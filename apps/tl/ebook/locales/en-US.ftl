@@ -157,6 +157,28 @@ d-2xhwxzlq = Builtin
 
 d-gtq4jwzo-filter-builtin = Builtin
 
+d-6xfhtrzr = Font
+    .doc = A face the page can be set in: a family this device has, the name a person gave it, how large it reads beside the others, and whether it shows in the reader's picker.
+    .noun = { $count ->
+        [one] font
+       *[other] fonts
+    }
+
+d-jlawoyck = Family
+    .doc = The family the face is set in: `serif`, `mono`, a family the toolkit ships, or one the device has.
+
+d-w2n5kzdl = Name
+    .doc = The name a person gave it; empty while it is called what its family is.
+
+d-6pky4ug3 = Size
+    .doc = The text size this face reads at, a multiple of the page's own, between 0.7 and 1.4.
+
+d-qxdff5v3 = Shown
+    .doc = Whether it appears in the reader's face picker.
+
+d-7bsrqnib = Builtin
+    .doc = A face the reader ships with: the settings keep it and offer no way to remove it.
+
 d-5zqlbdnq = Found
     .doc = A book Project Gutenberg answered a search with, waiting to be downloaded.
     .noun = { $count ->
@@ -222,6 +244,9 @@ d-4nrbbruw = Justified
 
 d-q2xeecyu = Scheme
     .doc = The palette chosen, by name; the sepia page where it names none.
+
+d-obt3nk5o = Fonts
+    .doc = The faces the page can be set in: the ones the reader ships with, and the families a person added from this device.
 
 d-7iepiv5z = Draft scheme
     .doc = The name a palette of the person's own is made under, and its paper and ink colours.
@@ -294,39 +319,39 @@ d-mjbtpsjr = Remove book
     .doc = Takes a book off the shelf, its chapters and marks with it.
     .did = removed a book
 
-d-sf2gg5er = Set title
+d-23vpvbzy = Set title
     .doc = Gives `b` the title a person reads it by.
     .did = renamed a book
     .w-a-book-has-a-title = A book has a title
 
-d-sf2gg5er-title = Title
+d-23vpvbzy-title = Title
 
-d-xuk6dlhn = Set author
+d-3cfv74w3 = Set author
     .doc = Gives `b` its author, or leaves it without one.
     .did = changed a book's author
 
-d-xuk6dlhn-author = Author
+d-3cfv74w3-author = Author
 
-d-bucrle2g = Set subject
+d-kg76tk4c = Set subject
     .doc = Gives `b` the subject line its card and its shelf filters say.
     .did = changed a book's subject
 
-d-bucrle2g-subject = Subject
+d-kg76tk4c-subject = Subject
 
-d-wiyccdh7 = Set language
+d-syhb3w3r = Set language
     .doc = Sets the language `b` is set in, for its hyphenation.
     .did = changed a book's language
     .w-a-book-is-set-in-a = A book is set in a language
 
-d-wiyccdh7-language = Language
+d-syhb3w3r-language = Language
 
-d-td7khtuv = Set cover
+d-np45fqzx = Set cover
     .doc = Puts `picture` on `b` as its cover.
     .did = changed a book's cover
 
-d-td7khtuv-picture = Picture
+d-np45fqzx-picture = Picture
 
-d-gbskw33x = Clear cover
+d-6lnp7mta = Clear cover
     .doc = Takes a cover off `b`, so its card draws the book's own art.
     .did = took a book's cover off
 
@@ -408,6 +433,44 @@ d-x5djz5gg = Set face
     .did = chose the reading face
 
 d-x5djz5gg-face = Face
+
+d-v5w4tpa7 = Add font
+    .doc = Adds the family `family`, which this device has, to the reader's faces.
+    .did = added a reading face
+    .w-a-face-has-a-family = A face has a family
+
+d-v5w4tpa7-family = Family
+
+d-xkw5f5wc = Rename font
+    .doc = Gives the face `f` the name a person reads it by; empty calls it what its family is.
+    .did = renamed a reading face
+
+d-xkw5f5wc-f = F
+
+d-xkw5f5wc-name = Name
+
+d-6l7hpiw4 = Set font size
+    .doc = Sets how large the face `f` reads beside the others.
+    .did = changed a reading face's size
+
+d-6l7hpiw4-f = F
+
+d-6l7hpiw4-size = Size
+
+d-5e53kwxp = Set font shown
+    .doc = Says whether the face `f` appears in the reader's picker.
+    .did = changed whether a face shows
+
+d-5e53kwxp-f = F
+
+d-5e53kwxp-shown = Shown
+
+d-rvd4667o = Remove font
+    .doc = Takes a face of the person's own out of the reader's picker.
+    .did = removed a reading face
+    .w-the-reader-s-own-faces-stay = The reader's own faces stay
+
+d-rvd4667o-f = F
 
 d-wfzyizr4 = Set justified
     .doc = Whether the page's paragraphs are justified.
@@ -548,11 +611,15 @@ d-ob6iyicm = Clear found
 
 d-oxd7kaud = Watch folder~present
 
-d-rrm3aih4 = Set title~present
+d-vyxg67tn = Set title~present
 
-d-qxsrdlbw = Set language~present
+d-64m3byry = Set language~present
 
 d-w4cgekcm = Show passage~present
+
+d-ujf5rwrf = Add font~present
+
+d-o5nk6k7i = Remove font~present
 
 d-om3e7iv4 = Set shelf sort~present
 
@@ -582,9 +649,18 @@ d-cmr5ibgv = Library settings
     .w-text = Text
     .w-text-size = Text size
     .w-line-spacing = Line spacing
-    .w-face = Face
-    .w-the-reader-s-serif = The reader's serif
     .w-justified-paragraphs = Justified paragraphs
+    .w-reading-faces = Reading faces
+    .w-set-at = { $family } · set at { $size }×
+    .w-hide = Hide
+    .w-show = Show
+    .w-how-large-reads = How large { $font_title } reads
+    .w-rename = Rename
+    .w-remove = Remove
+    .w-the-name-it-shows-as = The name it shows as
+    .w-save-name = Save name
+    .w-cancel = Cancel
+    .w-add-a-face = Add a face
     .w-watched-folders = Watched folders
     .w-new-epubs-here-become-books = New EPUBs here become books
     .w-a-folder-on-this-device = A folder on this device
@@ -626,6 +702,7 @@ d-tntic6tx = Book page
     .w-smaller-text = Smaller text
     .w-larger-text = Larger text
     .w-change-the-page-palette = Change the page palette
+    .w-face = Face
     .w-pages = Pages
     .w-one-page = One page
     .w-two-pages = Two pages

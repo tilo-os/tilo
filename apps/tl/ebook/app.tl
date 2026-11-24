@@ -96,6 +96,28 @@ type Scheme (title: name) {
     builtin: Bool = false
 }
 
+/// A face the page can be set in: a family this device has, the name a person gave it, how
+/// large it reads beside the others, and whether it shows in the reader's picker.
+type Font (title: name) {
+    /// The family the face is set in: `serif`, `mono`, a family the toolkit ships, or one the
+    /// device has.
+    family: Text
+    /// The name a person gave it; empty while it is called what its family is.
+    name: Text = ""
+    /// The text size this face reads at, a multiple of the page's own, between 0.7 and 1.4.
+    size: Float = 1.0
+    /// Whether it appears in the reader's face picker.
+    shown: Bool = true
+    /// A face the reader ships with: the settings keep it and offer no way to remove it.
+    builtin: Bool = false
+
+    search {
+        // A face is the reader's setting, not something the workspace holds to find.
+        hide family
+        hide name
+    }
+}
+
 /// A book Project Gutenberg answered a search with, waiting to be downloaded.
 type Found (title: title) {
     title: Text
@@ -133,6 +155,9 @@ type Library {
     justified: Bool = false
     /// The palette chosen, by name; the sepia page where it names none.
     scheme: Text = "Sepia"
+    /// The faces the page can be set in: the ones the reader ships with, and the families a
+    /// person added from this device.
+    fonts: Collection<Font>
     /// The name a palette of the person's own is made under, and its paper and ink colours.
     draft_scheme: Text = ""
     custom_page: Text = "#f5ead6"
@@ -182,6 +207,15 @@ initial action fill(lib: Library) {
             builtin: true,
         ),
     )
+    // The faces every reader knows: the toolkit's reading faces, the plain serif, sans and
+    // monospace, and the sizes that set each at the default face's apparent size.
+    lib.fonts.insert(Font(family: "serif", size: 1.05, builtin: true))
+    lib.fonts.insert(Font(family: "sans", size: 1.0, builtin: true))
+    lib.fonts.insert(Font(family: "mono", size: 0.96, builtin: true))
+    lib.fonts.insert(Font(family: "libertinus", size: 1.05, builtin: true))
+    lib.fonts.insert(Font(family: "literata", size: 0.9, builtin: true))
+    lib.fonts.insert(Font(family: "garamond", size: 1.0, builtin: true))
+    lib.fonts.insert(Font(family: "source_serif", size: 0.95, builtin: true))
 }
 
 /// Adds the EPUB `file` to the shelf and opens it. Its title, author and language are the book's
@@ -414,6 +448,83 @@ action set_face(lib: Library, face: Text) (did: "chose the reading face") {
     lib.face = face
 }
 
+/// Adds the family `family`, which this device has, to the reader's faces.
+action add_font(lib: Library, family: Text) (icon: .plus, did: "added a reading face") {
+    require family.trim() != "" "A face has a family"
+    let face = family.trim()
+    if lib.fonts.any(f -> f.family == face) {
+        return
+    }
+    lib.fonts.insert(Font(family: face, size: 1.0))
+}
+
+/// Gives the face `f` the name a person reads it by; empty calls it what its family is.
+action rename_font(lib: Library, f: Font, name: Text) (did: "renamed a reading face") {
+    f.name = name.trim()
+}
+
+/// Sets how large the face `f` reads beside the others.
+action set_font_size(lib: Library, f: Font, size: Float) (did: "changed a reading face's size") {
+    f.size = size.clamp(0.7, 1.4)
+}
+
+/// Says whether the face `f` appears in the reader's picker.
+action set_font_shown(lib: Library, f: Font, shown: Bool) (did: "changed whether a face shows") {
+    f.shown = shown
+}
+
+/// Takes a face of the person's own out of the reader's picker.
+destructive action remove_font(lib: Library, f: Font) (did: "removed a reading face") {
+    require not f.builtin "The reader's own faces stay"
+    // What the face is called is read before it goes: once it is away, nothing of it is left.
+    let family = f.family
+    lib.fonts.remove(f)
+    if lib.face == family {
+        lib.face = "serif"
+    }
+}
+
+/// What a face is called where a person reads it: the name someone gave it, else what its
+/// family is.
+fn font_title(f: Font) -> Text {
+    if f.name.trim() != "" { f.name.trim() } else { font_family_title(f.family) }
+}
+
+/// The name a family is known by where a person reads it.
+fn font_family_title(family: Text) -> Text {
+    if family == "serif" {
+        "Serif"
+    } else if family == "sans" {
+        "Sans"
+    } else if family == "mono" {
+        "Monospace"
+    } else if family == "libertinus" {
+        "Libertinus"
+    } else if family == "literata" {
+        "Literata"
+    } else if family == "garamond" {
+        "EB Garamond"
+    } else if family == "source_serif" { "Source Serif" } else { family }
+}
+
+/// The faces the reader's picker offers: the ones a person left shown.
+fn shown_fonts(lib: Library) -> List<Font> {
+    lib.fonts.filter(f -> f.shown).sort_by(.family)
+}
+
+/// The size the face `family` reads at, one for a family nobody tuned.
+fn face_size(lib: Library, family: Text) -> Float {
+    match lib.fonts.find(f -> f.family == family) {
+        .some(f) => f.size,
+        .none => 1.0,
+    }
+}
+
+/// How large the page is set: the text size, times the face's own.
+fn reading_scale(lib: Library) -> Float {
+    (lib.text_size * face_size(lib, lib.face)).clamp(0.8, 2.0)
+}
+
 /// Whether the page's paragraphs are justified.
 action set_justified(lib: Library, on: Bool) (did: "changed the paragraph fitting") {
     lib.justified = on
@@ -497,8 +608,10 @@ action add_scheme(lib: Library, name: Text, page: Text, ink: Text) (did: "made a
 /// Deletes a palette of the person's own. The four the reader ships with stay.
 destructive action delete_scheme(lib: Library, scheme: Scheme) (did: "deleted a page palette") {
     require not scheme.builtin "The reader's own palettes stay"
+    // The palette's name is read before it goes: once it is away, nothing of it is left.
+    let name = scheme.name
     lib.schemes.remove(scheme)
-    if lib.scheme == scheme.name {
+    if lib.scheme == name {
         lib.scheme = "Sepia"
     }
 }
@@ -981,6 +1094,9 @@ view library(lib: Library) {
 /// How the page is set: its size, spacing, face, how it is shown, how its paragraphs fit, and
 /// the palettes it can be set in.
 view library_settings(lib: Library) {
+    // The face a person is renaming, and what they typed: one face's row is edited at a time.
+    state renaming: Text = ""
+    state draft: Text = ""
     ui.Scroll {
         page {
             stack(gap: .group) {
@@ -1003,15 +1119,21 @@ view library_settings(lib: Library) {
                             step: 0.05,
                             shows_value: true,
                         )
-                        ui.Dropdown(
-                            bind: lib.face,
-                            options: fonts(),
-                            caption: "Face",
-                            placeholder: "The reader's serif",
-                        ) {
-                            on change(font): set_face(lib, font)
-                        }
                         ui.Toggle(bind: lib.justified, label: "Justified paragraphs")
+                    }
+                }
+                ui.Section("Reading faces") {
+                    stack(gap: .related) {
+                        for f in lib.fonts.sort_by(.family) {
+                            face_row(lib, f, renaming, draft)
+                        }
+                        ui.MenuButton("Add a face", icon: .plus) {
+                            for family in fonts() {
+                                ui.MenuItem(font_family_title(family)) {
+                                    on choose: add_font(lib, family)
+                                }
+                            }
+                        }
                     }
                 }
                 ui.Section("Watched folders") {
@@ -1077,6 +1199,60 @@ view library_settings(lib: Library) {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// One face the page can be set in: what it is called, the family it is, whether the picker
+/// offers it, how large it reads, and the way to rename it or take it away.
+view face_row(lib: Library, f: Font, renaming: State<Text>, draft: State<Text>) {
+    stack(gap: .tight) {
+        ui.ListRow(
+            item: f,
+            title: font_title(f),
+            secondary: "{f.family} · set at {f.size}×",
+            icon: .type,
+            selected: lib.face == f.family,
+        ) {
+            on activate: set_face(lib, f.family)
+            trailing: {
+                ui.Button(
+                    if f.shown { "Hide" } else { "Show" },
+                    icon: if f.shown { .eye_off } else { .eye },
+                    size: .small,
+                ) {
+                    on press: set_font_shown(lib, f, not f.shown)
+                }
+            }
+        }
+        ui.Slider(
+            bind: f.size,
+            label: "How large {font_title(f)} reads",
+            min: 0.7,
+            max: 1.4,
+            step: 0.05,
+            shows_value: true,
+        )
+        row(gap: .related, align: .center) {
+            ui.Button("Rename", icon: .pencil, size: .small) {
+                on press: set(draft, f.name).then(set(renaming, f.family))
+            }
+            if not f.builtin {
+                ui.Button("Remove", icon: .trash_2, size: .small) {
+                    on press: remove_font(lib, f)
+                }
+            }
+        }
+        if renaming == f.family {
+            row(gap: .related, align: .center) {
+                ui.TextInput(bind: draft, placeholder: "The name it shows as")
+                ui.Button("Save name", icon: .check) {
+                    on press: rename_font(lib, f, draft).then(set(renaming, ""))
+                }
+                ui.Button("Cancel", icon: .x) {
+                    on press: set(renaming, "")
                 }
             }
         }
@@ -1229,7 +1405,7 @@ view book_page(b: Book) {
                 stack(fill, gap: .related) {
                     ui.Reading(
                         value: open.body,
-                        scale: lib.text_size,
+                        scale: reading_scale(lib),
                         spacing: lib.line_spacing,
                         justified: lib.justified,
                         face: face_of(lib),
@@ -1322,6 +1498,13 @@ view book_page(b: Book) {
                         }
                         ui.Button("Change the page palette", icon: .palette, icon_only: true) {
                             on press: cycle_scheme(lib)
+                        }
+                        ui.MenuButton("Face", icon: .type, icon_only: true) {
+                            for f in shown_fonts(lib) {
+                                ui.MenuItem(font_title(f), checked: lib.face == f.family) {
+                                    on choose: set_face(lib, f.family)
+                                }
+                            }
                         }
                         if mode == "continuous" {
                             ui.Button("Pages", icon: .columns_2, icon_only: true) {
@@ -1487,7 +1670,7 @@ view chapter_page(c: Chapter) {
                 page {
                     ui.Reading(
                         value: c.body,
-                        scale: lib.text_size,
+                        scale: reading_scale(lib),
                         spacing: lib.line_spacing,
                         justified: lib.justified,
                         face: face_of(lib),

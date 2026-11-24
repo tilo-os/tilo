@@ -429,6 +429,54 @@ action open_window(resource: host.Resource) {
                 .expect("a mark's row stands for it")
         }
 
+        /// The face of the family `family`, read from the library's own collection.
+        fn font_ref(&self, family: &str) -> ResourceRef {
+            let fonts = self.rt.read(&self.lib, "fonts").unwrap();
+            let project = self.rt.project(&fonts);
+            let id = project["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|item| item["fields"]["family"] == serde_json::json!(family))
+                .and_then(|item| item["id"].as_str())
+                .unwrap_or_else(|| panic!("no face of {family} in the reader's settings"))
+                .to_owned();
+            let ty = self
+                .app
+                .meta()
+                .types
+                .iter()
+                .find(|declared| declared.name == "Font")
+                .expect("the books app declares its faces")
+                .id
+                .clone();
+            ResourceRef::parse_id(&id, ty).expect("a face's id is a resource id")
+        }
+
+        /// Whether the library holds a face of `family`.
+        fn has_font(&self, family: &str) -> bool {
+            let fonts = self.rt.read(&self.lib, "fonts").unwrap();
+            let project = self.rt.project(&fonts);
+            project["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|item| item["fields"]["family"] == serde_json::json!(family))
+        }
+
+        /// The face called `title` in the reader's settings, as its row stands for it.
+        fn face(&self, title: &str) -> ResourceRef {
+            let window = self.window("library_settings", vec![Value::resource(&self.lib)]);
+            of_kind(window.tree(), "ui.ListRow")
+                .into_iter()
+                .find(|row| text_prop(row, "title") == title)
+                .and_then(|row| match row.props.get("item") {
+                    Some(Value::Ref(r)) => Some(ResourceRef::clone(&r.target)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no face {title} in the reader's settings"))
+        }
+
         /// A chapter of `book`, by the place its contents give it.
         fn chapter(&self, book: &ResourceRef, at: i64) -> ResourceRef {
             let window = self.book_window(book);
@@ -836,40 +884,125 @@ action open_window(resource: host.Resource) {
         phase the_faces_the_device_has_are_offered;
         {
             let books = Books::new();
-            let mut window = books.window("library_settings", vec![Value::resource(&books.lib)]);
-            let picker = of_kind(window.tree(), "ui.Dropdown")
+            let lib = Value::resource(&books.lib);
+            // The reader starts with the faces the toolkit ships, and the plain three.
+            let settings = books.window("library_settings", vec![lib.clone()]);
+            let titles: Vec<String> = of_kind(settings.tree(), "ui.ListRow")
                 .into_iter()
-                .find(|node| text_prop(node, "caption") == "Face")
-                .expect("the settings offer a face to pick");
-            let options = match picker.props.get("options") {
-                Some(Value::List(items)) => items
-                    .iter()
-                    .map(|item| match item {
-                        Value::Text(family) => family.clone(),
-                        other => panic!("a family is text, not {other:?}"),
-                    })
-                    .collect::<Vec<_>>(),
-                other => panic!("a dropdown's options are a list, not {other:?}"),
-            };
-            assert_eq!(
-                options,
-                ["Our Serif", "Our Sans"],
-                "the picker offers the families this device sets text in"
+                .map(|row| text_prop(row, "title"))
+                .collect();
+            for face in [
+                "Serif",
+                "Sans",
+                "Monospace",
+                "Libertinus",
+                "Literata",
+                "EB Garamond",
+                "Source Serif",
+            ] {
+                assert!(
+                    titles.iter().any(|title| title == face),
+                    "the reader ships with {face}: {titles:?}"
+                );
+            }
+            // A family this device sets text in is added, then renamed.
+            books.call(
+                "add_font",
+                books.args("add_font", &[("lib", lib.clone()), ("family", Value::text("Our Sans"))]),
             );
-            let key = picker.key.clone();
-            window
-                .fire_with(&key, "change", Some(&Value::text("Our Sans")))
-                .unwrap();
-            window.poll_patches().unwrap();
-            assert_eq!(
-                books.rt.read(&books.lib, "face").unwrap(),
-                Value::text("Our Sans"),
-                "picking a face records it through the reading settings' action"
+            let added = books.face("Our Sans");
+            books.call(
+                "rename_font",
+                books.args(
+                    "rename_font",
+                    &[
+                        ("lib", lib.clone()),
+                        ("f", Value::resource(&added)),
+                        ("name", Value::text("Our own sans")),
+                    ],
+                ),
+            );
+            let settings = books.window("library_settings", vec![lib.clone()]);
+            assert!(
+                of_kind(settings.tree(), "ui.ListRow")
+                    .iter()
+                    .any(|row| text_prop(row, "title") == "Our own sans"),
+                "the settings call the face the name a person gave it"
+            );
+            // The face is chosen, reads larger by its own size, and hides from the reader's
+            // quick picker while the settings still offer it.
+            books.call(
+                "set_face",
+                books.args("set_face", &[("lib", lib.clone()), ("face", Value::text("Our Sans"))]),
+            );
+            books.call(
+                "set_font_size",
+                books.args(
+                    "set_font_size",
+                    &[
+                        ("lib", lib.clone()),
+                        ("f", Value::resource(&added)),
+                        ("size", Value::Float(1.4)),
+                    ],
+                ),
             );
             let book = books.open();
             let page = books.book_window(&book);
             let reading = of_kind(page.tree(), "ui.Reading")[0];
             assert_eq!(prop(reading, "face"), "Our Sans");
+            assert_eq!(
+                prop(reading, "scale"),
+                "1.4",
+                "the page is set at the text size times the face's own"
+            );
+            books.call(
+                "set_font_shown",
+                books.args(
+                    "set_font_shown",
+                    &[
+                        ("lib", lib.clone()),
+                        ("f", Value::resource(&added)),
+                        ("shown", Value::Bool(false)),
+                    ],
+                ),
+            );
+            let page = books.book_window(&book);
+            let menu = of_kind(page.tree(), "ui.MenuButton")
+                .into_iter()
+                .find(|menu| text_prop(menu, "label") == "Face")
+                .expect("the reader's bar offers its faces");
+            assert!(
+                of_kind(menu, "ui.MenuItem")
+                    .iter()
+                    .all(|item| text_prop(item, "label") != "Our own sans"),
+                "a hidden face leaves the reader's quick picker"
+            );
+            let settings = books.window("library_settings", vec![lib.clone()]);
+            assert!(
+                of_kind(settings.tree(), "ui.ListRow")
+                    .iter()
+                    .any(|row| text_prop(row, "title") == "Our own sans"),
+                "the settings still offer a hidden face, to show again"
+            );
+            // A face the reader ships with stays; the person's own goes, with its row open.
+            let serif = books.font_ref("serif");
+            let refused = books.rt.invoke_action(
+                &me(),
+                (
+                    books.app.action("remove_font").as_str(),
+                    books.args(
+                        "remove_font",
+                        &[("lib", lib.clone()), ("f", Value::resource(&serif))],
+                    ),
+                ),
+            );
+            assert!(refused.is_err(), "a face the reader ships with is kept");
+            let own = books.font_ref("Our Sans");
+            books.call(
+                "remove_font",
+                books.args("remove_font", &[("lib", lib), ("f", Value::resource(&own))]),
+            );
+            assert!(!books.has_font("Our Sans"), "the person's own face goes");
         }
 
         phase the_page_is_set_the_way_its_reader_likes_it;

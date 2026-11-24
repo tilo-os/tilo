@@ -478,12 +478,21 @@ d-cmr5ibgv = Leseeinstellungen
     .w-text = Text
     .w-text-size = Textgröße
     .w-line-spacing = Zeilenabstand
-    .w-face = Schriftart
-    .w-the-reader-s-serif = Die Serifenschrift des Lesers
     .w-justified-paragraphs = Absätze im Blocksatz
+    .w-reading-faces = Schriftarten
+    .w-set-at = { $family } · gesetzt auf { $size }×
+    .w-hide = Ausblenden
+    .w-show = Einblenden
+    .w-how-large-reads = Wie groß { $font_title } liest
+    .w-rename = Umbenennen
+    .w-remove = Entfernen
+    .w-the-name-it-shows-as = Der Name, unter dem sie erscheint
+    .w-save-name = Namen speichern
+    .w-cancel = Abbrechen
     .w-watched-folders = Überwachte Ordner
     .w-a-folder-on-this-device = Ein Ordner auf diesem Gerät
     .w-watch-it = Überwachen
+    .w-add-a-face = Schriftart hinzufügen
     .w-page-palettes = Seitenfarben
     .w-palette-name = Name der Farben
     .w-paper = Papier
@@ -502,6 +511,14 @@ d-jnthvtdd = Gefundene Bücher
     .w-search-project-gutenberg-for-a-free = Suche bei Project Gutenberg nach einem freien Buch; es steht hier, bis du es herunterlädst.
 
 d-tntic6tx = Buchseite
+    .w-book-details = Buchdetails
+    .w-face = Schriftart
+    .w-title = Titel
+    .w-author = Autor
+    .w-subject = Thema
+    .w-language-as-en-or-de = Sprache, als `en` oder `de`
+    .w-choose-a-cover = Cover wählen
+    .w-take-the-cover-off = Cover abnehmen
     .w-contents = Inhalt
     .w-justified = Blocksatz
     .w-reading-settings = Leseeinstellungen
@@ -537,13 +554,6 @@ d-tntic6tx = Buchseite
     .w-edit-the-note = Die Notiz bearbeiten
     .w-finished = Beendet
     .w-save = Speichern
-    .w-book-details = Buchdetails
-    .w-title = Titel
-    .w-author = Autor
-    .w-subject = Thema
-    .w-language-as-en-or-de = Sprache, als `en` oder `de`
-    .w-choose-a-cover = Cover wählen
-    .w-take-the-cover-off = Cover abnehmen
 
 d-uxr7ymrf = Kapitelseite
     .w-read-in = In { $title } lesen
@@ -619,54 +629,104 @@ d-om3e7iv4 = Regalreihenfolge setzen~present
 
 d-7n672gfq = Notiztext bearbeiten~present
 
-d-sf2gg5er = Titel setzen
+# Schriftarten und Buchdetails
+d-6xfhtrzr = Schriftart
+    .doc = Eine Schriftart, in der die Seite gesetzt werden kann: eine Familie, die dieses Gerät hat, der Name, den eine Person ihr gegeben hat, wie groß sie neben den anderen liest, und ob sie in der Auswahl des Lesers erscheint.
+    .noun = { $count ->
+        [one] Schriftart
+       *[other] Schriftarten
+    }
 
-d-sf2gg5er-title = Titel
+d-jlawoyck = Familie
+    .doc = Die Familie, in der die Schriftart gesetzt ist: `serif`, `mono`, eine Familie, die das Toolkit mitbringt, oder eine, die das Gerät hat.
 
-d-xuk6dlhn = Autor setzen
+d-w2n5kzdl = Name
+    .doc = Der Name, den eine Person ihr gegeben hat; leer, solange sie heißt wie ihre Familie.
 
-d-xuk6dlhn-author = Autor
+d-6pky4ug3 = Größe
+    .doc = Die Textgröße, in der diese Schriftart liest, als Vielfaches der Seite, zwischen 0,7 und 1,4.
 
-d-bucrle2g = Thema setzen
+d-qxdff5v3 = Sichtbar
+    .doc = Ob sie in der Schriftartenauswahl des Lesers erscheint.
 
-d-bucrle2g-subject = Thema
+d-7bsrqnib = Mitgeliefert
+    .doc = Eine Schriftart, die der Leser mitbringt: die Einstellungen behalten sie und bieten keinen Weg, sie zu entfernen.
 
-d-wiyccdh7 = Sprache setzen
+d-obt3nk5o = Schriftarten
+    .doc = Die Schriftarten, in denen die Seite gesetzt werden kann: die, die der Leser mitbringt, und die Familien, die eine Person von diesem Gerät hinzugefügt hat.
 
-d-wiyccdh7-language = Sprache
-
-d-td7khtuv = Cover setzen
-
-d-td7khtuv-picture = Bild
-
-d-gbskw33x = Cover entfernen
-
-d-rrm3aih4 = Titel setzen
-
-d-qxsrdlbw = Sprache setzen
-
-d-sf2gg5er = Gibt `b` den Titel, unter dem eine Person es liest.
+d-23vpvbzy = Titel setzen
     .doc = Gibt `b` den Titel, unter dem eine Person es liest.
     .did = benannte ein Buch um
     .w-a-book-has-a-title = Ein Buch hat einen Titel
 
-d-xuk6dlhn = Gibt `b` seinen Autor, oder lässt es ohne einen.
+d-23vpvbzy-title = Titel
+
+d-3cfv74w3 = Autor setzen
     .doc = Gibt `b` seinen Autor, oder lässt es ohne einen.
     .did = änderte den Autor eines Buchs
 
-d-bucrle2g = Gibt `b` die Themenzeile, die seine Karte und seine Regalfilter sagen.
+d-3cfv74w3-author = Autor
+
+d-kg76tk4c = Thema setzen
     .doc = Gibt `b` die Themenzeile, die seine Karte und seine Regalfilter sagen.
     .did = änderte das Thema eines Buchs
 
-d-wiyccdh7 = Setzt die Sprache, in der `b` gesetzt ist, für seine Silbentrennung.
+d-kg76tk4c-subject = Thema
+
+d-syhb3w3r = Sprache setzen
     .doc = Setzt die Sprache, in der `b` gesetzt ist, für seine Silbentrennung.
     .did = änderte die Sprache eines Buchs
     .w-a-book-is-set-in-a = Ein Buch ist in einer Sprache gesetzt
 
-d-td7khtuv = Legt `picture` als Cover auf `b`.
+d-syhb3w3r-language = Sprache
+
+d-np45fqzx = Cover setzen
     .doc = Legt `picture` als Cover auf `b`.
     .did = änderte das Cover eines Buchs
 
-d-gbskw33x = Nimmt ein Cover von `b`, damit seine Karte die eigene Kunst des Buchs zeichnet.
+d-np45fqzx-picture = Bild
+
+d-6lnp7mta = Cover entfernen
     .doc = Nimmt ein Cover von `b`, damit seine Karte die eigene Kunst des Buchs zeichnet.
     .did = nahm das Cover eines Buchs ab
+
+d-v5w4tpa7 = Schriftart hinzufügen
+    .doc = Fügt die Familie `family`, die dieses Gerät hat, den Schriftarten des Lesers hinzu.
+    .did = fügte eine Schriftart hinzu
+    .w-a-face-has-a-family = Eine Schriftart hat eine Familie
+
+d-v5w4tpa7-family = Familie
+
+d-xkw5f5wc = Schriftart umbenennen
+    .doc = Gibt der Schriftart `f` den Namen, unter dem eine Person sie liest; leer heißt sie wie ihre Familie.
+    .did = benannte eine Schriftart um
+
+d-xkw5f5wc-f = Schriftart
+d-xkw5f5wc-name = Name
+
+d-6l7hpiw4 = Schriftgröße setzen
+    .doc = Setzt, wie groß die Schriftart `f` neben den anderen liest.
+    .did = änderte die Größe einer Schriftart
+
+d-6l7hpiw4-f = Schriftart
+d-6l7hpiw4-size = Größe
+
+d-5e53kwxp = Sichtbarkeit einer Schriftart setzen
+    .doc = Sagt, ob die Schriftart `f` in der Auswahl des Lesers erscheint.
+    .did = änderte, ob eine Schriftart erscheint
+
+d-5e53kwxp-f = Schriftart
+d-5e53kwxp-shown = Sichtbar
+
+d-rvd4667o = Schriftart entfernen
+    .doc = Nimmt eine eigene Schriftart der Person aus der Auswahl des Lesers.
+    .did = entfernte eine Schriftart
+    .w-the-reader-s-own-faces-stay = Die eigenen Schriftarten des Lesers bleiben
+
+d-rvd4667o-f = Schriftart
+
+d-vyxg67tn = Titel setzen
+d-64m3byry = Sprache setzen
+d-ujf5rwrf = Schriftart hinzufügen
+d-o5nk6k7i = Schriftart entfernen

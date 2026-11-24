@@ -179,16 +179,19 @@ const PAGE_TURN_KEYS: [NamedKey; 8] = [
 ];
 
 impl Reading {
-    /// The face the page is shaped in.
+    /// The face the page is shaped in: one of the toolkit's own, or any family the device
+    /// sets text in, named as the person's settings name it.
     fn face_choice(&self) -> FontChoice {
-        match self.face.as_str() {
+        let face = self.face.trim();
+        match face {
+            "" | "serif" => FontChoice::Serif,
             "sans" => FontChoice::SansSerif,
             "mono" => FontChoice::Monospace,
             "libertinus" => FontChoice::Named(ui::ReadingFace::Libertinus.family().to_owned()),
             "literata" => FontChoice::Named(ui::ReadingFace::Literata.family().to_owned()),
             "garamond" => FontChoice::Named(ui::ReadingFace::Garamond.family().to_owned()),
             "source_serif" => FontChoice::Named(ui::ReadingFace::SourceSerif.family().to_owned()),
-            _ => FontChoice::Serif,
+            family => FontChoice::Named(family.to_owned()),
         }
     }
 
