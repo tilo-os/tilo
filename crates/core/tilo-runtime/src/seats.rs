@@ -557,7 +557,7 @@ impl Seats {
                     .map_err(|error| format!("the certificate does not read: {error}"))?;
                 (cert.device_public_key, cert)
             }
-            None => self.certify_here(seat)?,
+            None => self.certify_here(seat.clone())?,
         };
         let key = self
             .keys
