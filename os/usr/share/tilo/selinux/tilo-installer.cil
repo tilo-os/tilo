@@ -55,6 +55,24 @@
 (allow init_t tilo_installer_bridge_t
   (file (getattr open read write append create setattr unlink)))
 
+; The installer UI reads what the medium says about this install: the profile
+; tilo-installer-profile-extract validated out of the medium's tail and the
+; staged installation tilo-staging-handoff recognised, each with its error.
+; Root writes them before the greeter starts and restorecon labels them. The
+; base policy would leave them var_run_t, which xdm_t may not read, so the UI
+; failed with "could not read installation profile: Permission denied" and
+; asked again for every choice the profile had made. A type of their own lets
+; the greeter read these four files and nothing else in /run.
+(type tilo_installer_setup_t)
+(roletype object_r tilo_installer_setup_t)
+(typeattributeset file_type (tilo_installer_setup_t))
+(typeattributeset non_auth_file_type (tilo_installer_setup_t))
+(filecon "/run/tilo-installer/profile\.(json|error)" file
+  (system_u object_r tilo_installer_setup_t ((s0) (s0))))
+(filecon "/run/tilo-installer/handoff\.(json|error)" file
+  (system_u object_r tilo_installer_setup_t ((s0) (s0))))
+(allow xdm_t tilo_installer_setup_t (file (getattr open read)))
+
 ; Other D-Bus permissions, if live AVCs require them:
 ; ----------------------------------------------------------------
 ; Add only permissions observed in an enforcing VM run.

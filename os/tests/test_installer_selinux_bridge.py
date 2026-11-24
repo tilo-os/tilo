@@ -60,7 +60,28 @@ class BridgeContract(unittest.TestCase):
             self.assertIn("(type tilo_installer_bridge_t)", compact)
             self.assertEqual(
                 re.findall(r"\(allow xdm_t ([^\s)]+)", compact),
-                ["init_t", "tilo_installer_bridge_t", "tilo_installer_bridge_t"],
+                [
+                    "init_t",
+                    "tilo_installer_bridge_t",
+                    "tilo_installer_bridge_t",
+                    "tilo_installer_setup_t",
+                ],
+            )
+            # The setup files the installer UI reads (the medium's profile and a
+            # staged installation, each with its error) are readable and no more:
+            # root writes them before the greeter starts.
+            self.assertIn("(type tilo_installer_setup_t)", compact)
+            self.assertIn(
+                '(filecon "/run/tilo-installer/profile\\.(json|error)" file',
+                compact,
+            )
+            self.assertIn(
+                '(filecon "/run/tilo-installer/handoff\\.(json|error)" file',
+                compact,
+            )
+            self.assertIn(
+                "(allow xdm_t tilo_installer_setup_t (file (getattr open read)))",
+                compact,
             )
             self.assertIn(
                 "(allow xdm_t tilo_installer_bridge_t (dir (getattr search read watch)))",
