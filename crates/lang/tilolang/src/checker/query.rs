@@ -960,12 +960,13 @@ impl Checker<'_> {
             ),
             "people" => (3, Ty::List(Box::new(Ty::Actor))),
             "images" => (5, Ty::List(Box::new(Ty::Text))),
+            "links" => (6, Ty::List(Box::new(Ty::Text))),
             other => {
                 self.err(
                     "E021",
                     name.span,
                     format!(
-                        "`RichText` has the members `excerpt`, `text`, `markdown`, `references`, `people` and `images`, not `{other}`"
+                        "`RichText` has the members `excerpt`, `text`, `markdown`, `references`, `people`, `images` and `links`, not `{other}`"
                     ),
                 );
                 return Ex::error();

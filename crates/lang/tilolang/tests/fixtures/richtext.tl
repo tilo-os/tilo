@@ -120,6 +120,11 @@ action markdown_of(p: Post) -> Text {
     p.body.markdown
 }
 
+/// The addresses a post's links name, in the order they stand, each once.
+action links_of(p: Post) -> List<Text> {
+    p.body.links
+}
+
 /// What `p` says as Markdown, each task it refers to a link to the file `folder` writes that
 /// task at: a bundle of pages, where a page names another by the path it stands at.
 action linked_markdown(p: Post, folder: Text) -> Text {

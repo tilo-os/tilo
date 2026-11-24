@@ -627,4 +627,39 @@ mod cases {
             "the pictures it names are the sources it wrote"
         );
     }
+
+    /// The addresses a document's links name: each once, in the order they stand, whichever way
+    /// the link was written.
+    #[test]
+    fn a_documents_links_are_the_addresses_they_name() {
+        let store = AmStore::new();
+        let w = Workspace::on(&store, None);
+        let InvokeOutcome::Done(Value::Ref(post)) = w.call(
+            "post_html",
+            vec![
+                Value::resource(&w.board),
+                Value::text(
+                    "<p>Read the <a href=\"https://tilo.sh/plan\">plan</a>, then \
+                     <a href=\"https://tilo.sh/plan\">it</a> again.</p>\
+                     <p>Write to <a href=\"mailto:ada@analytical.example\">Ada</a>.</p>",
+                ),
+            ],
+        ) else {
+            panic!("post_html answers the post");
+        };
+        let post = (*post.target).clone();
+        let answered = w.done("links_of", vec![Value::resource(&post)]);
+        let Value::List(items) = answered else {
+            panic!("links_of answers a list: {answered:?}");
+        };
+        let links: Vec<String> = items
+            .iter()
+            .filter_map(|item| item.as_text().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            links,
+            ["https://tilo.sh/plan", "mailto:ada@analytical.example"],
+            "each address once, in the order it stands"
+        );
+    }
 }

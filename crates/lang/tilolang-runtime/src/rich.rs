@@ -238,6 +238,29 @@ impl RichValue {
         self.blocks.iter().filter_map(picture_source).collect()
     }
 
+    /// The addresses its links name, in the order they stand, each once: a page of a bundle
+    /// (`#page-…`), a resource (`tilo://open#…`), or one outside (`https://…`, `mailto:`). What
+    /// a reader opens among them is its own rule.
+    #[must_use]
+    pub fn links(&self) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        for block in &self.blocks {
+            for mark in &block.marks {
+                if mark.name != tilo_doc::schema::MARK_LINK {
+                    continue;
+                }
+                let Some(target) = mark.value.as_str().map(str::trim) else {
+                    continue;
+                };
+                if target.is_empty() || found.iter().any(|seen| seen == target) {
+                    continue;
+                }
+                found.push(target.to_owned());
+            }
+        }
+        found
+    }
+
     /// Whether it says nothing: no paragraph holds text, and none is something other than
     /// text (an image, a divider).
     #[must_use]

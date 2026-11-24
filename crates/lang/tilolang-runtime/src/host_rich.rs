@@ -33,6 +33,9 @@ pub const PART_MARKDOWN: i32 = 4;
 /// address of the workspace's content, one a sender wrote is the address it names, which nothing
 /// is read from until a person asks.
 pub const PART_IMAGES: i32 = 5;
+/// `r.links`: the addresses the document's links name, in the order they stand, each once: a page
+/// of a bundle (`#page-…`), a resource (`tilo://open#…`), or one outside (`https://…`).
+pub const PART_LINKS: i32 = 6;
 
 impl Core {
     /// `r.part`: one of a text's parts ([`PART_EXCERPT`] … [`PART_MARKDOWN`]).
@@ -44,6 +47,7 @@ impl Core {
             PART_MARKDOWN => Value::Text(tilo_doc_codecs::rich::markdown_of_blocks(&r.blocks)),
             PART_REFERENCES => Value::List(self.referenced(&r)?),
             PART_IMAGES => Value::List(r.images().into_iter().map(Value::text).collect()),
+            PART_LINKS => Value::List(r.links().into_iter().map(Value::text).collect()),
             PART_PEOPLE => Value::List(
                 r.references()
                     .into_iter()
