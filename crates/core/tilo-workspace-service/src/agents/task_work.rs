@@ -769,7 +769,7 @@ mod session_tests {
     use crate::workspaces::fixtures::{TestGroupKeys, TestHost, governor, test_host_holding};
 
     /// The packages the device runs, each with its ids lock: Tasks and what it builds on.
-    const PACKAGES: [(&str, &str); 3] = [
+    const PACKAGES: [(&str, &str); 4] = [
         (
             include_str!("../../../../../apps/tl/discussion/app.tl"),
             include_str!("../../../../../apps/tl/discussion/app.ids"),
@@ -777,6 +777,14 @@ mod session_tests {
         (
             include_str!("../../../../../apps/tl/notes/app.tl"),
             include_str!("../../../../../apps/tl/notes/app.ids"),
+        ),
+        (
+            concat!(
+                include_str!("../../../../../apps/tl/contacts/app.tl"),
+                "\n",
+                include_str!("../../../../../apps/tl/contacts/identities.tl")
+            ),
+            include_str!("../../../../../apps/tl/contacts/app.ids"),
         ),
         (
             include_str!("../../../../../apps/tl/tasks/app.tl"),
