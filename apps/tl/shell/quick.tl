@@ -1,5 +1,5 @@
 use so.tilo.device as device
-use so.tilo.settings as settings
+use so.tilo.settings.sections as settings
 
 /// The quick settings: the switches and sliders a person reaches for most, what is live now, then
 /// the sound, the networks in reach, the Bluetooth devices and the ways to leave the session. Each reads the

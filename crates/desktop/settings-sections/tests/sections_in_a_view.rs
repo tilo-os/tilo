@@ -16,7 +16,7 @@ use serde_json::Value as Json;
 use tilo_service::Services;
 use tilolang_tilo::call::Callees;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::platform_apps::{SETTINGS_APP, on_device, platform_package, platform_roots};
+use tilolang_tilo::platform_apps::{SECTIONS_APP, on_device, platform_package, platform_roots};
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::{Actor, EditOutcome, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::tilolang::{IdsLock, compile_package};
@@ -26,7 +26,7 @@ const DEVICE: &str = "ababababababababababababababababababababababababababababab
 
 const VIEW: &str = r#"app test.sections "Sections"
 
-use so.tilo.settings as settings
+use so.tilo.settings.sections as settings
 
 view looks(a: settings.Appearance) {
   stack {
@@ -133,7 +133,7 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
         || None,
     )
     .unwrap();
-    let metas = vec![platform_package(SETTINGS_APP).unwrap()];
+    let metas = vec![platform_package(SECTIONS_APP).unwrap()];
     for meta in &metas {
         host.runtime().load_foreign(meta.clone()).unwrap();
     }
@@ -175,7 +175,7 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
     };
 
     // The person's appearance, at `settings/appearance`, set to light through `set-mode`.
-    let (appearance, published) = root("so.tilo.settings#Appearance");
+    let (appearance, published) = root("so.tilo.settings.sections#Appearance");
     assert_eq!(published, "settings/appearance");
     publish(&host, &services, &appearance, &published);
     let mut looks = host
@@ -212,7 +212,7 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
 
     // This device's power, at `devices/<device>/settings/power`, locked sooner through
     // `set-lock-minutes`.
-    let (power, published) = root("so.tilo.settings#Power");
+    let (power, published) = root("so.tilo.settings.sections#Power");
     assert_eq!(published, format!("devices/{DEVICE}/settings/power"));
     publish(&host, &services, &power, &published);
     let mut lock = host.open_resource(&power, Some(&declared("lock"))).unwrap();

@@ -5,7 +5,7 @@ app so.tilo.lang.settings "Settings" (
     keywords: ["settings", "preferences", "configuration", "einstellungen", "system", "options"],
 )
 
-use so.tilo.settings as settings
+use so.tilo.settings.sections as settings
 use so.tilo.device as device
 
 /// The window's root. Settings keeps nothing of its own here: every row below changes a

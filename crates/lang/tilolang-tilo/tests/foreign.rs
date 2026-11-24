@@ -567,7 +567,7 @@ tilo_test_env::scenario! {
         // as `settings.appearance` does, and its fields are the reading's.
         const VIEW: &str = r#"app test.models "Models"
 
-use so.tilo.settings as settings
+use so.tilo.settings.sections as settings
 
 view switcher() {
   let m = settings.agent_models
@@ -586,7 +586,7 @@ view switcher() {
         // resource, so the view passes it.
         const VIEW: &str = r#"app test.models "Models"
 
-use so.tilo.settings as settings
+use so.tilo.settings.sections as settings
 
 view switcher(m: settings.AgentModels) {
   stack {
@@ -604,7 +604,7 @@ view switcher(m: settings.AgentModels) {
     {
         const VIEW: &str = r#"app test.models "Models"
 
-use so.tilo.settings as settings
+use so.tilo.settings.sections as settings
 
 view switcher(m: settings.AgentModels) {
   ui.Text("{m.in_use.model_label}")
@@ -625,7 +625,7 @@ view switcher(m: settings.AgentModels) {
         let package = host.load_compiled(&compiled).unwrap();
         let reading = tilolang_runtime::ResourceRef::parse_id(
             "settings/agent-models",
-            "so.tilo.settings#AgentModels",
+            "so.tilo.settings.sections#AgentModels",
         )
         .unwrap();
         host.runtime()

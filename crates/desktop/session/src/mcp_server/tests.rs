@@ -363,7 +363,7 @@ fn what_the_session_does_not_publish_is_no_reading_of_its() {
     assert_eq!(
         published_reading(
             &services,
-            tilolang_tilo::platform_apps::SETTINGS_APP,
+            tilolang_tilo::platform_apps::SECTIONS_APP,
             crate::device_lists::STYLES_RESOURCE,
         ),
         None,

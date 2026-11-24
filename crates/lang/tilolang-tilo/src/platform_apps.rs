@@ -29,9 +29,9 @@ pub const DEVICE_APP: &str = "so.tilo.device";
 /// Its own id, not the Contacts app's: the app is a tilolang package of that id, and a
 /// package a view imports is one id.
 pub const CONTACTS_APP: &str = "so.tilo.contacts.directory";
-/// Files' app, whose folders and trees the session publishes.
-/// Settings' app, whose sections the session keeps and publishes.
-pub use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
+/// The settings sections' package: the person's and the device's settings as a view reads and
+/// sets them, apart from the Settings app that shows them.
+pub use tilo_actions::remote::settings_resources::SURFACE_APP as SECTIONS_APP;
 /// The app a workspace's own actions are published under: `use tilo.workspace`.
 pub const WORKSPACE_APP: &str = tilo_action_policy::agent_answers::WORKSPACE_APP;
 /// The device's image model app: the picture bounded and sent to the model, as
@@ -224,7 +224,7 @@ const PUBLISHED: &[Published] = &[
         listed: &[],
     },
     Published {
-        app: SETTINGS_APP,
+        app: SECTIONS_APP,
         title: "Settings",
         kinds: &[],
         // Its roots are the sections' ([`settings_roots`]).
@@ -366,7 +366,7 @@ fn settings_types() -> Result<Vec<(String, String)>, String> {
     let mut surfaces = Vec::new();
     for published in PUBLISHED
         .iter()
-        .filter(|published| published.app == SETTINGS_APP)
+        .filter(|published| published.app == SECTIONS_APP)
     {
         for file in published.files {
             surfaces.extend(surfaces_of(file)?);
@@ -378,8 +378,8 @@ fn settings_types() -> Result<Vec<(String, String)>, String> {
         .map(|(_, kind, published)| {
             let ty = types
                 .get(&kind)
-                .ok_or_else(|| format!("{SETTINGS_APP} publishes no `{kind}` with fields"))?;
-            Ok((published, format!("{SETTINGS_APP}#{ty}")))
+                .ok_or_else(|| format!("{SECTIONS_APP} publishes no `{kind}` with fields"))?;
+            Ok((published, format!("{SECTIONS_APP}#{ty}")))
         })
         .collect()
 }
@@ -510,7 +510,7 @@ fn package(published: &Published) -> Result<PackageMeta, String> {
             published: Some((*published_as).to_owned()),
         });
     }
-    if published.app == SETTINGS_APP {
+    if published.app == SECTIONS_APP {
         name_settings(&mut meta, &surfaces)?;
     }
     Ok(meta)
