@@ -3110,6 +3110,44 @@
       ]
     },
     {
+      "kind": "battery_history",
+      "label": "Battery history",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "points",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "HistoryPoint"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "HistoryPoint",
+          "doc": "The battery's charge at one moment.",
+          "fields": [
+            {
+              "name": "unix_minute",
+              "type": "int"
+            },
+            {
+              "name": "capacity",
+              "type": "int"
+            },
+            {
+              "name": "on_ac",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "power",
       "label": "Power",
       "version": 1,
