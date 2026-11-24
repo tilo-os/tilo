@@ -6917,6 +6917,209 @@
       ]
     },
     {
+      "kind": "journal",
+      "label": "System journal",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "refresh",
+          "label": "Read the journal again",
+          "description": "Read the most recent records.",
+          "kind": "read",
+          "params": [
+            {
+              "name": "limit",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "read-after",
+          "label": "Read the records after a cursor",
+          "description": "Read the records written after `cursor`.",
+          "kind": "read",
+          "params": [
+            {
+              "name": "cursor",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "limit",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "set-following",
+          "label": "Follow the journal live",
+          "description": "Follow the journal as new records arrive, or stop following it.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "serving",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "read_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "entries",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "JournalEntry"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "cursor",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "following",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "read_at_ms",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "JournalEntry",
+          "doc": "One record of the journal, as the window lists it.",
+          "fields": [
+            {
+              "name": "realtime_us",
+              "type": "int"
+            },
+            {
+              "name": "unit",
+              "type": "text"
+            },
+            {
+              "name": "identifier",
+              "type": "text"
+            },
+            {
+              "name": "priority",
+              "type": "int"
+            },
+            {
+              "name": "message",
+              "type": "text"
+            },
+            {
+              "name": "pid",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "hostname",
+              "type": "text"
+            },
+            {
+              "name": "boot_id",
+              "type": "text"
+            },
+            {
+              "name": "transport",
+              "type": "text"
+            },
+            {
+              "name": "extra",
+              "type": {
+                "list": {
+                  "named": "JournalField"
+                }
+              }
+            },
+            {
+              "name": "time",
+              "type": "text"
+            },
+            {
+              "name": "timestamp",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "JournalField",
+          "doc": "One field of a journal record the reading does not promote to a column.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "value",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "system-update",
       "label": "System update",
       "version": 1,
