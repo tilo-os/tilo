@@ -29,4 +29,5 @@ hosts = [
   "gateway.discord.gg",
   "cdn.discordapp.com",
   "media.discordapp.net",
+  "*.discord.media",
 ]
