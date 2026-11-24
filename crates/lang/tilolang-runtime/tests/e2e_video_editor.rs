@@ -13,7 +13,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::clipboard::ClipboardHost;
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
         AmStore, EnumValue, Held, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
@@ -35,6 +35,8 @@ mod cases {
         /// What this device cannot read: an ask whose input names one of these is refused as
         /// bytes it does not hold.
         unreadable: Rc<RefCell<Vec<String>>>,
+        /// What each start named to run as its job moves and ends.
+        handlers: Rc<RefCell<Vec<JobHandlers>>>,
     }
 
     impl Engine {
@@ -83,13 +85,14 @@ mod cases {
             _app: &str,
             op: &str,
             input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
+            handlers: &JobHandlers,
         ) -> Result<String, String> {
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
             if op == "render" {
-                Ok(r#"{"job":"job-1"}"#.to_owned())
+                self.handlers.borrow_mut().push(handlers.clone());
+                Ok("job-1".to_owned())
             } else {
                 Err(format!("`{op}` is no op this device runs"))
             }
@@ -308,6 +311,25 @@ mod cases {
             }
         }
 
+        /// The job the device started last moved on, as `record` says it stands: the handler the
+        /// start named, filled with the job, invoked as the person who started it.
+        fn moves(
+            &self,
+            handler: impl Fn(&JobHandlers) -> Option<serde_json::Value>,
+            record: &serde_json::Value,
+        ) {
+            let kept = handler(
+                self.engine
+                    .handlers
+                    .borrow()
+                    .last()
+                    .expect("the device started a job"),
+            )
+            .expect("the start named this handler");
+            let call = self.rt.job_call(&kept, record).unwrap();
+            self.rt.invoke_action(&me(), call).unwrap();
+        }
+
         fn window(&self) -> ViewInstance {
             let mut window = self
                 .rt
@@ -499,7 +521,7 @@ mod cases {
             );
         }
 
-        phase a_render_runs_as_a_job_whose_progress_is_asked;
+        phase a_render_runs_as_a_job_and_its_moves_fill_the_bar;
         {
             let s = Studio::new();
             let (p, _, _) = s.placed();
@@ -519,10 +541,21 @@ mod cases {
             assert_eq!(ask["container"], "mp4");
             let cut: serde_json::Value = serde_json::from_str(ask["project"].as_str().unwrap()).unwrap();
             assert_eq!(cut["name"], "Untitled project");
-            s.call("poll_render", vec![Value::resource(&p)]);
+            s.moves(
+                |handlers| handlers.progress.clone(),
+                &serde_json::json!({
+                    "id": "job-1", "op": "render", "state": "running",
+                    "detail": {"state": "running", "done": 120, "total": 300, "url": "", "error": ""},
+                }),
+            );
             assert_eq!(s.number(&p, "job_done"), 120.0, "how far it has got");
-            *s.engine.ready.borrow_mut() = true;
-            s.call("poll_render", vec![Value::resource(&p)]);
+            s.moves(
+                |handlers| handlers.done.clone(),
+                &serde_json::json!({
+                    "id": "job-1", "op": "render", "state": "done",
+                    "detail": {"state": "done", "done": 300, "total": 300, "url": FILM, "error": ""},
+                }),
+            );
             assert_eq!(s.text(&p, "exported"), FILM);
             assert_eq!(s.text(&p, "job"), "", "the job is over");
         }

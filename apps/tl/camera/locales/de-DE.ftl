@@ -242,14 +242,6 @@ d-bvcsvkpx = Auftragsantwort
        *[other] job answers
     }
 d-3uzmfe3a = Auftrag
-d-nkgv3mxw = Auftragsstand
-    .noun = { $count ->
-        [one] job state
-       *[other] job states
-    }
-d-5c2s6yqj = Stand
-d-b4mxjneo = Adresse
-d-i7ypqcia = Fehler
 d-v3o2ntdi = Aufnahmeauftrag
     .noun = { $count ->
         [one] record ask
@@ -411,10 +403,11 @@ d-bb47r4i7 = Aufnehmen
     .doc = Takes a photo of the frame the camera shows, and hands it on.
 d-xu77d7u4 = Aufnahme starten
     .doc = Starts recording from the frames the camera's engine thread takes.
+d-5fj2zyp3 = Aufgenommen
+    .doc = The recording ended: the clip it made and handed on, or why it made none.
+d-5fj2zyp3-j = J
 d-hl65pw5y = Aufnahme beenden
     .doc = Stops the clip recording and hands it on once the engine has muxed it.
-d-w7cps4pe = Nachfragen
-    .doc = Asks how far the recording and the document scan have got, finishing what is done.
 d-codxq4tq = Selbstauslöser auslösen
     .doc = The self-timer's moment came: take the photo it counted down to, unless it was cancelled.
 d-el5ehp2f = Bild einlesen
@@ -438,6 +431,9 @@ d-zqkxzxd6 = Textsprache setzen
 d-zqkxzxd6-language = Sprache
 d-oujb6up2 = Seite scannen
     .doc = Captures one page with the chosen scanner and settings.
+d-s4rr32oh = Gescannt
+    .doc = The scan ended: its page added to the document, or why none came.
+d-s4rr32oh-j = J
 d-jnyvgsk5 = Seite wählen
 d-jnyvgsk5-page = Seite
 d-reqcqfow = Seite drehen

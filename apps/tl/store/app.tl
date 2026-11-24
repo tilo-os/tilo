@@ -364,12 +364,8 @@ type Prepared {
     trouble: Text = ""
 }
 
-/// How far the engine's job has got.
-type Job {
-    state: Text = ""
-    done: Int = 0
-    total: Int = 0
-    error: Text = ""
+/// The engine's own line about a job, once it moved.
+type JobWords {
     status: Text = ""
 }
 
@@ -620,89 +616,69 @@ action refresh(s: Store) (icon: .refresh) {
     if s.reading != "" {
         return
     }
-    match engine.start("catalogue", json.encode(Ask(force: false))) {
-        .ok(text) => match json.decode<Started>(text) {
-            .ok(started) => {
-                s.reading = started.job
-                s.trouble = ""
-            }
-            .err(why) => {
-                s.trouble = why
-            }
-        },
+    match engine.start(
+        "catalogue",
+        json.encode(Ask(force: false)),
+        done: j -> reading_done(s, j),
+        progress: j -> reading_moved(s, j),
+    ) {
+        .ok(job) => {
+            s.reading = job
+            s.trouble = ""
+        }
         .err(why) => {
             s.trouble = why
         }
     }
 }
 
-/// Asks how far the read or the change running has got, and puts what it found into the
-/// workspace. Runs while the window is open.
-action poll(s: Store) uses web {
-    if s.reading != "" {
-        match engine.status(s.reading) {
-            .err(why) => {
-                s.trouble = why
-                s.reading = ""
+/// The read moved on: the line the window shows while it runs.
+action reading_moved(s: Store, j: host.Job) {
+    if j.total > 0 {
+        match json.decode<JobWords>(j.detail) {
+            .ok(words) => {
+                s.status = words.status
             }
-            .ok(text) => match json.decode<Job>(text) {
-                .err(why) => {
-                    s.trouble = why
-                    s.reading = ""
-                }
-                .ok(job) => {
-                    if job.state == "done" {
-                        s.reading = ""
-                        s.status = job.status
-                        take_catalogue(s, job.status)
-                    } else if job.state == "failed" {
-                        s.reading = ""
-                        s.trouble = job.error
-                    } else if job.state == "cancelled" {
-                        s.reading = ""
-                    } else if job.total > 0 {
-                        s.status = job.status
-                    }
-                }
-            },
+            .err(_) => {}
         }
-    }
-    for a in s.apps.filter(x -> x.job != "") {
-        follow(s, a)
     }
 }
 
-/// A read or a change runs while the app is in use, so what it came to is asked for once a
-/// second: the engine keeps the answer after the window is closed too.
-trigger watch(s: Store) every 1s: poll(s)
+/// The read ended: the catalogue it found, or why it found none.
+action reading_done(s: Store, j: host.Job) uses web {
+    s.reading = ""
+    if j.state == .done {
+        match json.decode<JobWords>(j.detail) {
+            .ok(words) => {
+                s.status = words.status
+                take_catalogue(s, words.status)
+            }
+            .err(why) => {
+                s.trouble = why
+            }
+        }
+    } else if j.state == .failed {
+        s.trouble = j.error
+    }
+}
 
 /// The job an app's change is, as far as the engine has got: its row says where it stands, and
 /// what it made is read once it ends.
-action follow(s: Store, a: App) {
-    match engine.status(a.job) {
-        .err(why) => {
-            a.job = ""
-            s.trouble = why
-        }
-        .ok(text) => match json.decode<Job>(text) {
+action change_done(s: Store, a: App, j: host.Job) {
+    a.job = ""
+    if j.state == .done {
+        match json.decode<JobWords>(j.detail) {
+            .ok(words) => {
+                s.status = words.status
+                read_app(s, a)
+            }
             .err(why) => {
-                a.job = ""
                 s.trouble = why
             }
-            .ok(job) => {
-                if job.state == "done" {
-                    a.job = ""
-                    s.status = job.status
-                    read_app(s, a)
-                } else if job.state == "failed" {
-                    a.job = ""
-                    s.trouble = "{a.name}: {job.error}"
-                    read_app(s, a)
-                } else if job.state == "cancelled" {
-                    a.job = ""
-                }
-            }
-        },
+        }
+    } else if j.state == .failed {
+        s.trouble = "{a.name}: {j.error}"
+        read_app(s, a)
     }
 }
 
@@ -712,19 +688,10 @@ action begin_reading(s: Store, op: Text, ask: Text) {
     if s.reading != "" {
         return
     }
-    match engine.start(op, ask) {
-        .ok(text) => match json.decode<Started>(text) {
-            .ok(started) => {
-                if started.job != "" {
-                    s.reading = started.job
-                } else {
-                    s.trouble = started.error
-                }
-            }
-            .err(why) => {
-                s.trouble = why
-            }
-        },
+    match engine.start(op, ask, done: j -> reading_done(s, j), progress: j -> reading_moved(s, j)) {
+        .ok(job) => {
+            s.reading = job
+        }
         .err(why) => {
             s.trouble = why
         }
@@ -736,15 +703,10 @@ action begin(s: Store, a: App, op: Text, ask: Text) {
     if a.job != "" {
         return
     }
-    match engine.start(op, ask) {
-        .ok(text) => match json.decode<Started>(text) {
-            .ok(started) => {
-                a.job = started.job
-            }
-            .err(why) => {
-                s.trouble = why
-            }
-        },
+    match engine.start(op, ask, done: j -> change_done(s, a, j)) {
+        .ok(job) => {
+            a.job = job
+        }
         .err(why) => {
             s.trouble = why
         }
@@ -1910,12 +1872,6 @@ type FlathubAsk {
     query: Text = ""
     hits_per_page: Int = 500
     page: Int = 1
-}
-
-/// The engine's answer when it starts a job.
-type Started {
-    job: Text = ""
-    error: Text = ""
 }
 
 /// What one app is asked about: its id, and the registry its source is, when a bot is added from

@@ -103,27 +103,14 @@ d-addusg2k = Statusanfrage
 
 d-lbble236 = Registry
 
-d-v7l43wxq = Auftragsstand
-    .doc = Wie weit ein Auftrag gekommen ist.
+d-kdearqwg = Registryzeile
+    .doc = Die eigene Zeile der Registry über den Antrag, sobald ihr Aufruf endete.
     .noun = { $count ->
-        [one] Auftragsstand
-       *[other] Auftragsstände
+        [one] Registryzeile
+       *[other] Registryzeilen
     }
 
-d-jqgcvhvb = Zustand
-
-d-wu2vhifg = Zusammenfassung
-
-d-ghygxnrv = Fehler
-
-d-g665cy3q = Auftragsantwort
-    .doc = Der Auftrag, den ein Aufruf bekam.
-    .noun = { $count ->
-        [one] Auftragsantwort
-       *[other] Auftragsantworten
-    }
-
-d-q55hkx2s = Auftrag
+d-2gablpyd = Zusammenfassung
 
 d-mo2pqvcq = Schlüsselstand
     .doc = Der Schlüssel dieses Rechners, wie die Engine ihn liest.
@@ -174,16 +161,18 @@ d-cyealnod = Antrag prüfen
     .w-the-registry-has-not-answered-yet = Die Registry hat noch nicht geantwortet
     .w-a-registry-is-reached-over-credential = Eine Registry wird über zugangsfreies https erreicht oder über reines http allein auf diesem Rechner
 
-d-ekk7qvwc = Nachfragen
-    .doc = Fragt die Registry, wie der laufende Aufruf steht, einmal je Sekunde, solange einer läuft.
+d-as6a7tpg = Namensräume beantragen
+
+d-3p63wowc = Status prüfen
+
+d-yqdomzqj = Beantwortet
+    .doc = Die Registry antwortete: was sie zum Antrag sagte oder warum nicht.
     .w-no-application-yet = Noch kein Antrag
     .w-this-registry-has-no-application-from = Diese Registry hat noch keinen Antrag von diesem Schlüssel.
     .w-application-status = Antragsstatus
     .w-the-registry-call-was-cancelled = Der Aufruf der Registry wurde abgebrochen.
 
-d-as6a7tpg = Namensräume beantragen
-
-d-3p63wowc = Status prüfen
+d-yqdomzqj-j = J
 
 d-32nhaxk2 = Fenster der App-Veröffentlichung
     .w-that-didn-t-work = Das hat nicht funktioniert

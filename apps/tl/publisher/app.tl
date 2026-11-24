@@ -297,16 +297,9 @@ type StatusAsk {
     registry: Text
 }
 
-/// How far a job has got.
-type JobState {
-    state: Text
-    summary: Text
-    error: Text
-}
-
-/// The job a call was given.
-type JobAnswer {
-    job: Text
+/// The registry's own line about the application, once its call ended.
+type RegistryWords {
+    summary: Text = ""
 }
 
 /// This computer's key, as the engine reads it.
@@ -332,20 +325,14 @@ primary action apply_for_namespaces(p: Publisher) (
         forge_account: p.forge_account,
         contact: p.contact,
     )
-    match engine.start("apply", json.encode(ask)) {
+    match engine.start("apply", json.encode(ask), done: j -> answered(p, j)) {
         .err(why) => {
             p.notice_kind = "error"
             p.notice_detail = why
         }
-        .ok(text) => match json.decode<JobAnswer>(text) {
-            .err(why) => {
-                p.notice_kind = "error"
-                p.notice_detail = why
-            }
-            .ok(answer) => {
-                p.job = answer.job
-            }
-        },
+        .ok(job) => {
+            p.job = job
+        }
     }
 }
 
@@ -360,82 +347,61 @@ action check_status(p: Publisher) (
     p.notice_kind = ""
     p.notice_title = ""
     p.notice_detail = ""
-    match engine.start("status", json.encode(StatusAsk(registry: p.registry))) {
+    match engine.start(
+        "status",
+        json.encode(StatusAsk(registry: p.registry)),
+        done: j -> answered(p, j),
+    ) {
         .err(why) => {
             p.notice_kind = "error"
             p.notice_detail = why
         }
-        .ok(text) => match json.decode<JobAnswer>(text) {
-            .err(why) => {
-                p.notice_kind = "error"
-                p.notice_detail = why
-            }
-            .ok(answer) => {
-                p.job = answer.job
-            }
-        },
+        .ok(job) => {
+            p.job = job
+        }
     }
 }
 
-/// Asks the registry how the call under way is doing, once a second while one runs.
-action poll(p: Publisher) uses time {
-    if p.job == "" {
-        return
-    }
-    match engine.status(p.job) {
-        .err(why) => {
-            p.job = ""
-            p.notice_kind = "error"
-            p.notice_detail = why
-        }
-        .ok(text) => match json.decode<JobState>(text) {
+/// The registry answered: what it said about the application, or why it could not.
+action answered(p: Publisher, j: host.Job) uses time {
+    p.job = ""
+    if j.state == .done {
+        match json.decode<RegistryWords>(j.detail) {
             .err(why) => {
-                p.job = ""
                 p.notice_kind = "error"
                 p.notice_detail = why
             }
-            .ok(state) => {
-                if state.state == "done" {
-                    p.job = ""
-                    if state.summary == "" {
-                        p.notice_kind = "info"
-                        p.notice_title = std.say("No application yet")
-                        p.notice_detail = std.say(
-                            "This registry has no application from this key yet.",
-                        )
-                    } else {
-                        p.notice_kind = "info"
-                        p.notice_title = std.say("Application status")
-                        p.notice_detail = state.summary
-                        p.readings.insert(Reading(at: now, summary: state.summary))
-                        let all = p.readings.sort_by(r -> r.at, desc)
-                        if all.len() > 5 {
-                            if let cut = all.take(5).last() {
-                                let gone = all.filter(r -> r.at < cut.at)
-                                for r in gone {
-                                    p.readings.remove(r)
-                                }
+            .ok(words) => {
+                if words.summary == "" {
+                    p.notice_kind = "info"
+                    p.notice_title = std.say("No application yet")
+                    p.notice_detail = std.say("This registry has no application from this key yet.")
+                } else {
+                    p.notice_kind = "info"
+                    p.notice_title = std.say("Application status")
+                    p.notice_detail = words.summary
+                    p.readings.insert(Reading(at: now, summary: words.summary))
+                    let all = p.readings.sort_by(r -> r.at, desc)
+                    if all.len() > 5 {
+                        if let cut = all.take(5).last() {
+                            let gone = all.filter(r -> r.at < cut.at)
+                            for r in gone {
+                                p.readings.remove(r)
                             }
                         }
                     }
-                } else if state.state == "failed" {
-                    p.job = ""
-                    p.notice_kind = "error"
-                    p.notice_detail = state.error
-                } else if state.state == "cancelled" {
-                    p.job = ""
-                    p.notice_kind = "info"
-                    p.notice_title = std.say("The registry call was cancelled.")
-                    p.notice_detail = ""
                 }
             }
-        },
+        }
+    } else if j.state == .failed {
+        p.notice_kind = "error"
+        p.notice_detail = j.error
+    } else if j.state == .cancelled {
+        p.notice_kind = "info"
+        p.notice_title = std.say("The registry call was cancelled.")
+        p.notice_detail = ""
     }
 }
-
-/// A call under way is followed once a second, so its answer reaches the window without anything
-/// asking again by hand.
-trigger watch(p: Publisher) every 1s: poll(p)
 
 /// The window: this computer's key and the proof line, where the proof goes, the namespaces to
 /// claim, and what the registry said.

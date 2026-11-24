@@ -11,7 +11,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
@@ -189,6 +189,8 @@ action open_app(app_name: Text) {
         asked: Rc<RefCell<Vec<(String, String, String)>>>,
         /// The jobs started, by their id, and the state the next ask answers.
         done: Rc<RefCell<bool>>,
+        /// What each start named to run as its job moves and ends.
+        handlers: Rc<RefCell<Vec<JobHandlers>>>,
         /// Whether the sources answer at all.
         unreachable: Rc<RefCell<bool>>,
     }
@@ -241,7 +243,7 @@ action open_app(app_name: Text) {
             _app: &str,
             op: &str,
             input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
+            handlers: &JobHandlers,
         ) -> Result<String, String> {
             self.asked
                 .borrow_mut()
@@ -249,7 +251,10 @@ action open_app(app_name: Text) {
             match op {
                 "catalogue" | "install" | "update" | "uninstall" | "pin" | "unpin"
                 | "install-runtime" | "update-all" | "remote-add" | "remote-enable"
-                | "remote-remove" => Ok(r#"{"job":"job-1","error":""}"#.to_owned()),
+                | "remote-remove" => {
+                    self.handlers.borrow_mut().push(handlers.clone());
+                    Ok("job-1".to_owned())
+                }
                 other => Err(format!("`{other}` is no job this device runs")),
             }
         }
@@ -432,7 +437,42 @@ action open_app(app_name: Text) {
         /// Reads the sources and takes in what they found, as a window does.
         fn read(&self) {
             self.call_root("refresh");
-            self.call_root("poll");
+            self.ended("done", done_words());
+        }
+
+        /// The job the device started last moved on, as `record` says it stands: the handler the
+        /// start named, filled with the job, invoked as the person who started it.
+        fn moves(
+            &self,
+            handler: impl Fn(&JobHandlers) -> Option<serde_json::Value>,
+            record: &serde_json::Value,
+        ) {
+            let kept = handler(
+                self.engine
+                    .handlers
+                    .borrow()
+                    .last()
+                    .expect("the device started a job"),
+            )
+            .expect("the start named this handler");
+            let call = self.rt.job_call(&kept, record).unwrap();
+            self.rt.invoke_action(&me(), call).unwrap();
+        }
+
+        /// The job the device started last ended, as the engine says it stands.
+        fn ended(&self, state: &str, detail: serde_json::Value) {
+            let record = serde_json::json!({
+                "id": "job-1", "op": "change", "state": state, "detail": detail,
+            });
+            self.moves(|handlers| handlers.done.clone(), &record);
+        }
+
+        /// The job the device started last moved on, as the engine says it stands.
+        fn moved(&self, detail: serde_json::Value) {
+            let record = serde_json::json!({
+                "id": "job-1", "op": "change", "state": "running", "detail": detail,
+            });
+            self.moves(|handlers| handlers.progress.clone(), &record);
         }
 
         fn apps(&self) -> Vec<ResourceRef> {
@@ -519,6 +559,11 @@ action open_app(app_name: Text) {
             .collect()
     }
 
+    /// The engine's word when a job ends: what it came to, in the line the app keeps.
+    fn done_words() -> serde_json::Value {
+        serde_json::json!({"state": "done", "done": 1, "total": 1, "error": "", "status": "Done."})
+    }
+
     tilo_test_env::scenario! {
         fn the_store_reads_its_sources_and_shows_what_they_offer;
 
@@ -533,7 +578,15 @@ action open_app(app_name: Text) {
                 "{:?}",
                 m.engine.ops()
             );
-            m.call_root("poll");
+            m.moved(serde_json::json!({
+                "state": "running", "done": 0, "total": 1, "error": "", "status": "Working.",
+            }));
+            assert_eq!(
+                m.text(&m.root, "status"),
+                "Working.",
+                "the banner says how far the read is"
+            );
+            m.ended("done", done_words());
             assert_eq!(m.text(&m.root, "reading"), "", "the read is over");
             assert_eq!(m.text(&m.root, "status"), "Store refreshed.");
             let apps = m.apps();
@@ -666,7 +719,7 @@ action open_app(app_name: Text) {
             assert_eq!(asked["root"], "aa", "the exact signed root");
             assert_eq!(asked["publisher"], "cc");
             // What the sources were asked is one read, then the change the workspace follows.
-            m.call_root("poll");
+            m.ended("done", done_words());
             assert_eq!(m.text(&notes, "job"), "", "the change ended");
             assert!(
                 m.engine.ops().contains(&"call:one".to_owned()),
@@ -694,10 +747,10 @@ action open_app(app_name: Text) {
             m.call("pin", vec![Value::resource(&notes)]);
             assert!(m.flag(&notes, "pinned"));
             assert!(m.engine.input_of("pin").contains("so.tilo.notes"));
-            m.call_root("poll");
+            m.ended("done", done_words());
             m.call("unpin", vec![Value::resource(&notes)]);
             assert!(!m.flag(&notes, "pinned"));
-            m.call_root("poll");
+            m.ended("done", done_words());
             m.call("remove", vec![Value::resource(&notes)]);
             assert!(m.engine.input_of("uninstall").contains("so.tilo.notes"));
         }
@@ -995,7 +1048,7 @@ action open_app(app_name: Text) {
             let m = Market::new();
             *m.engine.unreachable.borrow_mut() = true;
             m.call_root("refresh");
-            m.call_root("poll");
+            m.ended("done", done_words());
             assert_eq!(m.text(&m.root, "trouble"), "the sources are unreachable");
             let window = m.window();
             let tree = window.tree();

@@ -279,18 +279,6 @@ type RenderAsk {
     name: Text
 }
 
-type JobAnswer {
-    job: Text
-}
-
-type JobState {
-    state: Text = ""
-    done: Int = 0
-    total: Int = 0
-    url: Text = ""
-    error: Text = ""
-}
-
 /// The cut as the device reads it: plain values, with the names the engine knows.
 type Shot {
     name: Text
@@ -1388,18 +1376,17 @@ action begin_render(p: Project, render_kind: Text, resolution: Text, container: 
                 name: export_name(p, container),
             ),
         ),
+        done: j -> render_done(p, j),
+        progress: j -> render_moved(p, j),
     ) {
-        .ok(text) => match json.decode<JobAnswer>(text) {
-            .ok(answer) => {
-                p.job = answer.job
-                p.job_kind = render_kind
-                p.job_done = 0
-                p.job_total = 0
-                p.format = container
-                p.trouble = ""
-            }
-            .err(why) => trouble(p, why),
-        },
+        .ok(job) => {
+            p.job = job
+            p.job_kind = render_kind
+            p.job_done = 0
+            p.job_total = 0
+            p.format = container
+            p.trouble = ""
+        }
         .err(why) => trouble(p, why),
     }
 }
@@ -2648,37 +2635,31 @@ action export_cut(p: Project, resolution: Text, container: Text, fps: Int) {
     begin_render(p, "export", resolution, container, fps)
 }
 
-/// Asks how far the running render has got.
-action poll_render(p: Project) {
-    if p.job == "" {
-        return
-    }
-    match engine.status(p.job) {
-        .err(why) => trouble(p, why),
-        .ok(text) => match json.decode<JobState>(text) {
-            .err(why) => trouble(p, why),
-            .ok(state) => {
-                p.job_done = state.done
-                p.job_total = state.total
-                if state.state == "done" {
-                    if p.job_kind == "preview" {
-                        p.proxy = state.url
-                        p.format = "mp4"
-                    } else {
-                        p.exported = state.url
-                    }
-                    p.job = ""
-                    p.trouble = ""
-                    draw_still(p, render_from(p))
-                } else if state.state == "failed" {
-                    trouble(p, state.error)
-                    p.job = ""
-                } else if state.state == "cancelled" {
-                    p.job = ""
+/// The render moved on: how far it has got, as the window shows it.
+action render_moved(p: Project, j: host.Job) {
+    p.job_done = j.done
+    p.job_total = j.total
+}
+
+/// The render ended: the cut small for the window to play, the file a person saves, or why it
+/// made neither.
+action render_done(p: Project, j: host.Job) {
+    p.job = ""
+    if j.state == .done {
+        match json.decode<StillAnswer>(j.detail) {
+            .ok(made) => {
+                if p.job_kind == "preview" {
+                    p.proxy = made.url
+                    p.format = "mp4"
+                } else {
+                    p.exported = made.url
                 }
+                p.trouble = ""
+                draw_still(p, render_from(p))
             }
-        },
-    }
+            .err(why) => trouble(p, why),
+        }
+    } else if j.state == .failed { trouble(p, j.error) }
 }
 
 action cancel_render(p: Project) {
@@ -2687,9 +2668,6 @@ action cancel_render(p: Project) {
         p.job = ""
     }
 }
-
-/// A render runs while the window is open, so its progress is asked for once a second.
-trigger watch_render(p: Project) every 1s: poll_render(p)
 
 /// A clock a person reads: `1:04.5`.
 // ---------------------------------------------------------------- the timeline's drawing

@@ -12,7 +12,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::clipboard::ClipboardHost;
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
@@ -43,6 +43,8 @@ mod cases {
         key_file: Rc<RefCell<String>>,
         /// What the next `status` answers; nothing while a job still runs.
         status: Rc<RefCell<String>>,
+        /// What each start named to run when its job ends.
+        handlers: Rc<RefCell<Vec<JobHandlers>>>,
         /// Every key-file ask, and the signature asks.
         next: Rc<RefCell<u32>>,
     }
@@ -90,14 +92,16 @@ mod cases {
             _app: &str,
             op: &str,
             input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
+            handlers: &JobHandlers,
         ) -> Result<String, String> {
             self.started
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
             let mut next = self.next.borrow_mut();
             *next = next.saturating_add(1);
-            Ok(format!(r#"{{"job":"{op}-{next}"}}"#))
+            let id = format!("{op}-{next}");
+            self.handlers.borrow_mut().push(handlers.clone());
+            Ok(id)
         }
 
         fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
@@ -257,6 +261,30 @@ mod cases {
 
         fn act(&self, action: &str) {
             self.call(action, vec![Value::resource(&self.root)]);
+        }
+
+        /// The registry call the device started last ended, as its next `status` says: the
+        /// handler the start named, filled with the job, invoked as the person who started it.
+        fn end(&self) {
+            let said = self.engine.status.borrow().clone();
+            let detail: serde_json::Value =
+                serde_json::from_str(&said).expect("the status is JSON");
+            let state = detail["state"].as_str().expect("a state");
+            let record = serde_json::json!({
+                "id": "job-1", "op": "apply", "state": state, "detail": detail,
+            });
+            let kept = self
+                .engine
+                .handlers
+                .borrow()
+                .last()
+                .cloned()
+                .expect("the device started a job");
+            let call = self
+                .rt
+                .job_call(&kept.done.expect("the start named done:"), &record)
+                .unwrap();
+            self.rt.invoke_action(&me(), call).unwrap();
         }
 
         fn text(&self, field: &str) -> String {
@@ -457,7 +485,7 @@ mod cases {
 
         p.engine
             .set_status(r#"{"state":"done","summary":"pending (dev.lovelace)","error":""}"#);
-        p.act("poll");
+        p.end();
         assert_eq!(p.text("job"), "", "the call ended");
         assert_eq!(p.text("notice_kind"), "info");
         assert_eq!(p.text("notice_title"), "Application status");
@@ -473,7 +501,7 @@ mod cases {
         p.engine
             .set_status(r#"{"state":"done","summary":"approved (dev.lovelace)","error":""}"#);
         p.act("check_status");
-        p.act("poll");
+        p.end();
         assert_eq!(
             p.readings(&p.window()),
             ["approved (dev.lovelace)", "pending (dev.lovelace)"]
@@ -487,7 +515,7 @@ mod cases {
         p.act("check_status");
         p.engine
             .set_status(r#"{"state":"done","summary":"","error":""}"#);
-        p.act("poll");
+        p.end();
         assert_eq!(p.text("notice_title"), "No application yet");
         assert!(
             p.text("notice_detail")
@@ -508,7 +536,7 @@ mod cases {
         p.engine.set_status(
             r#"{"state":"failed","summary":"","error":"missing proof at DNS TXT _tilo-publisher.lovelace.dev"}"#,
         );
-        p.act("poll");
+        p.end();
         assert_eq!(p.text("job"), "");
         assert_eq!(p.text("notice_kind"), "error");
         assert!(p.text("notice_detail").contains("missing proof"));
@@ -550,7 +578,7 @@ mod cases {
             assert_ne!(p.text("job"), "", "{address} is a registry");
             p.engine
                 .set_status(r#"{"state":"cancelled","summary":"","error":""}"#);
-            p.act("poll");
+            p.end();
         }
     }
 

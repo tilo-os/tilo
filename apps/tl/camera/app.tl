@@ -187,12 +187,6 @@ type JobAnswer {
     job: Text
 }
 
-type JobState {
-    state: Text
-    url: Text
-    error: Text
-}
-
 type RecordAsk {
     device: Text
     width: Int
@@ -806,20 +800,43 @@ action start_recording(c: Camera) uses time {
         width: photo_width(p.resolution),
         height: photo_height(p.resolution),
     )
-    match engine.start("record", json.encode(ask)) {
-        .ok(text) => match json.decode<JobAnswer>(text) {
-            .ok(answer) => {
-                p.recording = answer.job
-                p.recording_since = .some(now)
-                p.trouble = ""
+    match engine.start("record", json.encode(ask), done: j -> recorded(c, j)) {
+        .ok(job) => {
+            p.recording = job
+            p.recording_since = .some(now)
+            p.trouble = ""
+        }
+        .err(why) => {
+            p.trouble = why
+        }
+    }
+}
+
+/// The recording ended: the clip it made and handed on, or why it made none.
+action recorded(c: Camera, j: host.Job) uses time {
+    let p = prefs_of(c)
+    p.recording = ""
+    p.recording_since = .none
+    if j.state == .done {
+        match json.decode<UrlAnswer>(j.detail) {
+            .ok(clip) => {
+                c.recent = .some(
+                    SharedCapture(
+                        file: File.at("VID_{now}.avi", clip.url),
+                        kind: .video,
+                        ts: now,
+                        w: photo_width(p.resolution),
+                        h: photo_height(p.resolution),
+                        facing: p.lens,
+                    ),
+                )
             }
             .err(why) => {
                 p.trouble = why
             }
-        },
-        .err(why) => {
-            p.trouble = why
         }
+    } else if j.state == .failed {
+        p.trouble = j.error
     }
 }
 
@@ -848,81 +865,57 @@ action stop_recording(c: Camera) {
     }
 }
 
-/// Asks how far the recording and the document scan have got, finishing what is done.
-action poll(c: Camera) uses time {
-    let p = prefs_of(c)
-    if p.recording != "" {
-        match engine.status(p.recording) {
-            .ok(text) => match json.decode<JobState>(text) {
-                .ok(state) => {
-                    if state.state == "done" {
-                        c.recent = .some(
-                            SharedCapture(
-                                file: File.at("VID_{now}.avi", state.url),
-                                kind: .video,
-                                ts: now,
-                                w: photo_width(p.resolution),
-                                h: photo_height(p.resolution),
-                                facing: p.lens,
-                            ),
-                        )
-                        p.recording = ""
-                    } else if state.state == "failed" {
-                        p.trouble = state.error
-                        p.recording = ""
-                    } else if state.state == "cancelled" {
-                        p.recording = ""
-                    }
-                }
-                .err(why) => {
-                    p.trouble = why
-                    p.recording = ""
-                }
-            },
-            .err(why) => {
-                p.trouble = why
-                p.recording = ""
-            }
-        }
+/// Captures one page with the chosen scanner and settings.
+action capture_page(c: Camera) {
+    let session = session_of(c)
+    if session.job != "" {
+        return
     }
-    for session in c.sessions {
-        if session.job != "" {
-            match engine.status(session.job) {
-                .ok(text) => match json.decode<JobState>(text) {
-                    .ok(state) => {
-                        if state.state == "done" {
-                            session.pages.insert(
-                                ScannedPage(
-                                    file: File.at("scan-{session.pages.len() + 1}.png", state.url),
-                                    order: session.pages.len(),
-                                ),
-                            )
-                            session.selected = session.pages.len() - 1
-                            session.job = ""
-                            session.failed = ""
-                        } else if state.state == "failed" {
-                            session.failed = state.error
-                            session.job = ""
-                        } else if state.state == "cancelled" {
-                            session.job = ""
-                        }
-                    }
-                    .err(why) => {
-                        session.failed = why
-                        session.job = ""
-                    }
-                },
-                .err(why) => {
-                    session.failed = why
-                    session.job = ""
-                }
-            }
+    if session.scanner == "" {
+        session.failed = "Choose a document scanner first"
+        return
+    }
+    let ask = ScanAsk(
+        scanner: session.scanner,
+        resolution: session.resolution,
+        colour: session.colour,
+        source: session.source,
+        name: "scan-{session.pages.len() + 1}.png",
+    )
+    match engine.start("scan", json.encode(ask), done: j -> scanned(session, j)) {
+        .ok(job) => {
+            session.job = job
+            session.failed = ""
+        }
+        .err(why) => {
+            session.failed = why
         }
     }
 }
 
-/// The recording and the document scanner ask about their work once a second.
-trigger watch(c: Camera) every 1s: poll(c)
+/// The scan ended: its page added to the document, or why none came.
+action scanned(session: ScanSession, j: host.Job) {
+    session.job = ""
+    if j.state == .done {
+        match json.decode<UrlAnswer>(j.detail) {
+            .ok(page) => {
+                session.pages.insert(
+                    ScannedPage(
+                        file: File.at("scan-{session.pages.len() + 1}.png", page.url),
+                        order: session.pages.len(),
+                    ),
+                )
+                session.selected = session.pages.len() - 1
+                session.failed = ""
+            }
+            .err(why) => {
+                session.failed = why
+            }
+        }
+    } else if j.state == .failed {
+        session.failed = j.error
+    }
+}
 
 /// The self-timer's moment came: take the photo it counted down to, unless it was cancelled.
 action shutter_due(c: Camera) uses time {
@@ -990,39 +983,6 @@ action set_scan_source(c: Camera, source: Text) {
 action set_ocr_language(c: Camera, language: Text) {
     let session = session_of(c)
     session.language = language
-}
-
-/// Captures one page with the chosen scanner and settings.
-action capture_page(c: Camera) {
-    let session = session_of(c)
-    if session.job != "" {
-        return
-    }
-    if session.scanner == "" {
-        session.failed = "Choose a document scanner first"
-        return
-    }
-    let ask = ScanAsk(
-        scanner: session.scanner,
-        resolution: session.resolution,
-        colour: session.colour,
-        source: session.source,
-        name: "scan-{session.pages.len() + 1}.png",
-    )
-    match engine.start("scan", json.encode(ask)) {
-        .ok(text) => match json.decode<JobAnswer>(text) {
-            .ok(answer) => {
-                session.job = answer.job
-                session.failed = ""
-            }
-            .err(why) => {
-                session.failed = why
-            }
-        },
-        .err(why) => {
-            session.failed = why
-        }
-    }
 }
 
 /// The page the document shows.

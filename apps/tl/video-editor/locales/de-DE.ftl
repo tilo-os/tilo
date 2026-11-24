@@ -566,34 +566,6 @@ d-mqmxnv4s = Name
 
 d-khrei3pe-filter-fps = Bilder/s
 
-d-cvn34nlm = Auftragsantwort
-    .noun = { $count ->
-        [one] job answer
-       *[other] job answers
-    }
-
-d-2qflgu2y = Auftrag
-
-d-cfr4gprt = Auftragsstand
-    .noun = { $count ->
-        [one] job state
-       *[other] job states
-    }
-
-d-2lqqe2u4 = Stand
-
-d-wddixskv = Fertig
-
-d-yfo7z67v = Gesamt
-
-d-ivfsfn6q = Adresse
-
-d-tlb73mjx = Fehler
-
-d-cfr4gprt-filter-done = Fertig
-
-d-cfr4gprt-filter-total = Gesamt
-
 d-7ufzdmfk = Schnittaufnahme
     .doc = Der Schnitt, wie das Gerät ihn liest: schlichte Werte mit den Namen, die die Engine kennt.
     .noun = { $count ->
@@ -1746,8 +1718,15 @@ d-mrqvrzq6-container = Container
 
 d-mrqvrzq6-fps = Bilder/s
 
-d-fdcfxbsk = Rendern abfragen
-    .doc = Fragt, wie weit das laufende Rendern ist.
+d-fsxxo55z = Rendern fortgeschritten
+    .doc = Das Rendern kam voran: wie weit es gekommen ist, wie das Fenster es zeigt.
+
+d-fsxxo55z-j = J
+
+d-4ket26hx = Rendern beendet
+    .doc = Das Rendern endete: der kleine Schnitt zum Abspielen im Fenster, die Datei zum Speichern oder warum beides ausblieb.
+
+d-4ket26hx-j = J
 
 d-5m5ch2tv = Rendern abbrechen
 
@@ -2122,8 +2101,6 @@ d-5oqtuzrw = Quelle löschen
     .doc = Nimmt eine Quelle aus der Ablage und jeden Clip, der sie zeigte, mit.
 
 d-hw26iiy2 = Maske setzen
-
-
 
 
 d-25a3ji5l-words = Wörter
