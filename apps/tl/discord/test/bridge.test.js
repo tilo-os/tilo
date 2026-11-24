@@ -368,7 +368,7 @@ test("a carried account finds the bot's token in the vault instead of asking for
   const gateway = fakeGateway();
   const running = run({ tilo: { workspace: () => ws }, makeClient: () => gateway, log: () => {} });
   await until(() => released.length > 0, "the token");
-  expect(found).toEqual([{ app: "so.tilo.discord.preview", purpose: "bot-token" }]);
+  expect(found).toEqual([{ app: "so.tilo.discord", purpose: "bot-token" }]);
   expect(released).toEqual(["vault.item:adopted-token"]);
   expect(carried.token_item).toBe("vault.item:adopted-token");
   finish();

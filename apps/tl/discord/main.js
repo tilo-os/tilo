@@ -40,6 +40,10 @@ import {
 /// The bridge's record path: its own app's root, the accounts it bridges.
 export const ACCOUNTS = `${SELF}/accounts`;
 
+/// The app the bot's token was kept under before this app replaced it: the tag the vault item
+/// the device's old keeper was adopted as carries.
+export const KEPT_APP = "so.tilo.discord";
+
 /// The id a call answered: a resource reference's id, or the id text itself.
 export function referenceId(result) {
   if (!result) return null;
@@ -174,7 +178,7 @@ export async function held({ calls, makeClient, makeVoice, fetch = globalThis.fe
     // keeper's entry was adopted as, found by the app and purpose it was kept for.
     if (account && !account.token_item) {
       try {
-        account.token_item = (await calls.find({ app: SELF, purpose: "bot-token" })) ?? "";
+        account.token_item = (await calls.find({ app: KEPT_APP, purpose: "bot-token" })) ?? "";
       } catch (error) {
         log(`the bot's token was not found in the vault: ${error?.message ?? error}`);
       }
@@ -336,7 +340,7 @@ export async function answerSetup({ calls, account, fetch = globalThis.fetch, wa
     }
     // A record the move carried over names no token item: the setup reads the vault item the
     // old keeper's entry was adopted as, as the bridge's own gateway does.
-    const found = account.token_item || (await calls.find({ app: SELF, purpose: "bot-token" }));
+    const found = account.token_item || (await calls.find({ app: KEPT_APP, purpose: "bot-token" }));
     const token = await released(calls, found, { wait });
     if (want === "find") {
       const answer = await discord(fetch, token, "/users/@me/guilds", {}, account.api_origin);
