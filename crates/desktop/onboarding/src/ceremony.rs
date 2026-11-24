@@ -103,7 +103,7 @@ impl Ceremony {
             .unwrap_or_default();
         let mistakes = state.as_ref().and_then(OnboardingState::mistakes);
         let seen = state.as_ref().map_or(0, OnboardingState::revision);
-        let ceremony = Self {
+        Self {
             state,
             seen,
             path: LocalState::new(page.connect_path.clone()),
@@ -121,8 +121,7 @@ impl Ceremony {
             motion: ui::tokens::EffectiveMotion::default(),
             structure_dirty: true,
             focus_reset: false,
-        };
-        ceremony
+        }
     }
 
     /// Take the page the shell shows now, if it changed.

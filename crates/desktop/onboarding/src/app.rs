@@ -85,7 +85,7 @@ impl ResourceApp for OnboardingApp {
         };
         let wake = cx.waker();
         if let Some(state) = &state {
-            state.wake_with(wake.clone());
+            state.wake_with(wake);
         }
         let asking = state.clone();
         cx.effects(move |mut effect: OnboardingEffect, _cx| {
