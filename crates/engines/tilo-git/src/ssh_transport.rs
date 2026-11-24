@@ -120,13 +120,17 @@ impl Endpoint {
             let separator = if let Some(bracket) = raw.find('[') {
                 raw.get(bracket..)
                     .and_then(|rest| rest.find("]:"))
-                    .map(|offset| bracket + offset + 1)
+                    // Both offsets come from this string, so their sum is inside it; saturating
+                    // keeps the addition defined for any input.
+                    .map(|offset| bracket.saturating_add(offset).saturating_add(1))
             } else {
                 raw.find(':')
             }
             .context("SSH remote must have host:path or ssh:// form")?;
             let authority = raw.get(..separator).context("invalid SSH authority")?;
-            let path = raw.get(separator + 1..).context("invalid SSH path")?;
+            let path = raw
+                .get(separator.saturating_add(1)..)
+                .context("invalid SSH path")?;
             let (user, host) = authority.rsplit_once('@').unwrap_or(("", authority));
             (
                 host.trim_start_matches('[')
@@ -185,7 +189,9 @@ fn decode_url_component(value: &str) -> anyhow::Result<String> {
             let (Some(high), Some(low)) = (high, low) else {
                 bail!("invalid percent escape in SSH URL");
             };
-            bytes.push(u8::try_from(high * 16 + low)?);
+            // Both digits are 0..=15, so the byte is at most 0xff; saturating arithmetic keeps it
+            // in range even if that ever stopped holding.
+            bytes.push(u8::try_from(high.saturating_mul(16).saturating_add(low))?);
         } else {
             bytes.push(byte);
         }
@@ -241,7 +247,7 @@ struct SshSession {
 
 impl SshSession {
     fn connect(endpoint: &Endpoint, command: String) -> anyhow::Result<Self> {
-        let (handle, channel) = crate::net_runtime().block_on(async {
+        let (handle, channel) = crate::net_runtime()?.block_on(async {
             tokio::time::timeout(CONNECT_TIMEOUT, async {
                 let home = std::env::home_dir().context("no home directory for SSH host trust")?;
                 let mut handle = client::connect(
@@ -298,7 +304,11 @@ impl SshSession {
             return;
         }
         self.closed = true;
-        let _ = crate::net_runtime().block_on(async {
+        // Closing is best effort: a runtime that cannot start leaves nothing to disconnect.
+        let Ok(runtime) = crate::net_runtime() else {
+            return;
+        };
+        let _ = runtime.block_on(async {
             tokio::time::timeout(CLOSE_TIMEOUT, async {
                 let _ = self.channel.close().await;
                 self.handle
@@ -341,7 +351,8 @@ impl Read for SshStream {
         let SshSession {
             channel, pending, ..
         } = &mut *session;
-        let result = crate::net_runtime().block_on(async {
+        let runtime = crate::net_runtime().map_err(io::Error::other)?;
+        let result = runtime.block_on(async {
             tokio::time::timeout(IO_TIMEOUT, async {
                 loop {
                     match channel.wait().await {
@@ -392,7 +403,8 @@ impl Write for SshStream {
                 "SSH session is closed",
             ));
         }
-        let result = crate::net_runtime().block_on(async {
+        let runtime = crate::net_runtime().map_err(io::Error::other)?;
+        let result = runtime.block_on(async {
             tokio::time::timeout(IO_TIMEOUT, session.channel.data(input))
                 .await
                 .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SSH write timed out"))?
@@ -462,7 +474,7 @@ mod tests {
             port: 2222,
             known_hosts: known_hosts.clone(),
         };
-        let runtime = crate::net_runtime();
+        let runtime = crate::net_runtime().unwrap();
         assert!(
             runtime.block_on(verifier.check_server_key(&key)).is_err(),
             "no known_hosts is no trust"

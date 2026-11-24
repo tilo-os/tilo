@@ -89,22 +89,25 @@ impl HunkState {
             _ => (DiffLineKind::Context, raw),
         };
 
+        // Line numbers count lines of the diff text, so a file would need four billion lines to
+        // reach the end of the range; saturating keeps a pathological size at the last line
+        // instead of wrapping it back to the start.
         let (old_l, new_l) = match kind {
             DiffLineKind::Addition => {
                 let n = self.new_no;
-                self.new_no += 1;
+                self.new_no = self.new_no.saturating_add(1);
                 (None, Some(n))
             }
             DiffLineKind::Deletion => {
                 let o = self.old_no;
-                self.old_no += 1;
+                self.old_no = self.old_no.saturating_add(1);
                 (Some(o), None)
             }
             _ => {
                 let o = self.old_no;
                 let n = self.new_no;
-                self.old_no += 1;
-                self.new_no += 1;
+                self.old_no = self.old_no.saturating_add(1);
+                self.new_no = self.new_no.saturating_add(1);
                 (Some(o), Some(n))
             }
         };

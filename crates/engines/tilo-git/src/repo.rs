@@ -394,7 +394,12 @@ fn upstream_delta(repo: &Repository, branch: &git2::Branch) -> (u32, u32) {
     if let (Some(l), Some(u)) = (local, upstream)
         && let Ok((ahead, behind)) = repo.graph_ahead_behind(l, u)
     {
-        return (ahead as u32, behind as u32);
+        // The counts are commit distances, which no repository reaches four billion of; the last
+        // representable count stands for an impossible one.
+        return (
+            u32::try_from(ahead).unwrap_or(u32::MAX),
+            u32::try_from(behind).unwrap_or(u32::MAX),
+        );
     }
     (0, 0)
 }
@@ -614,7 +619,9 @@ pub fn apply_hunk(path: &Path, file: &str, hunk_index: usize, unstage: bool) -> 
         if is_target {
             applied.set(true);
         }
-        seen.set(n + 1);
+        // libgit2 walks the file's hunks in order; saturating keeps the count monotonic if a diff
+        // ever held usize::MAX hunks.
+        seen.set(n.saturating_add(1));
         let _ = hunk;
         is_target
     });
@@ -687,7 +694,9 @@ pub fn discard_hunk(path: &Path, file: &str, hunk_index: usize) -> anyhow::Resul
         if is_target {
             applied.set(true);
         }
-        seen.set(n + 1);
+        // libgit2 walks the file's hunks in order; saturating keeps the count monotonic if a diff
+        // ever held usize::MAX hunks.
+        seen.set(n.saturating_add(1));
         is_target
     });
     apply_opts.delta_callback(move |delta| {

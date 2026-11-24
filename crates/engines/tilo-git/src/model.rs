@@ -108,17 +108,25 @@ pub type DiffMap = std::collections::HashMap<DiffKey, FileDiff>;
 
 impl FileDiff {
     pub fn additions(&self) -> u32 {
-        self.lines
-            .iter()
-            .filter(|l| l.kind == DiffLineKind::Addition)
-            .count() as u32
+        // A diff with more than four billion additions is not a diff; the last representable count
+        // stands for it rather than wrapping to a small one.
+        u32::try_from(
+            self.lines
+                .iter()
+                .filter(|l| l.kind == DiffLineKind::Addition)
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
     }
 
     pub fn deletions(&self) -> u32 {
-        self.lines
-            .iter()
-            .filter(|l| l.kind == DiffLineKind::Deletion)
-            .count() as u32
+        u32::try_from(
+            self.lines
+                .iter()
+                .filter(|l| l.kind == DiffLineKind::Deletion)
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
     }
 }
 
@@ -227,7 +235,12 @@ pub struct RepoModel {
 
 impl RepoModel {
     pub fn change_count(&self) -> usize {
-        self.staged.len() + self.unstaged.len() + self.untracked.len()
+        // The three lists come from one status scan, so their total is bounded by the files in the
+        // worktree; saturating keeps it from wrapping if a worktree ever held usize::MAX files.
+        self.staged
+            .len()
+            .saturating_add(self.unstaged.len())
+            .saturating_add(self.untracked.len())
     }
 
     pub fn all_changes(&self) -> Vec<&FileChange> {

@@ -47,7 +47,9 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
             l
         } else {
             columns.push(None);
-            columns.len() - 1
+            // The push above just made the length at least one, so the subtraction saturates to
+            // the new last index rather than underflowing.
+            columns.len().saturating_sub(1)
         };
         commit.column = my_column;
         // This commit now occupies the column; clear any reservation for itself before assigning
@@ -75,7 +77,9 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
                 // First parent: keep our column, growing the column vec first when this is a fresh
                 // column.
                 if my_column >= columns.len() {
-                    columns.resize(my_column + 1, None);
+                    // A column index comes from this vec's own length, so it is far below usize's
+                    // end; saturating keeps the resize argument defined regardless.
+                    columns.resize(my_column.saturating_add(1), None);
                 }
                 if let Some(slot) = columns.get_mut(my_column) {
                     *slot = Some(parent.clone());
@@ -88,7 +92,9 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
                     l
                 } else {
                     columns.push(None);
-                    columns.len() - 1
+                    // The push above just made the length at least one, so this is the new last
+                    // index; saturating keeps the subtraction from underflowing.
+                    columns.len().saturating_sub(1)
                 };
                 // `l` came from `position()` or a fresh `push`, so it is a valid index.
                 if let Some(slot) = columns.get_mut(l) {

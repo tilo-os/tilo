@@ -167,17 +167,19 @@ pub struct DiffView {
     pub right: String,
 }
 
-/// The network runtime the SSH and HTTP transports run on, made once.
-fn net_runtime() -> &'static tokio::runtime::Runtime {
-    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| {
+/// The network runtime the SSH and HTTP transports run on, made once. A runtime that does not
+/// start keeps its failure, so every later transfer reports the same cause.
+fn net_runtime() -> anyhow::Result<&'static tokio::runtime::Runtime> {
+    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+    let built = RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("tilo-git-net")
             .enable_all()
             .build()
-            .expect("the git engine's network runtime starts")
-    })
+            .map_err(|error| format!("the git engine's network runtime does not start: {error}"))
+    });
+    built.as_ref().map_err(|error| anyhow::anyhow!("{error}"))
 }
 
 fn absolute(path: &str) -> Result<PathBuf, String> {
@@ -210,8 +212,14 @@ fn change_view(
     whitespace: bool,
 ) -> ChangeView {
     let (ours, theirs) = if change.kind == ChangeKind::Conflicted {
-        repo::conflict_cost(repo_path, &change.path)
-            .map_or((0, 0), |cost| (cost.ours as u32, cost.theirs as u32))
+        // A conflict's line costs are line counts; the last representable count stands for one
+        // larger than u32 can hold.
+        repo::conflict_cost(repo_path, &change.path).map_or((0, 0), |cost| {
+            (
+                u32::try_from(cost.ours).unwrap_or(u32::MAX),
+                u32::try_from(cost.theirs).unwrap_or(u32::MAX),
+            )
+        })
     } else {
         (0, 0)
     };
@@ -322,12 +330,11 @@ fn render_unified(diff: &FileDiff, whitespace: bool) -> String {
 fn render_side(diff: &FileDiff, old: bool, whitespace: bool) -> String {
     let mut text = String::new();
     let lines = &diff.lines;
-    let mut i = 0;
-    while i < lines.len() {
-        match lines[i].kind {
-            DiffLineKind::Meta => i += 1,
-            DiffLineKind::Hunk => {
-                let line = &lines[i];
+    let mut at = 0usize;
+    while let Some(line) = lines.get(at) {
+        match line.kind {
+            DiffLineKind::Meta => at = at.saturating_add(1),
+            DiffLineKind::Hunk | DiffLineKind::Context => {
                 text.push_str(&side_line(
                     old,
                     line.old_lineno,
@@ -336,38 +343,38 @@ fn render_side(diff: &FileDiff, old: bool, whitespace: bool) -> String {
                     &shown(&line.content, whitespace),
                 ));
                 text.push('\n');
-                i += 1;
-            }
-            DiffLineKind::Context => {
-                let line = &lines[i];
-                text.push_str(&side_line(
-                    old,
-                    line.old_lineno,
-                    line.new_lineno,
-                    ' ',
-                    &shown(&line.content, whitespace),
-                ));
-                text.push('\n');
-                i += 1;
+                at = at.saturating_add(1);
             }
             DiffLineKind::Deletion => {
-                let del_start = i;
-                while i < lines.len() && lines[i].kind == DiffLineKind::Deletion {
-                    i += 1;
+                let del_start = at;
+                let mut add_start = at;
+                while matches!(
+                    lines.get(add_start).map(|line| line.kind),
+                    Some(DiffLineKind::Deletion)
+                ) {
+                    add_start = add_start.saturating_add(1);
                 }
-                let add_start = i;
-                while i < lines.len() && lines[i].kind == DiffLineKind::Addition {
-                    i += 1;
+                let mut end = add_start;
+                while matches!(
+                    lines.get(end).map(|line| line.kind),
+                    Some(DiffLineKind::Addition)
+                ) {
+                    end = end.saturating_add(1);
                 }
-                let dels = add_start - del_start;
-                let adds = i - add_start;
+                // The runs' lengths are differences of indices into the same vec, so both
+                // subtractions stay at or above zero.
+                let dels = add_start.saturating_sub(del_start);
+                let adds = end.saturating_sub(add_start);
+                let (start, count) = if old {
+                    (del_start, dels)
+                } else {
+                    (add_start, adds)
+                };
                 for k in 0..dels.max(adds) {
-                    let row = if old {
-                        (k < dels).then(|| &lines[del_start + k])
-                    } else {
-                        (k < adds).then(|| &lines[add_start + k])
-                    };
-                    match row {
+                    match (k < count)
+                        .then(|| lines.get(start.saturating_add(k)))
+                        .flatten()
+                    {
                         Some(line) => {
                             let marker = if old { '-' } else { '+' };
                             text.push_str(&side_line(
@@ -382,9 +389,9 @@ fn render_side(diff: &FileDiff, old: bool, whitespace: bool) -> String {
                     }
                     text.push('\n');
                 }
+                at = end;
             }
             DiffLineKind::Addition => {
-                let line = &lines[i];
                 if old {
                     text.push_str("                         ");
                 } else {
@@ -397,7 +404,7 @@ fn render_side(diff: &FileDiff, old: bool, whitespace: bool) -> String {
                     ));
                 }
                 text.push('\n');
-                i += 1;
+                at = at.saturating_add(1);
             }
         }
     }
@@ -412,7 +419,8 @@ fn shown(content: &str, whitespace: bool) -> String {
     }
     let trimmed = content.trim_end_matches([' ', '\t']);
     let mut out = trimmed.to_owned();
-    for tail in content[trimmed.len()..].chars() {
+    // `trimmed` is a prefix of `content`, so the tail starts at its length.
+    for tail in content.get(trimmed.len()..).unwrap_or("").chars() {
         out.push(if tail == '\t' { '\u{2192}' } else { '\u{00b7}' });
     }
     out
@@ -578,211 +586,234 @@ fn read_change(
 /// refuses the change.
 pub fn run(op: &str, input: &str) -> Result<String, String> {
     match op {
-        "load" => {
-            let ask: LoadAsk = ask(input)?;
-            loaded_json(&absolute(&ask.path)?, ask.whitespace, "")
-        }
-        "diff" => {
-            let ask: ChangeAsk = ask(input)?;
-            answer(read_change(
-                &absolute(&ask.path)?,
-                ask.area,
-                &ask.file,
-                ask.whitespace,
-            )?)
-        }
-        "commit_detail" => {
-            let ask: CommitFilesAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            let files = repo::commit_files(&path, &ask.commit).map_err(|e| format!("{e:#}"))?;
-            let mut detail = Vec::with_capacity(files.len());
-            for file in &files {
-                let diff = repo::commit_file_diff(&path, &ask.commit, &file.path);
-                let view = diff
-                    .map(|diff| {
-                        serde_json::json!({
-                            "path": diff.path,
-                            "old_path": file.old_path,
-                            "kind": file.kind,
-                            "additions": diff.additions(),
-                            "deletions": diff.deletions(),
-                            "binary": diff.binary,
-                            "language": language_token(&diff.language),
-                            "unified": render_unified(&diff, false),
-                            "left": render_side(&diff, true, false),
-                            "right": render_side(&diff, false, false),
-                        })
-                    })
-                    .unwrap_or_else(|_| {
-                        serde_json::json!({
-                            "path": file.path,
-                            "old_path": file.old_path,
-                            "kind": file.kind,
-                            "additions": file.additions,
-                            "deletions": file.deletions,
-                            "binary": false,
-                            "language": "plain",
-                            "unified": "",
-                            "left": "",
-                            "right": "",
-                        })
-                    });
-                detail.push(view.to_string());
-            }
-            answer(detail)
-        }
-        "commit_files" => {
-            let ask: CommitFilesAsk = ask(input)?;
-            let files = repo::commit_files(&absolute(&ask.path)?, &ask.commit)
-                .map_err(|e| format!("{e:#}"))?;
-            answer(files.iter().map(write).collect::<Vec<String>>())
-        }
-        "commit_diff" => {
-            let ask: CommitDiffAsk = ask(input)?;
-            let diff = repo::commit_file_diff(&absolute(&ask.path)?, &ask.commit, &ask.file)
-                .map_err(|e| format!("{e:#}"))?;
-            answer(DiffView {
-                path: diff.path.clone(),
-                old_path: diff.old_path.clone(),
-                kind: if diff.is_new {
-                    ChangeKind::Added
-                } else if diff.is_deleted {
-                    ChangeKind::Deleted
-                } else {
-                    ChangeKind::Modified
-                },
-                additions: diff.additions(),
-                deletions: diff.deletions(),
-                binary: diff.binary,
-                language: language_token(&diff.language),
-                unified: render_unified(&diff, false),
-                left: render_side(&diff, true, false),
-                right: render_side(&diff, false, false),
-            })
-        }
-        "stage_file" => {
-            let ask: FileAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            repo::stage_file(&path, &ask.file).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, "")
-        }
-        "unstage_file" => {
-            let ask: FileAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            repo::unstage_file(&path, &ask.file).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, "")
-        }
-        "stage_all" => {
-            let ask: LoadAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            repo::stage_all(&path).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, ask.whitespace, "")
-        }
-        "unstage_all" => {
-            let ask: LoadAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            repo::unstage_all(&path).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, ask.whitespace, "")
-        }
-        "apply_hunk" => {
-            let ask: HunkAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            repo::apply_hunk(&path, &ask.file, ask.hunk, ask.unstage)
-                .map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, "")
-        }
-        "discard_file" => {
-            let ask: FileAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            repo::discard_file(&path, &ask.file).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, "")
-        }
-        "discard_hunk" => {
-            let ask: HunkAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            repo::discard_hunk(&path, &ask.file, ask.hunk).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, "")
-        }
-        "commit" => {
-            let ask: CommitAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            let id = repo::commit(&path, &ask.message).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, &id)
-        }
-        "create_branch" => {
-            let ask: BranchAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            repo::create_branch(&path, &ask.name, None, ask.checkout)
-                .map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, "")
-        }
-        "delete_branch" => {
-            let ask: BranchAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            repo::delete_branch(&path, &ask.name).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, "")
-        }
-        "checkout_branch" => {
-            let ask: CheckoutAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            let plan = if ask.stash {
-                repo::CheckoutPlan::Stash
-            } else {
-                repo::CheckoutPlan::Carry
-            };
-            let stash = repo::checkout_branch_planned(&path, &ask.name, plan)
-                .map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, stash.as_deref().unwrap_or(""))
-        }
-        "create_worktree" => {
-            let ask: WorktreeAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            let destination = absolute(&ask.destination)?;
-            repo::create_worktree(&path, &destination, &ask.branch, &ask.start)
-                .map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, "")
-        }
-        "stash_save" => {
-            let ask: StashSaveAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            let id = repo::stash_save(&path, &ask.message).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, &id)
-        }
-        "stash_apply" => {
-            let ask: StashApplyAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            repo::stash_apply(&path, ask.index).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, "")
-        }
-        "conflict_cost" => {
-            let ask: ConflictAsk = ask(input)?;
-            let cost = repo::conflict_cost(&absolute(&ask.path)?, &ask.file)
-                .map_err(|e| format!("{e:#}"))?;
-            answer(CostAnswer {
-                ours: cost.ours,
-                theirs: cost.theirs,
-            })
-        }
-        "resolve_conflict" => {
-            let ask: ResolveAsk = ask(input)?;
-            let path = absolute(&ask.path)?;
-            let side = if ask.ours {
-                repo::ConflictSide::Ours
-            } else {
-                repo::ConflictSide::Theirs
-            };
-            repo::resolve_conflict(&path, &ask.file, side).map_err(|e| format!("{e:#}"))?;
-            loaded_json(&path, false, "")
-        }
-        "workdir" => {
-            let ask: LoadAsk = ask(input)?;
-            answer(
-                repo::workdir(&absolute(&ask.path)?)
-                    .map(|path| path.to_string_lossy().into_owned()),
-            )
-        }
+        "load" => op_load(input),
+        "diff" => op_diff(input),
+        "commit_detail" => op_commit_detail(input),
+        "commit_files" => op_commit_files(input),
+        "commit_diff" => op_commit_diff(input),
+        "stage_file" => file_ask(input, repo::stage_file),
+        "unstage_file" => file_ask(input, repo::unstage_file),
+        "stage_all" => all_ask(input, repo::stage_all),
+        "unstage_all" => all_ask(input, repo::unstage_all),
+        "apply_hunk" => hunk_ask(input, |path, ask| {
+            repo::apply_hunk(path, &ask.file, ask.hunk, ask.unstage)
+        }),
+        "discard_file" => file_ask(input, repo::discard_file),
+        "discard_hunk" => hunk_ask(input, |path, ask| {
+            repo::discard_hunk(path, &ask.file, ask.hunk)
+        }),
+        "commit" => op_commit(input),
+        "create_branch" => branch_ask(input, |path, ask| {
+            repo::create_branch(path, &ask.name, None, ask.checkout)
+        }),
+        "delete_branch" => branch_ask(input, |path, ask| repo::delete_branch(path, &ask.name)),
+        "checkout_branch" => op_checkout(input),
+        "create_worktree" => op_worktree(input),
+        "stash_save" => op_stash_save(input),
+        "stash_apply" => op_stash_apply(input),
+        "conflict_cost" => op_conflict_cost(input),
+        "resolve_conflict" => op_resolve(input),
+        "workdir" => op_workdir(input),
         other => Err(format!("`{other}` is no op this engine answers")),
     }
+}
+
+fn op_load(input: &str) -> Result<String, String> {
+    let ask: LoadAsk = ask(input)?;
+    loaded_json(&absolute(&ask.path)?, ask.whitespace, "")
+}
+
+fn op_diff(input: &str) -> Result<String, String> {
+    let ask: ChangeAsk = ask(input)?;
+    answer(read_change(
+        &absolute(&ask.path)?,
+        ask.area,
+        &ask.file,
+        ask.whitespace,
+    ))
+}
+
+fn op_commit_detail(input: &str) -> Result<String, String> {
+    let ask: CommitFilesAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    let files = repo::commit_files(&path, &ask.commit).map_err(|e| format!("{e:#}"))?;
+    let mut detail = Vec::with_capacity(files.len());
+    for file in &files {
+        // A file whose diff cannot be read still lists, with its counts from the commit walk.
+        let view = repo::commit_file_diff(&path, &ask.commit, &file.path).map_or_else(
+            |_| {
+                serde_json::json!({
+                    "path": file.path,
+                    "old_path": file.old_path,
+                    "kind": file.kind,
+                    "additions": file.additions,
+                    "deletions": file.deletions,
+                    "binary": false,
+                    "language": "plain",
+                    "unified": "",
+                    "left": "",
+                    "right": "",
+                })
+            },
+            |diff| {
+                serde_json::json!({
+                    "path": diff.path,
+                    "old_path": file.old_path,
+                    "kind": file.kind,
+                    "additions": diff.additions(),
+                    "deletions": diff.deletions(),
+                    "binary": diff.binary,
+                    "language": language_token(&diff.language),
+                    "unified": render_unified(&diff, false),
+                    "left": render_side(&diff, true, false),
+                    "right": render_side(&diff, false, false),
+                })
+            },
+        );
+        detail.push(view.to_string());
+    }
+    answer(detail)
+}
+
+fn op_commit_files(input: &str) -> Result<String, String> {
+    let ask: CommitFilesAsk = ask(input)?;
+    let files =
+        repo::commit_files(&absolute(&ask.path)?, &ask.commit).map_err(|e| format!("{e:#}"))?;
+    answer(files.iter().map(write).collect::<Vec<String>>())
+}
+
+fn op_commit_diff(input: &str) -> Result<String, String> {
+    let ask: CommitDiffAsk = ask(input)?;
+    let diff = repo::commit_file_diff(&absolute(&ask.path)?, &ask.commit, &ask.file)
+        .map_err(|e| format!("{e:#}"))?;
+    answer(DiffView {
+        path: diff.path.clone(),
+        old_path: diff.old_path.clone(),
+        kind: if diff.is_new {
+            ChangeKind::Added
+        } else if diff.is_deleted {
+            ChangeKind::Deleted
+        } else {
+            ChangeKind::Modified
+        },
+        additions: diff.additions(),
+        deletions: diff.deletions(),
+        binary: diff.binary,
+        language: language_token(&diff.language),
+        unified: render_unified(&diff, false),
+        left: render_side(&diff, true, false),
+        right: render_side(&diff, false, false),
+    })
+}
+
+fn file_ask(
+    input: &str,
+    operation: impl FnOnce(&Path, &str) -> anyhow::Result<()>,
+) -> Result<String, String> {
+    let ask: FileAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    operation(&path, &ask.file).map_err(|e| format!("{e:#}"))?;
+    loaded_json(&path, false, "")
+}
+
+fn all_ask(
+    input: &str,
+    operation: impl FnOnce(&Path) -> anyhow::Result<()>,
+) -> Result<String, String> {
+    let ask: LoadAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    operation(&path).map_err(|e| format!("{e:#}"))?;
+    loaded_json(&path, ask.whitespace, "")
+}
+
+fn hunk_ask(
+    input: &str,
+    operation: impl FnOnce(&Path, &HunkAsk) -> anyhow::Result<()>,
+) -> Result<String, String> {
+    let ask: HunkAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    operation(&path, &ask).map_err(|e| format!("{e:#}"))?;
+    loaded_json(&path, false, "")
+}
+
+fn branch_ask(
+    input: &str,
+    operation: impl FnOnce(&Path, &BranchAsk) -> anyhow::Result<()>,
+) -> Result<String, String> {
+    let ask: BranchAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    operation(&path, &ask).map_err(|e| format!("{e:#}"))?;
+    loaded_json(&path, false, "")
+}
+
+fn op_commit(input: &str) -> Result<String, String> {
+    let ask: CommitAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    let id = repo::commit(&path, &ask.message).map_err(|e| format!("{e:#}"))?;
+    loaded_json(&path, false, &id)
+}
+
+fn op_checkout(input: &str) -> Result<String, String> {
+    let ask: CheckoutAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    let plan = if ask.stash {
+        repo::CheckoutPlan::Stash
+    } else {
+        repo::CheckoutPlan::Carry
+    };
+    let stash =
+        repo::checkout_branch_planned(&path, &ask.name, plan).map_err(|e| format!("{e:#}"))?;
+    loaded_json(&path, false, stash.as_deref().unwrap_or(""))
+}
+
+fn op_worktree(input: &str) -> Result<String, String> {
+    let ask: WorktreeAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    let destination = absolute(&ask.destination)?;
+    repo::create_worktree(&path, &destination, &ask.branch, &ask.start)
+        .map_err(|e| format!("{e:#}"))?;
+    loaded_json(&path, false, "")
+}
+
+fn op_stash_save(input: &str) -> Result<String, String> {
+    let ask: StashSaveAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    let id = repo::stash_save(&path, &ask.message).map_err(|e| format!("{e:#}"))?;
+    loaded_json(&path, false, &id)
+}
+
+fn op_stash_apply(input: &str) -> Result<String, String> {
+    let ask: StashApplyAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    repo::stash_apply(&path, ask.index).map_err(|e| format!("{e:#}"))?;
+    loaded_json(&path, false, "")
+}
+
+fn op_conflict_cost(input: &str) -> Result<String, String> {
+    let ask: ConflictAsk = ask(input)?;
+    let cost =
+        repo::conflict_cost(&absolute(&ask.path)?, &ask.file).map_err(|e| format!("{e:#}"))?;
+    answer(CostAnswer {
+        ours: cost.ours,
+        theirs: cost.theirs,
+    })
+}
+
+fn op_resolve(input: &str) -> Result<String, String> {
+    let ask: ResolveAsk = ask(input)?;
+    let path = absolute(&ask.path)?;
+    let side = if ask.ours {
+        repo::ConflictSide::Ours
+    } else {
+        repo::ConflictSide::Theirs
+    };
+    repo::resolve_conflict(&path, &ask.file, side).map_err(|e| format!("{e:#}"))?;
+    loaded_json(&path, false, "")
+}
+
+fn op_workdir(input: &str) -> Result<String, String> {
+    let ask: LoadAsk = ask(input)?;
+    answer(repo::workdir(&absolute(&ask.path)?).map(|path| path.to_string_lossy().into_owned()))
 }
 
 fn remote_name(remote: &str) -> Option<&str> {
