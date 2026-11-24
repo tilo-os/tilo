@@ -319,6 +319,7 @@ suites = [
   "os/containers/tilo-server/test-contract.sh",
   "os/containers/tilo-lounge/test-entrypoint.sh",
   "os/containers/tilo-sh/test-native-env.sh",
+  "os/containers/tilo-sh/test-refused-setup.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",
@@ -772,12 +773,13 @@ inputs = [
   "apps/",
   "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "crates/sdk/",
   # A new Rust app is scaffolded against the toolkit in the checkout, and checked under the
-  # test environment's wrapper.
-  "crates/ui/ui-core/", "tools/with-test-environment.sh",
+  # test environment's wrapper. The layout check lays a board out from the shared fixture.
+  "crates/ui/ui-core/", "tools/with-test-environment.sh", "tools/layout-check/",
 ]
 readers = [
   "crates/lang/tilolang-cli/src/cli.rs",
   "crates/lang/tilolang-cli/src/cli/guide.rs",
+  "crates/lang/tilolang-cli/src/layout_check.rs",
   "crates/lang/tilolang-cli/tests/json_output.rs",
   "crates/lang/tilolang-cli/tests/outside_repo.rs",
   "crates/lang/tilolang-cli/tests/native_sdk.rs",
@@ -848,6 +850,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_api_tester.rs",
   "crates/lang/tilolang-runtime/tests/e2e_backups.rs",
   "crates/lang/tilolang-runtime/tests/e2e_browser.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_camera.rs",
   "crates/lang/tilolang-runtime/tests/e2e_chip_design.rs",
   "crates/lang/tilolang-runtime/tests/e2e_clocks.rs",
   "crates/lang/tilolang-runtime/tests/e2e_code_editor.rs",
@@ -901,6 +904,8 @@ inputs = [
   "apps/tl/passwords/",
   "crates/core/actions/src/remote/invocations-surface.json",
   "crates/services/vision/surface.json",
+  "crates/services/crash-reports/crash-reports-surface.json",
+  "crates/sdk/tilo-app-window/locales/en-US.ftl",
   "crates/core/tilo-contact-directory/surface.json",
   "crates/core/tilo-workspace-service/workspace-surface.toml",
 ]
@@ -910,15 +915,26 @@ readers = [
   "crates/lang/tilolang-tilo/src/shell.rs",
   "crates/lang/tilolang-tilo/src/surface.rs",
   "crates/lang/tilolang-tilo/tests/agent_queries.rs",
+  "crates/lang/tilolang-tilo/tests/activity.rs",
   "crates/lang/tilolang-tilo/tests/block_search.rs",
   "crates/lang/tilolang-tilo/tests/bundle.rs",
+  "crates/lang/tilolang-tilo/tests/canvas.rs",
   "crates/lang/tilolang-tilo/tests/chat.rs",
+  "crates/lang/tilolang-tilo/tests/chat_agents.rs",
+  "crates/lang/tilolang-tilo/tests/chat_ban.rs",
+  "crates/lang/tilolang-tilo/tests/chat_calls.rs",
+  "crates/lang/tilolang-tilo/tests/chat_copylink.rs",
+  "crates/lang/tilolang-tilo/tests/chat_emoji.rs",
+  "crates/lang/tilolang-tilo/tests/chat_liveshare.rs",
+  "crates/lang/tilolang-tilo/tests/chat_members.rs",
+  "crates/lang/tilolang-tilo/tests/chat_small.rs",
   "crates/lang/tilolang-tilo/tests/chat_persona_shot.rs",
   "crates/lang/tilolang-tilo/tests/containers.rs",
   "crates/lang/tilolang-tilo/tests/db_client_search.rs",
   "crates/lang/tilolang-tilo/tests/discord.rs",
   "crates/lang/tilolang-tilo/tests/discord_migration.rs",
   "crates/lang/tilolang-tilo/tests/disks.rs",
+  "crates/lang/tilolang-tilo/tests/document_search.rs",
   "crates/lang/tilolang-tilo/tests/files.rs",
   "crates/lang/tilolang-tilo/tests/firewall.rs",
   "crates/lang/tilolang-tilo/tests/fixtures.rs",
@@ -935,7 +951,15 @@ readers = [
   "crates/lang/tilolang-tilo/tests/native_notes.rs",
   "crates/lang/tilolang-tilo/tests/native_tube.rs",
   "crates/lang/tilolang-tilo/tests/note_import.rs",
+  "crates/lang/tilolang-tilo/tests/settings_about.rs",
+  "crates/lang/tilolang-tilo/tests/settings_billing.rs",
+  "crates/lang/tilolang-tilo/tests/settings_displays.rs",
+  "crates/lang/tilolang-tilo/tests/settings_input.rs",
   "crates/lang/tilolang-tilo/tests/settings_panes.rs",
+  "crates/lang/tilolang-tilo/tests/settings_permissions.rs",
+  "crates/lang/tilolang-tilo/tests/settings_shell.rs",
+  "crates/lang/tilolang-tilo/tests/settings_sound.rs",
+  "crates/lang/tilolang-tilo/tests/settings_windows.rs",
   "crates/lang/tilolang-tilo/tests/notebook_order.rs",
   "crates/lang/tilolang-tilo/tests/passwords_vault.rs",
   "crates/lang/tilolang-tilo/tests/notes.rs",
@@ -976,6 +1000,12 @@ package = "tilolang-web"
 # and read every native app's manifest and surface.
 inputs = ["apps/tl/", "apps/*/tilo-app.toml", "apps/*/surface.toml"]
 readers = ["crates/lang/tilolang-web/tests/apps.rs"]
+
+[[cargo]]
+package = "tilolang-window"
+# The window's test support compiles Settings from its sources, and reads its ids lock.
+inputs = ["apps/tl/settings/"]
+readers = ["crates/lang/tilolang-window/tests/support/mod.rs"]
 
 [[cargo]]
 package = "tilolang-youtube"
@@ -1499,7 +1529,10 @@ package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
 inputs = ["crates/ui/ui-core/assets/fonts/", "tools/font-catalog.py"]
-readers = ["crates/platform/font-catalog/build.rs"]
+readers = [
+  "crates/platform/font-catalog/build.rs",
+  "crates/platform/font-catalog/src/tests.rs",
+]
 
 [[cargo]]
 package = "tilo-workspace-service"
@@ -1534,12 +1567,6 @@ package = "discord"
 # The fixture writes the legacy record the migration test reads back.
 inputs = ["crates/lang/tilolang-tilo/tests/legacy/rust_discord.hex"]
 readers = ["apps/discord/tests/native_discord_fixture.rs"]
-
-[[cargo]]
-package = "tilo-video-picture"
-# The footage tests share the media stack check's own probe.
-inputs = ["crates/engines/video-edit/tests/support/media_stack.rs"]
-readers = ["crates/engines/video-picture/tests/support/generated_clip.rs"]
 
 [[cargo]]
 package = "tilo-collab-types"
