@@ -28,7 +28,7 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, PendingPoll, ProvidedPackage,
-    RemoteActionTarget, application_provider,
+    RemoteActionTarget,
 };
 use tilo_actions::{ResourceSpec, api::locate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
@@ -162,34 +162,22 @@ impl Providers {
         );
     }
 
-    /// The registered provider that published the address an app's call (`application:<workspace>:
-    /// <app>`) names; `None` for a call naming no app, or an address no registered provider
-    /// publishes, which an app answers.
-    #[must_use]
-    pub fn publishing(&self, target: &RemoteActionTarget) -> Option<Registered> {
-        application_provider(&target.provider)?;
-        self.published(target)
-    }
-
     /// The registered provider that published the address `target` names, whichever provider
-    /// token the call carries: a workspace's own `app.<app>#open` is the open of the app a
-    /// provider places, and is answered by it. `None` when no registered provider publishes it.
+    /// token the call carries, and that a caller from `from` may reach: a workspace's own
+    /// `app.<app>#open` is the open of the app a provider places, and is answered by it. A call
+    /// from another device ([`Reach::Devices`]) reaches only a provider that reaches devices.
+    /// `None` when no such provider publishes it.
     #[must_use]
-    pub fn published(&self, target: &RemoteActionTarget) -> Option<Registered> {
+    pub fn published(&self, target: &RemoteActionTarget, from: Reach) -> Option<Registered> {
         self.0
             .provided
             .read_recover()
             .values()
-            .find(|registered| locate(&registered.published, &target.address).is_some())
+            .find(|registered| {
+                (!from.devices() || registered.reach.devices())
+                    && locate(&registered.published, &target.address).is_some()
+            })
             .cloned()
-    }
-
-    /// [`Self::published`], for a provider that reaches devices: what a call from another device
-    /// may reach.
-    #[must_use]
-    pub fn published_for_devices(&self, target: &RemoteActionTarget) -> Option<Registered> {
-        self.published(target)
-            .filter(|registered| registered.reach.devices())
     }
 
     /// The publishers the registered providers reaching devices list for `caller`: what joins a
@@ -350,7 +338,7 @@ impl Providers {
         // the call names: a workspace's own `app.<app>#open` is the open of an app this device
         // places.
         let registered = registered
-            .or_else(|| self.published(&request.target))
+            .or_else(|| self.published(&request.target, Reach::ThisDevice))
             .or_else(|| self.get(provider))?;
         Some(registered.answers.invoke(caller, request))
     }
@@ -406,7 +394,7 @@ impl Providers {
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         let registered = self
             .for_devices(&request.target.provider)
-            .or_else(|| self.published_for_devices(&request.target))?;
+            .or_else(|| self.published(&request.target, Reach::Devices))?;
         let (Some(device), Some(workspace)) = (
             caller.device_public_key().copied(),
             caller.workspace().map(str::to_owned),

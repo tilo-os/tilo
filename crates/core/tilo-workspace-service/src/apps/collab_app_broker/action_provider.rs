@@ -1850,7 +1850,10 @@ impl AppBrokerState {
             .services
             .providers
             .as_ref()
-            .and_then(|providers| providers.publishing(&request.target))
+            .filter(|_| tilo_actions::remote::application_provider(&request.target.provider).is_some())
+            .and_then(|providers| {
+                providers.published(&request.target, crate::workspaces::providers::Reach::ThisDevice)
+            })
         {
             let mut request = request.clone();
             registered.provider.clone_into(&mut request.target.provider);

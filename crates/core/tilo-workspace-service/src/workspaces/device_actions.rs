@@ -945,7 +945,7 @@ impl ActionProvider for Answers {
         if self
             .work
             .providers
-            .published_for_devices(&request.target)
+            .published(&request.target, super::providers::Reach::Devices)
             .is_some()
         {
             return self
