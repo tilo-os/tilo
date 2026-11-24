@@ -184,6 +184,9 @@ d-2u5srydi = Umschalten
 d-dd6dt32e = Pause
     .doc = Pausiert, was läuft, und startet es wieder, wo es stand (die eigene Aufgabe von [`toggle`]).
 
+d-i5ctxqgd = Stopp
+    .doc = Stoppt, was läuft: es läuft auf keinem Gerät, und die Shell zeigt es nicht mehr.
+
 d-fxxarqxu = Weiter
     .doc = Der Eintrag nach diesem: der nächste der Warteschlange oder der erste, wenn Wiederholen an ist.
 
@@ -277,3 +280,4 @@ d-4zpe77fa = Live
     .w-next = Weiter
     .w-back-15-seconds = 15 Sekunden zurück
     .w-forward-15-seconds = 15 Sekunden vor
+    .w-stop = Stopp

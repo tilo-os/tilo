@@ -185,6 +185,9 @@ d-2u5srydi = Toggle
 d-dd6dt32e = Pause
     .doc = Pauses what plays and starts it again where it stood ([`toggle`]'s own job).
 
+d-i5ctxqgd = Stop
+    .doc = Stops what plays: it plays on no device, and the shell shows it no more.
+
 d-fxxarqxu = Next
     .doc = The item after this one: the queue's next, or the first when repeat is on.
 
@@ -278,3 +281,4 @@ d-4zpe77fa = Live
     .w-next = Next
     .w-back-15-seconds = Back 15 seconds
     .w-forward-15-seconds = Forward 15 seconds
+    .w-stop = Stop
