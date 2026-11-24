@@ -1,7 +1,8 @@
 //! The daemon is the one server of the workspace trees' socket. A mount that connects to it is
 //! told the file access list of the workspaces it holds before anything of the tree, and puts it
 //! in force as the files daemon does (its capability file, read by every open of the mount); a
-//! role changed while the mount runs is in force at its next open. Two devices' mounts of one
+//! role changed, a folder granted or taken back, and a member removed while the mount runs are in
+//! force at its next open. Two devices' mounts of one
 //! workspace sync through their daemons. Where a mount's folder stands is the daemon's resource
 //! `tilo.folders`, which this device's own person reads in their own workspace and nobody else
 //! reads.
@@ -20,12 +21,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use collab_types::caps::{Access as Granted, CapOverride, Scope};
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{
     ActionCallError, Caller, ResourceAddress, ResourceCopy, ResourceReads as _,
 };
+use tilo_action_policy::Grantee;
 use tilo_fs::Access;
-use tilo_server_protocol::workspaces::Role;
+use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
+use tilo_server_protocol::workspaces::{RemoveMemberRequest, Role};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use tilo_workspace_service::files::{FOLDERS_APP, FolderList};
 
@@ -538,4 +542,105 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
         ),
         "another person's daemon does not answer for Ada"
     );
+
+    // A folder the workspace grants Bob's app reaches his mount without it being mounted again,
+    // and taking the grant back refuses his next read and write there at once, while the rest
+    // of the workspace stands.
+    let folder = "shared";
+    let granted = format!("/var/workspace/{folder}");
+    let shared = bob_mount.file(&format!("{folder}/plan.md"));
+    assert_eq!(
+        bob_mount.open(shared, Access::Read),
+        Err(libc::ENOENT),
+        "the folder is not his until the workspace grants it"
+    );
+    let capability = CapOverride::grant(
+        Grantee::person(hex::encode(bob_cert.user_public_key)),
+        Scope::FsPath(granted),
+        Granted::Write,
+    )
+    .with_id("bob-shared")
+    .through("so.tilo.notes");
+    hosted
+        .commit_own_membership(
+            &workspace,
+            WorkspaceMembershipCommand::Settings(SettingsChange::GrantSandbox {
+                capability: capability.clone(),
+            }),
+            None,
+        )
+        .await
+        .expect("the workspace grants Bob's app the folder");
+    bob_mount
+        .until(
+            "Bob's mount lets him write the folder the workspace granted",
+            shared,
+            Access::Write,
+            Ok(()),
+        )
+        .await;
+    assert_eq!(bob_mount.open(shared, Access::Read), Ok(()));
+
+    hosted
+        .commit_own_membership(
+            &workspace,
+            WorkspaceMembershipCommand::Settings(SettingsChange::RevokeSandbox {
+                capability: "bob-shared".into(),
+            }),
+            None,
+        )
+        .await
+        .expect("the workspace takes the folder back");
+    bob_mount
+        .until(
+            "Bob's mount refuses the folder the workspace took back",
+            shared,
+            Access::Read,
+            Err(libc::ENOENT),
+        )
+        .await;
+    assert_eq!(bob_mount.open(shared, Access::Write), Err(libc::ENOENT));
+    assert_eq!(
+        bob_mount.open(note, Access::Read),
+        Ok(()),
+        "the rest of the workspace stands: the mount is not made again"
+    );
+    assert_eq!(bob_mount.open(note, Access::Write), Ok(()));
+
+    // Bob is removed from the workspace while his mount runs: every access he holds to its
+    // files is gone at once, and Ada's mount goes on.
+    let adas = ada_mount
+        .tree
+        .namespace
+        .lock()
+        .unwrap()
+        .resolve_path_ino(&plan)
+        .unwrap();
+    hosted
+        .remove_member(
+            &workspace,
+            &server_cert,
+            RemoveMemberRequest {
+                request_id: fresh_id(),
+                user_public_key: bob_cert.user_public_key,
+            },
+        )
+        .await
+        .expect("the owner removes Bob");
+    bob_mount
+        .until(
+            "Bob's mount refuses the workspace he was removed from",
+            note,
+            Access::Read,
+            Err(libc::ENOENT),
+        )
+        .await;
+    assert_eq!(bob_mount.open(note, Access::Write), Err(libc::ENOENT));
+    assert_eq!(bob_mount.open(shared, Access::Read), Err(libc::ENOENT));
+    assert_eq!(
+        ada_mount.open(adas, Access::Read),
+        Ok(()),
+        "the workspace's other member keeps what he holds"
+    );
+    assert_eq!(ada_mount.open(adas, Access::Write), Ok(()));
 }
