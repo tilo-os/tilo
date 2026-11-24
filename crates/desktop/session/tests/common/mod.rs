@@ -729,6 +729,25 @@ pub fn device_home() -> tilo_test_env::TestHome {
     home
 }
 
+/// The device's daemon, started in this process over `profile` with the language runtime mounted on
+/// it, as the `tilo-runtime` program mounts it: the daemon reads the records of the built-in apps,
+/// and the styles the store's packages offer, through it.
+///
+/// # Panics
+/// The daemon does not start.
+#[track_caller]
+pub fn start_daemon(profile: &Path) -> tilo_runtime::daemon::Running {
+    static MOUNTED: std::sync::Once = std::sync::Once::new();
+    MOUNTED.call_once(|| {
+        use tilo_runtime::device::capabilities::{Capabilities, mount};
+        mount(Capabilities {
+            tilolang: Some(Box::new(tilolang_workspace::host)),
+            ..Default::default()
+        });
+    });
+    tilo_runtime::daemon::Running::start(profile).expect("the device's daemon starts")
+}
+
 /// A device of a person's, of the test's own: its daemon, started in this process over `home` and
 /// a profile of its own, serving the person founded on it. A daemon whose identity names no person
 /// stays up serving the device's own actions alone, waiting to be founded, so a test that only
@@ -745,8 +764,7 @@ pub fn device_daemon(home: tilo_test_env::TestHome, name: Option<&str>) -> Devic
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
         .expect("the profile is this user's");
     let within = tilo_test_env::hang_bound();
-    let daemon =
-        tilo_runtime::daemon::Running::start(profile.path()).expect("the device's daemon starts");
+    let daemon = start_daemon(profile.path());
     // The directory the daemon keeps its sockets in: a profile named apart keeps them beside
     // itself, not inside it, so the endpoint it listens on says where they are.
     let sockets = daemon
