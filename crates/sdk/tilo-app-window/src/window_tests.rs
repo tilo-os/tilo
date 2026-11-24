@@ -986,12 +986,14 @@ fn a_control_declares_keys_that_all_press_it() {
 
 /// The keys the window's published surface names for its action `action`, as the palette lists it.
 fn palette_keys(window: &AppWindow, action: &str) -> Option<String> {
-    fn find(specs: &[tilo_actions::ResourceSpec], action: &str) -> Option<Option<String>> {
+    fn find<'a>(
+        specs: &'a [tilo_actions::ResourceSpec],
+        action: &str,
+    ) -> Option<&'a tilo_actions::ActionSpec> {
         specs.iter().find_map(|spec| {
             spec.actions
                 .iter()
                 .find(|offered| offered.id == action)
-                .map(|offered| offered.state.shortcut.clone())
                 .or_else(|| find(&spec.children, action))
         })
     }
@@ -999,7 +1001,11 @@ fn palette_keys(window: &AppWindow, action: &str) -> Option<String> {
         window,
         &ui::automerge::AutoCommit::new(),
     );
-    find(&shown, action).expect("the window publishes the action")
+    find(&shown, action)
+        .expect("the window publishes the action")
+        .state
+        .shortcut
+        .clone()
 }
 
 /// A command the person moved to other keys runs on those, through the control the app declared

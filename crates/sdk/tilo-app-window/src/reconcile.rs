@@ -783,13 +783,12 @@ impl Reconciler {
         let panel =
             matches!(node.props.get("surface"), Some(Value::Text(surface)) if surface == "panel");
         if panel {
-            return match crate::page_runner::panel_engine(&self.shown_page) {
-                Some(engine) => (engine, None, ui::webview::Surface::Panel),
-                None => {
-                    let missing: ui::webview::SharedEngine =
-                        tilo_webview::chromium::UnavailableEngine::new(String::new());
-                    (missing, None, ui::webview::Surface::Panel)
-                }
+            return if let Some(engine) = crate::page_runner::panel_engine(&self.shown_page) {
+                (engine, None, ui::webview::Surface::Panel)
+            } else {
+                let missing: ui::webview::SharedEngine =
+                    tilo_webview::chromium::UnavailableEngine::new(String::new());
+                (missing, None, ui::webview::Surface::Panel)
             };
         }
         (
@@ -2393,10 +2392,10 @@ mod tests {
         let id = "abcdefghijklmnopabcdefghijklmnop".to_owned();
         let url = format!("chrome-extension://{id}/panel.html");
         test.push_event(WebViewEvent::ExtensionSidePanel {
-            id: id.clone(),
-            change: ExtensionSidePanelChange::Open(url.clone()),
+            id,
+            change: ExtensionSidePanelChange::Open(url),
         });
-        *page.borrow_mut() = Some(PageSession::new(test.clone() as SharedEngine));
+        *page.borrow_mut() = Some(PageSession::new(test as SharedEngine));
         // The window takes what its page said of itself once a frame.
         let noted = crate::page_runner::notes(&page);
         assert!(noted.iter().any(|note| note.contains("\"panel\"")));
@@ -2452,7 +2451,7 @@ mod tests {
                     }],
                     attrs: BTreeMap::new(),
                 }],
-                styles: Default::default(),
+                styles: BTreeMap::new(),
                 embeds: vec![Embed {
                     reference: TASK.into(),
                     view,

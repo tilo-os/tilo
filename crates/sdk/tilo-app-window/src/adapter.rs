@@ -1399,7 +1399,7 @@ mod tests {
                 ..Default::default()
             }],
             embeds: Vec::new(),
-            styles: Default::default(),
+            styles: BTreeMap::new(),
         };
         let body = node("BlockEditor", "body", &[("value", Value::Rich(rich))]);
         let widget = reconciler.build(&body);
