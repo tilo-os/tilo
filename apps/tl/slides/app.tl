@@ -2121,9 +2121,13 @@ view present_view(
             ui.Stage(
                 name: "Presentation",
                 canvas: [1280, 720],
+                transition: .cross_fade,
+                motion: .standard,
                 background: slide_ground(d, s),
                 fill,
             ) {
+                // The next slide comes over the one that was shown, on the theme's cross-fade:
+                // each place names the element it shows, so another slide is another page.
                 for e in s.elements {
                     ui.StagePin(
                         name: element_label(e),
