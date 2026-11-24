@@ -176,6 +176,10 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
     // What the person types and picks until they answer: the card's own, never kept.
     state typed: List<Text> = a.takes.map(t -> t.initial ?? "")
     state picked: List<Int> = []
+    // What the person writes in each field of the call they may change, by its place: the call
+    // as asked until they change it, and the form shut until they open it.
+    state written: List<Text> = a.form.map(f -> asked_value(f))
+    state changing: Bool = false
     // A phrase to type, or a field the program needs filled: the answer waits until it
     // holds something.
     let unfilled = a.takes.any(
@@ -198,7 +202,29 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
             for f in lines {
                 ui.Text(f.value, secondary: true)
             }
-            if not labelled.is_empty() {
+            if changing and here {
+                // The call's arguments the person may change, each in its field: a flag turns,
+                // every other field is written in.
+                for f in a.form {
+                    let i = a.form.index_of(f) ?? 0
+                    if let _ = f.value.on {
+                        ui.Toggle(f.label, shown: (written.at(i) ?? asked_value(f)) == "yes") {
+                            on check(on: Bool): set(
+                                written,
+                                written_at(a.form, written, i, flag_text(on)),
+                            )
+                        }
+                    } else {
+                        field(f.label) {
+                            ui.TextInput(
+                                bind: written.at(i),
+                                placeholder: f.shows ?? asked_value(f),
+                                lines: if f.multiline { 4 } else { 1 },
+                            )
+                        }
+                    }
+                }
+            } else if not labelled.is_empty() {
                 ui.PropertyList {
                     for f in labelled {
                         ui.Property(f.label, f.value)
@@ -276,6 +302,11 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
                             }
                         }
                         spacer
+                        if here and not a.form.is_empty() and not changing {
+                            ui.Button("Change", icon: .pencil, size: .small, role: .plain) {
+                                on press: set(changing, true)
+                            }
+                        }
                         ui.Button("Don't allow", size: .small, role: .secondary) {
                             on press: decline(key)
                         }
@@ -292,6 +323,7 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
                                     resolution: "approve",
                                     chosen: .some(picked),
                                     typed: .some(typed),
+                                    edits: changes_of(a.form, written),
                                 )
                             }
                         }
@@ -333,6 +365,63 @@ view files_asked(key: Text, files: invocations.FilesAsked, typed: List<Text>) {
             name: files.name ?? "",
             home: "~",
         )
+    }
+}
+
+/// A field's value as the call was asked with it, as the person reads and writes it: a flag
+/// `yes` or `no`.
+fn asked_value(f: invocations.FormField) -> Text {
+    if let on = f.value.on {
+        return flag_text(on)
+    }
+    return f.value.text ?? ""
+}
+
+/// A flag as the person reads and writes it.
+fn flag_text(on: Bool) -> Text {
+    return if on { "yes" } else { "no" }
+}
+
+/// `written` with the place `at` holding `value`, every other place what it held, or its field's
+/// value as asked where nothing was written there yet.
+fn written_at(
+    form: List<invocations.FormField>,
+    written: List<Text>,
+    at: Int,
+    value: Text,
+) -> List<Text> {
+    return form.map(
+        f -> if (form.index_of(f) ?? 0) == at {
+            value
+        } else {
+            written.at(form.index_of(f) ?? 0) ?? asked_value(f)
+        },
+    )
+}
+
+/// One change the person made to the call before approving it: a field, by its path in the
+/// call's arguments, and what they wrote in it. The record's `resolve` takes a list of them.
+type CallEdit {
+    path: List<Text>
+    text: Text
+}
+
+/// What the person changed in `form`, as the record's `resolve` takes it: each field whose
+/// written value is not the call's own, none where they changed nothing.
+fn changes_of(form: List<invocations.FormField>, written: List<Text>) -> Option<json.Value> {
+    let edits = form
+        .filter(
+            f -> (written.at(form.index_of(f) ?? 0) ?? asked_value(f)) != asked_value(f),
+        )
+        .map(
+            f -> CallEdit(path: f.path, text: written.at(form.index_of(f) ?? 0) ?? asked_value(f)),
+        )
+    if edits.is_empty() {
+        return .none
+    }
+    return match json.parse(json.encode(edits)) {
+        .ok(changes) => .some(changes),
+        .err(_) => .none,
     }
 }
 

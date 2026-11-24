@@ -468,6 +468,14 @@
                   "named": "Effect"
                 }
               }
+            },
+            {
+              "name": "form",
+              "type": {
+                "list": {
+                  "named": "FormField"
+                }
+              }
             }
           ]
         },
@@ -660,6 +668,60 @@
             {
               "name": "chord",
               "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "FormField",
+          "doc": "One of the call's arguments the person may change before approving it, by its path in the arguments, with its value as asked.",
+          "fields": [
+            {
+              "name": "path",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "value",
+              "type": {
+                "named": "FieldValue"
+              }
+            },
+            {
+              "name": "editable",
+              "type": "bool"
+            },
+            {
+              "name": "multiline",
+              "type": "bool"
+            },
+            {
+              "name": "shows",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "FieldValue",
+          "doc": "A changeable argument's value as asked: the text of a text or a number, or whether a flag is on.",
+          "fields": [
+            {
+              "name": "text",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "on",
+              "type": {
+                "option": "bool"
+              }
             }
           ]
         },

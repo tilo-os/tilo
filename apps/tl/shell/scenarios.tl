@@ -3311,6 +3311,7 @@ scenario "a press that needs a yes" {
                 ),
                 .none,
                 invoker,
+                [],
             ),
         ],
     )
@@ -3342,6 +3343,7 @@ scenario "questions waiting" {
                 .none,
                 .some("studio/chat/launch"),
                 invoker,
+                [],
             ),
             waiting_record(
                 "home",
@@ -3361,6 +3363,7 @@ scenario "questions waiting" {
                 .none,
                 .none,
                 invoker,
+                [],
             ),
             waiting_record(
                 "studio",
@@ -3393,6 +3396,64 @@ scenario "questions waiting" {
                 ),
                 .none,
                 invoker,
+                [],
+            ),
+        ],
+    )
+}
+
+/// An agent's call that waits for the person, whose form lets them change it before they
+/// approve: Scout sets an alarm, and Ada moves it half an hour and names it.
+scenario "a call to change before approving" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "centre"))
+    stage(
+        [
+            waiting_record(
+                "studio",
+                "invocations/alarm-2",
+                "Set alarm",
+                invocations.Asker(agent: .some(invocations.Named(id: "scout", name: "Scout"))),
+                1,
+                "",
+                .some("Alarms"),
+                [
+                    invocations.Fact(label: "At", value: "07:00"),
+                    invocations.Fact(label: "Label", value: "Wake up"),
+                    invocations.Fact(label: "Weekdays only", value: "yes"),
+                ],
+                [],
+                false,
+                "set",
+                .some("alarms"),
+                .none,
+                .none,
+                invoker,
+                [
+                    invocations.FormField(
+                        path: ["alarm", "at"],
+                        label: "At",
+                        value: invocations.FieldValue(text: .some("07:00")),
+                        editable: true,
+                        multiline: false,
+                    ),
+                    invocations.FormField(
+                        path: ["alarm", "label"],
+                        label: "Label",
+                        value: invocations.FieldValue(text: .some("Wake up")),
+                        editable: true,
+                        multiline: false,
+                    ),
+                    invocations.FormField(
+                        path: ["alarm", "weekdays"],
+                        label: "Weekdays only",
+                        value: invocations.FieldValue(on: .some(true)),
+                        editable: true,
+                        multiline: false,
+                    ),
+                ],
             ),
         ],
     )
@@ -3417,6 +3478,7 @@ fn waiting_record(
     pressed: Option<invocations.Pressed>,
     conversation: Option<Text>,
     waiting_for: Actor,
+    form: List<invocations.FormField>,
 ) -> invocations.Invocation {
     let names = asked_in == "home"
     return invocations.Invocation(
@@ -3457,6 +3519,7 @@ fn waiting_record(
                 takes: [],
                 many: false,
                 kind: "",
+                form: form,
             ),
         ),
     )

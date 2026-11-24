@@ -949,6 +949,9 @@ fn resolve_action() -> ActionMeta {
             param("chosen", "Option<List<Int>>", Some(DefaultMeta::none())),
             param("typed", "Option<List<Text>>", Some(DefaultMeta::none())),
             param("files", "Option<List<Text>>", Some(DefaultMeta::none())),
+            // What the person changed in the call before approving it: a list of
+            // `{path, text}`, each a field of the form its ask offers.
+            param("edits", "Option<json.Value>", Some(DefaultMeta::none())),
         ],
     )
 }
