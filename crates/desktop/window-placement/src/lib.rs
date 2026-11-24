@@ -560,7 +560,7 @@ impl DesktopPolicy {
         let carried = Carried::default();
         let notes = Notes::default();
         let items = Items::default();
-        let tiles = Windows {
+        let windows = Windows {
             arriving: Rc::clone(&arriving),
             launches: Rc::clone(&launches),
             crashed: Rc::clone(&crashed),
@@ -575,7 +575,7 @@ impl DesktopPolicy {
         let handle = DesktopHandle::new(tree, salt);
         Self {
             pass: DesktopPass::new(handle.clone()),
-            tiles,
+            tiles: windows,
             handle,
             arriving,
             launches,
