@@ -1006,6 +1006,13 @@ impl ViewInstance {
             InvokeOutcome::Done(made) => made,
             other => return Ok(other),
         };
+        // An action that could not make what it saves answers nothing: there is nothing to save,
+        // and what went wrong is the action's own notice.
+        let made = match made {
+            Value::Opt(Some(held)) => *held,
+            Value::Opt(None) => return Ok(InvokeOutcome::Done(Value::Unit)),
+            other => other,
+        };
         let (content, media) = match &made {
             Value::Text(text) => (text.clone().into_bytes(), crate::blob::media_of(name)),
             Value::File(file) => {
