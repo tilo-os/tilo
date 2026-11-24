@@ -1730,18 +1730,18 @@ impl Instance {
     /// `fragment`'s key — `width` by `height` rem of the window: its `space` follows, with a
     /// class changing only past its boundary by the hysteresis, and the boundary runs again only
     /// when something it read of it changed.
-    fn offer_space(&mut self, level: Level, key: String, width: f64, height: f64, rem: f64) {
+    fn offer_space(&mut self, level: Level, key: &str, width: f64, height: f64, rem: f64) {
         let spaces = match level {
             Level::Root => &mut self.root_space,
             Level::Detail => &mut self.detail_space,
         };
-        let space = spaces.get(&key).map_or_else(
+        let space = spaces.get(key).map_or_else(
             || crate::runtime::space::Space::from_rem(width, height).with_rem(rem),
             |before| before.followed(width, height).with_rem(rem),
         );
-        spaces.insert(key.clone(), space);
+        spaces.insert(key.to_owned(), space);
         if let Some(view) = self.view(level) {
-            view.borrow_mut().set_space(&key, space);
+            view.borrow_mut().set_space(key, space);
         }
     }
 
@@ -1812,7 +1812,7 @@ impl Instance {
                 rem,
             } => self.offer_space(
                 level,
-                key,
+                &key,
                 f64::from(width),
                 f64::from(height),
                 f64::from(rem),

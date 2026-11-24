@@ -1597,8 +1597,9 @@ impl Host {
         // its window is never of those roots, so this is when they are wanted.
         if !device_root {
             let device_roots: Vec<String> = self
-                .find_in_packages(|package| (package.meta.app == app).then(|| package.clone()))
-                .map(|package| package.meta.device_roots.clone())
+                .find_in_packages(|package| {
+                    (package.meta.app == app).then(|| package.meta.device_roots.clone())
+                })
                 .unwrap_or_default();
             for device_ty in device_roots {
                 if let Err(error) = self.root_resource(app, &device_ty) {

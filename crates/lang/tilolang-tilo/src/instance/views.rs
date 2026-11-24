@@ -11,6 +11,7 @@ use std::rc::Rc;
 use tilo_render_protocol::patch::{self as ui, Level, ToUi, Words};
 use tilolang_runtime::store::{StoreError, VersionKind};
 
+use super::patches::Sorted;
 use super::rows::{FIRST_ROWS, ListRows};
 use super::wire;
 use super::{
@@ -19,7 +20,7 @@ use super::{
 };
 use crate::host::Host;
 use crate::runtime::Store as _;
-use crate::runtime::{ResourceRef, ViewEvent};
+use crate::runtime::{NameHost, ResourceRef, ViewEvent};
 
 impl Instance {
     /// The facts page, drawn again when what it says changed: the resource's fields, or what
@@ -493,101 +494,7 @@ impl Instance {
         let names = Rc::clone(&self.names);
         let mut changed = self.poll_gone();
         for level in [Level::Root, Level::Detail] {
-            if !self
-                .level(level)
-                .is_some_and(|shown| shown.view.borrow().woken())
-                || self.unheld(&host, level)
-            {
-                continue;
-            }
-            let Some(view) = self.level_mut(level) else {
-                continue;
-            };
-            // What the view reads changed: the tree may stand as it was (a row's control reads
-            // the item's field it is bound to), and the window still needs the values it shows.
-            let stale = view.view.borrow_mut().is_stale();
-            let polled = {
-                let _phase = tilo_resource::profiling::Phase::start("instance.views.evaluate");
-                view.view.borrow_mut().poll_patches()
-            };
-            let Ok(patches) = polled.inspect_err(view_failed) else {
-                continue;
-            };
-            if patches.is_empty() {
-                changed |= stale;
-                self.tell_spaces(level);
-                continue;
-            }
-            changed = true;
-            // The item its page draws, when it lists the items it shows: a press that selects a
-            // row moves the page, and what is typed into it is that item's. A tree no patch
-            // changed draws the page it drew.
-            view.in_place = in_place_of(view.view.borrow().tree());
-            let lists = virtual_list_paths(view.view.borrow().tree());
-            let sorted = sort(patches, &lists);
-            let mut messages = Vec::new();
-            let handle = Rc::clone(&view.view);
-            for (list, changes) in sorted.lists {
-                let Some(rows) = view.lists.get_mut(&list) else {
-                    continue;
-                };
-                let row_changes = if changes.reread {
-                    rows.reread()
-                } else {
-                    let mut structural = rows.apply(&changes.structure);
-                    let changed = rows.changed(&changes.rows);
-                    convert_with(&host, &*names, &handle, |convert, _| {
-                        structural.extend(changed.iter().map(|row| ui::RowChange::Changed {
-                            row: Box::new(convert.node(row)),
-                        }));
-                    });
-                    structural
-                };
-                if row_changes.is_empty() {
-                    continue;
-                }
-                let len = u32::try_from(rows.len()).unwrap_or(u32::MAX);
-                messages.push(ToUi::RowsChanged {
-                    level,
-                    list,
-                    len,
-                    changes: row_changes,
-                });
-            }
-            if sorted.content {
-                let _phase = tilo_resource::profiling::Phase::start("instance.views.convert");
-                // A list inside the content may have rows the view has not rendered yet.
-                show_content_rows(&mut view.view.borrow_mut());
-                // Only what changed is converted, where it can be: a clock's minute converts
-                // the clock's text, not the window.
-                let in_place =
-                    view.sent
-                        .as_mut()
-                        .zip(sorted.changed.as_ref())
-                        .and_then(|(sent, changed)| {
-                            convert_with(&host, &*names, &view.view, |convert, instance| {
-                                patch_in_place(sent, instance.tree(), changed, convert)
-                            })
-                        });
-                let patches = in_place.unwrap_or_else(|| {
-                    let tree = window_tree(&host, &*names, &view.view);
-                    let mut patches = Vec::new();
-                    match &view.sent {
-                        Some(sent) => wire::diff(sent, &tree, &mut patches),
-                        None => patches.push(ui::Patch::SetRoot(tree.clone())),
-                    }
-                    view.sent = Some(tree);
-                    patches
-                });
-                if !patches.is_empty() {
-                    self.out.push(ToUi::Patch { level, patches });
-                }
-            }
-            self.out.extend(messages);
-            // A row that changed can hold a list it did not (the document of a row that opened),
-            // and the content one.
-            self.track_lists(level);
-            self.tell_spaces(level);
+            changed |= self.poll_level(&host, &names, level);
         }
         if changed {
             let _phase = tilo_resource::profiling::Phase::start("instance.views.bound");
@@ -596,6 +503,97 @@ impl Instance {
         }
         let selected = self.select_revealed();
         self.tell_reveal() || selected || changed
+    }
+
+    /// Re-run the view of `level` when what it reads changed, and send the window what it now
+    /// shows: whether anything did.
+    fn poll_level(&mut self, host: &Host, names: &Rc<dyn NameHost>, level: Level) -> bool {
+        if !self
+            .level(level)
+            .is_some_and(|shown| shown.view.borrow().woken())
+            || self.unheld(host, level)
+        {
+            return false;
+        }
+        let Some(shown) = self.level_mut(level) else {
+            return false;
+        };
+        // What the view reads changed: the tree may stand as it was (a row's control reads the
+        // item's field it is bound to), and the window still needs the values it shows.
+        let stale = shown.view.borrow_mut().is_stale();
+        let polled = {
+            let _phase = tilo_resource::profiling::Phase::start("instance.views.evaluate");
+            shown.view.borrow_mut().poll_patches()
+        };
+        let patches = match polled {
+            Ok(patches) => patches,
+            Err(error) => {
+                view_failed(&error);
+                return false;
+            }
+        };
+        if patches.is_empty() {
+            self.tell_spaces(level);
+            return stale;
+        }
+        // The item its page draws, when it lists the items it shows: a press that selects a row
+        // moves the page, and what is typed into it is that item's. A tree no patch changed
+        // draws the page it drew.
+        shown.in_place = in_place_of(shown.view.borrow().tree());
+        let lists = virtual_list_paths(shown.view.borrow().tree());
+        let sorted = sort(patches, &lists);
+        let messages = changed_rows(host, names, shown, level, &sorted);
+        if sorted.content {
+            self.send_content(host, names, level, &sorted);
+        }
+        self.out.extend(messages);
+        // A row that changed can hold a list it did not (the document of a row that opened),
+        // and the content one.
+        self.track_lists(level);
+        self.tell_spaces(level);
+        true
+    }
+
+    /// Send the window the content of `level`'s view as `sorted` changed it: only what changed,
+    /// where it can be converted alone, the whole tree where not.
+    fn send_content(
+        &mut self,
+        host: &Host,
+        names: &Rc<dyn NameHost>,
+        level: Level,
+        sorted: &Sorted,
+    ) {
+        let Some(shown) = self.level_mut(level) else {
+            return;
+        };
+        let _phase = tilo_resource::profiling::Phase::start("instance.views.convert");
+        // A list inside the content may have rows the view has not rendered yet.
+        show_content_rows(&mut shown.view.borrow_mut());
+        // Only what changed is converted, where it can be: a clock's minute converts the clock's
+        // text, not the window.
+        let in_place =
+            shown
+                .sent
+                .as_mut()
+                .zip(sorted.changed.as_ref())
+                .and_then(|(sent, changed)| {
+                    convert_with(host, &**names, &shown.view, |convert, instance| {
+                        patch_in_place(sent, instance.tree(), changed, convert)
+                    })
+                });
+        let patches = in_place.unwrap_or_else(|| {
+            let tree = window_tree(host, &**names, &shown.view);
+            let mut patches = Vec::new();
+            match &shown.sent {
+                Some(sent) => wire::diff(sent, &tree, &mut patches),
+                None => patches.push(ui::Patch::SetRoot(tree.clone())),
+            }
+            shown.sent = Some(tree);
+            patches
+        });
+        if !patches.is_empty() {
+            self.out.push(ToUi::Patch { level, patches });
+        }
     }
 
     /// Select the row of the item a search hit named inside what the window shows
@@ -942,6 +940,46 @@ impl Instance {
 
 /// The key prefix of the page a level shows when what it showed is gone.
 const GONE: &str = "gone~";
+
+/// The window's messages for the rows `sorted` changed of `shown`'s virtual lists.
+fn changed_rows(
+    host: &Host,
+    names: &Rc<dyn NameHost>,
+    shown: &mut Shown,
+    level: Level,
+    sorted: &Sorted,
+) -> Vec<ToUi> {
+    let mut messages = Vec::new();
+    let handle = Rc::clone(&shown.view);
+    for (list, changes) in &sorted.lists {
+        let Some(rows) = shown.lists.get_mut(list) else {
+            continue;
+        };
+        let row_changes = if changes.reread {
+            rows.reread()
+        } else {
+            let mut structural = rows.apply(&changes.structure);
+            let changed = rows.changed(&changes.rows);
+            convert_with(host, &**names, &handle, |convert, _| {
+                structural.extend(changed.iter().map(|row| ui::RowChange::Changed {
+                    row: Box::new(convert.node(row)),
+                }));
+            });
+            structural
+        };
+        if row_changes.is_empty() {
+            continue;
+        }
+        let len = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+        messages.push(ToUi::RowsChanged {
+            level,
+            list: list.clone(),
+            len,
+            changes: row_changes,
+        });
+    }
+    messages
+}
 
 /// The page a level shows when the workspace no longer holds what it showed: the platform's
 /// words, in the page's own column where the view stood.
