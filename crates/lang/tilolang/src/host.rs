@@ -689,7 +689,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ("until", "Time", "The instant the code stops being good."),
             ("period", "Int", "How many seconds one code stands."),
             ("digits", "Int", "How many digits it has."),
-            ("algorithm", "Text", "The hash it is made with: `SHA1`, `SHA256` or `SHA512`."),
+            (
+                "algorithm",
+                "Text",
+                "The hash it is made with: `SHA1`, `SHA256` or `SHA512`.",
+            ),
         ],
     },
     ValueType {

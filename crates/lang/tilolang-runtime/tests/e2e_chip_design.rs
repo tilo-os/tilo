@@ -566,15 +566,24 @@ mod cases {
         }
 
         let cpu = properties(c.stage_page(by_key["cpu"]).tree());
-        assert_eq!(fact(&cpu, "Comparison contract"), "Backend characterization");
+        assert_eq!(
+            fact(&cpu, "Comparison contract"),
+            "Backend characterization"
+        );
         assert_eq!(fact(&cpu, "Compared words"), "8");
         assert_eq!(fact(&cpu, "Differing words"), "1");
         assert_eq!(fact(&cpu, "Reported accepted output SHA-256"), hash("a"));
-        assert!(cpu.contains(&("Original receipt artifact".to_owned(), "cpu.json".to_owned())));
+        assert!(cpu.contains(&(
+            "Original receipt artifact".to_owned(),
+            "cpu.json".to_owned()
+        )));
         assert!(cpu.contains(&("Declared artifact SHA-256".to_owned(), hash("1"))));
 
         let rtl = properties(c.stage_page(by_key["rtl"]).tree());
-        assert_eq!(fact(&rtl, "Reported simulation outcome"), "Completed simulation");
+        assert_eq!(
+            fact(&rtl, "Reported simulation outcome"),
+            "Completed simulation"
+        );
         assert_eq!(fact(&rtl, "Expected refusals observed"), "0");
         assert_eq!(fact(&rtl, "Observed RTL simulation cycles"), "1200");
         assert_eq!(fact(&rtl, "Accepted inputs"), "8");
@@ -598,7 +607,10 @@ mod cases {
 
         let physical = c.stage_page(by_key["physical"]);
         let facts = properties(physical.tree());
-        assert_eq!(fact(&facts, "Declared library"), "Synthetic research library");
+        assert_eq!(
+            fact(&facts, "Declared library"),
+            "Synthetic research library"
+        );
         assert_eq!(fact(&facts, "Declared clock constraint (ns)"), "6");
         assert_eq!(fact(&facts, "Estimated setup slack (ns)"), "0.9");
         assert_eq!(fact(&facts, "Estimated hold slack (ns)"), "0.04");
@@ -608,9 +620,10 @@ mod cases {
         assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("5"))));
         assert!(facts.contains(&("Placement database artifact".to_owned(), "db.h5".to_owned())));
         assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("6"))));
-        assert!(
-            facts.contains(&("Placement observation artifact".to_owned(), "report.json".to_owned()))
-        );
+        assert!(facts.contains(&(
+            "Placement observation artifact".to_owned(),
+            "report.json".to_owned()
+        )));
         assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("7"))));
         assert!(holds(physical.tree(), "Reported numerical observation"));
 
@@ -772,7 +785,10 @@ mod cases {
         let connection = c.records(&c.root, "connections");
         assert!(c.flag(&connection[0], "active"));
         assert!(!c.text(&connection[0], "digest").is_empty());
-        assert_eq!(c.text(&c.root, "failure"), "the device declines this design");
+        assert_eq!(
+            c.text(&c.root, "failure"),
+            "the device declines this design"
+        );
     }
 
     #[test]

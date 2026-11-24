@@ -8,9 +8,7 @@ use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::files::{Entry, FileTarget, FilesHost, TrashEntry};
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
-use tilolang_runtime::{
-    ActionRef, Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance,
-};
+use tilolang_runtime::{ActionRef, Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/containers/app.tl");
@@ -234,7 +232,9 @@ impl Installed {
         let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
             .expect("the platform's packages read");
         for meta in &metas {
-            host.runtime().load_foreign(meta.clone()).expect("the device is loaded");
+            host.runtime()
+                .load_foreign(meta.clone())
+                .expect("the device is loaded");
         }
         let compiled = tilolang::compile_package(SOURCE, &IdsLock::new(), &metas)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
@@ -257,18 +257,15 @@ impl Installed {
             .meta
             .actions
             .iter()
-            .filter_map(|action| {
-                action
-                    .key
-                    .clone()
-                    .map(|key| (action.name.clone(), key))
-            })
+            .filter_map(|action| action.key.clone().map(|key| (action.name.clone(), key)))
             .collect();
         let sent = Sent::default();
         // The app's own actions run here, as its window's do; what it asks of the device's
         // engine is sent, since the device is a package this host only reads.
         host.runtime().set_foreign_invoker(sent.clone());
-        host.runtime().set_reading(&reading(), reading_json).expect("the reading is set");
+        host.runtime()
+            .set_reading(&reading(), reading_json)
+            .expect("the reading is set");
         let root = host.root_of(APP).expect("the app's root");
         Self {
             host,
@@ -377,7 +374,14 @@ impl Installed {
 
 /// Every text under `node` that the window shows, in order.
 fn words(node: &UiNode, into: &mut Vec<String>) {
-    for prop in ["value", "title", "label", "message", "action", "description"] {
+    for prop in [
+        "value",
+        "title",
+        "label",
+        "message",
+        "action",
+        "description",
+    ] {
         if let Some(Value::Text(text)) = node.props.get(prop) {
             into.push(text.clone());
         }
@@ -402,11 +406,24 @@ fn the_window_lists_the_places_and_what_the_engine_holds() {
     let app = Installed::new(READING);
     let window = app.window();
     let words = shown(&window);
-    for wanted in ["Containers", "Images", "Volumes", "Distrobox", "web-frontend", "build-runner"] {
-        assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
+    for wanted in [
+        "Containers",
+        "Images",
+        "Volumes",
+        "Distrobox",
+        "web-frontend",
+        "build-runner",
+    ] {
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "{wanted} shows: {words:?}"
+        );
     }
     assert_eq!(
-        words.iter().filter(|text| text.as_str() == "Containers").count(),
+        words
+            .iter()
+            .filter(|text| text.as_str() == "Containers")
+            .count(),
         2,
         "the window's title and the place name it: {words:?}"
     );
@@ -417,8 +434,17 @@ fn a_chosen_container_shows_its_logs_with_their_severity() {
     let app = Installed::new(READING);
     let window = app.window_showing(&[("chosen", "9f3c1a7be4d2c0118af26b5d4e9f01a2")]);
     let words = shown(&window);
-    for wanted in ["GET / 200", "WARN upstream slow", "ERROR upstream gone", "Error", "Warning"] {
-        assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
+    for wanted in [
+        "GET / 200",
+        "WARN upstream slow",
+        "ERROR upstream gone",
+        "Error",
+        "Warning",
+    ] {
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "{wanted} shows: {words:?}"
+        );
     }
 }
 
@@ -460,8 +486,17 @@ fn the_details_tab_shows_ports_mounts_environment_and_labels() {
         ("tab", "inspect"),
     ]);
     let words = shown(&window);
-    for wanted in ["80/tcp", "8080", "/usr/share/nginx/html", "TZ", "io.tilo.cluster"] {
-        assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
+    for wanted in [
+        "80/tcp",
+        "8080",
+        "/usr/share/nginx/html",
+        "TZ",
+        "io.tilo.cluster",
+    ] {
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "{wanted} shows: {words:?}"
+        );
     }
 }
 
@@ -470,8 +505,16 @@ fn the_images_place_shows_the_images_and_their_verbs() {
     let app = Installed::new(READING);
     let window = app.window_showing(&[("place", "images")]);
     let words = shown(&window);
-    for wanted in ["docker.io/library/nginx:1.27-alpine", "Pull again", "Add a tag", "Pull an image"] {
-        assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
+    for wanted in [
+        "docker.io/library/nginx:1.27-alpine",
+        "Pull again",
+        "Add a tag",
+        "Pull an image",
+    ] {
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "{wanted} shows: {words:?}"
+        );
     }
 }
 
@@ -496,7 +539,10 @@ fn a_computer_without_podman_says_so_and_how_to_try_again() {
     let app = Installed::new(MISSING);
     let window = app.window();
     let words = shown(&window);
-    assert!(words.iter().any(|text| text == "Podman isn't available"), "{words:?}");
+    assert!(
+        words.iter().any(|text| text == "Podman isn't available"),
+        "{words:?}"
+    );
     assert!(words.iter().any(|text| text == "Try again"), "{words:?}");
 }
 
@@ -511,7 +557,10 @@ fn the_draft_is_filled_a_field_at_a_time_and_creates_the_container() {
         ("volumes", "site:/usr/share/nginx/html"),
         ("command", "nginx -g 'daemon off;'"),
     ] {
-        app.call("fill", vec![app.root_value(), Value::text(field), Value::text(text)]);
+        app.call(
+            "fill",
+            vec![app.root_value(), Value::text(field), Value::text(text)],
+        );
     }
     app.call("create_container", vec![app.root_value()]);
     let asked = app.sent.asked("create");
@@ -538,12 +587,20 @@ fn the_draft_is_filled_a_field_at_a_time_and_creates_the_container() {
         ]
     );
     // The form is cleared when the engine took the container.
-    let draft = match app.host.runtime().read(&app.root, "draft").expect("the draft reads") {
+    let draft = match app
+        .host
+        .runtime()
+        .read(&app.root, "draft")
+        .expect("the draft reads")
+    {
         Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target),
         other => panic!("the draft is a record, not {other:?}"),
     };
     assert_eq!(
-        app.host.runtime().read(&draft, "image").expect("the image field"),
+        app.host
+            .runtime()
+            .read(&draft, "image")
+            .expect("the image field"),
         Value::text("")
     );
 }
@@ -565,7 +622,11 @@ fn an_image_is_tagged_and_removed_by_its_verbs() {
     let app = Installed::new(READING);
     app.call(
         "tag_image",
-        vec![app.root_value(), Value::text("nginx:alpine"), Value::text("web:edge")],
+        vec![
+            app.root_value(),
+            Value::text("nginx:alpine"),
+            Value::text("web:edge"),
+        ],
     );
     let tagged = app.sent.asked("tag");
     assert_eq!(tagged[1], Value::text("nginx:alpine"));
@@ -574,7 +635,10 @@ fn an_image_is_tagged_and_removed_by_its_verbs() {
         "prompt_run",
         vec![Value::text("remove-image:nginx:alpine"), Value::text("")],
     );
-    assert_eq!(app.sent.asked("remove-image")[1], Value::text("nginx:alpine"));
+    assert_eq!(
+        app.sent.asked("remove-image")[1],
+        Value::text("nginx:alpine")
+    );
 }
 
 #[test]
@@ -601,7 +665,10 @@ fn a_shell_opens_inside_the_container_and_a_distrobox() {
     assert_eq!(
         app.shells.0.borrow().clone(),
         [
-            ("9f3c1a7be4d2c0118af26b5d4e9f01a2".to_owned(), "podman".to_owned()),
+            (
+                "9f3c1a7be4d2c0118af26b5d4e9f01a2".to_owned(),
+                "podman".to_owned()
+            ),
             ("toolbox".to_owned(), "distrobox".to_owned()),
         ]
     );
@@ -619,7 +686,10 @@ fn assert_number_keys_navigate_sections() {
     ] {
         assert_eq!(app.key_of(action), Some(key), "{action} is on {key}");
         window
-            .invoke(&ActionRef::new(app.action_id(action), vec![app.root_value()]))
+            .invoke(&ActionRef::new(
+                app.action_id(action),
+                vec![app.root_value()],
+            ))
             .unwrap_or_else(|why| panic!("{key} runs: {why}"));
         assert_eq!(
             window.view_state("place"),
@@ -645,7 +715,10 @@ fn assert_number_keys_navigate_sections() {
 #[test]
 fn a_pull_runs_in_the_apps_engine_and_its_output_shows() {
     let app = Installed::new(READING).with_engine();
-    app.call("begin_pull", vec![app.root_value(), Value::text("nginx:alpine")]);
+    app.call(
+        "begin_pull",
+        vec![app.root_value(), Value::text("nginx:alpine")],
+    );
     let asked = app.pulls.asked.borrow().clone();
     assert_eq!(asked.len(), 1);
     assert_eq!(asked[0].0, "so.tilo.containers");
@@ -672,5 +745,8 @@ fn a_pull_runs_in_the_apps_engine_and_its_output_shows() {
     let window = app.window();
     let words = shown(&window);
     assert!(words.iter().any(|text| text == "Done"), "{words:?}");
-    assert!(words.iter().any(|text| text == "The image is ready."), "{words:?}");
+    assert!(
+        words.iter().any(|text| text == "The image is ready."),
+        "{words:?}"
+    );
 }

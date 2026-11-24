@@ -942,7 +942,11 @@ mod cases {
         window.poll_patches().unwrap();
 
         let found = editor.list(&editor.root, "found");
-        assert_eq!(found.len(), 2, "both lines of the file hold the words: {found:?}");
+        assert_eq!(
+            found.len(),
+            2,
+            "both lines of the file hold the words: {found:?}"
+        );
         let code = of_kind(window.tree(), "ui.CodeEditor")
             .into_iter()
             .next()

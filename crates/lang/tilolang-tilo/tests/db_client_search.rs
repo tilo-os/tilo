@@ -2,9 +2,9 @@
 //! columns with the table they are in, and the statements the window ran, each found by its
 //! name. A connection's password is concealed: search neither holds nor finds it.
 
-use tilolang_runtime::Actor;
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilolang_runtime::Actor;
 
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::value::Value;

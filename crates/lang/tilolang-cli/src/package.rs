@@ -215,15 +215,14 @@ fn source_entrypoint(
     package: &DeclaredPackage,
     entry: DeclaredEntrypoint,
 ) -> Result<SourceEntrypoint, String> {
-    let script = entry
-        .script
-        .as_deref()
-        .ok_or_else(|| {
-            fail("a declared entrypoint runs a script; this one names none".to_owned())
-        })?;
-    let runtime = entry
-        .runtime
-        .ok_or_else(|| fail(format!("the script {script:?} needs the runtime that runs it")))?;
+    let script = entry.script.as_deref().ok_or_else(|| {
+        fail("a declared entrypoint runs a script; this one names none".to_owned())
+    })?;
+    let runtime = entry.runtime.ok_or_else(|| {
+        fail(format!(
+            "the script {script:?} needs the runtime that runs it"
+        ))
+    })?;
     let bin = entry.bin.ok_or_else(|| {
         fail(format!(
             "the script {script:?} needs its runtime's interpreter, `bin`"
@@ -247,7 +246,9 @@ fn source_entrypoint(
         }
     }
     if !dir.join(script).is_file() {
-        return Err(fail(format!("the script {script:?} is not a file of the package")));
+        return Err(fail(format!(
+            "the script {script:?} is not a file of the package"
+        )));
     }
     if !package
         .optional_runtimes
@@ -273,7 +274,11 @@ fn source_net(net: &DeclaredNet) -> Result<SourceNet, String> {
         "off" => "off",
         "host" => "host",
         "allowlist" => "allowlist",
-        other => return Err(format!("`[sandbox.net] mode = {other:?}` is not off, host or allowlist")),
+        other => {
+            return Err(format!(
+                "`[sandbox.net] mode = {other:?}` is not off, host or allowlist"
+            ));
+        }
     };
     if mode == "allowlist" && net.hosts.is_empty() {
         return Err("`[sandbox.net] mode = \"allowlist\"` names no host".to_owned());
@@ -512,13 +517,14 @@ fn sandbox(
     releases: bool,
 ) -> SandboxPlan {
     let (required, optional) = capabilities(origins, uses_files, engine.is_some(), web, releases);
-    let plan = |required, optional, namespaces: &[&'static str], net: String, seccomp| SandboxPlan {
-        required,
-        optional,
-        namespaces: namespaces.to_vec(),
-        net,
-        seccomp,
-    };
+    let plan =
+        |required, optional, namespaces: &[&'static str], net: String, seccomp| SandboxPlan {
+            required,
+            optional,
+            namespaces: namespaces.to_vec(),
+            net,
+            seccomp,
+        };
     if engine.is_some() {
         // A page runs in this device's engine, which keeps its own processes and speaks to the
         // web: the launcher grants it the web engine's confinement, which is the JIT a renderer
@@ -657,7 +663,12 @@ fn services_block(program: Option<&SourceProgram>) -> String {
     }
     services.push_str("\n# What the package's own program needs of this device's services.");
     for (name, requirement) in declared {
-        let _ = write!(services, "\n{} = {}", toml_string(name), toml_string(requirement));
+        let _ = write!(
+            services,
+            "\n{} = {}",
+            toml_string(name),
+            toml_string(requirement)
+        );
     }
     services
 }
@@ -1337,19 +1348,13 @@ fn assembled(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<A
 /// sources or what a build writes. The SDK's native addon is not a file of a package: the runtime
 /// package ships it (`node_modules/tilo-sdk-native`), so a copy beside an app would be a second
 /// one.
-fn program_files(
-    dir: &Path,
-    program: &SourceProgram,
-) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+fn program_files(dir: &Path, program: &SourceProgram) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     let Some(entry) = &program.entrypoint else {
         return Ok(Vec::new());
     };
     let mut files = Vec::new();
     collect_program_files(dir, dir, &mut files)?;
-    if !files
-        .iter()
-        .any(|(relative, _)| relative == &entry.script)
-    {
+    if !files.iter().any(|(relative, _)| relative == &entry.script) {
         return Err(format!(
             "{}: the script {} is not a file of the package",
             dir.join("app.toml").display(),
@@ -1416,7 +1421,9 @@ fn is_language_source(relative: &Path) -> bool {
             return true;
         }
     }
-    relative.extension().is_some_and(|extension| extension == "tl")
+    relative
+        .extension()
+        .is_some_and(|extension| extension == "tl")
 }
 
 /// Whether `relative` is the SDK's native addon, which the runtime package ships.
@@ -1492,11 +1499,7 @@ pub fn published(
 }
 
 /// SHA-256 (hex) of a manifest, the bundle staged with it and the program's files.
-fn digest(
-    manifest: &str,
-    bundle: &Bundle,
-    files: &[(PathBuf, PathBuf)],
-) -> Result<String, String> {
+fn digest(manifest: &str, bundle: &Bundle, files: &[(PathBuf, PathBuf)]) -> Result<String, String> {
     use sha2::Digest as _;
     let mut hasher = sha2::Sha256::new();
     for part in [
@@ -1572,10 +1575,7 @@ mod tests {
             "required = [\"network.http\", \"files.open\"]\noptional = [\"account-sign-ins\"]"
         );
         assert_eq!(
-            text(
-                vec!["secrets".to_owned()],
-                vec!["network.http".to_owned()]
-            ),
+            text(vec!["secrets".to_owned()], vec!["network.http".to_owned()]),
             "required = [\"secrets\"]\noptional = [\"network.http\"]",
             "a declared program adds its own capabilities, each once"
         );
@@ -1585,7 +1585,13 @@ mod tests {
                 .contains("\"files.open\"")
         );
         // A package showing a page names its engine and the confinement the launcher runs it in.
-        let page = sandbox(&[], false, Some("tilo-runtime/2026.10.23-chromium"), &[], false);
+        let page = sandbox(
+            &[],
+            false,
+            Some("tilo-runtime/2026.10.23-chromium"),
+            &[],
+            false,
+        );
         assert!(page.capabilities().contains("\"webview\""));
         assert!(page.namespaces().contains("\"net\""));
         assert_eq!(page.seccomp, "tilo-web-engine");

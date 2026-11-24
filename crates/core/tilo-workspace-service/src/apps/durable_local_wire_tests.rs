@@ -679,15 +679,10 @@ async fn durable_admission_rechecks_original_ownership_after_the_directory_answe
                         rig.worker.client.abort();
                         let _ = (&mut rig.worker.server).await;
                         let _ = (&mut rig.worker.client).await;
-                        rig.worker = join_worker(
-                            &rig.state,
-                            &rig.directories,
-                            &env.route,
-                            &env.cert,
-                            903,
-                        )
-                        .await
-                        .0;
+                        rig.worker =
+                            join_worker(&rig.state, &rig.directories, &env.route, &env.cert, 903)
+                                .await
+                                .0;
                     }
                     "stream" => {
                         drop(rig.stream.take());

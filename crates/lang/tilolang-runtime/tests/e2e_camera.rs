@@ -27,8 +27,10 @@ mod cases {
         }
 
         fn reads(&self, code: &str) {
-            *self.codes.borrow_mut() =
-                format!(r#"{{"codes":[{{"text":{},"x":0.1,"y":0.1,"w":0.2,"h":0.2}}]}}"#, json_text(code));
+            *self.codes.borrow_mut() = format!(
+                r#"{{"codes":[{{"text":{},"x":0.1,"y":0.1,"w":0.2,"h":0.2}}]}}"#,
+                json_text(code)
+            );
         }
 
         fn asked(&self) -> Vec<String> {
@@ -146,7 +148,11 @@ mod cases {
 
         fn view(&self, name: &str) -> tilolang_runtime::ViewInstance {
             self.rt
-                .open_view(&me(), &self.app.view(name), vec![Value::resource(&self.root)])
+                .open_view(
+                    &me(),
+                    &self.app.view(name),
+                    vec![Value::resource(&self.root)],
+                )
                 .unwrap()
         }
     }
