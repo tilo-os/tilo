@@ -320,9 +320,14 @@ action open_window(resource: host.Resource) {
         }
 
         fn window(&self, view: &str, args: Vec<Value>) -> ViewInstance {
-            self.rt
+            let mut window = self
+                .rt
                 .open_view(&me(), &self.app.view(view), args)
-                .unwrap()
+                .unwrap();
+            // The shelf is a virtual grid: its cards are built when a host shows them, so a
+            // test that reads the tree reads every one.
+            window.set_lazy_rows(false).unwrap();
+            window
         }
 
         fn book_window(&self, book: &ResourceRef) -> ViewInstance {
