@@ -579,6 +579,9 @@ view bar_search(w: device.Window) {
         } else {
             "Search this window"
         }) {
+            // Every word reaches the window's app as it is typed, so what it shows narrows with
+            // the search; Enter asks for it again with the query it holds.
+            on change: session.bar_search(tab: w.key, query: query)
             on submit: session.bar_search(tab: w.key, query: query)
         }
         ui.Button("Previous match", icon: .arrow_up, icon_only: true, role: .plain) {
