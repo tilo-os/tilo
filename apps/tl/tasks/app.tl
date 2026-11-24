@@ -226,7 +226,7 @@ type Task {
     /// The task it is a subtask of, to any depth; none for a task of its own.
     parent: Option<Task> = .none
     /// Files attached to it.
-    attachments: Collection<File>
+    attachments: List<File>
     /// Where it was first written, when it was moved here from another tracker.
     origin: Option<Origin> = .none
     /// The page it is read at elsewhere.
@@ -868,12 +868,12 @@ action attach(t: Task, file: File) (
     label: "Attach file",
     did: "attached a file",
 ) {
-    t.attachments.insert(file)
+    t.attachments = [t.attachments, [file]].flat_map(x -> x)
 }
 
 /// Takes an attachment off a task.
 action detach(t: Task, attachment: File) (icon: .x, label: "Remove attachment") {
-    t.attachments.remove(attachment)
+    t.attachments = t.attachments.filter(a -> a.name != attachment.name)
 }
 
 /// Opens the attachment `attachment` in the app that opens its kind: the file a task holds
@@ -904,7 +904,7 @@ action import_files(files: List<File>, p: Option<Project> = .none) -> List<Task>
         if not known {
             tasks.numbers += 1
             let task = tasks.items.insert(Task(number: tasks.numbers, title: file.name, project: p))
-            task.attachments.insert(file)
+            task.attachments = [task.attachments, [file]].flat_map(x -> x)
             made = [made, [task]].flat_map(x -> x)
         }
     }
@@ -1314,7 +1314,7 @@ action share_with(to: Task, from: Task) (did: "copied a task") {
         to.labels.add(l)
     }
     for a in from.attachments {
-        to.attachments.insert(a)
+        to.attachments = [to.attachments, [a]].flat_map(x -> x)
     }
     for r in from.related {
         to.related.insert(r)
