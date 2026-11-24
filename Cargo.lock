@@ -13385,6 +13385,7 @@ dependencies = [
  "tilo-actions",
  "tilo-agent-provider-config",
  "tilo-app",
+ "tilo-app-fleet",
  "tilo-app-id",
  "tilo-automerge-fork",
  "tilo-default-apps",

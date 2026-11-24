@@ -1778,7 +1778,7 @@ version = 1
 fields = [
   { path = "bindings", type = { list = { named = "ShortcutChord" } }, readonly = true },
   { path = "actions", type = { list = { named = "ActionShortcut" } }, readonly = true },
-  { path = "commands", type = { list = { named = "MovedCommand" } }, readonly = true },
+  { path = "commands", type = { list = { named = "AppCommand" } }, readonly = true },
 ]
 
 [[resources.types]]
@@ -1789,11 +1789,15 @@ fields = [
 ]
 
 [[resources.types]]
-name = "MovedCommand"
+name = "AppCommand"
 fields = [
   { name = "app", type = "text" },
+  { name = "app_name", type = "text" },
   { name = "action", type = "text" },
+  { name = "label", type = "text" },
+  { name = "usual", type = "text" },
   { name = "chord", type = "text" },
+  { name = "moved", type = "bool" },
 ]
 
 [[resources.types]]

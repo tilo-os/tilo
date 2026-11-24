@@ -6,6 +6,7 @@ view shortcuts_pane() {
     state chord: Text = ""
     state command_app: Text = ""
     state command_action: Text = ""
+    state command_label: Text = ""
     state command_chord: Text = ""
     let table = settings.shortcuts_table
     ui.Section("The desktop's shortcuts") {
@@ -42,34 +43,43 @@ view shortcuts_pane() {
             secondary: true,
         )
     }
-    ui.Section("App commands on other keys") {
-        if table.commands.is_empty() {
-            ui.Text(
-                "Every app command is on the keys its app gives it.",
-                role: .caption,
-                secondary: true,
-            )
-        }
-        for moved in table.commands {
+    ui.Section("App commands") {
+        for command in table.commands {
             ui.ListRow(
-                moved.action,
-                secondary: if moved.chord != "" {
-                    "{moved.app} · {moved.chord}"
-                } else { "{moved.app} · No keys" },
+                "{command.app_name}: {command.label}",
+                secondary: command_keys(command.chord, command.usual, command.moved),
                 icon: .command,
-            )
-            ui.Button("Its usual keys", size: .small) {
-                on press: settings.reset_command(
-                    settings.shortcuts,
-                    app: moved.app,
-                    action: moved.action,
-                )
+            ) {
+                trailing: {
+                    row(gap: .related, align: .center) {
+                        ui.Button("Move", size: .small) {
+                            on press: set(command_app, command.app)
+                                .then(
+                                    set(command_action, command.action),
+                                )
+                                .then(
+                                    set(command_label, "{command.app_name}: {command.label}"),
+                                )
+                        }
+                        if command.moved {
+                            ui.Button("Its usual keys", size: .small) {
+                                on press: settings.reset_command(
+                                    settings.shortcuts,
+                                    app: command.app,
+                                    action: command.action,
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
     ui.Section("Move an app command") {
-        ui.TextInput(bind: command_app, placeholder: "The app, such as so.tilo.mail")
-        ui.TextInput(bind: command_action, placeholder: "The command, such as send")
+        ui.Text(
+            if command_label == "" { "Choose a command above with Move." } else { command_label },
+            secondary: command_label == "",
+        )
         ui.ShortcutRecorder(bind: command_chord, label: "The keys it stands on")
         row(gap: .related, align: .center, wrap: true) {
             ui.Button("Put it on these keys", role: .primary) {
@@ -100,6 +110,13 @@ view shortcuts_pane() {
             on press: settings.reset_all(settings.shortcuts)
         }
     }
+}
+
+/// Where an app command is now: its keys, or none, and the keys its app gives it when the person
+/// moved it.
+fn command_keys(chord: Text, usual: Text, moved: Bool) -> Text {
+    let now = if chord == "" { "No keys" } else { chord }
+    if moved and usual != "" { "{now} (usually {usual})" } else { now }
 }
 
 /// What a shortcut is called, in words.

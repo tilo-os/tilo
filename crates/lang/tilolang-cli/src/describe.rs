@@ -62,6 +62,9 @@ pub struct FleetEntry {
     pub resource_types: Vec<(String, String)>,
     /// The actions it offers while closed.
     pub offers: Vec<FleetOffer>,
+    /// Every action its windows run on keys, with the keys it declares: what a person picks from
+    /// to move one to other keys.
+    pub commands: Vec<FleetCommand>,
     /// The kind of the record a window of it opens.
     pub window_kind: String,
     /// Whether a window of it is the person's own, never on a shared desktop.
@@ -92,6 +95,16 @@ pub struct FleetOffer {
     pub asks: Vec<FleetAsked>,
     pub keywords: Vec<String>,
     pub icon: String,
+}
+
+/// One action a window of the app runs on keys (`key: "Ctrl+Enter"`).
+#[derive(Debug, Serialize)]
+pub struct FleetCommand {
+    /// The action's id, as it is published and as a moved command names it.
+    pub action: String,
+    pub label: String,
+    /// The keys the app gives it.
+    pub key: String,
 }
 
 /// One value an offer asks for.
@@ -165,12 +178,28 @@ pub fn fleet(dir: &Path, search: &[PathBuf]) -> Result<Option<FleetEntry>, Strin
         keywords,
         resource_types,
         offers: offers(meta),
+        commands: commands(meta),
         window_kind: meta.resource_type(),
         windows_personal: meta.windows_are_personal(),
         window_documents: meta.windows_hold_documents(),
         surface: String::from_utf8_lossy(&surface).into_owned(),
         previously: meta.previously.clone(),
     }))
+}
+
+/// The actions of `meta` its windows run on keys, in the order the app declares them.
+fn commands(meta: &PackageMeta) -> Vec<FleetCommand> {
+    meta.actions
+        .iter()
+        .filter(|action| !action.scenario)
+        .filter_map(|action| {
+            Some(FleetCommand {
+                action: tilolang_tilo::meta::published_name(action).to_owned(),
+                label: action.label.clone(),
+                key: action.key.clone()?,
+            })
+        })
+        .collect()
 }
 
 /// The actions `meta` offers while it is closed: each primary action, and each action on the

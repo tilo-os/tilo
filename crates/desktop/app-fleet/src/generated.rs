@@ -416,6 +416,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[],
         offers: "discord.guild\t\tsend\tSend a message\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tedit\tEdit a message\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tdelete\tDelete a message\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\treact\tAdd a reaction\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tunreact\tRemove a reaction\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tstart-thread\tStart a thread\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tcreate-webhook\tCreate a webhook\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tapply-channel\tApply a channel\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tdelete-channel\tDelete a channel\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tarrange-channels\tArrange channels\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tapply-role\tApply a role\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tdelete-role\tDelete a role\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tset-member-roles\tSet member roles\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tkick\tKick a member\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tban\tBan a member\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tunban\tUnban a member\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tset-overwrite\tSet a permission override\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tfetch-asset\tCopy a file from Discord\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tbegin-connect\tStart linking your account\t\tundoable\tdocument\t0\tstate_sha256\t\t\ndiscord.guild\t\tcomplete-link\tLink the offered account\t\tundoable\tdocument\t0\tproof\t\t\ndiscord.guild\t\tset-sign-in\tOffer signing in with Discord\t\tundoable\tdocument\t0\tpage\t\t\ndiscord.guild\t\tanswer-interaction\tAnswer a slash command\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tunlink\tUnlink an account\t\tundoable\tdocument\t0\tdiscord_user\t\t\ndiscord.guild\t\tblock-persona\tBlock a user\t\tundoable\tdocument\t0\tdiscord_user\t\t\ndiscord.guild\t\tunblock-persona\tUnblock a user\t\tundoable\tdocument\t0\tdiscord_user\t\t\ndiscord.guild\t\tfinish-import\tFinish importing a server\t\tundoable\tdocument\t0\ttilo_only\t\t\ndiscord.guild\t\tapply-emoji\tApply an emoji\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tdelete-emoji\tDelete an emoji\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\treport-voice\tReport voice support\t\tundoable\tdocument\t0\tproblem\t\t\ndiscord.guild\t\tconnect-account\tConnect my account\t\tundoable\teffect\t0\t\t\t\ndiscord.guild\t\tlink-offer\tRead a link offer\t\tread\teffect\t0\ttoken\t\t\ndiscord.guild\t\taccept-link\tLink the offered account\t\tundoable\teffect\t0\ttoken\t\t\ndiscord.guild\t\tunlink-mine\tUnlink my account\t\tundoable\teffect\t0\t\t\t\ndiscord.guild\t\tset-bot-token\tSet bot token\t\toutside\teffect\t1\ttoken\t\t\ndiscord.guild\t\tfind-servers\tFind the bot's servers\t\toutside\teffect\t0\ttoken\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.messages",
@@ -438,6 +439,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.poker",
@@ -460,6 +462,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[],
         offers: "so.tilo.poker.table\t\tsit\tTake a seat\t\tundoable\tdocument\t0\tseat\t\t\nso.tilo.poker.table\t\tleave\tLeave table\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\tdeal\tDeal\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\tfold\tFold\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\tcall\tCall\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\traise\tRaise\t\tundoable\tdocument\t0\tto\t\t\nso.tilo.poker.table\t\tall-in\tAll in\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\tshow\tShow cards\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\tskip\tFold idle player\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\trebuy\tBuy back in\t\tundoable\tdocument\t0\t\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.remote",
@@ -489,6 +492,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[],
         offers: "remote.connection-list\t\tshow-connections\tShow connections\t\tread\tview\t0\t\t\t\nremote.connection-list\t\tnew\tNew connection\t\tread\tview\t0\t\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.slides",
@@ -517,6 +521,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[("slides.deck", "Deck")],
         offers: "slides.deck\t\tadd-slide\tAdd slide\t\tundoable\tdocument\t0\ttitle\t\t\nslides.deck\t\tadd-slides\tAdd slides\t\tundoable\tdocument\t0\tslides\t\t\nslides.deck\t\teditor\tShow editor\t\tread\tview\t0\t\t\t\nslides.deck\t\toverview\tShow slide overview\t\tread\tview\t0\t\t\t\nslides.deck\t\tpresent\tStart presentation\t\tread\tview\t0\t\t\t\nslides.deck\t\tpresent-largest-external\tPresent on largest external display\t\tread\tview\t0\t\t\t\nslides.deck\t\tpresent-primary-external\tPresent on primary external display\t\tread\tview\t0\t\t\t\nslides.deck\t\tend-presentation\tEnd presentation\t\tread\tview\t0\t\t\t\nslides.deck\t\tshow-slide-list\tShow slide list\t\tread\tview\t0\tshown\t\t\nslides.deck\t\tshow-properties\tShow properties\t\tread\tview\t0\tshown\t\t\nslides.deck\t\topen-slide\tOpen slide\t\tread\tview\t0\tslide\t\t\nslides.deck\t\topen-notes\tOpen speaker notes\t\tread\tview\t0\tslide\t\t\nslides.deck\t\tinsert-picture\tInsert picture\t\toutside\teffect\t0\t\t\t\nslides.deck\t\topen-presentation\tOpen presentation\t\toutside\teffect\t1\t\t\t\nslides.deck\t\tsave-as\tSave presentation\t\toutside\teffect\t0\t\t\t\nslides.deck\t\tread-deck\tRead deck as text\t\tread\teffect\t0\t\t\t\nslides.deck\t\texport-pptx-content\tExport presentation as content\t\tread\teffect\t0\t\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.terminal",
@@ -549,6 +554,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[],
         offers: "terminal.session\t\trun\tRun command\t\toutside\tdocument\t0\tcommand\t\t\nterminal.session\t\tstop\tStop command\t\tundoable\tdocument\t0\t\tstop\u{1f}cancel\u{1f}interrupt\u{1f}ctrl c\t\nterminal.session\t\topen-terminal\tOpen on a terminal\t\toutside\tdocument\t0\tcols\topen terminal\u{1f}interactive shell\u{1f}attach\t\nterminal.session\t\trecord-target\tRecord where the session runs\t\tundoable\tdocument\t0\ttarget\t\t\nterminal.session\t\trecord-relay-session\tRecord the reattached session\t\tundoable\tdocument\t0\tsession\t\t\nterminal.session\t\tclaim-pane\tClaim a pane\t\tundoable\tdocument\t0\tpane\t\t\nterminal.session\t\tinspect-session\tInspect session\t\tread\teffect\t0\t\t\t\nterminal.session\t\tread-screen\tRead output\t\tread\teffect\t0\t\t\t\nterminal.session\t\tinspect-editor\tInspect field\t\tread\teffect\t0\t\t\t\nterminal.session\t\topen-in\tOpen in…\t\toutside\teffect\t1\ttarget\t\t\nterminal.session\t\tcreate-environment\tNew environment\t\toutside\teffect\t1\tname\tnew container\u{1f}new sandbox\t\nterminal.session\t\tcopy-visible\tCopy visible output\t\tread\teffect\t1\t\tcopy output\u{1f}copy screen\t\nterminal.session\t\tcopy-selection\tCopy selected output\t\tread\teffect\t1\t\t\t\nterminal.session\t\tselect-all\tSelect all output\t\tread\teffect\t1\t\t\t\nterminal.session\t\thistory-top\tShow oldest output\t\tread\teffect\t0\t\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.totp",
@@ -580,6 +586,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[],
         offers: "totp.vault\t\tadd-account\tAdd account\t\tread\teffect\t0\t\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.activity",
@@ -606,6 +613,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[("tl.so.tilo.activity.Window", "Window")],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.api-tester",
@@ -638,6 +646,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.api-tester.Replay", "Replay"),
         ],
         offers: "tl.so.tilo.api-tester.Workspace\t\tnew_request\tNew request\tStarts a blank request in the builder, leaving the one it held.\tundoable\tdocument\t0\t\t\tplus\ntl.so.tilo.api-tester\t\tforget_value\tForget value\tTakes a stored value off this device.\tread\teffect\t0\treference\u{1d}text\u{1d}Reference\t\ttrash\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.backups",
@@ -673,6 +682,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.backups.Checked", "Checked"),
         ],
         offers: "tl.so.tilo.backups.Backups\t\trefresh\tLook again\tLooks at the repository again: the source, the destination and the snapshots it holds.\tundoable\tdocument\t0\t\t\trefresh\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.lang.board",
@@ -687,6 +697,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.lang.board.Column", "Column"),
         ],
         offers: "tl.so.tilo.lang.board.Board\t\tnew_column\tNew column\tAdds a column at the right of the board.\tundoable\tdocument\t0\t\t\tplus\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.browser",
@@ -743,6 +754,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.browser.Answer", "Answer"),
         ],
         offers: "tl.so.tilo.browser.Browser\t\tnew_page\tNew page\tOpens a page in a window of its own. Every window of the app is one page; what it shows, its\tundoable\tdocument\t0\t\t\tplus\ntl.so.tilo.browser\t\topen_download\tOpen the download\tOpens a saved download in the app that opens its kind, through the system's one open.\tread\teffect\t0\tname\u{1d}text\u{1d}Name\u{1e}path\u{1d}text\u{1d}Path\t\texternal-link\ntl.so.tilo.browser\t\treveal_download\tShow the download in Files\tShows where a saved download stands in Files, with the file marked: the system's one place for\tundoable\teffect\t0\tpath\u{1d}text\u{1d}Path\t\tfolder\ntl:so.tilo.browser:root-hh26i3w2\ttl.so.tilo.browser.Browser\topen-link\tOpen link\t\tread\tview\t0\tlink\u{1d}text\u{1d}\t\t\n",
+        commands: "new_page\tNew page\tt\nnew_private_page\tNew private window\tCtrl+Shift+p\nprint_page\tPrint\tCtrl+p\nadd_address\tAdd an address\tn\n",
     },
     FleetApp {
         id: "so.tilo.calculator",
@@ -775,6 +787,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.calculator.Surface", "Surface"),
         ],
         offers: "tl.so.tilo.calculator.Calculator\t\tcalculate\tCalculate\tWorks out an expression and keeps the result in the record. The result is checked here, where\tundoable\tdocument\t0\texpr\u{1d}text\u{1d}Expr\t\thash\ntl.so.tilo.calculator\t\tcopy_text\tCopy\tPuts `text` on the person's clipboard, as the system's copy does.\toutside\teffect\t0\ttext\u{1d}text\u{1d}Text\t\tcopy\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.calendar",
@@ -816,6 +829,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.calendar.Moment", "Moment"),
         ],
         offers: "tl.so.tilo.calendar.Calendars\t\tnew_event\tNew event\tStarts an event on a day the person points at, at nine in the morning for an hour, or at\tundoable\tdocument\t0\t\t\tplus\n",
+        commands: "new_event\tNew event\tCtrl+n\nnew_task\tNew task\tCtrl+Shift+n\nremove\tDelete event\tdelete\n",
     },
     FleetApp {
         id: "so.tilo.camera",
@@ -885,6 +899,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.camera.Email", "Email"),
         ],
         offers: "tl.so.tilo.camera\t\topen_photos\tOpen photos\tOpens the library the captures go to.\toutside\teffect\t0\t\t\t\ntl.so.tilo.camera\t\topen_camera_privacy\tOpen camera privacy\tOpens this device's camera privacy settings.\toutside\teffect\t0\t\t\t\n",
+        commands: "shutter\tShutter\tspace\n",
     },
     FleetApp {
         id: "so.tilo.canvas",
@@ -946,6 +961,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.canvas.CompareAsk", "Compare ask"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.chat",
@@ -989,6 +1005,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.chat.Example", "Example"),
         ],
         offers: "tl.so.tilo.chat.Conversations\t\tnew_channel\tNew channel\tAdds a text channel to the sidebar, under `category` when it is given and about `topic` when\tundoable\tdocument\t0\t\t\tplus\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.chip-design",
@@ -1047,6 +1064,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.chip-design.OutcomeOf", "Outcome of"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.clocks",
@@ -1084,6 +1102,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.clocks.Stopwatch", "Stopwatch"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.code-editor",
@@ -1151,6 +1170,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.code-editor.Settings", "Settings"),
         ],
         offers: "tl.so.tilo.code-editor.Project\t\tnew_file\tNew file\tStarts a file called `name` in `folder`, holding `text`: what a person types in the project,\tundoable\tdocument\t0\t\t\tfile-plus\n",
+        commands: "new_file\tNew file\tCtrl+n\ndelete\tDelete\tdelete\nsave_all\tSave all\tCtrl+Alt+s\nshow_problems\tShow the problems\tCtrl+Shift+m\nshow_terminal\tShow the terminal\tCtrl+j\nshow_search_results\tShow the search results\tCtrl+Shift+f\n",
     },
     FleetApp {
         id: "so.tilo.console",
@@ -1183,6 +1203,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.console.Window", "Window"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.contacts",
@@ -1214,6 +1235,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.contacts.Book", "Book"),
         ],
         offers: "tl.so.tilo.contacts.Book\t\tnew_contact\tNew contact\tA new contact, named by what is typed where they were made; a book's entry gives the name\tundoable\tdocument\t0\t\t\tplus\n",
+        commands: "new_contact\tNew contact\tCtrl+n\ndelete\tDelete\tdelete\n",
     },
     FleetApp {
         id: "so.tilo.containers",
@@ -1240,6 +1262,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.containers.JobState", "Job state"),
         ],
         offers: "tl.so.tilo.containers\t\topen_shell\tOpen shell\tOpens a shell in a running container: podman's, in the Tilo terminal.\tread\teffect\t0\tcontainer\u{1d}text\u{1d}Container\t\t\ntl.so.tilo.containers\t\tenter_box\tEnter box\tOpens a shell in a distrobox.\tread\teffect\t0\tbox\u{1d}text\u{1d}Box\t\t\ntl.so.tilo.containers\t\tprompt_run\tPrompt run\tRuns what the prompt asked, once the person pressed its verb.\toutside\teffect\t0\tprompt\u{1d}text\u{1d}Prompt\u{1e}typed\u{1d}text\u{1d}Typed\t\t\ntl.so.tilo.containers\t\tconfirm_run\tConfirm run\tDoes what the confirmation named.\toutside\teffect\t0\tconfirm\u{1d}text\u{1d}Confirm\t\t\n",
+        commands: "show_containers\tShow containers\t1\nshow_images\tShow images\t2\nshow_volumes\tShow volumes\t3\nshow_distrobox\tShow distroboxes\t4\nnew_container_form\tNew container\tn\n",
     },
     FleetApp {
         id: "so.tilo.lang.counter",
@@ -1251,6 +1274,7 @@ pub(super) const APPS: &[FleetApp] = &[
         keywords: &[],
         resource_types: &[],
         offers: "tl.so.tilo.lang.counter.Counter\t\tincrement\tIncrement\tAdd one to the counter.\tundoable\tdocument\t0\t\t\tplus\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.db-client",
@@ -1302,6 +1326,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.db-client.Handle", "Handle"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.diffmerge",
@@ -1352,6 +1377,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.diffmerge.SampleMerge", "Sample merge"),
         ],
         offers: "",
+        commands: "save_merged\tSave merged result\tCtrl+s\n",
     },
     FleetApp {
         id: "so.tilo.discord.preview",
@@ -1414,6 +1440,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.discord.preview.VoicePair", "Voice pair"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.lang.discussion",
@@ -1429,6 +1456,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.lang.discussion.Comments", "Comments"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.disk-usage",
@@ -1473,6 +1501,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.disk-usage.ScanState", "Scan state"),
         ],
         offers: "tl.so.tilo.disk-usage.Analyzer\t\tchoose\tChoose a folder\tAsks the person which folder to measure, showing the folders of this device.\tundoable\tdocument\t0\t\t\tfolder-open\ntl.so.tilo.disk-usage\t\topen_disks\tOpen Disks\tOpens the Disks app, where the device's drives and their use are.\toutside\teffect\t0\t\t\thard-drive\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.disks",
@@ -1496,6 +1525,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[],
         offers: "tl.so.tilo.disks\t\tformat_device\tFormat device\tErases the device the confirmation named, and writes the chosen filesystem.\toutside\teffect\t0\tdevice_name\u{1d}text\u{1d}Device name\u{1e}filesystem\u{1d}text\u{1d}Filesystem\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.ebook",
@@ -1540,6 +1570,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.ebook.Highlight", "Highlight"),
         ],
         offers: "tl.so.tilo.ebook\t\tcopy_passage\tCopy the passage\tCopies a passage, so it can be pasted anywhere: what a selection's Copy does.\toutside\teffect\t0\ttext\u{1d}text\u{1d}Text\t\tcopy\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.feeds",
@@ -1585,6 +1616,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.feeds.OpmlText", "Opml text"),
         ],
         offers: "tl.so.tilo.feeds.Library\t\tadd_subscription\tAdd subscription\tSubscribes to a feed's address, or shows the subscription this library already has.\tundoable\tdocument\t0\turl\u{1d}text\u{1d}Url\t\tplus\n",
+        commands: "mark_read\tMark all as read\ta\nrefresh\tRefresh all feeds\tr\n",
     },
     FleetApp {
         id: "so.tilo.file-explorer",
@@ -1620,6 +1652,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.file-explorer.Crumb", "Crumb"),
         ],
         offers: "",
+        commands: "refresh\tRefresh\tCtrl+r\ntrash_entries\tMove to Trash\tdelete\npaste\tPaste\tCtrl+v\n",
     },
     FleetApp {
         id: "so.tilo.firewall",
@@ -1650,6 +1683,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.firewall.ServiceDef", "Service def"),
         ],
         offers: "tl.so.tilo.firewall\t\tload_blocked\tShow dropped traffic\tReads what the kernel dropped in the last hour.\tread\teffect\t0\t\t\tshield-alert\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.lang.gallery",
@@ -1670,6 +1704,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.lang.gallery.Pinned", "Pinned"),
         ],
         offers: "tl.so.tilo.lang.gallery\t\tmark_chosen\tMark chosen\tNote the cells the sheet chose, in the page's answer.\tread\teffect\t0\tlast\u{1d}text\u{1d}Last\u{1e}chosen\u{1d}text\u{1d}Chosen\t\t\ntl.so.tilo.lang.gallery\t\tmark_key\tMark key\tNote the key the grid was given, in the page's answer.\tread\teffect\t0\tlast\u{1d}text\u{1d}Last\u{1e}pressed\u{1d}text\u{1d}Pressed\t\t\ntl.so.tilo.lang.gallery\t\tmark_wheel\tMark wheel\tNote the rows the grid scrolled by, in the page's answer.\tread\teffect\t0\tlast\u{1d}text\u{1d}Last\u{1e}rows\u{1d}integer\u{1d}Rows\t\t\ntl.so.tilo.lang.gallery\t\tmark_row\tMark row\tNote the row the diff grid was pressed on, in the page's answer.\tread\teffect\t0\tlast\u{1d}text\u{1d}Last\u{1e}row\u{1d}integer\u{1d}Row\t\t\ntl.so.tilo.lang.gallery\t\tpicture_from\tPicture from\tA page shown in a picture, from the first to the last.\tread\teffect\t0\tfirst\u{1d}integer\u{1d}First\t\t\ntl.so.tilo.lang.gallery\t\tmark_page\tMark page\tNote the page the rail chose, in the window's last answer.\tread\teffect\t0\tlast\u{1d}text\u{1d}Last\u{1e}index\u{1d}integer\u{1d}Index\t\t\ntl.so.tilo.lang.gallery\t\tmark_move\tMark move\tNote where a page moved to, in the window's last answer.\tread\teffect\t0\tlast\u{1d}text\u{1d}Last\u{1e}index\u{1d}integer\u{1d}Index\u{1e}at\u{1d}integer\u{1d}At\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.git-client",
@@ -1733,6 +1768,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.git-client.RemoteAsk", "Remote ask"),
         ],
         offers: "",
+        commands: "stage_all\tStage all\tShift+s\ncommit\tCommit staged changes\tCtrl+enter\n",
     },
     FleetApp {
         id: "so.tilo.hex-editor",
@@ -1782,6 +1818,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.hex-editor.SavedAnswer", "Saved answer"),
         ],
         offers: "",
+        commands: "new_buffer\tNew empty file\tCtrl+n\nsave\tSave\tCtrl+s\ncopy\tCopy\tCtrl+c\ncut\tCut\tCtrl+x\npaste\tPaste\tCtrl+v\nstart_search\tFind bytes\tCtrl+f\nstart_replace\tFind and replace\tCtrl+h\nstart_goto\tGo to offset\tCtrl+g\ntoggle_inspector\tShow or hide the inspector\tCtrl+i\n",
     },
     FleetApp {
         id: "so.tilo.logs",
@@ -1809,6 +1846,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.logs.ExportField", "Export field"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.mail",
@@ -1851,6 +1889,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.mail.Draft", "Draft"),
         ],
         offers: "tl.so.tilo.mail.Account\t\tnew_message\tNew message\tStarts a message from the account.\tundoable\tdocument\t0\t\t\tpencil\ntl.so.tilo.mail.Mail\t\tnew_draft\tNew message\tStarts a message. A message is written before the workspace has an account to send it from:\tundoable\tdocument\t0\t\t\tpencil\ntl.so.tilo.mail.Thread\t\treply\tReply\tAnswers the conversation's newest message, to whoever wrote it, quoting it under what is\tundoable\tdocument\t0\t\t\treply\ntl.so.tilo.mail.Draft\t\tsend\tSend\tSends the message from its account. It leaves the system, so it goes once, and waits in the\toutside\teffect\t0\t\t\tsend\n",
+        commands: "check_now\tCheck now\tf5\nnew_draft\tNew message\tCtrl+n\nreply\tReply\tr\nreply_all\tReply all\ta\nforward\tForward\tf\narchive\tArchive\te\nto_inbox\tMove to inbox\ti\ndelete\tDelete\t#\nflag\tFlag\ts\nmark_read\tMark as unread\tu\nsend\tSend\tCtrl+enter\n",
     },
     FleetApp {
         id: "so.tilo.maps",
@@ -1902,6 +1941,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.maps.Pois", "Pois"),
         ],
         offers: "tl:so.tilo.maps:root-xlmztacf\ttl.so.tilo.maps.Atlas\topen-link\tOpen link\t\tread\tview\t0\tlink\u{1d}text\u{1d}\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.migrate",
@@ -1935,6 +1975,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.migrate.Migration", "Migration"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.monitor",
@@ -1963,6 +2004,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.monitor.Monitor", "Monitor"),
         ],
         offers: "tl.so.tilo.monitor\t\tend_app\tEnd app\tAsks every process of an app to close.\toutside\teffect\t0\tapplication\u{1d}text\u{1d}Application\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.music",
@@ -2013,6 +2055,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.music.Library", "Library"),
         ],
         offers: "tl:so.tilo.music:root-aymfw7yu\ttl.so.tilo.music.Library\topen-link\tOpen link\t\tread\tview\t0\tlink\u{1d}text\u{1d}\t\t\n",
+        commands: "open_audio_file\tOpen audio file\tCtrl+o\n",
     },
     FleetApp {
         id: "so.tilo.notes",
@@ -2049,6 +2092,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.notes.Found", "Found"),
         ],
         offers: "tl.so.tilo.notes.Notebook\t\tnew_note\tNew note\tStarts a note titled `title` and saying `body` (Markdown) when the caller knows them already.\tundoable\tdocument\t0\t\t\tplus\n",
+        commands: "duplicate\tDuplicate\tCtrl+Shift+d\ndelete\tDelete\tdelete\n",
     },
     FleetApp {
         id: "so.tilo.passwords",
@@ -2093,6 +2137,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.passwords.UrlAnswer", "Url answer"),
         ],
         offers: "tl.so.tilo.passwords.Vault\t\tnew_item\tNew item\tStarts an item: an entry of the vault and the item that lists it, named by what is typed\tundoable\tdocument\t0\t\t\tplus\ntl.so.tilo.passwords\t\tkeep_typed\tKeep what was typed\tHands what the person typed on the system's card to the vault as `part` of the entry `id`:\tread\teffect\t0\tid\u{1d}text\u{1d}Id\u{1e}part\u{1d}text\u{1d}Part\t\tkey\n",
+        commands: "new_item\tNew item\tCtrl+n\ndelete\tDelete\tdelete\n",
     },
     FleetApp {
         id: "so.tilo.pdf-viewer",
@@ -2147,6 +2192,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.pdf-viewer.MarkColour", "Mark colour"),
         ],
         offers: "",
+        commands: "copy_selected\tCopy the selection\tCtrl+c\n",
     },
     FleetApp {
         id: "so.tilo.photos",
@@ -2189,6 +2235,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.photos.FaceScan", "Face scan"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.playback",
@@ -2204,6 +2251,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.playback.Progress", "Progress"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.print-centre",
@@ -2245,6 +2293,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.print-centre.ScanAsk", "Scan ask"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.publisher",
@@ -2284,6 +2333,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.publisher.KeyState", "Key state"),
         ],
         offers: "tl.so.tilo.publisher.Publisher\t\tapply_for_namespaces\tApply\tAsks the registry for the namespaces the profile's domain and forge account name.\tundoable\tdocument\t0\t\t\tsend\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.scratchpad",
@@ -2312,6 +2362,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[("tl.so.tilo.scratchpad.Note", "Note")],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.settings",
@@ -2333,6 +2384,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[("tl.so.tilo.settings.ProblemReport", "Problem report")],
         offers: "tl.so.tilo.settings\t\topen_pane\tShow a settings page\tShow the pane a search page names, as the search's own row runs it from outside the window.\tundoable\teffect\t0\tpage\u{1d}text\u{1d}Page\t\t\ntl.so.tilo.settings\t\tshow_setting\tShow a setting\tShow the pane a setting is on, as search's own row for a setting runs it.\tundoable\teffect\t0\tsetting\u{1d}text\u{1d}Setting\t\t\ntl.so.tilo.settings\t\tset_processors_room\tKeep processors free\tThe processors this device keeps free for the people at it: the slider's share, made whole.\toutside\teffect\t0\tpercent\u{1d}number\u{1d}Percent\t\t\ntl.so.tilo.settings\t\tset_memory_room\tKeep memory free\tThe memory this device keeps free for the people at it.\toutside\teffect\t0\tpercent\u{1d}number\u{1d}Percent\t\t\ntl.so.tilo.settings\t\tsend_problem_report\tSend a report\tFiles this computer's record of a problem as a problem report in the workspace's feedback\toutside\teffect\t0\tbody\u{1d}text\u{1d}Body\t\tflag\ntl.so.tilo.settings\t\treview_contrast\tReview contrast\tLists every contrast floor the theme would miss with `role` at the control's value, so its\tundoable\teffect\t0\ttheme\u{1d}text\u{1d}Theme\u{1e}role\u{1d}text\u{1d}Role\u{1e}value\u{1d}number\u{1d}Value\t\t\ntl.so.tilo.settings\t\treview_contrast_on\tReview contrast on\tThe same after a switch was tried: its on is `1` and its off `0`.\tundoable\teffect\t0\ttheme\u{1d}text\u{1d}Theme\u{1e}role\u{1d}text\u{1d}Role\u{1e}on\u{1d}boolean\u{1d}On\t\t\ntl.so.tilo.settings\t\treview_contrast_now\tReview contrast now\tRecords what the theme misses as it stands, when its editor opens or its polarity changes,\tundoable\teffect\t0\ttheme\u{1d}text\u{1d}Theme\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.sheets",
@@ -2376,6 +2428,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.sheets.Extent", "Extent"),
         ],
         offers: "tl.so.tilo.sheets.Workbook\t\tnew_sheet\tNew sheet\tAdds a sheet at the end, named `name` or the next free `SheetN`.\tundoable\tdocument\t0\t\t\tplus\ntl.so.tilo.sheets\t\tcopy_cells\tCopy\tCopies the cells a person chose to their clipboard as a table: a line per row and a tab\toutside\teffect\t0\ttext\u{1d}text\u{1d}Text\t\t\n",
+        commands: "copy_cells\tCopy\tCtrl+c\ncut_cells\tCut\tCtrl+x\npaste_cells\tPaste\tCtrl+v\ntoggle_bold\tBold\tCtrl+b\n",
     },
     FleetApp {
         id: "so.tilo.shell",
@@ -2403,6 +2456,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.shell.Viewing", "Viewing"),
         ],
         offers: "tl.so.tilo.shell\t\trename_workspace\tRename workspace\tName the workspace `key` what the person typed: the workspace's own published `rename`, so the\toutside\teffect\t0\tkey\u{1d}text\u{1d}Key\u{1e}name\u{1d}text\u{1d}Name\t\t\ntl.so.tilo.shell\t\trename_strip\tRename strip\tName the strip `key` what the person typed: one arranging action of the session's, so a\toutside\teffect\t0\tkey\u{1d}text\u{1d}Key\u{1e}name\u{1d}text\u{1d}Name\t\t\ntl.so.tilo.shell\t\tdecline\tDon't allow\tDecline the question at `key`: its asked record's own `resolve`, called by its address as any\toutside\teffect\t0\tkey\u{1d}text\u{1d}Key\t\t\ntl.so.tilo.shell\t\tput_history_away\tClose History\tPuts the surface away once a recent resource is opened again beside the window in front, by\toutside\teffect\t0\t\t\t\ntl.so.tilo.shell\t\tstep_level\tStep level\tSteps the value of the row `step` names (`1` up, `-1` down), as Left and Right do on an\toutside\teffect\t0\tstep\u{1d}text\u{1d}Step\t\t\ntl.so.tilo.shell\t\tchoose_launcher_row_as\tChoose launcher row as\tWhat choosing a row with a modifier held does: a row the search found opens the way `here`\toutside\teffect\t0\tpacked\u{1d}text\u{1d}Packed\u{1e}current\u{1d}boolean\u{1d}Current\t\t\ntl.so.tilo.shell\t\tchoose_launcher_row\tChoose launcher row\tWhat choosing the row the person reached does, read off the row's value: opening an\toutside\teffect\t0\tchoice\u{1d}text\u{1d}Choice\u{1e}current\u{1d}boolean\u{1d}Current\t\t\ntl.so.tilo.shell\t\topen_surface\tOpen surface\tOpen the shell's surface `surface` (`overview`, `workspaces`, `centre`), as the bar's own\toutside\teffect\t0\tsurface\u{1d}text\u{1d}Surface\t\t\ntl.so.tilo.shell\t\tclose_launcher\tClose launcher\tLeave the launcher: the surface stack goes back to the shell at rest.\toutside\teffect\t0\t\t\t\ntl.so.tilo.shell\t\ta_style_settings\tA style settings\tA shell of one note in the style named, with that place in front, and the style's own settings\tundoable\teffect\t0\tstyle\u{1d}text\u{1d}Style\t\t\ntl.so.tilo.shell\t\tquery_retry\tQuery retry\tLook for what the place `place`'s search names again.\tundoable\teffect\t0\tplace\u{1d}text\u{1d}Place\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.shortcuts",
@@ -2448,6 +2502,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.shortcuts.Repeated", "Repeated"),
         ],
         offers: "tl.so.tilo.shortcuts.Workbench\t\tnew_draft\tNew shortcut\t\tundoable\tdocument\t0\t\t\tplus\ntl.so.tilo.shortcuts\t\tagent_address\tAgent address\tThe agent's action that drafts, when this workspace is offered it; empty when it is not.\tread\teffect\t0\t\t\t\ntl.so.tilo.shortcuts\t\tcatalogue_summary\tCatalogue summary\tThe actions a draft may use, one line each, as the agent is told about them.\tread\teffect\t0\t\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.snippets",
@@ -2476,6 +2531,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.snippets.Library", "Library"),
         ],
         offers: "tl.so.tilo.snippets.Library\t\tnew_snippet\tNew snippet\tMakes a snippet, filed under `folder` when it names one.\tundoable\tdocument\t0\ttitle\u{1d}text\u{1d}Title\t\tplus\ntl.so.tilo.snippets\t\tcopy_text\tCopy text\tPuts `text` on the clipboard: as a secret, which histories do not keep and which leaves the\toutside\teffect\t0\ttext\u{1d}text\u{1d}Text\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.speed-test",
@@ -2508,6 +2564,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.speed-test.Run", "Run"),
         ],
         offers: "tl.so.tilo.speed-test.SpeedTest\t\tstart\tRun speed test\tStarts a run: the window measures latency against the nearest Cloudflare test server, then\tundoable\tdocument\t0\t\t\tplay\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.store",
@@ -2566,6 +2623,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.store.Evidence", "Evidence"),
         ],
         offers: "tl:so.tilo.store:root-r4polcvt\ttl.so.tilo.store.Store\topen-link\tOpen link\t\tread\tview\t0\tlink\u{1d}text\u{1d}\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.tasks",
@@ -2603,6 +2661,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.tasks.Related", "Related"),
         ],
         offers: "tl.so.tilo.tasks.Tasks\t\tnew_task\tNew task\tAdds a task to the inbox or to `p` at `status`: the entry at a list's end fills `title` with\tundoable\tdocument\t0\t\t\tplus\ntl.so.tilo.tasks.Project\t\tadd_to\tNew task\tAdds a task to a project at `status`. It is the project's primary action, so its key brings the\tundoable\tdocument\t0\ttitle\u{1d}text\u{1d}Title\t\tplus\n",
+        commands: "new_task\tNew task\tCtrl+n\nadd_to\tNew task\tCtrl+n\nindent\tIndent\tCtrl+]\noutdent\tOutdent\tCtrl+[\ncheck\tReopen\tCtrl+enter\nadd_subtask\tAdd subtask\tCtrl+Shift+n\ndue_today\tToday\tCtrl+t\nschedule\tPick date\tCtrl+d\nfile\tProject\tCtrl+Shift+m\nduplicate\tDuplicate\tCtrl+Shift+d\nremove\tDelete\tdelete\n",
     },
     FleetApp {
         id: "so.tilo.lang.today",
@@ -2614,6 +2673,7 @@ pub(super) const APPS: &[FleetApp] = &[
         keywords: &[],
         resource_types: &[],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.tube",
@@ -2669,6 +2729,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.tube.YouTube", "You tube"),
         ],
         offers: "tl.so.tilo.tube.Video\t\tplay\tPlay\tPlays the video, whether or not it was played before: the session takes it as its one item,\toutside\teffect\t0\t\t\tplay\ntl:so.tilo.tube:root-thwdswkk\ttl.so.tilo.tube.YouTube\topen-link\tOpen link\t\tread\tview\t0\tlink\u{1d}text\u{1d}\t\t\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.typst-editor",
@@ -2708,6 +2769,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.typst-editor.CellRow", "Cell row"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.video",
@@ -2755,6 +2817,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.video.Library", "Library"),
         ],
         offers: "",
+        commands: "open_video\tOpen video\tCtrl+o\ntoggle_playing\tToggle playing\tp\n",
     },
     FleetApp {
         id: "so.tilo.video-editor",
@@ -2818,6 +2881,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.video-editor.SavedMarker", "Saved marker"),
         ],
         offers: "tl.so.tilo.video-editor.Editor\t\tnew_project\tNew project\tStarts a cut: its shape and its first two tracks.\tundoable\tdocument\t0\t\t\tplus\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.lang.views",
@@ -2832,6 +2896,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.lang.views.Default", "Default"),
         ],
         offers: "",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.weather",
@@ -2867,6 +2932,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("tl.so.tilo.weather.Readings", "Readings"),
         ],
         offers: "",
+        commands: "refresh\tRefresh forecasts\tr\n",
     },
     FleetApp {
         id: "so.tilo.windows",
@@ -2888,6 +2954,7 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[("tl.so.tilo.windows.Windows", "Windows")],
         offers: "tl.so.tilo.windows\t\trecovery_desktop\tOpen recovery desktop\tOpen the appliance's recovery desktop.\toutside\teffect\t0\t\t\twrench\ntl.so.tilo.windows\t\tstart_windows\tStart Windows\tStart the appliance.\toutside\teffect\t0\t\t\tplay\ntl.so.tilo.windows\t\trestart_windows\tRestart Windows\tRestart the appliance.\toutside\teffect\t0\t\t\trotate-cw\ntl.so.tilo.windows\t\tsuspend_windows\tSuspend Windows\tSuspend the appliance.\toutside\teffect\t0\t\t\tpause\ntl.so.tilo.windows\t\tresume_windows\tResume Windows\tResume the appliance.\toutside\teffect\t0\t\t\tplay\ntl.so.tilo.windows\t\tshutdown_windows\tShut down Windows\tShut the appliance down.\toutside\teffect\t0\t\t\tpower\ntl.so.tilo.windows\t\ttemporary_network\tConnect for activation\tConnect the appliance for activation, for a while.\toutside\teffect\t0\t\t\twifi\ntl.so.tilo.windows\t\tupdate_network\tConnect for Windows Update\tConnect the appliance for Windows Update, for a while.\toutside\teffect\t0\t\t\tdownload\ntl.so.tilo.windows\t\trevoke_network\tEnd temporary network access\tEnd the appliance's temporary connection.\toutside\teffect\t0\t\t\tx\n",
+        commands: "",
     },
     FleetApp {
         id: "so.tilo.word-processor",
@@ -2918,5 +2985,6 @@ pub(super) const APPS: &[FleetApp] = &[
         ],
         resource_types: &[("tl.so.tilo.word-processor.Document", "Document")],
         offers: "tl.so.tilo.word-processor.Document\t\tnew_document\tNew document\tStarts the document over: a blank page, or the Markdown one of the templates starts with.\tundoable\tdocument\t0\t\t\tfile-plus\n",
+        commands: "new_document\tNew document\tCtrl+n\n",
     },
 ];
