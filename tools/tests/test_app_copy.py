@@ -175,12 +175,12 @@ class AppCopyTests(unittest.TestCase):
                 "crates/session/desktop/src/view.rs:1: en-US lacks shell-absent",
             ])
 
-    def test_the_desktop_surface_checks_the_activity_keys_a_match_picks(self):
+    def test_the_session_core_checks_the_activity_keys_a_match_picks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.crate(root, "crates/ui/ui-core", {"en-US": "ok = OK\n"}, "")
             open_ = "activity-morning-open = Open\n"
-            self.crate(root, "crates/session/desktop-surface",
+            self.crate(root, "crates/desktop/session-core",
                        {"en-US": open_, "de-DE": open_},
                        '''
                        fn label(&self) -> &'static str {
@@ -190,8 +190,8 @@ class AppCopyTests(unittest.TestCase):
                        }
                        ''')
             self.assertEqual(copy.missing_copy(root), [
-                "crates/session/desktop-surface/src/view.rs:3: de-DE lacks activity-morning-next",
-                "crates/session/desktop-surface/src/view.rs:3: en-US lacks activity-morning-next",
+                "crates/desktop/session-core/src/view.rs:3: de-DE lacks activity-morning-next",
+                "crates/desktop/session-core/src/view.rs:3: en-US lacks activity-morning-next",
             ])
 
 
