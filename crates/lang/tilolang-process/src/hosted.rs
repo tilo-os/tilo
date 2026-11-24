@@ -1024,10 +1024,8 @@ impl Platform for HostPlatform {
             }
         }
         crate::files_engine::register();
-        crate::containers_engine::status(job).or_else(|unknown| {
-            tilolang_tilo::engine::progress(job).map_err(|_| unknown)
-        })
-        })
+        crate::containers_engine::status(job)
+            .or_else(|unknown| tilolang_tilo::engine::progress(job).map_err(|_| unknown))
     }
 
     #[cfg(feature = "app-launch")]
@@ -2556,12 +2554,9 @@ impl Hosted {
         // which is the narrower claim, else the media type the name declares.
         let media =
             tilolang_tilo::runtime::blob::media_of(file.name.as_deref().unwrap_or_default());
-        let declared = tilolang_tilo::meta::action_opening(
-            &self.bundle.meta,
-            file.name.as_deref(),
-            &media,
-        )
-        .cloned();
+        let declared =
+            tilolang_tilo::meta::action_opening(&self.bundle.meta, file.name.as_deref(), &media)
+                .cloned();
         let Some(action) = declared else {
             // The app does not open this kind of file: its window shows its records, and says why
             // rather than opening a window that took nothing.
