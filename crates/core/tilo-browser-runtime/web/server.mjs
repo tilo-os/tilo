@@ -1,12 +1,12 @@
 /**
- * The page as a certified device of one tilo-server workspace, in one call:
+ * The page as a certified device of one Tilo host's workspace, in one call:
  * `connectServerPeer` opens this profile's device key (`device-key.mjs`),
  * loads the runtime and connects `peer.mjs`'s certified peer to `workspace`.
  * The peer's `whenReady()` resolves once the host admitted this page to the
  * workspace, and `live` is the workspace's live layer.
  *
- * A workspace on a loopback `http:` origin (local review, `tilo-server workspace
- * --web-plain`) is accepted: the page then needs no certificate exception.
+ * A workspace on a loopback `http:` origin (local review, the daemon behind a
+ * local proxy) is accepted: the page then needs no certificate exception.
  */
 import * as host from './host.mjs';
 import {connectPeer} from './peer.mjs';

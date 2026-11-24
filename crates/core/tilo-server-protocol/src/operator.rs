@@ -1,8 +1,10 @@
-//! The JSON-lines protocol between a workspace's operator and the
-//! `tilo-server workspace` child it runs for it — a short-lived workspace, or one
-//! persistent workspace.
+//! The wait-list mailbox and status a public workspace's entry keeps, and the
+//! JSON-lines protocol between a workspace's operator and the child process a
+//! server ran for it — a short-lived workspace, or one persistent workspace. The
+//! device's daemon serves the entry itself now, so no process speaks the
+//! protocol; the mailbox and status are what remain in use.
 //!
-//! The service writes one [`OperatorCommand`] per line to the child's stdin.
+//! The service wrote one [`OperatorCommand`] per line to the child's stdin.
 //! The child writes one [`OperatorEvent`] per line to its stdout, each behind
 //! [`LINE_PREFIX`], so nothing else the child prints can be mistaken for one.
 //! Operator and workspace server are built from one tree, so the protocol changes

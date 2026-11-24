@@ -59,11 +59,12 @@ endpoint id or JSON `EndpointAddr`) or several with `TILO_COLLAB_HOSTS` (a
 JSON array of `EndpointAddr`s). Newly minted invite tokens carry these host
 addresses so the guest is not dependent on the inviter staying online.
 
-`tilo-server init` writes configuration; it does not mint an identity. Before
-`run`, the host must already have an enrolled, host-capable device key and cert
-at the configured `identity_root`. Home-server first-boot enrollment belongs to
-the provisioning-image flow, while a hosted service supplies its provider
-identity through its control plane.
+The device's daemon (`tilo-runtime`) reads the configuration; it does not mint
+an identity. Before it keeps a server's workspaces, the machine must already
+have an enrolled, host-capable device key and cert at the configured
+`identity_root`, which a ticket signs it in with. Home-server first-boot
+enrollment belongs to the provisioning-image flow, while a hosted service
+supplies its provider identity through its control plane.
 
 A desktop session finds the person's own devices on the local network with
 sealed probes only those devices can read; nothing on

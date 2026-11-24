@@ -392,11 +392,12 @@ fifteenth of a cent on demand, and a hundred-and-fiftieth of a cent on Spot.
 
 ## Running it
 
-A host that places workspaces (`tilo-server workspace … --workspace-documents`) serves
-their Browser with `TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
+A host that places workspaces (the daemon, with the workspaces its server
+configuration lists under `[[kept]]`) serves their Browser with
+`TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
 `TILO_HOSTED_BROWSER_SERVER` (`KEY@HOST:PORT`, the public address sessions
 reach it at), `TILO_SERVER_BROWSER_ACTIONS` (the action log) and
 `TILO_HOSTED_PLANS`. A host that holds its person's root makes itself their
-stand-in from it at start (`workspace --root-file`), and keeps it in its state.
+stand-in from it at start, and keeps it in its state.
 A VM host serves Browser in its VMs when `TILO_VM_SERVER_ENDPOINT` is set; it
 keeps its templates under its state directory by itself.

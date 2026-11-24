@@ -81,8 +81,8 @@ What it reaches:
   connection.
 
 The server must be a persistent host, which keeps workspaces of people's own
-for anyone who asks, and run its workspaces' records (its agents, or
-`--workspace-documents`).
+for anyone who asks, and run its workspaces' records and agents (the daemon's
+`agents` build).
 
 - **Sign-in.** `TILO_API_WEB_ENTRY` must serve `/sign-in`: given
   `audience`, `challenge`, `return`, `pending`, `client`, `grant_key`,

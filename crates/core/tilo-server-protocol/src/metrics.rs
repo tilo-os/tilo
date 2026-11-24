@@ -14,8 +14,9 @@ use thiserror::Error;
 /// Last daemon counter snapshot, consumed by offline admin/status commands.
 pub const METRICS_FILE: &str = "metrics.json";
 
-/// The server's own state root under the `--state` of `tilo-server workspace`: it
-/// keeps [`METRICS_FILE`] there. A workspace host reads the snapshot from here.
+/// The server's own state root below the daemon's state root (`state_root` in
+/// its server configuration): it keeps [`METRICS_FILE`] there. A workspace host
+/// reads the snapshot from here.
 #[must_use]
 pub fn workspace_server_root(workspace_state: &Path) -> PathBuf {
     workspace_state.join("server")
@@ -43,9 +44,9 @@ pub fn earlier_server_root_beside(workspace_state: &Path) -> Option<PathBuf> {
         .find(|earlier| earlier.is_dir())
 }
 
-/// Where the connector workers of a `tilo-server workspace` keep their counters as
-/// Prometheus text, one `<app>.prom` each, under its `--state`. A workspace
-/// host appends these to its metrics page.
+/// Where a connector worker kept its counters as Prometheus text, one
+/// `<app>.prom` each, below the state root of the server that ran it. The
+/// daemon runs no connector worker, so nothing writes here now.
 #[must_use]
 pub fn workspace_textfile_dir(workspace_state: &Path) -> PathBuf {
     workspace_state.join("metrics.d")

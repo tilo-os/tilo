@@ -47,10 +47,13 @@
 //! move_server_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge --remove-sources
 //! ```
 //!
-//! `--state`, `--root-file` and `--persistent` are what `tilo-server workspace` runs
-//! with: the host serves under the certificate it signs from them at every
-//! start, and the tool opens the workspaces under that same certificate, so
-//! it acts as the host itself and changes nothing in their governance. Running it
+//! `--state` is the state root the daemon keeps (`state_root` in the server
+//! configuration), `--root-file` the person's root the deployment keeps, and
+//! `--persistent` the name of the workspace the old `tilo-server workspace
+//! --persistent` served: a host serves under the certificate it signs from them
+//! at every start, and the tool opens the workspaces under that same
+//! certificate, so it acts as the host itself and changes nothing in their
+//! governance. Running it
 //! again is safe: what is in place and intact is left alone. It exits
 //! non-zero when an item did not match its name or could not be moved, or a
 //! record did not read whole.
@@ -72,7 +75,8 @@ const UNASSIGNED: &str = "unassigned";
 struct Args {
     state: PathBuf,
     root_file: PathBuf,
-    /// The workspace's name, as `tilo-server workspace --persistent` names it.
+    /// The workspace's name, as the old `tilo-server workspace --persistent`
+    /// named it.
     persistent: String,
     dry_run: bool,
     remove_sources: bool,
@@ -98,11 +102,10 @@ fn args() -> anyhow::Result<Args> {
         }
     }
     Ok(Args {
-        state: state.context("--state: the directory `tilo-server workspace --state` names")?,
-        root_file: root_file
-            .context("--root-file: the file `tilo-server workspace --root-file` names")?,
+        state: state.context("--state: the state root the daemon keeps")?,
+        root_file: root_file.context("--root-file: the person's root the deployment keeps")?,
         persistent: persistent.context(
-            "--persistent: the name `tilo-server workspace --persistent` gives the workspace",
+            "--persistent: the name the old `tilo-server workspace --persistent` gave it",
         )?,
         dry_run,
         remove_sources,
@@ -336,7 +339,7 @@ fn read_host_key(path: &Path) -> anyhow::Result<SigningKey> {
     Ok(SigningKey::from_bytes(&seed))
 }
 
-/// The certificate `tilo-server workspace --persistent <name>` serves with: it is
+/// The certificate a `--persistent <name>` host serves with: it is
 /// kept nowhere, but signed afresh at every start from the workspace root,
 /// the host's key and the workspace's name, exactly so. The host's
 /// workspaces name it among their hosts; a certificate signed any other way
@@ -584,7 +587,7 @@ mod tests {
                     tilo_server::daemon::ServerIdentity {
                         user_public_key: root.verifying_key().to_bytes(),
                         device_signing_key: host.clone(),
-                        // As `tilo-server workspace --persistent lounge` signs it.
+                        // As a host serving the workspace `lounge` signs it.
                         device_cert: server_cert(root, host, "lounge").unwrap(),
                         revocations: RevocationList::new(),
                     },

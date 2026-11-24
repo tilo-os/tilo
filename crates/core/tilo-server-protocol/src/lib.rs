@@ -15,8 +15,9 @@
 //! - [`workspaces`] — governed workspaces over HTTPS: administration and joining;
 //! - [`directory`] — the public workspaces a host lists, and the entry that
 //!   lets anyone in with the owner's default role;
-//! - [`operator`] — the JSON-lines protocol between the public-workspace
-//!   service and each `tilo-server workspace` child it runs;
+//! - [`operator`] — the wait-list mailbox and status an entry keeps, and the
+//!   JSON-lines protocol a server that ran each workspace as a child process
+//!   spoke with it before the daemon served them itself;
 //! - [`mesh`] — service capabilities and the server advertisements devices
 //!   offer work with;
 //! - [`config`] and [`policy`] — the on-disk `server.toml` schema;
