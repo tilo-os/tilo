@@ -6,7 +6,10 @@
 //! media codecs install and every secret's ownership.
 //! The app shows the page this view projects ([`tilo_onboarding::Page`]) and
 //! asks through the state this view lends it; secrets are typed into buffers
-//! this view owns and zeroizes, never carried by what the app asks.
+//! this view owns and zeroizes, never carried by what the app asks. A step
+//! that needs a file from the person has this view ask for it, as the system
+//! does: the app names the file it works with and never draws a picker
+//! ([`file_ask`]).
 //!
 //! Setup stays trusted chrome: the app is mounted in the shell's own
 //! process and drawn where this view stands, above every application
@@ -22,6 +25,7 @@
 //! notification.
 
 mod codecs;
+mod file_ask;
 mod journal;
 mod mounted;
 mod recovery_key;
@@ -41,6 +45,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, rc::Rc};
 use taffy::{NodeId, TaffyTree};
+use ui::ColorCompat as _;
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath, TaffyTreeExt, Widget};
 use vello::Scene;
@@ -49,6 +54,7 @@ use winit::event::WindowEvent;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::identity::{MintedIdentity, Onboarding, Screen};
+use file_ask::{AskPurpose, FileAsk};
 use os_actions::codec_pack::{CodecAction, CodecPackStatus};
 pub use tilo_onboarding::{OnboardingContext, TourPage, WordsCheck};
 use tilo_onboarding::{t, t_args};
@@ -254,12 +260,6 @@ fn mint_with(minter: &Shared<Minter>) -> Result<MintedIdentity, String> {
         .and_then(|minter| (*minter)())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PickerPurpose {
-    ImportIdentity,
-    BackupIdentity,
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Invalidation {
     #[default]
@@ -274,13 +274,6 @@ impl Invalidation {
         *self = match *self {
             Self::Clean | Self::Structure => Self::Structure,
             Self::Focus | Self::StructureAndFocus => Self::StructureAndFocus,
-        };
-    }
-
-    fn focus(&mut self) {
-        *self = match *self {
-            Self::Clean | Self::Focus => Self::Focus,
-            Self::Structure | Self::StructureAndFocus => Self::StructureAndFocus,
         };
     }
 
@@ -452,10 +445,8 @@ pub struct OnboardingView {
     /// The setup app this view shows the ceremony through.
     app: mounted::Mounted,
     rect: Rect,
-    /// The file chooser the ceremony asked the app to show.
-    chooser: Option<PickerPurpose>,
-    /// The file the person chose in it, for the next `sync`.
-    picked: Option<PathBuf>,
+    /// The file the person is being asked for, while its question stands.
+    file_ask: Option<FileAsk>,
     /// The words of a written-down recovery key typed back: the buffers the
     /// app's fields write into, cleared with the copy.
     key_answers: [Arc<Mutex<String>>; 3],
@@ -687,8 +678,7 @@ impl OnboardingView {
             invalidation: Invalidation::Focus,
             app: mounted::Mounted::default(),
             rect: Rect::ZERO,
-            chooser: None,
-            picked: None,
+            file_ask: None,
             key_answers: std::array::from_fn(|_| Arc::new(Mutex::new(String::new()))),
             connect_source_selected: false,
             connect_passphrase: Arc::new(Mutex::new(String::new())),
@@ -1550,7 +1540,7 @@ impl OnboardingView {
             "state": if self.backup_was_verified { "verified" }
                 else if self.backup_error.is_some() { "failed" } else { "ready" },
             "can_save": self.backup_export_available && self.identity_idle() && self.journal_idle()
-                && self.chooser.is_none() && self.error.is_none(),
+                && self.file_ask.is_none() && self.error.is_none(),
         }))
     }
     /// Whether the identity ceremony still runs. This is readiness only;
@@ -1601,6 +1591,64 @@ impl Drop for OnboardingView {
         clear_secret(&self.ticket);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
+    }
+}
+
+impl OnboardingView {
+    /// Ask the person for the file setup needs, in the system's picker: the
+    /// backup to restore from, or where a new one goes.
+    fn ask_for_file(&mut self, purpose: AskPurpose) {
+        let (initial, roots) = self.session.picker_scope();
+        let question = file_ask::question(purpose, &initial);
+        self.file_ask = Some(FileAsk::new(purpose, question, &initial, roots));
+        self.invalidation.both();
+    }
+
+    /// The system's question the person is answering now, as they are asked
+    /// it: the files setup needs, where they are.
+    #[must_use]
+    pub fn files_asked(&self) -> Option<&tilo_actions::remote::asked::FilesAsked> {
+        self.file_ask.as_ref().map(FileAsk::question)
+    }
+
+    /// What the person answered the file question with: the files they chose,
+    /// or none when they dismissed it. Nothing changes on a dismissal.
+    pub(crate) fn files_answered(&mut self, files: Vec<String>) {
+        let Some(ask) = self.file_ask.take() else {
+            return;
+        };
+        let purpose = ask.purpose();
+        if let Some(path) = files.into_iter().next() {
+            let path = PathBuf::from(path);
+            match purpose {
+                AskPurpose::Restore => {
+                    self.connect_path.set(path.to_string_lossy().into_owned());
+                    self.connect_source_selected = true;
+                    self.error = None;
+                }
+                AskPurpose::Save => self.export_identity(path),
+            }
+        }
+        self.invalidation.both();
+    }
+
+    /// What the picker answered, once it did: the same answer `files_answered`
+    /// takes, as the files it chose.
+    fn follow_file_answer(&mut self) {
+        let Some(ask) = self.file_ask.as_mut() else {
+            return;
+        };
+        if ask.poll_lookups() {
+            self.invalidation.structure();
+        }
+        let Some(answered) = ask.take() else {
+            return;
+        };
+        let files = match answered {
+            file_ask::Answered::Chosen(path) => vec![path.to_string_lossy().into_owned()],
+            file_ask::Answered::Dismissed => Vec::new(),
+        };
+        self.files_answered(files);
     }
 }
 
@@ -1664,19 +1712,8 @@ impl Widget for OnboardingView {
         }
         self.settle_identity_work();
 
-        // The file the person chose in the app's chooser.
-        if let Some(path) = self.picked.take() {
-            match self.chooser.take() {
-                Some(PickerPurpose::ImportIdentity) => {
-                    self.connect_path.set(path.to_string_lossy().into_owned());
-                    self.connect_source_selected = true;
-                    self.error = None;
-                }
-                Some(PickerPurpose::BackupIdentity) => self.export_identity(path),
-                None => {}
-            }
-            self.invalidation.both();
-        }
+        // What the person answered the file question with.
+        self.follow_file_answer();
 
         if self.pressed.take(KEY_BEGIN) && self.identity_idle() {
             self.flow.begin();
@@ -1708,10 +1745,9 @@ impl Widget for OnboardingView {
 
         if self.pressed.take(KEY_CONNECT_BROWSE)
             && self.flow.screen() == Screen::Restore
-            && self.chooser.is_none()
+            && self.file_ask.is_none()
         {
-            self.chooser = Some(PickerPurpose::ImportIdentity);
-            self.invalidation.focus();
+            self.ask_for_file(AskPurpose::Restore);
         }
 
         if self.pressed.take(KEY_CONNECT_NEARBY)
@@ -1775,7 +1811,7 @@ impl Widget for OnboardingView {
         if self.pressed.take(KEY_BACKUP_BROWSE)
             && self.flow.screen() == Screen::Done
             && !self.identity_ready_page
-            && self.chooser.is_none()
+            && self.file_ask.is_none()
             && self.backup_export_available
             && self.identity_idle()
         {
@@ -1793,8 +1829,7 @@ impl Widget for OnboardingView {
                 _ => Some(t("onboarding-passphrase-unavailable")),
             };
             if self.backup_error.is_none() {
-                self.chooser = Some(PickerPurpose::BackupIdentity);
-                self.invalidation.focus();
+                self.ask_for_file(AskPurpose::Save);
             } else {
                 self.invalidation.structure();
             }
@@ -2025,11 +2060,15 @@ impl Widget for OnboardingView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.show_page();
-        let child = self.app.build_layout(taffy, theme, node_map);
         let style = taffy::Style {
             size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
+        if self.file_ask.is_some() {
+            // The question places itself over the whole surface.
+            return taffy.widget_node(style, &[], node_map, self);
+        }
+        let child = self.app.build_layout(taffy, theme, node_map);
         let children: Vec<NodeId> = child.into_iter().collect();
         taffy.widget_node(style, &children, node_map, self)
     }
@@ -2038,6 +2077,10 @@ impl Widget for OnboardingView {
         let rect = ui::widget::layout_rect(taffy, node, origin);
         let resized = (rect.height() <= 540.0) != (self.rect.height() <= 540.0);
         self.rect = rect;
+        if let Some(ask) = self.file_ask.as_mut() {
+            ask.set_rect(file_ask::rect(rect));
+            return;
+        }
         self.app.apply_layout(taffy, Point::new(rect.x0, rect.y0));
         if resized {
             // A short display packs the page tighter.
@@ -2052,6 +2095,33 @@ impl Widget for OnboardingView {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        if let Some(ask) = self.file_ask.as_mut() {
+            // The trusted ground stays solid under the question: no
+            // application may show through the surface setup stands on.
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.base,
+                None,
+                &self.rect,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.56),
+                None,
+                &self.rect,
+            );
+            ask.set_rect(file_ask::rect(self.rect));
+            ask.draw(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
+            return;
+        }
         self.app.draw(&mut ui::DrawCtx::new(
             scene,
             transform,
@@ -2062,14 +2132,26 @@ impl Widget for OnboardingView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if let Some(ask) = self.file_ask.as_mut() {
+            ask.handle_event(event, ctx);
+            *ctx.handled = true;
+            self.follow_file_answer();
+            return;
+        }
         self.app.handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        if let Some(ask) = &self.file_ask {
+            return vec![ask.picker()];
+        }
         self.app.widget().into_iter().collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some(ask) = self.file_ask.as_mut() {
+            return vec![ask.picker_mut()];
+        }
         self.app.widget_mut().into_iter().collect()
     }
 
@@ -2108,7 +2190,11 @@ impl Widget for OnboardingView {
             .app
             .widget_mut()
             .is_some_and(Widget::take_structure_dirty);
-        own || child
+        let asked = self
+            .file_ask
+            .as_mut()
+            .is_some_and(FileAsk::take_structure_dirty);
+        own || child || asked
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -2148,6 +2234,10 @@ impl Widget for OnboardingView {
                 .is_some_and(IdentityWork::reported)
             || self.app.needs_redraw()
             || self.app.widget().is_some_and(Widget::needs_animation_frame)
+            || self
+                .file_ask
+                .as_ref()
+                .is_some_and(FileAsk::needs_animation_frame)
     }
 }
 
@@ -2764,12 +2854,19 @@ mod tests {
                 *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
                 press(&view, &mut document, KEY_BACKUP_BROWSE);
                 sync_journaled(&mut view, &document);
-                assert_eq!(view.chooser, Some(PickerPurpose::BackupIdentity));
-                // The person picks where the backup goes in the app's chooser;
+                assert_eq!(
+                    view.files_asked().map(|asked| asked.mode),
+                    Some(tilo_actions::remote::asked::FilesMode::Save)
+                );
+                // The person picks where the backup goes in the system's picker;
                 // the frame hands the export to its own worker.
-                view.picked = Some(progress.path().join("tilo-identity-backup.tilo-identity"));
+                view.files_answered(vec![progress
+                    .path()
+                    .join("tilo-identity-backup.tilo-identity")
+                    .to_string_lossy()
+                    .into_owned()]);
                 view.sync(&document, &automerge::ROOT);
-                assert!(view.chooser.is_none());
+                assert!(view.files_asked().is_none());
                 assert!(!view.identity_idle(), "the export is running");
                 for _ in 0..3 {
                     view.sync(&document, &automerge::ROOT);
@@ -3665,7 +3762,7 @@ mod tests {
             );
         }
 
-        phase connect_browse_opens_a_shell_owned_modal_picker;
+        phase connect_browse_asks_for_the_backup_file;
         {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
@@ -3674,28 +3771,26 @@ mod tests {
             view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_CONNECT_BROWSE);
             view.sync(&doc, &automerge::ROOT);
+            let asked = view.files_asked().expect("the person is asked for a file");
             assert_eq!(
-                view.page().chooser.map(|chooser| chooser.purpose),
-                Some(tilo_onboarding::ChooserPurpose::Restore),
-                "the app is asked to show the chooser"
+                asked.mode,
+                tilo_actions::remote::asked::FilesMode::Open,
+                "the backup to open, not a place to write one"
             );
 
-            view.app
-                .state()
-                .ask(tilo_onboarding::OnboardingEffect::CloseChooser);
+            // Dismissing the question leaves the step where it was, nothing
+            // chosen.
+            view.files_answered(Vec::new());
             view.sync(&doc, &automerge::ROOT);
-            assert!(view.chooser.is_none());
+            assert!(view.files_asked().is_none());
             assert_eq!(view.flow().screen(), Screen::Restore);
+            assert!(view.connect_path.get().is_empty());
 
             press(&view, &mut doc, KEY_CONNECT_BROWSE);
             view.sync(&doc, &automerge::ROOT);
-            view.app
-                .state()
-                .ask(tilo_onboarding::OnboardingEffect::Pick {
-                    path: "/home/person/backup.tilo-identity".into(),
-                });
+            view.files_answered(vec!["/home/person/backup.tilo-identity".into()]);
             view.sync(&doc, &automerge::ROOT);
-            assert!(view.chooser.is_none());
+            assert!(view.files_asked().is_none());
             assert_eq!(view.connect_path.get(), "/home/person/backup.tilo-identity");
         }
     }
@@ -4046,7 +4141,7 @@ mod tests {
     }
 
     /// Save a backup through setup's API as the person does: type the new
-    /// passphrase twice, open the chooser, pick where it goes.
+    /// passphrase twice, ask for a file, name where it goes.
     fn save_backup(
         view: &mut OnboardingView,
         destination: &Path,
@@ -4066,15 +4161,14 @@ mod tests {
             ));
         }
         assert!(act(view, &OnboardingEffect::Browse));
-        if view.chooser != Some(PickerPurpose::BackupIdentity) {
+        if view
+            .files_asked()
+            .is_none_or(|asked| asked.mode != tilo_actions::remote::asked::FilesMode::Save)
+        {
             return false;
         }
-        act(
-            view,
-            &OnboardingEffect::Pick {
-                path: destination.to_string_lossy().into_owned(),
-            },
-        )
+        view.files_answered(vec![destination.to_string_lossy().into_owned()]);
+        true
     }
 
     #[test]
@@ -4328,7 +4422,7 @@ mod tests {
             *view.backup_confirmation.lock().unwrap() = "does not match".into();
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &doc);
-            assert!(view.chooser.is_none());
+            assert!(view.files_asked().is_none());
             assert!(
                 view.backup_error
                     .as_deref()
@@ -4339,26 +4433,20 @@ mod tests {
             *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &doc);
-            view.app
-                .state()
-                .ask(tilo_onboarding::OnboardingEffect::CloseChooser);
+            view.files_answered(Vec::new());
             sync_journaled(&mut view, &doc);
-            assert!(view.chooser.is_none());
+            assert!(view.files_asked().is_none());
             assert_eq!(exports.load(Ordering::SeqCst), 0);
 
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &doc);
-            view.app
-                .state()
-                .ask(tilo_onboarding::OnboardingEffect::Pick {
-                    path: progress
-                        .path()
-                        .join("tilo-identity-backup.tilo-identity")
-                        .to_string_lossy()
-                        .into_owned(),
-                });
+            view.files_answered(vec![progress
+                .path()
+                .join("tilo-identity-backup.tilo-identity")
+                .to_string_lossy()
+                .into_owned()]);
             view.sync(&doc, &automerge::ROOT);
-            assert!(view.chooser.is_none());
+            assert!(view.files_asked().is_none());
             sync_journaled(&mut view, &doc);
             assert_eq!(exports.load(Ordering::SeqCst), 1);
             assert!(view.backup_saved.is_some());

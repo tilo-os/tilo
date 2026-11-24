@@ -34,9 +34,10 @@ impl SessionPaths {
         }
     }
 
-    /// OOBE is trusted compositor chrome, so its chooser follows the user rather
-    /// than an application's capability scope. Keep roots narrow: the home tree
-    /// plus conventional removable-media mount roots, never the whole filesystem.
+    /// OOBE is trusted compositor chrome, so the file it asks for is looked for
+    /// where the user's files are rather than in an application's capability
+    /// scope. Keep roots narrow: the home tree plus conventional removable-media
+    /// mount roots, never the whole filesystem.
     pub fn picker_scope(&self) -> (PathBuf, Vec<PathBuf>) {
         let home = self
             .home

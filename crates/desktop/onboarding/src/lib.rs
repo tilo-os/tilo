@@ -30,8 +30,8 @@ pub use app::{
 };
 pub use effect::{CHOICES, FIELDS, OnboardingEffect, SECRET_FIELDS};
 pub use page::{
-    Chooser, ChooserPurpose, Codecs, IdentityProblem, JoinedDevice, KeyCopy, Nearby,
-    OnboardingContext, PackState, Page, Screen, SecretText, Step, TourPage, WordsCheck,
+    Codecs, IdentityProblem, JoinedDevice, KeyCopy, Nearby, OnboardingContext, PackState, Page,
+    Screen, SecretText, Step, TourPage, WordsCheck,
 };
 pub use state::{OnboardingState, SecretBuffer, Secrets, WordMistakes};
 

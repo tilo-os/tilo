@@ -96,23 +96,10 @@ pub enum OnboardingEffect {
     },
     /// Choose a file
     ///
-    /// Opens the file chooser the page offers.
+    /// Asks the person for the file the page works with, in the system's file picker.
     #[effect(kind = "outside")]
     #[effect(own_device)]
     Browse,
-    /// Pick a file
-    ///
-    /// Answers the open file chooser with a file.
-    #[effect(kind = "outside")]
-    #[effect(own_device, attended)]
-    Pick {
-        #[param("The file")]
-        path: String,
-    },
-    /// Close the file chooser
-    #[effect(kind = "outside")]
-    #[effect(own_device, idempotent)]
-    CloseChooser,
     /// Skip
     ///
     /// Leaves this step for later or skips it.
@@ -172,8 +159,6 @@ impl std::fmt::Debug for OnboardingEffect {
                 .field("field", field)
                 .finish_non_exhaustive(),
             Self::Browse => f.write_str("Browse"),
-            Self::Pick { path } => f.debug_struct("Pick").field("path", path).finish(),
-            Self::CloseChooser => f.write_str("CloseChooser"),
             Self::Skip => f.write_str("Skip"),
             Self::Retry => f.write_str("Retry"),
             Self::Cancel => f.write_str("Cancel"),

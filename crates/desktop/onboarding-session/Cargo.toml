@@ -12,6 +12,7 @@ test-support = []
 
 [dependencies]
 anyhow.workspace = true
+app-state = { package = "tilo-app-state", path = "../../system/app-state" }
 automerge.workspace = true
 durable-store = { path = "../../system/durable-store" }
 os-actions = { path = "../../os/os-actions" }

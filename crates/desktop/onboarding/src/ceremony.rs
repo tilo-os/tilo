@@ -1,15 +1,14 @@
 //! Setup's surface: the trusted backdrop, the card the page is composed in,
-//! the slide from one step to the next and the file chooser over it.
+//! and the slide from one step to the next.
 //!
 //! The page is composed again whenever it is laid out after the shell
 //! changed it, at the size and in the theme it is laid out in; a short
 //! display, large text and high contrast each get the room they need. The
-//! card is the only thing a pointer or key reaches while the chooser is
-//! closed; Escape follows the page's Back while the ceremony may still go
-//! back, and skips the tour on a tour page.
+//! card is the only thing a pointer or key reaches; Escape follows the page's
+//! Back while the ceremony may still go back, and skips the tour on a tour
+//! page.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use ui::ColorCompat as _;
 use ui::LocalState;
@@ -19,17 +18,14 @@ use ui::theme::Theme;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Circle, Point, Rect};
 use ui::vello::peniko::{BlendMode, Fill};
-use ui::widget::{
-    AppModel, Button, Checkbox, FilePicker, FilePickerMode, ModelPath, TaffyTreeExt, Widget,
-};
+use ui::widget::{AppModel, Button, Checkbox, DrawChild as _, ModelPath, TaffyTreeExt, Widget};
 use ui::winit::event::{ElementState, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 
 use crate::effect::OnboardingEffect;
-use crate::page::{ChooserPurpose, Page, Screen, TourPage};
+use crate::page::{Page, Screen, TourPage};
 use crate::state::{OnboardingState, Secrets, WordMistakes};
 use crate::{Onboarding, t};
-use ui::widget::DrawChild;
 
 const PANEL_MAX_WIDTH: f32 = 760.0;
 // Longer translated/large-text pages scroll inside this limit. Short pages
@@ -91,18 +87,8 @@ pub(crate) struct Ceremony {
     transition_direction: f64,
     reduce_motion: bool,
     motion: ui::tokens::EffectiveMotion,
-    chooser: Option<(ChooserPurpose, FilePicker)>,
-    waker: Option<std::task::Waker>,
     structure_dirty: bool,
     focus_reset: bool,
-}
-
-struct Wake(ui::WakeHandle);
-
-impl std::task::Wake for Wake {
-    fn wake(self: Arc<Self>) {
-        self.0.wake();
-    }
 }
 
 impl Ceremony {
@@ -110,7 +96,6 @@ impl Ceremony {
         state: Option<OnboardingState>,
         page: Page,
         dispatch: Dispatcher<Onboarding>,
-        wake: Option<ui::WakeHandle>,
     ) -> Self {
         let secrets = state
             .as_ref()
@@ -118,7 +103,7 @@ impl Ceremony {
             .unwrap_or_default();
         let mistakes = state.as_ref().and_then(OnboardingState::mistakes);
         let seen = state.as_ref().map_or(0, OnboardingState::revision);
-        let mut ceremony = Self {
+        let ceremony = Self {
             state,
             seen,
             path: LocalState::new(page.connect_path.clone()),
@@ -134,12 +119,9 @@ impl Ceremony {
             transition_direction: 1.0,
             reduce_motion: false,
             motion: ui::tokens::EffectiveMotion::default(),
-            chooser: None,
-            waker: wake.map(|wake| std::task::Waker::from(Arc::new(Wake(wake)))),
             structure_dirty: true,
             focus_reset: false,
         };
-        ceremony.follow_chooser();
         ceremony
     }
 
@@ -197,88 +179,7 @@ impl Ceremony {
             self.transition = ui::motion::Presence::opened();
         }
         self.page = page;
-        self.follow_chooser();
         self.structure_dirty = true;
-    }
-
-    /// Open the chooser the page asks for, or close it once it no longer does.
-    fn follow_chooser(&mut self) {
-        let wanted = self.page.chooser.clone();
-        match (&self.chooser, wanted) {
-            (Some((open, _)), Some(chooser)) if *open == chooser.purpose => {}
-            (_, Some(chooser)) => {
-                let picker = match chooser.purpose {
-                    ChooserPurpose::Restore => FilePicker::new(
-                        t("onboarding-picker-import-title"),
-                        &chooser.initial,
-                        chooser.roots,
-                    )
-                    .with_filters(vec![
-                        ui::widget::file_picker::FileFilter::new(
-                            t("onboarding-picker-import-filter"),
-                            &["tilo-identity", "tilo-identity-backup", "json"],
-                        ),
-                        ui::widget::file_picker::FileFilter::all(),
-                    ]),
-                    ChooserPurpose::Backup => FilePicker::new(
-                        t("onboarding-picker-backup-title"),
-                        &chooser.initial,
-                        chooser.roots,
-                    )
-                    .with_mode(FilePickerMode::Save)
-                    .with_filters(vec![ui::widget::file_picker::FileFilter::new(
-                        t("onboarding-picker-backup-filter"),
-                        &["tilo-identity"],
-                    )])
-                    .with_filename("tilo-identity-backup.tilo-identity"),
-                };
-                self.chooser = Some((chooser.purpose, picker.with_waker(self.waker.clone())));
-                self.structure_dirty = true;
-                self.focus_reset = true;
-            }
-            (Some(_), None) => {
-                self.chooser = None;
-                self.structure_dirty = true;
-                self.focus_reset = true;
-            }
-            (None, None) => {}
-        }
-    }
-
-    /// What the chooser answered: the file, or that it was closed.
-    fn follow_chooser_answer(&mut self) {
-        let Some((_, picker)) = self.chooser.as_mut() else {
-            return;
-        };
-        if picker.poll_lookups() {
-            self.structure_dirty = true;
-        }
-        let Some(outcome) = picker.take_outcome() else {
-            return;
-        };
-        let effect = match outcome {
-            ui::widget::FilePickerOutcome::Selected(paths) => {
-                paths
-                    .into_iter()
-                    .next()
-                    .map_or(OnboardingEffect::CloseChooser, |path| {
-                        OnboardingEffect::Pick {
-                            path: path.to_string_lossy().into_owned(),
-                        }
-                    })
-            }
-            ui::widget::FilePickerOutcome::Cancelled => OnboardingEffect::CloseChooser,
-        };
-        if let OnboardingEffect::Pick { path } = &effect
-            && self.chooser.as_ref().map(|(purpose, _)| *purpose) == Some(ChooserPurpose::Restore)
-        {
-            self.path.set(path.clone());
-        }
-        // Closed here at once; the shell confirms with the next page.
-        self.chooser = None;
-        self.structure_dirty = true;
-        self.focus_reset = true;
-        self.dispatch.effect(&effect);
     }
 
     /// A button whose press asks `effect`.
@@ -393,7 +294,11 @@ impl Ceremony {
     }
 
     fn draw_composed(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.composed.is_none() {
             return;
@@ -411,12 +316,7 @@ impl Ceremony {
             let _ = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         }
         let mut local = Scene::new();
-        composed.draw_child(
-            &mut local,
-            Affine::IDENTITY,
-            text_renderer,
-            &on_panel,&env,
-        );
+        composed.draw_child(&mut local, Affine::IDENTITY, text_renderer, &on_panel, &env);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -426,23 +326,6 @@ impl Ceremony {
         );
         scene.append(&local, Some(pose.applied_to(transform)));
         scene.pop_layer();
-    }
-
-    fn draw_chooser(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        let Some((_, picker)) = self.chooser.as_mut() else {
-            return;
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.56),
-            None,
-            &self.rect,
-        );
-        picker.set_rect(chooser_rect(self.rect));
-        picker.draw_child(scene, transform, text_renderer, theme,&env);
     }
 
     fn escape_effect(&self) -> Option<OnboardingEffect> {
@@ -461,7 +344,6 @@ impl Ceremony {
 impl Widget for Ceremony {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.follow_state();
-        self.follow_chooser_answer();
         if let Some(composed) = &mut self.composed {
             composed.sync(state, path);
         }
@@ -478,14 +360,6 @@ impl Widget for Ceremony {
         self.reduce_motion = theme.reduce_motion;
         self.motion = theme.motion();
         self.follow_state();
-        if self.chooser.is_some() {
-            // The chooser places itself over the whole surface.
-            let style = taffy::Style {
-                size: taffy::Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            };
-            return taffy.widget_node(style, &[], node_map, self);
-        }
         let accessibility_expanded =
             theme.text_scale > 1.0 || theme.name.eq_ignore_ascii_case("high contrast");
         let page = &self.page;
@@ -588,10 +462,6 @@ impl Widget for Ceremony {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
-        if let Some((_, picker)) = self.chooser.as_mut() {
-            picker.set_rect(chooser_rect(self.rect));
-            return;
-        }
         if let Some(composed) = &mut self.composed
             && let Ok(children) = taffy.children(node)
             && let Some(&child) = children.first()
@@ -604,32 +474,23 @@ impl Widget for Ceremony {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.draw_backdrop(scene, transform, theme);
-        if self.chooser.is_none() {
-            self.draw_composed(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
-        }
-        self.draw_chooser(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.draw_composed(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some((_, picker)) = self.chooser.as_mut() {
-            picker.set_rect(chooser_rect(self.rect));
-            let mut picker_taffy = TaffyTree::<()>::new();
-            if let Ok(picker_node) = picker_taffy.new_leaf(taffy::Style::default()) {
-                picker.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        taffy: &picker_taffy,
-                        ..ctx.reborrow(ctx.path, picker_node)
-                    },
-                );
-            }
-            *ctx.handled = true;
-            self.follow_chooser_answer();
-            return;
-        }
         let escape = matches!(
             event,
             WindowEvent::KeyboardInput { event, .. }
@@ -650,9 +511,6 @@ impl Widget for Ceremony {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        if let Some((_, picker)) = self.chooser.as_ref() {
-            return vec![picker];
-        }
         self.composed
             .as_ref()
             .map(std::convert::AsRef::as_ref)
@@ -661,9 +519,6 @@ impl Widget for Ceremony {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if let Some((_, picker)) = self.chooser.as_mut() {
-            return vec![picker];
-        }
         self.composed
             .as_mut()
             .map(|composed| composed.as_mut() as &mut (dyn Widget + '_))
@@ -699,10 +554,6 @@ impl Widget for Ceremony {
     fn needs_animation_frame(&self) -> bool {
         (!self.reduce_motion && self.transition.is_moving(ui::motion::frame_now()))
             || self
-                .chooser
-                .as_ref()
-                .is_some_and(|(_, picker)| picker.needs_animation_frame())
-            || self
                 .composed
                 .as_ref()
                 .is_some_and(|child| child.needs_animation_frame())
@@ -726,18 +577,6 @@ fn view_order(screen: Screen, tour: Option<TourPage>) -> u8 {
         Some(TourPage::Start) => 7,
         None => screen_order(screen),
     }
-}
-
-fn chooser_rect(viewport: Rect) -> Rect {
-    let width = (viewport.width() * 0.78)
-        .clamp(420.0, 900.0)
-        .min(viewport.width());
-    let height = (viewport.height() * 0.78)
-        .clamp(320.0, 640.0)
-        .min(viewport.height());
-    let x0 = viewport.x0 + (viewport.width() - width) / 2.0;
-    let y0 = viewport.y0 + (viewport.height() - height) / 2.0;
-    Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
 /// A step arriving now, on the drill.
@@ -767,7 +606,7 @@ mod tests {
                 ..Page::default()
             };
             let dispatch = ui::framework::testing::dispatcher::<Onboarding>(crate::APP_ID);
-            let mut ceremony = Ceremony::new(None, page, dispatch, None);
+            let mut ceremony = Ceremony::new(None, page, dispatch);
             ceremony.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             let mut scene = Scene::new();
             ceremony.draw_backdrop(&mut scene, Affine::IDENTITY, &theme);

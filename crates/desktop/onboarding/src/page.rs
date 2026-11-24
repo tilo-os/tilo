@@ -177,23 +177,6 @@ pub struct Codecs {
     pub last_error: String,
 }
 
-/// What a file chooser is for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChooserPurpose {
-    /// Choose the backup to restore from.
-    Restore,
-    /// Choose where to save a new backup.
-    Backup,
-}
-
-/// A file chooser setup asked for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Chooser {
-    pub purpose: ChooserPurpose,
-    pub initial: std::path::PathBuf,
-    pub roots: Vec<std::path::PathBuf>,
-}
-
 /// The device that joined, with names when its signed installation has them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct JoinedDevice {
@@ -250,7 +233,6 @@ pub struct Page {
     pub recovery_key_copy: Option<KeyCopy>,
     pub recovery_key_written: bool,
     pub recovery_key_copy_confirmed: bool,
-    pub chooser: Option<Chooser>,
     /// The display is short: denser spacing.
     pub compact: bool,
 }

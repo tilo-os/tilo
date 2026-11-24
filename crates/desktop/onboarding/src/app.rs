@@ -107,7 +107,7 @@ impl ResourceApp for OnboardingApp {
             state.ask(effect);
             Ok(Effected::done())
         });
-        Box::new(Ceremony::new(state, page, cx.dispatcher(), Some(wake)))
+        Box::new(Ceremony::new(state, page, cx.dispatcher()))
     }
 
     fn scenarios() -> &'static [&'static str] {

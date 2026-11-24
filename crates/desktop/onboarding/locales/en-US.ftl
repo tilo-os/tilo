@@ -232,10 +232,8 @@ onboarding-setup = Setup
 so-tilo-onboarding-step-acknowledge = Acknowledge
 so-tilo-onboarding-step-browse = Choose a file
 so-tilo-onboarding-step-choose = Choose another way
-so-tilo-onboarding-step-close-chooser = Close the file chooser
 so-tilo-onboarding-step-enter = Enter a value
 so-tilo-onboarding-step-enter-secret = Enter a secret
-so-tilo-onboarding-step-pick = Pick a file
 so-tilo-onboarding-step-retry = Try again
 so-tilo-onboarding-step-skip = Skip
 

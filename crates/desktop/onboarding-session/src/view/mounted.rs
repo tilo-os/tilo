@@ -9,8 +9,7 @@ use tilo_onboarding::{OnboardingEffect, OnboardingState, Page, Secrets, Step};
 use ui::device_local_api::SharedApi;
 use ui::theme::Theme;
 use ui::widget::{AppModel, AppWidget, ModelPath, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::Point;
 use winit::event::WindowEvent;
 
 use super::{
@@ -18,9 +17,8 @@ use super::{
     KEY_BEGIN, KEY_CHOOSE_NEARBY, KEY_CHOOSE_RECOVERY_KEY, KEY_CHOOSE_RESTORE, KEY_CODECS_CONTINUE,
     KEY_CODECS_INSTALL, KEY_CODECS_SKIP, KEY_CONNECT_BROWSE, KEY_CONNECT_CANCEL,
     KEY_CONNECT_NEARBY, KEY_CONNECT_RETRY, KEY_CREATE, KEY_EXISTING, KEY_FINISH, KEY_IMPORT,
-    KEY_RECOVERY_KEY_CLOSE, KEY_RECOVERY_KEY_CONFIRM,
-    KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, KEY_TOUR_BACK, KEY_TOUR_NEXT, KEY_TOUR_SKIP,
-    OnboardingView, PickerPurpose,
+    KEY_RECOVERY_KEY_CLOSE, KEY_RECOVERY_KEY_CONFIRM, KEY_RECOVERY_KEY_RESTORE,
+    KEY_RECOVERY_KEY_SHOW, KEY_TOUR_BACK, KEY_TOUR_NEXT, KEY_TOUR_SKIP, OnboardingView,
 };
 use ui::widget::DrawChild;
 
@@ -151,13 +149,17 @@ impl Mounted {
     }
 
     pub(super) fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.node.is_none() {
             return;
         }
         if let Some(app) = self.app.as_mut() {
-            app.draw_child(scene, transform, text_renderer, theme,&env);
+            app.draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 
@@ -298,17 +300,6 @@ impl OnboardingView {
             }),
             recovery_key_written: self.recovery_key_written,
             recovery_key_copy_confirmed: self.recovery_key_copy_confirmed,
-            chooser: self.chooser.map(|purpose| {
-                let (initial, roots) = self.session.picker_scope();
-                tilo_onboarding::Chooser {
-                    purpose: match purpose {
-                        PickerPurpose::ImportIdentity => tilo_onboarding::ChooserPurpose::Restore,
-                        PickerPurpose::BackupIdentity => tilo_onboarding::ChooserPurpose::Backup,
-                    },
-                    initial,
-                    roots,
-                }
-            }),
             compact: self.rect.height() > 0.0 && self.rect.height() <= 540.0,
         }
     }
@@ -369,12 +360,6 @@ impl OnboardingView {
                 OnboardingEffect::Enter { field, value } if field == "backup-file" => {
                     if step == Step::Restore {
                         self.connect_path.set(value);
-                    }
-                }
-                OnboardingEffect::Pick { path } => self.picked = Some(path.into()),
-                OnboardingEffect::CloseChooser => {
-                    if self.chooser.take().is_some() {
-                        self.invalidation.both();
                     }
                 }
                 effect => {
