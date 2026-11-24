@@ -379,6 +379,14 @@ pub trait Platform {
         false
     }
 
+    /// Offer `text` as a secret copy that histories and device sync do not keep, taken off the
+    /// clipboard after `clear_after` unless something else was copied: what
+    /// `clipboard.copy_secret` reaches. A platform that cannot copy a secret apart answers false.
+    fn copy_secret_clipboard(&self, text: &str, clear_after: std::time::Duration) -> bool {
+        let _ = (text, clear_after);
+        false
+    }
+
     /// What the person's selection holds of the first of `types` it offers, as its media type and
     /// bytes: what `clipboard.paste` and `clipboard.paste_image` read. A platform that serves no
     /// clipboard answers none.
@@ -778,6 +786,10 @@ pub struct PlatformClipboard(pub(super) Rc<dyn Platform>);
 impl tilolang_runtime::clipboard::ClipboardHost for PlatformClipboard {
     fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
         self.0.copy_clipboard(mime, bytes)
+    }
+
+    fn copy_secret(&self, text: &str, clear_after: std::time::Duration) -> bool {
+        self.0.copy_secret_clipboard(text, clear_after)
     }
 
     fn paste(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {

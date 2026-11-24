@@ -17,6 +17,8 @@ mod cases {
     #[derive(Clone, Default)]
     struct Selection {
         copied: Rc<RefCell<Option<String>>>,
+        /// How long the last copy stays, when it was a secret's.
+        clears_after: Rc<RefCell<Option<std::time::Duration>>>,
     }
 
     impl ClipboardHost for Selection {
@@ -25,6 +27,13 @@ mod cases {
                 return false;
             }
             *self.copied.borrow_mut() = Some(String::from_utf8_lossy(bytes).into_owned());
+            *self.clears_after.borrow_mut() = None;
+            true
+        }
+
+        fn copy_secret(&self, text: &str, clear_after: std::time::Duration) -> bool {
+            *self.copied.borrow_mut() = Some(text.to_owned());
+            *self.clears_after.borrow_mut() = Some(clear_after);
             true
         }
 
@@ -51,7 +60,7 @@ mod cases {
             authority.trust(&app.load(&rt));
             // Copying reaches the person's clipboard, outside Tilo, which the policy grants the
             // app it is written in.
-            for action in ["copy", "copy_filled"] {
+            for action in ["copy", "copy_filled", "copy_text"] {
                 authority.grant_outside(&app.action(action));
             }
             let lib = rt.create_root("Library").unwrap();
@@ -244,6 +253,61 @@ mod cases {
         let page = snippets.window("snippet_page", vec![Value::resource(&restart)]);
         assert!(
             drawn(&page).contains(&"Copied once".to_owned()),
+            "{:?}",
+            drawn(&page)
+        );
+    }
+
+    #[test]
+    fn a_snippet_carrying_a_credential_is_copied_as_a_secret_that_leaves_the_clipboard() {
+        let snippets = Snippets::new();
+        let key = snippets.add("Staging key", "Ops");
+        snippets.write_body(&key, "export API_KEY=sk-live-4f2a");
+        let page = snippets.window("snippet_page", vec![Value::resource(&key)]);
+        assert!(
+            drawn(&page)
+                .iter()
+                .any(|said| said.contains("leaves the clipboard")),
+            "the page says a copy will not stay: {:?}",
+            drawn(&page)
+        );
+        snippets
+            .rt
+            .invoke_action(
+                &me(),
+                (
+                    snippets.app.action("copy").as_str(),
+                    vec![Value::resource(&key)],
+                ),
+            )
+            .unwrap_or_else(|error| panic!("copy: {error:?}"));
+        assert_eq!(snippets.copied(), "export API_KEY=sk-live-4f2a");
+        assert_eq!(
+            *snippets.selection.clears_after.borrow(),
+            Some(tilolang_runtime::clipboard::SECRET_CLEARS_AFTER),
+            "the key is a secret copy, taken off the clipboard again"
+        );
+
+        // A plain snippet is an ordinary copy, kept as any other.
+        let note = snippets.add("Greeting", "Writing");
+        snippets.write_body(&note, "Thanks for the quick review!");
+        snippets
+            .rt
+            .invoke_action(
+                &me(),
+                (
+                    snippets.app.action("copy").as_str(),
+                    vec![Value::resource(&note)],
+                ),
+            )
+            .unwrap_or_else(|error| panic!("copy: {error:?}"));
+        assert_eq!(snippets.copied(), "Thanks for the quick review!");
+        assert_eq!(*snippets.selection.clears_after.borrow(), None);
+        let page = snippets.window("snippet_page", vec![Value::resource(&note)]);
+        assert!(
+            !drawn(&page)
+                .iter()
+                .any(|said| said.contains("leaves the clipboard")),
             "{:?}",
             drawn(&page)
         );

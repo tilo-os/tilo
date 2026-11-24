@@ -191,7 +191,9 @@ translated in the package's catalogues like the text of a view (`d-<action>.w-<w
 `clipboard.copy(text)`, `clipboard.copy_image(file)`, `clipboard.paste()` and
 `clipboard.paste_image()` are the person's clipboard. A copy is theirs: it reaches their device
 and stays there as a copy of theirs, kept in their history and on their other devices like one
-they made in an app. A paste reads what is on the clipboard now, as an `Option<Text>` or an
+they made in an app. `clipboard.copy_secret(text)` copies a password, a token or a key: it pastes
+as text, histories and other devices are told not to keep it, and it leaves the clipboard after
+45 seconds unless something else was copied since. A paste reads what is on the clipboard now, as an `Option<Text>` or an
 `Option<File>` — an image the device keeps for the app once pasted. An action that copies or
 pastes declares `uses clipboard`; a view does neither, since it is drawn again from what it is
 shown.

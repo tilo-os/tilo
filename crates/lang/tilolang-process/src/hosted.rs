@@ -927,6 +927,14 @@ impl Platform for HostPlatform {
             .is_some_and(|clipboard| clipboard.copy(mime, bytes))
     }
 
+    /// `clipboard.copy_secret`: a secret copy on the session's selection, marked so histories and
+    /// device sync do not keep it, and taken off again once it has done its job.
+    fn copy_secret_clipboard(&self, text: &str, clear_after: std::time::Duration) -> bool {
+        self.clipboard
+            .as_ref()
+            .is_some_and(|clipboard| clipboard.copy_secret(text, clear_after))
+    }
+
     /// `clipboard.paste` and `clipboard.paste_image`: what the person's selection holds.
     fn paste_clipboard(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
         self.clipboard
@@ -1452,7 +1460,8 @@ struct Child {
     served: Option<(u64, tilo_actions::InvocationId)>,
     /// The person the served invocation acts for, when the broker named one: what the run goes
     /// on as when the answer comes.
-    person: Option<String>,    /// The asked record the call waits in, once the dispatch said a person is asked about it:
+    person: Option<String>,
+    /// The asked record the call waits in, once the dispatch said a person is asked about it:
     /// the served invocation said so once, naming it.
     asked: Option<String>,
 }

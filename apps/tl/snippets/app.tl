@@ -201,8 +201,36 @@ destructive action remove_tag(lib: Library, tag: Text) (
 /// Copies a snippet's body to the clipboard, and counts the use. A snippet with variables is
 /// filled in first (`begin_fill`), so what is copied is what the person meant.
 action copy(snippet: Snippet) uses clipboard (icon: .copy, label: "Copy", did: "copied a snippet") {
-    clipboard.copy(snippet.body)
+    copy_text(snippet.body)
     snippet.uses += 1
+}
+
+/// Puts `text` on the clipboard: as a secret, which histories do not keep and which leaves the
+/// clipboard after a while, when it looks like it carries a credential, so an API key does not
+/// stay there for whatever is pasted next.
+action copy_text(text: Text) uses clipboard {
+    if carries_a_credential(text) { clipboard.copy_secret(text) } else { clipboard.copy(text) }
+}
+
+/// Whether `text` looks like it carries a credential: a key, token, secret or password assigned
+/// a value, an authorization header, a private key, or the prefix of a well-known service's key.
+fn carries_a_credential(text: Text) -> Bool {
+    let lower = text.lower()
+    if lower.contains("bearer ") or lower.contains("-----begin ") {
+        return true
+    }
+    let named = ["api_key", "apikey", "token", "secret", "password", "authorization:"]
+    for word in named {
+        if lower.contains("{word}=") or lower.contains("{word}: ") {
+            return true
+        }
+    }
+    for prefix in ["sk-", "ghp_", "xoxb-", "akia"] {
+        if lower.contains(prefix) {
+            return true
+        }
+    }
+    false
 }
 
 /// Starts filling in a snippet's variables: one field for each variable its body holds, emptied.
@@ -226,7 +254,7 @@ action copy_filled(lib: Library, fill: Fill) uses clipboard (
     did: "copied a snippet",
 ) {
     let snippet = fill.snippet ?? Snippet(title: "")
-    clipboard.copy(expanded(snippet.body, fill))
+    copy_text(expanded(snippet.body, fill))
     snippet.uses += 1
     clear_fill(fill)
 }
@@ -579,6 +607,13 @@ view snippet_page(snippet: Snippet) {
                 ) {
                     on press: if has_variables { begin_fill(lib, snippet) } else { copy(snippet) }
                 }
+            }
+            if carries_a_credential(snippet.body) {
+                text(
+                    "It looks like a credential, so a copy leaves the clipboard in under a minute",
+                    role: .caption,
+                    secondary: true,
+                )
             }
             ui.CodeEditor(
                 bind: snippet.body,

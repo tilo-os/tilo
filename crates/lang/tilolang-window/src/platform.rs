@@ -145,6 +145,14 @@ impl Platform for Packages {
         self.clipboard.set_text(ClipboardTarget::Clipboard, text)
     }
 
+    /// `clipboard.copy_secret`: the browser's clipboard as the page's secret copy, as a Rust app's
+    /// on the web is. A page can neither mark it nor wait to take it off again, so it pastes as
+    /// the person copied it and stays until the next copy.
+    fn copy_secret_clipboard(&self, text: &str, clear_after: std::time::Duration) -> bool {
+        let _ = clear_after;
+        self.clipboard.set_secret_text(text)
+    }
+
     /// `clipboard.paste` and `clipboard.paste_image`: what the person's selection holds, read
     /// from the browser's clipboard events; outside one a read answers nothing, as a page that
     /// was not granted it does.

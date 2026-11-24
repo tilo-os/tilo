@@ -3254,6 +3254,7 @@ impl Checker<'_> {
     fn builtin_clipboard(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let (imp, ty) = match name.name.as_str() {
             "copy" => (Imp::ClipboardCopyText, Ty::Bool),
+            "copy_secret" => (Imp::ClipboardCopySecret, Ty::Bool),
             "copy_image" => (Imp::ClipboardCopyImage, Ty::Bool),
             "paste" => (Imp::ClipboardPasteText, Ty::Option(Box::new(Ty::Text))),
             "paste_image" => (Imp::ClipboardPasteImage, Ty::Option(Box::new(Ty::File))),
@@ -3262,8 +3263,9 @@ impl Checker<'_> {
                     "E022",
                     name.span,
                     format!(
-                        "`clipboard` has `copy`, `copy_image`, `paste` and `paste_image`, not \
-                         `{other}`: `clipboard.copy(text)`, `clipboard.copy_image(file)`, \
+                        "`clipboard` has `copy`, `copy_secret`, `copy_image`, `paste` and \
+                         `paste_image`, not `{other}`: `clipboard.copy(text)`, \
+                         `clipboard.copy_secret(text)`, `clipboard.copy_image(file)`, \
                          `clipboard.paste()` and `clipboard.paste_image()`"
                     ),
                 );
@@ -3277,6 +3279,7 @@ impl Checker<'_> {
         self.reads(crate::effects::Effect::Clipboard, span, &what);
         let (held, said) = match name.name.as_str() {
             "copy" => (Some(Ty::Text), "the text to copy"),
+            "copy_secret" => (Some(Ty::Text), "the secret to copy"),
             "copy_image" => (Some(Ty::File), "the image file to copy"),
             _ => (None, ""),
         };

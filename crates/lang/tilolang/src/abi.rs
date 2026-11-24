@@ -524,6 +524,7 @@ imports! {
     // The clipboard: text or an image file offered as the person's copy, and the text or the image
     // on it now (an `Option`).
     ClipboardCopyText = "clipboard_copy_text" ([H] -> [I32]);
+    ClipboardCopySecret = "clipboard_copy_secret" ([H] -> [I32]);
     ClipboardCopyImage = "clipboard_copy_image" ([H] -> [I32]);
     ClipboardPasteText = "clipboard_paste_text" ([] -> [H]);
     ClipboardPasteImage = "clipboard_paste_image" ([] -> [H]);

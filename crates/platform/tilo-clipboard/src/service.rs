@@ -226,6 +226,35 @@ impl Connected {
         self.copy_formats(Target::Clipboard, false, &[(mime, bytes)])
     }
 
+    /// Offer `text` as a secret copy (a password, a token, a key) that histories and device sync
+    /// must not keep, and take it off the clipboard after `clear_after` unless the person copied
+    /// something else meanwhile, so a later copy is never destroyed: what a Rust app's
+    /// `ui::try_clipboard_copy_secret` does, for tilolang's runtime. False when the session did
+    /// not take it.
+    #[must_use]
+    pub fn copy_secret(self: &Arc<Self>, text: &str, clear_after: Duration) -> bool {
+        if !self.copy_formats(Target::Clipboard, true, &[("text/plain", text.as_bytes())]) {
+            return false;
+        }
+        let clipboard = Arc::clone(self);
+        let secret = text.to_owned();
+        let cleared = std::thread::Builder::new()
+            .name("clipboard-secret-clear".to_owned())
+            .spawn(move || {
+                std::thread::sleep(clear_after);
+                let held = clipboard.paste(&["text/plain"]);
+                if held.is_some_and(|(_, bytes)| bytes == secret.as_bytes()) {
+                    let _ = clipboard.copy_formats(Target::Clipboard, true, &[("text/plain", b"")]);
+                }
+            });
+        // A clear that cannot be scheduled must not leave the secret behind: take it back now.
+        if cleared.is_err() {
+            let _ = self.copy_formats(Target::Clipboard, true, &[("text/plain", b"")]);
+            return false;
+        }
+        true
+    }
+
     /// Offer `formats` as the person's copy on `target`, marked secret for a copy histories and
     /// device sync must not keep: false when the session did not take it, or a format is larger
     /// than the clipboard holds.
@@ -654,6 +683,45 @@ mod tests {
             ServiceClipboard(Connected::connect(rust_app).expect("the connection is usable")),
             Connected::connect(lang_app).expect("the connection is usable"),
         )
+    }
+
+    /// What the selection holds as text now.
+    fn text_held(selection: &Selection) -> Option<Vec<u8>> {
+        selection
+            .paste(Target::Clipboard, &["text/plain"])
+            .into_iter()
+            .next()
+            .map(|(_, bytes)| bytes)
+    }
+
+    #[test]
+    fn a_tilolang_secret_copy_leaves_the_clipboard_unless_something_else_was_copied() {
+        let (selection, rust, lang) = served();
+        let lang = Arc::new(lang);
+        assert!(lang.copy_secret("sk-live-1234", Duration::from_millis(50)));
+        assert!(
+            *held(selection.secret.lock()),
+            "histories are told it is a secret"
+        );
+        assert_eq!(text_held(&selection).as_deref(), Some(&b"sk-live-1234"[..]));
+        let gone = std::time::Instant::now() + Duration::from_secs(10);
+        while text_held(&selection).as_deref() != Some(&b""[..]) {
+            assert!(
+                std::time::Instant::now() < gone,
+                "the secret is taken off the clipboard"
+            );
+            std::thread::yield_now();
+        }
+
+        // A copy the person makes after the secret is theirs: the clear leaves it alone.
+        assert!(lang.copy_secret("hunter2", Duration::from_millis(50)));
+        assert!(rust.set_text(ClipboardTarget::Clipboard, "the next thing"));
+        std::thread::park_timeout(Duration::from_millis(300));
+        assert_eq!(
+            text_held(&selection).as_deref(),
+            Some(&b"the next thing"[..]),
+            "a later copy is never destroyed"
+        );
     }
 
     #[test]
