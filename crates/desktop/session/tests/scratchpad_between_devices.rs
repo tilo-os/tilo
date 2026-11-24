@@ -49,31 +49,67 @@ fn open_the_note(first: &Device, second: &Device) {
     }
 }
 
-/// The note as the app on `device` reads it: its own document, the one its window draws.
-fn note_text(device: &Device) -> Option<String> {
-    let answer = device.app_act(SCRATCHPAD, "read", &json!({}));
-    body_in(answer.pointer("/update/output/value")?)
+/// The note as `device`'s workspace service keeps it: its document, as the window draws it.
+#[track_caller]
+fn note_document(device: &Device, workspace: &str) -> Option<automerge::AutoCommit> {
+    let result = match device.frame(RemoteActionMessage::ResourceRead {
+        correlation: 1,
+        on_behalf_of: None,
+        read: ResourceReadRequest {
+            workspace: workspace.to_owned(),
+            app: SCRATCHPAD.to_owned(),
+            // The app's one record of the workspace.
+            record: String::new(),
+            joined: false,
+            after: None,
+            wait_ms: Some(1_000),
+            answer: tilo_actions::remote::ReadAnswer::Document,
+        },
+    }) {
+        RemoteActionMessage::ResourceReading { result, .. } => result,
+        other => panic!("{} answers a record read with {other:?}", device.label),
+    };
+    let readings: Value = serde_json::from_str(
+        &result.unwrap_or_else(|error| panic!("{} reads the note: {error}", device.label)),
+    )
+    .expect("a reading is JSON");
+    let document = readings["records"]
+        .as_array()
+        .and_then(|records| records.first())
+        .and_then(|record| record["document"].as_str())?;
+    let bytes = hex::decode(document).expect("a document is hex");
+    Some(automerge::AutoCommit::load(&bytes).expect("the note is an automerge document"))
 }
 
-/// The first `body` field in `value`, wherever a reading nests it.
-fn body_in(value: &Value) -> Option<String> {
-    match value {
-        Value::Object(fields) => fields
-            .get("body")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or_else(|| fields.values().find_map(body_in)),
-        Value::Array(items) => items.iter().find_map(body_in),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
+/// The note's body at `heads` (the note as it stood then), or now.
+#[track_caller]
+fn body_at(document: &automerge::AutoCommit, heads: Option<&[automerge::ChangeHash]>) -> Option<String> {
+    use automerge::ReadDoc as _;
+    let (value, body) = document
+        .get(automerge::ROOT, "body")
+        .expect("the note's document reads")?;
+    assert!(
+        matches!(value, automerge::Value::Object(automerge::ObjType::Text)),
+        "the note's body is a text object, not {value:?}"
+    );
+    match heads {
+        Some(heads) => document.text_at(&body, heads).ok(),
+        None => document.text(&body).ok(),
     }
+}
+
+/// The note as the app on `device` reads it: its body, the words its window draws.
+fn note_text(device: &Device, workspace: &str) -> Option<String> {
+    let document = note_document(device, workspace)?;
+    body_at(&document, None)
 }
 
 /// Wait until the app on `device` reads exactly `wanted`.
 #[track_caller]
-fn wait_for_text(device: &Device, wanted: &str) -> String {
+fn wait_for_text(device: &Device, workspace: &str, wanted: &str) -> String {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let read = note_text(device);
+        let read = note_text(device, workspace);
         if read.as_deref() == Some(wanted) {
             return wanted.to_owned();
         }
@@ -89,10 +125,10 @@ fn wait_for_text(device: &Device, wanted: &str) -> String {
 
 /// Wait until the app on `device` reads words holding `wanted`, and answer what it read.
 #[track_caller]
-fn wait_for_words(device: &Device, wanted: &str) -> String {
+fn wait_for_words(device: &Device, workspace: &str, wanted: &str) -> String {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let read = note_text(device).unwrap_or_default();
+        let read = note_text(device, workspace).unwrap_or_default();
         if read.contains(wanted) {
             return read;
         }
@@ -192,9 +228,13 @@ fn undo(device: &Device) {
 /// The note's text at the version `version` (a change's hash or a causal frontier), read by the
 /// app on `device` from the history its document keeps.
 #[track_caller]
-fn text_at_version(device: &Device, version: &str) -> Option<String> {
-    let answer = device.app_act(SCRATCHPAD, "read", &json!({ "version": version }));
-    body_in(answer.pointer("/update/output/value/content")?)
+fn text_at_version(device: &Device, workspace: &str, version: &str) -> Option<String> {
+    let heads: Vec<automerge::ChangeHash> = version
+        .split('+')
+        .map(|hash| hash.parse().expect("a version names change hashes"))
+        .collect();
+    let document = note_document(device, workspace)?;
+    body_at(&document, Some(&heads))
 }
 
 /// The heads of the note's record as `device`'s workspace service keeps it: the frontier a
@@ -346,7 +386,7 @@ fn an_edit_on_one_members_note_reaches_the_other_with_its_caret_and_history() {
     open_the_note(&first, &second);
 
     // The note starts empty on both devices: nobody has written it yet.
-    let opened = note_text(&first);
+    let opened = note_text(&first, &site.workspace);
     assert!(
         opened.as_deref().is_none_or(str::is_empty),
         "{} opens an empty note, not {opened:?}\n{}",
@@ -357,17 +397,17 @@ fn an_edit_on_one_members_note_reaches_the_other_with_its_caret_and_history() {
     // Typed on the first device, through its own editor.
     press_in_the_note(&first);
     first.type_text(TYPED);
-    wait_for_text(&first, TYPED);
+    wait_for_text(&first, &site.workspace, TYPED);
 
     // The other's open note shows the same words: the record reached its device, and its app
     // merged the changes into its own document.
-    assert_eq!(wait_for_text(&second, TYPED), TYPED);
+    assert_eq!(wait_for_text(&second, &site.workspace, TYPED), TYPED);
 
     // The version the second device's history holds is the first's edit: nobody has written
     // there since.
     let version = record_heads(&second, &site.workspace).join("+");
     assert_eq!(
-        text_at_version(&second, &version).as_deref(),
+        text_at_version(&second, &site.workspace, &version).as_deref(),
         Some(TYPED),
         "the second Scratchpad reads the first's words as a version of the note\n{}",
         second.diagnostic()
@@ -389,7 +429,7 @@ fn an_edit_on_one_members_note_reaches_the_other_with_its_caret_and_history() {
         "the caret moved with the first member, so it is theirs and it is here"
     );
     assert_eq!(
-        note_text(&second).as_deref(),
+        note_text(&second, &site.workspace).as_deref(),
         Some(TYPED),
         "the caret moved and no word did\n{}",
         second.diagnostic()
@@ -398,9 +438,9 @@ fn an_edit_on_one_members_note_reaches_the_other_with_its_caret_and_history() {
     // The second member types their own word after the first's, at their own caret.
     press_in_the_note(&second);
     second.type_text(ANSWERED);
-    let both = wait_for_words(&second, ANSWERED);
+    let both = wait_for_words(&second, &site.workspace, ANSWERED);
     assert_eq!(
-        wait_for_text(&first, &both),
+        wait_for_text(&first, &site.workspace, &both),
         both,
         "the first reads what the second typed"
     );
@@ -408,12 +448,12 @@ fn an_edit_on_one_members_note_reaches_the_other_with_its_caret_and_history() {
     // One undo takes back the second's word, and only that: both devices read the first's words
     // again.
     undo(&second);
-    wait_for_text(&second, TYPED);
-    wait_for_text(&first, TYPED);
+    wait_for_text(&second, &site.workspace, TYPED);
+    wait_for_text(&first, &site.workspace, TYPED);
 
     // And the first member's edit is still in the second device's history.
     assert_eq!(
-        text_at_version(&second, &version).as_deref(),
+        text_at_version(&second, &site.workspace, &version).as_deref(),
         Some(TYPED),
         "the second's history still holds the first's edit\n{}",
         second.diagnostic()

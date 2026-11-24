@@ -1944,19 +1944,18 @@ impl Device {
         answer
     }
 
-    /// Install the Files app in this device's store as a desktop that carries it has it: the surface
-    /// its package ships, under a signed root. A session reads the records of the person's that an
-    /// installed app keeps from its store, before the app ever runs, and the daemon that serves this
-    /// device's trees is that app's endpoint: a session serves no tree record for an app it cannot
-    /// read as installed.
+    /// Install the Files app in this device's store, the tilolang package this run built. A
+    /// session reads the records of the person's that an installed app keeps from its store,
+    /// before the app ever runs, and the daemon that serves this device's trees is that app's
+    /// endpoint: a session serves no tree record for an app it cannot read as installed.
     pub fn install_files(&self) {
-        self.install("so.tilo.file-explorer", files_install());
+        super::dev_apps::install_named(&self.store(), &[FILES_APP]);
     }
 
-    /// Install Scratchpad in this device's store: the Rust app whose one note is the workspace's
-    /// record, so what either device writes the other's window shows.
+    /// Install Scratchpad in this device's store, the tilolang package this run built: its one
+    /// note is the workspace's record, so what either device writes the other's window shows.
     pub fn install_scratchpad(&self) {
-        self.install(tilo_app_id::apps::SCRATCHPAD, scratchpad_install());
+        super::dev_apps::install_named(&self.store(), &[tilo_app_id::apps::SCRATCHPAD]);
     }
 
     /// What this device publishes now, every page of it: its resources and their actions.
@@ -2242,27 +2241,6 @@ impl Drop for Device {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-/// The payload Files is installed from here ([`stage`]), with the digest of its signed root.
-fn files_install() -> &'static (PathBuf, String) {
-    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
-    INSTALL.get_or_init(|| stage("file-explorer", &[]))
-}
-
-/// The payload Scratchpad is installed from here ([`stage`]), with the digest of its signed root:
-/// the Rust app this run built, under the manifest its package ships.
-fn scratchpad_install() -> &'static (PathBuf, String) {
-    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
-    INSTALL.get_or_init(|| {
-        stage(
-            "scratchpad",
-            &[(
-                tilo_test_env::sibling_binary("scratchpad", "scratchpad"),
-                "scratchpad",
-            )],
-        )
-    })
 }
 
 /// The payload Passwords is installed from here ([`stage`]), with the digest of its signed root.
