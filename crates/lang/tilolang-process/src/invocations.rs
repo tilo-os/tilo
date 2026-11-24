@@ -120,12 +120,12 @@ impl Invocations {
     }
 
     /// Run `line`, which the person typed in `target`, as their own step.
-    pub fn run_line(&mut self, target: &ResourceRef, line: String) {
+    pub fn run_line(&mut self, target: &ResourceRef, line: &str) {
         let place = call_place(target);
         let lines = self.lines.entry(place.clone()).or_default();
         let at = lines.len();
         lines.push(LineRun {
-            line: line.clone(),
+            line: line.to_owned(),
             running: true,
             said: String::new(),
             failed: false,
@@ -133,7 +133,7 @@ impl Invocations {
         self.lines_moved.insert(place.clone());
         let request = request(
             tilo_actions::remote::session_actions::run_line_target(),
-            json!({ "line": line }),
+            &json!({ "line": line }),
         );
         self.asked
             .insert(request.invocation, Asked::Line { place, at });
@@ -327,7 +327,7 @@ impl Invocations {
             .and_then(|lines| lines.get_mut(at))
         {
             line.running = false;
-            line.said = said.to_owned();
+            said.clone_into(&mut line.said);
             line.failed = failed;
             self.lines_moved.insert(place.to_owned());
         }
@@ -335,7 +335,7 @@ impl Invocations {
 }
 
 /// An invocation of `target` with `argument`, as the instance's own call.
-fn request(target: tilo_actions::remote::RemoteActionTarget, argument: Value) -> InvokeRequest {
+fn request(target: tilo_actions::remote::RemoteActionTarget, argument: &Value) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
         target,

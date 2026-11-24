@@ -450,8 +450,11 @@ impl ShellPage {
                 return;
             }
         };
-        self.styles_after = readings["revision"].as_str().map(str::to_owned);
-        let Some(record) = readings["records"].get(0) else {
+        self.styles_after = readings
+            .get("revision")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let Some(record) = readings.get("records").and_then(|records| records.get(0)) else {
             return;
         };
         let styles = if record["absent"].as_bool() == Some(true) {
@@ -680,7 +683,7 @@ fn taken(invocation: &Invocation) -> Option<Taken> {
         args.iter()
             .find(|(parameter, _)| parameter == name)
             .and_then(|(_, value)| match value {
-                tilolang_tilo::runtime::Value::Text(text) => Some(text.to_string()),
+                tilolang_tilo::runtime::Value::Text(text) => Some(text.clone()),
                 _ => None,
             })
     };

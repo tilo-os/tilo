@@ -48,10 +48,12 @@ pub fn start(app: &str, op: &str, input: &str) -> Result<String, String> {
 ///
 /// No such job on this device.
 pub fn status(job: &str) -> Result<String, String> {
-    let known = jobs()
+    let running = jobs()
         .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?;
-    let Some(running) = known.get(job) else {
+        .map_err(|_| "the job table is unreadable".to_owned())?
+        .get(job)
+        .cloned();
+    let Some(running) = running else {
         return Err(format!("no job `{job}` runs on this device"));
     };
     if running.cancel.load(Ordering::Relaxed) {

@@ -63,7 +63,7 @@ pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result
         return Err(format!("`{op}` is no op this device runs for {app}"));
     }
     match op {
-        "cameras" => cameras(),
+        "cameras" => Ok(cameras()),
         "frame" => frame(platform, input),
         "still" => still(platform, input),
         "codes" => codes(platform, input),
@@ -96,10 +96,12 @@ pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Resul
 ///
 /// No such job on this device.
 pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
-    let known = jobs()
+    let state = jobs()
         .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?;
-    let Some(state) = known.get(job) else {
+        .map_err(|_| "the job table is unreadable".to_owned())?
+        .get(job)
+        .cloned();
+    let Some(state) = state else {
         return Err(format!("no job `{job}` runs on this device"));
     };
     state.settle(platform);
@@ -139,6 +141,9 @@ pub fn cancel(job: &str) -> bool {
     true
 }
 
+/// A page the scanner answered: its name, and the bytes its receiver keeps.
+type Scan = (String, Receiver<Result<Vec<u8>, String>>);
+
 /// One job in flight, and what it made.
 struct Job {
     finished: AtomicBool,
@@ -147,8 +152,8 @@ struct Job {
     recording: AtomicBool,
     error: Mutex<Option<String>>,
     url: Mutex<Option<String>>,
-    /// A page the scanner answered: its name, and the bytes it wrote.
-    scan: Mutex<Option<(String, Receiver<Result<Vec<u8>, String>>)>>,
+    /// A page the scanner answered, kept as the job's file on the next ask.
+    scan: Mutex<Option<Scan>>,
     /// A clip the camera thread answered: what it is called, and its bytes with its duration.
     clip: Mutex<Option<Clip>>,
 }
@@ -263,14 +268,14 @@ fn file_json(name: &str, media: &str, bytes: usize, hash: &str) -> String {
     .to_string()
 }
 
-fn cameras() -> Result<String, String> {
+fn cameras() -> String {
     let devices = tilo_capture::devices(tilo_capture::DeviceKind::Camera)
         .into_iter()
         .map(|device| serde_json::json!({ "id": device.id, "label": device.label }))
         .collect::<Vec<_>>();
     let prompt = tilo_capture::availability(tilo_capture::Feature::Camera)
         == tilo_capture::Availability::Prompt;
-    Ok(serde_json::json!({ "devices": devices, "prompt": prompt }).to_string())
+    serde_json::json!({ "devices": devices, "prompt": prompt }).to_string()
 }
 
 #[derive(Deserialize)]
@@ -356,18 +361,18 @@ fn picture_with(
     } else {
         name
     };
-    let kept = platform
-        .keep_content(&name, encoding.mime(), &bytes)
-        .map_err(|error| error.to_string())?;
+    let kept = platform.keep_content(&name, encoding.mime(), &bytes)?;
     Ok(file_json(&name, encoding.mime(), bytes.len(), &kept.hash))
 }
 
 /// The frame scaled to `width` at most, its aspect kept.
 fn fit(frame: &tilo_capture::Frame, width: u32) -> DecodedImage {
     let wanted = width.clamp(1, frame.width.max(1));
-    let height =
-        (u64::from(frame.height) * u64::from(wanted) / u64::from(frame.width.max(1))).max(1);
-    let height = u32::try_from(height).unwrap_or(frame.height.max(1));
+    let height = u64::from(frame.height)
+        .saturating_mul(u64::from(wanted))
+        .checked_div(u64::from(frame.width.max(1)))
+        .unwrap_or(0);
+    let height = u32::try_from(height.max(1)).unwrap_or_else(|_| frame.height.max(1));
     if wanted == frame.width && height == frame.height {
         return DecodedImage {
             rgba: frame.rgba.clone(),
@@ -375,14 +380,27 @@ fn fit(frame: &tilo_capture::Frame, width: u32) -> DecodedImage {
             height: frame.height,
         };
     }
-    let mut rgba = Vec::with_capacity(usize::try_from(wanted * height * 4).unwrap_or(0));
+    let pixels = usize::try_from(wanted)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX))
+        .saturating_mul(4);
+    let mut rgba = Vec::with_capacity(pixels);
     for y in 0..height {
-        let source_y = u64::from(y) * u64::from(frame.height) / u64::from(height);
+        let source_y = u64::from(y)
+            .saturating_mul(u64::from(frame.height))
+            .checked_div(u64::from(height))
+            .unwrap_or(0);
         for x in 0..wanted {
-            let source_x = u64::from(x) * u64::from(frame.width) / u64::from(wanted);
-            let at = (source_y * u64::from(frame.width) + source_x) * 4;
+            let source_x = u64::from(x)
+                .saturating_mul(u64::from(frame.width))
+                .checked_div(u64::from(wanted))
+                .unwrap_or(0);
+            let at = source_y
+                .saturating_mul(u64::from(frame.width))
+                .saturating_add(source_x)
+                .saturating_mul(4);
             let at = usize::try_from(at).unwrap_or(0);
-            match frame.rgba.get(at..at + 4) {
+            match frame.rgba.get(at..at.saturating_add(4)) {
                 Some(pixel) => rgba.extend_from_slice(pixel),
                 None => rgba.extend_from_slice(&[0, 0, 0, 255]),
             }
@@ -399,8 +417,7 @@ fn fit(frame: &tilo_capture::Frame, width: u32) -> DecodedImage {
 fn now_name() -> String {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_millis())
-        .unwrap_or(0);
+        .map_or(0, |since| since.as_millis());
     format!("{millis}")
 }
 
@@ -517,7 +534,7 @@ fn pages_pdf(platform: &dyn Platform, input: &str) -> Result<String, String> {
         let rgb = decoded
             .rgba
             .chunks_exact(4)
-            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+            .flat_map(|pixel| pixel.iter().take(3).copied())
             .collect();
         pages.push(tilo_doc_pdf::ScannedPdfPage {
             width: decoded.width,
@@ -527,9 +544,7 @@ fn pages_pdf(platform: &dyn Platform, input: &str) -> Result<String, String> {
         });
     }
     let pdf = tilo_doc_pdf::render_scanned_pdf(&pages);
-    let kept = platform
-        .keep_content(&ask.name, "application/pdf", &pdf)
-        .map_err(|error| error.to_string())?;
+    let kept = platform.keep_content(&ask.name, "application/pdf", &pdf)?;
     Ok(serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string())
 }
 
@@ -613,6 +628,9 @@ impl Job {
     }
 }
 
+/// What a stopped recording answers: its bytes, its duration, and its frame size.
+type ClipAnswer = (Vec<u8>, i64, u32, u32);
+
 /// What the camera thread is told, and what it answers.
 enum Control {
     /// The newest frame of the camera `key`, opening it when it is not the one open.
@@ -628,7 +646,7 @@ enum Control {
     },
     /// Finish the clip: its bytes, its duration, and its size.
     StopRecord {
-        reply: Sender<Result<(Vec<u8>, i64, u32, u32), String>>,
+        reply: Sender<Result<ClipAnswer, String>>,
     },
     /// Throw the clip away.
     CancelRecord { reply: Sender<()> },
@@ -641,7 +659,7 @@ fn keeper() -> Option<&'static Mutex<Sender<Control>>> {
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::Builder::new()
                 .name("camera-keeper".to_owned())
-                .spawn(move || keep(rx))
+                .spawn(move || keep(&rx))
                 .ok()
                 .map(|_| Mutex::new(tx))
         })
@@ -650,23 +668,23 @@ fn keeper() -> Option<&'static Mutex<Sender<Control>>> {
 
 /// The camera thread: one capture open at a time, drained for the newest frame, and the clip
 /// the app asked for.
-fn keep(rx: Receiver<Control>) {
+fn keep(rx: &Receiver<Control>) {
     let mut open: Option<(String, tilo_capture::VideoCapture)> = None;
     let mut latest: Option<tilo_capture::Frame> = None;
     let mut recorder: Option<media::clip::Recorder> = None;
     loop {
         let control = rx.recv_timeout(POLL);
-        if let Some(capture) = open.as_mut().map(|(_, capture)| capture) {
-            if let Some(frame) = capture.take_latest() {
-                if let Some(recorder) = recorder.as_mut() {
-                    recorder.push(&media::clip::Frame {
-                        width: frame.width,
-                        height: frame.height,
-                        rgba: &frame.rgba,
-                    });
-                }
-                latest = Some(frame);
+        if let Some(capture) = open.as_mut().map(|(_, capture)| capture)
+            && let Some(frame) = capture.take_latest()
+        {
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.push(&media::clip::Frame {
+                    width: frame.width,
+                    height: frame.height,
+                    rgba: &frame.rgba,
+                });
             }
+            latest = Some(frame);
         }
         match control {
             Ok(Control::Frame { key, ask, reply }) => {
@@ -684,10 +702,7 @@ fn keep(rx: Receiver<Control>) {
                 // A frame already taken is the answer; a camera that just opened is waited for
                 // its first, for as long as a person waits before calling it broken.
                 let waited = std::time::Instant::now();
-                loop {
-                    let Some(capture) = open.as_mut().map(|(_, capture)| capture) else {
-                        break;
-                    };
+                while let Some(capture) = open.as_mut().map(|(_, capture)| capture) {
                     if let Some(frame) = capture.take_latest() {
                         latest = Some(frame);
                         break;
@@ -764,7 +779,7 @@ fn ask_frame(ask: &PictureAsk) -> Result<tilo_capture::Frame, String> {
         })
         .map_err(|_| "the camera thread is gone".to_owned())?;
     answered
-        .recv_timeout(FIRST_FRAME + POLL)
+        .recv_timeout(FIRST_FRAME.saturating_add(POLL))
         .map_err(|_| "the camera did not answer".to_owned())?
 }
 
@@ -781,7 +796,7 @@ fn record(input: &str) -> Result<String, String> {
         })
         .map_err(|_| "the camera thread is gone".to_owned())?;
     answered
-        .recv_timeout(FIRST_FRAME + POLL)
+        .recv_timeout(FIRST_FRAME.saturating_add(POLL))
         .map_err(|_| "the camera did not answer".to_owned())??;
     let id = next_job_id();
     jobs()
@@ -834,9 +849,10 @@ fn stop_record(input: &str) -> Result<String, String> {
 
 /// The JPEG encoder the clip recorder feeds, through the one image codec.
 fn encode_jpeg_rgb(rgb: &[u8], width: u32, height: u32, quality: u8) -> Option<Vec<u8>> {
-    let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
+    let mut rgba = Vec::with_capacity((rgb.len() / 3).saturating_mul(4));
     for pixel in rgb.chunks_exact(3) {
-        rgba.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+        rgba.extend_from_slice(pixel);
+        rgba.push(255);
     }
     tilo_image_codec::encode_now(
         &DecodedImage {

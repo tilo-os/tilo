@@ -56,10 +56,12 @@ pub fn start(_platform: &dyn Platform, app: &str, op: &str, input: &str) -> Resu
 ///
 /// No such job on this device.
 pub fn status(job: &str) -> Result<String, String> {
-    let known = jobs()
+    let state = jobs()
         .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?;
-    let Some(state) = known.get(job) else {
+        .map_err(|_| "the job table is unreadable".to_owned())?
+        .get(job)
+        .cloned();
+    let Some(state) = state else {
         return Err(format!("no job `{job}` runs on this device"));
     };
     let lines = state
@@ -164,7 +166,7 @@ fn pull(input: &str) -> Result<String, String> {
                     if let Ok(mut lines) = lines.lock() {
                         lines.push(line);
                         if lines.len() > LINES_KEPT {
-                            let cut = lines.len() - LINES_KEPT;
+                            let cut = lines.len().saturating_sub(LINES_KEPT);
                             lines.drain(..cut);
                         }
                     }

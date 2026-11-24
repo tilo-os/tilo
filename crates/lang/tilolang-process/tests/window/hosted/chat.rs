@@ -192,23 +192,22 @@ fn agent_sends_view(session: &mut Session, direct: &ResourceRef, title: &str, de
 }
 
 /// What the dispatch records of the invocation `id`: the window reads it with `invoked(id)`.
-fn dispatched(session: &Session, id: &str, record: Invoked) {
+fn dispatched(session: &Session, id: &str, record: &Invoked) {
     session
         .instance_host()
         .runtime()
-        .set_invoked(id, Some(&record));
+        .set_invoked(id, Some(record));
 }
 
 /// Record a turn and its steps on the dispatch, in the order the window reads them: the turn
 /// first, so the view reads its steps, then each step. A record set before the window read it is
 /// the dispatch's to read again, and the window's reader of invocations clears what it has not
 /// read yet.
-fn dispatch_a_turn(session: &mut Session, turn: Invoked, steps: &[Invoked]) {
-    let turn_id = turn.id.clone();
-    dispatched(session, &turn_id, turn);
+fn dispatch_a_turn(session: &mut Session, turn: &Invoked, steps: &[Invoked]) {
+    dispatched(session, &turn.id, turn);
     session.settle();
     for step in steps {
-        dispatched(session, &step.id, step.clone());
+        dispatched(session, &step.id, step);
     }
     session.settle();
 }
@@ -377,7 +376,7 @@ fn an_agents_answer_stands_with_its_turn_and_author() {
     );
     dispatch_a_turn(
         &mut session,
-        turn_in(&workspace, turn, "ended", vec![step.to_owned()]),
+        &turn_in(&workspace, turn, "ended", vec![step.to_owned()]),
         &[step_in(&workspace, step, "ended", "Wrote the plan")],
     );
 
@@ -475,7 +474,7 @@ fn an_agents_ask_shows_and_the_persons_answer_goes_to_the_dispatch() {
     );
     dispatch_a_turn(
         &mut session,
-        turn_in(&workspace, turn, "waiting", vec![step.to_owned()]),
+        &turn_in(&workspace, turn, "waiting", vec![step.to_owned()]),
         &[step_in(&workspace, step, "waiting", "Send the plan")],
     );
 
@@ -529,7 +528,7 @@ fn an_agents_ask_shows_and_the_persons_answer_goes_to_the_dispatch() {
     // the conversation, with nothing left to answer.
     dispatch_a_turn(
         &mut session,
-        turn_in(&workspace, turn, "ended", vec![step.to_owned()]),
+        &turn_in(&workspace, turn, "ended", vec![step.to_owned()]),
         &[step_in(&workspace, step, "ended", "Sent the plan")],
     );
     agent_says(
@@ -621,6 +620,7 @@ fn glide(session: &mut Session) {
 /// turn is, so the dispatch ends it and what it wrote so far stays.
 #[test]
 fn a_running_turn_is_stopped_from_its_message() {
+    use ui::tilo_actions::remote::{InvokeArgument, RemoteActionMessage};
     let _settled = ui::motion::testing::settled();
     let (mut session, workspace) = chat_with_an_agent();
     open_the_agents_conversation(&mut session);
@@ -641,7 +641,7 @@ fn a_running_turn_is_stopped_from_its_message() {
     );
     dispatch_a_turn(
         &mut session,
-        turn_in(&workspace, turn, "running", Vec::new()),
+        &turn_in(&workspace, turn, "running", Vec::new()),
         &[],
     );
 
@@ -659,7 +659,6 @@ fn a_running_turn_is_stopped_from_its_message() {
     session.window.press_named("Stop");
     session.settle();
 
-    use ui::tilo_actions::remote::{InvokeArgument, RemoteActionMessage};
     let cancelled = session.sent.borrow().iter().any(|request| {
         let collaboration::CollabRequest::RemoteAction {
             message: RemoteActionMessage::Invoke(request),
@@ -781,7 +780,7 @@ fn a_person_replies_to_a_message_and_the_window_quotes_what_it_answers() {
         .a11y_nodes()
         .iter()
         .filter_map(|(_, node)| {
-            (node.label().as_deref() == Some("Reply"))
+            (node.label() == Some("Reply"))
                 .then(|| node.bounds())
                 .flatten()
                 .filter(|rect| rect.y1 <= answer_at.y0 + 1.0)

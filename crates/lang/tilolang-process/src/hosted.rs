@@ -1273,6 +1273,19 @@ impl Answers {
     }
 }
 
+/// What the system's media controls were last told this instance plays: told nothing, told it
+/// plays nothing, or told what it plays.
+#[derive(Default)]
+enum MediaSaid {
+    /// The controls have not been told yet.
+    #[default]
+    Untold,
+    /// The controls were told the instance plays nothing.
+    Nothing,
+    /// The controls were told what the instance plays.
+    Playing(runtime_portal::process_link::MediaView),
+}
+
 /// One app instance. See the module docs.
 pub struct Hosted {
     spec: Spec,
@@ -1387,7 +1400,7 @@ pub struct Hosted {
     outputs_sent: Option<Vec<u8>>,
     /// What the system's media controls were last told this instance plays: said again only
     /// when it moved.
-    media_said: Option<Option<runtime_portal::process_link::MediaView>>,
+    media_said: MediaSaid,
     /// The folders this instance watches for `File.watch`, shared with the platform that
     /// registered them: each turn runs the action of a folder that changed.
     watches: Rc<crate::files::Watches>,
@@ -1445,6 +1458,155 @@ impl DocumentScope {
     }
 }
 
+/// What opening a host makes before the host itself: its instance, and the parts the host keeps.
+struct Opened {
+    instance: Instance,
+    surface: SurfaceSlot,
+    builds: BuildsSlot,
+    /// What the person may do in the app, which the instance reads at each decision.
+    access: Rc<RefCell<Option<tilo_action_policy::MemberAccess>>>,
+    /// The platform roots the instance reads the device through, shared with the host.
+    roots: Rc<RefCell<Roots>>,
+    watches: Rc<crate::files::Watches>,
+    used: Vec<Used>,
+    personal: PersonalDocument,
+}
+
+/// One invocation the broker delivered: its id, the invocation's own id, the resource and action
+/// it names, what it passes, who invokes and the broker's context.
+struct Delivered {
+    id: u64,
+    invocation: tilo_actions::InvocationId,
+    resource: String,
+    action: String,
+    argument: Option<String>,
+    actor: tilo_actions::Actor,
+    context: Option<Box<tilo_actions::ActionContext>>,
+}
+
+/// End the runs an earlier host over `store` left waiting on a child call: the invocation each
+/// went out as died with that host, and the change it held went with it, so each is ended with
+/// the failure that is true of it rather than left waiting for ever.
+fn abandon_open_runs(
+    store: &ResourceStore,
+    connection: &Connection,
+    instance: &Instance,
+    app: &str,
+) {
+    for (call, run, action) in store.open_runs() {
+        let reason = format!("`{action}` stopped when its app restarted");
+        tracing::warn!(%app, %call, %run, %reason);
+        let Some(host) = instance.host() else {
+            continue;
+        };
+        match host.runtime().abandon_run(&run, &reason) {
+            Ok(Some((request, invocation))) => {
+                // The person sees it where the invocation shows: its own record says it ended,
+                // with why.
+                let Ok(invocation) = invocation.parse() else {
+                    continue;
+                };
+                let update = failed(invocation, Refused::new("action_failed", reason.clone()));
+                if let Err(error) = connection
+                    .manager()
+                    .try_send(CollabRequest::UpdateInvocation {
+                        id: request,
+                        update,
+                    })
+                {
+                    tracing::warn!(%app, %run, %error, "the ended invocation was not answered");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%app, %run, %error, "a waiting run could not be ended");
+            }
+        }
+    }
+}
+
+/// The instance `spec` runs in, on the device services `kept` holds, its words read by `phrases`
+/// and written in `formats`: its platform, its earlier documents and its access set, inside the
+/// document's scope.
+fn open_instance(
+    spec: &Spec,
+    bundle: &Arc<Bundle>,
+    (phrases, formats): (&Rc<Phrases>, &Formats),
+    kept: &Kept,
+    store: &ResourceStore,
+    window: Box<dyn Transport>,
+    (wake, scope): (&Waker, &DocumentScope),
+    connection: &Connection,
+) -> Opened {
+    let surface: SurfaceSlot = Rc::default();
+    let builds: BuildsSlot = Rc::default();
+    let in_scope = scope.enter();
+    let used = used_apps(spec, bundle, store);
+    let personal = PersonalDocument::open(&spec.app, &spec.person, store);
+    let watches = Rc::new(crate::files::Watches::new(Arc::clone(wake)));
+    let roots = Rc::new(RefCell::new(Roots::default()));
+    let platform = HostPlatform {
+        bundle: Arc::clone(bundle),
+        installed: spec.installed.clone(),
+        shows: spec.shows,
+        phrases: Rc::clone(phrases),
+        formats: Rc::clone(formats),
+        wake: Arc::clone(wake),
+        surface: Rc::clone(&surface),
+        builds: Rc::clone(&builds),
+        content: kept.content.clone(),
+        own_content: memory_content(),
+        chooser: kept.chooser.clone(),
+        clipboard: kept.clipboard.clone(),
+        thumbnails: kept.thumbnails.clone(),
+        tools: kept.tools.clone(),
+        no_chooser: crate::files::NO_CHOOSER.to_owned(),
+        person: spec.person.clone(),
+        watches: Rc::clone(&watches),
+        platform: Rc::clone(&roots),
+        root_wake: scope.0.handle(),
+    };
+    let mut instance = Instance::new(
+        Config {
+            app: spec.app.clone(),
+            me: spec.person.as_str().into(),
+            mode: Mode::Live,
+            device: None,
+            store: store.clone(),
+            root: tilolang_tilo::host::RootView::default(),
+            sink: None,
+            link_home: None,
+        },
+        Rc::new(platform),
+        // People by what the workspace's member list calls them, once it arrived.
+        Rc::new(tilolang_tilo::names::Installed),
+        window,
+    );
+    // What a native app of the package's id kept on this device: the package's migrations carry
+    // it over on the device whose turn each one is.
+    instance.set_earlier(earlier_documents(
+        kept.earlier.as_ref(),
+        &spec.app,
+        connection,
+    ));
+    // What its runtime offers and invokes is decided by the person's access as the session
+    // says it, read at each decision.
+    let access = Rc::new(RefCell::new(spec.access.clone()));
+    let read = Rc::clone(&access);
+    instance.set_access(Rc::new(move || read.borrow().clone()));
+    drop(in_scope);
+    Opened {
+        instance,
+        surface,
+        builds,
+        access,
+        roots,
+        watches,
+        used,
+        personal,
+    }
+}
+
 impl Hosted {
     /// The instance `spec` of `bundle` on `connection`, its resources in `store` and their content
     /// in `content`, its words read by `phrases` and written in `formats`.
@@ -1459,8 +1621,6 @@ impl Hosted {
         (phrases, formats): (&Rc<Phrases>, &Formats),
         wake: Waker,
     ) -> Self {
-        let surface: SurfaceSlot = Rc::default();
-        let builds: BuildsSlot = Rc::default();
         // The window speaks the person's language where its package ships it, and the package's
         // source language otherwise: the frames' words, the app's own words and the history's
         // sentences all follow that language, never the one this host's process runs in.
@@ -1469,61 +1629,25 @@ impl Hosted {
         // window speaks, whatever language the workspace's people are named in.
         collaboration::history_source::authors::set_names_language(&phrases.locale());
         let scope = DocumentScope::of(content, &wake);
-        let in_scope = scope.enter();
-        let used = used_apps(&spec, &bundle, &store);
-        let personal = PersonalDocument::open(&spec.app, &spec.person, &store);
-        let watches = Rc::new(crate::files::Watches::new(Arc::clone(&wake)));
-        let platform_roots = Rc::new(RefCell::new(Roots::default()));
-        let platform = HostPlatform {
-            bundle: Arc::clone(&bundle),
-            installed: spec.installed.clone(),
-            shows: spec.shows,
-            phrases: Rc::clone(&phrases),
-            formats: Rc::clone(formats),
-            wake: Arc::clone(&wake),
-            surface: Rc::clone(&surface),
-            builds: Rc::clone(&builds),
-            content: kept.content.clone(),
-            own_content: memory_content(),
-            chooser: kept.chooser.clone(),
-            clipboard: kept.clipboard.clone(),
-            thumbnails: kept.thumbnails.clone(),
-            tools: kept.tools.clone(),
-            no_chooser: crate::files::NO_CHOOSER.to_owned(),
-            person: spec.person.clone(),
-            watches: Rc::clone(&watches),
-            platform: Rc::clone(&platform_roots),
-            root_wake: scope.0.handle(),
-        };
-        let mut instance = Instance::new(
-            Config {
-                app: spec.app.clone(),
-                me: spec.person.as_str().into(),
-                mode: Mode::Live,
-                device: None,
-                store: store.clone(),
-                root: tilolang_tilo::host::RootView::default(),
-                sink: None,
-                link_home: None,
-            },
-            Rc::new(platform),
-            // People by what the workspace's member list calls them, once it arrived.
-            Rc::new(tilolang_tilo::names::Installed),
+        let Opened {
+            mut instance,
+            surface,
+            builds,
+            access,
+            roots: platform_roots,
+            watches,
+            used,
+            personal,
+        } = open_instance(
+            &spec,
+            &bundle,
+            (&phrases, formats),
+            kept,
+            &store,
             window,
-        );
-        // What a native app of the package's id kept on this device: the package's migrations carry
-        // it over on the device whose turn each one is.
-        instance.set_earlier(earlier_documents(
-            kept.earlier.as_ref(),
-            &spec.app,
+            (&wake, &scope),
             &connection,
-        ));
-        // What its runtime offers and invokes is decided by the person's access as the session
-        // says it, read at each decision.
-        let access = Rc::new(RefCell::new(spec.access.clone()));
-        let read = Rc::clone(&access);
-        instance.set_access(Rc::new(move || read.borrow().clone()));
-        drop(in_scope);
+        );
         let presence = Presence::new(&spec.app, &spec.person);
         let calls = Calls::new(&spec.person);
         let invocations = Invocations::new(&spec.workspace);
@@ -1538,37 +1662,7 @@ impl Hosted {
         // the invocation the call went out as died with that host, and the change the run held
         // went with it. It is ended here with the failure that is true of it, rather than left
         // waiting for ever.
-        for (call, run, action) in store.open_runs() {
-            let reason = format!("`{action}` stopped when its app restarted");
-            tracing::warn!(app = spec.app, %call, %run, %reason);
-            let Some(host) = instance.host() else {
-                continue;
-            };
-            match host.runtime().abandon_run(&run, &reason) {
-                Ok(Some((request, invocation))) => {
-                    // The person sees it where the invocation shows: its own record says it
-                    // ended, with why.
-                    let Ok(invocation) = invocation.parse() else {
-                        continue;
-                    };
-                    let update = failed(invocation, Refused::new("action_failed", reason.clone()));
-                    if let Err(error) =
-                        connection
-                            .manager()
-                            .try_send(CollabRequest::UpdateInvocation {
-                                id: request,
-                                update,
-                            })
-                    {
-                        tracing::warn!(app = spec.app, %run, %error, "the ended invocation was not answered");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::warn!(app = spec.app, %run, %error, "a waiting run could not be ended");
-                }
-            }
-        }
+        abandon_open_runs(&store, &connection, &instance, &spec.app);
         let waiting_calls: Rc<RefCell<BTreeMap<String, Invocation>>> = Rc::default();
         let children: Rc<RefCell<BTreeMap<String, Child>>> = Rc::new(RefCell::new(BTreeMap::new()));
 
@@ -1614,7 +1708,7 @@ impl Hosted {
             opening: None,
             files: kept.content.clone(),
             outputs_sent: None,
-            media_said: None,
+            media_said: MediaSaid::Untold,
             watches,
         }
     }
@@ -1860,17 +1954,7 @@ impl Hosted {
             self.personal.moved_again();
         }
         // Who else is here and who is writing, before the views that show it run.
-        let before = events.len();
-        events.retain(|event| {
-            !self.presence.take(event)
-                && !self.calls.take(event)
-                && !self.invocations.take(event)
-                && !self.shell.as_mut().is_some_and(|shell| shell.take(event))
-        });
-        changed |= events.len() != before;
-        self.presence.show(&mut self.instance);
-        self.calls.show(&mut self.instance);
-        self.invocations.show(&mut self.instance);
+        changed |= self.take_events(&mut events);
         // The platform's roots are followed before the views run, so the first frame reads what
         // the session publishes rather than an app's waiting state.
         changed |= self.read_platform();
@@ -1913,7 +1997,7 @@ impl Hosted {
         // The invocations the views read, read again while they run, and the lines the person
         // ran, run as their own steps.
         for (target, line) in self.instance.take_line_runs() {
-            self.invocations.run_line(&target, line);
+            self.invocations.run_line(&target, &line);
         }
         self.invocations.follow(&self.instance);
         self.invocations
@@ -1955,6 +2039,23 @@ impl Hosted {
         // session to a speaker or a cast target hears it there from the next frame.
         changed |= self.say_outputs();
         changed
+    }
+
+    /// Take in who else is here, who writes and what they run from the frame's `events`, before
+    /// the views that show them run. Whether any took one.
+    fn take_events(&mut self, events: &mut Vec<CollabEvent>) -> bool {
+        let before = events.len();
+        events.retain(|event| {
+            !self.presence.take(event)
+                && !self.calls.take(event)
+                && !self.invocations.take(event)
+                && !self.shell.as_mut().is_some_and(|shell| shell.take(event))
+        });
+        let took = events.len() != before;
+        self.presence.show(&mut self.instance);
+        self.calls.show(&mut self.instance);
+        self.invocations.show(&mut self.instance);
+        took
     }
 
     /// Run the action the app was opened with, once the instance has published its surface: the
@@ -2031,10 +2132,18 @@ impl Hosted {
     /// last turn said it: its Playback's reading, or `None` when it plays nothing.
     pub fn media(&mut self) -> Option<Option<runtime_portal::process_link::MediaView>> {
         let view = self.media_view();
-        if self.media_said.as_ref() == Some(&view) {
+        let unchanged = match (&self.media_said, &view) {
+            (MediaSaid::Nothing, None) => true,
+            (MediaSaid::Playing(said), Some(view)) => said == view,
+            _ => false,
+        };
+        if unchanged {
             return None;
         }
-        self.media_said = Some(view.clone());
+        self.media_said = match &view {
+            Some(view) => MediaSaid::Playing(view.clone()),
+            None => MediaSaid::Nothing,
+        };
         Some(view)
     }
 
@@ -2073,22 +2182,14 @@ impl Hosted {
         };
         let number = |field: &str| match runtime.read(at, field) {
             Ok(Value::Float(value)) => value,
-            Ok(Value::Int(value)) => value as f64,
+            Ok(Value::Int(value)) => ui_core::num::f64_of_i64(value),
             _ => 0.0,
         };
         let queue = match runtime.read(at, "queue") {
             Ok(Value::List(items)) => items.len(),
             _ => 0,
         };
-        let seconds = |value: f64| {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a playhead and a length read as whole microseconds, clamped at zero"
-            )]
-            let micros = (value.max(0.0) * 1_000_000.0) as i64;
-            micros
-        };
+        let seconds = |value: f64| ui_core::num::i64_of_f64(value.max(0.0) * 1_000_000.0);
         Some(runtime_portal::process_link::MediaView {
             id: at.id_string(),
             identity: self.bundle.meta.title.clone(),
@@ -2133,7 +2234,7 @@ impl Hosted {
             Ok(Value::Float(length)) => length,
             _ => 0.0,
         };
-        let (name, args) = media_action(command, &playing, length)?;
+        let (name, args) = media_action(command, &playing, length);
         let action = self
             .bundle
             .imports
@@ -2879,6 +2980,29 @@ impl Hosted {
             }
             _ => return false,
         };
+        self.serve(Delivered {
+            id,
+            invocation,
+            resource,
+            action,
+            argument,
+            actor,
+            context,
+        })
+    }
+
+    /// Run the invocation the broker delivered, as the invoker it admitted: its action's code, or
+    /// what it calls that answers later. Whether it changed the instance.
+    fn serve(&mut self, delivered: Delivered) -> bool {
+        let Delivered {
+            id,
+            invocation,
+            resource,
+            action,
+            argument,
+            actor,
+            context,
+        } = delivered;
         let address = ActionAddress::new(resource, action);
         // The invoker is who the broker admitted, with the member and the person it acts
         // for that the broker set in the delivery's context; nothing else is trusted.
@@ -2948,7 +3072,7 @@ impl Hosted {
 
     /// Hand the instance the readings of the platform roots its bundle reads, and follow the ones
     /// its views asked for. Whether a reading moved, which runs those views again.
-    fn read_platform(&mut self) -> bool {
+    fn read_platform(&self) -> bool {
         let Some(host) = self.instance.host() else {
             return false;
         };
@@ -4260,14 +4384,14 @@ fn media_action(
     command: runtime_portal::process_link::MediaCommand,
     playing: &tilolang_tilo::runtime::ResourceRef,
     length: f64,
-) -> Result<(&'static str, Vec<Value>), String> {
+) -> (&'static str, Vec<Value>) {
     let target = Value::resource(playing);
-    Ok(match command {
+    match command {
         runtime_portal::process_link::MediaCommand::Play => ("play", vec![target]),
-        runtime_portal::process_link::MediaCommand::Pause => ("pause", vec![target]),
-        runtime_portal::process_link::MediaCommand::Toggle => ("toggle", vec![target]),
         // The player has no stop of its own: a stop stands it still, which is its pause.
-        runtime_portal::process_link::MediaCommand::Stop => ("pause", vec![target]),
+        runtime_portal::process_link::MediaCommand::Pause
+        | runtime_portal::process_link::MediaCommand::Stop => ("pause", vec![target]),
+        runtime_portal::process_link::MediaCommand::Toggle => ("toggle", vec![target]),
         runtime_portal::process_link::MediaCommand::Next => ("next", vec![target]),
         runtime_portal::process_link::MediaCommand::Previous => ("previous", vec![target]),
         runtime_portal::process_link::MediaCommand::SeekBy(micros) => {
@@ -4290,7 +4414,7 @@ fn media_action(
             vec![target, Value::Float(level.clamp(0.0, 1.0))],
         ),
         runtime_portal::process_link::MediaCommand::Mute => ("mute", vec![target]),
-    })
+    }
 }
 
 /// Give each version `history` lists the sentence it reads as in `locale`: what was done, by the

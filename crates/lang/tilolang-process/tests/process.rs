@@ -3128,6 +3128,8 @@ fn a_hosted_window_advances_words_revision_and_republishes_translated_labels() {
         labels.contains(&"Neue Notiz") && !labels.contains(&"New note"),
         "published action labels update to German when words_revision moves: {labels:?}"
     );
+}
+
 const SOUNDCHECK: &str = "so.tilo.lang.soundcheck";
 
 /// A package that reads a field of the device's sound and asks the device to mute it: the

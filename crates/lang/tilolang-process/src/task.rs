@@ -356,6 +356,9 @@ impl Task {
         person: Option<Stream>,
     ) -> Result<Self, String> {
         let apps = apps(&fds.apps, request.apps_len)?;
+        #[cfg(unix)]
+        let stream = crate::stream_of(fds.program);
+        #[cfg(windows)]
         let stream = crate::stream_of(fds.program).map_err(|error| error.to_string())?;
         let writer = stream.try_clone().map_err(|error| error.to_string())?;
         let watched = stream.try_clone().map_err(|error| error.to_string())?;

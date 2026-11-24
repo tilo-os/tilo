@@ -9,6 +9,7 @@
 //! runtime's own threads, so nothing deadlocks, and the person sees a modal chooser over
 //! their window while it is open.
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use tilo_content::ContentStore;
@@ -37,10 +38,10 @@ pub fn resolve(path: &str) -> std::path::PathBuf {
     if path == "~" {
         return home().unwrap_or_else(|| std::path::PathBuf::from("~"));
     }
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = home() {
-            return home.join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = home()
+    {
+        return home.join(rest);
     }
     std::path::PathBuf::from(path)
 }
@@ -376,7 +377,10 @@ pub fn compress(paths: &[String], to: &str) -> Result<i64, String> {
     }
     let to = resolve(to);
     let named = to.to_string_lossy().to_ascii_lowercase();
-    let packing = if named.ends_with(".zip") {
+    let packing = if std::path::Path::new(&named)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+    {
         tilo_archive::Packing::Zip
     } else if named.ends_with(".tar.zst") {
         tilo_archive::Packing::TarZst
@@ -577,27 +581,53 @@ fn trash_date(seconds: i64) -> String {
 
 /// The days since 1970-01-01 as a calendar date (Howard Hinnant's civil calendar).
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
+    let z = days.saturating_add(719_468);
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (y + i64::from(m <= 2), m, d)
+    let yoe = (doe
+        .saturating_sub(doe / 1460)
+        .saturating_add(doe / 36_524)
+        .saturating_sub(doe / 146_096))
+        / 365;
+    let y = yoe.saturating_add(era.saturating_mul(400));
+    let doy = doe.saturating_sub(
+        yoe.saturating_mul(365)
+            .saturating_add(yoe / 4)
+            .saturating_sub(yoe / 100),
+    );
+    let mp = doy.saturating_mul(5).saturating_add(2) / 153;
+    let d = doy
+        .saturating_sub(mp.saturating_mul(153).saturating_add(2) / 5)
+        .saturating_add(1);
+    let m = if mp < 10 {
+        mp.saturating_add(3)
+    } else {
+        mp.saturating_sub(9)
+    };
+    (y.saturating_add(i64::from(m <= 2)), m, d)
 }
 
 /// The days since 1970-01-01 of a calendar date, as [`civil_from_days`] reads back.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
+    let y = if m <= 2 { y.saturating_sub(1) } else { y };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
-    let mp = if m > 2 { m - 3 } else { m + 9 };
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+    let mp = if m > 2 {
+        m.saturating_sub(3)
+    } else {
+        m.saturating_add(9)
+    };
+    let doy = (mp.saturating_mul(153).saturating_add(2) / 5)
+        .saturating_add(d)
+        .saturating_sub(1);
+    let doe = yoe
+        .saturating_mul(365)
+        .saturating_add(yoe / 4)
+        .saturating_sub(yoe / 100)
+        .saturating_add(doy);
+    era.saturating_mul(146_097)
+        .saturating_add(doe)
+        .saturating_sub(719_468)
 }
 
 /// Percent-encode a path as the freedesktop trash's `Path=` holds it.
@@ -608,27 +638,48 @@ fn trash_escape(path: &str) -> String {
         if keep {
             out.push(char::from(byte));
         } else {
-            out.push_str(&format!("%{byte:02X}"));
+            let _ = write!(out, "%{byte:02X}");
         }
     }
     out
+}
+
+/// The byte a hex digit `digit` names, when it is one.
+fn hex_digit(digit: u8) -> Option<u8> {
+    char::from(digit)
+        .to_digit(16)
+        .and_then(|digit| u8::try_from(digit).ok())
+}
+
+/// The byte a percent-escaped pair `high` and `low` names, when both are hex digits.
+fn hex_byte(high: u8, low: u8) -> Option<u8> {
+    let high = hex_digit(high)?;
+    let low = hex_digit(low)?;
+    high.checked_mul(16).and_then(|high| high.checked_add(low))
 }
 
 /// Percent-decode the trash's `Path=`.
 fn trash_unescape(path: &str) -> String {
     let bytes = path.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&path[i + 1..i + 3], 16) {
-                out.push(byte);
-                i += 3;
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        if byte == b'%' {
+            // The byte the two digits after the `%` name, when both are there and are digits.
+            let pair = bytes.get(at.saturating_add(1)..at.saturating_add(3));
+            let decoded = pair.and_then(|pair| {
+                let high = *pair.first()?;
+                let low = *pair.get(1)?;
+                hex_byte(high, low)
+            });
+            if let Some(decoded) = decoded {
+                out.push(decoded);
+                at = at.saturating_add(3);
                 continue;
             }
         }
-        out.push(bytes[i]);
-        i += 1;
+        out.push(byte);
+        at = at.saturating_add(1);
     }
     String::from_utf8_lossy(&out).into_owned()
 }
@@ -656,7 +707,11 @@ fn deleted_at(receipt: &str) -> i64 {
     else {
         return 0;
     };
-    days_from_civil(y, m, d) * 86_400 + hours * 3600 + minutes * 60 + seconds
+    days_from_civil(y, m, d)
+        .saturating_mul(86_400)
+        .saturating_add(hours.saturating_mul(3600))
+        .saturating_add(minutes.saturating_mul(60))
+        .saturating_add(seconds)
 }
 
 /// The receipt of the trashed entry `name`: where it came from and when.
@@ -770,7 +825,7 @@ pub fn restore(name: &str) -> Result<Entry, String> {
     let (files, info) = trash_dirs()?;
     let name = name.strip_suffix(".trashinfo").unwrap_or(name);
     let (original, _) =
-        receipt(&info, name).ok_or_else(|| format!("{} is not in this device's trash", name))?;
+        receipt(&info, name).ok_or_else(|| format!("{name} is not in this device's trash"))?;
     let to = resolve(&original);
     if to.symlink_metadata().is_ok() {
         return Err(format!("{} already exists", to.display()));

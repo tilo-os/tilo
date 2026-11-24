@@ -224,26 +224,37 @@ pub enum AdmitError {
     Window(std::io::Error),
 }
 
-/// A connection the session handed, to read and write: a Unix socket, or a pipe on Windows.
+/// A connection the session handed, to read and write: a Unix socket.
+#[cfg(unix)]
+pub(crate) fn stream_of(handed: Descriptor) -> tilo_socket::Stream {
+    handed.into()
+}
+
+/// A connection the session handed, to read and write: a pipe on Windows.
 ///
 /// # Errors
-/// On Windows, a handle that is no pipe.
+/// A handle that is no pipe.
+#[cfg(windows)]
 pub(crate) fn stream_of(handed: Descriptor) -> std::io::Result<tilo_socket::Stream> {
-    #[cfg(unix)]
-    {
-        Ok(handed.into())
-    }
-    #[cfg(windows)]
-    {
-        handed.into_stream()
-    }
+    handed.into_stream()
 }
 
 /// [`stream_of`] for a connection an instance runs without when it is unusable: said, and none.
 fn usable(handed: Option<Descriptor>, what: &str) -> Option<tilo_socket::Stream> {
-    stream_of(handed?)
-        .inspect_err(|error| tracing::warn!(%error, "the instance's {what} connection is unusable"))
-        .ok()
+    let handed = handed?;
+    #[cfg(unix)]
+    {
+        let _ = what;
+        Some(stream_of(handed))
+    }
+    #[cfg(windows)]
+    {
+        stream_of(handed)
+            .inspect_err(
+                |error| tracing::warn!(%error, "the instance's {what} connection is unusable"),
+            )
+            .ok()
+    }
 }
 
 /// A window's end of its instance's patch connection, or the instance's: a packet socket on Unix,
@@ -1125,6 +1136,13 @@ impl TilolangProcess {
                 .into_iter()
                 .find(|name| tilolang_tilo::origin::uses_origin(&hosted.bundle().meta, name));
             if let Some(name) = served {
+                #[cfg(unix)]
+                let origin =
+                    tilolang_tilo::origin::remote(name, stream_of(origin), Arc::clone(&self.wake))
+                        .map_err(|error| {
+                            AdmitError::Join(format!("its {name} connector: {error}"))
+                        })?;
+                #[cfg(windows)]
                 let origin = stream_of(origin)
                     .map_err(|error| error.to_string())
                     .and_then(|origin| {

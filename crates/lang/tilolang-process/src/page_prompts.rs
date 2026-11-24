@@ -150,9 +150,10 @@ impl PagePrompts {
             .find(|(_, raised)| raised.invocation == receipt.invocation)
             .map(|(key, _)| key.clone())?;
         let ended_without_running = match &receipt.status {
-            ReceiptStatus::Accepted => false,
-            // Kept for the person: it waits in its asked record.
-            ReceiptStatus::Rejected {
+            // Accepted runs when the person says yes; a rejection that waits on their
+            // confirmation is kept for them, in its asked record.
+            ReceiptStatus::Accepted
+            | ReceiptStatus::Rejected {
                 error: ActionCallError::ConfirmationRequired(_),
             } => false,
             ReceiptStatus::Completed { .. } => {
@@ -197,7 +198,7 @@ mod tests {
 
     const PAGE: &str = "tl:so.tilo.browser:page-1";
 
-    fn raise(prompts: &mut PagePrompts, prompt: serde_json::Value) -> Vec<CollabRequest> {
+    fn raise(prompts: &mut PagePrompts, prompt: &serde_json::Value) -> Vec<CollabRequest> {
         let mut sent = Vec::new();
         prompts.take(
             prompt.to_string().as_bytes(),
@@ -220,8 +221,8 @@ mod tests {
     #[test]
     fn a_camera_request_is_the_apps_call_naming_the_site() {
         let mut prompts = PagePrompts::default();
-        let sent = raise(&mut prompts, camera());
-        assert!(raise(&mut prompts, camera()).is_empty(), "raised once");
+        let sent = raise(&mut prompts, &camera());
+        assert!(raise(&mut prompts, &camera()).is_empty(), "raised once");
         let [
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
@@ -244,7 +245,7 @@ mod tests {
     #[test]
     fn a_declined_call_tells_the_page_no() {
         let mut prompts = PagePrompts::default();
-        raise(&mut prompts, camera());
+        raise(&mut prompts, &camera());
         let invocation = prompts.waiting()[0];
         let waits = RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
             invocation,
@@ -277,11 +278,11 @@ mod tests {
     #[test]
     fn a_prompt_the_page_no_longer_waits_on_withdraws_its_call() {
         let mut prompts = PagePrompts::default();
-        raise(&mut prompts, camera());
+        raise(&mut prompts, &camera());
         let invocation = prompts.waiting()[0];
         let sent = raise(
             &mut prompts,
-            serde_json::json!({"ended": "permission", "id": 7}),
+            &serde_json::json!({"ended": "permission", "id": 7}),
         );
         assert!(
             matches!(
@@ -292,7 +293,7 @@ mod tests {
             ),
             "{sent:?}"
         );
-        raise(&mut prompts, camera());
+        raise(&mut prompts, &camera());
         let mut withdrawn = Vec::new();
         prompts.withdraw_all(|request| {
             withdrawn.push(request);

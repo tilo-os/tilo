@@ -218,7 +218,7 @@ impl Bus {
             .iter()
             .map(|row| {
                 let mut member = collaboration::Member::named(row.who.clone(), row.name.clone());
-                member.avatar = row.avatar.clone();
+                member.avatar.clone_from(&row.avatar);
                 member.is_self = row.who.person_id() == Some(person);
                 member
             })

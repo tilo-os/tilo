@@ -56,8 +56,12 @@ pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Resul
 ///
 /// No such job on this device.
 pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
-    let known = jobs().lock().map_err(|_| "the job table is unreadable".to_owned())?;
-    let Some(state) = known.get(job) else {
+    let state = jobs()
+        .lock()
+        .map_err(|_| "the job table is unreadable".to_owned())?
+        .get(job)
+        .cloned();
+    let Some(state) = state else {
         return Err(format!("no job `{job}` runs on this device"));
     };
     state.take_scan(platform);
@@ -90,14 +94,18 @@ pub fn cancel(job: &str) -> bool {
     true
 }
 
+/// A scan the scanner answered: its name, and the bytes its receiver keeps as the job's file on
+/// the next ask.
+type Scan = (String, std::sync::mpsc::Receiver<Result<Vec<u8>, String>>);
+
 /// One job in flight, and what it made.
 struct Job {
     finished: AtomicBool,
     stopped: AtomicBool,
     error: Mutex<Option<String>>,
     url: Mutex<Option<String>>,
-    /// A scan the scanner answered: its name and bytes, kept as the job's file on the next ask.
-    scan: Mutex<Option<(String, std::sync::mpsc::Receiver<Result<Vec<u8>, String>>)>>,
+    /// A scan the scanner answered, kept as the job's file on the next ask.
+    scan: Mutex<Option<Scan>>,
 }
 
 impl Job {
@@ -220,10 +228,9 @@ fn print(platform: &dyn Platform, input: &str) -> Result<String, String> {
         copies: ask.copies.unwrap_or(1).clamp(1, 99),
         two_sided: ask.two_sided.unwrap_or(false),
         page_range: match ask.pages.as_deref().map(str::trim) {
-            Some(pages) if !pages.is_empty() => Some(
-                os_actions::printing::PageRange::parse(pages)
-                    .map_err(|error| format!("{error}"))?,
-            ),
+            Some(pages) if !pages.is_empty() => {
+                Some(os_actions::printing::PageRange::parse(pages)?)
+            }
             _ => None,
         },
         page_size: ask.page_size,
@@ -303,10 +310,8 @@ fn scan(_platform: &dyn Platform, input: &str) -> Result<String, String> {
         .map_err(|_| "the job table is unreadable".to_owned())?
         .insert(id.clone(), Arc::clone(&state));
     let worker = Arc::clone(&state);
-    let name = ask
-        .name
-        .unwrap_or_else(|| format!("scan-{id}.png"));
-    let scanner = ask.scanner.clone();
+    let name = ask.name.unwrap_or_else(|| format!("scan-{id}.png"));
+    let scanner = ask.scanner;
     // The platform is not `Send` everywhere; the scan runs on its own thread with the bytes it
     // writes kept through a channel back to this one, which keeps them when the job is asked.
     let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u8>, String>>();
@@ -367,8 +372,6 @@ fn pages_pdf(platform: &dyn Platform, input: &str) -> Result<String, String> {
     }
     let pdf = tilo_doc_pdf::render_scanned_pdf(&pages);
     let name = ask.name.unwrap_or_else(|| "scan.pdf".to_owned());
-    let kept = platform
-        .keep_content(&name, "application/pdf", &pdf)
-        .map_err(|error| error.to_string())?;
+    let kept = platform.keep_content(&name, "application/pdf", &pdf)?;
     Ok(serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string())
 }

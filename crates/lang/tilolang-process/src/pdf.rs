@@ -22,7 +22,7 @@ impl Engine {
     }
 }
 
-fn said(error: reader::Error) -> String {
+fn said(error: &reader::Error) -> String {
     error.to_string()
 }
 
@@ -33,64 +33,64 @@ fn json<T: serde::Serialize>(value: &T) -> Result<String, String> {
 
 impl PdfHost for Engine {
     fn pages(&self, bytes: &[u8]) -> Result<String, String> {
-        let document = reader::Document::open(bytes).map_err(said)?;
-        json(&document.pages().map_err(said)?)
+        let document = reader::Document::open(bytes).map_err(|error| said(&error))?;
+        json(&document.pages().map_err(|error| said(&error))?)
     }
 
     fn outline(&self, bytes: &[u8]) -> Result<String, String> {
-        let document = reader::Document::open(bytes).map_err(said)?;
+        let document = reader::Document::open(bytes).map_err(|error| said(&error))?;
         json(&document.outline())
     }
 
     fn text(&self, bytes: &[u8], page: i64) -> Result<String, String> {
-        let document = reader::Document::open(bytes).map_err(said)?;
+        let document = reader::Document::open(bytes).map_err(|error| said(&error))?;
         let page = page_of(page)?;
-        json(&document.text(page).map_err(said)?)
+        json(&document.text(page).map_err(|error| said(&error))?)
     }
 
     fn links(&self, bytes: &[u8], page: i64) -> Result<String, String> {
-        let document = reader::Document::open(bytes).map_err(said)?;
+        let document = reader::Document::open(bytes).map_err(|error| said(&error))?;
         let page = page_of(page)?;
-        json(&document.links(page).map_err(said)?)
+        json(&document.links(page).map_err(|error| said(&error))?)
     }
 
     fn fields(&self, bytes: &[u8]) -> Result<String, String> {
-        let document = reader::Document::open(bytes).map_err(said)?;
-        json(&document.fields().map_err(said)?)
+        let document = reader::Document::open(bytes).map_err(|error| said(&error))?;
+        json(&document.fields().map_err(|error| said(&error))?)
     }
 
     fn markup(&self, bytes: &[u8]) -> Result<String, String> {
-        let document = reader::Document::open(bytes).map_err(said)?;
-        json(&document.markup().map_err(said)?)
+        let document = reader::Document::open(bytes).map_err(|error| said(&error))?;
+        json(&document.markup().map_err(|error| said(&error))?)
     }
 
     fn picture(&self, bytes: &[u8], page: i64, width: i64) -> Result<Vec<u8>, String> {
-        let document = reader::Document::open(bytes).map_err(said)?;
+        let document = reader::Document::open(bytes).map_err(|error| said(&error))?;
         let page = page_of(page)?;
         let width = u32::try_from(width.max(0)).unwrap_or(u32::MAX);
-        document.picture(page, width).map_err(said)
+        document.picture(page, width).map_err(|error| said(&error))
     }
 
     fn import(&self, bytes: &[u8]) -> Result<String, String> {
-        let (kind, pages) = reader::import(bytes).map_err(said)?;
         #[derive(serde::Serialize)]
         struct Held<'a> {
             kind: &'a str,
-            pages: Vec<Page>,
+            pages: Vec<PageEntry>,
         }
         #[derive(serde::Serialize)]
-        struct Page {
+        struct PageEntry {
             page: usize,
             width: f32,
             height: f32,
         }
+        let (kind, pages) = reader::import(bytes).map_err(|error| said(&error))?;
         json(&Held {
             kind,
             pages: pages
                 .iter()
                 .enumerate()
-                .map(|(at, (width, height))| Page {
-                    page: at + 1,
+                .map(|(at, (width, height))| PageEntry {
+                    page: at.saturating_add(1),
                     width: *width,
                     height: *height,
                 })
@@ -100,7 +100,7 @@ impl PdfHost for Engine {
 
     fn save(&self, sources: &[&[u8]], request: &str) -> Result<Vec<u8>, String> {
         let request = reader::SaveRequest::from_json(request)?;
-        reader::save(sources, &request).map_err(said)
+        reader::save(sources, &request).map_err(|error| said(&error))
     }
 }
 

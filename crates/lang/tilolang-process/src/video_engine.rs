@@ -62,10 +62,12 @@ pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Resul
 ///
 /// No such job on this device.
 pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
-    let known = jobs()
+    let state = jobs()
         .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?;
-    let Some(state) = known.get(job) else {
+        .map_err(|_| "the job table is unreadable".to_owned())?
+        .get(job)
+        .cloned();
+    let Some(state) = state else {
         return Err(format!("no job `{job}` runs on this device"));
     };
     let done = state.done.load(Ordering::Relaxed);
@@ -82,7 +84,7 @@ pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
         })
         .to_string());
     }
-    if let Some(url) = set_done(state, platform) {
+    if let Some(url) = set_done(&state, platform) {
         return Ok(serde_json::json!({
             "state": "done", "done": total, "total": total, "url": url, "error": "",
         })
@@ -288,16 +290,25 @@ fn sample(platform: &dyn Platform, input: &str) -> Result<String, String> {
             .with_timeout(std::time::Duration::from_secs(2))
             .strict();
     let rgba = compositor.frame(&project, ask.at, width, height, &mut sources);
-    let x =
-        ((ask.x.clamp(0.0, 1.0) * f64::from(width - 1)).round() as usize).min(width as usize - 1);
-    let y =
-        ((ask.y.clamp(0.0, 1.0) * f64::from(height - 1)).round() as usize).min(height as usize - 1);
-    let at = (y * width as usize + x) * 4;
-    let channel = |i: usize| f64::from(*rgba.get(at + i).unwrap_or(&0)) / 255.0;
+    let x = axis_index(ask.x, width);
+    let y = axis_index(ask.y, height);
+    let at = y
+        .saturating_mul(usize::try_from(width).unwrap_or(usize::MAX))
+        .saturating_add(x)
+        .saturating_mul(4);
+    let channel = |i: usize| f64::from(*rgba.get(at.saturating_add(i)).unwrap_or(&0)) / 255.0;
     Ok(
         serde_json::json!({ "red": channel(0), "green": channel(1), "blue": channel(2) })
             .to_string(),
     )
+}
+
+/// The index along an axis `extent` cells long that `fraction` of it names, rounded and kept on
+/// the axis.
+fn axis_index(fraction: f64, extent: u32) -> usize {
+    let last = extent.saturating_sub(1);
+    let at = ui_core::num::usize_of_f64((fraction.clamp(0.0, 1.0) * f64::from(last)).round());
+    at.min(usize::try_from(last).unwrap_or(usize::MAX))
 }
 
 /// Start a cut's render as a job.
@@ -315,7 +326,7 @@ fn render(platform: &dyn Platform, input: &str) -> Result<String, String> {
     let project = reads::<Shot>(&ask.project)?.into_project(Some(platform))?;
     let resolution = match ask.resolution.as_deref() {
         Some("720") => Resolution::P720,
-        Some("2160") | Some("4k") => Resolution::P2160,
+        Some("2160" | "4k") => Resolution::P2160,
         _ => Resolution::P1080,
     };
     let container = match ask.container.as_deref() {
@@ -346,7 +357,7 @@ fn render(platform: &dyn Platform, input: &str) -> Result<String, String> {
         finished: AtomicBool::new(false),
         done: AtomicU64::new(0),
         total: AtomicU64::new(0),
-        path: path.clone(),
+        path,
         name,
         error: Mutex::new(None),
         url: Mutex::new(None),
@@ -563,6 +574,12 @@ struct ShotClip {
     id: String,
     track: String,
     media: String,
+    /// The switches a clip's own motion and sound carry.
+    #[serde(flatten)]
+    playback: ClipPlayback,
+    /// The switches a clip's key and mask carry.
+    #[serde(flatten)]
+    key: ClipKey,
     #[serde(default)]
     start: f64,
     #[serde(default)]
@@ -585,8 +602,6 @@ struct ShotClip {
     palette: u8,
     #[serde(default)]
     speed_rate: Option<f64>,
-    #[serde(default)]
-    speed_reverse: bool,
     #[serde(default = "half")]
     brightness: f64,
     #[serde(default = "half")]
@@ -616,8 +631,6 @@ struct ShotClip {
     /// One JSON text a key: its param, clip-local seconds, value and interp.
     #[serde(default)]
     keys: Vec<String>,
-    #[serde(default)]
-    key_enabled: bool,
     #[serde(default = "key_color")]
     key_color: [f64; 3],
     #[serde(default = "key_tolerance")]
@@ -641,13 +654,27 @@ struct ShotClip {
     #[serde(default)]
     mask_feather: Option<f64>,
     #[serde(default)]
-    mask_invert: bool,
-    #[serde(default)]
     link: String,
     #[serde(default = "yes")]
     link_follows: bool,
+}
+
+/// The switches a clip's own motion and sound carry, beside its numbers.
+#[derive(Deserialize)]
+struct ClipPlayback {
+    #[serde(default)]
+    speed_reverse: bool,
     #[serde(default)]
     sound_split: bool,
+}
+
+/// The switches a clip's key and mask carry, beside their numbers.
+#[derive(Deserialize)]
+struct ClipKey {
+    #[serde(default)]
+    key_enabled: bool,
+    #[serde(default)]
+    mask_invert: bool,
 }
 
 fn one_f() -> f64 {
@@ -765,158 +792,179 @@ impl Shot {
         project.mark_out = (self.mark_out >= 0.0).then_some(self.mark_out);
         for media in self.media {
             let media: ShotMedia = reads(&media)?;
-            // Where this device can decode it: the content store's bytes laid out, or a path
-            // that is already here. An address this device cannot read stays as the app wrote
-            // it, which the picture draws from the source's own fill.
-            let path = platform
-                .and_then(|platform| media_path(platform, &media.path).ok())
-                .map(|at| at.to_string_lossy().into_owned())
-                .unwrap_or_else(|| media.path.clone());
-            project.media.push(model::MediaItem {
-                id: id_of(&media.id),
-                name: media.name,
-                kind: kind_of(&media.kind),
-                duration: media.duration,
-                width: media.width,
-                height: media.height,
-                fps: media.fps,
-                palette: media.palette,
-                path,
-                text: (media.kind == "text").then(|| model::TextSource {
-                    content: media.content,
-                    size: media.size,
-                    color: media.color,
-                    align: align_of(Some(&media.align)),
-                    font: media.font,
-                    bold: media.bold,
-                    italic: media.italic,
-                    backdrop: media.backdrop,
-                }),
-                has_audio: media.has_audio,
-            });
+            project.media.push(media_item(media, platform));
         }
         for track in self.tracks {
             let track: ShotTrack = reads(&track)?;
-            project.tracks.push(model::Track {
-                id: id_of(&track.id),
-                name: track.name,
-                kind: if track.kind == "audio" {
-                    model::TrackKind::Audio
-                } else {
-                    model::TrackKind::Video
-                },
-                index: track.index,
-                muted: track.muted,
-                solo: track.solo,
-                locked: track.locked,
-                gain_db: track.gain_db,
-                pan: track.pan,
-            });
+            project.tracks.push(track_of(track));
         }
         for clip in self.clips {
             let clip: ShotClip = reads(&clip)?;
-            let mut anim = ClipAnimation::default();
-            for text in &clip.keys {
-                let key: ShotKey = reads(text)?;
-                if let Some(param) = Param::from_name(&key.param) {
-                    anim.ensure(param).set_key(
-                        key.t,
-                        key.v,
-                        Interp::from_name(key.interp.as_deref().unwrap_or_default()),
-                    );
-                }
-            }
-            let mut effects = Ordered::new();
-            for effect in clip.effects {
-                let effect: ShotEffect = reads(&effect)?;
-                if let Some(kind) = effect_of(&effect.form) {
-                    effects.push(model::ClipEffect {
-                        id: id_of(&effect.id),
-                        kind,
-                        amount: effect.amount,
-                    });
-                }
-            }
-            project.clips.push(model::Clip {
-                id: id_of(&clip.id),
-                track: id_of(&clip.track),
-                media: id_of(&clip.media),
-                start: clip.start,
-                in_point: clip.in_point,
-                out_point: clip.out_point,
-                opacity: clip.opacity,
-                volume: clip.volume,
-                transition: transition_of(clip.transition.as_deref()),
-                palette: clip.palette,
-                filters: model::Filters {
-                    brightness: clip.brightness,
-                    contrast: clip.contrast,
-                    saturation: clip.saturation,
-                },
-                curves: video_edit::curve::Curve::default(),
-                fade_in: clip.fade_in,
-                fade_out: clip.fade_out,
-                transition_duration: clip.transition_duration,
-                effects,
-                transform: model::Transform {
-                    scale_x: clip.scale_x.unwrap_or(1.0),
-                    scale_y: clip.scale_y.unwrap_or(1.0),
-                    pos_x: clip.pos_x.unwrap_or(0.0),
-                    pos_y: clip.pos_y.unwrap_or(0.0),
-                    rotation: clip.rotation.unwrap_or(0.0),
-                    anchor_x: 0.5,
-                    anchor_y: 0.5,
-                    crop_left: clip.crop_left.unwrap_or(0.0),
-                    crop_right: clip.crop_right.unwrap_or(0.0),
-                    crop_top: clip.crop_top.unwrap_or(0.0),
-                    crop_bottom: clip.crop_bottom.unwrap_or(0.0),
-                },
-                speed: model::Speed {
-                    rate: clip
-                        .speed_rate
-                        .unwrap_or(1.0)
-                        .clamp(model::MIN_SPEED, model::MAX_SPEED),
-                    reverse: clip.speed_reverse,
-                },
-                key: model::ChromaKey {
-                    enabled: clip.key_enabled,
-                    color: clip.key_color,
-                    tolerance: clip.key_tolerance,
-                    softness: clip.key_softness,
-                    spill: clip.key_spill,
-                },
-                mask: model::Mask {
-                    shape: match clip.mask_shape.as_deref() {
-                        Some("rect") => model::MaskShape::Rect,
-                        Some("ellipse") => model::MaskShape::Ellipse,
-                        _ => model::MaskShape::None,
-                    },
-                    x: clip.mask_x.unwrap_or(0.0),
-                    y: clip.mask_y.unwrap_or(0.0),
-                    w: clip.mask_w.unwrap_or(0.6),
-                    h: clip.mask_h.unwrap_or(0.6),
-                    rotation: clip.mask_rotation.unwrap_or(0.0),
-                    feather: clip.mask_feather.unwrap_or(0.12),
-                    invert: clip.mask_invert,
-                },
-                anim,
-                markers: Keyed::new(),
-                link: (clip.link != "").then(|| id_of(&clip.link)),
-                link_follows: clip.link_follows,
-                sound_split: clip.sound_split,
-            });
+            project.clips.push(clip_of(clip)?);
         }
         for marker in self.markers {
             let marker: ShotMarker = reads(&marker)?;
-            project.markers.push(model::Marker {
-                id: id_of(&marker.id),
-                t: marker.t,
-                name: marker.name,
-                palette: marker.palette,
-                note: marker.note,
-            });
+            project.markers.push(marker_of(marker));
         }
         Ok(project)
+    }
+}
+
+/// The media `media` names, laid out where this device can decode it: the content store's bytes
+/// laid out, or a path that is already here. An address this device cannot read stays as the app
+/// wrote it, which the picture draws from the source's own fill.
+fn media_item(media: ShotMedia, platform: Option<&dyn Platform>) -> model::MediaItem {
+    let path = platform
+        .and_then(|platform| media_path(platform, &media.path).ok())
+        .map_or_else(
+            || media.path.clone(),
+            |at| at.to_string_lossy().into_owned(),
+        );
+    model::MediaItem {
+        id: id_of(&media.id),
+        name: media.name,
+        kind: kind_of(&media.kind),
+        duration: media.duration,
+        width: media.width,
+        height: media.height,
+        fps: media.fps,
+        palette: media.palette,
+        path,
+        text: (media.kind == "text").then(|| model::TextSource {
+            content: media.content,
+            size: media.size,
+            color: media.color,
+            align: align_of(Some(&media.align)),
+            font: media.font,
+            bold: media.bold,
+            italic: media.italic,
+            backdrop: media.backdrop,
+        }),
+        has_audio: media.has_audio,
+    }
+}
+
+/// The track `track` names, as the model holds it.
+fn track_of(track: ShotTrack) -> model::Track {
+    model::Track {
+        id: id_of(&track.id),
+        name: track.name,
+        kind: if track.kind == "audio" {
+            model::TrackKind::Audio
+        } else {
+            model::TrackKind::Video
+        },
+        index: track.index,
+        muted: track.muted,
+        solo: track.solo,
+        locked: track.locked,
+        gain_db: track.gain_db,
+        pan: track.pan,
+    }
+}
+
+/// The clip `clip` names, its keys and effects read, as the model holds it.
+fn clip_of(clip: ShotClip) -> Result<model::Clip, String> {
+    let mut anim = ClipAnimation::default();
+    for text in &clip.keys {
+        let key: ShotKey = reads(text)?;
+        if let Some(param) = Param::from_name(&key.param) {
+            anim.ensure(param).set_key(
+                key.t,
+                key.v,
+                Interp::from_name(key.interp.as_deref().unwrap_or_default()),
+            );
+        }
+    }
+    let mut effects = Ordered::new();
+    for effect in clip.effects {
+        let effect: ShotEffect = reads(&effect)?;
+        if let Some(kind) = effect_of(&effect.form) {
+            effects.push(model::ClipEffect {
+                id: id_of(&effect.id),
+                kind,
+                amount: effect.amount,
+            });
+        }
+    }
+    Ok(model::Clip {
+        id: id_of(&clip.id),
+        track: id_of(&clip.track),
+        media: id_of(&clip.media),
+        start: clip.start,
+        in_point: clip.in_point,
+        out_point: clip.out_point,
+        opacity: clip.opacity,
+        volume: clip.volume,
+        transition: transition_of(clip.transition.as_deref()),
+        palette: clip.palette,
+        filters: model::Filters {
+            brightness: clip.brightness,
+            contrast: clip.contrast,
+            saturation: clip.saturation,
+        },
+        curves: video_edit::curve::Curve::default(),
+        fade_in: clip.fade_in,
+        fade_out: clip.fade_out,
+        transition_duration: clip.transition_duration,
+        effects,
+        transform: model::Transform {
+            scale_x: clip.scale_x.unwrap_or(1.0),
+            scale_y: clip.scale_y.unwrap_or(1.0),
+            pos_x: clip.pos_x.unwrap_or(0.0),
+            pos_y: clip.pos_y.unwrap_or(0.0),
+            rotation: clip.rotation.unwrap_or(0.0),
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+            crop_left: clip.crop_left.unwrap_or(0.0),
+            crop_right: clip.crop_right.unwrap_or(0.0),
+            crop_top: clip.crop_top.unwrap_or(0.0),
+            crop_bottom: clip.crop_bottom.unwrap_or(0.0),
+        },
+        speed: model::Speed {
+            rate: clip
+                .speed_rate
+                .unwrap_or(1.0)
+                .clamp(model::MIN_SPEED, model::MAX_SPEED),
+            reverse: clip.playback.speed_reverse,
+        },
+        key: model::ChromaKey {
+            enabled: clip.key.key_enabled,
+            color: clip.key_color,
+            tolerance: clip.key_tolerance,
+            softness: clip.key_softness,
+            spill: clip.key_spill,
+        },
+        mask: model::Mask {
+            shape: match clip.mask_shape.as_deref() {
+                Some("rect") => model::MaskShape::Rect,
+                Some("ellipse") => model::MaskShape::Ellipse,
+                _ => model::MaskShape::None,
+            },
+            x: clip.mask_x.unwrap_or(0.0),
+            y: clip.mask_y.unwrap_or(0.0),
+            w: clip.mask_w.unwrap_or(0.6),
+            h: clip.mask_h.unwrap_or(0.6),
+            rotation: clip.mask_rotation.unwrap_or(0.0),
+            feather: clip.mask_feather.unwrap_or(0.12),
+            invert: clip.key.mask_invert,
+        },
+        anim,
+        markers: Keyed::new(),
+        link: (!clip.link.is_empty()).then(|| id_of(&clip.link)),
+        link_follows: clip.link_follows,
+        sound_split: clip.playback.sound_split,
+    })
+}
+
+/// The marker `marker` names, as the model holds it.
+fn marker_of(marker: ShotMarker) -> model::Marker {
+    model::Marker {
+        id: id_of(&marker.id),
+        t: marker.t,
+        name: marker.name,
+        palette: marker.palette,
+        note: marker.note,
     }
 }
 

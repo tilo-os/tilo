@@ -50,13 +50,13 @@ const CALLEE_APP: &str = "test.callee";
 fn bundles() -> Bundle {
     let callee = tilolang::compile_package(CALLEE, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("the callee compiles: {diagnostics:#?}"));
-    let caller = tilolang::compile_package(
+    let client = tilolang::compile_package(
         CALLER,
         &tilolang::IdsLock::new(),
         std::slice::from_ref(&callee.meta),
     )
     .unwrap_or_else(|diagnostics| panic!("the caller compiles: {diagnostics:#?}"));
-    Bundle::new(&caller, std::slice::from_ref(&callee))
+    Bundle::new(&client, std::slice::from_ref(&callee))
 }
 
 /// What the caller's counter holds.
