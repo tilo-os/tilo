@@ -354,6 +354,28 @@ class ReadmeTests(unittest.TestCase):
                              ["name has no tilo- or tilolang prefix"])
 
 
+class EmbeddedTests(unittest.TestCase):
+    def test_a_package_carries_what_it_embeds_from_elsewhere_in_the_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            crate = tree / "crates/example"
+            (crate / "src/deep").mkdir(parents=True)
+            (tree / "apps/shell").mkdir(parents=True)
+            (tree / "apps/shell/app.tl").write_text("app shell\n")
+            (crate / "src/own.txt").write_text("own\n")
+            code = ('const SHELL: &str = include_str!("../../../../apps/shell/app.tl");\n'
+                    'const OWN: &str = include_str!("../own.txt");\n'
+                    'const GONE: &[u8] = include_bytes!("../../../../apps/none.bin");\n')
+            (crate / "src/deep/lib.rs").write_text(code)
+            self.assertEqual(check.carry_embedded(crate, tree), ["apps/shell/app.tl"])
+            self.assertEqual((crate / "published-files/apps/shell/app.tl").read_text(), "app shell\n")
+            rewritten = (crate / "src/deep/lib.rs").read_text()
+            self.assertIn('include_str!("../../published-files/apps/shell/app.tl")', rewritten)
+            self.assertIn('include_str!("../own.txt")', rewritten, "a file of its own stays")
+            self.assertIn("apps/none.bin", rewritten, "a missing file is left for the build to name")
+            self.assertEqual(check.carry_embedded(crate, tree), [], "carried once")
+
+
 class OversizeTests(unittest.TestCase):
     def test_a_package_over_the_limit_names_its_biggest_files(self):
         with tempfile.TemporaryDirectory() as directory:

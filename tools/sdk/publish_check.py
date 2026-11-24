@@ -400,6 +400,55 @@ def rewrite_manifest(text: str, base: pathlib.Path, published: set[pathlib.Path]
     return "".join(out)
 
 
+# A file a crate's code embeds by a literal path: `include_str!("…")`, `include_bytes!("…")`,
+# `include!("…")`.
+EMBEDDED = re.compile(r'\b(include_str|include_bytes|include)!\(\s*"([^"\n]+)"\s*\)')
+# Where a package carries the files it embeds from elsewhere in the repository.
+EMBEDDED_DIR = "published-files"
+
+
+def embed_outside_files(tree: pathlib.Path, names: set[str]) -> list[str]:
+    """Copy into each of NAMES' packages in TREE the files its code embeds from outside its
+    directory (the tilolang shell, the developer guides, theme files), and point each embedding
+    at its copy. A package holds only its own directory, so a crate built from crates.io could
+    not read them; the repository keeps one copy of each. Returns what was copied, as
+    `crate: path`."""
+    copied = []
+    for package in metadata(tree, locked=False)["packages"]:
+        if package["source"] is None and package["name"] in names:
+            root = pathlib.Path(package["manifest_path"]).parent
+            copied += [f"{package['name']}: {path}" for path in carry_embedded(root, tree)]
+    return sorted(set(copied))
+
+
+def carry_embedded(root: pathlib.Path, tree: pathlib.Path) -> list[str]:
+    """The package at ROOT made to carry what its code embeds from elsewhere in TREE (copied
+    under EMBEDDED_DIR, each embedding pointed at its copy); the paths copied, from TREE."""
+    root, tree = root.resolve(), tree.resolve()
+    copied = []
+    for source in sorted(root.rglob("*.rs")):
+        if EMBEDDED_DIR in source.relative_to(root).parts:
+            continue
+        text = source.read_text()
+
+        def carried(match: re.Match) -> str:
+            embedded = (source.parent / match.group(2)).resolve()
+            if (embedded.is_relative_to(root) or not embedded.is_relative_to(tree)
+                    or not embedded.is_file()):
+                return match.group(0)
+            copy = root / EMBEDDED_DIR / embedded.relative_to(tree)
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(embedded, copy)
+            copied.append(str(embedded.relative_to(tree)))
+            path = os.path.relpath(copy, source.parent).replace(os.sep, "/")
+            return f'{match.group(1)}!("{path}")'
+
+        new = EMBEDDED.sub(carried, text)
+        if new != text:
+            source.write_text(new)
+    return sorted(set(copied))
+
+
 def at_version(tree: pathlib.Path, names: set[str], version: str) -> None:
     """Every manifest of TREE's workspace rewritten so the crates NAMES are at VERSION and
     everything that depends on one by path and version asks for exactly it. The rewrite is read
@@ -601,6 +650,12 @@ def package(tree: pathlib.Path, target: pathlib.Path, ready: set[str], version: 
     os.environ["CARGO_NET_OFFLINE"] = "false"
     forks_as_members(tree)
     at_version(tree, ready, version)
+    carried = embed_outside_files(tree, ready)
+    if carried:
+        print(f"Files the packages embed from elsewhere in the repository, carried in each "
+              f"({len(carried)}):")
+        for line in carried:
+            print(f"  {line}")
     for name in ready:
         for stale in (target / "package" / f"{name}-{version}.crate",
                       target / "package/tmp-registry" / f"{name}-{version}.crate"):

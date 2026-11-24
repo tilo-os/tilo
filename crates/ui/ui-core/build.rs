@@ -200,7 +200,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for source in [
         "tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex",
         "tests/fixtures/test_image.png.hex",
-        "../../engines/paint-stream/tests/fixtures/layers.top.png.hex",
     ] {
         println!("cargo::rerun-if-changed={source}");
     }
@@ -212,9 +211,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         include_str!("tests/fixtures/test_image.png.hex"),
         "test_image.png",
     )?;
-    emit_hex_fixture(
-        include_str!("../../engines/paint-stream/tests/fixtures/layers.top.png.hex"),
-        "layers.top.png",
-    )?;
+    // The paint stream's fixture is that crate's, beside it in the repository. The published
+    // package of this crate carries neither it nor the webview tests that read it (they include
+    // that crate's other fixtures too), so it is decoded only where it is.
+    let paint_stream = "../../engines/paint-stream/tests/fixtures/layers.top.png.hex";
+    if let Ok(hex) = std::fs::read_to_string(paint_stream) {
+        println!("cargo::rerun-if-changed={paint_stream}");
+        emit_hex_fixture(&hex, "layers.top.png")?;
+    }
     Ok(())
 }
