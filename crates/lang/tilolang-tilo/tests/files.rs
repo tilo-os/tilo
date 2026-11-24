@@ -1045,10 +1045,25 @@ fn a_picture_shows_the_preview_the_device_made_and_the_entries_draw_larger_or_sm
 
     app.call("preview_step", vec![app.root_value()]);
     let mut window = app.window();
+    let words = shown(&mut window);
+    assert!(
+        words.iter().any(|word| word == "beach.png"),
+        "the picture stands in the window: {words:?}"
+    );
+    let cards = nodes_of(&mut window, "ui.Card");
     assert_eq!(
-        nodes_of(&mut window, "ui.CardGridCard").len(),
+        cards.len(),
         1,
-        "the picture stands as the grid's one card"
+        "the picture stands as the grid's one card: {}",
+        {
+            let mut kinds = Vec::new();
+            kinds_of(window.tree(), &mut kinds);
+            kinds.join(", ")
+        }
+    );
+    assert!(
+        window.event_action(&cards[0].key, "activate").is_some(),
+        "a press on the card opens the picture"
     );
     let pictures = nodes_of(&mut window, "ui.Image");
     assert_eq!(

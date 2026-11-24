@@ -2015,16 +2015,11 @@ view entry_list(
 view entry_grid(f: Files, s: Session, entries: List<Entry>) {
     ui.Scroll {
         page(full) {
-            ui.CardGrid(
-                name: "Files",
-                card_width: if s.zoom == 0 {
-                    .compact
-                } else if s.zoom == 2 { .wide } else { .regular },
-            ) {
+            // A card stands for a resource, and an entry of this device's disk is no resource:
+            // the card carries the entry's own words and a press names its path.
+            grid(min: if s.zoom == 0 { 8rem } else if s.zoom == 2 { 16rem } else { 12rem }) {
                 for e in entries {
-                    // A card stands for a resource: a device entry has none, so the card keeps
-                    // the entry it was made from and the press names its path.
-                    ui.CardGridCard(item: e, title: e.name) {
+                    ui.Card(title: e.name) {
                         on activate: open_entry(f, e.path)
                         body: {
                             ui.DragSource("", files: dragged(s, e), title: e.name) {
