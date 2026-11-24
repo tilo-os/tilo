@@ -82,6 +82,9 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # resolve an installed app's service binds the way a launch does. The library
 # reads manifests through tilo-app-package and never links the launcher.
 launcher = { path = "../../core/launcher" }
+# A test's daemon installs the way the device's does, through the same changes
+# the cache's actions make.
+package-actions = { path = "../../core/package-actions" }
 
 [[test]]
 name = "it"

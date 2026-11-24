@@ -608,6 +608,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
  "launcher",
+ "package-actions",
  "package-store",
  "registry-types",
  "reqwest",

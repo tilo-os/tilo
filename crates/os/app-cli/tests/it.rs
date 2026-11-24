@@ -12,6 +12,10 @@
 
 #[path = "catalogue_selection.rs"]
 pub mod catalogue_selection;
+#[path = "daemon_fixture.rs"]
+pub mod daemon_fixture;
+#[path = "package_file.rs"]
+pub mod package_file;
 #[path = "registry_fixture.rs"]
 pub mod registry_fixture;
 mod registry_recovery;
