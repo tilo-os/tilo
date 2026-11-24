@@ -107,7 +107,7 @@ impl Web {
             .or(public_origin)
             .map_or_else(|| format!("https://{addr}"), str::to_owned);
         match crate::web_push::WebPush::open(state, &contact) {
-            Ok(push) => {
+            Ok(_push) => {
                 // What a person's assistant told them reaches the same
                 // browsers, while no device of theirs is looking.
                 #[cfg(feature = "agents")]
@@ -116,7 +116,7 @@ impl Web {
                 {
                     let teller = tilo_workspace_service::agents::telling::Teller::new(
                         workspaces.clone(),
-                        Arc::new(push.clone()),
+                        Arc::new(_push.clone()),
                     );
                     // An app of theirs that is closed hears of it through
                     // Apple's push service, where this server was given a
@@ -359,6 +359,7 @@ pub(crate) fn keep_stand_in(
 
 /// The stand-in certificate and key this host keeps for `user`, when it keeps
 /// a live one.
+#[cfg(feature = "agents")]
 pub(crate) fn stand_in_for(
     state_root: &std::path::Path,
     user: &[u8; 32],
