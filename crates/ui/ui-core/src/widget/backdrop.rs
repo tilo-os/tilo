@@ -15,7 +15,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Brush, Extend, Fill, Gradient, ImageBrush};
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -86,9 +85,10 @@ impl Widget for Backdrop {
         // No picture: the shell's own gradient stands corner to corner, as it does under the
         // surfaces that frost it.
         if let Some(stops) = source.gradient() {
-            let gradient = Gradient::new_linear(self.rect.origin(), Point::new(self.rect.x1, self.rect.y1))
-                .with_extend(Extend::Pad)
-                .with_stops([stops.0, stops.1].as_slice());
+            let gradient =
+                Gradient::new_linear(self.rect.origin(), Point::new(self.rect.x1, self.rect.y1))
+                    .with_extend(Extend::Pad)
+                    .with_stops([stops.0, stops.1].as_slice());
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -101,7 +101,12 @@ impl Widget for Backdrop {
 }
 
 /// Paint `picture` covering `rect`, centred, clipped to it: what a wallpaper does to a screen.
-fn paint_picture(scene: &mut Scene, transform: Affine, rect: Rect, picture: &vello::peniko::ImageData) {
+fn paint_picture(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    picture: &vello::peniko::ImageData,
+) {
     let (width, height) = (f64::from(picture.width), f64::from(picture.height));
     if width <= 0.0 || height <= 0.0 {
         return;

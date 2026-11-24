@@ -63,20 +63,38 @@ impl Hub {
             .iter()
             .map(|head| head.parse().map_err(|error| format!("{error:?}")))
             .collect::<Result<Vec<automerge::ChangeHash>, _>>()?;
-        let mut channels = self.channels.lock().unwrap();
-        let record = &channels.entry(channel.to_owned()).or_default().record;
-        let changes: Vec<u8> = record
-            .get_changes(&after)
-            .iter()
-            .flat_map(|change| change.raw_bytes().iter().copied())
-            .collect();
+        let (changes, heads) = Self::record_changes(
+            self.channels
+                .lock()
+                .unwrap()
+                .entry(channel.to_owned())
+                .or_default(),
+            &after,
+        );
         let from = usize::try_from(from).map_err(|error| error.to_string())?;
-        let end = changes.len().min(from + RECORD_PAGE_BYTES);
+        let end = changes.len().min(from.saturating_add(RECORD_PAGE_BYTES));
         Ok(Store::RecordChanges {
             changes: Bytes(changes.get(from..end).ok_or("no such page")?.to_vec()),
-            heads: record.get_heads().iter().map(ToString::to_string).collect(),
+            heads,
             next: (end < changes.len()).then(|| u64::try_from(end).unwrap()),
         })
+    }
+
+    /// The changes of `channel`'s record past `after`, as bytes, and the heads they bring a
+    /// reader to.
+    fn record_changes(
+        channel: &Channel,
+        after: &[automerge::ChangeHash],
+    ) -> (Vec<u8>, Vec<String>) {
+        let record = &channel.record;
+        (
+            record
+                .get_changes(after)
+                .iter()
+                .flat_map(|change| change.raw_bytes().iter().copied())
+                .collect(),
+            record.get_heads().iter().map(ToString::to_string).collect(),
+        )
     }
 
     /// Take `source`'s own run of changes into `channel`'s record once its last run arrives, and
@@ -98,6 +116,7 @@ impl Hub {
         state
             .notices
             .retain(|sub| sub.peer == source || sub.tx.send(()).is_ok());
+        drop(channels);
         Ok(Store::Written)
     }
 

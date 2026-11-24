@@ -29,12 +29,12 @@ pub(crate) use filter::{filter_resource, filter_shared};
 use filter::{inherit_filtered, insert_available_permitted};
 
 mod control;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use control::control_draft_identity;
 pub(crate) use control::{
     ControlContinuationArguments, ControlDeclaration, ControlIdentity, ControlObservation,
-    control_declaration, control_observation, control_observation_with_arguments,
+    control_declaration, control_observation,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use control::{control_draft_identity, control_observation_with_arguments};
 
 use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
 use crate::published::SharedResource;

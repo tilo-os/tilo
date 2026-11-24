@@ -48,8 +48,7 @@ fn rendered(theme: &Theme, rect: Rect) -> Vec<u8> {
             PresenceCtx::empty().draw_env(),
         ),
     );
-    crate::offscreen::OffscreenRenderer::new(240, 240)
-        .render(&scene, vello::peniko::Color::BLACK)
+    crate::offscreen::OffscreenRenderer::new(240, 240).render(&scene, vello::peniko::Color::BLACK)
 }
 
 #[test]
@@ -67,10 +66,7 @@ fn the_backdrop_paints_the_shells_wallpaper_under_everything() {
     );
     // Its gradient stands where the shell has no picture.
     let source = Source::new();
-    source.set_gradient((
-        Color::from_rgb8(20, 40, 200),
-        Color::from_rgb8(20, 40, 200),
-    ));
+    source.set_gradient((Color::from_rgb8(20, 40, 200), Color::from_rgb8(20, 40, 200)));
     wallpaper::install(Some(source));
     let seen = rendered(&theme, rect);
     let (red, green, blue, _) = crate::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);

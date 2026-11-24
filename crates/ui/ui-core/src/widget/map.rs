@@ -78,16 +78,14 @@ const MARKER_RADIUS: f64 = 5.0;
 const MARKER_RING: f64 = 2.0;
 
 /// Draw `image` into `rect`: the tile scaled to the screen the camera puts it at.
-fn draw_tile(
-    scene: &mut Scene,
-    transform: Affine,
-    image: &vello::peniko::ImageData,
-    rect: Rect,
-) {
+fn draw_tile(scene: &mut Scene, transform: Affine, image: &vello::peniko::ImageData, rect: Rect) {
     let width = f64::from(image.width).max(1.0);
     let height = f64::from(image.height).max(1.0);
     let scale = Affine::scale_non_uniform(rect.width() / width, rect.height() / height);
-    scene.draw_image(image, transform * Affine::translate(rect.origin().to_vec2()) * scale);
+    scene.draw_image(
+        image,
+        transform * Affine::translate(rect.origin().to_vec2()) * scale,
+    );
 }
 
 /// The ink a line of the map draws in: a route the person takes, a way walked, a public
@@ -111,15 +109,12 @@ fn marker_ink(kind: MapMarkerKind, theme: &Theme) -> vello::peniko::Color {
         MapMarkerKind::Cafe | MapMarkerKind::Restaurant | MapMarkerKind::Bar => {
             colors.semantic.warning
         }
-        MapMarkerKind::Park => colors.semantic.success,
-        MapMarkerKind::Transit => colors.intent.accent,
+        MapMarkerKind::Park | MapMarkerKind::Start => colors.semantic.success,
+        MapMarkerKind::Transit | MapMarkerKind::Current => colors.intent.accent,
         MapMarkerKind::Hotel => colors.presence.series(6),
         MapMarkerKind::Shop => colors.presence.series(3),
-        MapMarkerKind::Hospital => colors.semantic.danger,
+        MapMarkerKind::Hospital | MapMarkerKind::End => colors.semantic.danger,
         MapMarkerKind::Other | MapMarkerKind::Poi => colors.text_dim,
-        MapMarkerKind::Current => colors.intent.accent,
-        MapMarkerKind::Start => colors.semantic.success,
-        MapMarkerKind::End => colors.semantic.danger,
     }
 }
 
@@ -584,7 +579,9 @@ impl MapArea {
         let columns = 1_i64 << z.clamp(0, TILE_ZOOM_MOST);
         let column = |longitude: f64| ((longitude + 180.0) / 360.0).rem_euclid(1.0);
         let row = |latitude: f64| {
-            let lat = latitude.clamp(-MERCATOR_MAX_LAT, MERCATOR_MAX_LAT).to_radians();
+            let lat = latitude
+                .clamp(-MERCATOR_MAX_LAT, MERCATOR_MAX_LAT)
+                .to_radians();
             let sine = lat.sin();
             0.5 - ((1.0 + sine) / (1.0 - sine)).ln() / (4.0 * std::f64::consts::PI)
         };
@@ -2305,7 +2302,7 @@ impl Map {
     /// that covers it, and, where one is still on its way, the coarser tile it stands in that
     /// has loaded, so imagery never blanks when the person zooms or pans.
     fn draw_basemap(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         pictures: &crate::pictures::Pictures,
@@ -2923,7 +2920,8 @@ impl Map {
                     // A click on a marker opens what the marker is; the map reports nothing of
                     // its own for that press, as a click on a pin is the pin's.
                     if let Some(key) = self.marker_under(press.start) {
-                        self.marker_event.fire(Some(crate::component::Value::Text(key)));
+                        self.marker_event
+                            .fire(Some(crate::component::Value::Text(key)));
                         self.dirty = true;
                         *ctx.handled = true;
                         return;

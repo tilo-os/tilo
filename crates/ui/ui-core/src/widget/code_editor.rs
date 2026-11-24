@@ -130,9 +130,10 @@ impl Language {
             Language::Typst => Some(Box::new(TypstHighlighter)),
             Language::Sql => Some(Box::new(SyntaxHighlighter::for_token_or_plain("sql"))),
             Language::Json => Some(Box::new(SyntaxHighlighter::for_token_or_plain("json"))),
-            Language::Shell => Some(Box::new(SyntaxHighlighter::for_token_or_plain("sh"))),
             // Git commands are shell commands; the set has no grammar of their own.
-            Language::Git => Some(Box::new(SyntaxHighlighter::for_token_or_plain("sh"))),
+            Language::Shell | Language::Git => {
+                Some(Box::new(SyntaxHighlighter::for_token_or_plain("sh")))
+            }
             Language::Python => Some(Box::new(SyntaxHighlighter::for_token_or_plain("py"))),
             Language::JavaScript => Some(Box::new(SyntaxHighlighter::for_token_or_plain("js"))),
             Language::TypeScript => Some(Box::new(SyntaxHighlighter::for_token_or_plain("ts"))),
