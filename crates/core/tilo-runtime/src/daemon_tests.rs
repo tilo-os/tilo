@@ -1957,4 +1957,137 @@ impl crate::seats::Shells for NestedShells {
         super::the_shells_environment(&mut command, env);
         daemon.start_shell(command, window)
     }
+
+/// The person's services start when this device's own account founds them (`devices#found`),
+/// without the daemon restarting: before founding they are not there and a call as the person is
+/// refused, and after it answers the person's key they come up and answer a call as them.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the whole first start: before, founding, and the services it brings up"
+)]
+fn the_persons_services_start_when_this_device_founds_them() {
+    use io::{BufRead as _, Write as _};
+    use std::os::unix::fs::DirBuilderExt as _;
+    use tilo_actions::remote::{
+        InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+        RemoteActionTarget,
+    };
+    use tilo_actions::{ActionAddress, InvocationId};
+
+    let dir = tempfile::tempdir().unwrap();
+    let private = |path: &std::path::Path| {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .unwrap();
+    };
+    let (home, run, profile) = (
+        dir.path().join("home"),
+        dir.path().join("run"),
+        dir.path().join("profile"),
+    );
+    for path in [
+        home.clone(),
+        run.clone(),
+        profile.clone(),
+        home.join(".local/state"),
+        home.join(".config"),
+        home.join(".local/share"),
+    ] {
+        private(&path);
+    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", &home)
+        .set("XDG_RUNTIME_DIR", &run)
+        .set("XDG_STATE_HOME", home.join(".local/state"))
+        .set("XDG_CONFIG_HOME", home.join(".config"))
+        .set("XDG_DATA_HOME", home.join(".local/share"))
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+        .set("TILO_IDENTITY_ROOT", dir.path().join("identity"))
+        .remove("CREDENTIALS_DIRECTORY")
+        .remove("TILO_RUNTIME_PROFILE");
+    let running = super::Running::start(&profile).unwrap();
+    let socket = running.native_socket().to_owned();
+
+    // One call to the device's actions, over the frame wire every client reaches it with.
+    let call = |action: &str| -> ReceiptStatus {
+        let request = RemoteActionMessage::Invoke(InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: tilo_device_identity::login::PROVIDER.to_owned(),
+                address: ActionAddress::new(tilo_device_identity::login::RESOURCE, action),
+            },
+            argument: InvokeArgument::Json(serde_json::Map::new()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        });
+        let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        writer
+            .write_all(&RemoteActionFrame::new(request).encode().unwrap())
+            .unwrap();
+        writer.write_all(b"\n").unwrap();
+        let mut line = String::new();
+        io::BufReader::new(stream)
+            .read_line(&mut line)
+            .expect("the daemon answers");
+        match RemoteActionFrame::decode(line.trim_end().as_bytes())
+            .expect("the answer is a frame")
+            .message
+        {
+            RemoteActionMessage::Receipt(receipt) => receipt.status,
+            other => panic!("a call is answered with a receipt, not {other:?}"),
+        }
+    };
+
+    // Before founding, the person's services are not there and a call as them is refused.
+    assert!(
+        running.person.within(Duration::from_millis(200)).is_err(),
+        "nothing serves a person before one is founded"
+    );
+    let before = call(tilo_device_identity::login::IDENTITIES);
+    assert!(
+        matches!(before, ReceiptStatus::Rejected { .. }),
+        "a call as the person is refused before one is founded: {before:?}"
+    );
+
+    // This device's own account founds them; the action answers the person's key, in hex.
+    let found = call(tilo_device_identity::login::FOUND);
+    let ReceiptStatus::Completed { output } = found else {
+        panic!("the device founds a person: {found:?}");
+    };
+    let person = output
+        .value
+        .as_ref()
+        .and_then(|value| value.get("person"))
+        .and_then(serde_json::Value::as_str)
+        .expect("the found action answers the person")
+        .to_owned();
+    assert_eq!(
+        person.len(),
+        64,
+        "the person is their root key, in hex: {person}"
+    );
+
+    // Without a restart, their services come up, and a frame now answers as them.
+    running
+        .person
+        .within(Duration::from_secs(120))
+        .expect("the person's services start once this device founds them");
+    let after = call(tilo_device_identity::login::IDENTITIES);
+    assert!(
+        matches!(after, ReceiptStatus::Completed { .. }),
+        "the person's services answer a call as them: {after:?}"
+    );
+    running.stop().unwrap();
 }
