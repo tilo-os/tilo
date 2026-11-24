@@ -13,7 +13,7 @@ happens to be installed on a host. The 35 `product` fonts, the SDK's
 standalone catalog, total 54,113,192 bytes; the `os` font New Computer
 Modern Regular brings the Tilo OS catalog to 54,830,780 bytes; Adwaita adds
 879,796 fixture bytes. The four `web` cuts, which only a page's host
-serves and no catalog installs, total 158,704 bytes.
+serves and no catalog installs, total 158,520 bytes.
 
 ## Tilo Sans (UI face)
 
@@ -24,20 +24,23 @@ in https://code.tilo.so/tilo/tilo-sans. The catalog ships its default build:
 Latin, Vietnamese, Greek, and the distinct I/l (`ss13`, `cv01`, `cv02`) and
 slashed zero (`zero`) features, which the toolkit applies by capability for
 identifiers and "Always distinguish similar letters". Cyrillic is held back
-until review approves it and falls back to Onest (below).
+until review approves it and falls back to Onest (below). Since v1.003 its
+middle dot has the period's side bearings and its period and comma kern into
+a figure by at most 30 units, where Instrument Sans set separators and
+amounts too tight; tilo-sans' README says exactly what differs.
 
 | file | bytes | SHA-256 |
 |---|---:|---|
-| `TiloSans[wdth,wght].ttf` | 325400 | `903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6` |
-| `TiloSans-Italic[wdth,wght].ttf` | 338224 | `72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743` |
+| `TiloSans[wdth,wght].ttf` | 325124 | `309464819c93c8d4a66de94b2ad15e006b4c0a920ec30de24cf8759e6be4b7f6` |
+| `TiloSans-Italic[wdth,wght].ttf` | 337960 | `86875acc703958329e7064489ad6c3cfb4b3ca0978bbcc9e7b52eb3c462b2e91` |
 | `LICENSES/Tilo-Sans-OFL.txt` (tilo/tilo-sans `OFL.txt`) | 4448 | `63a4ce1628d9c43e728a77e40d27529f036a7bca9f50c65be96f4cf0a9aa5f98` |
 
-Both fonts are tilo/tilo-sans' `fonts/default/` at tag `v1.002` (commit
-`025d4613d723e0da70d0d2d99e39fbb781f9f45f`), built with
+Both fonts are tilo/tilo-sans' `fonts/default/` at tag `v1.003` (commit
+`e609d23123936d848e93d6c096d001a6d4001c0c`), built with
 
 ```sh
-git clone https://code.tilo.so/tilo/tilo-sans && cd tilo-sans && git checkout v1.002
-SOURCE_DATE_EPOCH=1791160331 uv run build.py
+git clone https://code.tilo.so/tilo/tilo-sans && cd tilo-sans && git checkout v1.003
+SOURCE_DATE_EPOCH=1795504183 uv run build.py
 ```
 
 `SOURCE_DATE_EPOCH` is that commit's time; it sets `head.modified`, the only
@@ -45,7 +48,7 @@ part of the output that otherwise follows the clock. The repository pins its
 build dependencies (fonttools 4.66.1, ufo2ft 3.9.1, ufoLib2 0.18.1, glyphsLib
 6.15.0, skia-pathops 0.9.2, uharfbuzz 0.56.2; `build.py.lock` the rest), so
 the rebuild reproduces these bytes; the same files are attached to the
-`v1.002` release there. `scripts/shaping_tests.py` passed on the build.
+`v1.003` release there. `scripts/shaping_tests.py` passed on the build.
 
 Both fonts embed `Copyright 2022 The Instrument Sans Project Authors
 (https://github.com/Instrument/instrument-sans). Copyright 2026 The Tilo Sans
@@ -229,10 +232,10 @@ in two by script, so a page in English or German loads only its Latin file:
 
 | file | bytes | SHA-256 | source |
 |---|---:|---|---|
-| `TiloSans-Latin.woff2` | 44980 | `f1dccb574913c1e5ffc434508a508a7e7bbd449198176b35c694e15bdff37c46` | `TiloSans[wdth,wght].ttf` |
-| `TiloSans-Extended.woff2` | 32120 | `2af918ce6662c5563af2eee07e373fe5d18cec320ed469239e835f5c70348837` | `TiloSans[wdth,wght].ttf` |
-| `TiloSans-Italic-Latin.woff2` | 47680 | `76d6ac58f806fd95ab28bebe0b70bef3d65383a1c501381f586d3f870e903e0a` | `TiloSans-Italic[wdth,wght].ttf` |
-| `TiloSans-Italic-Extended.woff2` | 33924 | `d3561b1a45a2b6c09edb925b0f43e5d6260dd7ee1419bfcd10936d1b9eb9830d` | `TiloSans-Italic[wdth,wght].ttf` |
+| `TiloSans-Latin.woff2` | 44892 | `416c6fa7b759955de785f3c82e4771f6ac63705b2ffadb7be20f3dcd96ee62e7` | `TiloSans[wdth,wght].ttf` |
+| `TiloSans-Extended.woff2` | 32076 | `9b9a5a45809ccaf2216c57caff034abdb1973a03ca886b7b657e990786dab0f6` | `TiloSans[wdth,wght].ttf` |
+| `TiloSans-Italic-Latin.woff2` | 47664 | `e6afb6160690dcd79ee0555ef04596e27ef84d47a81a556dfc71912f56b7fbbe` | `TiloSans-Italic[wdth,wght].ttf` |
+| `TiloSans-Italic-Extended.woff2` | 33888 | `b8cedb75db45eb1aea8439a70e00c62d90cdbc54b48855a61bbc164024096b87` | `TiloSans-Italic[wdth,wght].ttf` |
 
 `tools/font-web-cuts.py` reads the pinned source from the prepared catalog,
 pins the `wdth` axis at its default 100 (a page never condenses text), keeps

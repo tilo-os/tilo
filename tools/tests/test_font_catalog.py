@@ -231,7 +231,7 @@ class CacheLockTest(unittest.TestCase):
             self.assertEqual(failures, [])
             self.assertEqual(len(roots), 2)
             self.assertEqual(roots[0], roots[1])
-            self.assertEqual(fc.verify(roots[0], "fixtures"), (37, 55771564))
+            self.assertEqual(fc.verify(roots[0], "fixtures"), (37, 55771024))
             self.assertEqual(set(store.asked),
                              {font["file"] for font in fc.selected(fc.manifest(FONTS), "fixtures")},
                              "every font came from the store")
@@ -274,11 +274,11 @@ class CatalogTest(unittest.TestCase):
     def test_reviewed_payload_is_staged_and_corruption_is_never_substituted(self):
         with self.subTest(phase='reviewed payload and product staging'):
             source = fc.prepared_root(ROOT / "crates/ui/ui-core/assets/fonts", "fixtures")
-            self.assertEqual(fc.verify(source, "fixtures"), (37, 55771564))
+            self.assertEqual(fc.verify(source, "fixtures"), (37, 55771024))
             with tempfile.TemporaryDirectory() as tmp:
                 dest = Path(tmp) / "fonts"
                 fc.stage(source, dest, "os")
-                self.assertEqual(fc.verify(dest, "os"), (36, 54891768))
+                self.assertEqual(fc.verify(dest, "os"), (36, 54891228))
                 self.assertTrue((dest / "NewCM10-Regular.otf").is_file())
                 self.assertFalse((dest / "AdwaitaSans-Regular.ttf").exists())
                 self.assertTrue((dest / "LICENSES/Noto-Color-Emoji-OFL.txt").is_file())
@@ -288,7 +288,7 @@ class CatalogTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 dest = Path(tmp) / "fonts"
                 fc.stage(source, dest, "product")
-                self.assertEqual(fc.verify(dest, "product"), (35, 54174180))
+                self.assertEqual(fc.verify(dest, "product"), (35, 54173640))
                 # New Computer Modern's GPL-licensed Regular cut stays in the
                 # Tilo OS; its GUST-licensed cuts ship.
                 self.assertFalse((dest / "NewCM10-Regular.otf").exists())
@@ -303,7 +303,7 @@ class CatalogTest(unittest.TestCase):
                 fc.stage(source, product, "product")
                 fc.stage(source, os_fonts, "os")
                 fc.link(product, linked, "os", extra=os_fonts)
-                self.assertEqual(fc.verify(linked, "os"), (36, 54891768))
+                self.assertEqual(fc.verify(linked, "os"), (36, 54891228))
                 face = "NotoSansMath-Regular.ttf"
                 self.assertEqual((linked / face).stat().st_ino, (product / face).stat().st_ino)
                 # The OS-only face is not in the product catalog: copied, not linked.
@@ -495,7 +495,7 @@ class CatalogBuildTest(unittest.TestCase):
             # new catalog rather than replacing one in place.
             self.assertEqual(Path(roots[0]).parent.as_posix(), "font-catalogs")
             self.assertRegex(Path(roots[0]).name, r"^[0-9a-f]{64}-fixtures$")
-            self.assertEqual(fc.verify(profile / roots[0], "fixtures"), (37, 55771564))
+            self.assertEqual(fc.verify(profile / roots[0], "fixtures"), (37, 55771024))
         self.assertEqual(published[0], published[1], "a rerun publishes no second catalog")
         # Nothing is written where cargo fills the build script's output directory.
         self.assertEqual(sorted(entry.name for entry in out.iterdir()), ["manifest.rs"])

@@ -3,39 +3,39 @@
   "assets": [
     {
       "file": "TiloSans[wdth,wght].ttf",
-      "bytes": 325400,
-      "sha256": "903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6",
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6/font-903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6.ttf"
+      "bytes": 325124,
+      "sha256": "309464819c93c8d4a66de94b2ad15e006b4c0a920ec30de24cf8759e6be4b7f6",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/309464819c93c8d4a66de94b2ad15e006b4c0a920ec30de24cf8759e6be4b7f6/font-309464819c93c8d4a66de94b2ad15e006b4c0a920ec30de24cf8759e6be4b7f6.ttf"
     },
     {
       "file": "TiloSans-Italic[wdth,wght].ttf",
-      "bytes": 338224,
-      "sha256": "72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743",
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743/font-72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743.ttf"
+      "bytes": 337960,
+      "sha256": "86875acc703958329e7064489ad6c3cfb4b3ca0978bbcc9e7b52eb3c462b2e91",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/86875acc703958329e7064489ad6c3cfb4b3ca0978bbcc9e7b52eb3c462b2e91/font-86875acc703958329e7064489ad6c3cfb4b3ca0978bbcc9e7b52eb3c462b2e91.ttf"
     },
     {
       "file": "TiloSans-Latin.woff2",
-      "bytes": 44980,
-      "sha256": "f1dccb574913c1e5ffc434508a508a7e7bbd449198176b35c694e15bdff37c46",
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/f1dccb574913c1e5ffc434508a508a7e7bbd449198176b35c694e15bdff37c46/font-f1dccb574913c1e5ffc434508a508a7e7bbd449198176b35c694e15bdff37c46.woff2"
+      "bytes": 44892,
+      "sha256": "416c6fa7b759955de785f3c82e4771f6ac63705b2ffadb7be20f3dcd96ee62e7",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/416c6fa7b759955de785f3c82e4771f6ac63705b2ffadb7be20f3dcd96ee62e7/font-416c6fa7b759955de785f3c82e4771f6ac63705b2ffadb7be20f3dcd96ee62e7.woff2"
     },
     {
       "file": "TiloSans-Extended.woff2",
-      "bytes": 32120,
-      "sha256": "2af918ce6662c5563af2eee07e373fe5d18cec320ed469239e835f5c70348837",
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/2af918ce6662c5563af2eee07e373fe5d18cec320ed469239e835f5c70348837/font-2af918ce6662c5563af2eee07e373fe5d18cec320ed469239e835f5c70348837.woff2"
+      "bytes": 32076,
+      "sha256": "9b9a5a45809ccaf2216c57caff034abdb1973a03ca886b7b657e990786dab0f6",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/9b9a5a45809ccaf2216c57caff034abdb1973a03ca886b7b657e990786dab0f6/font-9b9a5a45809ccaf2216c57caff034abdb1973a03ca886b7b657e990786dab0f6.woff2"
     },
     {
       "file": "TiloSans-Italic-Latin.woff2",
-      "bytes": 47680,
-      "sha256": "76d6ac58f806fd95ab28bebe0b70bef3d65383a1c501381f586d3f870e903e0a",
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/76d6ac58f806fd95ab28bebe0b70bef3d65383a1c501381f586d3f870e903e0a/font-76d6ac58f806fd95ab28bebe0b70bef3d65383a1c501381f586d3f870e903e0a.woff2"
+      "bytes": 47664,
+      "sha256": "e6afb6160690dcd79ee0555ef04596e27ef84d47a81a556dfc71912f56b7fbbe",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/e6afb6160690dcd79ee0555ef04596e27ef84d47a81a556dfc71912f56b7fbbe/font-e6afb6160690dcd79ee0555ef04596e27ef84d47a81a556dfc71912f56b7fbbe.woff2"
     },
     {
       "file": "TiloSans-Italic-Extended.woff2",
-      "bytes": 33924,
-      "sha256": "d3561b1a45a2b6c09edb925b0f43e5d6260dd7ee1419bfcd10936d1b9eb9830d",
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/d3561b1a45a2b6c09edb925b0f43e5d6260dd7ee1419bfcd10936d1b9eb9830d/font-d3561b1a45a2b6c09edb925b0f43e5d6260dd7ee1419bfcd10936d1b9eb9830d.woff2"
+      "bytes": 33888,
+      "sha256": "b8cedb75db45eb1aea8439a70e00c62d90cdbc54b48855a61bbc164024096b87",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/b8cedb75db45eb1aea8439a70e00c62d90cdbc54b48855a61bbc164024096b87/font-b8cedb75db45eb1aea8439a70e00c62d90cdbc54b48855a61bbc164024096b87.woff2"
     },
     {
       "file": "AtkinsonHyperlegibleNext[wght].ttf",

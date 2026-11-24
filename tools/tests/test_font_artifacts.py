@@ -73,7 +73,7 @@ class FontArtifactsTest(unittest.TestCase):
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     roots = list(pool.map(lambda _: fc.prepared_root(SOURCE, "fixtures", cache, True), range(2)))
                 self.assertEqual(roots[0], roots[1])
-                self.assertEqual(fc.verify(roots[0], "fixtures"), (37, 55771564))
+                self.assertEqual(fc.verify(roots[0], "fixtures"), (37, 55771024))
                 notice = roots[0] / "PROVENANCE.md"
                 notice.write_bytes(notice.read_bytes() + b"changed")
                 with self.assertRaisesRegex(ValueError, "provenance"):
@@ -115,7 +115,7 @@ class FontArtifactsTest(unittest.TestCase):
                 self.warm_cache(target / "font-artifacts", rows)
                 with patch.object(fc.urllib.request, "urlopen", side_effect=AssertionError("offline network")):
                     root = fc.prepared_root(SOURCE, "fixtures", None, True)
-                self.assertEqual(fc.verify(root, "fixtures"), (37, 55771564))
+                self.assertEqual(fc.verify(root, "fixtures"), (37, 55771024))
 
     def test_a_cache_that_cannot_be_made_names_why(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -133,7 +133,7 @@ class FontArtifactsTest(unittest.TestCase):
                 with patch.object(fc.urllib.request, "urlopen", side_effect=AssertionError("offline network")):
                     self.assertEqual(fc.prepared_root(SOURCE, "fixtures", root / "absent", True), supplied)
                     fc.prepare(SOURCE, root / "product", "product", root / "absent", True)
-                    self.assertEqual(fc.verify(root / "product", "product"), (35, 54174180))
+                    self.assertEqual(fc.verify(root / "product", "product"), (35, 54173640))
                     target = supplied / fc.manifest(SOURCE)["font"][0]["file"]
                     data = bytearray(target.read_bytes())
                     data[-1] ^= 1
@@ -240,7 +240,7 @@ class FontArtifactsTest(unittest.TestCase):
                 with patch.object(fc, "IMAGE_SEED", root / "seed"):
                     fresh = root / "fresh"
                     found = fc.prepared_root(SOURCE, "fixtures", fresh, True)
-                    self.assertEqual(fc.verify(found, "fixtures"), (37, 55771564))
+                    self.assertEqual(fc.verify(found, "fixtures"), (37, 55771024))
                     # Every font came from the seed: the cache holds the catalog alone.
                     self.assertEqual([path.name for path in fresh.iterdir()], ["catalogs"])
                     self.assertEqual(fc.cached_font(row, fresh, True), root / "seed" / row["sha256"] / row["file"])
