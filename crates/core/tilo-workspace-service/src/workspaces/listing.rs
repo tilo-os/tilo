@@ -424,15 +424,18 @@ impl Workspaces {
             .any(|invitation| invitation.recipient_user_public_key == Some(user))
     }
 
-    /// The authority `workspace` records, as this host's device reads it: the
-    /// one policy lookup the entry, the directory and a member's role answer
-    /// from.
+    /// The authority `workspace` records, as this service reads it: as its own device where it
+    /// governs the workspace, as the device its member copy acts as where it joins one. The one
+    /// policy lookup the entry, the directory and a member's role answer from.
     pub async fn policy_of(&self, workspace: &str) -> Option<tilo_action_policy::WorkspacePolicy> {
+        let reader = self
+            .own_reader(workspace)
+            .unwrap_or(self.inner.host.cert.device_public_key);
         let state = self.workspace(workspace).await.ok()?;
         let state = state.lock().await;
         state
             .peer()
-            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+            .permissions(reader, tilo_clock::wall())
             .ok()
             .map(|permissions| (*permissions.policy).clone())
     }

@@ -172,7 +172,7 @@ impl Workspaces {
 
     /// The device this service reads `workspace` as: its own where it governs the workspace, the
     /// device its member copy acts as where it joins one.
-    fn own_reader(&self, workspace: &str) -> Option<[u8; 32]> {
+    pub(super) fn own_reader(&self, workspace: &str) -> Option<[u8; 32]> {
         if self.inner.readings.held(workspace)?.member {
             return self.member_identity().ok().map(|device| device.device());
         }
