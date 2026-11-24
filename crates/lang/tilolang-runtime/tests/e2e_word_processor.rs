@@ -170,6 +170,67 @@ view member_row(p: Member) {
         fn words(&self, words: &str) -> Value {
             Value::Rich(RichValue::from_text(words))
         }
+
+        fn window(&self) -> tilolang_runtime::ViewInstance {
+            self.rt
+                .open_view(
+                    &me(),
+                    &self.app.view("writer"),
+                    vec![Value::resource(&self.doc)],
+                )
+                .unwrap()
+        }
+    }
+
+    /// The key of the one `kind` node in `view` whose `label` reads `label`.
+    fn control(view: &tilolang_runtime::ViewInstance, kind: &str, label: &str) -> String {
+        let found: Vec<String> = of_kind(view.tree(), kind)
+            .into_iter()
+            .filter(|node| node.props.get("label") == Some(&Value::text(label)))
+            .map(|node| node.key.clone())
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "one {kind} reads {label:?}:\n{}",
+            dump(view.tree())
+        );
+        found[0].clone()
+    }
+
+    /// What the editor in `view` was asked for: the formatting command carried by its `format`.
+    fn asked_of(view: &tilolang_runtime::ViewInstance) -> String {
+        let editor = of_kind(view.tree(), "ui.BlockEditor")[0];
+        match editor.props.get("format") {
+            Some(Value::Text(ask)) => ask.clone(),
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Text(ask) => ask.clone(),
+                other => panic!("the editor's format reads {other:?}"),
+            },
+            other => panic!("the editor's format reads {other:?}"),
+        }
+    }
+
+    /// How much larger the editor in `view` shows the page.
+    fn shown_zoom(view: &tilolang_runtime::ViewInstance) -> f64 {
+        let editor = of_kind(view.tree(), "ui.BlockEditor")[0];
+        match editor.props.get("zoom") {
+            Some(Value::Float(zoom)) => *zoom,
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Float(zoom) => *zoom,
+                other => panic!("the editor's zoom reads {other:?}"),
+            },
+            other => panic!("the editor's zoom reads {other:?}"),
+        }
+    }
+
+    /// Every text the window shows.
+    fn texts(view: &tilolang_runtime::ViewInstance) -> Vec<String> {
+        of_kind(view.tree(), "ui.Text")
+            .into_iter()
+            .filter_map(|text| text.props.get("value").and_then(Value::as_text))
+            .map(str::to_owned)
+            .collect()
     }
 
     fn file_of(outcome: InvokeOutcome) -> FileValue {
@@ -297,6 +358,88 @@ view member_row(p: Member) {
         assert_eq!(exported.name, "notes.txt");
         let markdown = file_of(writer.call("export_content", vec![Value::resource(&writer.doc)]));
         assert_eq!(markdown.name, "notes.md");
+    }
+
+    #[test]
+    fn the_page_zooms_from_the_toolbar_and_the_band_says_how_large_it_reads() {
+        let writer = Writer::new();
+        let mut view = writer.window();
+        assert_eq!(shown_zoom(&view), 1.0, "a page opens at its own size");
+
+        let larger = control(&view, "ui.ToolbarButton", "Zoom in");
+        view.press(&larger).unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(shown_zoom(&view), 1.25);
+        assert!(
+            texts(&view).iter().any(|text| text == "125%"),
+            "the band names the size the page reads at: {:?}",
+            texts(&view)
+        );
+
+        let smaller = control(&view, "ui.ToolbarButton", "Zoom out");
+        view.press(&smaller).unwrap();
+        view.press(&smaller).unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(shown_zoom(&view), 0.8, "two steps back from 125%");
+
+        // The page's menu names the sizes it is set at, and choosing one sets it.
+        let menu = view.tree().clone();
+        let half = of_kind(&menu, "ui.MenuItem")
+            .into_iter()
+            .find(|item| item.props.get("label") == Some(&Value::text("150%")))
+            .unwrap_or_else(|| panic!("the menu names each size:\n{}", dump(&menu)));
+        let half = half.key.clone();
+        view.fire(&half, "choose").unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(shown_zoom(&view), 1.5);
+    }
+
+    #[test]
+    fn the_band_counts_the_sheets_the_page_fills() {
+        let writer = Writer::new();
+        let mut view = writer.window();
+        assert!(
+            !texts(&view).iter().any(|text| text.ends_with(" pages")),
+            "one sheet says nothing: {:?}",
+            texts(&view)
+        );
+        let editor = of_kind(view.tree(), "ui.BlockEditor")[0].key.clone();
+        view.fire_with(&editor, "page_count", Some(&Value::Int(3)))
+            .unwrap();
+        view.poll_patches().unwrap();
+        assert!(
+            texts(&view).iter().any(|text| text == "3 pages"),
+            "the band counts what the editor reports: {:?}",
+            texts(&view)
+        );
+    }
+
+    #[test]
+    fn the_panels_ask_the_editor_for_spacing_and_a_pictures_shape() {
+        let writer = Writer::new();
+        let mut view = writer.window();
+
+        // The paragraph panel's line spacing, as the paragraph's own command.
+        let styles = control(&view, "ui.ToolbarButton", "Styles");
+        view.press(&styles).unwrap();
+        view.poll_patches().unwrap();
+        let spaced = control(&view, "ui.Chip", "1.5");
+        view.press(&spaced).unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(asked_of(&view), "spacing:1.5:1");
+
+        // The Text panel's picture inspector: each control names the picture change it makes.
+        let text = control(&view, "ui.ToolbarButton", "Text");
+        view.press(&text).unwrap();
+        view.poll_patches().unwrap();
+        let larger = control(&view, "ui.Chip", "Larger");
+        view.press(&larger).unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(asked_of(&view), "picture:size:up:2");
+        let wrapped = control(&view, "ui.Chip", "Left");
+        view.press(&wrapped).unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(asked_of(&view), "picture:wrap:left:3");
     }
 
     #[test]

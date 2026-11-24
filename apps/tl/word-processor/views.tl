@@ -19,6 +19,10 @@ view writer(d: Document) {
     state heading_lines: List<Text> = []
     state heading_levels: List<Int> = []
     state reveal: Option<Text> = .none
+    // How much larger the page reads than its own size, and how many sheets it fills at the width
+    // it is laid out at: the editor reports the count as the width and the words change.
+    state zoom: Float = 1.0
+    state page_count: Int = 0
     // Where the person's caret or selection stands, as the editor reports it: the block it
     // starts in, and where it starts and ends there. What a comment written now is anchored to.
     state comment_at: Text = ""
@@ -34,7 +38,7 @@ view writer(d: Document) {
         on search(words: Text): set(reveal, words_place(d, words, asked))
             .then(set(asked, asked + 1))
         actions: {
-            toolbar(d, format_ask, asked, panel, ruler, outline)
+            toolbar(d, format_ask, asked, panel, ruler, outline, zoom)
             spacer()
             file_menu(d)
         }
@@ -98,6 +102,7 @@ view writer(d: Document) {
                                     margin_right: d.margin_right,
                                     margin_bottom: d.margin_bottom,
                                     margin_left: d.margin_left,
+                                    zoom: zoom,
                                     insert: if d.chosen == "" {
                                         .none
                                     } else { .some("{d.chosen}:{d.chosen_count}") },
@@ -122,6 +127,7 @@ view writer(d: Document) {
                                         .then(
                                             set(panel, "comments"),
                                         )
+                                    on page_count(count): set(page_count, count)
                                     on slash_image: file.choose(
                                         place_image(d),
                                         accept: ["image/png", "image/jpeg", "image/webp"],
@@ -132,7 +138,7 @@ view writer(d: Document) {
                         }
                     }
                 }
-                status_band(d)
+                status_band(d, page_count, zoom)
             }
         }
     }
@@ -146,6 +152,7 @@ template view toolbar(
     panel: State<Text>,
     ruler: State<Bool>,
     outline: State<Bool>,
+    zoom: State<Float>,
 ) {
     ui.Toolbar {
         ui.ToolbarButton("Bold", icon: .bold, priority: 1) {
@@ -228,6 +235,23 @@ template view toolbar(
         }
         ui.ToolbarButton("Outline", icon: .list_tree, toggled: outline, priority: 22) {
             on press: set(outline, not outline)
+        }
+        ui.ToolbarSeparator()
+        // The page's size: smaller, larger, or the size its menu names.
+        ui.ToolbarButton("Zoom out", icon: .zoom_out, priority: 23) {
+            on press: set(zoom, (zoom * 0.8).clamp(0.4, 3.0))
+        }
+        ui.ToolbarButton("{zoom_percent(zoom)}%", priority: 24) {
+            menu: {
+                for step in zoom_steps() {
+                    ui.MenuItem("{zoom_percent(step)}%", checked: zoom == step) {
+                        on choose: set(zoom, step)
+                    }
+                }
+            }
+        }
+        ui.ToolbarButton("Zoom in", icon: .zoom_in, priority: 25) {
+            on press: set(zoom, (zoom * 1.25).clamp(0.4, 3.0))
         }
         ui.ToolbarSpacer()
     }
@@ -373,6 +397,12 @@ fn steps() -> List<Int> {
     [0, 6, 12, 18, 24]
 }
 
+/// The line spacings a paragraph is set to, as the panel names them: the document's own, then
+/// the multiples of it a writer sets rows apart by.
+fn line_spacings() -> List<Text> {
+    ["1", "1.15", "1.5", "2"]
+}
+
 /// The styles every document has, as the paragraph panel names them.
 fn style_names() -> List<Text> {
     ["Body", "Heading 1", "Heading 2", "Heading 3", "Quote", "List item"]
@@ -478,6 +508,83 @@ view text_format(format_ask: State<Option<Text>>, asked: State<Int>) {
                     )
             }
         }
+        // A picture the caret stands in: its size, which way it faces, how much of it shows and
+        // how it sits among the words.
+        section("Picture") {
+            text("With the caret in a picture, these change it.", role: .caption, secondary: true)
+            row(gap: .tight, wrap: true) {
+                ui.Chip("Smaller") {
+                    on press: set(asked, asked + 1)
+                        .then(
+                            set(format_ask, "picture:size:down:{asked + 1}"),
+                        )
+                }
+                ui.Chip("Larger") {
+                    on press: set(asked, asked + 1)
+                        .then(
+                            set(format_ask, "picture:size:up:{asked + 1}"),
+                        )
+                }
+                ui.Chip("Flip horizontally") {
+                    on press: set(asked, asked + 1)
+                        .then(set(format_ask, "picture:flip:h:{asked + 1}"))
+                }
+                ui.Chip("Flip vertically") {
+                    on press: set(asked, asked + 1)
+                        .then(set(format_ask, "picture:flip:v:{asked + 1}"))
+                }
+            }
+            row(gap: .tight, wrap: true) {
+                ui.Chip("Crop") {
+                    on press: set(asked, asked + 1)
+                        .then(
+                            set(format_ask, "picture:crop:in:{asked + 1}"),
+                        )
+                }
+                ui.Chip("Show it all again") {
+                    on press: set(asked, asked + 1)
+                        .then(
+                            set(format_ask, "picture:crop:reset:{asked + 1}"),
+                        )
+                }
+            }
+            row(gap: .tight, wrap: true) {
+                text("Placement", role: .caption, secondary: true)
+                ui.Chip("In line") {
+                    on press: set(asked, asked + 1)
+                        .then(
+                            set(format_ask, "picture:place:inline:{asked + 1}"),
+                        )
+                }
+                ui.Chip("Free") {
+                    on press: set(asked, asked + 1)
+                        .then(
+                            set(format_ask, "picture:place:free:{asked + 1}"),
+                        )
+                }
+            }
+            row(gap: .tight, wrap: true) {
+                text("Text wraps", role: .caption, secondary: true)
+                ui.Chip("None") {
+                    on press: set(asked, asked + 1)
+                        .then(
+                            set(format_ask, "picture:wrap:none:{asked + 1}"),
+                        )
+                }
+                ui.Chip("Left") {
+                    on press: set(asked, asked + 1)
+                        .then(
+                            set(format_ask, "picture:wrap:left:{asked + 1}"),
+                        )
+                }
+                ui.Chip("Right") {
+                    on press: set(asked, asked + 1)
+                        .then(
+                            set(format_ask, "picture:wrap:right:{asked + 1}"),
+                        )
+                }
+            }
+        }
     }
 }
 
@@ -571,6 +678,17 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
                     }
                 }
             }
+            row(gap: .tight, wrap: true) {
+                text("Line spacing", role: .caption, secondary: true)
+                for step in line_spacings() {
+                    ui.Chip("{step}") {
+                        on press: set(asked, asked + 1)
+                            .then(
+                                set(format_ask, "spacing:{step}:{asked + 1}"),
+                            )
+                    }
+                }
+            }
         }
         section("Set up") {
             text("Started as a {d.started} page.", role: .caption, secondary: true)
@@ -634,15 +752,33 @@ view review_panel(
 }
 
 /// What stands under the page: how much the document says, and what the page is set for.
-view status_band(d: Document) {
+view status_band(d: Document, page_count: Int, zoom: Float) {
     row(gap: .related, align: .center, padding: .related) {
         spacer()
         text("{d.body.text.words()} words", role: .caption, secondary: true)
         text("·", role: .caption, secondary: true)
         text("{d.body.text.len()} characters", role: .caption, secondary: true)
+        if page_count > 0 {
+            text("·", role: .caption, secondary: true)
+            text("{page_count} pages", role: .caption, secondary: true)
+        }
+        if zoom != 1.0 {
+            text("·", role: .caption, secondary: true)
+            text("{zoom_percent(zoom)}%", role: .caption, secondary: true)
+        }
         text("·", role: .caption, secondary: true)
         text(d.paper, role: .caption, secondary: true)
     }
+}
+
+/// A zoom as the person reads it, in percent.
+fn zoom_percent(zoom: Float) -> Int {
+    (zoom * 100.0).round()
+}
+
+/// The zooms the page's menu offers, the size it is set at counted once.
+fn zoom_steps() -> List<Float> {
+    [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 }
 
 /// Where `words` stand in the document, as the page asks it to show them: the place of the
