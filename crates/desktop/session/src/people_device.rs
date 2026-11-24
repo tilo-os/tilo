@@ -913,6 +913,13 @@ fn person_of(
         .as_deref()
         .map(crate::app_names::app_name)
         .filter(|name| !name.trim().is_empty());
+    let doing = here
+        .status
+        .as_ref()
+        .map(|status| status.text.trim().to_owned())
+        .filter(|line| !line.is_empty());
+    // What their device wrote for them is marked as software's, never shown as their own words.
+    let automatic = here.status.as_ref().is_some_and(|status| status.automatic) && doing.is_some();
     Person {
         key: here.device.clone(),
         name: member.name.clone(),
@@ -921,13 +928,8 @@ fn person_of(
         bot,
         me: false,
         availability: here.availability.id().to_owned(),
-        doing: here
-            .status
-            .as_ref()
-            .map(|status| status.text.trim().to_owned())
-            .filter(|line| !line.is_empty())
-            .unwrap_or_default(),
-        automatic: here.status.as_ref().is_some_and(|status| status.automatic),
+        doing: doing.unwrap_or_default(),
+        automatic,
         activity: titled.unwrap_or_default(),
         in_app: app.unwrap_or_default(),
         call: here
@@ -1160,6 +1162,30 @@ mod tests {
             "the window, named as every surface names it"
         );
         assert_eq!(row.in_app, "Notes", "and the app it runs, by its name");
+    }
+
+    /// A line their device read off their steps is marked as software's; one they wrote is not.
+    #[test]
+    fn a_line_software_wrote_says_so() {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(6), "Studio");
+        let ada = MemberId::person("ada");
+        workspace.member_here(tilo_desktop_model::Member::named(ada.clone(), "Ada"));
+        let mut here = Present::of(ada);
+        here.device = "device-key".to_owned();
+        here.status = Some(Status {
+            text: "Editing the release plan".to_owned(),
+            automatic: true,
+        });
+        workspace.place_presence(here);
+        let row = person_of(&workspace, &workspace.members[0], &workspace.present[0]);
+        assert!(row.automatic, "their device wrote the line for them");
+        assert_eq!(row.doing, "Editing the release plan");
+        workspace.present[0].status = Some(Status {
+            text: "Editing the release plan".to_owned(),
+            automatic: false,
+        });
+        let row = person_of(&workspace, &workspace.members[0], &workspace.present[0]);
+        assert!(!row.automatic, "what they wrote is their own");
     }
 
     /// A follower's row names whom they follow, for any pair: someone following this person says

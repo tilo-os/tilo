@@ -203,11 +203,12 @@ view roster(board: device.People) {
         }
     }
     // The way into the workspace of whoever is not here yet: the session's own invite sheet,
-    // where the link is made. The sheet asks the workspace again, and says why where inviting is
-    // not this person's to do, so the offer stands whichever the reading answers.
-    row(gap: .related, align: .center) {
-        ui.Button("Invite someone", icon: .user_plus, size: .small) {
-            on press: device.show_invite(device.invite)
+    // where the link is made, offered only where the workspace lets this person invite.
+    if board.may_invite {
+        row(gap: .related, align: .center) {
+            ui.Button("Invite someone", icon: .user_plus, size: .small) {
+                on press: device.show_invite(device.invite)
+            }
         }
     }
 }
@@ -239,9 +240,13 @@ view person_row(p: device.Person, board: device.People) {
         secondary: if secondary != "" { secondary },
         note: if doing != "" { doing },
         badge: if p.agent { software_tag(p) },
-        mark: if followed {
+        mark: if p.automatic {
             // Software says what kind it is before its name, as a reader and a painter both find it:
             // an agent someone here runs, or one of the workspace's bots.
+            // What software wrote for them is marked on the row's edge, never shown as if they had
+            // said it; then where this person's own relation to them shows.
+            .sparkles
+        } else if followed {
             .eye
         } else if p.agent { .bot } else if is_follower(p) { .users } else { .user },
     ) {

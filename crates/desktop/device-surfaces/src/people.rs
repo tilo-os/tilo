@@ -4,7 +4,8 @@
 //! The roster is the session's reading of presence and the workspace's member rows, published as
 //! `session:people` for a shell in another language to draw. What each person's row says: their
 //! name, the colour the workspace gives them, where they are (the window they are in, or the app
-//! when this shell shows no window of it), what they say they are doing, how available they are,
+//! when this shell shows no window of it), what they say they are doing (marked where their device
+//! wrote it for them), how available they are,
 //! the call they are in, whom they follow and when they joined, whether this person follows them
 //! and whether they follow this person. Software is a member too: an agent's or a bot's row says
 //! which it is, and an agent's says the window it works in. What the row's words are is the shell's,
@@ -145,7 +146,8 @@ pub struct Person {
     /// What they say they are doing, in their own words: empty when they say nothing.
     pub doing: String,
     /// Their device read `doing` off the steps they took, rather than anyone saying it: theirs to
-    /// see, never theirs to edit in their card's own field.
+    /// see, never theirs to edit in their card's own field. A view marks such words as software's,
+    /// never showing them as if they had said them.
     #[serde(default)]
     pub automatic: bool,
     /// The window of this workspace they are in, as this shell names it: empty when they are in
