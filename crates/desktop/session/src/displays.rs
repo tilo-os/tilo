@@ -431,9 +431,7 @@ struct Inner {
     /// The configuration the displays run with, as the person's settings keep it: each one's HDR,
     /// variable refresh rate, SDR brightness and colour profile.
     config: settings_store::hardware::DisplayConfig,
-    /// The person's display placement, as their settings keep it.
-    placements: settings_store::person_displays::Placements,
-    /// The settings revision and monitor set `config` and `placements` were read at, so an
+    /// The settings revision and monitor set `config` was read at, so an
     /// unchanged document is not read again.
     followed: Option<(Option<settings_store::SettingsStamp>, String)>,
     /// Where this person's display settings are kept, which a change tried from a view is
@@ -473,7 +471,7 @@ struct Shown {
 }
 
 impl Inner {
-    /// Read the person's display settings and placement again when the settings document or the
+    /// Read the person's display settings again when the settings document or the
     /// monitors they are kept for changed: a display's HDR, variable refresh rate, SDR brightness
     /// and colour profile come from there.
     fn follow_settings(
@@ -496,7 +494,6 @@ impl Inner {
         let config = settings_store::hardware::DisplayConfig::load_effective_remembering(&set).0;
         self.settings_moved |= self.config != config;
         self.config = config;
-        self.placements = settings_store::person_displays::Placements::load();
         self.followed = Some(followed);
     }
 
