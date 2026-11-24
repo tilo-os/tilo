@@ -725,3 +725,147 @@ fn a_locked_build_refuses_an_out_of_date_ids_lock_and_writes_nothing() {
         "and then a locked build passes"
     );
 }
+
+/// A package that carries a program (`app.toml`): its payload holds the program's files beside the
+/// module, and its manifest's entrypoint runs the program with its runtime's interpreter, as the
+/// app's held connection, while the tilolang runtime the app's actions and views run on still
+/// installs with it. The SDK's native addon is the runtime package's, never a package's own copy.
+#[test]
+fn a_package_that_carries_a_program_ships_it_beside_its_module() {
+    use tilo_app_package::manifest::{EntrypointType, NetMode};
+
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    let dir = source.join("counter");
+    copy_package(&packages().join("counter"), &dir);
+    std::fs::write(
+        dir.join("app.toml"),
+        r#"[package]
+optional-runtimes = ["bun/1.4.5+bun"]
+
+[entrypoint]
+type = "cli"
+runtime = "bun/1.4.5+bun"
+bin = "bin/bun"
+script = "main.js"
+connection = true
+
+[capabilities]
+required = ["network.http", "secrets"]
+
+[sandbox.services]
+native = "required@40"
+
+[sandbox.net]
+mode = "allowlist"
+hosts = ["gateway.example", "*.example.media"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.js"), "export function run() {}\n").unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/tilo.js"), "export const calls = [];\n").unwrap();
+    std::fs::create_dir_all(dir.join("node_modules/tilo-sdk-native")).unwrap();
+    std::fs::write(dir.join("node_modules/tilo-sdk-native/index.js"), "module\n").unwrap();
+    std::fs::write(dir.join("node_modules/vendored.js"), "export {}\n").unwrap();
+
+    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
+    let options = BuildOptions {
+        dir: dir.clone(),
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: "tilo-runtime/2026.07".into(),
+        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        version: "0.1.0".into(),
+        locked: false,
+    };
+    let apps = package::build(&options, &identity).unwrap();
+    let built = apps.last().expect("the package is built");
+    let manifest =
+        Manifest::from_toml_str(&std::fs::read_to_string(&built.manifest).unwrap()).unwrap();
+    let entrypoint = manifest.entrypoint.as_ref().expect("an entrypoint");
+    assert_eq!(entrypoint.r#type, EntrypointType::Cli);
+    assert_eq!(entrypoint.runtime.as_deref(), Some("bun/1.4.5+bun"));
+    assert_eq!(entrypoint.bin, Path::new("bin/bun"));
+    assert_eq!(
+        entrypoint.script.as_deref(),
+        Some(Path::new("main.js")),
+        "the runtime's binary runs the package's script"
+    );
+    assert!(entrypoint.connection, "the program is the app's held connection");
+    for runtime in ["bun/1.4.5+bun", package::DEFAULT_TILOLANG_RUNTIME] {
+        assert!(
+            manifest
+                .package
+                .required_runtimes
+                .iter()
+                .any(|declared| declared == runtime),
+            "{runtime} installs with the app: {:?}",
+            manifest.package.required_runtimes
+        );
+    }
+    assert_eq!(manifest.sandbox.net.mode, NetMode::Allowlist);
+    assert_eq!(
+        manifest.sandbox.net.hosts,
+        ["gateway.example", "*.example.media"],
+        "the hosts the program reaches, as it declared them"
+    );
+    assert!(
+        manifest.sandbox.namespaces.iter().any(|name| name == "net"),
+        "a program that reaches a host opens a socket: {:?}",
+        manifest.sandbox.namespaces
+    );
+    assert!(manifest.capabilities.required.iter().any(|name| name == "secrets"));
+    assert!(manifest.sandbox.services.contains_key("native"));
+
+    for file in ["app.wasm", "app.ids", "surface.toml", "main.js", "src/tilo.js"] {
+        assert!(
+            built.payload.join(file).is_file(),
+            "the payload holds {file}"
+        );
+    }
+    assert!(
+        built.payload.join("node_modules/vendored.js").is_file(),
+        "a program ships the modules it vendors"
+    );
+    assert!(
+        !built.payload.join("node_modules/tilo-sdk-native").exists(),
+        "the SDK's native addon is the runtime package's, not a package's copy"
+    );
+    assert!(!built.payload.join("app.tl").exists(), "sources are compiled, not shipped");
+    assert!(!built.payload.join("app.toml").exists());
+}
+
+/// The Discord bridge is such a package: its `app.toml` says its program is `main.js` on bun, and
+/// the build of `apps/tl/discord` runs that program as the app, with the module its records and
+/// actions are beside it.
+#[test]
+fn the_discord_bridge_packages_its_program_as_the_entrypoint() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    for name in with_used(&["discord"]) {
+        copy_package(&packages().join(&name), &source.join(&name));
+    }
+    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
+    let options = BuildOptions {
+        dir: source.join("discord"),
+        search: vec![source.clone(), packages()],
+        out: scratch.path().join("out"),
+        tilo_runtime: "tilo-runtime/2026.07".into(),
+        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        version: "0.1.0".into(),
+        locked: false,
+    };
+    let apps = package::build(&options, &identity).unwrap();
+    let built = apps.last().expect("the package is built");
+    assert_eq!(built.app, "so.tilo.discord.preview");
+    let manifest =
+        Manifest::from_toml_str(&std::fs::read_to_string(&built.manifest).unwrap()).unwrap();
+    let entrypoint = manifest.entrypoint.as_ref().expect("an entrypoint");
+    assert_eq!(entrypoint.script.as_deref(), Some(Path::new("main.js")));
+    assert_eq!(entrypoint.runtime.as_deref(), Some("bun/1.4.5+bun"));
+    assert!(entrypoint.connection);
+    assert!(built.payload.join("main.js").is_file());
+    assert!(built.payload.join("src/plan.js").is_file());
+    assert!(built.payload.join("app.wasm").is_file());
+}

@@ -8,7 +8,7 @@
 /// verified as a launch of it verifies it.
 #[derive(Debug)]
 pub struct Verified {
-    /// The tilolang runtime its entrypoint names, `tilolang/<version>`.
+    /// The tilolang runtime its code runs on, `tilolang/<version>`.
     pub runtime: String,
     /// The Tilo runtime it names, `tilo-runtime/<version>`: what a host on Linux runs on beside the
     /// tilolang runtime. A Mac's tilolang runtime carries everything it loads, so there it only
@@ -18,17 +18,22 @@ pub struct Verified {
     pub module: runtime_portal::process_link::Module,
 }
 
-/// Whether the installed app `app` is a tilolang app: its manifest's entrypoint runs a tilolang
-/// runtime. Read only to decide how its windows are launched; what a process runs is read from the
-/// installation verified as a launch verifies it.
+/// Whether the installed app `app` is a tilolang app: its payload carries the module its records
+/// and views are, on a tilolang runtime it names. Its entrypoint may be the binary of that
+/// runtime, or a program's runtime (`bun`) that the app also carries; either way its code runs in
+/// a tilolang host. Read only to decide how its windows are launched; what a process runs is read
+/// from the installation verified as a launch verifies it.
 #[must_use]
 pub fn runs_in_process(app: &str) -> bool {
     app_catalogue::apps::read_one_from_env(app)
         .ok()
         .flatten()
-        .and_then(|installed| launcher::manifest::read_manifest(&installed.manifest_path).ok())
-        .and_then(|manifest| manifest.entrypoint.runtime)
-        .is_some_and(|runtime| launcher::manifest::is_tilolang(&runtime))
+        .and_then(|installed| {
+            let manifest =
+                launcher::manifest::read_manifest(&installed.manifest_path).ok()?;
+            launcher::manifest::code_runtime(&manifest, &installed.payload_root).map(|_| ())
+        })
+        .is_some()
 }
 
 /// An installed tilolang app as an agent task's programs reach it: its package, verified as a

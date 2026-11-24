@@ -141,7 +141,8 @@ pub fn bwrap_argv(
 /// installation verified as a launch of it verifies it.
 #[derive(Debug)]
 pub struct VerifiedInstance {
-    /// The tilolang runtime its entrypoint names, `tilolang/<version>`.
+    /// The tilolang runtime its code runs on, `tilolang/<version>`: its entrypoint's, or the one
+    /// the package requires beside a program's runtime.
     pub runtime: String,
     /// The Tilo runtime it names, `tilo-runtime/<version>`.
     pub app_runtime: String,
@@ -173,11 +174,8 @@ pub fn verified_instance(
         super::verified_launch_publisher(installed, manifest_path, payload_root, expected)?;
     let not_tilolang =
         || LaunchError::InvalidServiceLaunch(format!("{} is no tilolang app", manifest.package_id));
-    let runtime = manifest
-        .entrypoint
-        .runtime
-        .clone()
-        .filter(|runtime| crate::manifest::is_tilolang(runtime))
+    let runtime = crate::manifest::code_runtime(&manifest, payload_root)
+        .map(str::to_owned)
         .ok_or_else(not_tilolang)?;
     let app_runtime = manifest.runtime.clone().ok_or_else(not_tilolang)?;
     let module = runtime_portal::process_link::Module::read(payload_root)?;

@@ -28,6 +28,24 @@ pub fn is_tilolang(runtime: &str) -> bool {
         .is_some_and(|(name, version)| name == "tilolang" && !version.is_empty())
 }
 
+/// The tilolang runtime a package's own code runs on, when it carries such code: the runtime its
+/// entrypoint names when that is one, and otherwise the tilolang runtime among those it requires,
+/// when its payload carries the module. A package whose entrypoint is a program's runtime (`bun`)
+/// still carries the module its app's records and views are, and a device runs it in the app's
+/// tilolang host beside the program.
+#[must_use]
+pub fn code_runtime<'a>(manifest: &'a ManifestView, payload: &std::path::Path) -> Option<&'a str> {
+    match manifest.entrypoint.runtime.as_deref() {
+        Some(runtime) if is_tilolang(runtime) => Some(runtime),
+        Some(_) if payload.join("app.wasm").is_file() => manifest
+            .required_runtimes
+            .iter()
+            .find(|runtime| is_tilolang(runtime))
+            .map(String::as_str),
+        _ => None,
+    }
+}
+
 /// A service requirement written as a manifest would (`"required@1"`).
 #[cfg(test)]
 pub(crate) fn service_req(raw: &str) -> ServiceReq {
@@ -172,5 +190,47 @@ bin = "bin/app"
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod program_tests {
+    use super::*;
+
+    /// A package that carries a program (`[entrypoint] script`) still names the tilolang runtime
+    /// its module runs on among those it requires: a device runs the code in the app's host and
+    /// the program as the app's process. Without a module it is no tilolang app.
+    #[test]
+    fn a_package_carrying_a_program_still_names_its_code_runtime() {
+        let temp = tempfile::tempdir().expect("a payload directory");
+        let payload = temp.path();
+        let script = test_manifest(
+            "id = \"com.example.bridge\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+             optional-runtimes = [\"tilolang/1.0.0\", \"bun/1.4.5+bun\"]",
+            "[entrypoint]\nbin = \"bin/bun\"\ntype = \"cli\"\nruntime = \"bun/1.4.5+bun\"\n\
+             script = \"main.js\"\nconnection = true",
+        );
+        assert_eq!(
+            code_runtime(&script, payload),
+            None,
+            "a program with no module carries no code of its own"
+        );
+        std::fs::write(payload.join("app.wasm"), b"module").expect("the module");
+        assert_eq!(
+            code_runtime(&script, payload),
+            Some("tilolang/1.0.0"),
+            "the module's runtime is the one it requires"
+        );
+        let plain = test_manifest(
+            "id = \"com.example.app\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+             optional-runtimes = [\"tilolang/1.0.0\"]",
+            "[entrypoint]\nbin = \"bin/tilolang-process\"\nruntime = \"tilolang/1.0.0\"",
+        );
+        assert_eq!(code_runtime(&plain, payload), Some("tilolang/1.0.0"));
+        let native = test_manifest(
+            "id = \"com.example.native\"\nversion = \"1.0.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/app\"\ntype = \"cli\"",
+        );
+        assert_eq!(code_runtime(&native, payload), None);
     }
 }

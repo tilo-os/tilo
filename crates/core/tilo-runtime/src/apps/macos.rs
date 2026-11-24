@@ -206,11 +206,7 @@ pub(super) fn connector(
             app.app_id
         ));
     }
-    let runtime = manifest
-        .entrypoint
-        .runtime
-        .as_deref()
-        .filter(|runtime| launcher::manifest::is_tilolang(runtime))
+    let runtime = launcher::manifest::code_runtime(&manifest, &app.payload_root)
         .ok_or_else(|| format!("{} runs on no tilolang runtime", app.app_id))?;
     let runtime = runtime_payload(catalog, app, runtime)?;
     if apps.data_home.as_os_str().is_empty() {

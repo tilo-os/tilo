@@ -767,6 +767,88 @@ tilo_test_env::scenario! {
     }
 }
 
+// A package that carries a program (`[entrypoint] script`) beside the module its actions and views
+// are: the device runs the program as the app's held connection, in its own process, and its code
+// still runs in the app's tilolang host, so its actions answer.
+#[cfg(target_os = "linux")]
+tilo_test_env::scenario! {
+    fn a_package_that_carries_a_program_keeps_its_own_connection;
+
+    phase its_code_runs_in_a_tilolang_host_and_its_program_is_the_connection;
+    {
+        use crate::device::package_runs;
+        use tilo_workspace_service::work::HostConnections;
+        const BRIDGE: &str = "so.tilo.bridge";
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        let package = format!(
+            "[package]\nid = \"{BRIDGE}\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
+             runtime = \"tilo-runtime/2026.07\"\n\
+             optional-runtimes = [\"tilolang/1.0.0\", \"bun/1.4.5+bun\"]\n\n\
+             [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\n\
+             [sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]\n\
+             seccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n\
+             [sandbox.net]\nmode = \"allowlist\"\nhosts = [\"gateway.example\"]\n\n\
+             [capabilities]\nrequired = [\"network.http\", \"secrets\"]\n\n\
+             [entrypoint]\nbin = \"bin/bun\"\ntype = \"cli\"\nruntime = \"bun/1.4.5+bun\"\n\
+             script = \"main.js\"\nconnection = true\n",
+            "00".repeat(32)
+        );
+        store.install(
+            BRIDGE,
+            &package,
+            &[
+                ("app.wasm", b"module"),
+                ("main.js", b"program"),
+                ("src/tilo.js", b"calls"),
+            ],
+        );
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment
+            .remove("TILO_APPS_SYSTEM_DIR")
+            .set("TILO_APPS_DATA_DIR", &store.root);
+        assert!(
+            package_runs::runs_in_process(BRIDGE),
+            "its payload carries the module its actions are"
+        );
+        assert_eq!(
+            package_runs::origin_of(BRIDGE).unwrap(),
+            None,
+            "it reaches no outside service through a connector"
+        );
+        assert!(
+            !package_runs::runs_in_process(VIEWER),
+            "an app that carries no module runs no code of its own"
+        );
+
+        let said = root.join("said");
+        let launcher = tilo_test_env::stand_in(
+            root.join("tilo-launcher"),
+            &format!("env > '{said}.env'\nhold\n", said = said.display()),
+        )
+        .unwrap();
+        let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+        assert_eq!(
+            apps.connections()
+                .into_iter()
+                .map(|(app, _)| app)
+                .collect::<Vec<String>>(),
+            [BRIDGE.to_owned()],
+            "it is the app's held connection"
+        );
+        HostConnections::start(&apps, WORKSPACE, BRIDGE)
+            .expect("its program is started as its own process, not its origin's connector");
+        assert!(apps.runs(WORKSPACE, BRIDGE), "the program runs");
+        let env = wait_for(&format!("{}.env", said.display()));
+        assert!(
+            env.lines().any(|line| line == "TILO_NO_WINDOW=1"),
+            "it draws nothing: {env}"
+        );
+        assert!(!env.contains("TILO_NO_WINDOW_IDLE"), "{env}");
+        apps.stop(WORKSPACE, BRIDGE);
+    }
+}
+
 /// What a stand-in wrote to `path`, once it wrote it: a launch's own arguments and environment
 /// are the launcher's to record, and the process runs on until the test ends.
 #[cfg(target_os = "linux")]

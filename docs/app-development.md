@@ -239,6 +239,15 @@ first argument. The network is what `[sandbox.net]` declares and the workspace
 granted, reached through the proxy that `HTTP_PROXY`, `HTTPS_PROXY` and
 `ALL_PROXY` name. Nothing else is reachable.
 
+The declaration goes in the package's `app.toml`, beside its `app.tl`. A
+package may carry both: `tilolang build` ships the script's files (everything
+in the package directory except the language's sources and what a build writes)
+beside the compiled module, so a device runs the program as the app's process —
+the held connection when it says `connection = true` — and the module in the
+app's tilolang host, where its records, actions and views answer as any
+tilolang app's. The SDK's native addon is not something a package vendors: the
+bun runtime package carries it at `node_modules/tilo-sdk-native`.
+
 `$TILO_SVC_NATIVE_FD` is a socket to the device daemon that the launcher
 already connected. It carries action frames, one JSON line each, and the daemon
 admits every call on it as this app in `$TILO_WORKSPACE_ID`. A tilolang action

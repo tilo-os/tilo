@@ -55,7 +55,7 @@ impl HostConnections for Apps {
     }
 
     fn start(&self, workspace: &str, app: &str) -> Result<(), String> {
-        if crate::device::package_runs::runs_in_process(app) {
+        if crate::device::package_runs::runs_in_process(app) && !self.keeps_its_own_process(app) {
             // A tilolang app's outside connection is its origin's connector.
             if crate::device::package_runs::origin_of(app)?.is_none() {
                 return Err(format!(
@@ -77,18 +77,31 @@ impl HostConnections for Apps {
     }
 
     fn runs(&self, workspace: &str, app: &str) -> bool {
-        if crate::device::package_runs::runs_in_process(app) {
+        if crate::device::package_runs::runs_in_process(app) && !self.keeps_its_own_process(app) {
             return self.connectors.runs(app, workspace);
         }
         self.launched.no_window_running(app, workspace, None)
     }
 
     fn stop(&self, workspace: &str, app: &str) {
-        if crate::device::package_runs::runs_in_process(app) {
+        if crate::device::package_runs::runs_in_process(app) && !self.keeps_its_own_process(app) {
             self.connectors.stop(app, workspace);
             return;
         }
         self.launched.stop_no_window(app, workspace);
+    }
+}
+
+impl Apps {
+    /// Whether `app`'s held connection is its own process: a package that carries a program
+    /// (`[entrypoint] script`) runs that program as the connection, beside the module its code
+    /// runs from, where a tilolang app's connection is its origin's connector.
+    fn keeps_its_own_process(&self, app: &str) -> bool {
+        self.installed()
+            .into_iter()
+            .find(|installed| installed.app_id == app)
+            .and_then(|installed| installed.manifest.entrypoint)
+            .is_some_and(|entrypoint| entrypoint.script.is_some())
     }
 }
 

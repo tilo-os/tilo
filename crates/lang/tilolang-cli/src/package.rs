@@ -1,11 +1,15 @@
 //! `tilolang build`: each package of a build becomes a signed Tilo app, a `.tapp`.
 //!
 //! The package's payload is its [`Bundle`] (module with metadata, ids lock, the metadata of the
-//! packages it uses, the generated surface) and its icon. Its manifest is generated from the
-//! `app` declaration: the app id is the package id, the name and category are the declaration's,
-//! and the entrypoint is the tilolang runtime bundle's binary (`[entrypoint] runtime`), which
-//! the launcher points at the payload.
+//! packages it uses, the generated surface), its icon and, when the package carries one, the
+//! program its `app.toml` declares (`main.js` for bun, `main.py` for Python). Its manifest is
+//! generated from the `app` declaration: the app id is the package id, the name and category are
+//! the declaration's, and the entrypoint is the tilolang runtime bundle's binary
+//! (`[entrypoint] runtime`), which the launcher points at the payload — or the runtime and script
+//! the package's `app.toml` declares, while the module still runs in the app's tilolang host.
 
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use tilo_app_package::manifest::{AtspiAcceptance, Manifest};
@@ -43,6 +47,241 @@ fn source_accessibility(dir: &Path) -> Result<Option<AtspiAcceptance>, String> {
     let source: SourceManifest =
         toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(source.accessibility.and_then(|it| it.atspi_acceptance))
+}
+
+/// What a package's `app.toml`, beside its `app.tl`, declares beyond the language's own sources:
+/// the program the package carries (a JavaScript or Python program a runtime's binary runs), the
+/// runtimes that program needs, and the sandbox and capabilities it acts within. The package's
+/// module is still built and shipped, and an installed device runs it in the app's tilolang host
+/// as it runs every tilolang app's: the program is the app's process, not its code.
+#[derive(Debug, Default)]
+struct SourceProgram {
+    /// The declared entrypoint, when the package carries a program.
+    entrypoint: Option<SourceEntrypoint>,
+    /// The runtimes the declared `[package]` needs beside the language's own.
+    runtimes: Vec<String>,
+    /// The capabilities the declared `[capabilities]` requires and may use.
+    required: Vec<String>,
+    optional: Vec<String>,
+    /// The network the declared program reaches.
+    net: Option<SourceNet>,
+    /// The device services the declared program needs, as its `[sandbox.services]` names them.
+    services: BTreeMap<String, String>,
+}
+
+/// The entrypoint a package's `app.toml` declares: a program of the package that a runtime
+/// bundle's binary runs.
+#[derive(Debug)]
+struct SourceEntrypoint {
+    /// `cli`: a program draws no window.
+    kind: &'static str,
+    /// The runtime whose `bin` runs the script (`bun/1.4.5+bun`).
+    runtime: String,
+    /// The interpreter, as the runtime's payload names it (`bin/bun`).
+    bin: PathBuf,
+    /// The program, a file of the package.
+    script: PathBuf,
+    /// Whether the device runs it as the app's held connection.
+    connection: bool,
+}
+
+/// What a declared `[sandbox.net]` reaches.
+#[derive(Debug)]
+struct SourceNet {
+    /// `off`, `host` or `allowlist`.
+    mode: &'static str,
+    hosts: Vec<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct DeclaredManifest {
+    #[serde(default)]
+    package: DeclaredPackage,
+    #[serde(default)]
+    entrypoint: Option<DeclaredEntrypoint>,
+    #[serde(default)]
+    capabilities: Option<DeclaredCapabilities>,
+    #[serde(default)]
+    sandbox: Option<DeclaredSandbox>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct DeclaredPackage {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default, rename = "optional-runtimes")]
+    optional_runtimes: Vec<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct DeclaredEntrypoint {
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    runtime: Option<String>,
+    #[serde(default)]
+    bin: Option<String>,
+    #[serde(default)]
+    script: Option<String>,
+    #[serde(default)]
+    connection: bool,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct DeclaredCapabilities {
+    #[serde(default)]
+    required: Vec<String>,
+    #[serde(default)]
+    optional: Vec<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct DeclaredSandbox {
+    #[serde(default)]
+    net: Option<DeclaredNet>,
+    #[serde(default)]
+    services: BTreeMap<String, String>,
+}
+
+#[derive(serde::Deserialize)]
+struct DeclaredNet {
+    mode: String,
+    #[serde(default)]
+    hosts: Vec<String>,
+}
+
+/// The program `dir`'s `app.toml` declares, `None` when the package declares none. A declared
+/// entrypoint names a script, the runtime whose binary runs it and the interpreter inside that
+/// runtime; a declared package id or kind must be the app's own.
+fn source_program(dir: &Path, meta: &PackageMeta) -> Result<Option<SourceProgram>, String> {
+    let path = dir.join("app.toml");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path).map_err(io(&path))?;
+    let declared: DeclaredManifest =
+        toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    let fail = |why: String| format!("{}: {why}", path.display());
+    if let Some(id) = &declared.package.id
+        && id != &meta.app
+    {
+        return Err(fail(format!(
+            "its package id is {id:?}, not the app's {:?}",
+            meta.app
+        )));
+    }
+    if let Some(kind) = &declared.package.kind
+        && kind != "app"
+    {
+        return Err(fail(format!(
+            "its package kind is {kind:?}; a tilolang package is an `app`"
+        )));
+    }
+    let entrypoint = declared
+        .entrypoint
+        .map(|entry| source_entrypoint(dir, &fail, &declared.package, entry))
+        .transpose()?;
+    let net = declared
+        .sandbox
+        .as_ref()
+        .and_then(|sandbox| sandbox.net.as_ref())
+        .map(source_net)
+        .transpose()?;
+    let (required, optional) = declared
+        .capabilities
+        .map_or_else(Default::default, |capabilities| {
+            (capabilities.required, capabilities.optional)
+        });
+    Ok(Some(SourceProgram {
+        entrypoint,
+        runtimes: declared.package.optional_runtimes,
+        required,
+        optional,
+        net,
+        services: declared
+            .sandbox
+            .map(|sandbox| sandbox.services)
+            .unwrap_or_default(),
+    }))
+}
+
+/// [`SourceProgram::entrypoint`] for a declared `[entrypoint]`: a program of the package, run by
+/// the interpreter its runtime provides.
+fn source_entrypoint(
+    dir: &Path,
+    fail: &impl Fn(String) -> String,
+    package: &DeclaredPackage,
+    entry: DeclaredEntrypoint,
+) -> Result<SourceEntrypoint, String> {
+    let script = entry
+        .script
+        .as_deref()
+        .ok_or_else(|| {
+            fail("a declared entrypoint runs a script; this one names none".to_owned())
+        })?;
+    let runtime = entry
+        .runtime
+        .ok_or_else(|| fail(format!("the script {script:?} needs the runtime that runs it")))?;
+    let bin = entry.bin.ok_or_else(|| {
+        fail(format!(
+            "the script {script:?} needs its runtime's interpreter, `bin`"
+        ))
+    })?;
+    match entry.kind.as_deref() {
+        None | Some("cli") => {}
+        Some(other) => {
+            return Err(fail(format!(
+                "a script entrypoint is `cli`, not {other:?}: a program draws no window"
+            )));
+        }
+    }
+    for path in [&bin, script] {
+        let path = Path::new(path);
+        if path.is_absolute() || path.components().any(|c| c.as_os_str() == "..") {
+            return Err(fail(format!(
+                "{} is not a path inside the package or its runtime",
+                path.display()
+            )));
+        }
+    }
+    if !dir.join(script).is_file() {
+        return Err(fail(format!("the script {script:?} is not a file of the package")));
+    }
+    if !package
+        .optional_runtimes
+        .iter()
+        .any(|declared| declared == &runtime)
+    {
+        return Err(fail(format!(
+            "the entrypoint runs on {runtime}, which `[package] optional-runtimes` does not list"
+        )));
+    }
+    Ok(SourceEntrypoint {
+        kind: "cli",
+        runtime,
+        bin: PathBuf::from(bin),
+        script: PathBuf::from(script),
+        connection: entry.connection,
+    })
+}
+
+/// [`SourceProgram::net`] for a declared `[sandbox.net]`.
+fn source_net(net: &DeclaredNet) -> Result<SourceNet, String> {
+    let mode = match net.mode.as_str() {
+        "off" => "off",
+        "host" => "host",
+        "allowlist" => "allowlist",
+        other => return Err(format!("`[sandbox.net] mode = {other:?}` is not off, host or allowlist")),
+    };
+    if mode == "allowlist" && net.hosts.is_empty() {
+        return Err("`[sandbox.net] mode = \"allowlist\"` names no host".to_owned());
+    }
+    Ok(SourceNet {
+        mode,
+        hosts: net.hosts.clone(),
+    })
 }
 
 /// What a build makes of the package in a directory and the packages it uses.
@@ -131,40 +370,107 @@ pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
     origins
 }
 
+/// A package's sandbox as its manifest declares it, before a declared program's own declarations
+/// add to it.
+struct SandboxPlan {
+    required: Vec<String>,
+    optional: Vec<String>,
+    namespaces: Vec<&'static str>,
+    net: String,
+    seccomp: &'static str,
+}
+
+impl SandboxPlan {
+    /// The capabilities a declared program requires and may use, each once: one name stands in one
+    /// list, and what the language's own sources declare already is not repeated.
+    fn declare_capabilities(&mut self, required: &[String], optional: &[String]) {
+        for name in required {
+            if !self.required.contains(name) && !self.optional.contains(name) {
+                self.required.push(name.clone());
+            }
+        }
+        for name in optional {
+            if !self.required.contains(name) && !self.optional.contains(name) {
+                self.optional.push(name.clone());
+            }
+        }
+    }
+
+    /// The network a declared program reaches, and the namespace that lets it: a program that
+    /// reaches any host opens a socket of its own.
+    fn declare_net(&mut self, net: &SourceNet) {
+        self.net = match net.mode {
+            "host" => "mode = \"host\"".to_owned(),
+            "allowlist" => format!(
+                "mode = \"allowlist\"\nhosts = [{}]",
+                net.hosts
+                    .iter()
+                    .map(|host| toml_string(host))
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            ),
+            _ => "mode = \"off\"".to_owned(),
+        };
+        if net.mode != "off" && !self.namespaces.contains(&"net") {
+            self.namespaces.push("net");
+        }
+    }
+
+    fn capabilities(&self) -> String {
+        let list = |names: &[String]| {
+            names
+                .iter()
+                .map(|name| format!("\"{name}\""))
+                .collect::<Vec<String>>()
+                .join(", ")
+        };
+        format!(
+            "required = [{}]\noptional = [{}]",
+            list(&self.required),
+            list(&self.optional)
+        )
+    }
+
+    fn namespaces(&self) -> String {
+        format!(
+            "[{}]",
+            self.namespaces
+                .iter()
+                .map(|name| format!("\"{name}\""))
+                .collect::<Vec<String>>()
+                .join(", ")
+        )
+    }
+}
+
 /// A package's `[capabilities]`: the hosts it reaches, and the device's files when one of its
 /// actions reads them (`uses files`). An app that reads a folder also opens the files it lists in
 /// the app that opens their kind, which is `files.open`; it is a `required` capability since the
 /// app's own page offers the open, and the person saw it declared when they installed the app.
-fn capabilities(origins: &[&str], uses_files: bool, engine: bool, web: &[String]) -> String {
-    let mut required: Vec<&str> = Vec::new();
-    let mut optional: Vec<&str> = Vec::new();
+fn capabilities(
+    origins: &[&str],
+    uses_files: bool,
+    engine: bool,
+    web: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let mut required: Vec<String> = Vec::new();
+    let mut optional: Vec<String> = Vec::new();
     if !origins.is_empty() || engine || !web.is_empty() {
-        required.push("network.http");
+        required.push("network.http".to_owned());
         // The mail origin signs in to the workspace's accounts (`ACCOUNT_SIGN_INS`); the others
         // don't.
         if origins.contains(&"imap") {
-            optional.push("account-sign-ins");
+            optional.push("account-sign-ins".to_owned());
         }
     }
     // The page runs in this device's engine, which keeps its own processes and speaks to the web.
     if engine {
-        required.push("webview");
+        required.push("webview".to_owned());
     }
     if uses_files {
-        required.push(tilo_app_package::manifest::FILES_OPEN);
+        required.push(tilo_app_package::manifest::FILES_OPEN.to_owned());
     }
-    let list = |names: &[&str]| {
-        names
-            .iter()
-            .map(|name| format!("\"{name}\""))
-            .collect::<Vec<String>>()
-            .join(", ")
-    };
-    format!(
-        "required = [{}]\noptional = [{}]",
-        list(&required),
-        list(&optional)
-    )
+    (required, optional)
 }
 
 /// A package's `[sandbox]`: the capabilities, namespaces and
@@ -175,15 +481,23 @@ fn sandbox(
     uses_files: bool,
     engine: Option<&str>,
     web: &[String],
-) -> (String, &'static str, String, &'static str) {
-    let capabilities = capabilities(origins, uses_files, engine.is_some(), web);
+) -> SandboxPlan {
+    let (required, optional) = capabilities(origins, uses_files, engine.is_some(), web);
+    let plan = |required, optional, namespaces: &[&'static str], net: String, seccomp| SandboxPlan {
+        required,
+        optional,
+        namespaces: namespaces.to_vec(),
+        net,
+        seccomp,
+    };
     if engine.is_some() {
         // A page runs in this device's engine, which keeps its own processes and speaks to the
         // web: the launcher grants it the web engine's confinement, which is the JIT a renderer
         // needs and nothing more than the engine's own sandbox around it.
-        return (
-            capabilities,
-            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
+        return plan(
+            required,
+            optional,
+            &["user", "pid", "uts", "ipc", "mount", "net"],
             "# The engine reaches the web itself, in the sandbox the launcher runs the app in.\n\
              mode = \"host\""
                 .to_owned(),
@@ -191,9 +505,10 @@ fn sandbox(
         );
     }
     if !origins.is_empty() {
-        return (
-            capabilities,
-            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
+        return plan(
+            required,
+            optional,
+            &["user", "pid", "uts", "ipc", "mount", "net"],
             "# Each origin's connector speaks to the hosts its service names, in the sandbox\n\
              # the launcher runs it in.\nmode = \"host\""
                 .to_owned(),
@@ -215,16 +530,18 @@ fn sandbox(
                 hosts.join(", ")
             )
         };
-        return (
-            capabilities,
-            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
+        return plan(
+            required,
+            optional,
+            &["user", "pid", "uts", "ipc", "mount", "net"],
             net,
             "tilo-default",
         );
     }
-    (
-        capabilities,
-        "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]",
+    plan(
+        required,
+        optional,
+        &["user", "pid", "uts", "ipc", "mount"],
         "mode = \"off\"".to_owned(),
         "tilo-default",
     )
@@ -270,16 +587,137 @@ fn connector_origins(origins: &[&str]) -> String {
     format!("origins = [{}]\n", list.join(", "))
 }
 
+/// The sandbox of a package, with what a declared program adds to it: its capabilities and the
+/// network it reaches.
+fn sandbox_plan(meta: &PackageMeta, program: Option<&SourceProgram>) -> SandboxPlan {
+    let origins = origins_of(meta);
+    let mut plan = sandbox(
+        &origins,
+        uses_files(meta),
+        meta.engine.as_deref(),
+        &meta.web,
+    );
+    if let Some(program) = program {
+        plan.declare_capabilities(&program.required, &program.optional);
+        if let Some(net) = &program.net {
+            plan.declare_net(net);
+        }
+    }
+    plan
+}
+
+/// The `[sandbox.services]` a package declares: the two every app asks the runtime for, and what
+/// a declared program needs of the device.
+fn services_block(program: Option<&SourceProgram>) -> String {
+    let mut services = format!(
+        "# Collaboration and the filesystem, at the version the runtime serves its session services.\n\
+         collab = \"optional@{version}\"\ntilo-fs = \"optional@{version}\"",
+        version = runtime_portal::RUNTIME_INTERFACE_VERSION
+    );
+    let Some(program) = program else {
+        return services;
+    };
+    let declared: Vec<(&String, &String)> = program
+        .services
+        .iter()
+        .filter(|(name, _)| !matches!(name.as_str(), "collab" | "tilo-fs"))
+        .collect();
+    if declared.is_empty() {
+        return services;
+    }
+    services.push_str("\n# What the package's own program needs of this device's services.");
+    for (name, requirement) in declared {
+        let _ = write!(services, "\n{} = {}", toml_string(name), toml_string(requirement));
+    }
+    services
+}
+
+/// The `[package] optional-runtimes` a package needs: the language's own, the app's page engine
+/// (installing the app installs it in the same step or not at all), and the runtimes a declared
+/// program names.
+fn runtime_list(
+    meta: &PackageMeta,
+    options: &BuildOptions,
+    program: Option<&SourceProgram>,
+) -> String {
+    let mut runtimes = vec![toml_string(&options.tilolang_runtime)];
+    if let Some(engine) = &meta.engine {
+        runtimes.push(toml_string(engine));
+    }
+    if let Some(program) = program {
+        for runtime in &program.runtimes {
+            let quoted = toml_string(runtime);
+            if !runtimes.contains(&quoted) {
+                runtimes.push(quoted);
+            }
+        }
+    }
+    runtimes.join(", ")
+}
+
+/// A manifest's `[entrypoint]` lines: the tilolang runtime bundle's binary the launcher points at
+/// the payload, or a declared program's runtime, interpreter, script and connection.
+struct EntrypointLines {
+    runtime: String,
+    bin: String,
+    kind: String,
+    program: String,
+}
+
+fn entrypoint_lines(program: Option<&SourceProgram>, options: &BuildOptions) -> EntrypointLines {
+    let Some(entry) = program.and_then(|program| program.entrypoint.as_ref()) else {
+        return EntrypointLines {
+            runtime: toml_string(&options.tilolang_runtime),
+            bin: toml_string(RUNTIME_BIN),
+            kind: toml_string("gui"),
+            program: String::new(),
+        };
+    };
+    let mut lines = format!(
+        "script = {}\n",
+        toml_string(&entry.script.to_string_lossy())
+    );
+    if entry.connection {
+        lines.push_str("connection = true\n");
+    }
+    EntrypointLines {
+        runtime: toml_string(&entry.runtime),
+        bin: toml_string(&entry.bin.to_string_lossy()),
+        kind: toml_string(entry.kind),
+        program: lines,
+    }
+}
+
+/// The scenario a package declared for the external AT-SPI check, as a signed manifest carries
+/// it.
+fn accessibility_text(acceptance: Option<&AtspiAcceptance>) -> String {
+    acceptance.map_or_else(String::new, |acceptance| {
+        let list = |names: &[String]| {
+            names
+                .iter()
+                .map(|name| toml_string(name))
+                .collect::<Vec<String>>()
+                .join(", ")
+        };
+        format!(
+            "\n[accessibility.atspi_acceptance]\nroot = {}\nrequired = [{}]\naction = {}\nafter_action = [{}]\n",
+            toml_string(&acceptance.root),
+            list(&acceptance.required),
+            toml_string(&acceptance.action),
+            list(&acceptance.after_action)
+        )
+    })
+}
+
 /// The manifest of the app `meta` is, signed by `publisher` (hex Ed25519 key), with the name the
-/// app gives itself in every language `catalogues` translates it in.
+/// app gives itself in every language `catalogues` translates it in, and what the package's
+/// `app.toml` declares when it carries a program of its own (`program`).
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the manifest is written field by field, in the order the file reads"
-)]
-pub fn manifest_text(
+#[expect(clippy::too_many_lines, reason = "the manifest is one format template")]
+fn manifest_text(
     meta: &PackageMeta,
     accessibility: Option<&AtspiAcceptance>,
+    program: Option<&SourceProgram>,
     catalogues: &[(String, String)],
     options: &BuildOptions,
     publisher: &str,
@@ -292,19 +730,20 @@ pub fn manifest_text(
         .collect();
     let providers_ext: Vec<String> = providers_ext.iter().map(|ext| toml_string(ext)).collect();
     let origins = origins_of(meta);
-    let (capabilities, namespaces, net, seccomp) = sandbox(
-        &origins,
-        uses_files(meta),
-        meta.engine.as_deref(),
-        &meta.web,
-    );
-    // The runtimes the package needs beside the language's own: the app's page engine, which
-    // installing the app installs in the same step or not at all.
-    let mut runtimes = vec![toml_string(&options.tilolang_runtime)];
-    if let Some(engine) = &meta.engine {
-        runtimes.push(toml_string(engine));
-    }
-    let runtimes = runtimes.join(", ");
+    let plan = sandbox_plan(meta, program);
+    let capabilities = plan.capabilities();
+    let namespaces = plan.namespaces();
+    let services = services_block(program);
+    let runtimes = runtime_list(meta, options, program);
+    let entry = entrypoint_lines(program, options);
+    let EntrypointLines {
+        runtime: entry_runtime,
+        bin: entry_bin,
+        kind: entry_type,
+        program: entry_program,
+    } = entry;
+    let seccomp = plan.seccomp;
+    let net = plan.net;
     // A package that shows a page shows it with this device's engine, so its window runs only
     // where that engine is: the manifest says so, and a session does not move the window.
     let window = if meta.engine.is_some() {
@@ -341,24 +780,7 @@ pub fn manifest_text(
     // The other words people know the app by, in each language it ships: what search matches,
     // translated where a catalogue says it in its own words.
     let keywords = keywords_table(meta, catalogues);
-    // The scenario the package declared for the external AT-SPI check, as a signed manifest
-    // carries it.
-    let accessibility = accessibility.map_or_else(String::new, |acceptance| {
-        let list = |names: &[String]| {
-            names
-                .iter()
-                .map(|name| toml_string(name))
-                .collect::<Vec<String>>()
-                .join(", ")
-        };
-        format!(
-            "\n[accessibility.atspi_acceptance]\nroot = {}\nrequired = [{}]\naction = {}\nafter_action = [{}]\n",
-            toml_string(&acceptance.root),
-            list(&acceptance.required),
-            toml_string(&acceptance.action),
-            list(&acceptance.after_action)
-        )
-    });
+    let accessibility = accessibility_text(accessibility);
     format!(
         r#"# Generated by `tilolang build` from the package's `app` declaration.
 
@@ -389,7 +811,7 @@ identity = "ed25519:{publisher}"
 signature = ""
 
 [sandbox]
-# Without the mail origin no `net` namespace: the app opens no socket of its own. Collaboration reaches the
+# Without a declared network no `net` namespace: the app opens no socket of its own. Collaboration reaches the
 # broker over a service descriptor.
 namespaces = {namespaces}
 seccomp = {seccomp}
@@ -401,15 +823,13 @@ landlock = "strict"
 [sandbox.portals]
 
 [sandbox.services]
-# Collaboration and the filesystem, at the version the runtime serves its session services.
-collab = "optional@{services}"
-tilo-fs = "optional@{services}"
+{services}
 
 [entrypoint]
-runtime = {tilolang}
-bin = {bin}
-type = "gui"
-{splash}{window}{origins}
+runtime = {entry_runtime}
+bin = {entry_bin}
+type = {entry_type}
+{splash}{window}{origins}{entry_program}
 {accessibility}[providers]
 mime = [{providers_mime}]
 ext = [{providers_ext}]
@@ -422,7 +842,10 @@ schemes = [{providers_schemes}]
         // Where the app runs: where its runtime runs.
         platforms = PLATFORMS,
         runtime = toml_string(&options.tilo_runtime),
-        tilolang = toml_string(&options.tilolang_runtime),
+        entry_runtime = entry_runtime,
+        entry_bin = entry_bin,
+        entry_type = entry_type,
+        entry_program = entry_program,
         runtimes = runtimes,
         seccomp = toml_string(seccomp),
         // The app's workspace record, and the workspace's record of each person's own state of it,
@@ -432,7 +855,6 @@ schemes = [{providers_schemes}]
             .map(|kind| toml_string(kind))
             .collect::<Vec<String>>()
             .join(", "),
-        bin = toml_string(RUNTIME_BIN),
         window = window,
         // The promise the app's header made (`splash_budget:`), or nothing where it made none,
         // so the manifest's own default stands rather than an invented budget.
@@ -440,7 +862,7 @@ schemes = [{providers_schemes}]
             .splash_budget
             .map_or_else(String::new, |ms| format!("splash-budget = {ms}\n")),
         invokes = invokes,
-        services = runtime_portal::RUNTIME_INTERFACE_VERSION,
+        services = services,
         capabilities = capabilities,
         namespaces = namespaces,
         net = net,
@@ -670,6 +1092,22 @@ fn deliver_all(
             let path = stage_payload.join(ICON_FILE);
             std::fs::write(&path, icon_artwork(icon)?).map_err(io(&path))?;
         }
+        // The program the package carries, beside its module: what its runtime's binary runs, and
+        // the files it reads.
+        for (relative, source) in &app.files {
+            let path = stage_payload.join(relative);
+            if path.exists() {
+                return Err(format!(
+                    "{}: the program's file {} would replace what the build wrote",
+                    app.app,
+                    relative.display()
+                ));
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(io(parent))?;
+            }
+            std::fs::copy(source, &path).map_err(io(source))?;
+        }
         let stage_manifest = stage_dir.join("manifest.toml");
         std::fs::write(&stage_manifest, &app.manifest).map_err(io(&stage_manifest))?;
         let final_manifest = options.out.join(&name).join("manifest.toml");
@@ -814,7 +1252,11 @@ struct Assembled {
     meta: PackageMeta,
     manifest: String,
     bundle: Bundle,
-    /// SHA-256 (hex) of the manifest and the bundle, as an install of the same build gets it.
+    /// The program's files, each relative to the payload and where it is read from; empty for a
+    /// package that carries none.
+    files: Vec<(PathBuf, PathBuf)>,
+    /// SHA-256 (hex) of the manifest, the bundle and the program's files, as an install of the
+    /// same build gets it.
     digest: String,
 }
 
@@ -827,24 +1269,129 @@ fn assembled(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<A
     for (package, bundle) in built.iter().zip(tilolang_tilo::bundle::of_build(&built)) {
         let meta = &package.compiled.meta;
         let accessibility = source_accessibility(&package.dir)?;
+        let program = source_program(&package.dir, meta)?;
+        let files = match &program {
+            Some(program) => program_files(&package.dir, program)?,
+            None => Vec::new(),
+        };
         let manifest = manifest_text(
             meta,
             accessibility.as_ref(),
+            program.as_ref(),
             &bundle.catalogues(),
             options,
             &publisher,
         );
-        let digest = digest(&manifest, &bundle)?;
+        let digest = digest(&manifest, &bundle, &files)?;
         apps.push(Assembled {
             app: meta.app.clone(),
             title: meta.title.clone(),
             meta: meta.clone(),
             manifest,
             bundle,
+            files,
             digest,
         });
     }
     Ok(apps)
+}
+
+/// The files of the program `program` declares in `dir`, each relative to the package directory
+/// and where it is read from: everything the program runs from, and none of the language's own
+/// sources or what a build writes. The SDK's native addon is not a file of a package: the runtime
+/// package ships it (`node_modules/tilo-sdk-native`), so a copy beside an app would be a second
+/// one.
+fn program_files(
+    dir: &Path,
+    program: &SourceProgram,
+) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    let Some(entry) = &program.entrypoint else {
+        return Ok(Vec::new());
+    };
+    let mut files = Vec::new();
+    collect_program_files(dir, dir, &mut files)?;
+    if !files
+        .iter()
+        .any(|(relative, _)| relative == &entry.script)
+    {
+        return Err(format!(
+            "{}: the script {} is not a file of the package",
+            dir.join("app.toml").display(),
+            entry.script.display()
+        ));
+    }
+    Ok(files)
+}
+
+/// [`program_files`]' walk of `dir`, `root` being the package directory.
+fn collect_program_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<(), String> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(io(dir))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<PathBuf>>>()
+        .map_err(io(dir))?;
+    entries.sort();
+    for path in entries {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| format!("{}: {error}", path.display()))?
+            .to_path_buf();
+        if is_language_source(&relative) || is_sdk_module(&relative) {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(&path).map_err(io(&path))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "{}: a program ships files, not links: its link is not in the package",
+                path.display()
+            ));
+        }
+        if metadata.is_dir() {
+            collect_program_files(root, &path, files)?;
+        } else {
+            files.push((relative, path));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `relative` is the language's own source or what a build writes: never part of the
+/// program a package carries.
+fn is_language_source(relative: &Path) -> bool {
+    if relative.components().count() == 1 {
+        let name = relative.file_name().and_then(|name| name.to_str());
+        if matches!(
+            name,
+            Some(
+                "app.tl"
+                    | "app.ids"
+                    | "app.toml"
+                    | "tilo-app.toml"
+                    | "app.wasm"
+                    | "surface.toml"
+                    | "icon.svg"
+                    | "imports"
+            )
+        ) {
+            return true;
+        }
+    }
+    relative.extension().is_some_and(|extension| extension == "tl")
+}
+
+/// Whether `relative` is the SDK's native addon, which the runtime package ships.
+fn is_sdk_module(relative: &Path) -> bool {
+    let components: Vec<&str> = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    components
+        .windows(2)
+        .any(|pair| matches!(pair, ["node_modules", "tilo-sdk-native"]))
 }
 
 /// Stage, pack and sign one already-compiled package as the `.tapp` a session installs: the same
@@ -860,8 +1407,8 @@ pub fn deliver_compiled(
     let meta = &compiled.meta;
     let publisher = hex::encode(identity.public_key_bytes());
     let bundle = Bundle::new(compiled, imports.iter().copied());
-    let manifest = manifest_text(meta, None, &bundle.catalogues(), options, &publisher);
-    let digest = digest(&manifest, &bundle)?;
+    let manifest = manifest_text(meta, None, None, &bundle.catalogues(), options, &publisher);
+    let digest = digest(&manifest, &bundle, &[])?;
     let mut apps = deliver_all(
         vec![Assembled {
             app: meta.app.clone(),
@@ -869,6 +1416,7 @@ pub fn deliver_compiled(
             meta: meta.clone(),
             manifest,
             bundle,
+            files: Vec::new(),
             digest,
         }],
         options,
@@ -907,8 +1455,12 @@ pub fn published(
         .collect())
 }
 
-/// SHA-256 (hex) of a manifest and the bundle staged with it.
-fn digest(manifest: &str, bundle: &Bundle) -> Result<String, String> {
+/// SHA-256 (hex) of a manifest, the bundle staged with it and the program's files.
+fn digest(
+    manifest: &str,
+    bundle: &Bundle,
+    files: &[(PathBuf, PathBuf)],
+) -> Result<String, String> {
     use sha2::Digest as _;
     let mut hasher = sha2::Sha256::new();
     for part in [
@@ -923,6 +1475,14 @@ fn digest(manifest: &str, bundle: &Bundle) -> Result<String, String> {
     for import in &bundle.imports {
         hasher.update((import.wasm.len() as u64).to_le_bytes());
         hasher.update(&import.wasm);
+    }
+    for (relative, source) in files {
+        let path = relative.to_string_lossy();
+        let bytes = std::fs::read(source).map_err(io(source))?;
+        hasher.update((path.len() as u64).to_le_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -947,46 +1507,68 @@ mod tests {
 
     #[test]
     fn an_app_that_reads_the_devices_files_declares_that_it_opens_them() {
+        let text = |required: Vec<String>, optional: Vec<String>| {
+            SandboxPlan {
+                required,
+                optional,
+                namespaces: Vec::new(),
+                net: String::new(),
+                seccomp: "tilo-default",
+            }
+            .capabilities()
+        };
+        let generated = |origins: &[&str], uses_files: bool| {
+            let (required, optional) = capabilities(origins, uses_files, false, &[]);
+            text(required, optional)
+        };
         assert_eq!(
-            capabilities(&[], true, false, &[]),
+            generated(&[], true),
             "required = [\"files.open\"]\noptional = []",
             "an app reading folders opens the files it lists"
         );
+        assert_eq!(generated(&[], false), "required = []\noptional = []");
         assert_eq!(
-            capabilities(&[], false, false, &[]),
-            "required = []\noptional = []"
-        );
-        assert_eq!(
-            capabilities(&["youtube"], false, false, &[]),
+            generated(&["youtube"], false),
             "required = [\"network.http\"]\noptional = []"
         );
         assert_eq!(
-            capabilities(&["imap"], true, false, &[]),
+            generated(&["imap"], true),
             "required = [\"network.http\", \"files.open\"]\noptional = [\"account-sign-ins\"]"
         );
-        assert!(sandbox(&[], true, None, &[]).0.contains("\"files.open\""));
+        assert_eq!(
+            text(
+                vec!["secrets".to_owned()],
+                vec!["network.http".to_owned()]
+            ),
+            "required = [\"secrets\"]\noptional = [\"network.http\"]",
+            "a declared program adds its own capabilities, each once"
+        );
+        assert!(
+            sandbox(&[], true, None, &[])
+                .capabilities()
+                .contains("\"files.open\"")
+        );
         // A package showing a page names its engine and the confinement the launcher runs it in.
-        let (capabilities, namespaces, _, seccomp) =
-            sandbox(&[], false, Some("tilo-runtime/2026.10.23-chromium"), &[]);
-        assert!(capabilities.contains("\"webview\""), "{capabilities}");
-        assert!(namespaces.contains("\"net\""), "{namespaces}");
-        assert_eq!(seccomp, "tilo-web-engine");
+        let page = sandbox(&[], false, Some("tilo-runtime/2026.10.23-chromium"), &[]);
+        assert!(page.capabilities().contains("\"webview\""));
+        assert!(page.namespaces().contains("\"net\""));
+        assert_eq!(page.seccomp, "tilo-web-engine");
     }
 
     #[test]
     fn an_app_that_reaches_the_web_says_which_hosts() {
         let listed = sandbox(&[], false, None, &["example.org".to_owned()]);
-        assert!(listed.0.contains("\"network.http\""), "{}", listed.0);
-        assert!(listed.1.contains("\"net\""), "{}", listed.1);
-        assert!(listed.2.contains("mode = \"allowlist\""), "{}", listed.2);
-        assert!(listed.2.contains("\"example.org\""), "{}", listed.2);
+        assert!(listed.capabilities().contains("\"network.http\""));
+        assert!(listed.namespaces().contains("\"net\""));
+        assert!(listed.net.contains("mode = \"allowlist\""));
+        assert!(listed.net.contains("\"example.org\""));
         // `*` is any host a person points the app at: what a reader of feeds and a browser ask.
         let any = sandbox(&[], false, None, &["*".to_owned()]);
-        assert!(any.2.contains("mode = \"host\""), "{}", any.2);
+        assert!(any.net.contains("mode = \"host\""));
         // An app reaching nothing declares no network at all.
         let none = sandbox(&[], false, None, &[]);
-        assert!(!none.0.contains("network.http"), "{}", none.0);
-        assert_eq!(none.2, "mode = \"off\"");
+        assert!(!none.capabilities().contains("network.http"));
+        assert_eq!(none.net, "mode = \"off\"");
     }
 
     #[test]
@@ -997,6 +1579,7 @@ mod tests {
                 engine: Some("tilo-runtime/2026.10.23-chromium".into()),
                 ..PackageMeta::default()
             },
+            None,
             None,
             &[],
             &BuildOptions::default(),
@@ -1009,6 +1592,7 @@ mod tests {
         assert!(
             !manifest_text(
                 &PackageMeta::default(),
+                None,
                 None,
                 &[],
                 &BuildOptions::default(),

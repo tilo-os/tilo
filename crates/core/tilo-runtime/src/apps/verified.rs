@@ -14,11 +14,8 @@ pub(crate) fn verified_tilolang(
     verify_package(installed)?;
     let manifest = launcher::manifest::read_manifest(&installed.manifest_path)
         .map_err(|error| error.to_string())?;
-    let runtime = manifest
-        .entrypoint
-        .runtime
-        .clone()
-        .filter(|runtime| launcher::manifest::is_tilolang(runtime))
+    let runtime = launcher::manifest::code_runtime(&manifest, &installed.payload_root)
+        .map(str::to_owned)
         .ok_or_else(|| format!("{} is no tilolang app", installed.id))?;
     let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
     installed_runtime(&catalog, &runtime)?;
