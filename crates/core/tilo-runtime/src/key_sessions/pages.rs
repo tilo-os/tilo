@@ -24,8 +24,9 @@ use std::time::Duration;
 
 use runtime_collab::native_media::{Request, Snapshot};
 use tilo_actions::remote::{
-    Caller, CatalogueQuery, FOUND_FILE, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionTarget, Within, pending,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, CatalogueQuery, FOUND_FILE,
+    InvocationReceipt, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
+    Within, pending,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -479,10 +480,9 @@ impl DesktopWells {
                 return Err(unavailable("the layout was not read"));
             }
         };
-        let listed: Vec<String> = catalogue(&self.dispatch, &self.caller)?
-            .providers
+        let listed: Vec<String> = openable(&self.dispatch, &self.caller)?
             .into_iter()
-            .map(|provider| provider.app_id)
+            .map(|(app_id, _)| app_id)
             .collect();
         let mut wells = std::collections::BTreeMap::new();
         for window in read["windows"].as_array().into_iter().flatten() {
@@ -587,49 +587,73 @@ fn page_app_name(app_id: &str) -> &str {
     app_id.rsplit_once('.').map_or(app_id, |(_, last)| last)
 }
 
-/// What the workspace's catalogue lists `caller`: the apps they may use, and their records.
+/// What the workspace's catalogue lists `caller`: the apps they may use and their records, or
+/// only the rows of the action `action` wherever it is published.
 fn catalogue(
     dispatch: &SessionHost,
     caller: &Caller,
+    action: Option<&str>,
 ) -> Result<tilo_actions::remote::CataloguePage, PageRefusal> {
     waited(dispatch.query(
         caller,
         CatalogueQuery {
             max_results: 200,
+            action: action.map(str::to_owned),
             ..CatalogueQuery::default()
         },
     ))?
     .map_err(unavailable)
 }
 
-/// The apps `caller` may open in the workspace, as `(title, page name)`, by title: each app
-/// whose records the catalogue lists them, named as its own top resource is.
-fn apps(dispatch: &SessionHost, caller: &Caller) -> Result<Vec<(String, String)>, PageRefusal> {
-    let listed = catalogue(dispatch, caller)?;
-    let mut apps: Vec<(String, String)> = Vec::new();
+/// The apps `caller` may open in the workspace, as `(app id, title)`: each app publishing its
+/// records there, titled by its own top resource when it lists one, and each app the workspace
+/// installed that the catalogue offers them to open, titled by its name. An installed app need
+/// not be running: its page starts it.
+fn openable(
+    dispatch: &SessionHost,
+    caller: &Caller,
+) -> Result<Vec<(String, Option<String>)>, PageRefusal> {
+    let listed = catalogue(dispatch, caller, None)?;
+    let installed = catalogue(dispatch, caller, Some(APPLICATION_OPEN_ACTION))?;
+    let mut apps: Vec<(String, Option<String>)> = Vec::new();
     for provider in &listed.providers {
-        let name = page_app_name(&provider.app_id);
-        if name.is_empty() || apps.iter().any(|(_, known)| known == name) {
-            continue;
-        }
         let title = listed
             .rows
             .iter()
             .find(|row| row.app_id == provider.app_id && row.parent_resource.is_empty())
-            .map_or_else(|| field_title(name), |row| row.resource.label.clone());
-        apps.push((title, name.to_owned()));
+            .map(|row| row.resource.label.clone());
+        apps.push((provider.app_id.clone(), title));
+    }
+    for row in &installed.rows {
+        let opens_itself =
+            row.resource.id.strip_prefix(APPLICATION_RESOURCE_PREFIX) == Some(row.app_id.as_str());
+        if opens_itself && !apps.iter().any(|(app, _)| *app == row.app_id) {
+            apps.push((row.app_id.clone(), Some(row.resource.label.clone())));
+        }
+    }
+    Ok(apps)
+}
+
+/// The apps `caller` may open in the workspace, as `(title, page name)`, by title.
+fn apps(dispatch: &SessionHost, caller: &Caller) -> Result<Vec<(String, String)>, PageRefusal> {
+    let mut apps: Vec<(String, String)> = Vec::new();
+    for (app_id, title) in openable(dispatch, caller)? {
+        let name = page_app_name(&app_id);
+        if name.is_empty() || apps.iter().any(|(_, known)| known == name) {
+            continue;
+        }
+        apps.push((title.unwrap_or_else(|| field_title(name)), name.to_owned()));
     }
     apps.sort();
     Ok(apps)
 }
 
 /// The id of the app a page names (`notes`, or its whole id), among the apps `caller` may open
-/// in the workspace: the catalogue lists an app's records to whoever may use it.
+/// in the workspace, running or only installed.
 fn app_named(dispatch: &SessionHost, caller: &Caller, name: &str) -> Result<String, PageRefusal> {
-    catalogue(dispatch, caller)?
-        .providers
+    openable(dispatch, caller)?
         .into_iter()
-        .map(|provider| provider.app_id)
+        .map(|(app_id, _)| app_id)
         .find(|app_id| app_id == name || page_app_name(app_id) == name)
         .ok_or(PageRefusal::NoSuchApp)
 }
