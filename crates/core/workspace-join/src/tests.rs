@@ -490,3 +490,19 @@ fn an_administrator_invitation_is_signed_as_one() {
     };
     assert!(issue_administrator_invitation(viewer, None, &device).is_err());
 }
+
+#[test]
+fn a_member_list_with_devices_crosses_as_json_and_postcard() {
+    let list = crate::MemberList {
+        members: Vec::new(),
+        devices: [
+            (crate::MemberId::Agent("planner".into()), vec![[7; 32]]),
+            (crate::MemberId::Bot("mail".into()), vec![[1; 32], [2; 32]]),
+        ]
+        .into(),
+    };
+    let json = serde_json::to_string(&list).expect("a member list is JSON");
+    assert_eq!(serde_json::from_str::<crate::MemberList>(&json).expect("it reads back"), list);
+    let bytes = postcard::to_allocvec(&list).expect("a member list is postcard");
+    assert_eq!(postcard::from_bytes::<crate::MemberList>(&bytes).expect("it reads back"), list);
+}

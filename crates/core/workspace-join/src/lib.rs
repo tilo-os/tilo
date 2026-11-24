@@ -87,7 +87,34 @@ pub struct DocumentRow {
 pub struct MemberList {
     pub members: Vec<Member>,
     /// The device keys of each member, by the member whose root certified them.
+    #[serde(with = "devices_by_member")]
     pub devices: BTreeMap<MemberId, Vec<[u8; 32]>>,
+}
+
+/// A member is no JSON object key, and the daemon publishes a reading that holds this list as
+/// JSON: the devices travel as pairs of member and keys, which postcard writes as it writes the
+/// map.
+mod devices_by_member {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::MemberId;
+
+    pub(super) fn serialize<S: Serializer>(
+        devices: &BTreeMap<MemberId, Vec<[u8; 32]>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(devices)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<MemberId, Vec<[u8; 32]>>, D::Error> {
+        Ok(Vec::<(MemberId, Vec<[u8; 32]>)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
+    }
 }
 
 impl MemberList {
