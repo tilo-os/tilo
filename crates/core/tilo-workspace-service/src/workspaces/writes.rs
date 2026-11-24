@@ -408,7 +408,7 @@ mod tests {
             .await
             .expect_err("a change that names nothing that made it is refused, not signed");
             assert!(
-                unnamed.contains("names no action"),
+                unnamed.contains("names no one who made it"),
                 "the refusal says why: {unnamed}"
             );
             assert_eq!(title(workspaces, workspace, &id).await, "Plan");
