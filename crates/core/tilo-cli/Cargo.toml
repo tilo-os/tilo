@@ -61,8 +61,6 @@ tilo-user-identity = { path = "../tilo-user-identity" }
 tilo-workspace-join = { path = "../workspace-join" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
-# Reads the PEM certificates a test names for HTTPS to trust (`tilo login`).
-rustls.workspace = true
 ed25519-dalek.workspace = true
 postcard.workspace = true
 hex.workspace = true

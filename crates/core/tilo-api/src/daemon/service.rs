@@ -28,11 +28,10 @@ const LABEL: &str = "so.tilo.peer";
 const APP_LABEL: &str = "so.tilo.runtime";
 
 /// The environment the service carries over from the login that installed it: where the device
-/// is kept, and what a test's HTTPS trusts.
+/// is kept, and where its data and state live.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const CARRIED: &[&str] = &[
     "TILO_IDENTITY_ROOT",
-    "TILO_TEST_CA_FILE",
     "XDG_DATA_HOME",
     "XDG_STATE_HOME",
 ];

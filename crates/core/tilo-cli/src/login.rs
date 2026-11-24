@@ -15,7 +15,6 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::OnceLock;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
@@ -33,52 +32,11 @@ pub(crate) use tilo_api::daemon::enter::{
 use tilo_api::daemon::enter::enter_said;
 pub use tilo_device_identity::login::{Device, Place, served_device_key};
 
-/// For tests only: PEM files (separated as `PATH` is) whose certificates
-/// HTTPS also trusts, each as a CA and as that exact server certificate.
-/// Verification stays on; production trust is the system's alone.
-pub const TEST_CA_ENV: &str = "TILO_TEST_CA_FILE";
-
 /// What Tilo's tools let the agent do, as it tells the person.
 const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where they see you by \
      name with what you do: tilo_ls lists its apps and documents, tilo_read reads one, \
      tilo_do runs their actions, and tilo_do with path terminal#run runs a shell command \
      there, all of which History keeps as your run";
-
-/// The HTTPS client every request here goes through.
-static CLIENT: OnceLock<tilo_net::Client> = OnceLock::new();
-
-/// Trust what [`TEST_CA_ENV`] names besides the system's roots, saying so
-/// on stderr, when it is set.
-pub(crate) fn trust_test_certificates() -> Result<()> {
-    use rustls::pki_types::CertificateDer;
-    use rustls::pki_types::pem::PemObject as _;
-    let Some(files) = std::env::var_os(TEST_CA_ENV).filter(|files| !files.is_empty()) else {
-        return Ok(());
-    };
-    let mut trusted = Vec::new();
-    for path in std::env::split_paths(&files) {
-        let pem = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-        let found = CertificateDer::pem_slice_iter(&pem)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| anyhow!("{} is not PEM certificates: {error}", path.display()))?;
-        if found.is_empty() {
-            bail!("{} holds no PEM certificate", path.display());
-        }
-        eprintln!(
-            "WARNING: {TEST_CA_ENV} is set, so HTTPS here also trusts {} as a test's own. \
-             Never set it outside a test.",
-            path.display()
-        );
-        trusted.extend(found);
-    }
-    let client = tilo_net::Client::builder()
-        .tls(tilo_net::client_config_also_trusting(trusted)?)
-        .build()?;
-    CLIENT
-        .set(client)
-        .map_err(|_| anyhow!("HTTPS was set up before {TEST_CA_ENV} was read"))?;
-    Ok(())
-}
 
 /// Whether a person's certificate names this computer's device key: it is one of their devices,
 /// read without the key, so the process stays dumpable.
@@ -204,7 +162,6 @@ fn invitation_in(link: &str) -> Result<Vec<u8>> {
 /// # Errors
 /// The link carries no valid invitation, the daemon is not reached, or the workspace refuses it.
 pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Result<ExitCode> {
-    trust_test_certificates()?;
     let invitation = invitation_in(link)?;
     let verified = tilo_workspace_join::decode_and_verify_invitation(
         &invitation,
@@ -270,7 +227,6 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
 /// This computer holds no identity, `host` is no server's line, the server is not reached or keeps
 /// no workspace of the person's, or the login cannot be kept.
 pub fn login_at_server(host: &str) -> Result<ExitCode> {
-    trust_test_certificates()?;
     if crate::identity::held()?.is_none() {
         bail!(
             "Only a computer that holds your Tilo identity logs in at a server by itself: log in \

@@ -182,7 +182,6 @@ fn start() -> Result<()> {
     if !crate::login::logged_in() {
         bail!("{}", crate::login::NOT_LOGGED_IN);
     }
-    crate::login::trust_test_certificates()?;
     tilo_api::daemon::service::start().map_err(anyhow::Error::msg)
 }
 

@@ -49,7 +49,6 @@ pub fn add(
     if let Some(ticket) = ticket {
         return sign_in(ticket, json);
     }
-    login::trust_test_certificates()?;
     // A login that ended names a workspace no daemon here holds: the daemon serves this
     // computer as the person's own device instead, in the workspace it founded.
     let here = login::home().filter(Device::reaches_a_server);
@@ -139,7 +138,6 @@ pub fn add(
 fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     use tilo_device_identity::login::{APPROVE, Direction, PENDING};
 
-    login::trust_test_certificates()?;
     let parsed = Ticket::parse(ticket).map_err(|_| {
         anyhow!(
             "{} is not a Tilo ticket; a browser's sign-in prompt copies one that starts with \
@@ -671,7 +669,6 @@ pub enum RolloutCmd {
 /// # Errors
 /// The daemon is not running here, or refused the turn.
 pub fn rollout(cmd: RolloutCmd) -> Result<ExitCode> {
-    login::trust_test_certificates()?;
     let here = login::home().filter(Device::reaches_a_server);
     let daemon = login::ensure_daemon()?;
     let (action, args) = match cmd {
