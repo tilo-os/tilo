@@ -232,9 +232,13 @@ impl Expr {
         Self { kind, ty }
     }
 
+    /// What stands where checking found no value: a diagnostic names it, or a template's type
+    /// parameter no argument bound (a defaulted `Option<M>` left `.none`), whose code then never
+    /// runs but still has to validate. It is held as `Ty::Error` is, an `i32` handle, so the
+    /// module around it type-checks either way.
     pub const fn error() -> Self {
         Self {
-            kind: Ek::Int(0),
+            kind: Ek::I32(0),
             ty: Ty::Error,
         }
     }
