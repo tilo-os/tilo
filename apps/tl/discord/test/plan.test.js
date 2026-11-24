@@ -8,6 +8,10 @@ import {
   avatarUrl,
   mapping,
   threadToDiscord,
+  byThisBridge,
+  chatChanges,
+  changeTarget,
+  messageOf,
 } from "../src/plan.js";
 import { callsOf } from "../main.js";
 import { looksLikeToken, webhookSend } from "../src/rest.js";
@@ -318,4 +322,116 @@ test("the helpers cut to Discord's bounds", () => {
   ).toBe("https://cdn.discordapp.com/avatars/1/h.png?size=128");
   expect(avatarUrl(null)).toBe("");
   expect(mapping(state(), "channel", "tl:so.tilo.chat:design").discord).toBe("456");
+});
+
+test("a change names the message it moved and who made it, and a bridged one is carried", () => {
+  const event = {
+    kind: "change",
+    path: "chat",
+    actor: { by: { member: { person: "ada" } }, app: "so.tilo.chat" },
+    resources: [
+      { path: "chat", app: "so.tilo.chat", record: "root-lmdoxbnn", item: "c1/messages/m1" },
+      { path: "notes", app: "so.tilo.notes", record: "notes" },
+    ],
+  };
+  const bridged = state({
+    map: {
+      ...state().map,
+      "channel:tl:so.tilo.chat:root-lmdoxbnn/c1": {
+        kind: "channel",
+        tilo: "tl:so.tilo.chat:root-lmdoxbnn/c1",
+        discord: "458",
+      },
+      "webhook:tl:so.tilo.chat:root-lmdoxbnn/c1": {
+        kind: "webhook",
+        tilo: "tl:so.tilo.chat:root-lmdoxbnn/c1",
+        discord: "559",
+      },
+    },
+  });
+  expect(byThisBridge(event)).toBe(false);
+  const changes = chatChanges(event);
+  expect(changes).toHaveLength(1);
+  expect(changeTarget(bridged, changes[0])).toEqual({
+    conversation: "tl:so.tilo.chat:root-lmdoxbnn/c1",
+    message: "tl:so.tilo.chat:root-lmdoxbnn/c1/messages/m1",
+    id: "m1",
+    record: "root-lmdoxbnn",
+    item: "c1/messages/m1",
+    app: "chat",
+  });
+  // A record the conversation is its own document of reads the same way.
+  const own = {
+    kind: "change",
+    path: "chat",
+    resources: [
+      { path: "chat", app: "so.tilo.chat", record: "root-lmdoxbnn/c1", item: "messages/m1" },
+    ],
+  };
+  expect(changeTarget(bridged, chatChanges(own)[0]).conversation).toBe(
+    "tl:so.tilo.chat:root-lmdoxbnn/c1",
+  );
+  // The item may be the message's own id, under the conversation's record.
+  expect(
+    changeTarget(bridged, {
+      path: "chat",
+      app: "so.tilo.chat",
+      record: "root-lmdoxbnn/c1",
+      item: "m2",
+    }),
+  ).toMatchObject({
+    conversation: "tl:so.tilo.chat:root-lmdoxbnn/c1",
+    message: "tl:so.tilo.chat:root-lmdoxbnn/c1/messages/m2",
+    id: "m2",
+  });
+  // A message in a conversation the bridge carries nowhere is no change of its own.
+  expect(
+    changeTarget(state(), {
+      path: "chat",
+      app: "so.tilo.chat",
+      record: "root-lmdoxbnn",
+      item: "c9/messages/m1",
+    }),
+  ).toBe(null);
+});
+
+test("the bridge's own writes and changes that are no change at all are not carried", () => {
+  expect(
+    byThisBridge({ actor: { by: { app: "so.tilo.discord.preview" }, app: "so.tilo.discord.preview" } }),
+  ).toBe(true);
+  expect(byThisBridge({ actor: { by: { member: { person: "ada" } }, app: "so.tilo.chat" } })).toBe(
+    false,
+  );
+  expect(byThisBridge({ kind: "presence", here: [] })).toBe(false);
+  expect(chatChanges({ kind: "presence" })).toEqual([]);
+  // A change of something that is not a message of a carried conversation is no message.
+  expect(
+    changeTarget(state(), {
+      path: "chat",
+      app: "so.tilo.chat",
+      record: "root-lmdoxbnn",
+      item: "c1",
+    }),
+  ).toBe(null);
+});
+
+test("a message reads in the words the planners use", () => {
+  const message = messageOf(
+    {
+      body: "hello there",
+      by: "Ada",
+      written: 1000,
+      attachments: [{ id: "a1", value: { name: "shot.png", media: "image/png", size: 3, blob: "tilo-blob://abc" } }],
+      reactions: { "🎉": [ADA], "👀": [] },
+      thread: { id: "root-lmdoxbnn/c1/threads/t1" },
+    },
+    { id: "root-lmdoxbnn/c1/messages/m1", writer: ADA, at: 2000 },
+  );
+  expect(message.text).toBe("hello there");
+  expect(message.author).toBe(ADA);
+  expect(message.by).toBe("Ada");
+  expect(message.written).toBe(1000);
+  expect(message.attachments).toEqual([{ blob: "tilo-blob://abc", name: "shot.png", size: 3 }]);
+  expect(message.reactions).toEqual(["🎉"]);
+  expect(message.thread).toBe("root-lmdoxbnn/c1/threads/t1");
 });
