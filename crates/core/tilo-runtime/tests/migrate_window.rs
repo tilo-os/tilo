@@ -28,7 +28,7 @@ const MIGRATE: &str = "so.tilo.migrate";
 const ENGINE: &str = "so.tilo.migrate.engine";
 
 /// Where this device's migrations answer, as the package code calls them by names it.
-async fn engine(host: &host::Host) -> String {
+pub(crate) async fn engine(host: &host::Host) -> String {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let page = host
@@ -57,7 +57,7 @@ async fn engine(host: &host::Host) -> String {
 
 /// What the agent's `tilo_do` of `action` on `path` answered: its value, or what it said when
 /// it did not run.
-async fn agent_does(
+pub(crate) async fn agent_does(
     agent: &host::Agent,
     path: &str,
     action: &str,

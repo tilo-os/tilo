@@ -113,6 +113,8 @@ mod keeping_pages;
 mod machine_secrets;
 #[path = "migrate_engine.rs"]
 mod migrate_engine;
+#[path = "migrate_walk.rs"]
+mod migrate_walk;
 #[path = "migrate_window.rs"]
 mod migrate_window;
 #[path = "provided.rs"]
