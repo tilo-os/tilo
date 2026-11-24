@@ -58,29 +58,36 @@ pub struct Kept {
     pub total: u64,
 }
 
+/// The ground an area covers, and the zoom levels whose tiles it keeps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AreaBounds {
+    /// The latitude of the area's northern edge, in degrees.
+    pub north: f64,
+    /// The latitude of the area's southern edge, in degrees.
+    pub south: f64,
+    /// The longitude of the area's eastern edge, in degrees.
+    pub east: f64,
+    /// The longitude of the area's western edge, in degrees.
+    pub west: f64,
+    /// The furthest zoom level out whose tiles it keeps.
+    pub least_zoom: i64,
+    /// The closest zoom level in whose tiles it keeps.
+    pub most_zoom: i64,
+}
+
 impl Area {
     /// The area a view names, with the levels clamped to the ones a basemap has tiles for.
     #[must_use]
-    pub fn new(
-        id: String,
-        name: String,
-        north: f64,
-        south: f64,
-        east: f64,
-        west: f64,
-        least_zoom: i64,
-        most_zoom: i64,
-        basemap: String,
-    ) -> Self {
+    pub fn new(id: String, name: String, bounds: AreaBounds, basemap: String) -> Self {
         Self {
             id,
             name,
-            north,
-            south,
-            east,
-            west,
-            least_zoom: least_zoom.clamp(0, MOST_ZOOM),
-            most_zoom: most_zoom.clamp(0, MOST_ZOOM),
+            north: bounds.north,
+            south: bounds.south,
+            east: bounds.east,
+            west: bounds.west,
+            least_zoom: bounds.least_zoom.clamp(0, MOST_ZOOM),
+            most_zoom: bounds.most_zoom.clamp(0, MOST_ZOOM),
             basemap,
         }
     }
@@ -103,10 +110,11 @@ impl Area {
                 let share = 0.5 - ((1.0 + sine) / (1.0 - sine)).ln() / (4.0 * std::f64::consts::PI);
                 (share * columns as f64).floor() as i64
             };
-            let first_x = column(self.west.min(self.east)).clamp(0, columns - 1);
-            let last_x = column(self.west.max(self.east)).clamp(first_x, columns - 1);
-            let first_y = row(self.north.max(self.south)).clamp(0, columns - 1);
-            let last_y = row(self.north.min(self.south)).clamp(first_y, columns - 1);
+            let edge = columns.saturating_sub(1);
+            let first_x = column(self.west.min(self.east)).clamp(0, edge);
+            let last_x = column(self.west.max(self.east)).clamp(first_x, edge);
+            let first_y = row(self.north.max(self.south)).clamp(0, edge);
+            let last_y = row(self.north.min(self.south)).clamp(first_y, edge);
             for y in first_y..=last_y {
                 for x in first_x..=last_x {
                     tiles.push((z, x, y));
@@ -161,10 +169,10 @@ impl Tiles {
                 break;
             }
             if self.save(&area.address(z, x, y)).is_some() {
-                kept.saved += 1;
+                kept.saved = kept.saved.saturating_add(1);
             }
-            let done = done as u64 + 1;
-            if done % 16 == 0 {
+            let done = (done as u64).saturating_add(1);
+            if done.is_multiple_of(16) {
                 progress(kept);
             }
         }
@@ -250,12 +258,14 @@ mod tests {
         Area::new(
             "region:48.10:11.55:48.18:11.62:z14-15".to_owned(),
             "Munich".to_owned(),
-            48.18,
-            48.10,
-            11.62,
-            11.55,
-            least,
-            most,
+            AreaBounds {
+                north: 48.18,
+                south: 48.10,
+                east: 11.62,
+                west: 11.55,
+                least_zoom: least,
+                most_zoom: most,
+            },
             "https://tiles.test/%z/%x/%y.png".to_owned(),
         )
     }
