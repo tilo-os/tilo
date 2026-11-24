@@ -593,8 +593,8 @@ mod claims_wire {
         invoker: Option<crate::claim::Invoker>,
         /// The call the run's changes were made for, when a host ran them for
         /// a caller elsewhere: the caller's own signed invocation, which every
-        /// change of one invocation shares.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// change of one invocation shares. Written always, `None` too: postcard reads a struct's
+        /// fields by position, so a field left out ends the frame early.
         call: Option<Box<tilo_actions::remote::SignedInvocation>>,
     }
 
@@ -604,7 +604,6 @@ mod claims_wire {
         action: &'a ClaimedAction,
         units: &'a [UnitPath],
         invoker: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         call: Option<&'a tilo_actions::remote::SignedInvocation>,
     }
 
