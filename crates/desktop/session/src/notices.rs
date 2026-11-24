@@ -220,6 +220,22 @@ pub(crate) fn style_failed_notice(style: &str, reason: &str) -> Notice {
     .staying(Some(Duration::from_secs(30)))
 }
 
+/// Tell the person a press of theirs did not run, saying what the device's dispatch refused: a
+/// press made before the services answered it waits for them, and one they refuse is said here.
+pub(crate) fn press_refused_notice(reason: &str) -> Notice {
+    Notice::new(
+        t("press-refused-app-name"),
+        1,
+        t("press-refused-title"),
+        t_args(
+            "press-refused-body",
+            &[("reason", reason.to_owned().into())],
+        ),
+    )
+    .here()
+    .staying(Some(Duration::from_secs(30)))
+}
+
 /// What a paste of files has to tell the person, or `None` when it went through.
 pub(crate) fn paste_notice(outcome: &crate::clipboard::paste::Outcome) -> Option<Notice> {
     use crate::clipboard::paste::Refused;

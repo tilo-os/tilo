@@ -433,6 +433,10 @@ style-failed-app-name = Shell
 style-failed-title = Your style could not be shown
 style-failed-body = { $style } could not be shown, so the shell shows Strips. Your choice is kept.
 
+press-refused-app-name = Shell
+press-refused-title = That action did not run
+press-refused-body = { $reason }
+
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } mentioned you in ‘{ $place }’
 mention-notice = { $name } mentioned you

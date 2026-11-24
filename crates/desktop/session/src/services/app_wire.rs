@@ -609,6 +609,20 @@ struct ServiceCall {
     >,
 }
 
+/// Whether the device's dispatch serves the session's services ([`SERVICES_PROVIDER`]) yet. A
+/// press of one of their actions made before it does waits for it, never dropped: the link to the
+/// daemon is opened and the provider offered while the shell is already drawing, so a press can
+/// reach the dispatch first.
+#[derive(Clone, Debug)]
+pub(crate) enum Registration {
+    /// Offered no earlier than now: a press waits until it is.
+    Pending,
+    /// The dispatch serves them: a press goes through.
+    Registered,
+    /// They cannot be served this session: a press is told why rather than dropped.
+    Failed(String),
+}
+
 /// The session's services as the device's dispatch calls them over the shell link. The dispatch
 /// runs on the session's runtime, while the services live on its loop: a call is handed over
 /// here, the loop answers it on its next pass, and the dispatch reads the answer.
@@ -617,6 +631,12 @@ pub(crate) struct ServedServices {
     wake: tilo_service::Wake,
     /// Who the person reads as asking when one of the services' actions waits for them.
     by: tilo_actions::remote::asked::AskedBy,
+    /// Whether the device's dispatch serves these services, watched by a press that reached it
+    /// before they were offered.
+    registration: tokio::sync::watch::Sender<Registration>,
+    /// What the dispatch refused of a press that was held for it, in its words, for the loop to
+    /// show the person on its next pass.
+    refused: std::sync::Mutex<Vec<String>>,
 }
 
 impl ServedServices {
@@ -625,11 +645,91 @@ impl ServedServices {
         wake: tilo_service::Wake,
         by: tilo_actions::remote::asked::AskedBy,
     ) -> std::sync::Arc<Self> {
+        let (registration, _) = tokio::sync::watch::channel(Registration::Pending);
         std::sync::Arc::new(Self {
             calls: std::sync::Mutex::default(),
             wake,
             by,
+            registration,
+            refused: std::sync::Mutex::default(),
         })
+    }
+
+    /// The device's dispatch serves these services from now on: a press waiting for them goes
+    /// through.
+    pub(crate) fn registered(&self) {
+        // A press may wait before it subscribes: the value is kept for whoever asks next, even
+        // with no watcher on it now.
+        let _ = self.registration.send_replace(Registration::Registered);
+    }
+
+    /// The device's dispatch cannot serve these services this session, saying why: a press
+    /// waiting for them is told instead of dropped.
+    pub(crate) fn registration_failed(&self, reason: &str) {
+        let _ = self
+            .registration
+            .send_replace(Registration::Failed(reason.to_owned()));
+    }
+
+    /// Wait until the device's dispatch serves these services, and say how that ended: what a
+    /// press made before they were offered holds for.
+    pub(crate) async fn await_registration(&self) -> Registration {
+        let mut watched = self.registration.subscribe();
+        loop {
+            let state = watched.borrow_and_update().clone();
+            match state {
+                Registration::Pending => {
+                    if watched.changed().await.is_err() {
+                        return Registration::Failed(
+                            "the session ended before its services reached the device's dispatch"
+                                .to_owned(),
+                        );
+                    }
+                }
+                done => return done,
+            }
+        }
+    }
+
+    /// Send a press that waits for its person through `send` once the device's dispatch serves
+    /// these services, and keep what it answered when it failed for the loop to show: a press
+    /// made before they were offered waits, and a press the dispatch refuses is said, never
+    /// dropped behind a log line.
+    pub(crate) async fn deliver_press<F, Fut>(&self, send: F)
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Result<(), String>> + Send,
+    {
+        match self.await_registration().await {
+            Registration::Registered => {
+                if let Err(reason) = send().await {
+                    self.refuse(&reason);
+                }
+            }
+            Registration::Failed(reason) => self.refuse(&reason),
+            Registration::Pending => {}
+        }
+    }
+
+    /// Keep `reason`, what the dispatch refused of a held press, for the person to be told on the
+    /// loop's next pass, and wake the loop to show it.
+    fn refuse(&self, reason: &str) {
+        self.refused
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(reason.to_owned());
+        (self.wake)();
+    }
+
+    /// What the dispatch refused of a press it was held for since the last pass, in its words: what
+    /// the loop tells the person.
+    pub(crate) fn take_refused(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .refused
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Answer every call the dispatch made since the last pass.
@@ -795,10 +895,12 @@ pub(crate) fn serve_services(
     daemon: &Result<runtime_collab::ShellClient, String>,
 ) {
     let Ok(link) = daemon else {
+        // The press path is not taken without a link either, so nothing waits for one.
         return;
     };
     let Ok(runtime) = tilo_rt::try_app() else {
         tracing::warn!("the session's services reach no device dispatch");
+        served.registration_failed("this session has no runtime to reach the device's dispatch");
         return;
     };
     let placed = tilo_actions::api::survey_placed(&services.resources());
@@ -818,13 +920,13 @@ pub(crate) fn serve_services(
         ..tilo_actions::remote::CataloguePage::default()
     };
     let provider = std::sync::Arc::new(ServicesOnDispatch {
-        served,
+        served: std::sync::Arc::clone(&served),
         page: page.clone(),
         runtime: runtime.handle().clone(),
     });
     let link = link.clone();
     runtime.spawn(async move {
-        if let Err(error) = link
+        match link
             .provide(
                 SERVICES_PROVIDER,
                 &page,
@@ -832,10 +934,102 @@ pub(crate) fn serve_services(
             )
             .await
         {
-            tracing::warn!(
-                %error,
-                "the session's services reach no device dispatch"
-            );
+            // A press made before now waited for this: it goes through.
+            Ok(_) => served.registered(),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "the session's services reach no device dispatch"
+                );
+                served.registration_failed(&error.to_string());
+            }
         }
     });
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    //! A press that reaches the device's dispatch before the session's services are offered waits
+    //! for them and runs once they are; one the dispatch refuses is the person's to read.
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Waker};
+
+    use tilo_actions::remote::asked::AskedBy;
+
+    use super::ServedServices;
+
+    /// The services as the session makes them, waking a loop that does nothing.
+    fn serving() -> Arc<ServedServices> {
+        ServedServices::new(Arc::new(|| ()), AskedBy::default())
+    }
+
+    /// What a held press sends: one run counted, answered with nothing.
+    fn counting(
+        runs: &Arc<AtomicUsize>,
+    ) -> impl FnOnce() -> std::future::Ready<Result<(), String>> {
+        let runs = Arc::clone(runs);
+        move || {
+            runs.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn a_press_made_before_the_services_register_waits_and_runs_once() {
+        let served = serving();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mut pressing = Box::pin(served.deliver_press(counting(&runs)));
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        assert!(
+            pressing.as_mut().poll(&mut context).is_pending(),
+            "the press waits for the services to be offered"
+        );
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            0,
+            "nothing runs before they are"
+        );
+
+        served.registered();
+        assert!(
+            pressing.as_mut().poll(&mut context).is_ready(),
+            "the press goes through once they are"
+        );
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "the held press ran, and only once"
+        );
+        assert!(served.take_refused().is_empty());
+    }
+
+    #[test]
+    fn a_press_the_dispatch_refuses_is_said_to_the_person() {
+        let served = serving();
+        served.registered();
+        let refusal = "the dispatch did not take the call";
+        let mut pressing = Box::pin(served.deliver_press(|| {
+            let refusal = refusal.to_owned();
+            async move { Err(refusal) }
+        }));
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        assert!(pressing.as_mut().poll(&mut context).is_ready());
+
+        assert_eq!(
+            served.take_refused(),
+            vec![refusal.to_owned()],
+            "what the dispatch refused is kept for the person"
+        );
+        let notice = crate::notices::press_refused_notice(refusal);
+        assert!(
+            notice.body.contains(refusal),
+            "the notice says what the dispatch did: {}",
+            notice.body
+        );
+    }
 }

@@ -104,6 +104,14 @@ impl Session {
         // What the device's dispatch asked of the services since the last pass: a press of one
         // of their actions, and the person's answer to the question it asked.
         self.shared.served_services.serve(&mut services);
+        // A press the dispatch refused, where it was held for the services to be offered, is the
+        // person's to see: what it said, as a notice on the shell rather than a log line.
+        for reason in self.shared.served_services.take_refused() {
+            self.shared
+                .notifications
+                .borrow()
+                .tell(&crate::notices::press_refused_notice(&reason));
+        }
         if let Some(app_wire) = &self.app_wire {
             app_wire.link.serve(&mut services);
         }

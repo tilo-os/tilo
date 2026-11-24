@@ -439,6 +439,10 @@ style-failed-app-name = Shell
 style-failed-title = Dein Stil konnte nicht angezeigt werden
 style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt die Shell Streifen. Deine Wahl bleibt erhalten.
 
+press-refused-app-name = Shell
+press-refused-title = Diese Aktion wurde nicht ausgeführt
+press-refused-body = { $reason }
+
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
 mention-notice = { $name } hat dich erwähnt

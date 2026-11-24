@@ -1876,6 +1876,9 @@ impl crate::Session {
         // Where a press that waits for the person reaches the device's dispatch: it keeps the call
         // as their asked record, which the shell draws.
         let daemon = self.shared.daemon.clone();
+        // The services that answer it over the same link: a press made before they are offered
+        // waits for them, and one the dispatch refuses is said on the shell.
+        let served = std::sync::Arc::clone(&self.shared.served_services);
         shell.serve(
             |resource, action, name| {
                 tilo_actions::api::resolve(&resources, &ActionAddress::new(resource, action))
@@ -1942,13 +1945,17 @@ impl crate::Session {
                     let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
                     let workspace = workspace.clone();
                     let waiting = daemon.clone();
+                    let served = std::sync::Arc::clone(&served);
                     daemon.runtime().spawn(async move {
-                        if let Err(error) = waiting.dispatch(Some(&workspace), &message).await {
-                            tracing::warn!(
-                                %error,
-                                "a press that waits for its person did not reach the dispatch"
-                            );
-                        }
+                        // The dispatch may not serve the session's services yet: the link opens
+                        // while the shell is already drawing. The press waits for them rather than
+                        // being dropped, and goes through once they are there; what the dispatch
+                        // refuses is the person's to see on the shell, not a log line.
+                        served
+                            .deliver_press(|| async move {
+                                waiting.dispatch(Some(&workspace), &message).await.map(drop)
+                            })
+                            .await;
                     });
                     return Ok(());
                 }
