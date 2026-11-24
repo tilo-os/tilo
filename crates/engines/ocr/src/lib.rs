@@ -18,7 +18,7 @@ use std::process::Command;
 use std::time::Duration;
 use tilo_image_codec::DecodedImage;
 
-use image::{DynamicImage, GrayImage, ImageFormat, Luma, imageops};
+use image::{DynamicImage, GrayImage, Luma, imageops};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -324,7 +324,9 @@ pub fn recognize_detailed(image: &DecodedImage, language: &str) -> Result<Recogn
     let mut input = tempfile::Builder::new()
         .suffix(".png")
         .tempfile_in(scratch)?;
-    prepared.write_to(&mut input, ImageFormat::Png)?;
+    // The encoder is named, not looked up by format: a lookup keeps every
+    // encoder the image crate has in the binary.
+    prepared.write_with_encoder(image::codecs::png::PngEncoder::new(&mut input))?;
     recognize_path(input.path(), language).map(|document| Recognition {
         document,
         deskew_degrees,

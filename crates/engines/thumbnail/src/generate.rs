@@ -408,8 +408,9 @@ pub fn encode_png(thumb: &RgbaThumb) -> Option<Vec<u8>> {
     }
     let buf = image::RgbaImage::from_raw(thumb.width, thumb.height, thumb.rgba.clone())?;
     let mut out = Vec::new();
-    image::DynamicImage::ImageRgba8(buf)
-        .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+    // The encoder is named, not looked up by format: a lookup keeps every
+    // encoder the image crate has in the binary.
+    buf.write_with_encoder(image::codecs::png::PngEncoder::new(&mut out))
         .ok()?;
     Some(out)
 }
