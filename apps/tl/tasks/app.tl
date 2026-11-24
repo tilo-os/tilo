@@ -1569,16 +1569,14 @@ view home(t: Tasks) {
             }
         }
         content: {
+            // Nothing open: the list stands alone, as a window with one column does. Only an
+            // empty place says something here, in place of the columns the shell would show.
             if let x = opened {
                 std.document_page {
                     task_body(x)
                 }
             } else if t.items.is_empty() {
                 ui.EmptyState("No tasks here", icon: .list_checks)
-            } else if not all_done {
-                // With everything done, the all-done state above the list is the one calm word:
-                // the column beside it says nothing more.
-                ui.EmptyState(phrase("tilolang-nothing-open"), icon: .list_checks, inline: true)
             }
         }
     }
