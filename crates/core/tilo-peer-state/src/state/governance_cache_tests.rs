@@ -509,3 +509,41 @@ fn a_reader_sets_keys_are_held_by_its_peoples_devices_alone() {
     assert_eq!(holders, theirs);
     assert!(!holders.contains(&people[2].device_public_key));
 }
+
+/// A set naming a role is read by its listed people and by every member whose role includes
+/// it, though the set lists none of them: the workspace's owner reads a set naming moderators,
+/// its devices hold the set's keys, and a device that follows its groups for them (a page) is
+/// one of the set's readers; an editor it does not list is neither.
+#[test]
+fn a_role_reader_holds_the_keys_and_reads_without_being_named() {
+    let now = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(2000))
+        .unwrap();
+    let (peer, people) = crowded_workspace(WORKSPACE, 3, 0, now);
+    let owner = person_device(3).1;
+    let readers = collab_types::NamedReaders {
+        role: Some(Role::Moderator),
+        people: std::collections::BTreeSet::from([people[0].user_public_key]),
+    };
+    let holders = peer.governance().reader_key_holders(&readers, now).unwrap();
+    assert_eq!(
+        holders,
+        std::collections::BTreeSet::from([people[0].device_public_key, owner.device_public_key]),
+        "the listed person and the owner, whose role includes moderating"
+    );
+    assert!(
+        peer.governance()
+            .reads_named(&readers, &owner.user_public_key, now),
+        "the owner reads the set without being listed"
+    );
+    assert!(
+        peer.governance()
+            .reads_named(&readers, &people[0].user_public_key, now)
+    );
+    assert!(
+        !peer
+            .governance()
+            .reads_named(&readers, &people[1].user_public_key, now),
+        "an editor it does not list reads none of it"
+    );
+}

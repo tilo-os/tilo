@@ -362,16 +362,27 @@ impl PeerGovernance<'_> {
         named: &collab_types::NamedReaders,
         now: SystemTime,
     ) -> Result<BTreeSet<[u8; 32]>, String> {
-        let mut theirs: BTreeSet<[u8; 32]> = self
-            .governed_set(now)?
-            .into_iter()
-            .filter(|(root, member)| !member.removed && named.includes(root, Some(member.role)))
-            .flat_map(|(_, member)| member.devices)
+        let members = self.governed_set(now)?;
+        let reads = |root: &[u8; 32]| {
+            named.includes(
+                root,
+                members
+                    .get(root)
+                    .filter(|member| !member.removed)
+                    .map(|member| member.role),
+            )
+        };
+        let mut theirs: BTreeSet<[u8; 32]> = members
+            .iter()
+            .filter(|(root, member)| !member.removed && reads(root))
+            .flat_map(|(_, member)| member.devices.iter().copied())
             .collect();
+        // A device keeping the workspace for a person reads as that person does, by name or
+        // by the role they hold.
         theirs.extend(
             self.keeping_devices()
                 .iter()
-                .filter(|hint| named.people.contains(&hint.host.user_public_key))
+                .filter(|hint| reads(&hint.host.user_public_key))
                 .map(|hint| hint.host.device_public_key),
         );
         let mut holders = self.key_holders(now)?;
@@ -393,9 +404,9 @@ impl PeerGovernance<'_> {
         }
         named.role.is_some()
             && self.governed_set(now).is_ok_and(|members| {
-                members
-                    .get(person)
-                    .is_some_and(|member| !member.removed && named.includes(person, Some(member.role)))
+                members.get(person).is_some_and(|member| {
+                    !member.removed && named.includes(person, Some(member.role))
+                })
             })
     }
 

@@ -671,8 +671,9 @@ impl KeyDirectory for OwnerDirectory {
         )
     }
 
-    /// The devices of `people` among those that hold the workspace's keys at `now`, and this
-    /// device when it follows its groups as one of theirs.
+    /// The devices of the people `named` lists, and of the members holding the role it names,
+    /// among those that hold the workspace's keys at `now`; and this device when it follows its
+    /// groups as one of theirs, read by name or by its person's role.
     fn reader_devices(
         &self,
         workspace: ModelWorkspaceId,
@@ -686,7 +687,12 @@ impl KeyDirectory for OwnerDirectory {
             .with_current(workspace, |view| {
                 let mut readers = view.reader_key_holders(named, at)?;
                 let device = view.device();
-                if reader && named.people.contains(&device.user_public_key) {
+                if reader
+                    && view
+                        .peer()
+                        .governance()
+                        .reads_named(named, &device.user_public_key, at)
+                {
                     readers.insert(device.device_public_key);
                 }
                 Ok(readers)
