@@ -41,12 +41,6 @@ struct App {
 
 const APPS: &[App] = &[
     App {
-        package: "activity",
-        bin: "activity",
-        id: "so.tilo.activity",
-        kind: "activity.window",
-    },
-    App {
         package: "assistant",
         bin: "assistant",
         id: "so.tilo.assistant",
