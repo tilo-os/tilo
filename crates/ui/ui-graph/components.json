@@ -4795,8 +4795,9 @@
         },
         {
           "name": "fail",
-          "doc": "The engine could not play the source: carries what it said.",
-          "value": "text"
+          "doc": "The engine could not play the source: carries what it said, and where in the song it stopped, in seconds. A stream a source serves only partway through stops here, and the app asks the source for a fresh address and continues from that place.",
+          "value": "text",
+          "at": "float"
         }
       ],
       "semantics": {
@@ -8701,8 +8702,9 @@
         },
         {
           "name": "fail",
-          "doc": "The player could not show its video: carries what the engine said.",
-          "value": "text"
+          "doc": "The player could not show its video: carries what the engine said, and where in the video it stopped, in seconds. A stream a source serves only partway through stops here, and the app asks the source for a fresh address and continues from that place.",
+          "value": "text",
+          "at": "float"
         },
         {
           "name": "progress",

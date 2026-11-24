@@ -255,6 +255,11 @@ d-gmizjqwj = Startseitenproblem
 
 d-vnufl2py = Problem
 
+d-jelhifn2 = Wiedergabeproblem
+    .doc = Warum die Wiedergabe des Titels endete, in den Worten der Engine, und wo sie endete, in Sekunden: Der Hinweis nennt die Stelle und spielt von dort weiter.
+
+d-bw27kdqh = Stelle
+
 d-fkvdcomi = Online
 
 d-aymfw7yu-filter-taste = Geschmack
@@ -262,6 +267,8 @@ d-aymfw7yu-filter-taste = Geschmack
 d-aymfw7yu-filter-playing = Wiedergabe
 
 d-aymfw7yu-filter-online = Online
+
+d-aymfw7yu-filter-player_at = Wiedergabestelle
 
 d-4n3tw3px = Start
     .doc = Womit die Bibliothek beginnt: die Schalter der Empfehlungen an.
@@ -362,9 +369,19 @@ d-txbarxog = Songtext
 d-txbarxog-p = Wiedergabe
 
 d-p3qnaypk = Fehler melden
-    .doc = Sagt, warum der Player aufhörte.
+    .doc = Sagt, warum der Player aufhörte, und wo, damit der Hinweis die Stelle nennt und von dort weiterspielt.
 
 d-p3qnaypk-reason = Grund
+
+d-p3qnaypk-at = Stelle
+
+d-tc6nujg6 = Der Wiedergabe folgen
+    .doc = Hält die Quelle der Sitzung auf der Adresse des Titels, damit die Live-Karte und ein anderes Gerät die zuletzt vom Katalog geantwortete Adresse spielen.
+
+d-tc6nujg6-p = P
+
+d-t5g7ut27 = Erneut versuchen
+    .doc = Fragt den Katalog erneut nach der Adresse des Titels und spielt von der Stelle weiter, an der der Stream abbrach: ein Stream, den seine Quelle unterwegs nicht mehr lieferte, oder eine abgelaufene signierte Adresse setzt dort fort, statt von vorn zu beginnen.
 
 d-xfhbh7qm = Neue Playlist
     .doc = Macht eine eigene Playlist der Person.
@@ -434,6 +451,9 @@ d-yyin4m4b = Bibliothek
 
 d-fl2vq3rn = Player
     .w-nothing-playing = Nothing playing
+    .w-the-stream-stopped-at = Der Stream stoppte bei { $stopped }
+    .w-this-song-won-t-play-here = Dieser Titel lässt sich hier nicht abspielen
+    .w-try-again = Erneut versuchen
 
 d-juhtgzza = Titel
     .w-kept-offline = Kept offline

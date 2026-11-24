@@ -324,7 +324,10 @@ view video(c: Clip) {
                         on progress(share: Float): playback.set_share(p, share)
                         on length(seconds: Float): playback.set_length(p, seconds)
                         on seek(place: Float): playback.seek(p, place)
-                        on fail(what: Text): set(trouble, what)
+                        on fail(what: Text, at: Float): set(
+                            trouble,
+                            "Stopped after " + at.max(0.0).to_int().to_text() + " seconds: " + what,
+                        )
                     }
                 } else {
                     row(fill, align: .center, distribute: .center) {

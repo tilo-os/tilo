@@ -314,6 +314,96 @@ mod cases {
                 "the playlist's own words stand on its page: {words:?}"
             );
         }
+
+        phase a_stream_cut_short_says_where_and_plays_on_from_there;
+        {
+            let s = Shelf::new();
+            let song = s.song("Blue Hour", "Ava", "ava", "Morning");
+            s.call("play_song", vec![Value::resource(&song)]);
+            // The engine stopped at 1:23 and said why.
+            let window = s.window();
+            let band = of_kind(window.tree(), "ui.MediaTransport")
+                .into_iter()
+                .next()
+                .expect("the player is in the window");
+            window
+                .fire_with(
+                    &band.key,
+                    "fail",
+                    Some(&Value::List(vec![
+                        Value::text("the source refused the rest of the stream"),
+                        Value::Float(83.0),
+                    ])),
+                )
+                .expect("the player reports why it stopped");
+            let window = s.window();
+            let shown = format!("{:?}", window.tree());
+            assert!(
+                shown.contains("The stream stopped at 1:23"),
+                "the notice names where it stopped: {shown}"
+            );
+            let banner = of_kind(window.tree(), "ui.Banner")
+                .into_iter()
+                .next()
+                .expect("the notice offers to continue there");
+            let action = match banner.props.get("action") {
+                Some(Value::Text(label)) => Some(label.as_str()),
+                Some(Value::Opt(Some(label))) => label.as_text(),
+                _ => None,
+            };
+            assert_eq!(action, Some("Try again"), "and one press continues it");
+            // The press asks the catalogue for a fresh address, and the session stands where the
+            // stream stopped.
+            let mut outcome = window
+                .fire_with(&banner.key, "act", None)
+                .expect("the notice's press runs");
+            while let InvokeOutcome::Waits { run, .. } = outcome {
+                outcome = match s.dispatch.allow(&s.rt, &run) {
+                    RunOutcome::Done(value) => InvokeOutcome::Done(value),
+                    RunOutcome::Waits { run, call } => InvokeOutcome::Waits { run, call },
+                };
+            }
+            assert_eq!(
+                s.asked_for("music.stream"),
+                vec![serde_json::json!("k-Blue Hour")],
+                "the catalogue is asked where the song's bytes are now"
+            );
+            assert!(
+                !format!("{:?}", s.window().tree()).contains("The stream stopped"),
+                "the notice goes once the person answered it"
+            );
+            // What the catalogue answered is what plays, from where the stream stopped.
+            s.write_field(
+                &song,
+                "Track",
+                "stream",
+                Value::text("https://music.example/blue-hour-fresh.wav"),
+            );
+            let window = s.window();
+            let band = of_kind(window.tree(), "ui.MediaTransport")
+                .into_iter()
+                .next()
+                .expect("the player is in the window");
+            let source = match band.props.get("source") {
+                Some(Value::Text(source)) => Some(source.as_str()),
+                Some(Value::Opt(Some(source))) => source.as_text(),
+                _ => None,
+            };
+            assert_eq!(
+                source,
+                Some("https://music.example/blue-hour-fresh.wav"),
+                "the player opens the address the catalogue answered with"
+            );
+            let position = match band.props.get("position") {
+                Some(Value::Float(position)) => Some(*position),
+                Some(Value::Opt(Some(position))) => match &**position {
+                    Value::Float(seconds) => Some(*seconds),
+                    _ => None,
+                },
+                _ => None,
+            };
+            assert_eq!(position, Some(83.0), "and plays on from where it stopped");
+        }
     }
 }
 
@@ -638,6 +728,7 @@ mod spotify_cases {
                 ]))
             );
         }
+
 
         phase an_ended_sign_in_says_so_and_offers_to_connect_again;
         {

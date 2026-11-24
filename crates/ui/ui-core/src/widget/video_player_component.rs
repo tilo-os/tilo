@@ -85,8 +85,10 @@ pub struct VideoPlayerProps {
     /// A caption track was chosen: carries its language code, empty for off.
     #[component(event(value = String))]
     pub select_captions: Event,
-    /// The player could not show its video: carries what the engine said.
-    #[component(event(value = String))]
+    /// The player could not show its video: carries what the engine said, and where in the video
+    /// it stopped, in seconds. A stream a source serves only partway through stops here, and the
+    /// app asks the source for a fresh address and continues from that place.
+    #[component(event(value = String, at = f64))]
     pub fail: Event,
     /// Where playback got to while it played, as a share of its length (`0..=1`): reported on the
     /// first frame it plays, then every five seconds, and once more when it stops, so a view
@@ -443,7 +445,11 @@ impl DeclaredVideo {
         // player's failure instead of a picture that never came.
         for event in self.player.take_media_events() {
             if let Some(reason) = failure_of(&event) {
-                self.fail.fire(Some(Value::Text(reason)));
+                let position = crate::num::f64_of_u64(self.player.position_ms()) / 1000.0;
+                self.fail.fire(Some(Value::List(vec![
+                    Value::Text(reason),
+                    Value::Float(position),
+                ])));
             }
         }
         let playing = self.player.is_playing();

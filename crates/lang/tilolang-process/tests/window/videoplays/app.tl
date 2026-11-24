@@ -12,6 +12,8 @@ type Clip {
     reports: Int merge counter
     /// Why the player could not show the clip, when it could not.
     failure: Text
+    /// Where in the clip the player stopped, in seconds.
+    stopped: Float = 0.0
 }
 
 root Clip
@@ -32,9 +34,10 @@ action reached(c: Clip, at: Float) {
     c.reports += 1
 }
 
-/// Records why the player could not show the clip.
-action failed(c: Clip, reason: Text) {
+/// Records why the player could not show the clip, and where it stopped.
+action failed(c: Clip, reason: Text, at: Float) {
     c.failure = reason
+    c.stopped = at
 }
 
 /// The clip, playing, and a line once playback reported moving on from where it started.
@@ -43,7 +46,7 @@ view clip(c: Clip) {
         if c.source != "" {
             ui.VideoPlayer(source: c.source, playing: true) {
                 on progress(at: Float): reached(c, at)
-                on fail(reason: Text): failed(c, reason)
+                on fail(reason: Text, at: Float): failed(c, reason, at)
             }
         }
         if c.reports > 1 and c.at > c.first {

@@ -97,6 +97,54 @@ mod cases {
                 .unwrap_or_else(|why| panic!("{action}: {why}"))
         }
 
+        /// Presses `event` of the node `key` in `view`, answering what it asks the person and
+        /// waiting on as they would.
+        fn press(&self, view: &ViewInstance, key: &str, event: &str) -> InvokeOutcome {
+            use tilolang_runtime::delegate::Invoked;
+            let mut outcome = view
+                .fire_with(key, event, None)
+                .unwrap_or_else(|why| panic!("{event} of {key}: {why}"));
+            loop {
+                match outcome {
+                    InvokeOutcome::Asked(_) => {
+                        let (call, values) = self.dispatch.asked();
+                        outcome = self
+                            .rt
+                            .invoke_admitted(&me(), (call.as_str(), values), None)
+                            .unwrap_or_else(|why| panic!("{call}, the person said yes: {why}"));
+                    }
+                    InvokeOutcome::Waits { run, .. } => {
+                        let (call, values) = self.dispatch.asked();
+                        let answer = match self
+                            .rt
+                            .invoke_admitted(&me(), (call.as_str(), values), None)
+                            .unwrap_or_else(|why| panic!("{call}, the person said yes: {why}"))
+                        {
+                            InvokeOutcome::Done(value) => Invoked::Done(value),
+                            other => Invoked::Failed(format!("{other:?}")),
+                        };
+                        outcome = self
+                            .rt
+                            .answer_call(&run, answer)
+                            .unwrap_or_else(|why| panic!("{event}'s run takes the answer: {why}"))
+                            .into();
+                    }
+                    InvokeOutcome::Done(_) => return outcome,
+                    other => panic!("{event} of {key} came to {other:?}"),
+                }
+            }
+        }
+
+        /// The payloads the app asked the service for through `capability`, in order.
+        fn asked(&self, capability: &str) -> Vec<serde_json::Value> {
+            self.rt
+                .pending_outbox()
+                .into_iter()
+                .filter(|entry| entry.capability == capability)
+                .map(|entry| entry.payload)
+                .collect()
+        }
+
         fn channel(&self, key: &str, name: &str) -> ResourceRef {
             seed_origin(
                 &self.rt,
@@ -222,6 +270,67 @@ mod cases {
                 .collect();
             assert!(buttons.iter().any(|b| b == "1.5×"), "a speed is offered: {buttons:?}");
             assert!(buttons.iter().any(|b| b == "1080p"), "a quality is offered: {buttons:?}");
+        }
+
+        phase a_stream_cut_short_says_where_and_try_again_continues_there;
+        {
+            let w = Watch::new();
+            w.channel("mkbhd", "MKBHD");
+            let video = w.video("v1", "A week on one charge", "mkbhd", "MKBHD");
+            w.call_and_approve("play", vec![Value::resource(&video)]);
+            // The player stopped at 2:05 and said why.
+            let page = w.open("video_page", vec![Value::resource(&video)]);
+            let player = of_kind(page.tree(), "ui.VideoPlayer")
+                .into_iter()
+                .next()
+                .expect("the player shows the video");
+            page.fire_with(
+                &player.key,
+                "fail",
+                Some(&Value::List(vec![
+                    Value::text("the service refused the rest of the stream"),
+                    Value::Float(125.0),
+                ])),
+            )
+            .expect("the player reports why it stopped");
+            let page = w.open("video_page", vec![Value::resource(&video)]);
+            let banner = of_kind(page.tree(), "ui.Banner")
+                .into_iter()
+                .next()
+                .expect("the notice offers to continue the stream");
+            assert_eq!(
+                text_prop(banner, "title"),
+                "The stream stopped at 2:05",
+                "the notice names where it stopped"
+            );
+            let action = match banner.props.get("action") {
+                Some(Value::Text(label)) => Some(label.as_str()),
+                Some(Value::Opt(Some(label))) => label.as_text(),
+                _ => None,
+            };
+            assert_eq!(action, Some("Try again"));
+            // One press asks the service for a fresh address, and the session stands where the
+            // stream stopped.
+            w.press(&page, &banner.key, "act");
+            assert_eq!(
+                w.asked("youtube.stream"),
+                vec![serde_json::json!(["v1", "auto"])],
+                "the service is asked where the video's bytes are now"
+            );
+            let page = w.open("video_page", vec![Value::resource(&video)]);
+            let player = of_kind(page.tree(), "ui.VideoPlayer")
+                .into_iter()
+                .next()
+                .expect("the player shows the video");
+            let position = match player.props.get("position") {
+                Some(Value::Float(position)) => Some(*position),
+                Some(Value::Opt(Some(position))) => match &**position {
+                    Value::Float(seconds) => Some(*seconds),
+                    _ => None,
+                },
+                _ => None,
+            };
+            assert_eq!(position, Some(125.0), "and plays on from where it stopped");
         }
 
         phase a_comment_is_liked_and_the_heart_says_so;
