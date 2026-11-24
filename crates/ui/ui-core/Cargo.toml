@@ -269,7 +269,7 @@ wgpu.workspace = true
 winit.workspace = true
 tilo-winit-x11 = { version = "0.1.0", path = "../winit-x11", optional = true }
 fluent.workspace = true
-tilo-headless-schema = { version = "0.1.0", path = "../headless-schema" }
+tilo-headless-schema = { version = "0.1.0", path = "../../platform/headless-schema" }
 unic-langid.workspace = true
 # UAX #14 opportunities shared by editor geometry and clamped-label wrapping.
 # cosmic-text uses the same crate internally; naming it directly lets toolkit

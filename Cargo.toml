@@ -184,7 +184,7 @@ members = [
     "tools/fake-model-providers",
     "tools/projector-stand-in",
     "tools/nested-session-bus",
-    "crates/ui/headless-schema",
+    "crates/platform/headless-schema",
     "tools/test-env",
     "tools/test-relay",
     "tools/test-app-registry",

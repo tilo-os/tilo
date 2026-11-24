@@ -1137,7 +1137,7 @@ doc = false
 "tilo-fs-native" = { path = "../../crates/core/fs-native", default-features = false, features = [] }
 "tilo-fs-protocol" = { path = "../../crates/core/fs-protocol", default-features = false, features = [] }
 "tilo-git" = { path = "../../crates/engines/tilo-git", default-features = false, features = [] }
-"tilo-headless-schema" = { path = "../../crates/ui/headless-schema", default-features = false, features = [] }
+"tilo-headless-schema" = { path = "../../crates/platform/headless-schema", default-features = false, features = [] }
 "tilo-highlight" = { path = "../../crates/ui/highlight", default-features = false, features = [] }
 "tilo-highlight-grammars" = { path = "../../crates/ui/highlight-grammars", default-features = false, features = ["syntax-definitions"] }
 "tilo-history" = { path = "../../crates/sdk/tilo-history", default-features = false, features = [] }
@@ -2303,7 +2303,7 @@ doc = false
 "tilo-formats" = { path = "../../crates/ui/tilo-formats", default-features = false, features = [] }
 "tilo-fs-client" = { path = "../../crates/core/tilo-fs-client", default-features = false, features = [] }
 "tilo-fs-protocol" = { path = "../../crates/core/fs-protocol", default-features = false, features = [] }
-"tilo-headless-schema" = { path = "../../crates/ui/headless-schema", default-features = false, features = [] }
+"tilo-headless-schema" = { path = "../../crates/platform/headless-schema", default-features = false, features = [] }
 "tilo-history" = { path = "../../crates/sdk/tilo-history", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../crates/core/tilo-identity-client", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
@@ -3627,7 +3627,7 @@ doc = false
 "tilo-fs-content" = { path = "../../crates/core/fs-content", default-features = false, features = [] }
 "tilo-fs-native" = { path = "../../crates/core/fs-native", default-features = false, features = [] }
 "tilo-fs-protocol" = { path = "../../crates/core/fs-protocol", default-features = false, features = [] }
-"tilo-headless-schema" = { path = "../../crates/ui/headless-schema", default-features = false, features = [] }
+"tilo-headless-schema" = { path = "../../crates/platform/headless-schema", default-features = false, features = [] }
 "tilo-highlight" = { path = "../../crates/ui/highlight", default-features = false, features = [] }
 "tilo-highlight-grammars" = { path = "../../crates/ui/highlight-grammars", default-features = false, features = ["syntax-definitions"] }
 "tilo-history" = { path = "../../crates/sdk/tilo-history", default-features = false, features = [] }
@@ -4836,7 +4836,7 @@ doc = false
 "tilo-fs-content" = { path = "../../crates/core/fs-content", default-features = false, features = [] }
 "tilo-fs-native" = { path = "../../crates/core/fs-native", default-features = false, features = [] }
 "tilo-fs-protocol" = { path = "../../crates/core/fs-protocol", default-features = false, features = [] }
-"tilo-headless-schema" = { path = "../../crates/ui/headless-schema", default-features = false, features = [] }
+"tilo-headless-schema" = { path = "../../crates/platform/headless-schema", default-features = false, features = [] }
 "tilo-history" = { path = "../../crates/sdk/tilo-history", default-features = false, features = [] }
 "tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../crates/core/tilo-identity-client", default-features = false, features = [] }

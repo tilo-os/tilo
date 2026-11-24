@@ -389,7 +389,7 @@ They run a single `sync → build_layout → compute_layout → apply_layout →
   "dump":"/tmp/after.json"}'
 ```
 
-Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`. The whole grammar is `crates/ui/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
+Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`. The whole grammar is `crates/platform/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
 
 `invoke` performs one action the app publishes, by address, through the same resolution, availability, confirmation and strict argument binding the live host applies:
 
