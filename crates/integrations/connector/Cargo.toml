@@ -12,6 +12,7 @@ test-worker = []
 
 [dependencies]
 tilo-files = { path = "../../platform/tilo-files" }
+tilo-actions = { path = "../../core/actions" }
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-live = { path = "../../core/tilo-live", features = ["relay"] }
 hex.workspace = true
@@ -30,6 +31,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 blake3.workspace = true
 key-group = { package = "tilo-key-group", path = "../../core/key-group" }
 tempfile.workspace = true

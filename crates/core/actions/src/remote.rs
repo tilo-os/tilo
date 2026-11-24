@@ -42,6 +42,8 @@ pub mod agent_tools;
 mod application;
 pub mod asked;
 pub mod browser;
+/// An outside service's call carried into a workspace's call, on an app's connection.
+pub mod call;
 mod caller;
 pub mod environment_device;
 pub mod invocation_record;
@@ -137,7 +139,7 @@ mod execution_lease;
 mod line;
 pub use execution_lease::ExecutionLease;
 #[cfg(not(target_arch = "wasm32"))]
-pub use line::{LineClient, LinePut, serve_lines};
+pub use line::{CallLanes, LineClient, LinePut, Take, serve_lines, serve_lines_with};
 pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{
@@ -2087,6 +2089,38 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<(), ActionCallError>,
     },
+    /// Ask the device to carry an outside service's call into a workspace call from now on, or,
+    /// with no pair, to let go of the one it carries ([`call`]). Decided by the app's grants and
+    /// held to the call's rule; a device that carries no call for this app refuses.
+    CallCarryRequest {
+        correlation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pair: Option<call::BridgedCall>,
+    },
+    /// Answer to [`Self::CallCarryRequest`], same correlation.
+    CallCarryResponse {
+        correlation: u64,
+        result: Result<(), ActionCallError>,
+    },
+    /// What the app's service says of its calls: who is in each, where the bridge stands, and
+    /// the line its people see.
+    CallReport {
+        correlation: u64,
+        report: call::CallReport,
+    },
+    /// Answer to [`Self::CallReport`], same correlation.
+    CallReportResponse {
+        correlation: u64,
+        result: Result<(), ActionCallError>,
+    },
+    /// One Opus frame an outside person said, for the workspace call.
+    CallHeard(call::CallAudio),
+    /// One Opus frame a workspace participant said, for the outside call. Sent by the device,
+    /// never asked for.
+    CallSaid(call::CallAudio),
+    /// What the device says the outside call should show of who is on the workspace's side.
+    /// Sent by the device, never asked for.
+    CallStatus(call::CallStatus),
 }
 
 /// One record a reader asks for over the action API: alone, or `joined`
@@ -2411,6 +2445,24 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         RemoteActionMessage::SurfaceRequest { correlation, app } => {
             surfaces::surfaced(provider, correlation, &app)
         }
+        // A call lane is its own host's, never a provider's: one asked here says it carries
+        // none.
+        RemoteActionMessage::CallCarryRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::CallCarryResponse {
+                correlation,
+                result: Err(ActionCallError::Unavailable {
+                    reason: "this connection carries no call lane".into(),
+                }),
+            })
+        }
+        RemoteActionMessage::CallReport { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::CallReportResponse {
+                correlation,
+                result: Err(ActionCallError::Unavailable {
+                    reason: "this connection carries no call lane".into(),
+                }),
+            })
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -2424,6 +2476,11 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::ChangedResponse { .. }
         | RemoteActionMessage::SurfaceResponse { .. }
+        | RemoteActionMessage::CallCarryResponse { .. }
+        | RemoteActionMessage::CallReportResponse { .. }
+        | RemoteActionMessage::CallHeard(_)
+        | RemoteActionMessage::CallSaid(_)
+        | RemoteActionMessage::CallStatus(_)
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.

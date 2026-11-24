@@ -100,6 +100,11 @@ pub const ACCOUNT_SIGN_INS: &str = "account-sign-ins";
 /// its signed manifest declares it: the manifest is the ceiling, never the app's request.
 pub const FILES_OPEN: &str = "files.open";
 
+/// The capability to carry an outside service's call into a workspace call: a bridge program
+/// asks the device for a call lane, and only an app whose signed manifest declares this one is
+/// given it. The workspace's grants still decide who may be in the call.
+pub const CALLS: &str = "calls";
+
 /// `[capabilities]` — host capabilities by name (`network.http`,
 /// `notifications`, `files.save`, ...). A `required` capability that a host
 /// cannot provide stops the launch; an `optional` one degrades.

@@ -256,6 +256,24 @@ action relay(b: Bridge, text: Text) {
 }
 ```
 
+## Calls
+
+An app that carries an outside service's call into a workspace call asks the
+connection it holds for a call lane, once its signed manifest declares the
+`calls` capability. `CallCarryRequest` names the service's call and the
+workspace's voice channel they are one with; `CallReport` says who is in the
+outside call and where the bridge stands; `CallHeard` and `CallSaid` exchange
+20 ms Opus frames, one speaker at a time in each direction, untouched. The
+device says `CallStatus` on the same connection with the line to show in the
+service.
+
+The device holds the lane to the workspace's call rule and carries the frames
+under the call's media keys, which the app never sees. A computer that cannot
+carry a call there, or a workspace that admitted the app to another call,
+refuses the pair with the reason. The app plays the outside call's frames out
+and hands what the workspace's people say back as they are: mixing, decoding
+and re-encoding are the outside service's own business, not the host's.
+
 The interpreters come as runtime packages, never from the host. Each is
 built by `tools/apps/runtime_packages.sh` from a pinned upstream release
 (bun's release binary, and a relocatable CPython that carries its own `lib/`)

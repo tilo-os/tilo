@@ -34,12 +34,43 @@ const WAITING_AT_ONCE: usize = 64;
 /// answered meanwhile; each answer names what it answers, so the order answers go out in is
 /// theirs. A line that is no frame is refused, and the connection goes on.
 pub fn serve_lines<H: ActionProvider + Clone + Send + Sync + 'static>(
+    tree: impl FnMut(&RemoteActionFrame) -> Result<(H, Caller), ActionCallError>,
+    uploads: &HostedContentPuts,
+    first: Option<Vec<u8>>,
+    input: impl BufRead,
+    output: impl Write + Send + 'static,
+    slack: Duration,
+) {
+    serve_lines_with(tree, uploads, first, input, output, slack, None);
+}
+
+/// What a host's own lane did with a frame.
+pub enum Take {
+    /// The frame is not the lane's: the provider answers it as any other.
+    NotCall,
+    /// The lane took it and answers nothing.
+    Silent,
+    /// The lane's answer, as the line to write.
+    Answer(String),
+}
+
+/// A host's own frames on a connection it serves, beside the action wire: a call lane on an
+/// app's connection ([`crate::remote::call`]). The host answers them itself and may write
+/// pushes of its own to the same connection; a frame it does not take goes to the provider.
+pub trait CallLanes: Send + Sync {
+    /// Take `message` as the lane's, or say it is the provider's.
+    fn take(&self, message: &RemoteActionMessage) -> Take;
+}
+
+/// [`serve_lines`], with `lanes` answering the frames it owns before the provider sees them.
+pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
     mut tree: impl FnMut(&RemoteActionFrame) -> Result<(H, Caller), ActionCallError>,
     uploads: &HostedContentPuts,
     first: Option<Vec<u8>>,
     mut input: impl BufRead,
     output: impl Write + Send + 'static,
     slack: Duration,
+    lanes: Option<&dyn CallLanes>,
 ) {
     let output = Arc::new(Mutex::new(output));
     let waiting = Arc::new(AtomicUsize::new(0));
@@ -61,6 +92,18 @@ pub fn serve_lines<H: ActionProvider + Clone + Send + Sync + 'static>(
                 continue;
             }
         };
+        if let Some(lanes) = lanes {
+            match lanes.take(&frame.message) {
+                Take::NotCall => {}
+                Take::Silent => continue,
+                Take::Answer(answer) => {
+                    if !write_line(&output, &answer) {
+                        return;
+                    }
+                    continue;
+                }
+            }
+        }
         let (provider, caller) = match tree(&frame) {
             Ok(served) => served,
             Err(refusal) => {

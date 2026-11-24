@@ -564,17 +564,6 @@ impl ConnectorCall {
         let Some(pair) = &self.carried else {
             return Vec::new();
         };
-        let call = Call {
-            call: CallPresence {
-                channel: pair.tilo.clone(),
-                name: String::new(),
-                bridge: Some(self.service.clone()),
-            },
-            camera: false,
-            screen: false,
-            muted: false,
-            deafened: false,
-        };
         outside_people(&self.report, &pair.outside)
             .into_iter()
             .map(|person| BridgedMember {
@@ -584,10 +573,24 @@ impl ConnectorCall {
                     service: self.service.clone(),
                     account: person.account.clone(),
                     name: person.name.clone(),
-                    avatar: None,
+                    // The picture's hash, when the bridge kept it here: a call view draws what
+                    // the workspace holds, never a URL only the service reaches.
+                    avatar: person.avatar.clone(),
                     linked: None,
                 },
-                call: call.clone(),
+                call: Call {
+                    call: CallPresence {
+                        channel: pair.tilo.clone(),
+                        name: String::new(),
+                        bridge: Some(self.service.clone()),
+                    },
+                    camera: false,
+                    screen: false,
+                    // What the service says of them: a muted or deafened outside person is shown
+                    // as such in the call, as anyone here would be.
+                    muted: person.muted || person.deafened,
+                    deafened: person.deafened,
+                },
             })
             .collect()
     }

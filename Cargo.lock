@@ -16374,6 +16374,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-clock",
  "tilo-collab-types",
  "tilo-files",

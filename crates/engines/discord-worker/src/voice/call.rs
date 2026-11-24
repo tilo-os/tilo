@@ -59,6 +59,7 @@ struct Want {
 struct Present {
     channel: String,
     muted: bool,
+    deafened: bool,
 }
 
 #[derive(Clone)]
@@ -439,6 +440,7 @@ impl Calls {
                     Present {
                         channel: channel.to_owned(),
                         muted: flag("self_mute") || flag("mute") || flag("suppress"),
+                        deafened: flag("self_deaf") || flag("deaf"),
                     },
                 );
             }
@@ -462,7 +464,9 @@ impl Calls {
                     account: user.clone(),
                     name: named.map_or_else(|| user.clone(), |n| n.name.clone()),
                     avatar_url: named.and_then(|n| n.avatar_url.clone()),
+                    avatar: None,
                     muted: present.muted,
+                    deafened: present.deafened,
                 });
         }
         calls

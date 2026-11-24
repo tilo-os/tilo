@@ -108,7 +108,7 @@ mod lines;
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::{LineClient, LinePut};
 #[cfg(not(target_arch = "wasm32"))]
-pub use lines::serve_lines;
+pub use lines::{CallLanes, Take, serve_lines, serve_lines_with};
 
 #[cfg(test)]
 mod tests {

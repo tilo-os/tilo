@@ -75,10 +75,19 @@ pub struct OutsidePerson {
     /// Where the service serves their avatar, if they have one.
     #[serde(default)]
     pub avatar_url: Option<String>,
+    /// BLAKE3 hex of their avatar, when the bridge kept its bytes in the
+    /// workspace's content store: what a call view draws, where a URL cannot
+    /// be reached.
+    #[serde(default)]
+    pub avatar: Option<String>,
     /// Muted, by themselves or by the service's moderators: nothing of
     /// theirs is heard.
     #[serde(default)]
     pub muted: bool,
+    /// Deafened on the service: they hear nothing of the call either, and
+    /// their microphone is off.
+    #[serde(default)]
+    pub deafened: bool,
 }
 
 /// The worker's own place in the outside calls.
