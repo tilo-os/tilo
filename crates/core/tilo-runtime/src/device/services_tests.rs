@@ -1184,21 +1184,23 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
             matches!(&counted, ShellReply::Resources(Ok(_))),
             "the daemon runs the shell's resource command: {counted:?}"
         );
-        let ShellReply::Vault(forgot) = shell_asks(
+        let ShellReply::Vault(released) = shell_asks(
             &shell,
-            ShellCall::Vault(runtime_collab::wire::shell::VaultCall::Forget {
+            ShellCall::Vault(runtime_collab::wire::shell::VaultCall::Release {
                 workspace: workspace.clone(),
-                account: "nobody@example.org".to_owned(),
+                person: [0; 32],
+                device: [0; 32],
+                app: WRITER_APP.to_owned(),
+                item: "vault.item:none".to_owned(),
             }),
         )
         .await
         else {
             panic!("the daemon answers the shell's vault ask");
         };
-        assert_eq!(
-            forgot.map(|answer| answer.0),
-            Ok("false".to_owned()),
-            "an account the workspace never had is not forgotten"
+        assert!(
+            released.is_err(),
+            "an entry the workspace never had is released to no one: {released:?}"
         );
     });
     // Any other process of the account, which dials the dispatch itself, is refused; the shell
