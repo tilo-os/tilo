@@ -750,8 +750,12 @@ pub struct Map {
     rest_due: Option<crate::time::Instant>,
     /// What a click on a marker reports.
     marker_event: Event,
-    /// The view set a new centre since the map was last laid out: centre it once, next layout.
-    recentre: bool,
+    /// The centre the view set since the map was last laid out, in canvas pixels, and the zoom
+    /// it set: taken once, by the next solve, which centres the camera at the viewport's size
+    /// before it lays the places out about it.
+    centre: Rc<Cell<Option<(Point, Option<f64>)>>>,
+    /// The camera that solve centred, which the map takes as its own as it is laid out.
+    centred: Rc<Cell<Option<MapCamera>>>,
     /// The edge or corner being dragged, until it is let go.
     edge_drag: Option<EdgeDrag>,
     /// The rectangle the view points at, in canvas pixels, drawn as a light outline.
@@ -903,7 +907,8 @@ impl Map {
             rest: Event::None,
             rest_due: None,
             marker_event: Event::None,
-            recentre: false,
+            centre: Rc::default(),
+            centred: Rc::default(),
             edge_drag: None,
             outline: None,
             key: String::new(),
@@ -982,11 +987,7 @@ impl Map {
     /// The closest and furthest the camera draws this map back and in: a canvas keeps
     /// [`MAP_ZOOM_MIN`], a map of the world draws back to the whole world.
     fn zoom_limits(&self) -> (f64, f64) {
-        if self.world {
-            (MAP_ZOOM_WORLD_MIN, MAP_ZOOM_WORLD_MAX)
-        } else {
-            (MAP_ZOOM_MIN, MAP_ZOOM_MAX)
-        }
+        zoom_limits(self.world)
     }
 
     /// Zoom `camera` by `factor` about the screen point `about`, within this map's own limits.
@@ -997,25 +998,32 @@ impl Map {
 
     /// Centre the camera on the place the view set, at the zoom it set: once, on the first
     /// layout after the view changed it. The person's own pan and zoom stand after that.
+    fn ask_centre(&self) {
+        self.centre.set(
+            self.focus
+                .map(|(latitude, longitude)| (mercator_project(latitude, longitude), self.focus_zoom)),
+        );
+    }
+
+    /// Take the camera the solve centred on the place the view set, as the person's own lens:
+    /// the places were laid out about it already, so nothing is laid out again. A solve that did
+    /// not lay the region out leaves the centre for this layout to set, at the map's own size.
     fn centre_on_focus(&mut self) {
-        if !self.recentre {
+        if let Some(camera) = self.centred.take() {
+            self.camera = camera;
+            self.answer = None;
+            self.glide = None;
             return;
         }
-        let Some((latitude, longitude)) = self.focus else {
+        let Some((at, zoom)) = self.centre.take() else {
             return;
         };
-        let size = self.rect.size();
-        if size.width <= 0.0 || size.height <= 0.0 {
+        let Some(camera) = centred_camera(at, zoom, self.camera.zoom, self.world, self.rect.size())
+        else {
+            self.centre.set(Some((at, zoom)));
             return;
-        }
-        let (least, most) = self.zoom_limits();
-        let zoom = self
-            .focus_zoom
-            .map_or(self.camera.zoom, |zoom| zoom.clamp(least, most));
-        let centre = mercator_project(latitude, longitude);
-        let origin = centre - (size.to_vec2() * 0.5) / zoom.max(f64::EPSILON);
-        self.set_camera(MapCamera { origin, zoom });
-        self.recentre = false;
+        };
+        self.set_camera(camera);
     }
 
     /// Take over what the person was looking at from the map this one is built in place of (a
@@ -1446,6 +1454,8 @@ impl Map {
         // glide of the camera lays the places out again without building the region again.
         let shown = Rc::clone(&self.shown);
         let followed = Rc::clone(&self.followed);
+        let centre = Rc::clone(&self.centre);
+        let centred = Rc::clone(&self.centred);
         // A map of the world lays its pins out at the size the view gave them on screen, centred
         // on their places; a canvas scales them with the camera, from their top-leading corner.
         let world = self.world;
@@ -1463,6 +1473,18 @@ impl Map {
             // The tallest a hugging place stands: the viewport, less the room a place that
             // arrives keeps from its edges.
             let room = f64::from(available.height) - 2.0 * ARRIVAL_MARGIN;
+            // The centre the view set is taken here, where the viewport's size is known, so the
+            // places are laid out about it in this same solve.
+            if let Some((at, zoom)) = centre.take() {
+                let size = vello::kurbo::Size::new(f64::from(available.width), f64::from(available.height));
+                match centred_camera(at, zoom, shown.get().zoom, world, size) {
+                    Some(camera) => {
+                        shown.set(camera);
+                        centred.set(Some(camera));
+                    }
+                    None => centre.set(Some((at, zoom))),
+                }
+            }
             let camera = shown.get();
             // A camera that moved since the last solve carries the places: the ground moves under
             // them, and they stand where it took them, with the windows in their wells.
@@ -1610,6 +1632,33 @@ impl Map {
     }
 }
 
+/// How far a map zooms out and in: a map of the world draws back to the whole world.
+fn zoom_limits(world: bool) -> (f64, f64) {
+    if world {
+        (MAP_ZOOM_WORLD_MIN, MAP_ZOOM_WORLD_MAX)
+    } else {
+        (MAP_ZOOM_MIN, MAP_ZOOM_MAX)
+    }
+}
+
+/// The camera centred on `at` (canvas pixels) in a viewport of `size`, at `zoom` within the
+/// map's limits, else at the camera's own `current` zoom; none while the viewport has no size.
+fn centred_camera(
+    at: Point,
+    zoom: Option<f64>,
+    current: f64,
+    world: bool,
+    size: vello::kurbo::Size,
+) -> Option<MapCamera> {
+    if size.width <= 0.0 || size.height <= 0.0 {
+        return None;
+    }
+    let (least, most) = zoom_limits(world);
+    let zoom = zoom.map_or(current, |zoom| zoom.clamp(least, most));
+    let origin = at - (size.to_vec2() * 0.5) / zoom.max(f64::EPSILON);
+    Some(MapCamera { origin, zoom })
+}
+
 impl Described for Map {
     type Props = MapProps;
 
@@ -1697,7 +1746,7 @@ impl Described for Map {
         } else {
             zoom
         };
-        map.recentre = map.focus.is_some();
+        map.ask_centre();
         for pin in pins {
             let (x, y) = match (pin.latitude, pin.longitude) {
                 (Some(latitude), Some(longitude)) => {
@@ -1834,7 +1883,9 @@ impl Described for Map {
         if focus != self.focus || zoom != self.focus_zoom {
             self.focus = focus;
             self.focus_zoom = zoom;
-            self.recentre = focus.is_some();
+            self.ask_centre();
+            // The region lays the places out again about the camera the next solve centres.
+            self.invalidation.invalidate();
         }
         if pins.len() != self.pins.len()
             || pins
