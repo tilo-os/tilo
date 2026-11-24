@@ -382,7 +382,6 @@ d-vsaswu4a = Seitenansicht
     .w-reader-view = Leseansicht
     .w-zoom-in = Vergrößern
     .w-zoom-out = Verkleinern
-    .w-actual-size = Tatsächliche Größe
     .w-turn-tracker-protection-on-for-this = Trackingschutz für diese Seite einschalten
     .w-turn-tracker-protection-off-for-this = Trackingschutz für diese Seite ausschalten
     .w-forget-this-site-s-forms = Formulare dieser Seite vergessen
@@ -393,23 +392,21 @@ d-vsaswu4a = Seitenansicht
     .w-this-page-asks = Diese Seite fragt
     .w-ok = In Ordnung
     .w-cancel = Abbrechen
-    .w-sign-in-to = Anmelden bei
-    .w-the-last-sign-in-was-not = Die letzte Anmeldung wurde nicht angenommen
-    .w-sign-in = Anmelden
-    .w-user-name = Benutzername
-    .w-password = Passwort
-    .w-asks-to-use-your = möchte deine Geräte nutzen:
-    .w-allow = Erlauben
-    .w-deny = Ablehnen
-    .w-waiting-for-you = Wartet auf dich
+    .w-actual-size = Tatsächliche Größe
+    .w-actual-size-2 = Tatsächliche Größe ({ $percent }%)
+    .w-previous = Zurück
+    .w-downloads = Downloads
+    .w-cancel-every-download = Alle Downloads abbrechen
 
 d-pu2zdrbu = Schrittzeile
 
 d-uppzh7ic = Lesezeichenseite
     .w-address = Adresse
     .w-folder = Ordner
-    .w-bookmarks = Lesezeichen
     .w-remove-bookmark = Lesezeichen entfernen
+    .w-details = Details
+    .w-name = Name
+    .w-top-of-the-bookmarks = Oberste Ebene der Lesezeichen
 
 d-y2shuesh = Besuchsseite
     .w-address = Adresse
@@ -466,12 +463,6 @@ d-so-tilo-browser-keywords = web, internet, surfen, website, url, www, webbrowse
 d-mk755sf3 = Dialog
     .doc = Worauf die Seite wartet, wie ihr Fenster es zuletzt gelesen hat: eine Frage, die jemand beantwortet, und das Menü, das sie zeigte.
 
-d-fkg36eze = Anmelden
-
-d-noux3jmj = Berechtigung
-
-d-kebkpaeq = Zurückgehalten
-
 d-tveuvbse = Menü
 
 d-eiqyiw53 = Lädt
@@ -505,71 +496,6 @@ d-asepg6kx = Meldung
 d-4v2f3ua3 = Vorgabetext
 
 d-o3koqzgj-filter-request = Anfrage
-
-d-p6pwa4v4 = Anmeldefrage
-    .doc = Ein Server oder ein Proxy, der nach Benutzername und Passwort fragt.
-    .noun = { $count ->
-        [one] Anmeldefrage
-       *[other] Anmeldefragen
-    }
-
-d-7ktwjqfg = Anfrage
-
-d-mlo3tjcu = Fragende Stelle
-    .doc = Wer fragt, und wohin die Zugangsdaten gehen.
-
-d-7infiywo = Seite
-    .doc = Die fragende Stelle, wie eine Person eine Seite liest.
-
-d-djj5lwiv = Proxy
-
-d-3qkj7lmg = Bereich
-
-d-tjzwabeg = Erneut versuchen
-
-d-p6pwa4v4-filter-request = Anfrage
-
-d-p6pwa4v4-filter-proxy = Proxy
-
-d-p6pwa4v4-filter-retry = Erneut versuchen
-
-d-rw2sdui6 = Berechtigungsfrage
-    .doc = Eine Seite, die das Gerät nutzen möchte: seine Kamera, sein Mikrofon, seinen Standort.
-    .noun = { $count ->
-        [one] Berechtigungsfrage
-       *[other] Berechtigungsfragen
-    }
-
-d-wzq3w73u = Anfrage
-
-d-a7uxwo36 = Herkunft
-
-d-ehb3lndh = Berechtigungen
-    .doc = Worum sie bittet, wie der Engine es nennt.
-
-d-rw2sdui6-filter-request = Anfrage
-
-d-e57ag7a5 = Zurückgehaltene Anfrage
-    .doc = Eine Anfrage, die die Seite zurückhält, bis eine Person sie gehen lässt.
-    .noun = { $count ->
-        [one] zurückgehaltene Anfrage
-       *[other] zurückgehaltene Anfragen
-    }
-
-d-js3kljh3 = Anfrage
-
-d-aokfp2qg = Art
-    .doc = `submit`, `navigate`, `request`, `download` oder `payment`.
-
-d-vqbr3tb7 = Methode
-
-d-45sdzq5i = Herkunft
-
-d-6luk533x = Mit Bild
-
-d-e57ag7a5-filter-request = Anfrage
-
-d-e57ag7a5-filter-has_picture = Mit Bild
 
 d-3hxkb5pc = Menüanfrage
     .doc = Das Menü, das die Seite zeigte, mit seinen Zeilen.
@@ -1061,41 +987,11 @@ d-hpktlikg-accept = Annehmen
 
 d-hpktlikg-text = Text
 
-d-oi6ze4kg = Bei der Seite anmelden
-    .doc = Beantworte die Anmeldefrage eines Servers, oder brich sie ohne Benutzernamen ab.
-
-d-oi6ze4kg-id = Kennung
-
-d-oi6ze4kg-asker = Fragende Stelle
-
-d-oi6ze4kg-username = Benutzername
-
-d-oi6ze4kg-password = Passwort
-
-d-vey6ausp = Zurückgehaltene Anfrage beantworten
-    .doc = Lass eine zurückgehaltene Anfrage gehen, oder halte die Seite, wie sie ist.
-
-d-vey6ausp-id = Kennung
-
-d-vey6ausp-allow = Erlauben
-
 d-4djvsjzf = Fragen der Seite prüfen
     .doc = Liest, worauf die Seite wartet, in das Protokoll ihres Fensters: die Frage, die sie stellt, das Menü, das sie zeigte, und wie weit sie geladen ist.
 
 d-u7fbemnk = Seite geöffnet
     .doc = Das Fenster der Seite wurde geöffnet: es liest, was die Seite fragt und zeigt, bevor jemand hinsieht.
-
-d-plw5fzqs = Berechtigung beantworten
-    .doc = Beantwortet die Bitte einer Seite, das Gerät zu nutzen.
-
-d-plw5fzqs-id = Kennung
-
-d-plw5fzqs-allow = Erlauben
-
-d-v7gqhtah = Berechtigung ablehnen
-    .doc = Lehnt die Bitte einer Seite ab, ohne sie zu beantworten, sodass sie später erneut fragen darf.
-
-d-v7gqhtah-id = Kennung
 
 d-qbox6son = Befehl des Seitenmenüs
     .doc = Nimmt eine Zeile des Seitenmenüs, über den Befehl, den der Engine ihr gab.
@@ -1114,7 +1010,135 @@ d-og3g2nds = Die Seite fragen
 
 d-og3g2nds-request = Anfrage
 
-d-dmgfdflc = Zurückgehaltene Anfrage
-    .w-to = an
-
 d-23a4az4u = Vorschlag
+
+d-o2occ235 = Downloads
+
+d-cjw2xcfs = Download
+    .noun = { $count ->
+        [one] Download
+       *[other] Downloads
+    }
+
+d-anfisgsq = Übertragung
+
+d-in525zqp = Zustand
+
+d-wz6wi2p3 = Name
+
+d-z4gzfvzw = URL
+
+d-feka5n4y = Pfad
+
+d-kubpqqew = Wiederholbar
+
+d-cokrfftg = Empfangen
+
+d-pbavpdyk = Gesamt
+
+d-wfaksaa6 = Fehler
+
+d-ntpmcicu = Antworten
+
+d-qvvu7twk = Eingetippt
+
+d-e43kzg7c-filter-typed = Eingetippt
+
+d-4unqkzgu = Formular beantworten
+    .doc = Beantwortet ein ganzes Formular der Seite in einem Schritt: jede Frage mit ihrer Antwort, durch die Prüfung der Seite.
+d-4unqkzgu-form = Formular
+d-4unqkzgu-answers = Antworten
+d-4unqkzgu-submit = Senden
+d-4unqkzgu-cross_origin = Ursprungsübergreifend
+d-4unqkzgu-frame = Frame
+
+d-lvbnkhyd = Der Seite erlauben
+    .doc = Gibt einer Seite, was sie erbeten hat (Kamera, Mikrofon, Standort, Mitteilungen).
+d-lvbnkhyd-id = Id
+d-lvbnkhyd-origin = Ursprung
+d-lvbnkhyd-wants = Möchte
+
+d-p7w6i37f = Download speichern
+    .doc = Speichert die Datei, die eine Seite anbietet.
+d-p7w6i37f-id = Id
+d-p7w6i37f-name = Name
+d-p7w6i37f-url = URL
+
+d-jzj2zsuv = Download nicht speichern
+    .doc = Lehnt die Datei ab, die eine Seite anbietet: nichts wird gespeichert, und die Seite erfährt es.
+d-jzj2zsuv-id = Id
+d-jzj2zsuv-name = Name
+
+d-6a4m4f4s = Adresse herunterladen
+    .doc = Speichert, was eine Adresse liefert, in den Downloads des Browsers.
+    .w-type-the-address-to-download = Gib die Adresse zum Herunterladen ein
+d-6a4m4f4s-url = URL
+
+d-boafhtzg = Download abbrechen
+    .doc = Hält einen laufenden Download an.
+d-boafhtzg-d = D
+
+d-dmiputmu = Download wiederholen
+    .doc = Startet einen fehlgeschlagenen Download von vorn.
+d-dmiputmu-d = D
+
+d-boev3sbj = Alle Downloads abbrechen
+    .doc = Hält alle Downloads dieser Seite an.
+
+d-trhtau5i = Der Erweiterung erlauben
+    .doc = Gibt einer Erweiterung den zusätzlichen Zugriff, um den sie gebeten hat.
+d-trhtau5i-id = Id
+d-trhtau5i-extension = Erweiterung
+d-trhtau5i-could = Könnte
+
+d-4xa6zyzf = Bei der Seite anmelden
+    .doc = Meldet bei einer Seite an, die nach Benutzername und Passwort fragt.
+    .take-1 = Benutzername
+    .take-2 = Passwort
+d-4xa6zyzf-id = Id
+d-4xa6zyzf-asker = Fragender
+d-4xa6zyzf-site = Seite
+d-4xa6zyzf-realm = Bereich
+
+d-4i65tg5t = Anmeldung abbrechen
+d-4i65tg5t-id = Id
+d-4i65tg5t-asker = Fragender
+
+d-psytxnym = Senden lassen
+d-psytxnym-id = Id
+d-psytxnym-origin = Ursprung
+d-psytxnym-method = Methode
+d-psytxnym-leaving = Geht hinaus
+
+d-7gjwwcba = Dieses Lesezeichen benennen
+    .w-a-bookmark-is-called-by-some = Ein Lesezeichen braucht einen Namen
+d-7gjwwcba-title = Titel
+
+d-vyepjajq = Lesezeichen in einen Ordner legen
+d-vyepjajq-folder = Ordner
+
+d-eb3wtiud = Formular mit einer Adresse ausfüllen
+    .w-this-form-asks-nothing-an-address = Dieses Formular fragt nichts, was eine Adresse beantwortet
+d-eb3wtiud-form = Formular
+d-eb3wtiud-a = A
+
+
+
+d-fxq6nhpy = Adressseite
+    .w-the-address = Die Adresse
+    .w-name-for-it = Name dafür
+    .w-home = Zuhause
+    .w-full-name = Vollständiger Name
+    .w-given-name = Vorname
+    .w-family-name = Nachname
+    .w-street = Straße
+    .w-city = Stadt
+    .w-region = Region
+    .w-postal-code = Postleitzahl
+    .w-country = Land
+    .w-delete-address = Adresse löschen
+
+d-6w4zu5de = Downloadzeile
+    .w-downloading = Wird heruntergeladen
+    .w-cancel = Abbrechen
+    .w-retry = Wiederholen

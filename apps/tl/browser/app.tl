@@ -1633,7 +1633,11 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
         ui.MenuItem("Zoom out", icon: .minus) {
             on choose: zoom(p, zoomed_out(level)).then(set(level, zoomed_out(level)))
         }
-        ui.MenuItem(actual_size_label(level), icon: .zoom_in) {
+        let percent = (level * 100.0).round()
+        ui.MenuItem(
+            if percent == 100 { "Actual size" } else { "Actual size ({percent}%)" },
+            icon: .zoom_in,
+        ) {
             on choose: zoom(p, 1.0).then(set(level, 1.0))
         }
         if origin_of(p.url) != "" {
@@ -2185,15 +2189,6 @@ fn zoomed_out(level: Float) -> Float {
 /// `level` kept to the sizes a person can still read a page at.
 fn clamped_zoom(level: Float) -> Float {
     if level < 0.25 { 0.25 } else if level > 5.0 { 5.0 } else { level }
-}
-
-/// What the menu's reset row says: the size itself, or how far from it the page stands.
-fn actual_size_label(level: Float) -> Text {
-    if (level - 1.0).abs() < 0.01 {
-        return "Actual size"
-    }
-    let percent = (level * 100.0).round()
-    "Actual size ({percent}%)"
 }
 
 /// How many bytes come to a person: `812 B`, `4.2 KB`, `2.0 MB`.
