@@ -75,18 +75,18 @@ fn linked_runtime_libraries(binary: &Path) -> Result<Vec<String>, String> {
     for prefix in [b"libstd-".as_slice(), b"libruntime_dylib".as_slice()] {
         let mut rest = bytes.as_slice();
         while let Some(at) = position(rest, prefix) {
-            let candidate = &rest[at..];
+            let candidate = rest.get(at..).unwrap_or_default();
             let end = candidate
                 .iter()
                 .position(|byte| *byte == 0)
                 .unwrap_or(candidate.len());
-            if let Ok(name) = std::str::from_utf8(&candidate[..end])
+            if let Ok(name) = std::str::from_utf8(candidate.get(..end).unwrap_or_default())
                 && is_soname(name)
                 && !names.iter().any(|known| known == name)
             {
                 names.push(name.to_owned());
             }
-            rest = &candidate[prefix.len()..];
+            rest = candidate.get(prefix.len()..).unwrap_or_default();
         }
     }
     Ok(names)
@@ -94,7 +94,9 @@ fn linked_runtime_libraries(binary: &Path) -> Result<Vec<String>, String> {
 
 /// Whether `name` is a library's file name, as a binary records one it links.
 fn is_soname(name: &str) -> bool {
-    name.ends_with(".so")
+    std::path::Path::new(name)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("so"))
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))

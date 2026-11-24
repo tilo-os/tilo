@@ -1736,20 +1736,16 @@ fn build_local_runtime_binary(repo: &Path) -> Result<PathBuf, String> {
 pub fn dev(options: &DevOptions) -> Result<(), String> {
     let identity = crate::publisher_identity()?;
     let (sender, wakes) = mpsc::channel();
-    match &options.session {
-        Some(session) => {
-            let repo = session::repo_root(
-                options.repo.as_deref(),
-                &options.dir,
-                "tilolang dev --session",
-            )?;
-            dev_in_session(options, &repo, session, identity, &sender, &wakes)
-        }
-        None => {
-            let repo = session::checkout(options.repo.as_deref(), &options.dir)?;
-            dev_on_desktop(options, repo.as_deref(), identity, &sender, &wakes)
-        }
-    }
+    let Some(session) = &options.session else {
+        let repo = session::checkout(options.repo.as_deref(), &options.dir)?;
+        return dev_on_desktop(options, repo.as_deref(), identity, &sender, &wakes);
+    };
+    let repo = session::repo_root(
+        options.repo.as_deref(),
+        &options.dir,
+        "tilolang dev --session",
+    )?;
+    dev_in_session(options, &repo, session, identity, &sender, &wakes)
 }
 
 fn dev_in_session(
