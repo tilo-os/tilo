@@ -709,14 +709,17 @@ pub(crate) struct Layouts {
     unwritten: RefCell<HashMap<WorkspaceId, &'static str>>,
     /// Where what this device could not write yet of its workspaces is kept, so a session that
     /// ends first leaves it for the one after.
-    pending_at: Option<crate::kept::Kept>,
+    pending_at: Option<tilo_session_client::device_records::DeviceRecord>,
     /// What was last kept there: a look that keeps the same of it writes nothing.
-    kept_pending: RefCell<Option<Vec<u8>>>,
+    kept_pending: RefCell<Option<serde_json::Value>>,
     /// The item each window of this device's workspaces was opened on, by tab, as their layouts
     /// hold it and its own launches named it: what a window opens on again after a restart. Kept
     /// apart from the tab's view, which is the view a place shows.
     items: RefCell<BTreeMap<u64, String>>,
 }
+
+/// The device record what this device could not write yet of its workspaces' layouts is kept in.
+const PENDING: &str = "so.tilo.session-pending-layout";
 
 /// The layouts a session on `options` keeps, writing what its windows note of themselves (`notes`).
 #[cfg(target_os = "linux")]
@@ -728,27 +731,26 @@ pub(crate) fn of_session(
         notes,
         options.wake.clone(),
         options.person.clone(),
-        options.state.as_deref(),
+        options.records.as_ref(),
     )
     .hosting(crate::apps::runs_on_its_device)
 }
 
 impl Layouts {
     /// This session's records, writing what its windows note of themselves (`notes`), on the loop
-    /// `wake` wakes, and each workspace's view kept for `person`. `state` is this device's state
-    /// directory, where what a session could not write yet is kept for the one after.
+    /// `wake` wakes, and each workspace's view kept for `person`. `records` are the device's,
+    /// where what a session could not write yet is kept for the one after.
     pub(crate) fn new(
         notes: Arc<crate::continuations::Continuations>,
         wake: tilo_service::LoopWake,
         person: String,
-        state: Option<&std::path::Path>,
+        records: Option<&tilo_session_client::device_records::DeviceRecords>,
     ) -> Self {
         let layouts = Self {
             notes,
             wake,
             person: RefCell::new(Some(person)),
-            pending_at: state
-                .map(|state| crate::kept::Kept::open(state, crate::kept::PENDING_LAYOUT)),
+            pending_at: records.map(|records| records.record(PENDING)),
             ..Self::default()
         };
         layouts.load_pending();
@@ -778,15 +780,15 @@ impl Layouts {
         let Some(at) = &self.pending_at else {
             return;
         };
-        let bytes = match at.read() {
-            Ok(Some(bytes)) => bytes,
+        let value = match at.read() {
+            Ok(Some(value)) => value,
             Ok(None) => return,
             Err(error) => {
                 tracing::warn!(%error, "what this device could not write was not read");
                 return;
             }
         };
-        let kept: BTreeMap<String, Pending> = match serde_json::from_slice(&bytes) {
+        let kept: BTreeMap<String, Pending> = match serde_json::from_value(value) {
             Ok(kept) => kept,
             Err(error) => {
                 tracing::warn!(%error, "what this device could not write was not read");
@@ -834,14 +836,14 @@ impl Layouts {
             }
         }
         kept.retain(|_, pending| !(pending.layout.is_empty() && pending.view.is_empty()));
-        let Ok(bytes) = serde_json::to_vec(&kept) else {
+        let Ok(value) = serde_json::to_value(&kept) else {
             return;
         };
-        if self.kept_pending.borrow().as_deref() == Some(bytes.as_slice()) {
+        if self.kept_pending.borrow().as_ref() == Some(&value) {
             return;
         }
-        *self.kept_pending.borrow_mut() = Some(bytes.clone());
-        at.replace(bytes);
+        *self.kept_pending.borrow_mut() = Some(value.clone());
+        at.set(value);
     }
 
     /// These records, of a session that hosts the windows that run only on this device:
@@ -2208,13 +2210,7 @@ impl Layouts {
         shared_resource::commit_change(&mut doc, person, crate::activity::now_seconds(), None);
         let written = PersonView::read(&doc);
         self.keep(&key, doc.clone(), revision);
-        self.publish(
-            &key,
-            doc,
-            Some(Written::View(written)),
-            &before,
-            revision,
-        );
+        self.publish(&key, doc, Some(Written::View(written)), &before, revision);
         true
     }
 

@@ -19,12 +19,12 @@
 //! shows its gradient before the person's picture.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
+use tilo_session_client::device_records::{DeviceRecord, DeviceRecords};
 use ui::peniko::ImageData;
 
 /// The record format this build reads.
@@ -96,16 +96,19 @@ struct Kept {
     choices: Choices,
 }
 
-fn load_at(kept: &crate::kept::Kept) -> Choices {
-    let bytes = match kept.read() {
-        Ok(Some(bytes)) => bytes,
+/// The device record the choices are kept in.
+const KEPT: &str = "so.tilo.session-wallpapers";
+
+fn load_at(kept: &DeviceRecord) -> Choices {
+    let value = match kept.read() {
+        Ok(Some(value)) => value,
         Ok(None) => return Choices::default(),
         Err(error) => {
             tracing::warn!(%error, "the kept wallpapers are not read");
             return Choices::default();
         }
     };
-    match serde_json::from_slice::<Kept>(&bytes) {
+    match serde_json::from_value::<Kept>(value) {
         Ok(kept) if kept.schema == SCHEMA => kept.choices,
         // A file a newer build wrote describes pictures this one cannot place.
         _ => {
@@ -115,15 +118,13 @@ fn load_at(kept: &crate::kept::Kept) -> Choices {
     }
 }
 
-fn save_at(at: &crate::kept::Kept, choices: &Choices) {
+fn save_at(at: &DeviceRecord, choices: &Choices) {
     let kept = Kept {
         schema: SCHEMA,
         choices: choices.clone(),
     };
-    match serde_json::to_vec(&kept) {
-        Ok(bytes) => {
-            at.replace(bytes);
-        }
+    match serde_json::to_value(&kept) {
+        Ok(value) => at.set(value),
         Err(error) => tracing::warn!(%error, "the wallpapers are not kept"),
     }
 }
@@ -132,7 +133,7 @@ fn save_at(at: &crate::kept::Kept, choices: &Choices) {
 /// workspace still shows it.
 pub(crate) struct Wallpapers {
     /// Where the choices are kept, if this session keeps any.
-    kept: Option<crate::kept::Kept>,
+    kept: Option<DeviceRecord>,
     /// Wakes the compositor when a picture decoded off its thread.
     wake: Arc<dyn Fn() + Send + Sync>,
     state: Arc<Mutex<State>>,
@@ -159,10 +160,10 @@ struct State {
 }
 
 impl Wallpapers {
-    /// The wallpapers this device kept under `state` , remembering no picture yet; without a state
-    /// directory, nothing is read or kept.
-    pub(crate) fn new(state: Option<&Path>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
-        let kept = state.map(|state| crate::kept::Kept::open(state, crate::kept::WALLPAPERS));
+    /// The wallpapers this device kept in `records` , remembering no picture yet; without them,
+    /// nothing is read or kept.
+    pub(crate) fn new(records: Option<&DeviceRecords>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+        let kept = records.map(|records| records.record(KEPT));
         Self {
             state: Arc::new(Mutex::new(State {
                 choices: kept.as_ref().map_or_else(Choices::default, load_at),
@@ -439,14 +440,14 @@ mod tests {
 
         phase the_wallpapers_this_device_kept_come_back_with_the_next_session;
         {
-            let state = tempfile::tempdir().expect("a state directory");
+            let records = DeviceRecords::held();
             let kept = Choices {
                 default: Some("dunes".into()),
                 workspaces: BTreeMap::from([("1".to_owned(), "meadow".to_owned())]),
             };
-            let wallpapers = Wallpapers::new(Some(state.path()), Arc::new(|| {}));
+            let wallpapers = Wallpapers::new(Some(&records), Arc::new(|| {}));
             wallpapers.save(&kept);
-            let again = Wallpapers::new(Some(state.path()), Arc::new(|| {}));
+            let again = Wallpapers::new(Some(&records), Arc::new(|| {}));
             assert_eq!(again.state.lock_recover().choices, kept);
         }
     }

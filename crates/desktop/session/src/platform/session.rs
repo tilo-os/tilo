@@ -145,6 +145,33 @@ impl Session {
             .map(crate::vpn::Vpn::served)
             .unwrap_or_default();
         let vpn = options.vpn.take().map(crate::vpn::Vpn::start);
+        // The shell link the device's daemon handed this session when it started it: the
+        // session's own reads and writes go there, the workspace resources it shows itself are
+        // followed there, and its apps are vouched for on it.
+        let daemon_link = tilo_session_client::daemon_documents::inherited_link(
+            options.shell_link.take(),
+            tilo_rt::app().handle(),
+        );
+        if let Err(reason) = &daemon_link {
+            tracing::error!(%reason, "this session reads and writes no workspace");
+        }
+        // What the session keeps for the next one is the device's, as its daemon keeps its
+        // records: read and written on the same link.
+        options.records = daemon_link
+            .is_ok()
+            .then(crate::sync::device_identity)
+            .flatten()
+            .map(|identity| {
+                tilo_session_client::device_records::DeviceRecords::on(
+                    tilo_session_client::daemon_documents::DaemonShell::new(
+                        daemon_link.clone(),
+                        tilo_rt::app().handle().clone(),
+                    ),
+                    collab_types::person_workspace(&identity.device_cert.user_public_key)
+                        .to_string(),
+                )
+            });
+        crate::clipboard::paste::keep_receipts_in(options.records.clone());
         // What the shell and the chrome ask of the session, from their own
         // widget trees.
         let notices = tilo_session_core::desktop::state::DesktopNotifications::default();
@@ -177,7 +204,7 @@ impl Session {
         let woken = options.wake.handle();
         // The pictures the shell shows are this device's: a change of the person's reaches them too.
         let wallpapers = std::sync::Arc::new(crate::wallpapers::Wallpapers::new(
-            options.state.as_deref(),
+            options.records.as_ref(),
             std::sync::Arc::clone(&woken),
         ));
         let watched_wallpapers = std::sync::Arc::clone(&wallpapers);
@@ -239,13 +266,7 @@ impl Session {
         let mut presentation = (options.presentation)();
         tilo_startup_metrics::mark("session-presentation-done");
         let overview: Rc<Cell<bool>> = Rc::default();
-        // The session's own store, where the activity and the mentions keep what this device saw,
-        // and the one stream of record changes the roles that follow records read.
-        let records_store: Option<crate::platform::Store> = options
-            .search
-            .records
-            .as_ref()
-            .map(crate::records::Records::store);
+        // The one stream of record changes the roles that follow records read.
         let changes = options
             .search
             .records
@@ -263,9 +284,8 @@ impl Session {
             std::sync::Arc::clone(&notes),
         ));
         let activity = crate::activity::Activity::new(
-            options.state.as_deref(),
+            options.records.as_ref(),
             options.person.clone(),
-            records_store.clone(),
             crate::platform::records::Changes::clone(&changes),
             Some(std::sync::Arc::new(options.lists.clone())
                 as std::sync::Arc<dyn crate::platform::apps::Apps>),
@@ -354,17 +374,7 @@ impl Session {
                 search.place_soon(needle, None, layout::canvas_find_within(), done);
             })
         };
-        // The shell link the device's daemon handed this session when it started it: the
-        // session's own reads and writes go there, the workspace resources it shows itself are
-        // followed there, and its apps are vouched for on it.
         let shell_daemon = options.shell_daemon.take();
-        let daemon_link = tilo_session_client::daemon_documents::inherited_link(
-            options.shell_link.take(),
-            tilo_rt::app().handle(),
-        );
-        if let Err(reason) = &daemon_link {
-            tracing::error!(%reason, "this session reads and writes no workspace");
-        }
         // Where what programs ask is raised as asked records, and those records read back.
         let asks_link = daemon_link.clone();
         let (document_reads, writes, daemon_writes, daemon) =
@@ -1588,6 +1598,8 @@ impl Session {
         let action_apps = options.apps.clone();
         // What apps published and what the workspaces' records hold is the device's one index,
         // which its daemon keeps and answers for the person as it answers every caller.
+        // Mentions are found in the workspaces' records search reads, when it reads any.
+        let reads_records = options.search.records.is_some();
         let mut search_options = options.search;
         if daemon.link().is_ok() {
             search_options.index = Some(Arc::new(
@@ -1626,11 +1638,14 @@ impl Session {
         );
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
         // The person's mentions in the workspaces' records: told through those notifications, kept
-        // in the records' store, and opened through this session's own API to the apps.
-        let mentions = records_store.clone().map(|store| {
+        // in the device's records, and opened through this session's own API to the apps.
+        let mentions = reads_records.then(|| {
             crate::mentions::Mentions::over(crate::mentions::Given {
                 person: vec![options.person.clone()],
-                store: Some(store),
+                kept: options
+                    .records
+                    .as_ref()
+                    .map(|records| records.record(crate::mentions::KEPT)),
                 // The workspaces' records are this device's service to answer: what their apps
                 // and the person's other devices write lands there, never in this store.
                 records: engine.as_ref().map(|_| {
@@ -1687,7 +1702,7 @@ impl Session {
             activity,
             person: options.person.clone(),
             earlier: own.earlier,
-            state: options.state.clone(),
+            records: options.records.clone(),
             search,
             launch: options.launch,
             #[cfg(target_os = "linux")]
@@ -1953,7 +1968,10 @@ impl Session {
                 Box::new(|| tilo_app_launch::Teardown::Logout),
             ),
             ready,
-            update_finish: crate::update_finish::Finish::for_session(options.desktop.as_deref()),
+            update_finish: crate::update_finish::Finish::for_session(
+                options.records.as_ref(),
+                options.desktop.as_deref(),
+            ),
             captures: options.captures,
             capture_io,
             capture_studio,

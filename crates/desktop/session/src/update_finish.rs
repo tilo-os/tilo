@@ -18,7 +18,13 @@ use tilo_notifications_service::{Notifications, Taken};
 use tilo_system_service::update::{self, Fallback, Presence, Update};
 
 use crate::Session;
-use crate::kept::Kept;
+use tilo_session_client::device_records::{DeviceRecord, DeviceRecords};
+
+/// The device record that holds when a restart for an update was last asked for, or done.
+const ASKED: &str = "so.tilo.session-update-asked";
+/// The device record that holds how updates ended that the person was told about: the deployment
+/// fallbacks and the live updates that did not finish.
+const TOLD: &str = "so.tilo.session-fallbacks-told";
 use crate::notices::RESTART_ACTION;
 
 /// When the session first looks for an update to finish: once the shell has settled.
@@ -51,11 +57,11 @@ pub(crate) struct Finish {
     was_updating: bool,
     /// When the person was last asked to restart, or the desktop or machine last restarted, as
     /// recorded in `asked` .
-    asked: Option<Kept>,
+    asked: Option<DeviceRecord>,
     /// Where what the person was told of how updates ended is recorded: the ids of the deployment
     /// fallbacks, and `live:` and the digest of each live update that did not finish. `None` where
     /// there is nowhere to keep them.
-    heard: Option<Kept>,
+    heard: Option<DeviceRecord>,
     /// What the person was told of, as the record names it; `None` until the record in `heard`
     /// is read.
     told: Option<Vec<String>>,
@@ -70,16 +76,14 @@ pub(crate) struct Finish {
 impl Finish {
     /// The clock this session finishes its updates on, recording what it asks, and which fallbacks
     /// the person heard of, where a restart of the desktop keeps them.
-    pub(crate) fn for_session(desktop: Option<&crate::desktop_services::DesktopServices>) -> Self {
-        let state = tilo_paths::state_dir();
+    pub(crate) fn for_session(
+        records: Option<&DeviceRecords>,
+        desktop: Option<&crate::desktop_services::DesktopServices>,
+    ) -> Self {
         Self::new(
             Instant::now(),
-            state
-                .as_deref()
-                .map(|state| Kept::open(state, crate::kept::UPDATE_ASKED)),
-            state
-                .as_deref()
-                .map(|state| Kept::open(state, crate::kept::UPDATES_TOLD)),
+            records.map(|records| records.record(ASKED)),
+            records.map(|records| records.record(TOLD)),
             desktop.map(crate::desktop_services::DesktopServices::notifications),
         )
     }
@@ -90,8 +94,8 @@ impl Finish {
     /// fallbacks they already heard of is read from and written to `heard` .
     pub(crate) fn new(
         now: Instant,
-        asked: Option<Kept>,
-        heard: Option<Kept>,
+        asked: Option<DeviceRecord>,
+        heard: Option<DeviceRecord>,
         notifications: Option<&Notifications>,
     ) -> Self {
         let (taken, answers) = mpsc::channel();
@@ -271,7 +275,7 @@ impl Finish {
 
 /// When the person was last asked, or the desktop or machine last restarted, as recorded in
 /// `asked` .
-fn last_asked_at(asked: &Kept) -> Option<SystemTime> {
+fn last_asked_at(asked: &DeviceRecord) -> Option<SystemTime> {
     let record = match asked.read() {
         Ok(record) => record?,
         Err(error) => {
@@ -279,39 +283,33 @@ fn last_asked_at(asked: &Kept) -> Option<SystemTime> {
             return None;
         }
     };
-    let seconds = std::str::from_utf8(&record).ok()?.trim().parse().ok()?;
+    let seconds = record.as_u64()?;
     SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
 }
 
-fn record_asked_at(asked: &Kept, now: SystemTime) {
+fn record_asked_at(asked: &DeviceRecord, now: SystemTime) {
     let seconds = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
-    asked.replace(seconds.to_string().into_bytes());
+    asked.set(serde_json::Value::from(seconds));
 }
 
-/// What the person was told of, as recorded in `heard` : one id per line.
-fn heard_ids(heard: &Kept) -> Vec<String> {
-    let record = match heard.read() {
-        Ok(record) => record.unwrap_or_default(),
+/// What the person was told of, as recorded in `heard` : the ids.
+fn heard_ids(heard: &DeviceRecord) -> Vec<String> {
+    match heard.read() {
+        Ok(record) => record
+            .and_then(|record| serde_json::from_value(record).ok())
+            .unwrap_or_default(),
         Err(error) => {
             tracing::warn!(%error, "the fallbacks the person was told about do not read back");
             Vec::new()
         }
-    };
-    String::from_utf8_lossy(&record)
-        .lines()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
-        .collect()
+    }
 }
 
-/// Record what the person was told of in `heard` , one id per line.
-fn record_heard(heard: &Kept, ids: &[String]) {
-    let mut text = ids.join("\n");
-    text.push('\n');
-    heard.replace(text.into_bytes());
+/// Record what the person was told of in `heard` .
+fn record_heard(heard: &DeviceRecord, ids: &[String]) {
+    heard.set(serde_json::Value::from(ids.to_vec()));
 }
 
 /// Whether this machine is an always-on host: a board or a host image with nobody at it to ask.
@@ -425,11 +423,7 @@ impl Session {
 mod tests {
     use super::*;
 
-    fn tempdir() -> tempfile::TempDir {
-        tempfile::tempdir().unwrap()
-    }
-
-    fn a_finish(now: Instant, asked: Option<Kept>) -> Finish {
+    fn a_finish(now: Instant, asked: Option<DeviceRecord>) -> Finish {
         Finish::new(now, asked, None, None)
     }
 
@@ -475,8 +469,8 @@ mod tests {
         // session tells them once, records that it did, and a session that starts later says nothing
         // of it.
         {
-            let dir = tempdir();
-            let heard = || Kept::open(dir.path(), crate::kept::UPDATES_TOLD);
+            let records = DeviceRecords::held();
+            let heard = || records.record(TOLD);
             let notifications = Notifications::new();
             let id = "20261025T101010Z-0a1b2c3d4e5f6a7b";
             let fallback = update::Fallback {
@@ -543,8 +537,8 @@ mod tests {
         // A second deployment that did not start is news of its own, and a machine with nowhere to
         // record what was told says nothing rather than saying it at every sign-in.
         {
-            let dir = tempdir();
-            let heard = || Kept::open(dir.path(), crate::kept::UPDATES_TOLD);
+            let records = DeviceRecords::held();
+            let heard = || records.record(TOLD);
             let notifications = Notifications::new();
             let fallback = |id: &str| update::Fallback {
                 id: id.into(),
@@ -586,8 +580,8 @@ mod tests {
         // failure and the person hears it once, offered the restart; a later session, and the
         // same failure read again, say nothing.
         {
-            let dir = tempdir();
-            let heard = || Kept::open(dir.path(), crate::kept::UPDATES_TOLD);
+            let records = DeviceRecords::held();
+            let heard = || records.record(TOLD);
             let notifications = Notifications::new();
             let staged = |digest: &str| update::Deployment {
                 digest: Some(digest.into()),
@@ -642,8 +636,8 @@ mod tests {
         phase the_desktop_restarts_onto_the_update_once_the_person_is_away;
         {
             let now = Instant::now();
-            let dir = tempdir();
-            let asked = || Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
+            let records = DeviceRecords::held();
+            let asked = || records.record(ASKED);
             let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
             let mut finish = a_finish(now, Some(asked()));
 
@@ -752,8 +746,8 @@ mod tests {
         phase an_update_that_needs_a_restart_of_the_machine_asks_as_soon_as_it_ends;
         {
             let now = Instant::now();
-            let dir = tempdir();
-            let asked = || Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
+            let records = DeviceRecords::held();
+            let asked = || records.record(ASKED);
             let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
             let mut finish = a_finish(now, Some(asked()));
             let running = Update {
@@ -788,8 +782,8 @@ mod tests {
         phase a_staged_update_asks_for_a_restart_of_the_machine_and_a_host_restarts_itself;
         {
             let now = Instant::now();
-            let dir = tempdir();
-            let asked = || Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
+            let records = DeviceRecords::held();
+            let asked = || records.record(ASKED);
             let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
             let staged = Update {
                 staged: Some(update::Deployment {
@@ -853,14 +847,13 @@ mod tests {
 
         phase the_last_restart_survives_a_restart_of_the_session;
         {
-            let dir = tempdir();
-            let asked = Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
+            let records = DeviceRecords::held();
+            let asked = records.record(ASKED);
             assert_eq!(last_asked_at(&asked), None);
             let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
             record_asked_at(&asked, at);
-            crate::kept::flush(Some(dir.path()));
             drop(asked);
-            let next = Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
+            let next = records.record(ASKED);
             assert_eq!(last_asked_at(&next), Some(at));
         }
     }

@@ -1274,6 +1274,83 @@ fn a_shell_links_secret_admits_one_connection() {
     });
 }
 
+/// What a desktop keeps for its next session is one of the device's records: written with the
+/// device's own action on the shell link the daemon handed it, kept by the daemon, and read back
+/// by the desktop that follows, on a link of its own. Neither desktop serves the seat: a desktop
+/// reads what it kept before it serves anything.
+#[cfg(unix)]
+#[test]
+fn the_desktop_keeps_what_its_next_session_opens_on_as_the_devices_records() {
+    use runtime_collab::wire::shell::SHELL_MAGIC;
+    use tilo_session_client::daemon_documents::DaemonShell;
+    use tilo_session_client::device_records::DeviceRecords;
+    use tokio::io::AsyncWriteExt as _;
+    const TEST: &str = "device::services::tests::the_desktop_keeps_what_its_next_session_opens_on_as_the_devices_records";
+    let Some(root) = isolated_root(TEST) else {
+        return;
+    };
+    let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    let socket = session.broker.app_socket().to_path_buf();
+    let person = session.workspaces.device_cert().user_public_key;
+    let workspace = tilo_action_policy::roles::person_workspace_id(&person);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    // A desktop as the daemon starts one: on a shell link its secret admits.
+    let desktop = || {
+        let secret = session
+            .shell_links()
+            .make(tilo_workspace_service::apps::shell::ShellCaller { person });
+        let link = runtime.block_on(async {
+            let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            stream.write_all(SHELL_MAGIC).await.unwrap();
+            stream.write_all(&secret).await.unwrap();
+            runtime_collab::ShellClient::open(stream).0
+        });
+        DeviceRecords::on(
+            DaemonShell::new(Ok(link), runtime.handle().clone()),
+            workspace.clone(),
+        )
+    };
+
+    let first = desktop();
+    let shown = first.record("so.tilo.session-shown");
+    assert_eq!(
+        shown.read().unwrap(),
+        None,
+        "a device that kept nothing yet reads nothing"
+    );
+    shown.set(json!({ "active": "front" }));
+    shown.set(json!({ "active": "moved" }));
+    first.record("so.tilo.session-file-paste")
+        .set_now(json!({ "version": 1 }))
+        .expect("a receipt is kept before the paste goes on");
+    first.flush();
+    assert_eq!(
+        session
+            .workspaces
+            .device_records()
+            .expect("the daemon keeps the device's records")
+            .get("so.tilo.session-shown"),
+        Some(json!({ "active": "moved" })),
+        "the daemon keeps the last of the desktop's writes, in the order it made them"
+    );
+    drop(first);
+
+    let next = desktop();
+    assert_eq!(
+        next.record("so.tilo.session-shown").read().unwrap(),
+        Some(json!({ "active": "moved" })),
+        "the next session opens on what the last one kept"
+    );
+    assert_eq!(
+        next.record("so.tilo.session-file-paste").read().unwrap(),
+        Some(json!({ "version": 1 }))
+    );
+}
+
 /// `command` running [`SHELL_TEST`] as the child `role`, and the file its output goes to.
 fn shell_child(
     root: &Path,

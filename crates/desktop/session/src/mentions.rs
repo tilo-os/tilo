@@ -4,23 +4,22 @@
 //! it ([`ui::mentions::in_resource_for`]). Every record a change reaches is looked at as the change
 //! arrives, and each new mention of the person here is one [`Notice`]. A mention is never told
 //! twice, is taken back when it is edited away, and one that was already there when this device
-//! started following the record is not news. What was told is kept in the session's store, so a
-//! restart tells nothing again.
+//! started following the record is not news. What was told is kept in one of the device's records,
+//! so a restart tells nothing again.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::task::Poll;
 
-use durable_store::{DurableStore, StorageKey, WriteOp};
+use tilo_session_client::device_records::DeviceRecord;
 use ui::automerge::AutoCommit;
 
-use crate::platform::Store;
 use crate::platform::notice::{Notice, Notices, OPEN_ACTION, Place};
 use crate::platform::records::{Changed, Records, Since};
 
-/// The package this device's told state is kept under: the session's.
-const PACKAGE: &str = "so.tilo.session.mentions";
+/// The device record what this device told is kept in.
+pub(crate) const KEPT: &str = "so.tilo.session.mentions";
 
 /// Least time between two looks, in milliseconds: changes arriving in a burst (a replay, someone
 /// typing) are looked at together.
@@ -266,8 +265,8 @@ pub struct Mentions(Rc<Inner>);
 pub struct Given {
     /// Every id the person here goes by.
     pub person: Vec<String>,
-    /// Where what was told is kept.
-    pub store: Option<Store>,
+    /// The device record what was told is kept in.
+    pub kept: Option<DeviceRecord>,
     /// The records of this device, as the host reads them.
     pub records: Option<Reads>,
     /// The person's notifications, as the host shows them.
@@ -283,14 +282,13 @@ pub struct Given {
 
 struct Inner {
     me: BTreeSet<ui::MemberId>,
-    store: Option<Store>,
+    kept: Option<DeviceRecord>,
     records: Option<Reads>,
     notices: Option<Rc<dyn Notices>>,
     name: Names,
     shown: OnScreen,
     wake: Option<tilo_service::Wake>,
     held: RefCell<Held>,
-    lease: RefCell<Option<durable_store::Lease>>,
     /// The records a change reached since the last look.
     pending: RefCell<BTreeSet<Changed>>,
     /// What was looked at and whose read has not landed yet.
@@ -307,7 +305,7 @@ impl Mentions {
     pub fn over(given: Given) -> Self {
         let Given {
             person,
-            store,
+            kept,
             records,
             notices,
             name,
@@ -317,19 +315,18 @@ impl Mentions {
         let me = people(&person);
         let records = records.map(|reads| reads.started(&me, wake.clone()));
         let mut held = Held::default();
-        if let Some(kept) = store.as_ref().and_then(|store| read(store.as_ref())) {
-            held.restore(&kept);
+        if let Some(told) = kept.as_ref().and_then(read) {
+            held.restore(&told);
         }
         Self(Rc::new(Inner {
             me,
-            store,
+            kept,
             records,
             notices,
             name,
             shown,
             wake,
             held: RefCell::new(held),
-            lease: RefCell::default(),
             pending: RefCell::default(),
             arriving: RefCell::default(),
             chosen: RefCell::default(),
@@ -531,27 +528,8 @@ impl Mentions {
 
     /// Keep what this device told, for this session and the next.
     fn keep(&self) {
-        let Some(store) = &self.0.store else {
-            return;
-        };
-        let key = StorageKey::app(PACKAGE);
-        let Ok(bytes) =
-            serde_json::to_vec(&serde_json::Value::Object(self.0.held.borrow().encoded()))
-        else {
-            return;
-        };
-        let mut lease = self.0.lease.borrow_mut();
-        if lease.is_none() {
-            match store.lease(&key) {
-                Ok(held) => *lease = Some(held),
-                Err(error) => {
-                    tracing::warn!(%error, "the mentions told are not written");
-                    return;
-                }
-            }
-        }
-        if let Err(error) = store.write(&key, WriteOp::Replace(bytes), None) {
-            tracing::warn!(%error, "the mentions told are not written");
+        if let Some(kept) = &self.0.kept {
+            kept.set(serde_json::Value::Object(self.0.held.borrow().encoded()));
         }
     }
 }
@@ -836,17 +814,16 @@ fn people(ids: &[String]) -> BTreeSet<ui::MemberId> {
         .collect()
 }
 
-/// What this device told before it started, as its store kept it.
-fn read(store: &dyn DurableStore) -> Option<serde_json::Map<String, serde_json::Value>> {
-    let key = StorageKey::app(PACKAGE);
-    let stored = match store.read(&key) {
-        Ok(stored) => stored?,
+/// What this device told before it started, as its record kept it.
+fn read(kept: &DeviceRecord) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let value = match kept.read() {
+        Ok(value) => value?,
         Err(error) => {
             tracing::warn!(%error, "the mentions told are not read");
             return None;
         }
     };
-    serde_json::from_slice(&stored.bytes)
+    serde_json::from_value(value)
         .inspect_err(|error| tracing::warn!(%error, "the mentions told do not read back"))
         .ok()
 }

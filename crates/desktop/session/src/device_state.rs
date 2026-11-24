@@ -1,15 +1,21 @@
 //! What this device shows: its workspaces in its own order, the one in front, which display each
 //! window group is on and whether one covers its display. It is the device's alone — a member has their own
-//! monitors and their own workspace in front — and is kept with this device's other state, as one
-//! small document of its store ([`crate::kept`]), written away from the frame. Nothing else of the layout is here: the strips, window
+//! monitors and their own workspace in front — and is kept as one of the device's records
+//! ([`DeviceRecords`]), written away from the frame. Nothing else of the layout is here: the strips, window
 //! groups and tabs are the workspace's layout record ([`tilo_desktop_model::shared_resource`]).
 
 use std::cell::{Cell, RefCell};
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::partition::OutputPartition;
 use tilo_desktop_model::{GroupId, Layout, Workspace, WorkspaceId};
+#[cfg(target_os = "linux")]
+use tilo_session_client::device_records::DeviceRecord;
+use tilo_session_client::device_records::DeviceRecords;
+
+/// The device record what this device shows is kept in.
+#[cfg(target_os = "linux")]
+const KEPT: &str = "so.tilo.session-shown";
 
 /// What this device shows of the session.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -105,7 +111,7 @@ impl Shown {
 #[derive(Default)]
 pub(crate) struct DeviceState {
     #[cfg(target_os = "linux")]
-    at: Option<crate::kept::Kept>,
+    at: Option<DeviceRecord>,
     /// What was last written, so a pass that changed nothing writes nothing.
     kept: RefCell<Shown>,
     /// The session revision the last look found, so a session that did not move is not read.
@@ -113,13 +119,12 @@ pub(crate) struct DeviceState {
 }
 
 impl DeviceState {
-    /// The state kept under `state`, and what this build made of it: bytes it does not read are
-    /// left where they are, and the session starts on the shell it would show anyway.
-    pub(crate) fn load(state: Option<&Path>) -> Self {
+    /// The state kept in `records`, and what this build made of it: a record it does not read is
+    /// left as it is, and the session starts on the shell it would show anyway.
+    pub(crate) fn load(records: Option<&DeviceRecords>) -> Self {
         #[cfg(target_os = "linux")]
         {
-            let Some(at) = state.map(|state| crate::kept::Kept::open(state, crate::kept::SHOWN))
-            else {
+            let Some(at) = records.map(|records| records.record(KEPT)) else {
                 return Self::default();
             };
             let kept = read(&at);
@@ -132,7 +137,7 @@ impl DeviceState {
         // A page keeps no state of its own on a disk.
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = state;
+            let _ = records;
             Self::default()
         }
     }
@@ -177,9 +182,9 @@ impl DeviceState {
 
 /// What `at` holds, or nothing this build reads.
 #[cfg(target_os = "linux")]
-fn read(at: &crate::kept::Kept) -> Shown {
+fn read(at: &DeviceRecord) -> Shown {
     match at.read() {
-        Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        Ok(Some(value)) => serde_json::from_value(value).unwrap_or_else(|error| {
             tracing::warn!(%error, "what this device shows was not read");
             Shown::default()
         }),
@@ -193,11 +198,9 @@ fn read(at: &crate::kept::Kept) -> Shown {
 
 /// Keep `shown` in `at`.
 #[cfg(target_os = "linux")]
-fn write(at: &crate::kept::Kept, shown: &Shown) {
-    match serde_json::to_vec(shown) {
-        Ok(bytes) => {
-            at.replace(bytes);
-        }
+fn write(at: &DeviceRecord, shown: &Shown) {
+    match serde_json::to_value(shown) {
+        Ok(value) => at.set(value),
         Err(error) => tracing::warn!(%error, "what this device shows was not written"),
     }
 }

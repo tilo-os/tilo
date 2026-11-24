@@ -97,6 +97,8 @@ default = []
 # This process runs apps itself: its writes are decided against, and signed with, the surfaces of
 # the apps it runs.
 toolkit = []
+# Device records held in a test's own process, as the device's daemon keeps them.
+test-support = []
 
 [dev-dependencies]
 # The page holder a test reads a peer's workspace through: the workspace service's document

@@ -6,7 +6,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,10 +15,10 @@ use std::time::Duration;
 // through the toolkit's.
 use ui::time::Instant;
 
-use durable_store::{DurableStore, StorageKey, WriteOp};
 use serde_json::Value;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_lock::MutexRecover as _;
+use tilo_session_client::device_records::{DeviceRecord, DeviceRecords};
 use tilo_session_core::desktop::activity::describer::{Describer, Job};
 use tilo_session_core::desktop::activity::{
     ActivityHost, ActivitySnapshot, DetachedRecordHistory, HistoryOrigin, TaskRunDocument,
@@ -60,7 +59,6 @@ impl tilo_session_core::desktop::activity::GovernanceReader for GovernanceValues
 #[cfg(target_os = "linux")]
 use crate::device_state::DeviceState;
 
-use crate::platform::Store;
 use crate::platform::apps::Apps;
 use crate::platform::authors::{People, Writers};
 use crate::platform::pane::Pane;
@@ -213,10 +211,10 @@ pub struct Given {
     pub layouts: Box<dyn History>,
     /// Who sits here.
     pub person: String,
-    pub store: Option<Store>,
     /// What the workspaces hold; a native session reads it through its engine once it opened it.
     pub held: Option<Source>,
-    pub state: Option<PathBuf>,
+    /// The device's records, where what this device shows is kept for the next session.
+    pub records: Option<DeviceRecords>,
     pub apps: Option<Arc<dyn Apps>>,
     /// Who an actor is, as presence shows them.
     pub people: People,
@@ -371,12 +369,12 @@ pub(crate) struct Members {
 }
 
 impl Activity {
-    /// This session's activity: the session under `state` , the records, the person.
+    /// This session's activity: what the session keeps in the device's `records`, the records, the
+    /// person.
     #[cfg(target_os = "linux")]
     pub(crate) fn new(
-        state: Option<&std::path::Path>,
+        records: Option<&DeviceRecords>,
         person: String,
-        store: Option<Store>,
         changes: crate::platform::records::Changes,
         apps: Option<Arc<dyn Apps>>,
         wake: Option<tilo_service::Wake>,
@@ -385,9 +383,8 @@ impl Activity {
         let given = Given {
             layouts,
             person,
-            store,
             held: None,
-            state: state.map(std::path::Path::to_path_buf),
+            records: records.cloned(),
             apps,
             people: crate::platform::authors::unnamed(),
             writers: Writers::untracked(),
@@ -404,12 +401,11 @@ impl Activity {
         let Given {
             layouts,
             person,
-            store,
             held,
             #[cfg(target_os = "linux")]
-            state,
+            records,
             #[cfg(not(target_os = "linux"))]
-                state: _,
+                records: _,
             apps,
             #[cfg(target_os = "linux")]
             people,
@@ -425,14 +421,14 @@ impl Activity {
         let requests = activity_requests(Arc::clone(&woken));
         let seen = (changes.moved(), 0);
         #[cfg(target_os = "linux")]
-        let shown = DeviceState::load(state.as_deref());
+        let shown = DeviceState::load(records.as_ref());
         Self(Rc::new(Inner {
             layouts,
             #[cfg(target_os = "linux")]
             shown,
             #[cfg(target_os = "linux")]
             devices: DevicesRecord::default(),
-            maps: HistoryMaps::load(store),
+            maps: HistoryMaps::load(records.as_ref()),
             apps,
             #[cfg(target_os = "linux")]
             people,
@@ -1179,35 +1175,30 @@ impl ActivityHost for Host {
 
 struct HistoryMaps {
     known: RefCell<serde_json::Map<String, Value>>,
-    store: Option<Store>,
-    /// The claim on the record, held for as long as this session writes it.
-    lease: RefCell<Option<durable_store::Lease>>,
+    /// The device record the view is kept in, for the next session.
+    kept: Option<DeviceRecord>,
 }
 
 impl HistoryMaps {
-    fn load(store: Option<Store>) -> Self {
-        let known = store
-            .as_ref()
-            .and_then(|store| Self::read(store.as_ref()))
-            .unwrap_or_default();
+    fn load(records: Option<&DeviceRecords>) -> Self {
+        let kept = records.map(|records| records.record(VIEW_PACKAGE));
+        let known = kept.as_ref().and_then(Self::read).unwrap_or_default();
         Self {
             known: RefCell::new(known),
-            store,
-            lease: RefCell::default(),
+            kept,
         }
     }
 
-    /// What this device's store holds of the view.
-    fn read(store: &dyn DurableStore) -> Option<serde_json::Map<String, Value>> {
-        let key = StorageKey::app(VIEW_PACKAGE);
-        let stored = match store.read(&key) {
-            Ok(stored) => stored?,
+    /// What the device's record holds of the view.
+    fn read(kept: &DeviceRecord) -> Option<serde_json::Map<String, Value>> {
+        let value = match kept.read() {
+            Ok(value) => value?,
             Err(error) => {
                 tracing::warn!(%error, "the remembered history view is not read");
                 return None;
             }
         };
-        serde_json::from_slice(&stored.bytes)
+        serde_json::from_value(value)
             .inspect_err(
                 |error| tracing::warn!(%error, "the remembered history view does not read back"),
             )
@@ -1243,27 +1234,10 @@ impl HistoryMaps {
         self.keep();
     }
 
-    /// Write the view to this device's store, as it stands now.
+    /// Write the view to the device's record, as it stands now.
     fn keep(&self) {
-        let Some(store) = &self.store else {
-            return;
-        };
-        let key = StorageKey::app(VIEW_PACKAGE);
-        let Ok(bytes) = serde_json::to_vec(&*self.known.borrow()) else {
-            return;
-        };
-        let mut lease = self.lease.borrow_mut();
-        if lease.is_none() {
-            match store.lease(&key) {
-                Ok(held) => *lease = Some(held),
-                Err(error) => {
-                    tracing::warn!(%error, "the remembered history view is not written");
-                    return;
-                }
-            }
-        }
-        if let Err(error) = store.write(&key, WriteOp::Replace(bytes), None) {
-            tracing::warn!(%error, "the remembered history view is not written");
+        if let Some(kept) = &self.kept {
+            kept.set(Value::Object(self.known.borrow().clone()));
         }
     }
 }
@@ -1274,8 +1248,10 @@ mod tests {
     //! command is the workspace's own changes, and what they restore from it reaches the session.
 
     use super::*;
+    use crate::platform::Store;
     use crate::platform::records::Kept as InStore;
     use automerge::transaction::Transactable as _;
+    use durable_store::{DurableStore as _, StorageKey, WriteOp};
 
     /// A window's record is read where its app keeps it, under its storage key: a document a file
     /// opened in Word Processor, named by the file's path, has its history like any other.
@@ -1524,7 +1500,6 @@ mod tests {
             let activity = Activity::new(
                 None,
                 "ada".to_string(),
-                None,
                 crate::platform::records::Changes::default(),
                 None,
                 None,
@@ -1697,9 +1672,8 @@ mod tests {
         session.activity = Activity::over(Given {
             layouts: Box::new(session.records.clone()),
             person: "ada".into(),
-            store: Some(Arc::clone(&store)),
             held: Some(Arc::new(InStore::over(Arc::clone(&store), changes.clone()))),
-            state: None,
+            records: None,
             apps: None,
             people: crate::platform::authors::unnamed(),
             writers: Writers::untracked(),

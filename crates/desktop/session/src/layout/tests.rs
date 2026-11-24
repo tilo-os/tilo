@@ -635,7 +635,7 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
 fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
-    let state = tempfile::tempdir().expect("a state directory");
+    let records = tilo_session_client::device_records::DeviceRecords::held();
     let service = crate::daemon_fixture::TestDaemon::start();
     let cert = service.certificate();
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
@@ -688,7 +688,7 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
         (workspace, Route::layout()),
     );
     let (wake, _heard) = woken();
-    let desktops = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
+    let desktops = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(&records));
     let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> = service.writes();
     let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = service.reads();
     service.attach_as(&desktops, &reads, &writes);
@@ -711,12 +711,11 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     });
     desktops.keep_pending();
     drop(desktops);
-    crate::kept::flush(Some(state.path()));
 
     // The session after reads what the one before could not write, and writes it once the keys
     // are here.
     let (wake, _heard) = woken();
-    let next = Layouts::new(Arc::clone(&notes), wake, person, Some(state.path()));
+    let next = Layouts::new(Arc::clone(&notes), wake, person, Some(&records));
     let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> = service.writes();
     let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = service.reads();
     service.attach_as(&next, &reads, &writes);
@@ -779,7 +778,7 @@ fn strips_of(workspace: &Workspace) -> Strips {
 fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
-    let state = tempfile::tempdir().expect("a state directory");
+    let records = tilo_session_client::device_records::DeviceRecords::held();
     let service = crate::daemon_fixture::TestDaemon::start();
     let cert = service.certificate();
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
@@ -849,7 +848,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     let notes = Arc::new(crate::continuations::Continuations::default());
     let layout_key = (workspace, Route::layout());
     let (wake, _heard) = woken();
-    let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
+    let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(&records));
     service.attach(&before);
     let mut shown = layout.clone();
     look(&before, &mut shown);
@@ -866,12 +865,11 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     before.capture(&shown);
     before.finish_writes(&shown, std::time::Duration::from_secs(30));
     drop(before);
-    crate::kept::flush(Some(state.path()));
 
     // The session after opens on the workspace and folds its layout and view in: the shell as it
     // was.
     let (wake, _heard) = woken();
-    let next = Layouts::new(Arc::clone(&notes), wake, person, Some(state.path()));
+    let next = Layouts::new(Arc::clone(&notes), wake, person, Some(&records));
     service.attach(&next);
     let mut reopened = Layout {
         workspaces: vec![Workspace::new(workspace, "Home")],
@@ -903,7 +901,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
 fn a_step_kept_for_the_workspace_leaves_a_window_that_came_since_as_it_shows() {
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
-    let state = tempfile::tempdir().expect("a state directory");
+    let records = tilo_session_client::device_records::DeviceRecords::held();
     let service = crate::daemon_fixture::TestDaemon::start();
     let cert = service.certificate();
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
@@ -949,7 +947,7 @@ fn a_step_kept_for_the_workspace_leaves_a_window_that_came_since_as_it_shows() {
         Arc::new(crate::continuations::Continuations::default()),
         wake,
         person.clone(),
-        Some(state.path()),
+        Some(&records),
     );
     service.attach(&desktops);
     look(&desktops, &mut shown);
@@ -990,7 +988,7 @@ fn a_step_kept_for_the_workspace_leaves_a_window_that_came_since_as_it_shows() {
 fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
-    let state = tempfile::tempdir().expect("a state directory");
+    let records = tilo_session_client::device_records::DeviceRecords::held();
     let hold = Arc::new(Hold::default());
     let service = crate::daemon_fixture::TestDaemon::start();
     let cert = service.certificate();
@@ -1040,7 +1038,7 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
         Arc::new(crate::continuations::Continuations::default()),
         wake,
         person.clone(),
-        Some(state.path()),
+        Some(&records),
     );
     service.attach_as(
         &desktops,
@@ -1085,7 +1083,7 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
 fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
-    let state = tempfile::tempdir().expect("a state directory");
+    let records = tilo_session_client::device_records::DeviceRecords::held();
     let hold = Arc::new(Hold::default());
     let service = crate::daemon_fixture::TestDaemon::start();
     let cert = service.certificate();
@@ -1135,7 +1133,7 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
         Arc::new(crate::continuations::Continuations::default()),
         wake,
         person.clone(),
-        Some(state.path()),
+        Some(&records),
     );
     service.attach_as(
         &desktops,
@@ -1169,7 +1167,6 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
         "the layout, the renamed strip with it, waits for the session after"
     );
     drop(desktops);
-    crate::kept::flush(Some(state.path()));
     // The write the session gave up on finishes now the hold is open: the next session starts from
     // the copy it left, not from a write still under way.
     hold.open();
@@ -1183,7 +1180,7 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
         Arc::new(crate::continuations::Continuations::default()),
         wake,
         person,
-        Some(state.path()),
+        Some(&records),
     );
     service.attach(&next);
     assert!(
@@ -1235,7 +1232,7 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
 fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
-    let state = tempfile::tempdir().expect("a state directory");
+    let records = tilo_session_client::device_records::DeviceRecords::held();
     let service = crate::daemon_fixture::TestDaemon::start();
     let cert = service.certificate();
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
@@ -1308,7 +1305,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
             Arc::clone(&notes_seen),
             wake,
             person.clone(),
-            Some(state.path()),
+            Some(&records),
         );
         service.attach(&before);
         let mut shown = layout.clone();
@@ -1329,7 +1326,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
             Arc::clone(&notes_seen),
             wake,
             person.clone(),
-            Some(state.path()),
+            Some(&records),
         );
         let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
             Arc::new(HeldWrites {
@@ -1387,12 +1384,11 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
             "and so does the other workspace's layout"
         );
     }
-    crate::kept::flush(Some(state.path()));
     hold.open();
 
     // The session after opens on the workspaces and shows the window where the person put it.
     let (wake, _heard) = woken();
-    let next = Layouts::new(notes_seen, wake, person.clone(), Some(state.path()));
+    let next = Layouts::new(notes_seen, wake, person.clone(), Some(&records));
     service.attach(&next);
     let mut reopened = Layout {
         workspaces: vec![
@@ -1462,7 +1458,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
 fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
-    let state = tempfile::tempdir().expect("a state directory");
+    let records = tilo_session_client::device_records::DeviceRecords::held();
     let service = crate::daemon_fixture::TestDaemon::start();
     let cert = service.certificate();
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
@@ -1504,7 +1500,7 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
     };
     let notes = Arc::new(crate::continuations::Continuations::default());
     let (wake, _heard) = woken();
-    let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
+    let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(&records));
     service.attach(&before);
     let mut shown = saved;
     look(&before, &mut shown);
@@ -1515,11 +1511,10 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
         "the session before saved its layout"
     );
     drop(before);
-    crate::kept::flush(Some(state.path()));
 
     // The login after: the daemon holds the workspace, and cannot open its records yet.
     let (wake, _heard) = woken();
-    let after = Layouts::new(notes, wake, person, Some(state.path()));
+    let after = Layouts::new(notes, wake, person, Some(&records));
     let opening = Arc::new(Opening {
         open: std::sync::atomic::AtomicBool::new(false),
         inner: service.reads(),
@@ -1637,7 +1632,7 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for WaitingWrites {
 /// again until the record moves.
 #[test]
 fn a_view_write_that_waits_is_no_refusal_and_waits_for_the_record_to_move() {
-    let state = tempfile::tempdir().expect("a state directory");
+    let records = tilo_session_client::device_records::DeviceRecords::held();
     let service = crate::daemon_fixture::TestDaemon::start();
     let cert = service.certificate();
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
@@ -1652,7 +1647,7 @@ fn a_view_write_that_waits_is_no_refusal_and_waits_for_the_record_to_move() {
         Arc::new(crate::continuations::Continuations::default()),
         wake,
         person,
-        Some(state.path()),
+        Some(&records),
     );
     let waited = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
@@ -1747,7 +1742,7 @@ fn one_window_of_notes(workspace: WorkspaceId, salt: u16) -> Layout {
 /// than folding every layout again on each pass of the loop.
 #[test]
 fn a_layout_that_cannot_be_read_settles_the_looks_until_the_workspaces_move() {
-    let state = tempfile::tempdir().expect("a state directory");
+    let records = tilo_session_client::device_records::DeviceRecords::held();
     let service = crate::daemon_fixture::TestDaemon::start();
     let cert = service.certificate();
     let elsewhere = WorkspaceId::new();
@@ -1762,7 +1757,7 @@ fn a_layout_that_cannot_be_read_settles_the_looks_until_the_workspaces_move() {
         Arc::new(crate::continuations::Continuations::default()),
         wake,
         hex::encode(cert.user_public_key),
-        Some(state.path()),
+        Some(&records),
     );
     service.attach(&layouts);
     look(&layouts, &mut tree);

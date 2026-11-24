@@ -25,6 +25,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
+use tilo_session_client::device_records::DeviceRecord;
 use tilo_session_core::desktop::notifications;
 use tilo_session_core::desktop::notifications::{
     ContinuityNotificationId, Notification, NotificationIconKind, NotificationPerson, QuietReason,
@@ -85,28 +86,41 @@ const MAX_BADGE: u32 = 9_999;
 /// Keep what the centre holds, so the next session opens the centre this one had: its titles, its
 /// bodies, its senders and how old each is. What a row could act on does not survive: the sender,
 /// its actions and the session's routes are gone with it.
-pub(crate) fn save_history(notices: &DesktopNotifications, kept: &crate::kept::Kept) {
-    let encoded = match notices.kept(ui::time::wall()) {
+pub(crate) fn save_history(notices: &DesktopNotifications, kept: &DeviceRecord) {
+    let encoded = match notices
+        .kept(ui::time::wall())
+        .and_then(|encoded| serde_json::from_slice::<serde_json::Value>(&encoded))
+    {
         Ok(encoded) => encoded,
         Err(error) => {
             tracing::warn!(%error, "the notification centre was not written");
             return;
         }
     };
-    kept.replace(encoded);
+    kept.set(encoded);
 }
 
+/// The device record the centre is kept in.
+const KEPT: &str = "so.tilo.session-notifications";
+
 /// Open the centre the last session left, as old as it was, and hand back where it is kept so this
-/// session writes it back there: in the device's store under the session's state directory, as
-/// the rest of what the session keeps.
+/// session writes it back there: one of the device's records, as the rest of what the session
+/// keeps.
 pub(crate) fn restore_history(
     notices: &DesktopNotifications,
     options: &crate::Options,
-) -> Option<crate::kept::Kept> {
-    let kept = crate::kept::Kept::open(options.state.as_deref()?, crate::kept::NOTIFICATIONS);
+) -> Option<DeviceRecord> {
+    let kept = options.records.as_ref()?.record(KEPT);
     match kept.read() {
-        Ok(Some(bytes)) => {
-            if let Err(error) = notices.restore_kept(&bytes, ui::time::wall()) {
+        Ok(Some(value)) => {
+            let restored = serde_json::to_vec(&value)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    notices
+                        .restore_kept(&bytes, ui::time::wall())
+                        .map_err(|error| error.to_string())
+                });
+            if let Err(error) = restored {
                 tracing::warn!(%error, "the notification centre kept was not read");
             }
         }
@@ -388,7 +402,7 @@ pub(crate) struct SessionNotifications {
     /// stands: the shell draws it as the one the keys act on.
     focused: Cell<Option<u64>>,
     /// Where the centre is written between sessions; `None` keeps it in memory.
-    history: Option<crate::kept::Kept>,
+    history: Option<DeviceRecord>,
     /// What continues on the person's other devices, and what they showed here.
     mirror: Rc<mirror::Mirroring>,
     noted: Noted,
@@ -410,7 +424,7 @@ impl SessionNotifications {
         policy: Arc<Mutex<NotificationPolicy>>,
         signals: Rc<NoticeSignals>,
         power: Option<PowerLink>,
-        history: Option<crate::kept::Kept>,
+        history: Option<DeviceRecord>,
     ) -> Self {
         let opened: Opened = Rc::default();
         let choosing = Rc::clone(&opened);

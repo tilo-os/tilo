@@ -351,7 +351,11 @@ async fn dispatch(
         } => {
             // A resource the device's services publish themselves (this device's server
             // settings) is read as the app the read names, decided there as its grant decides.
-            if let Some(published) = &services.published
+            // The device's own records are its daemon's, never published there: a desktop reads
+            // what it kept for its next session before it serves anything, and without asking
+            // itself.
+            if read.app != tilo_actions::remote::DEVICE_SETTINGS
+                && let Some(published) = &services.published
                 && let Some(revision) = published_revision(published, &read).await?
             {
                 return RemoteActionFrame::new(RemoteActionMessage::ResourceReading {

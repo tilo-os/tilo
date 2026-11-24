@@ -65,7 +65,7 @@ fn rig() -> Rig {
 }
 
 /// A rig whose centre is kept at `history` , so a next session can open it.
-fn rig_at(history: Option<crate::kept::Kept>) -> Rig {
+fn rig_at(history: Option<tilo_session_client::device_records::DeviceRecord>) -> Rig {
     let daemon = Notifications::new();
     let heard = Arc::new(Heard::default());
     let tap = Arc::clone(&heard);
@@ -723,28 +723,24 @@ tilo_test_env::scenario! {
     }
 
     phase the_centre_opens_with_what_the_last_session_kept;
-    // What the centre kept is written where this person's state lives, and the next session opens the
+    // What the centre kept is written to the device's records, and the next session opens the
     // centre the last one left.
     {
-        let state = tempfile::tempdir().expect("a state directory");
-        let rig = rig_at(Some(crate::kept::Kept::open(
-            state.path(),
-            crate::kept::NOTIFICATIONS,
-        )));
+        let records = tilo_session_client::device_records::DeviceRecords::held();
+        let rig = rig_at(Some(records.record(super::KEPT)));
         let id = rig.daemon.alloc_id();
         rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
         rig.step();
         rig.ask(Ask::Read(rig.banner().id));
         rig.step();
-        crate::kept::flush(Some(state.path()));
         assert!(
-            crate::kept::local_path(state.path(), crate::kept::NOTIFICATIONS).is_file(),
+            records.record(super::KEPT).read().unwrap().is_some(),
             "the centre was written"
         );
 
         let reopened = DesktopNotifications::default();
         let options = crate::Options {
-            state: Some(state.path().to_path_buf()),
+            records: Some(records.clone()),
             ..crate::Options::default()
         };
         let kept = restore_history(&reopened, &options);

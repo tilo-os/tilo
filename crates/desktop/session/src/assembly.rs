@@ -60,9 +60,9 @@ pub(crate) struct Shared {
     /// The ids they went by before this device had an identity, which their
     /// own workspaces may still name them by.
     pub(crate) earlier: Vec<String>,
-    /// Where this device keeps what outlives the session ([`crate::kept`]): what ends the session
+    /// The device's records, where the session keeps what outlives it: what ends the session
     /// waits for it to be written.
-    pub(crate) state: Option<std::path::PathBuf>,
+    pub(crate) records: Option<tilo_session_client::device_records::DeviceRecords>,
     #[cfg(target_os = "linux")]
     pub(crate) search: Rc<crate::search::SessionSearch>,
     /// The apps the person opens, when this session starts them.

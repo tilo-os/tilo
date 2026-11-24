@@ -9,7 +9,9 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 
 use super::*;
+use crate::platform::Store;
 use crate::platform::records::{Changes, Kept};
+use durable_store::{DurableStore as _, StorageKey, WriteOp};
 use ui::mentions::{MARK, reading_nothing};
 use ui::resource::{DocumentId, ResourceType};
 
@@ -39,11 +41,13 @@ fn nothing_shown() -> OnScreen {
 }
 
 /// A device's records: the store they are kept in, the one stream their writes land in, and the
-/// reader the role looks at them through — what a session hands its mentions.
+/// reader the role looks at them through — what a session hands its mentions — and the device's
+/// own records, where what it told is kept.
 struct Device {
     _dir: tempfile::TempDir,
     store: Store,
     changes: Changes,
+    told: tilo_session_client::device_records::DeviceRecords,
 }
 
 impl Device {
@@ -66,6 +70,7 @@ impl Device {
             _dir: dir,
             store,
             changes,
+            told: tilo_session_client::device_records::DeviceRecords::held(),
         }
     }
 
@@ -114,7 +119,7 @@ impl Device {
     fn role_seeing(&self, person: &str, shown: &Rc<Shown>, on_screen: OnScreen) -> Mentions {
         Mentions::over(Given {
             person: vec![person.to_owned()],
-            store: Some(self.store.clone()),
+            kept: Some(self.told.record(super::KEPT)),
             records: Some(Reads::here(Rc::new(Kept::over(
                 self.store.clone(),
                 self.changes.clone(),
@@ -574,7 +579,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
     });
     let mentions = Mentions::over(Given {
         person: vec![BEA.to_owned()],
-        store: Some(device.store.clone()),
+        kept: Some(device.told.record(super::KEPT)),
         records: Some(Reads::here(Rc::clone(&records) as Rc<dyn Records>)),
         notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
         name: Rc::new(name),
@@ -656,7 +661,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
     // After a restart the record is followed from where it was looked at last.
     let again = Mentions::over(Given {
         person: vec![BEA.to_owned()],
-        store: Some(device.store.clone()),
+        kept: Some(device.told.record(super::KEPT)),
         records: Some(Reads::here(Rc::clone(&records) as Rc<dyn Records>)),
         notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
         name: Rc::new(name),
@@ -725,7 +730,7 @@ fn a_look_at_a_document_still_arriving_returns_at_once_and_tells_it_once_it_land
     let shown = Rc::new(Shown::default());
     let mentions = Mentions::over(Given {
         person: vec![BEA.to_owned()],
-        store: Some(device.store.clone()),
+        kept: Some(device.told.record(super::KEPT)),
         records: Some(Reads::apart(Arc::clone(&opening) as _)),
         notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
         name: Rc::new(name),

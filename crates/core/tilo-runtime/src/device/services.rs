@@ -4086,7 +4086,15 @@ impl ActionProvider for RuntimeActionProvider {
             && request.target.address.resource == super::records::RESOURCE
             && let Some(records) = self.workspaces.device_records()
         {
-            return Pending::ready(Ok(records.receipt_for(caller, &request)));
+            // The device's own person, on the dispatch this device admitted them to, writes as the
+            // device their certificate names: what their desktop keeps for its next session.
+            let cert = self.workspaces.device_cert();
+            let as_device = (self.is_the_person(caller)
+                && caller.acting().person_id() == Some(hex::encode(cert.user_public_key).as_str()))
+            .then(|| Caller::authenticated(cert.user_public_key, cert.device_public_key));
+            return Pending::ready(Ok(
+                records.receipt_for(as_device.as_ref().unwrap_or(caller), &request)
+            ));
         }
         if let Some(tickets) = &self.tickets
             && Tickets::answers(&request)
