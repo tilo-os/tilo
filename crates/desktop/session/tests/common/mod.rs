@@ -916,7 +916,7 @@ pub fn app_store() -> &'static Path {
         let installed = dev_apps::install(&root, &root.join("build"));
         assert_eq!(
             installed.len(),
-            6,
+            dev_apps::APPS.len(),
             "every app of the development session is installed, the shell among them: {installed:?}"
         );
         // The store the environment names is the one the session's launcher reads, and the one its
