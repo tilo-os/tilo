@@ -123,6 +123,9 @@ pub struct BlockEditorProps {
     pub margin_bottom: Option<f64>,
     /// The page's left margin in points, where the view sets it.
     pub margin_left: Option<f64>,
+    /// How much larger the document reads than its own size, as a page's zoom field sets it:
+    /// 1 shows it as it is, 2 twice as large. The pages break again at the zoom.
+    pub zoom: Option<f64>,
     /// A picture to write in at the caret, as a view asks after the person chose a file: the
     /// address of its content, then a count the view changes every time it asks
     /// (`{address}:1`), so the same picture chosen twice is two pictures. A view asks this from
@@ -473,6 +476,7 @@ impl Described for BlockEditor {
             margin_right,
             margin_bottom,
             margin_left,
+            zoom,
             insert: _,
             link: _,
             link_to: _,
@@ -524,6 +528,7 @@ impl Described for BlockEditor {
             footer.clone(),
             [margin_top, margin_right, margin_bottom, margin_left],
         ));
+        editor.set_zoom(zoom.map_or(1.0, ui::num::f32_of_f64));
         editor.publish_headings();
         editor.publish_changes();
         // A view opened with a heading asked for, of the note shown before, is just opened; a
@@ -560,6 +565,7 @@ impl Described for BlockEditor {
             margin_right,
             margin_bottom,
             margin_left,
+            zoom,
             insert,
             link,
             link_to,
@@ -604,6 +610,7 @@ impl Described for BlockEditor {
             footer.clone(),
             [margin_top, margin_right, margin_bottom, margin_left],
         ));
+        self.set_zoom(zoom.map_or(1.0, ui::num::f32_of_f64));
         // A formatting ask is one command: the same ask twice is the command it already ran.
         let formatted = self.format_asked(format);
         let inserted = self.insert_asked(insert);

@@ -92,7 +92,7 @@ pub use block_editor::references::{BlockEditorProps, OPEN_REFERENCE};
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CalloutKind, CursorPlacement,
     DocumentPosition, DocumentSelection, EditScope, Pages, Paper, ParagraphStyle, PresenceKeyFn,
-    SlashRequest, TransclusionPreview, blocks_from_html, blocks_to_html,
+    SlashRequest, TransclusionPreview, ZOOM_MAX, ZOOM_MIN, blocks_from_html, blocks_to_html,
 };
 /// A document's editable table: its cells, its rows and columns, and how it reads to a person.
 pub mod table {

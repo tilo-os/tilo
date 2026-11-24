@@ -555,3 +555,26 @@ fn block_drag_escape_and_focus_loss_preserve_order() {
         );
     }
 }
+
+/// Zooming sets every block larger and breaks the pages again; the range is 40% to 300%.
+#[test]
+fn zooming_sets_every_block_larger() {
+    let mut editor = layout_block_editor(
+        ui::rich_edit::BlockEditor::from_markdown("one two three").with_wrap_lines(true),
+        400.0,
+    );
+    let _ = block_scene(&mut editor);
+    let single = editor.blocks()[0].line.get_rect().height();
+    editor.set_zoom(2.0);
+    let _ = block_scene(&mut editor);
+    let doubled = editor.blocks()[0].line.get_rect().height();
+    assert!(
+        (doubled - single * 2.0).abs() < 1.0,
+        "double the zoom, double the line: {single} then {doubled}"
+    );
+    assert_eq!(editor.zoom(), 2.0);
+    editor.set_zoom(9.0);
+    assert_eq!(editor.zoom(), ui::rich_edit::ZOOM_MAX);
+    editor.set_zoom(0.0);
+    assert_eq!(editor.zoom(), ui::rich_edit::ZOOM_MIN);
+}

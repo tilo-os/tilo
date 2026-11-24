@@ -38,6 +38,10 @@ use ui::widget::marks::{Mark, MarkSpan, PageId};
 use ui::widget::{EventCtx, Remount, StructureChange, Widget};
 
 pub const MAX_LIST_INDENT: u8 = 5;
+/// The smallest and largest a view can zoom the document: 40% to 300%, as a page's zoom field
+/// offers them.
+pub const ZOOM_MIN: f32 = 0.4;
+pub const ZOOM_MAX: f32 = 3.0;
 /// Matches the 28px indent step Notion uses in its dense block view.
 pub const LIST_INDENT_STEP_PX: f32 = 28.0;
 
@@ -632,6 +636,9 @@ pub struct BlockEditor {
     /// slide title); left unless the owner says otherwise.
     text_align: ui::richtext::TextAlign,
     font_scale: f32,
+    /// How much larger the document reads than its own size: a zoom of 1 shows it as it is,
+    /// and 2 sets every block twice as large and breaks the pages again.
+    zoom: f32,
     marker_x_height: Option<(std::sync::Arc<()>, f64)>,
     #[cfg(test)]
     painted_blocks: usize,
@@ -934,6 +941,7 @@ impl BlockEditor {
             mention_paint: None,
             text_align: ui::richtext::TextAlign::Left,
             font_scale: 1.0,
+            zoom: 1.0,
             #[cfg(test)]
             painted_blocks: 0,
             #[cfg(test)]
@@ -1731,6 +1739,29 @@ impl BlockEditor {
     #[must_use]
     pub fn body_size(&self) -> f32 {
         BlockKind::Paragraph.font_size() * self.font_scale
+    }
+
+    /// Show the document larger or smaller: `zoom` 1 shows it as it is, 2 sets every block
+    /// twice as large. The page breaks again at the zoom, as it would printed larger.
+    pub fn set_zoom(&mut self, zoom: f32) {
+        let zoom = if zoom.is_finite() {
+            zoom.clamp(ZOOM_MIN, ZOOM_MAX)
+        } else {
+            1.0
+        };
+        if (zoom - self.zoom).abs() <= 1e-4 {
+            return;
+        }
+        self.zoom = zoom;
+        self.structure_dirty = true;
+        self.dirty = true;
+        self.restack();
+    }
+
+    /// How much larger the document reads than its own size.
+    #[must_use]
+    pub fn zoom(&self) -> f32 {
+        self.zoom
     }
 
     #[must_use]
@@ -8776,7 +8807,7 @@ impl BlockEditor {
         stack.heights.clear();
         stack.measured = false;
         let mut total = 0.0_f32;
-        let font_scale = self.font_scale;
+        let font_scale = self.font_scale * self.zoom;
         for (block, stack_box) in self.blocks.iter_mut().zip(&self.stack_boxes) {
             let role = block.kind.text_role();
             if block.line.inner().text_role() != role {
