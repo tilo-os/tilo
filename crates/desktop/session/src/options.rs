@@ -38,10 +38,6 @@ pub struct Options {
     /// The system services the session hosts: what they publish is the session's, beside the
     /// desktop's.
     pub services: Vec<Box<dyn Service>>,
-    /// The device's image model: what the pictures in the device's search index show, read into
-    /// it as words they are found by. Without one, pictures are found by their names alone.
-    #[cfg(target_os = "linux")]
-    pub vision: Option<std::sync::Arc<dyn tilo_vision_service::VisionModel>>,
     /// The machine's brightness controls, which the displays service reads and
     /// sets: the panel's backlight and every external monitor that speaks
     /// DDC/CI. Without one, no display of this session can be dimmed (a test,

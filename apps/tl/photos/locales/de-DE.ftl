@@ -5,35 +5,6 @@ d-so-tilo-photos = Fotos
 
 d-so-tilo-photos-keywords = photo, photos, picture, pictures, image, images, album, albums, favorites, gallery, camera roll, foto, fotos, bild, bilder, alben, favoriten
 
-d-npagsiqh = Gefragtes Bild
-    .doc = Ein Bild, das dem Bildmodell des Geräts gestellt wird: seine Adresse im Inhaltsspeicher.
-    .noun = { $count ->
-        [one] gefragtes Bild
-       *[other] gefragte Bilder
-    }
-
-d-ilnmwg2o = Bild
-
-d-j7rusgg3 = Beschreibung
-    .doc = Was das Bildmodell des Geräts über ein Bild sagt: ein Satz.
-    .noun = { $count ->
-        [one] Beschreibung
-       *[other] Beschreibungen
-    }
-
-d-f3c37dlw = Beschreibung
-
-d-lgulun3e = Funde
-    .doc = Die Objekte und Tiere, die das Bildmodell des Geräts in einem Bild findet.
-    .noun = { $count ->
-        [one] Fund
-       *[other] Funde
-    }
-
-d-lppdtcyl = Objekte
-
-d-xvwv7col = Tiere
-
 d-jwejbqyn = Beschreiben
     .doc = Was ein Bild zeigt, in einem Satz, wie das Bildmodell des Geräts es liest: der Satz, den die Details der Bibliothek zeigen und die Suche findet.
 

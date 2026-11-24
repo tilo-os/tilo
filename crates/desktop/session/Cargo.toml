@@ -195,7 +195,6 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 [target.'cfg(target_os = "linux")'.dependencies]
 # The device's image model as the session's actions: its model gateway connection and the
 # library analysis search reads, which only a Linux desktop session hosts.
-tilo-vision-service = { path = "../../services/vision" }
 # The code editor's device work: its files, searches, commands and language servers.
 code-engine = { path = "../../engines/code-engine" }
 # The speed test's device work: its one run measuring latency, download and upload.

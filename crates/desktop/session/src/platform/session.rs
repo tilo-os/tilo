@@ -1433,33 +1433,6 @@ impl Session {
         // the session draws what the session says it does.
         let keyboard = crate::keyboard::Keyboard::default();
         let mut started = std::mem::take(&mut options.services);
-        // The image model reads the pictures of the device's one index, which the daemon keeps,
-        // and writes what each shows back beside its app's entry for it.
-        if let Some(model) = options.vision.take()
-            && daemon.link().is_ok()
-        {
-            let index = Arc::new(tilo_vision_service::index::VisionIndex {
-                search: Arc::new(tilo_session_client::daemon_documents::DaemonSearch(
-                    daemon.clone(),
-                )),
-                caller: tilo_actions::remote::Caller::local_person(options.person.as_str()),
-            });
-            let vision = tilo_vision_service::VisionService::new(
-                model,
-                Arc::clone(&index) as Arc<dyn tilo_vision_service::ImageSource>,
-                index,
-                options.wake.handle(),
-            );
-            // The model's work, which Photos asks the session for by name (`engine.call`): the
-            // app reads the JSON answer into its own records, and no other app asks it.
-            tilolang_tilo::engine::register(
-                tilo_vision_service::PHOTOS_APP,
-                Arc::new(ImageModelEngine(tilo_vision_service::ImageModelWork::of(
-                    &vision,
-                ))),
-            );
-            started.push(Box::new(vision));
-        }
         started.push(Box::new(shell_service));
         // The session's own document, which keeps the records of the package it runs itself: the
         // shell's, whether the store holds one or this build's copy stands in for it
@@ -3116,29 +3089,5 @@ mod windowed_shortcut_tests {
             Some(&chord(&["Ctrl", "Shift"])),
             "the other default still moves"
         );
-    }
-}
-
-/// The image model's work as the app that shows the pictures asks it (`engine.call`): a
-/// sentence about a picture, the words in it, the objects and pets, or the faces it groups.
-struct ImageModelEngine(tilo_vision_service::ImageModelWork);
-
-impl tilolang_tilo::engine::Provider for ImageModelEngine {
-    fn call(&self, op: &str, input: &str) -> Result<String, String> {
-        self.0.call(op, input)
-    }
-
-    fn start(&self, op: &str, _input: &str) -> Result<String, String> {
-        Err(format!(
-            "`{op}` is answered now: the image model runs no job for this app"
-        ))
-    }
-
-    fn status(&self, job: &str) -> Result<String, String> {
-        Err(format!("no job `{job}` runs on this device"))
-    }
-
-    fn cancel(&self, _job: &str) -> bool {
-        false
     }
 }

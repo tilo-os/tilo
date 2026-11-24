@@ -1067,6 +1067,21 @@ impl Daemon {
             broker.state().serve_records(Arc::clone(&reads) as _);
             search.serve(reads);
         }
+        // The device's image model, which apps ask by the addresses it publishes rather than
+        // through a connection of their own: one copy on this daemon's dispatch.
+        #[cfg(unix)]
+        if let Ok(model) =
+            super::vision::ImageModel::start(&sockets.join(BLOB_SOCKET), &search, &actor)
+        {
+            workspaces.copies().providers().provide(
+                super::vision::PROVIDER,
+                super::vision::APP,
+                tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+                Arc::new(model),
+            );
+        } else {
+            tracing::warn!("this device runs no image model");
+        }
         workspaces.serve_invocations(Arc::clone(&invocations));
         stage("reading the calls that wait for the person");
         let asked = super::asked::DeviceAsked::new(

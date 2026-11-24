@@ -44,10 +44,6 @@ pub const IMAGE_MODEL_RESOURCE: &str = "vision:vision.image-model";
 /// Its kind.
 pub const IMAGE_MODEL_KIND: &str = "vision.image-model";
 
-/// The app that shows the pictures the model reads: `engine.call`'s ops below are registered
-/// for it, so it asks the device's own work rather than another app's.
-pub const PHOTOS_APP: &str = "so.tilo.photos";
-
 /// The resource the library analysis run is published on.
 pub const ANALYSIS_RESOURCE: &str = "vision:vision.analysis";
 /// Its kind.
@@ -412,113 +408,6 @@ impl VisionService {
                 Started::Done(ActionOutput::default())
             }
             _ => Started::Accepted,
-        })
-    }
-}
-
-/// The device's image model as work an app asks the session for by name (`engine.call`): a
-/// sentence about a picture, the words in it, the objects and pets it holds, or the faces it
-/// groups, each asked with JSON and answered with JSON the app reads into its own records.
-#[derive(Clone)]
-pub struct ImageModelWork {
-    model: Arc<dyn VisionModel>,
-    content: Arc<Mutex<Option<tilo_content::ContentStore>>>,
-}
-
-impl ImageModelWork {
-    /// The work `service` does, registered for the app that asks it.
-    #[must_use]
-    pub fn of(service: &VisionService) -> Self {
-        Self {
-            model: Arc::clone(&service.model),
-            content: Arc::clone(&service.content),
-        }
-    }
-
-    /// One request answered now: `op` over the JSON `input`, as JSON the app decodes.
-    ///
-    /// # Errors
-    ///
-    /// An op this device does not run, an input it cannot read, or the model's refusal.
-    pub fn call(&self, op: &str, input: &str) -> Result<String, String> {
-        let asked: Value = serde_json::from_str(input)
-            .map_err(|error| format!("`{op}` takes JSON as its input: {error}"))?;
-        let address = |key: &str| {
-            asked
-                .get(key)
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("`{op}` takes `{key}`: the picture's address"))
-        };
-        let picture = |key: &str| {
-            let address = address(key)?;
-            read_picture(&self.content, address, "").ok_or_else(|| {
-                "the picture's bytes are not on this device yet; retry after it syncs".to_owned()
-            })
-        };
-        let said = |error: ModelError| error.to_string();
-        Ok(match op {
-            "describe" => {
-                let analysis = self.model.analyze(&picture("image")?).map_err(said)?;
-                serde_json::json!({ "description": analysis.description }).to_string()
-            }
-            "ocr" => {
-                let language = asked
-                    .get("language")
-                    .and_then(Value::as_str)
-                    .unwrap_or("eng");
-                let text = self
-                    .model
-                    .ocr(&picture("image")?, language)
-                    .map_err(said)?;
-                serde_json::json!({ "text": text }).to_string()
-            }
-            "tags" => {
-                let analysis = self.model.analyze(&picture("image")?).map_err(said)?;
-                serde_json::json!({
-                    "objects": analysis.objects,
-                    "pets": analysis.pets,
-                })
-                .to_string()
-            }
-            "faces" => {
-                let addresses: Vec<String> = asked
-                    .get("images")
-                    .and_then(Value::as_array)
-                    .map(|images| {
-                        images
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if addresses.is_empty() || addresses.len() > crate::engine::MAX_FACE_BATCH {
-                    return Err(format!(
-                        "`faces` takes one to {} pictures, in `images`",
-                        crate::engine::MAX_FACE_BATCH
-                    ));
-                }
-                let mut pictures = Vec::with_capacity(addresses.len());
-                for address in &addresses {
-                    let address = address.as_str();
-                    let bytes = read_picture(&self.content, address, "").ok_or_else(|| {
-                        format!("the picture {address} is not on this device yet")
-                    })?;
-                    pictures.push((address.to_owned(), bytes));
-                }
-                let batch = self.model.faces(&pictures).map_err(said)?;
-                let clusters: Vec<Value> = batch
-                    .clusters
-                    .into_iter()
-                    .map(|cluster| serde_json::json!({ "images": cluster.images }))
-                    .collect();
-                serde_json::json!({ "clusters": clusters }).to_string()
-            }
-            other => {
-                return Err(format!(
-                    "`{other}` is no op the image model runs: `describe`, `ocr`, `tags` or `faces`"
-                ));
-            }
         })
     }
 }

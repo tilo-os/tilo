@@ -62,22 +62,6 @@ type Person (untitled: "Person") {
     photos: Set<Text>
 }
 
-/// A picture asked of the device's image model: its address in the content store.
-type AskedPicture {
-    image: Text
-}
-
-/// What the device's image model says a picture shows: a sentence.
-type Description {
-    description: Text
-}
-
-/// The objects and pets the device's image model finds in a picture.
-type Findings {
-    objects: List<Text>
-    pets: List<Text>
-}
-
 /// The workspace's photo library: every photo, the albums people made of them, and the people
 /// the photos show.
 type Library {
@@ -239,14 +223,10 @@ action reset_edits(p: Photo) (label: "Reset edits", group: "Edits") {
 /// library's details show and search finds. The work is the device's own, asked of this session
 /// on the app's behalf, so the app never runs a model itself.
 action describe_photo(p: Photo) (icon: .sparkles, label: "Describe", group: "Details") {
-    let asked = json.encode(AskedPicture(image: shown_picture(p)))
-    match engine.call("describe", asked) {
-        .ok(text) => match json.decode<Description>(text) {
-            .ok(found) => {
-                p.description = found.description
-            }
-            .err(_) => {}
-        },
+    match try vision.describe(vision.image_model, image: shown_picture(p)) {
+        .ok(sentence) => {
+            p.description = sentence
+        }
         .err(_) => {}
     }
 }
@@ -254,19 +234,12 @@ action describe_photo(p: Photo) (icon: .sparkles, label: "Describe", group: "Det
 /// The objects and pets the device's image model finds in a picture, added to what the photo
 /// already lists.
 action tag_photo(p: Photo) (icon: .tag, label: "Tags", group: "Details") {
-    let asked = json.encode(AskedPicture(image: shown_picture(p)))
-    match engine.call("tags", asked) {
-        .ok(text) => match json.decode<Findings>(text) {
-            .ok(found) => {
-                for word in found.objects {
-                    p.objects.add(word)
-                }
-                for word in found.pets {
-                    p.pets.add(word)
-                }
+    match try vision.tags(vision.image_model, image: shown_picture(p)) {
+        .ok(words) => {
+            for word in words {
+                p.objects.add(word)
             }
-            .err(_) => {}
-        },
+        }
         .err(_) => {}
     }
 }

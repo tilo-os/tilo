@@ -133,7 +133,9 @@ tilo-migrate = { path = "../../import/migrate" }
 rand.workspace = true
 # The content store app surfaces are read from.
 # The apps' store: the device content store when the launcher handed one over.
+tilo-content = { path = "../content" }
 tilo-content-device = { path = "../content-device" }
+tilo-vision-service = { path = "../../services/vision" }
 # The workspace store this device holds for the workspaces it belongs to, and
 # the admission API it answers with: the engine's own membership.
 tilo-session-actions = { path = "../session-actions" }

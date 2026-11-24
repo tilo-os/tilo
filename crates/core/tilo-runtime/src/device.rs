@@ -66,6 +66,8 @@ pub mod serve;
 pub mod server_settings;
 pub mod services;
 #[cfg(unix)]
+mod vision;
+#[cfg(unix)]
 mod shell;
 pub mod shortcuts;
 pub(crate) mod signing;

@@ -1103,9 +1103,6 @@ fn device_options(
         config,
         search: search_options(),
         lists: tilo_session::Lists::of_device(),
-        // The device's image model, reached through the model gateway as `so.tilo.vision`, the
-        // package it answers as.
-        vision: Some(std::sync::Arc::new(tilo_vision_service::LocalVision::local())),
         // The apps this session starts reach its services over the socket the launcher hands them,
         // in this session's runtime directory.
         app_socket: AppSocket::Launcher,

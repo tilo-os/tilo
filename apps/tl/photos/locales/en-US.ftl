@@ -89,35 +89,6 @@ d-vbzsnqg5 = Photos
 
 d-hc736lwy-filter-photos = Photos
 
-d-npagsiqh = Asked picture
-    .doc = A picture asked of the device's image model: its address in the content store.
-    .noun = { $count ->
-        [one] asked picture
-       *[other] asked pictures
-    }
-
-d-ilnmwg2o = Image
-
-d-j7rusgg3 = Description
-    .doc = What the device's image model says a picture shows: a sentence.
-    .noun = { $count ->
-        [one] description
-       *[other] descriptions
-    }
-
-d-f3c37dlw = Description
-
-d-lgulun3e = Findings
-    .doc = The objects and pets the device's image model finds in a picture.
-    .noun = { $count ->
-        [one] finding
-       *[other] findings
-    }
-
-d-lppdtcyl = Objects
-
-d-xvwv7col = Pets
-
 d-j45kskqf = Library
     .doc = The workspace's photo library: every photo, the albums people made of them, and the people the photos show.
     .noun = { $count ->
