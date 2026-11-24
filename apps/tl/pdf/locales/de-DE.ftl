@@ -1102,11 +1102,6 @@ d-ibtlwzis = Betrachter
     .w-page-of = Seite { $page_now } von { $page_count }
     .w-page-of-2 = Seite { $value } von { $len }
 
-d-lfkj2ymr = Feldzeile
-    .w-the-document-locks-this-field = Das Dokument sperrt dieses Feld.
-    .w-the-document-needs-this-field-filled = Das Dokument braucht dieses Feld ausgefüllt.
-    .w-choose = Wählen
-
 d-krgcpooh = Feldhinweis
     .w-the-document-locks-this-field = Das Dokument sperrt dieses Feld.
     .w-the-document-needs-this-field-filled = Das Dokument braucht dieses Feld ausgefüllt.
