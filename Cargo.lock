@@ -21745,7 +21745,6 @@ dependencies = [
  "tilo-secrets",
  "tilo-server-client",
  "tilo-server-protocol",
- "tilo-service",
  "tilo-session-client",
  "tilo-settings-store",
  "tilo-test-env",

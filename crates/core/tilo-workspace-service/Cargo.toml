@@ -233,7 +233,6 @@ tilo-actions = { path = "../actions", features = ["test-support"] }
 # Tasks, Notes and Discussion run as a device runs them in the engine's tests of a task's
 # sessions: a tilolang host on a thread of a test's own.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
-tilo-service = { path = "../../desktop/service" }
 # A direct link a test makes a reader fall behind, with the frames it hears
 # bounded by the test rather than by what a live link holds.
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
