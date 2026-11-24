@@ -187,9 +187,9 @@ use mcp_agent_pick::{pick_action_anywhere, published_on};
 pub(super) use mcp_agent_tools::{held_until_ended, tool_definitions};
 use tilo_actions::tree::{
     Address, AppRef, CLOSE_MATCHES, InstalledApp, Level, Levels, LsCursor, Names, Node, PageMark,
-    Resolved, Segment, TypeNames, action_rank, app_names, app_of, below_app, bound_key,
-    is_program_form, list_names, listed_as, named_beyond_its_start, only_by_id, path_name,
-    pick_action, reads_action, shared_names,
+    Resolved, TypeNames, action_rank, app_names, app_of, below_app, bound_key, is_program_form,
+    list_names, listed_as, named_beyond_its_start, only_by_id, path_name, pick_action,
+    reads_action, shared_names,
 };
 
 /// `forms` as the names a pick reads types by.

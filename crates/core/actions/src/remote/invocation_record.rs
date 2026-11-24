@@ -12,10 +12,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use super::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend};
+use super::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
 use super::{
-    ActionCallError, ActionProvider, Caller, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, ResourceWake,
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, InvocationReceipt, InvocationState,
+    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionTarget,
+    ResourceWake, pending,
 };
 use crate::InvocationId;
 
@@ -26,6 +27,9 @@ pub type OriginWrites<'a> = dyn Fn(&Caller, &Origin) -> bool + 'a;
 
 /// The most invocations a device keeps a record of; the oldest goes first.
 const KEPT: usize = 4096;
+
+/// Why an invocation is not taken back at a provider: the record there offers no history.
+pub const NO_HISTORY: &str = "the record it changed offers no history to take back";
 
 /// Where an invocation runs: the provider, and the caller it runs as there.
 pub type Route = (Arc<dyn ActionProvider + Send + Sync>, Caller);
@@ -61,6 +65,8 @@ pub struct Recorded {
     pub retries: Option<InvocationId>,
     /// What a model call it made cost, as the model endpoint wrote it.
     pub spend: Option<Spend>,
+    /// What it changed was taken back, through its record's own history.
+    pub undone: bool,
     route: Route,
 }
 
@@ -121,6 +127,7 @@ impl Invocations {
             origin: origin_of(caller, request),
             retries,
             spend: None,
+            undone: false,
             route,
         };
         let mut kept = self.kept();
@@ -263,13 +270,13 @@ impl Invocations {
     }
 
     /// The answer to `request` when it asks one of [`PROVIDER`]'s invocations to stop
-    /// ([`CANCEL`]) or to run again ([`RETRY`]): the invocation is the resource, by its id. `None`
-    /// for any other request, a read included: a record is read through the record API, never as
-    /// an action.
+    /// ([`CANCEL`]), to run again ([`RETRY`]), or to take back what it changed ([`UNDO`]): the
+    /// invocation is the resource, by its id. `None` for any other request, a read included: a
+    /// record is read through the record API, never as an action.
     ///
-    /// A call is stopped or run again by its caller, by the person its agent works for, or by
-    /// whoever `may_write_origin` says may write the resource it was made from. Anyone else is
-    /// refused in words a person reads.
+    /// A call is stopped, run again or taken back by its caller, by the person its agent works
+    /// for, or by whoever `may_write_origin` says may write the resource it was made from.
+    /// Anyone else is refused in words a person reads.
     #[must_use]
     pub fn answer(
         self: &Arc<Self>,
@@ -278,8 +285,8 @@ impl Invocations {
         may_write_origin: &OriginWrites<'_>,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         let target = &request.target;
-        if target.provider != PROVIDER || ![CANCEL, RETRY].contains(&target.address.action.as_str())
-        {
+        let action = target.address.action.as_str();
+        if target.provider != PROVIDER || ![CANCEL, RETRY, UNDO].contains(&action) {
             return None;
         }
         let Some(id) = uuid::Uuid::parse_str(&target.address.resource)
@@ -292,15 +299,35 @@ impl Invocations {
             return Some(Pending::ready(Err(ActionCallError::UnknownInvocation)));
         };
         if !Self::may_manage(caller, &recorded, may_write_origin) {
-            let verb = if target.address.action == RETRY {
-                "run it again"
-            } else {
-                "stop it"
+            let verb = match action {
+                RETRY => "run it again",
+                UNDO => "take it back",
+                _ => "stop it",
             };
             return Some(Pending::ready(Err(refused(verb, recorded.origin.as_ref()))));
         }
-        if target.address.action == RETRY {
+        if action == RETRY {
             return Some(Self::retry(self, &recorded, request.invocation));
+        }
+        if action == UNDO {
+            let asked = request.invocation;
+            let taken = Self::take_back_recorded(self, &recorded);
+            let (complete, answer) = pending();
+            taken.then(move |done| {
+                complete.complete(match done {
+                    Some(Ok(())) => Ok(InvocationReceipt {
+                        invocation: asked,
+                        status: ReceiptStatus::Completed {
+                            output: crate::ActionOutput::default(),
+                        },
+                    }),
+                    Some(Err(error)) => Err(error),
+                    None => Err(ActionCallError::Unavailable {
+                        reason: "the record did not answer".into(),
+                    }),
+                });
+            });
+            return Some(answer);
         }
         let (provider, runs_as) = recorded.route;
         let invocation = request.invocation;
@@ -312,6 +339,42 @@ impl Invocations {
                 },
             })
         }))
+    }
+
+    /// Take back what one record's invocation changed, and say so of the record.
+    fn take_back_recorded(
+        records: &Arc<Self>,
+        recorded: &Recorded,
+    ) -> Pending<Result<(), ActionCallError>> {
+        if recorded.undone {
+            return Pending::ready(Err(already_taken_back()));
+        }
+        let id = recorded.request.invocation;
+        let at = recorded.request.target.provider.clone();
+        let run = id.0.to_string();
+        let (complete, answer) = pending();
+        let records = Arc::clone(records);
+        take_back_run(&recorded.route, &at, None, &run).then(move |done| {
+            let result = match done {
+                None => Err(ActionCallError::Unavailable {
+                    reason: "the record did not answer".into(),
+                }),
+                Some(Err(error)) => Err(error),
+                Some(Ok(())) => {
+                    records.mark_undone(&id);
+                    Ok(())
+                }
+            };
+            complete.complete(result);
+        });
+        answer
+    }
+
+    /// Note that what `id` changed was taken back.
+    fn mark_undone(&self, id: &InvocationId) {
+        if let Some(recorded) = self.kept().by_id.get_mut(id) {
+            recorded.undone = true;
+        }
     }
 
     /// Run `recorded`'s action again under a new invocation id, as the caller that made it and
@@ -410,6 +473,128 @@ impl Invocations {
     }
 }
 
+/// Take back what the run `run` changed, through the record's own history: `at` is the provider
+/// whose record holds the changes, and `root` the address prefix of the history action there
+/// when the provider keeps many records (a session's own services), `None` when it keeps one.
+///
+/// The store's change history knows which changes a run made, so nothing is rebuilt here: the
+/// record publishes the history verb `undo` with an `invocation` argument, and this runs it as
+/// the route's caller. `#undo` and a decline both ask it, keyed by the invocation.
+pub fn take_back_run(
+    route: &Route,
+    at: &str,
+    root: Option<&str>,
+    run: &str,
+) -> Pending<Result<(), ActionCallError>> {
+    let (provider, runs_as) = route.clone();
+    let query = CatalogueQuery {
+        provider: Some(at.to_owned()),
+        needle: UNDO.to_owned(),
+        max_results: MAX_CATALOGUE_PAGE,
+        ..CatalogueQuery::default()
+    };
+    let run = run.to_owned();
+    let root = root.map(str::to_owned);
+    let (complete, answer) = pending();
+    provider.query(&runs_as, query).then(move |page| {
+        let found = match page {
+            None => Err(ActionCallError::Unavailable {
+                reason: "the record did not answer".into(),
+            }),
+            Some(Err(error)) => Err(error),
+            Some(Ok(page)) => {
+                undo_action(&page.rows, root.as_deref()).ok_or_else(|| ActionCallError::Refused {
+                    reason: NO_HISTORY.to_owned(),
+                })
+            }
+        };
+        let (token, address) = match found {
+            Ok(found) => found,
+            Err(error) => {
+                complete.complete(Err(error));
+                return;
+            }
+        };
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("invocation".to_owned(), serde_json::Value::String(run));
+        let request = InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: token,
+                address,
+            },
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        provider.invoke(&runs_as, request).then(move |answered| {
+            complete.complete(match answered {
+                None => Err(ActionCallError::Unavailable {
+                    reason: "the record did not answer".into(),
+                }),
+                Some(Ok(receipt)) => taken(receipt.status),
+                Some(Err(error)) => Err(error),
+            });
+        });
+    });
+    answer
+}
+
+/// The `undo` action `rows` offer that takes an invocation back, its provider and address:
+/// the one whose history lies at `root` when `root` names a prefix, preferring a verb that
+/// names the invocation it takes.
+fn undo_action(
+    rows: &[super::CatalogueRow],
+    root: Option<&str>,
+) -> Option<(String, crate::ActionAddress)> {
+    let mut fallback = None;
+    for row in rows {
+        let Some(action) = &row.action else {
+            continue;
+        };
+        if action.address.action != UNDO {
+            continue;
+        }
+        if root.is_some_and(|root| !action.address.resource.starts_with(root)) {
+            continue;
+        }
+        if action.params.iter().any(|param| param.name == "invocation") {
+            return Some((row.provider.clone(), action.address.clone()));
+        }
+        fallback.get_or_insert_with(|| (row.provider.clone(), action.address.clone()));
+    }
+    fallback
+}
+
+/// How taking back ended.
+fn taken(status: ReceiptStatus) -> Result<(), ActionCallError> {
+    match status {
+        ReceiptStatus::Completed { .. } => Ok(()),
+        ReceiptStatus::Failed { error } => Err(ActionCallError::Refused {
+            reason: error.message,
+        }),
+        ReceiptStatus::Rejected { error } => Err(error),
+        ReceiptStatus::Cancelled { .. } => Err(ActionCallError::Refused {
+            reason: "taking it back was stopped".into(),
+        }),
+        ReceiptStatus::Accepted => Err(ActionCallError::Unavailable {
+            reason: "taking it back is still running".into(),
+        }),
+    }
+}
+
+/// Why an invocation whose changes are gone is not taken back again.
+fn already_taken_back() -> ActionCallError {
+    ActionCallError::Refused {
+        reason: "what this invocation changed is already taken back".into(),
+    }
+}
+
 /// The resource `caller` made `request` from, when the call named one: its `$from`, else the
 /// conversation the caller's turn belongs to.
 fn origin_of(caller: &Caller, request: &InvokeRequest) -> Option<Origin> {
@@ -457,6 +642,7 @@ fn refused(verb: &str, origin: Option<&Origin>) -> ActionCallError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
@@ -465,27 +651,91 @@ mod tests {
     };
     use crate::{ActionOutput, InvocationUpdate};
 
-    /// A host that runs every invocation until it is stopped.
+    /// A host that runs every invocation until it is stopped, and whose record takes a run's
+    /// writes back through its own history `undo`.
     #[derive(Default)]
     struct Runs {
         stopped: AtomicBool,
+        /// The writes still in effect, each by the invocation it was one of, oldest first.
+        written: Mutex<Vec<(String, String)>>,
+    }
+
+    impl Runs {
+        /// The writes the invocation `id` made, as the record keeps them.
+        fn writes(&self, id: &InvocationId) -> Vec<String> {
+            self.written
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(of, _)| of == &id.0.to_string())
+                .map(|(_, what)| what.clone())
+                .collect()
+        }
     }
 
     impl ActionProvider for Runs {
         fn query(
             &self,
             _: &Caller,
-            _: CatalogueQuery,
+            query: CatalogueQuery,
         ) -> Pending<Result<CataloguePage, ActionCallError>> {
-            Pending::ready(Ok(CataloguePage::default()))
+            let mut page = CataloguePage::default();
+            if query.provider.as_deref() == Some("terminal") {
+                page.rows.push(super::super::CatalogueRow::for_action(
+                    "terminal",
+                    "terminal",
+                    crate::ActionDescriptor {
+                        address: crate::ActionAddress::new("tl:terminal:", UNDO),
+                        semantic_identity: None,
+                        resource_kind: "terminal".into(),
+                        resource_label: "Terminal".into(),
+                        action_label: "Undo".into(),
+                        keywords: Vec::new(),
+                        did: None,
+                        icon: None,
+                        description: None,
+                        state: crate::ActionState::default(),
+                        locus: crate::ExecutionLocus::ClientLocal,
+                        kind: crate::OperationKind::Effect,
+                        contract: crate::ActionContract::default(),
+                        input: crate::InputSpec::None,
+                        params: vec![crate::ActionParam::optional(
+                            "invocation",
+                            crate::ParamType::Text,
+                            "The invocation whose changes are taken back.",
+                        )],
+                        view: None,
+                    },
+                ));
+            }
+            Pending::ready(Ok(page))
         }
 
         fn invoke(
             &self,
             _: &Caller,
-            _: InvokeRequest,
+            request: InvokeRequest,
         ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-            Pending::ready(Err(ActionCallError::UnknownAction))
+            if request.target.address.action != UNDO {
+                return Pending::ready(Err(ActionCallError::UnknownAction));
+            }
+            let InvokeArgument::Json(arguments) = &request.argument else {
+                return Pending::ready(Err(ActionCallError::InvalidRequest {
+                    reason: "the undo names no invocation".into(),
+                }));
+            };
+            let named = arguments
+                .get("invocation")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            // The store's history knows which changes the run made: exactly those go.
+            self.written.lock().unwrap().retain(|(of, _)| of != named);
+            Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: ActionOutput::default(),
+                },
+            }))
         }
 
         fn observe(&self, _: &Caller, id: &InvocationId) -> Option<InvocationState> {
@@ -522,6 +772,173 @@ mod tests {
             appearance: None,
             signed: None,
         }
+    }
+
+    /// The request of one of a record's actions: stopping it, running it again, taking it back.
+    fn record_action(id: &InvocationId, action: &str) -> InvokeRequest {
+        let mut request = request();
+        request.invocation = InvocationId::new();
+        request.target = RemoteActionTarget {
+            provider: PROVIDER.into(),
+            address: crate::ActionAddress::new(id.0.to_string(), action),
+        };
+        request.argument = InvokeArgument::None;
+        request
+    }
+
+    /// Record two writes of the run `id` in `runs`' history, as an action it ran made them.
+    fn made(runs: &Runs, id: &InvocationId, first: &str, second: &str) {
+        let mut written = runs.written.lock().unwrap();
+        written.push((id.0.to_string(), first.to_owned()));
+        written.push((id.0.to_string(), second.to_owned()));
+    }
+
+    /// How `answer` took a record action: ready, without a provider to wait on.
+    fn answered(
+        invocations: &Arc<Invocations>,
+        caller: &Caller,
+        request: &InvokeRequest,
+        never: &OriginWrites<'_>,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        invocations
+            .answer(caller, request, never)
+            .expect("the record answers its own action")
+            .poll_ready()
+            .ready()
+    }
+
+    trait Ready<T> {
+        fn ready(self) -> T;
+    }
+
+    impl<T: std::fmt::Debug> Ready<T> for PendingPoll<T> {
+        fn ready(self) -> T {
+            match self {
+                PendingPoll::Ready(value) => value,
+                other => panic!("the answer was ready, not {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_invocation_takes_back_the_writes_its_run_made() {
+        let invocations = Arc::new(Invocations::default());
+        let never = |_: &Caller, _: &Origin| false;
+        let asked = Caller::local_person("ada").in_new_execution();
+        let request = request();
+        let id = request.invocation;
+        let runs = Arc::new(Runs::default());
+        invocations.record(
+            &asked,
+            &asked,
+            &request,
+            Some("w1"),
+            (runs.clone(), asked.clone()),
+        );
+        made(&runs, &id, "Shipping notes.", " Sent.");
+        assert_eq!(runs.writes(&id).len(), 2, "the run made two writes");
+
+        let undone = answered(&invocations, &asked, &record_action(&id, UNDO), &never)
+            .expect("its caller takes it back");
+        assert!(matches!(undone.status, ReceiptStatus::Completed { .. }));
+        assert!(
+            runs.writes(&id).is_empty(),
+            "both writes the run made are taken back"
+        );
+        assert!(
+            invocations.get(&asked, &id).unwrap().undone,
+            "the record says what it changed was taken back"
+        );
+    }
+
+    #[test]
+    fn someone_who_may_not_manage_the_run_is_refused_in_words() {
+        let invocations = Arc::new(Invocations::default());
+        let never = |_: &Caller, _: &Origin| false;
+        let asked = Caller::local_person("ada").in_new_execution();
+        let request = request();
+        let id = request.invocation;
+        let runs = Arc::new(Runs::default());
+        invocations.record(
+            &asked,
+            &asked,
+            &request,
+            Some("w1"),
+            (runs.clone(), asked.clone()),
+        );
+        made(&runs, &id, "Shipping notes.", " Sent.");
+
+        let stranger = Caller::local_person("bob").in_new_execution();
+        let refused = answered(&invocations, &stranger, &record_action(&id, UNDO), &never)
+            .expect_err("a stranger is refused");
+        let ActionCallError::Refused { reason } = &refused else {
+            panic!("a stranger is refused in words, not {refused:?}");
+        };
+        assert!(
+            reason.starts_with("only the caller who made this invocation"),
+            "{reason}"
+        );
+        assert!(
+            reason.ends_with("take it back"),
+            "the refusal names what they may not do: {reason}"
+        );
+        assert_eq!(runs.writes(&id).len(), 2, "nothing was taken back");
+    }
+
+    #[test]
+    fn taking_an_invocation_back_twice_is_refused_in_words() {
+        let invocations = Arc::new(Invocations::default());
+        let never = |_: &Caller, _: &Origin| false;
+        let asked = Caller::local_person("ada").in_new_execution();
+        let request = request();
+        let id = request.invocation;
+        let runs = Arc::new(Runs::default());
+        invocations.record(
+            &asked,
+            &asked,
+            &request,
+            Some("w1"),
+            (runs.clone(), asked.clone()),
+        );
+        made(&runs, &id, "Shipping notes.", " Sent.");
+        answered(&invocations, &asked, &record_action(&id, UNDO), &never)
+            .expect("the first takes it back");
+
+        let refused = answered(&invocations, &asked, &record_action(&id, UNDO), &never)
+            .expect_err("the second is refused");
+        let ActionCallError::Refused { reason } = &refused else {
+            panic!("a second undo is a refusal in words, not {refused:?}");
+        };
+        assert_eq!(
+            reason, "what this invocation changed is already taken back",
+            "a person reads what stands"
+        );
+    }
+
+    #[test]
+    fn an_invocations_person_takes_back_a_run_of_its_agents() {
+        let invocations = Arc::new(Invocations::default());
+        let never = |_: &Caller, _: &Origin| false;
+        let agent = Caller::local_agent("scout").acting_for("ada");
+        let request = request();
+        let id = request.invocation;
+        let runs = Arc::new(Runs::default());
+        invocations.record(
+            &agent,
+            &agent,
+            &request,
+            Some("w1"),
+            (runs.clone(), agent.clone()),
+        );
+        made(&runs, &id, "Shipping notes.", " Sent.");
+
+        let person = Caller::local_person("ada").in_new_execution();
+        answered(&invocations, &person, &record_action(&id, UNDO), &never)
+            .expect("the person the agent works for takes it back");
+        assert!(
+            runs.writes(&id).is_empty(),
+            "both of the agent's writes went"
+        );
     }
 
     #[test]

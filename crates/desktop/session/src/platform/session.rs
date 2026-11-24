@@ -1334,7 +1334,7 @@ impl Session {
             )
             .with_session_actions(Some(std::sync::Arc::clone(&session_actions))),
         );
-        let undo_api: std::sync::Arc<dyn crate::task_undo::UndoApi> = host.clone();
+        let undo_api: std::sync::Arc<crate::mcp_server::Host> = host.clone();
         activity.attach_api(undo_api);
         if let Some(broker) = app_wire.as_ref().and_then(AppWire::agent_broker) {
             activity.attach_broker(broker);

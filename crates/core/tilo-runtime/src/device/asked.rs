@@ -23,7 +23,7 @@ use serde_json::Value;
 use tilo_actions::remote::asked::{
     self, AskedBy, AskedDispatch, AskedFacts, AskedRecords, AskedStore, Named,
 };
-use tilo_actions::remote::invocation_record::{Invocations, Route};
+use tilo_actions::remote::invocation_record::{Invocations, Route, take_back_run};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus, pending,
@@ -85,11 +85,13 @@ impl Run {
 /// What admits `run` afresh: where its call is sent, and who it goes as there.
 pub(crate) type Admits = Box<dyn Fn(&Run) -> Result<Route, String> + Send + Sync>;
 
-/// A call that waits: the run it was made in, who follows it, and where an approve sends it.
+/// A call that waits: the run it was made in, who follows it, where an approve sends it, and the
+/// provider whose record holds the changes it already made.
 struct Waiting {
     run: Run,
     caller: Caller,
     route: Route,
+    at: String,
 }
 
 /// The asked records of the device's dispatch, and the calls that wait in them.
@@ -208,7 +210,7 @@ impl DeviceAsked {
         let me = Arc::clone(self);
         let (call, caller) = (request.clone(), caller.clone());
         provider
-            .invoke(&acting, request)
+            .invoke(&acting, request.clone())
             .map(move |answered| match refused_for_a_yes(&answered) {
                 // Kept where it was sent, for its person to answer there: it goes on, and the
                 // listing says it waits for them.
@@ -220,9 +222,16 @@ impl DeviceAsked {
                     me.invocations.note_waiting(&call.invocation);
                     answered
                 }
-                Some(facts) if call.approval().is_none() => {
-                    me.keep(Waiting { run, caller, route }, &call, facts)
-                }
+                Some(facts) if call.approval().is_none() => me.keep(
+                    Waiting {
+                        run,
+                        caller,
+                        route,
+                        at: request.target.provider,
+                    },
+                    &call,
+                    facts,
+                ),
                 _ => answered,
             })
     }
@@ -286,6 +295,7 @@ impl DeviceAsked {
     fn admitted_again(
         &self,
         restored: &Caller,
+        request: &InvokeRequest,
         context: &Value,
     ) -> Result<Waiting, ActionCallError> {
         let run: Run = serde_json::from_value(context.clone()).map_err(|_| not_waiting())?;
@@ -300,6 +310,7 @@ impl DeviceAsked {
             run,
             caller: restored.clone(),
             route,
+            at: request.target.provider.clone(),
         })
     }
 }
@@ -360,9 +371,11 @@ impl AskedDispatch for DeviceAsked {
         context: &Value,
     ) -> Result<(), ActionCallError> {
         let remembered = self.waiting.lock_recover().remove(&request.invocation);
-        let Waiting { run, caller, route } = match remembered {
+        let Waiting {
+            run, caller, route, ..
+        } = match remembered {
             Some(waiting) => waiting,
-            None => self.admitted_again(restored, context)?,
+            None => self.admitted_again(restored, &request, context)?,
         };
         // It runs where it is sent from now on, and is read there.
         self.invocations.record(
@@ -431,6 +444,9 @@ impl AskedDispatch for DeviceAsked {
             &waiting.route.1,
             cancelled(invocation, asked::DECLINED),
         );
+        // What the run wrote before it asked is taken back, keyed by its invocation: the same
+        // take-back `<record>#undo` runs, at the provider whose record holds it.
+        let _ = take_back_run(&waiting.route, &waiting.at, None, &invocation.0.to_string());
         Ok(())
     }
 

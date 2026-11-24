@@ -36,6 +36,8 @@ pub const RESOURCE: &str = "workspace";
 pub const CANCEL: &str = "cancel";
 /// Run one invocation again: the same request, by the same caller, under a new id.
 pub const RETRY: &str = "retry";
+/// Take back what one invocation changed, through its record's own history.
+pub const UNDO: &str = "undo";
 
 /// How many invocations a page holds when the query asks for no number.
 pub const PAGE: usize = 50;

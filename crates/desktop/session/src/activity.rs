@@ -183,7 +183,7 @@ struct Inner {
     people_moved: Cell<u64>,
     /// The session's action API, once its apps run here.
     #[cfg(target_os = "linux")]
-    api: RefCell<Option<Arc<dyn crate::task_undo::UndoApi>>>,
+    api: RefCell<Option<Arc<crate::mcp_server::Host>>>,
     /// The records' content this device keeps.
     #[cfg(target_os = "linux")]
     content: RefCell<Option<Arc<crate::content::ContentService>>>,
@@ -192,7 +192,7 @@ struct Inner {
     #[cfg(target_os = "linux")]
     broker: RefCell<Option<LearnedBroker>>,
     #[cfg(target_os = "linux")]
-    undos: crate::task_undo::Undos,
+    undos: run_undo::Undos,
     /// The records each workspace holds, read on a worker of its own, told by the change stream
     /// when one of them moved.
     records:
@@ -373,7 +373,7 @@ impl Activity {
             #[cfg(target_os = "linux")]
             broker: RefCell::default(),
             #[cfg(target_os = "linux")]
-            undos: crate::task_undo::Undos::default(),
+            undos: run_undo::Undos::default(),
             person,
             records: RefCell::default(),
             services: RefCell::default(),
@@ -485,7 +485,7 @@ impl Activity {
 
     /// Undo an agent's run in the records it changed, as the person at the screen.
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_api(&self, api: Arc<dyn crate::task_undo::UndoApi>) {
+    pub(crate) fn attach_api(&self, api: Arc<crate::mcp_server::Host>) {
         *self.0.api.borrow_mut() = Some(api);
     }
 
@@ -1099,8 +1099,8 @@ impl ActivityHost for Host {
         #[cfg(target_os = "linux")]
         {
             match self.0.undos.poll(invocation)? {
-                crate::task_undo::UndoState::Running => None,
-                crate::task_undo::UndoState::Ended(outcome) => Some(outcome),
+                run_undo::UndoState::Running => None,
+                run_undo::UndoState::Ended(outcome) => Some(outcome),
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -1939,5 +1939,199 @@ mod tests {
             "the restore is a change on top: {:?}",
             feed.entries
         );
+    }
+}
+
+/// Taking back an agent's run in the records it changed, through the invocation record's own
+/// take-back: the same one `<record>#undo` runs, keyed by the run.
+#[cfg(target_os = "linux")]
+mod run_undo {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use tilo_actions::InvocationId;
+    use tilo_actions::remote::{
+        ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+        InvocationState, InvokeRequest, Pending, invocation_record::NO_HISTORY, session_actions,
+    };
+    use tilo_lock::MutexRecover as _;
+    use tilo_session_core::desktop::activity::TaskRunDocument;
+
+    /// How long one run's undo may take altogether.
+    const UNDO_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// How long a record has to answer one request at all.
+    const ANSWER: Duration = Duration::from_millis(100);
+
+    /// The session's action API as the person at the screen: an undo is their own step, not a
+    /// decision about someone else's.
+    struct AsThePerson(Arc<crate::mcp_server::Host>);
+
+    impl ActionProvider for AsThePerson {
+        fn query(
+            &self,
+            caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            ActionProvider::query(&*self.0, caller, query)
+        }
+
+        fn invoke(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            self.0.invoke_as_local_person(caller, request)
+        }
+
+        fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+            ActionProvider::observe(&*self.0, caller, id)
+        }
+
+        fn cancel(
+            &self,
+            caller: &Caller,
+            id: &InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            ActionProvider::cancel(&*self.0, caller, id)
+        }
+    }
+
+    /// Where `step`'s changes may be taken back, in the order asked: the app's record, the app's
+    /// own record of the workspace, and the session's services for the records they keep.
+    fn candidates(app: &str, record: &str) -> Vec<(String, Option<String>)> {
+        let mut at = Vec::new();
+        if !record.is_empty() {
+            at.push((format!("record:{app}:{record}"), None));
+        }
+        at.push((format!("record:{app}:"), None));
+        at.push((
+            session_actions::PROVIDER.to_owned(),
+            Some(format!("tl:{app}:")),
+        ));
+        at
+    }
+
+    /// Take back what the run `run` changed in each of `steps`' records, through the record's own
+    /// history: the one take-back `#undo` runs, asked of the app that holds each record.
+    fn undo_run(
+        api: Arc<crate::mcp_server::Host>,
+        caller: Caller,
+        run: &str,
+        steps: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<Vec<TaskRunDocument>, String> {
+        let now = Instant::now();
+        let until = now.checked_add(timeout).unwrap_or(now);
+        let provider: Arc<dyn ActionProvider + Send + Sync> = Arc::new(AsThePerson(api));
+        let route: (Arc<dyn ActionProvider + Send + Sync>, Caller) = (provider, caller);
+        let mut done = Vec::new();
+        let mut refused = Vec::new();
+        for (app, record) in steps {
+            let mut failure = None;
+            let mut taken = false;
+            for (at, root) in candidates(app, record) {
+                let left = until.saturating_duration_since(Instant::now());
+                let pending = tilo_actions::remote::invocation_record::take_back_run(
+                    &route,
+                    &at,
+                    root.as_deref(),
+                    run,
+                );
+                match pending.wait_timeout(left.max(ANSWER)) {
+                    Ok(Some(Ok(()))) => {
+                        taken = true;
+                        break;
+                    }
+                    // No history at this record: ask the next place it may be kept.
+                    Ok(Some(Err(ActionCallError::Refused { reason }))) if reason == NO_HISTORY => {}
+                    Ok(Some(Err(error))) => failure = Some(error.to_string()),
+                    _ => failure = Some("the record did not answer".to_owned()),
+                }
+            }
+            if taken {
+                done.push(TaskRunDocument {
+                    app: app.clone(),
+                    record: record.clone(),
+                });
+            } else {
+                refused.push(format!(
+                    "{app}: {}",
+                    failure.unwrap_or_else(|| "no history to undo there".to_owned())
+                ));
+            }
+        }
+        if done.is_empty() {
+            return Err(if refused.is_empty() {
+                "open the records this run changed to undo it".to_owned()
+            } else {
+                refused.join("; ")
+            });
+        }
+        if !refused.is_empty() {
+            tracing::warn!(run, refused = %refused.join("; "), "a run was undone only in part");
+        }
+        Ok(done)
+    }
+
+    /// Undoes a run by run on a thread of its own, so the activity's request answers at once and
+    /// its outcome is polled. An outcome is taken once.
+    #[derive(Clone, Default)]
+    pub(crate) struct Undos {
+        running: Arc<Mutex<Outcomes>>,
+    }
+
+    /// Each undo by its request: `None` while it runs, then how it ended.
+    type Outcomes = BTreeMap<uuid::Uuid, Option<Result<Vec<TaskRunDocument>, String>>>;
+
+    /// Where one undo is.
+    pub(crate) enum UndoState {
+        Running,
+        Ended(Result<Vec<TaskRunDocument>, String>),
+    }
+
+    impl Undos {
+        /// Start undoing the run `run` in `workspace` as `person`, through `api`; `done` is
+        /// told once it ended, on its thread.
+        pub(crate) fn start(
+            &self,
+            api: Arc<crate::mcp_server::Host>,
+            person: String,
+            workspace: String,
+            invocation: uuid::Uuid,
+            run: String,
+            steps: Vec<(String, String)>,
+            done: impl FnOnce() + Send + 'static,
+        ) -> Result<(), String> {
+            self.running.lock_recover().insert(invocation, None);
+            let running = Arc::clone(&self.running);
+            std::thread::Builder::new()
+                .name("tilo-run-undo".into())
+                .spawn(move || {
+                    // The caller's workspace decides what the API opens, so the undo asks as
+                    // itself.
+                    let caller = Caller::local_person(person)
+                        .in_workspace(workspace)
+                        .in_new_execution();
+                    let outcome = undo_run(api, caller, &run, &steps, UNDO_TIMEOUT);
+                    running.lock_recover().insert(invocation, Some(outcome));
+                    done();
+                })
+                .map(drop)
+                .map_err(|error| error.to_string())
+        }
+
+        /// Where undo `invocation` is; `None` when it is not one of these.
+        pub(crate) fn poll(&self, invocation: uuid::Uuid) -> Option<UndoState> {
+            let mut running = self.running.lock_recover();
+            let outcome = running.get(&invocation)?;
+            let Some(ended) = outcome.clone() else {
+                return Some(UndoState::Running);
+            };
+            running.remove(&invocation);
+            drop(running);
+            Some(UndoState::Ended(ended))
+        }
     }
 }

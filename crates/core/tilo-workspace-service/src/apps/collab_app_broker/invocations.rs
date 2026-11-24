@@ -291,7 +291,11 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
         step: None,
         by: by(&recorded.asked),
         title: title(request),
-        status: status(recorded),
+        status: if recorded.undone {
+            InvocationStatus::Undone
+        } else {
+            status(recorded)
+        },
         failure: recorded.state.as_ref().and_then(
             |state| match EffectReceiptStatus::from_terminal(&state.update) {
                 Some(EffectReceiptStatus::Failed { code }) => Some(code),
@@ -308,7 +312,7 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
         }),
         summary: None,
         changes: usize::try_from(recorded.changes).unwrap_or(usize::MAX),
-        undone: 0,
+        undone: usize::from(recorded.undone),
         records: Vec::new(),
         undoable: false,
         undo_blocked: None,

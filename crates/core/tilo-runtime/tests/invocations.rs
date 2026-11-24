@@ -534,3 +534,128 @@ fn a_caller_neither_its_own_nor_a_writer_of_its_origin_is_refused() {
         }
     });
 }
+
+/// An agent's run that made two writes is taken back whole by its record's `undo`: both writes
+/// go, the record says what it changed was taken back, a caller who may not manage the run is
+/// refused, and asking again is refused in words a person reads.
+#[test]
+fn an_agents_run_is_taken_back_whole_through_its_record() {
+    use crate::chat::{chat_holds, opens, said};
+
+    host::run(|host| async move {
+        opens(host.as_ref())
+            .await
+            .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
+        let agent = host.agent();
+        // The channel the chat opened with is listed before the agent posts into it.
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let (listed, failed) = said(&agent.tool("tilo_ls", &json!({"path": "chat"})).await);
+            if !failed && listed.contains("c_chat") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the chat is never listed: {listed}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // One invocation of the chat's group makes two writes.
+        let run = tilo_actions::InvocationId::new().0.to_string();
+        let posts = [
+            json!({"action": "post", "args": {"channel": "c_chat", "text": "bulk one"}}),
+            json!({"action": "post", "args": {"channel": "c_chat", "text": "bulk two"}}),
+        ];
+        let (grouped, failed) = said(
+            &agent
+                .tool(
+                    "tilo_do",
+                    &json!({"path": "chat/Messages#group",
+                            "args": {"actions": posts},
+                            "invocation_id": run}),
+                )
+                .await,
+        );
+        assert!(!failed, "the batch runs as one invocation: {grouped}");
+        for text in ["bulk one", "bulk two"] {
+            assert!(
+                chat_holds(host.as_ref(), text)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error}")),
+                "the run wrote {text:?}"
+            );
+        }
+
+        let dispatch = host.dispatch();
+        let person = host.caller();
+        // A stranger, neither the caller nor the person its agent works for, may not take it back.
+        let stranger = Caller::local_person(host.person())
+            .in_workspace(host.workspace())
+            .in_new_execution();
+        let refused = rejected(
+            invoked(
+                dispatch.as_ref(),
+                &stranger,
+                record_action(&run, workspace_invocations::UNDO),
+            )
+            .await
+            .expect("the record answers"),
+        );
+        let ActionCallError::Refused { reason } = &refused else {
+            panic!("a stranger is refused in words, not {refused:?}");
+        };
+        assert!(
+            reason.starts_with("only the caller who made this invocation"),
+            "{reason}"
+        );
+        for text in ["bulk one", "bulk two"] {
+            assert!(
+                chat_holds(host.as_ref(), text)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error}")),
+                "a refusal wrote nothing: {text:?}"
+            );
+        }
+
+        // The person its agent works for takes the run back whole.
+        let undone = completed(
+            invoked(
+                dispatch.as_ref(),
+                &person,
+                record_action(&run, workspace_invocations::UNDO),
+            )
+            .await
+            .expect("the person takes it back"),
+        );
+        assert!(undone.is_null(), "the undo answers nothing of its own");
+        for text in ["bulk one", "bulk two"] {
+            assert!(
+                !chat_holds(host.as_ref(), text)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error}")),
+                "the run's write {text:?} is gone"
+            );
+        }
+        let taken = one(dispatch.as_ref(), &person, &run).await;
+        assert_eq!(taken["status"], "undone", "{taken}");
+
+        // Asking again says what stands, in words.
+        let again = rejected(
+            invoked(
+                dispatch.as_ref(),
+                &person,
+                record_action(&run, workspace_invocations::UNDO),
+            )
+            .await
+            .expect("the record answers"),
+        );
+        let ActionCallError::Refused { reason } = &again else {
+            panic!("a second undo is refused in words, not {again:?}");
+        };
+        assert!(
+            reason.contains("already taken back"),
+            "a person reads what stands: {reason}"
+        );
+    });
+}
