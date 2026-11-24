@@ -28,15 +28,6 @@ pub(super) struct HostRuns {
     pub(super) workspaces: Arc<ServiceWorkspaces>,
     pub(super) invocations: Arc<Invocations>,
     pub(super) first: Arc<super::first_workspace::FirstWorkspace>,
-    /// The calls that wait for their person's root, and the device actions its answer runs.
-    pub(super) asked: Arc<super::asked::DeviceAsked>,
-    pub(super) tickets: Arc<super::ticket::Tickets>,
-    /// This device's certificate, which its person's root signed.
-    pub(super) cert: DeviceCert,
-    /// Whether what the start could not do for a fresh person was done once their workspace
-    /// was founded: listing this device with their others, marking their root here, and serving
-    /// their root-only asks.
-    pub(super) done: OnceLock<()>,
     /// The workspace's dispatch, once a key reached it.
     pub(super) provider: OnceLock<RuntimeActionProvider>,
     /// The person's workspace, by its UUID.
@@ -49,14 +40,13 @@ impl HostRuns {
     /// The person's workspace's dispatch: founded, and admitted for the person, the first time.
     ///
     /// A fresh person's workspace is not held when the daemon starts, so what the start does for
-    /// a person with one is done here the first time: this device is listed with their others,
-    /// their root is marked in their devices, and their root-only asks are served.
+    /// a person with one is done the first time, also for a workspace that came in from their
+    /// desktop ([`super::first_workspace::FirstWorkspace::found_if_theirs`]).
     fn provider(&self) -> Result<RuntimeActionProvider, String> {
         if let Some(provider) = self.provider.get() {
             return Ok(provider.clone());
         }
         self.first.found_if_theirs(&self.workspace)?;
-        self.done.get_or_init(|| self.hold_person());
         let provider = action_provider(
             &self.broker,
             &self.workspaces,
@@ -68,21 +58,39 @@ impl HostRuns {
         .map_err(|error| error.to_string())?;
         Ok(self.provider.get_or_init(|| provider).clone())
     }
+}
 
-    /// What the daemon's start does for a person whose workspace it holds, done here for a person
-    /// whose workspace was not held then: this device listed with their others, their root marked
-    /// in their devices, their root-only asks served here, and their workspaces read as held.
-    fn hold_person(&self) {
-        let (copies, cert) = (self.workspaces.copies().clone(), self.cert.clone());
-        let (asked, tickets) = (Arc::clone(&self.asked), Arc::clone(&self.tickets));
-        // Their workspaces, listed now that theirs is held: what this device offers their keys,
-        // and what their own tilo reads.
-        drop(self.workspaces.workspaces());
-        super::workspaces::block_on_owned(async move {
-            super::first_workspace::hold_person(&copies, &cert).await;
+/// What the daemon's start does for a person whose workspace is here, for a person whose
+/// workspace came later, done once it is
+/// ([`super::first_workspace::FirstWorkspace::settle`]): their workspaces read again, this
+/// device listed with their others, their root marked in their devices, and their root-only
+/// asks served here.
+pub(super) fn settling(
+    workspaces: &Arc<ServiceWorkspaces>,
+    asked: &Arc<super::asked::DeviceAsked>,
+    tickets: &Arc<super::ticket::Tickets>,
+    cert: &DeviceCert,
+) -> super::first_workspace::Settling {
+    let workspaces = Arc::downgrade(workspaces);
+    let (asked, tickets, cert) = (Arc::downgrade(asked), Arc::clone(tickets), cert.clone());
+    Arc::new(move || {
+        let (workspaces, asked, tickets, cert) = (
+            workspaces.upgrade(),
+            asked.upgrade(),
+            Arc::clone(&tickets),
+            cert.clone(),
+        );
+        Box::pin(async move {
+            let (Some(workspaces), Some(asked)) = (workspaces, asked) else {
+                return;
+            };
+            // Their workspaces, listed now that theirs is held: what this device offers their
+            // keys, and what their own tilo reads.
+            drop(workspaces.workspaces());
+            super::first_workspace::hold_person(workspaces.copies(), &cert).await;
             asked.serve_at_root((*tickets).clone());
-        });
-    }
+        })
+    })
 }
 
 impl crate::key_sessions::Sessions for HostRuns {

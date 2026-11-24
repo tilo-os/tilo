@@ -275,6 +275,9 @@ fn serve(
         );
         return;
     };
+    // The workspace the app names is made ready for it before its first ask is answered.
+    #[cfg(unix)]
+    person.connected(&handshake.app_id, &workspace, &stream);
     while let Ok(request) = read_action_frame::<Request>(&mut stream) {
         let response = match request {
             Request::Metadata => {

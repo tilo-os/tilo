@@ -20,6 +20,11 @@ pub(crate) const FOUNDED: &str = "workspace-of-";
 /// What the workspace founded on a computer with no login is called.
 pub(crate) const FOUNDED_NAME: &str = "Home";
 
+/// What the daemon does for its person once their workspace is here: what its start does for a
+/// person whose workspace it already holds.
+pub(crate) type Settling =
+    Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+
 /// The person's workspace on this computer, once there is one.
 pub(crate) struct FirstWorkspace {
     /// The file naming it on a computer with no login; `None` with a login, which names it.
@@ -28,6 +33,10 @@ pub(crate) struct FirstWorkspace {
     workspaces: Arc<ServiceWorkspaces>,
     /// Where the files of the workspaces this computer governs are shown, once they are.
     replicas: OnceLock<Weak<Replicas>>,
+    /// What the daemon does once the workspace is here ([`Self::when_here`]).
+    settling: OnceLock<Settling>,
+    /// Whether that was done, once the workspace was here.
+    settled: tokio::sync::OnceCell<()>,
 }
 
 impl FirstWorkspace {
@@ -69,6 +78,12 @@ impl FirstWorkspace {
             },
             (None, None) => None,
         };
+        // A workspace here when the daemon starts is settled by the start itself.
+        let settled = if named.is_some() {
+            tokio::sync::OnceCell::new_with(Some(()))
+        } else {
+            tokio::sync::OnceCell::new()
+        };
         Ok(Arc::new(Self {
             file,
             id: named.map_or_else(tokio::sync::OnceCell::new, |named| {
@@ -76,6 +91,8 @@ impl FirstWorkspace {
             }),
             workspaces,
             replicas: OnceLock::new(),
+            settling: OnceLock::new(),
+            settled,
         }))
     }
 
@@ -87,12 +104,40 @@ impl FirstWorkspace {
             id: tokio::sync::OnceCell::new_with(Some(workspace.to_string())),
             workspaces,
             replicas: OnceLock::new(),
+            settling: OnceLock::new(),
+            settled: tokio::sync::OnceCell::new_with(Some(())),
         })
     }
 
     /// Show the files of the workspace this computer founds, once it does, in the files daemon's trees.
     pub(crate) fn show_files_in(&self, replicas: &Arc<Replicas>) {
         let _ = self.replicas.set(Arc::downgrade(replicas));
+    }
+
+    /// Have `settling` done once the person's workspace is here: when it is founded, and when
+    /// whatever first reaches it finds it came in from their desktop ([`Self::settle`]). A
+    /// workspace here when the daemon started is the start's own to settle.
+    pub(crate) fn when_here(&self, settling: Settling) {
+        let _ = self.settling.set(settling);
+    }
+
+    /// Do once what the daemon does for its person once their workspace is here
+    /// ([`Self::when_here`]): this device listed with their others before anything signs as it,
+    /// their root marked, and their root-only asks served. Nothing while there is no workspace.
+    pub(crate) async fn settle(&self) {
+        let (Some(_), Some(settling)) = (self.get(), self.settling.get().cloned()) else {
+            return;
+        };
+        self.settled.get_or_init(|| settling()).await;
+    }
+
+    /// [`Self::settle`], from a caller that does not run on the runtime.
+    pub(crate) fn settle_blocking(self: &Arc<Self>) {
+        if self.settled.initialized() {
+            return;
+        }
+        let first = Arc::clone(self);
+        super::workspaces::block_on_owned(async move { first.settle().await });
     }
 
     /// Whether this computer founds its person's workspace itself: it has no login.
@@ -110,7 +155,8 @@ impl FirstWorkspace {
     /// # Errors
     /// The service did not found it, or its name cannot be kept.
     pub(crate) async fn found(&self) -> Result<String, String> {
-        self.id
+        let founded = self
+            .id
             .get_or_try_init(|| async {
                 let Some(file) = &self.file else {
                     return Err("this computer's login names no workspace".to_owned());
@@ -126,7 +172,10 @@ impl FirstWorkspace {
                 Ok(workspace.to_string())
             })
             .await
-            .cloned()
+            .cloned()?;
+        // Founded now or before: this device is listed in it before anything uses it.
+        self.settle().await;
+        Ok(founded)
     }
 
     /// [`Self::found`], from a caller that does not run on the runtime.
@@ -135,6 +184,8 @@ impl FirstWorkspace {
     /// As [`Self::found`].
     pub(crate) fn found_blocking(self: &Arc<Self>) -> Result<String, String> {
         if let Some(id) = self.get() {
+            // One that came in from the person's desktop is settled by the first that reaches it.
+            self.settle_blocking();
             return Ok(id.to_owned());
         }
         let first = Arc::clone(self);
@@ -142,14 +193,14 @@ impl FirstWorkspace {
     }
 
     /// Found the person's workspace when `workspace` names it and this computer founds it but has
-    /// none yet: what a call of theirs in it does the first time they need one. Any other
-    /// workspace, or one already here, is left as it is.
+    /// none yet: what a call of theirs in it does the first time they need one. One that came in
+    /// from their desktop first is theirs here, and is settled instead ([`Self::settle`]). Any
+    /// other workspace is left as it is.
     ///
     /// # Errors
     /// As [`Self::found`].
     pub(crate) fn found_if_theirs(self: &Arc<Self>, workspace: &str) -> Result<(), String> {
-        if self.get().is_some()
-            || !self.founds()
+        if !self.founds()
             || workspace
                 != own_workspace(&self.workspaces.device_cert().user_public_key).to_string()
         {

@@ -368,6 +368,19 @@ pub trait PersonResourceTypes: collab_types::signer::MaybeSendSync + 'static {
     /// app's surface; by default it is ignored and only a package's counts.
     fn attached(&self, _app_id: &str, _surface: &[u8]) {}
 
+    /// `app_id`'s service connection `stream` named `workspace` as the one it was started in,
+    /// before anything it asks is answered. A host may make that workspace ready for an app it
+    /// launched there: a person's own workspace is founded the first time an app they launched
+    /// reaches it. Nothing by default.
+    #[cfg(unix)]
+    fn connected(
+        &self,
+        _app_id: &str,
+        _workspace: &WorkspaceId,
+        _stream: &std::os::unix::net::UnixStream,
+    ) {
+    }
+
     /// Whether `reader` declares that it reads `owner`'s records (its surface's `reads` against
     /// the owner's resource kinds), as the broker admits its read-only join: it is handed the
     /// keys that open them, and signs nothing there. None by default.

@@ -1462,6 +1462,15 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
     let holder_key = cert.device_public_key;
     let holder = tickets(root_in(state.path().to_path_buf()), "holder", &cert);
     let root = root_in(state.path().to_path_buf())().unwrap().unwrap();
+    // The person's own workspace keeps their devices record. A computer that keeps their root
+    // founds it, at the id their key names, the first time they need it, as it does now.
+    issuer
+        .found(
+            super::first_workspace::own_workspace(&cert.user_public_key),
+            super::first_workspace::FOUNDED_NAME,
+        )
+        .await
+        .expect("the person's workspace is founded");
     tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
         copies, &root, &cert,
     )
@@ -1568,4 +1577,131 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
         rootless_store.record(&invocation.0.to_string()).is_none(),
         "the device that asked forgets the record once it shows how it ended"
     );
+}
+
+const FIRST_APP_TEST: &str = "device::ticket_tests::the_first_app_launched_in_the_persons_workspace_founds_it_with_the_device_listed";
+/// The socket the helper process of [`FIRST_APP_TEST`] connects to as an app.
+const FIRST_APP_SOCKET: &str = "TILO_FIRST_APP_SOCKET";
+
+/// On a computer with no login, the first app this daemon launched in the person's own workspace
+/// founds that workspace when its service connection names it, before the app signs anything,
+/// and the device is listed in the person's devices then. A process the daemon did not launch,
+/// and an app it launched in another workspace, found nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_device_listed() {
+    use std::io::Read as _;
+    use tilo_actions::remote::asked::{AskedKeeping, AskedStore};
+    use tilo_identity::sources::PersonResourceTypes as _;
+
+    // Helper role: a process of its own that connects as an app, and stays until told to go.
+    if let Some(socket) = std::env::var_os(FIRST_APP_SOCKET) {
+        let _connection = std::os::unix::net::UnixStream::connect(socket).unwrap();
+        let _ = std::io::stdin().read(&mut [0]);
+        return;
+    }
+    const APP: &str = "dev.tilo.first";
+    let (workspaces, state, key, cert, _paths) =
+        super::workspaces::ServiceWorkspaces::test_of_person().await;
+    let copies = workspaces.copies().clone();
+    let first = FirstWorkspace::open(
+        Arc::clone(&workspaces),
+        None,
+        state.path(),
+        &cert.user_public_key,
+    )
+    .unwrap();
+    // What the daemon's start has its person's workspace held with, once it is here.
+    let tickets = Arc::new(Tickets::new(
+        (key.clone(), cert.clone()),
+        workspaces.endpoint(),
+        None,
+        no_root(),
+        None,
+        Some(Arc::clone(&workspaces)),
+        tilo_device_identity::login::Place::at(
+            state.path().join("login"),
+            tilo_device_identity::IdentityPaths::under(state.path().join("login-keys")),
+        ),
+        copies.action_service(),
+    ));
+    let keeping: Arc<dyn AskedKeeping> = copies.asked_keeping();
+    let invocations: Arc<tilo_actions::remote::invocation_record::Invocations> = Arc::default();
+    let asked = super::asked::DeviceAsked::new(
+        AskedStore::opened(None, Some(keeping), Vec::new()).unwrap(),
+        invocations,
+        Box::new(|_| Err("nothing waits here to be sent again".to_owned())),
+    );
+    first.when_here(super::host_runs::settling(
+        &workspaces,
+        &asked,
+        &tickets,
+        &cert,
+    ));
+    let apps = Arc::new(crate::apps::Apps::new(
+        None,
+        state.path(),
+        std::path::PathBuf::new(),
+        Vec::new(),
+    ));
+    let surfaces = super::services::AttachedSurfaces {
+        apps: Arc::clone(&apps),
+        first: Arc::clone(&first),
+        dev: false,
+    };
+    let own = super::first_workspace::own_workspace(&cert.user_public_key);
+    let elsewhere = tilo_desktop_model::WorkspaceId::new();
+    // The app's service connection, from a process of its own.
+    let socket = state.path().join("identity.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let mut app = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", FIRST_APP_TEST, "--nocapture"])
+        .env(FIRST_APP_SOCKET, &socket)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let (daemon, _) = listener.accept().unwrap();
+    let listed = || {
+        let workspaces = Arc::clone(&workspaces);
+        let device = cert.device_public_key;
+        std::thread::spawn(move || {
+            super::signing::devices_seen(&workspaces)
+                .certified
+                .contains(&device)
+        })
+        .join()
+        .unwrap()
+    };
+
+    // A process no launch here started names the person's workspace: nothing is founded.
+    surfaces.connected(APP, &own, &daemon);
+    assert_eq!(
+        first.get(),
+        None,
+        "a process the daemon did not launch founds nothing"
+    );
+
+    // An app the daemon launched in another workspace names it: nothing is founded either.
+    apps.record_started(app.id(), APP, &elsewhere.to_string());
+    surfaces.connected(APP, &elsewhere, &daemon);
+    assert_eq!(
+        first.get(),
+        None,
+        "an app launched elsewhere founds nothing"
+    );
+    apps.forget_started(app.id());
+
+    // The app the daemon launched in the person's own workspace founds it, with this device
+    // listed in their devices before the app signs anything.
+    apps.record_started(app.id(), APP, &own.to_string());
+    let founding = tokio::task::spawn_blocking({
+        let own = own;
+        move || surfaces.connected(APP, &own, &daemon)
+    });
+    founding.await.unwrap();
+    assert_eq!(first.get(), Some(own.to_string().as_str()));
+    assert!(listed(), "the device is listed in the person's devices");
+    drop(app.stdin.take());
+    assert!(app.wait().unwrap().success());
 }

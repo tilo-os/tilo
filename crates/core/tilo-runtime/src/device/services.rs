@@ -1432,7 +1432,7 @@ impl Daemon {
             identity_socket.clone(),
             Arc::clone(&workspaces) as Arc<dyn WorkspaceMembership>,
             Arc::new(workspaces.keys()),
-            &apps,
+            (&apps, &first),
             dev,
         )?;
         stage("opening the content store");
@@ -1537,6 +1537,14 @@ impl Daemon {
             admits_again(&broker, &workspaces, &actor),
         );
         asked.withdraw_what_ended();
+        // A person whose workspace is founded here after the start, or comes in from their
+        // desktop, is held as the start holds one it finds: done by whatever first reaches it.
+        first.when_here(super::host_runs::settling(
+            &workspaces,
+            &asked,
+            &tickets,
+            &identity.cert,
+        ));
         // A read an app's join asks the person about waits here as its asked record.
         if let Some(broker) = broker.app_action_broker() {
             broker.state().serve_asked_reads(
@@ -1591,7 +1599,6 @@ impl Daemon {
                 &workspaces,
                 (&actor, founded, serves_pages),
                 (&policy_origin, &first),
-                (&asked, &tickets, &identity.cert),
             )?;
         }
         serve_agent_steps(&workspaces, &fanout);
@@ -2472,6 +2479,10 @@ impl RuntimeServices for Daemon {
                 blobs: &self.blob_socket,
             },
         )?;
+        // The process runs the app in the person's workspace, as the daemon launched it: what
+        // its connections are recognised by, by its exact launch record.
+        self.apps
+            .record_started(child.id(), app_id, &self.workspace);
         Ok(child)
     }
 
@@ -4862,11 +4873,6 @@ fn serve_key_sessions(
         &tilo_workspace_service::apps::policy_clock::PolicyOrigin,
         &Arc<super::first_workspace::FirstWorkspace>,
     ),
-    (asked, tickets, cert): (
-        &Arc<super::asked::DeviceAsked>,
-        &Arc<Tickets>,
-        &tilo_user_identity::DeviceCert,
-    ),
 ) -> io::Result<()> {
     let broker = broker
         .app_action_broker()
@@ -4880,10 +4886,6 @@ fn serve_key_sessions(
             workspaces: Arc::clone(workspaces),
             invocations: Arc::clone(invocations),
             first: Arc::clone(first),
-            asked: Arc::clone(asked),
-            tickets: Arc::clone(tickets),
-            cert: cert.clone(),
-            done: std::sync::OnceLock::new(),
             provider: std::sync::OnceLock::new(),
             workspace: workspace.to_string(),
             actor: actor.to_owned(),
@@ -5016,11 +5018,15 @@ fn identity_service(
     socket: PathBuf,
     workspaces: Arc<dyn WorkspaceMembership>,
     keys: Arc<dyn tilo_identity::broker::GroupKeySource>,
-    apps: &Arc<apps::Apps>,
+    (apps, first): (
+        &Arc<apps::Apps>,
+        &Arc<super::first_workspace::FirstWorkspace>,
+    ),
     dev: bool,
 ) -> io::Result<tilo_identity::broker::IdentityBrokerHandle> {
     let person = AttachedSurfaces {
         apps: Arc::clone(apps),
+        first: Arc::clone(first),
         dev,
     };
     tilo_identity::broker::spawn(socket, workspaces, keys, Arc::new(person))
@@ -5032,9 +5038,11 @@ fn identity_service(
 /// `tilolang dev` sets, is taken as its own, so its person records reach
 /// the person's workspace. An installed app runs only with its package's signed
 /// surface, and no attach replaces a surface the runtime already holds.
-struct AttachedSurfaces {
-    apps: Arc<apps::Apps>,
-    dev: bool,
+pub(super) struct AttachedSurfaces {
+    pub(super) apps: Arc<apps::Apps>,
+    /// The person's workspace here, which the first app this daemon launched in it founds.
+    pub(super) first: Arc<super::first_workspace::FirstWorkspace>,
+    pub(super) dev: bool,
 }
 
 impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
@@ -5044,6 +5052,33 @@ impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
 
     fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
         ui::app_surface::reads_app(reader, owner)
+    }
+
+    /// An app this daemon launched in the person's own workspace founds that workspace on a
+    /// computer with no login when nothing came in from their desktop yet, before it signs
+    /// anything: the device is listed in it then. The app is this daemon's by its exact launch
+    /// record, or because the daemon opened the connection itself, as it does for an app it
+    /// launches before the app runs (`host::launch`). Any other process, an app launched in
+    /// another workspace, or a workspace already here, founds nothing.
+    #[cfg(unix)]
+    fn connected(
+        &self,
+        app_id: &str,
+        workspace: &tilo_desktop_model::WorkspaceId,
+        stream: &std::os::unix::net::UnixStream,
+    ) {
+        let Some(pid) = crate::seats::peer_of(stream).ok().and_then(|peer| peer.pid) else {
+            return;
+        };
+        let workspace = workspace.to_string();
+        if pid != std::process::id()
+            && self.apps.attested(pid) != Some((app_id.to_owned(), workspace.clone()))
+        {
+            return;
+        }
+        if let Err(error) = self.first.found_if_theirs(&workspace) {
+            tracing::warn!(%error, app_id, "the person's workspace was not founded for their app");
+        }
     }
 
     fn attached(&self, app_id: &str, surface: &[u8]) {
