@@ -5,6 +5,10 @@ mod external_moderation_rpc_tests {
     use super::*;
     use registry_types::{ExternalModerationOperation, ModerationDestination, ModerationMutation};
     use runtime_collab::external_moderation::{PROTOCOL, Request};
+    use tilo_actions::remote::asked::{
+        AskedDispatch, AskedFacts, AskedStore, Offer, RecordRef, Resolve,
+    };
+    use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 
     struct ExactLaunch {
         app: String,
@@ -34,7 +38,59 @@ mod external_moderation_rpc_tests {
         route: CrdtRoute,
         state: Arc<AppBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
+        /// The store the calls this app makes that wait for its person are kept in, as the
+        /// device that carries the app's calls keeps them, and what admits one again.
+        asked: Arc<AskedStore>,
+        answering: Arc<Answering>,
         _owner_mailbox: crate::apps::test_owner::writes::OwnerCommitMailbox,
+    }
+
+    /// What admits a call this app made again once its person answers the record the fixture
+    /// keeps for them: this process's dispatch, as the device that carried the app's call.
+    struct Answering {
+        state: std::sync::Weak<AppBrokerState>,
+        outcome: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+    }
+
+    impl Answering {
+        /// What admitting the answered call again came to, once it did.
+        fn outcome(&self) -> Option<Result<(), String>> {
+            self.outcome.lock().unwrap().clone()
+        }
+    }
+
+    impl tilo_actions::remote::asked::AskedDispatch for Answering {
+        fn context(&self, _: tilo_actions::InvocationId) -> serde_json::Value {
+            serde_json::Value::Null
+        }
+
+        fn readmit(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+            _: &serde_json::Value,
+        ) -> Result<(), ActionCallError> {
+            let Some(state) = self.state.upgrade() else {
+                return Err(ActionCallError::Unavailable {
+                    reason: "the fixture's broker stopped".to_owned(),
+                });
+            };
+            let written = Arc::clone(&self.outcome);
+            let (caller, asking) = (caller.clone(), request.clone());
+            tokio::task::spawn_local(async move {
+                let came = match state.action_invoke(&caller, None, None, &asking).await {
+                    Some(Ok(_)) => Ok(()),
+                    Some(Err(error)) => Err(error.to_string()),
+                    None => Err("the fixture's broker abandoned the call".to_owned()),
+                };
+                *written.lock().unwrap() = Some(came);
+            });
+            Ok(())
+        }
+
+        fn declined(&self, _: &Caller, _: tilo_actions::InvocationId) -> Result<(), ActionCallError> {
+            Ok(())
+        }
     }
 
     impl Workspace {
@@ -93,13 +149,72 @@ mod external_moderation_rpc_tests {
                 Some(original.origin.capture().unwrap()),
             );
             assert!(state.certificate_authority.set(authority).is_ok());
+            let answering = Arc::new(Answering {
+                state: Arc::downgrade(&state),
+                outcome: Arc::new(std::sync::Mutex::new(None)),
+            });
+            let asked = AskedStore::opened(None, None, Vec::new())
+                .expect("the fixture keeps the calls that wait");
             Self {
                 original,
                 route,
                 state,
                 directories: Rc::new(LocalActionDirectoryRegistry::new(bridge)),
+                asked,
+                answering,
                 _owner_mailbox: owner_mailbox,
             }
+        }
+
+        /// The person the app's calls ask.
+        fn person(&self) -> Caller {
+            Caller::local_person(hex::encode(self.original.cert.user_public_key))
+                .in_workspace(&self.route.cluster_id)
+        }
+
+        /// The caller the app's own calls are made as: the person, through the app.
+        fn app_caller(&self) -> Caller {
+            Caller::local_app(self.route.app_id.clone())
+                .acting_for(hex::encode(self.original.cert.user_public_key))
+                .in_workspace(&self.route.cluster_id)
+        }
+
+        /// `request`, which the app made and which waits showing `facts`, kept as its asked
+        /// record for the person to answer.
+        fn waiting(&self, request: &InvokeRequest, facts: &AskedFacts) -> RecordRef {
+            let answering: Arc<Answering> = Arc::clone(&self.answering);
+            let dispatch: Arc<dyn AskedDispatch> = answering;
+            let dispatch = Arc::downgrade(&dispatch);
+            self.asked
+                .for_dispatch("device", dispatch)
+                .write_asked(&self.route.cluster_id, &self.app_caller(), request, facts)
+                .expect("the fixture keeps the call for its person")
+        }
+
+        /// The person's `answer` to `record`: what admitting the call again came to.
+        async fn answered(&self, record: &RecordRef, answer: Offer) -> Result<(), String> {
+            self.asked
+                .resolve(
+                    record,
+                    &self.person(),
+                    &Resolve {
+                        resolution: answer,
+                        ..Resolve::default()
+                    },
+                )
+                .await
+                .ok_or_else(|| "the fixture's store stopped".to_owned())?
+                .map_err(|error| error.to_string())?;
+            // Admitting it again runs on the fixture's own task: read how it went once it did.
+            tilo_test_env::within("the answered call is admitted again", async {
+                loop {
+                    if let Some(came) = self.answering.outcome() {
+                        return came;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
         }
 
         fn caller(&self) -> (BrokerActor, InvocationCaller) {

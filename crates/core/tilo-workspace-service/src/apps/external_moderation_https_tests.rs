@@ -125,19 +125,6 @@ mod https_completion {
         }
     }
 
-    /// `request`, carrying the person's approve of exactly it, as the host hands it back.
-    fn with_their_approve(
-        workspace: &Workspace,
-        request: &tilo_actions::remote::InvokeRequest,
-    ) -> tilo_actions::remote::InvokeRequest {
-        tilo_actions::remote::InvokeRequest {
-            confirmation: Some(crate::apps::collab_app_broker::person_approved(
-                &workspace.route.cluster_id,
-                request.invocation,
-            )),
-            ..request.clone()
-        }
-    }
     use registry_server::{
         AppState, ModerationApiService, PublisherAllowlist, ServerIdentity, Storage,
     };
@@ -579,6 +566,7 @@ mod https_completion {
                         &operation,
                         &workspace.original.cert.user_public_key,
                     );
+                    let record = workspace.waiting(&request(invocation), &question);
                     assert!(
                         server
                             .service()
@@ -592,28 +580,27 @@ mod https_completion {
                         "nothing is delivered before consent"
                     );
                     if allow {
-                        let admitted = bounded(
-                            "durable admission after consent",
-                            store_invoke(
-                                target.handle.clone(),
-                                with_their_approve(&workspace, &request(invocation)),
-                            ),
-                        )
-                        .await
-                        .unwrap();
+                        // Their answer of the record kept for them admits the call again, and
+                        // it is delivered.
+                        workspace
+                            .answered(&record, Offer::Approve)
+                            .await
+                            .expect("the person's approve admits the call again");
                         let delivered = bounded("durable invocation delivery", &mut delivery)
                             .await
                             .unwrap();
                         delivery = Box::pin(stream.read());
                         assert_eq!(delivered.invocation_uuid, *invocation.as_bytes());
-                        assert!(matches!(
-                            admitted.status,
-                            tilo_actions::remote::ReceiptStatus::Accepted
-                        ));
                         // The same request again admits nothing new: it carries the caller's
-                        // own evidence, not the person's approve.
-                        let retry = store_invoke(target.handle.clone(), request(invocation)).await;
-                        assert_eq!(retry.as_ref(), Ok(&admitted), "{retry:?}");
+                        // own evidence, not the person's approve, and the call it names ran.
+                        let retry = store_invoke(target.handle.clone(), request(invocation))
+                            .await
+                            .unwrap();
+                        assert!(retry.status.is_terminal(), "{retry:?}");
+                        assert!(
+                            futures::poll!(&mut delivery).is_pending(),
+                            "a retry delivers nothing"
+                        );
                     } else {
                         assert!(
                             futures::poll!(&mut delivery).is_pending(),
@@ -696,6 +683,7 @@ mod https_completion {
                         &operation,
                         &workspace.original.cert.user_public_key,
                     );
+                    let record = workspace.waiting(&asking, &question);
                     assert_eq!(
                         server.service().transparency(1, 10).unwrap().events.len(),
                         usize::from(case_id.is_some())
@@ -706,15 +694,10 @@ mod https_completion {
                         futures::poll!(&mut delivery).is_pending(),
                         "nothing is delivered before consent"
                     );
-                    bounded(
-                        "native admission after consent",
-                        store_invoke(
-                            target.handle.clone(),
-                            with_their_approve(&workspace, &asking),
-                        ),
-                    )
-                    .await
-                    .unwrap();
+                    workspace
+                        .answered(&record, Offer::Approve)
+                        .await
+                        .expect("the person's approve admits the call again");
                     let delivered = bounded("native invocation delivery", &mut delivery)
                         .await
                         .unwrap();
