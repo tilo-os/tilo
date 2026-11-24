@@ -524,10 +524,16 @@ impl Acting {
     /// device acting as `signer`: this tree, for the signer, so the signer's
     /// grants bound it. Only a member the signer may write for reaches here
     /// ([`crate::MemberAccess::may_write_for`]): the signer's own person, or an
-    /// agent it runs, so a handed agent keeps its delegation and nothing else
-    /// has to be cleared.
+    /// agent it runs. A handed agent keeps its delegation from a device of the
+    /// person it acts for; a device that is not that person's own hands nothing on.
     #[must_use]
     pub fn signed_by(mut self, signer: &Self) -> Self {
+        // A device that is not the person's own hands nothing on: the preset a handed agent
+        // carries is its own device's gift, so a change that device's person signs from
+        // somewhere else carries none of it.
+        if signer.foreign_device {
+            self.unhand();
+        }
         let person = signer
             .direct_person()
             .filter(|_| !signer.foreign_device)
@@ -542,6 +548,15 @@ impl Acting {
             self.app.clone_from(&signer.app);
         }
         self.acting_for(signer.clone())
+    }
+
+    /// Clears [`Self::handed`] on every node: what a device hands on is the delegation of the
+    /// device it is, and one that is nobody's own hands nothing.
+    fn unhand(&mut self) {
+        self.handed = false;
+        for node in &mut self.acted_for {
+            node.unhand();
+        }
     }
 
     /// The same acting, caused by the resource `cause`.
