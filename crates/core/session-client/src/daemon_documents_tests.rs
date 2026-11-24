@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use tilo_peer_state::owner::WriteRefusal;
 use tilo_peer_state::workspace_documents::{
-    DeviceDocuments, DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
+    DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
 };
 use tilo_workspace_service::apps::services::{
     Caller, ProcessServices, PublishedResources, Reading, ResourceWatch,
@@ -21,6 +21,7 @@ use tilo_workspace_service::apps::services::{
 use tilo_workspace_service::apps::shell::{
     ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
 };
+use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::ResourceWrite;
 
 use super::{DaemonShell, DaemonWritesFeed, NOT_STARTED_BY_THE_DAEMON, on_daemon};
@@ -30,46 +31,10 @@ const WORKSPACE: &str = "0b9d3c34-4c2e-4d70-9a4e-6c0f2a3b1d77";
 /// A write the daemon took: its workspace, document, changes and whether it founds the document.
 type Written = (String, String, Vec<u8>, bool);
 
-/// The device's documents as a test's daemon keeps them: the layout, and a note still on its way.
+/// The device's writes as a test's daemon takes them: each one kept, and refused, as a daemon
+/// whose history is full refuses it.
 struct Kept {
     written: Mutex<Vec<Written>>,
-}
-
-impl DeviceDocuments for Kept {
-    fn read(
-        &self,
-        workspace: &str,
-        app: &str,
-        resource: &str,
-        since: Option<&[[u8; 32]]>,
-    ) -> Result<DocumentRead, String> {
-        if workspace != WORKSPACE {
-            return Err(format!("this device keeps no workspace {workspace}"));
-        }
-        Ok(match (app, resource, since) {
-            ("so.tilo.desktop", "layout", None) => DocumentRead::Whole {
-                revision: [1; 32],
-                heads: vec![[2; 32]],
-                bytes: b"the layout".to_vec(),
-                hint: None,
-            },
-            ("so.tilo.desktop", "layout", Some(_)) => DocumentRead::Unchanged([1; 32]),
-            ("so.tilo.notes", "today", _) => DocumentRead::Pending,
-            _ => DocumentRead::Absent,
-        })
-    }
-
-    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        Ok(vec![(workspace.to_owned(), "layout".to_owned())])
-    }
-
-    fn holds(&self, _workspace: &str, app: &str, _resource: &str) -> bool {
-        app == "so.tilo.desktop"
-    }
-
-    fn workspaces(&self) -> Vec<String> {
-        vec![WORKSPACE.to_owned()]
-    }
 }
 
 impl DeviceWrites for Kept {
@@ -146,10 +111,11 @@ impl PublishedResources for NoStanding {
     }
 }
 
-/// A device's dispatch answering its person's shell from `kept`, and what tells of its writes.
+/// A device's dispatch answering its person's shell from the workspace it holds, its writes taken
+/// by `kept`, and what tells of its writes.
 struct Daemon {
     _dir: tempfile::TempDir,
-    _host: tilo_workspace_service::workspaces::fixtures::TestHost,
+    host: tilo_workspace_service::workspaces::fixtures::TestHost,
     _dispatch: tilo_workspace_service::apps::collab_broker::BrokerHandle,
     socket: std::path::PathBuf,
     links: Arc<ShellLinks>,
@@ -158,16 +124,31 @@ struct Daemon {
 }
 
 impl Daemon {
+    /// Whom the daemon makes its shell's links for: the person its device acts for.
+    fn person(&self) -> ShellCaller {
+        ShellCaller {
+            person: self.host.workspaces().device_cert().user_public_key,
+        }
+    }
+
     /// The shell link the daemon makes for the shell it starts, opened on the current runtime.
     async fn link(&self) -> runtime_collab::ShellClient {
         use tokio::io::AsyncWriteExt as _;
-        let secret = self.links.make(ShellCaller { person: [7; 32] });
+        let secret = self.links.make(self.person());
         let mut link = tokio::net::UnixStream::connect(&self.socket).await.unwrap();
         let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
         opening.extend_from_slice(&secret);
         link.write_all(&opening).await.unwrap();
         runtime_collab::ShellClient::open(link).0
     }
+}
+
+/// The desktop's layout as the daemon keeps it.
+fn layout() -> automerge::AutoCommit {
+    let mut layout = automerge::AutoCommit::new();
+    automerge::transaction::Transactable::put(&mut layout, automerge::ROOT, "front", "Writer")
+        .unwrap();
+    layout
 }
 
 fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
@@ -177,6 +158,31 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
     let socket = dir.path().join("collab.sock");
     let (key, cert) = governor();
     let host = runtime.block_on(test_host(&dir.path().join("host"), &key, &cert));
+    let workspaces = host.workspaces().clone();
+    // The daemon holds the person's workspace and keeps its desktop's layout there, written as
+    // the device, as its daemon writes what its desktop changes.
+    workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    runtime
+        .block_on(workspaces.create_workspace("Ada's", Some(WORKSPACE)))
+        .unwrap();
+    let documents = ServiceDocuments::of(workspaces.clone());
+    runtime
+        .block_on(ServiceWrites::of(workspaces.clone()).write(
+            WORKSPACE,
+            &layout().save(),
+            DocumentWriting {
+                app: "so.tilo.desktop",
+                document: "layout",
+                readers: None,
+                founding: true,
+                snapshot: true,
+                sealed: None,
+            },
+        ))
+        .unwrap();
     let kept = Arc::new(Kept {
         written: Mutex::default(),
     });
@@ -188,13 +194,13 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
             processes: None,
             links: Arc::clone(&links),
             socket: socket.clone(),
-            documents: Arc::clone(&kept) as _,
+            documents: Arc::new(documents),
             writes: Arc::clone(&kept) as _,
             document_writes: Arc::new(move || told.subscribe()),
             actions: Arc::new(NoActions),
             standing: Arc::new(NoStanding),
             published: None,
-            workspaces: host.workspaces().clone(),
+            workspaces,
             identity: None,
             live: None,
         })),
@@ -212,7 +218,7 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
     .unwrap();
     Daemon {
         _dir: dir,
-        _host: host,
+        host,
         _dispatch: dispatch,
         socket,
         links,
@@ -236,40 +242,55 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
     let link = runtime.block_on(daemon.link());
     let (documents, writes, _shell) = on_daemon(Ok(link), runtime.handle().clone());
 
-    // What the daemon keeps reads as it reads there: whole, unchanged since the heads the desktop
-    // has, on its way, or absent.
+    // What the daemon keeps of the person's workspace reads as it is kept there: the layout whole,
+    // at the heads it stands at, whatever the desktop holds of it already; a note it never kept
+    // absent.
+    let DocumentRead::Whole { heads, bytes, .. } = documents
+        .read(WORKSPACE, "so.tilo.desktop", "layout", None)
+        .unwrap()
+    else {
+        panic!("the daemon reads the layout whole");
+    };
+    let read = automerge::AutoCommit::load(&bytes).unwrap();
     assert_eq!(
-        documents
-            .read(WORKSPACE, "so.tilo.desktop", "layout", None)
-            .unwrap(),
-        DocumentRead::Whole {
-            revision: [1; 32],
-            heads: vec![[2; 32]],
-            bytes: b"the layout".to_vec(),
-            hint: None,
-        }
+        automerge::ReadDoc::get(&read, automerge::ROOT, "front")
+            .unwrap()
+            .map(|(value, _)| value.to_string()),
+        Some("\"Writer\"".to_owned())
     );
+    assert!(matches!(
+        documents
+            .read(WORKSPACE, "so.tilo.desktop", "layout", Some(&heads))
+            .unwrap(),
+        DocumentRead::Whole { heads: again, .. } if again == heads
+    ));
     assert_eq!(
         documents
-            .read(WORKSPACE, "so.tilo.desktop", "layout", Some(&[[2; 32]]))
+            .read(WORKSPACE, "so.tilo.notes", "today", None)
             .unwrap(),
-        DocumentRead::Unchanged([1; 32])
+        DocumentRead::Absent
     );
     assert!(documents.readable(WORKSPACE, "so.tilo.desktop", "layout"));
     assert!(!documents.readable(WORKSPACE, "so.tilo.notes", "today"));
     assert!(documents.holds(WORKSPACE, "so.tilo.desktop", "layout"));
     assert!(!documents.holds(WORKSPACE, "so.tilo.notes", "today"));
     assert_eq!(documents.workspaces(), vec![WORKSPACE.to_owned()]);
-    assert_eq!(
-        documents.listing(WORKSPACE).unwrap(),
-        vec![(WORKSPACE.to_owned(), "layout".to_owned())]
+    let listed = documents.listing(WORKSPACE).unwrap();
+    assert!(
+        listed.contains(&("so.tilo.desktop".to_owned(), "layout".to_owned())),
+        "{listed:?}"
     );
     // A workspace the daemon does not keep is refused as the daemon says it.
     let elsewhere = documents
-        .read("another", "so.tilo.desktop", "layout", None)
+        .read(
+            "5d0c1f0e-2b7a-4f3e-9c1d-8a6b4e2f0a11",
+            "so.tilo.desktop",
+            "layout",
+            None,
+        )
         .unwrap_err();
     assert!(
-        elsewhere.contains("keeps no workspace another"),
+        elsewhere.contains(tilo_actions::remote::RESOURCE_READ_REFUSED),
         "{elsewhere}"
     );
 
@@ -371,7 +392,7 @@ fn a_desktop_the_daemon_did_not_start_says_so() {
 fn a_link_is_taken_once() {
     let runtime = runtime();
     let daemon = daemon(&runtime);
-    let secret = daemon.links.make(ShellCaller { person: [7; 32] });
+    let secret = daemon.links.make(daemon.person());
     let open = |secret: [u8; 32]| {
         let socket = daemon.socket.clone();
         runtime.block_on(async move {
