@@ -16,6 +16,7 @@ use registry_types::{
 use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
 
+use crate::daemon_fixture::Daemon;
 use crate::registry_fixture::{Device, native_target, registry_config};
 
 const APP_ID: &str = "so.tilo.linked-e2e";
@@ -343,7 +344,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     );
 
     let data = tempfile::tempdir().unwrap();
-    let _device = Device::new(
+    let device = Device::new(
         Some(registry_config("local", &base, &owner)),
         &[
             ("TILO_RUNTIME_BUNDLE_DIR", &runtimes),
@@ -351,6 +352,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
             ("XDG_DATA_HOME", data.path()),
         ],
     );
+    let _daemon = Daemon::start(device.apps.path());
     assert!(app_cli::runtime_installed(&format!(
         "tilo-runtime/{device_version}"
     )));
@@ -543,10 +545,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .expect("the browser is offered");
     let error = app_cli::install::install_app(&offer).expect_err("no engine on offer, no install");
     assert!(
-        matches!(
-            error,
-            app_cli::install::InstallError::RuntimeUnavailable { .. }
-        ),
+        matches!(error, app_cli::install::InstallError::Refused { .. }),
         "{error:?}"
     );
     assert!(
@@ -665,8 +664,15 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .output_locked()
         .unwrap();
     assert!(
-        !damaged.status.success(),
-        "damaged retained runtime must not count as a completed install"
+        damaged.status.success(),
+        "a damaged retained runtime is installed again: {}",
+        String::from_utf8_lossy(&damaged.stderr)
+    );
+    runtime_bundle::verify_bundle(&runtimes.join(&new_version)).unwrap();
+    assert_eq!(
+        std::fs::read(runtimes.join(&new_version).join("lib/libruntime_dylib.so")).unwrap(),
+        b"new toolkit",
+        "the damaged file is the one the install replaced"
     );
 }
 
@@ -733,7 +739,7 @@ fn the_engine_installs_with_the_app_and_a_failed_fetch_keeps_the_working_app() {
     );
     served.put("/entries", serde_json::to_vec(&first).unwrap());
     let data = tempfile::tempdir().unwrap();
-    let _device = Device::new(
+    let device = Device::new(
         Some(registry_config("local", &base, &owner)),
         &[
             ("TILO_RUNTIME_BUNDLE_DIR", &runtimes),
@@ -741,6 +747,7 @@ fn the_engine_installs_with_the_app_and_a_failed_fetch_keeps_the_working_app() {
             ("XDG_DATA_HOME", data.path()),
         ],
     );
+    let _daemon = Daemon::start(device.apps.path());
     let offer = app_cli::available()
         .apps
         .into_iter()
@@ -781,11 +788,14 @@ fn the_engine_installs_with_the_app_and_a_failed_fetch_keeps_the_working_app() {
     ] {
         let refused = replace(&offer, &mut |_| {});
         assert!(
-            matches!(
-                refused,
-                Err(app_cli::install::InstallError::RuntimeUnavailable { .. })
-            ),
+            matches!(refused, Err(app_cli::install::InstallError::Refused { .. })),
             "missing pinned engine must refuse replacement: {refused:?}"
+        );
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.user_message().contains(&engine_ref)),
+            "the refusal names the engine: {refused:?}"
         );
         assert_working();
     }
@@ -813,21 +823,18 @@ fn the_engine_installs_with_the_app_and_a_failed_fetch_keeps_the_working_app() {
     assert_working();
     std::fs::write(&trust, format!("{}\n", identity.public_key_hex())).unwrap();
     let mut progress = Vec::new();
-    let mut engine_ready_before_replacement = false;
     app_cli::install::install_app_reporting(&offer, &mut |event| {
+        // Until the engine is there the app that works keeps working; the install brings both.
         if !app_cli::runtime_installed(&engine_ref) {
             assert_working();
-        } else if matches!(
-            event.phase,
-            app_cli::install::InstallPhase::Installing { elapsed } if elapsed.is_zero()
-        ) {
-            assert_working();
-            engine_ready_before_replacement = true;
         }
         progress.push(event);
     })
     .unwrap();
-    assert!(engine_ready_before_replacement);
+    assert!(
+        app_cli::runtime_installed(&engine_ref),
+        "the engine came with the app"
+    );
     assert_ne!(
         package_store::list_installed()
             .unwrap()

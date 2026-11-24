@@ -68,7 +68,7 @@ fn a_package_file_installs_by_the_app_hosts_rule() {
         "TILO_INSTALL_BIN",
         tilo_test_env::sibling_binary("install", "tilo-install"),
     );
-    let _daemon = Daemon::start(&mut env, &apps);
+    let _daemon = Daemon::start(&apps);
     let first = write_tapp(home.path(), "1.4.0");
     let second = write_tapp(home.path(), "1.5.0");
     let publisher = hex::encode(test_publisher().public_key_bytes());

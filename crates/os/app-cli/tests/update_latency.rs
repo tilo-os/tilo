@@ -19,14 +19,14 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use ed25519_dalek::SigningKey;
 use registry_types::{PublisherAuthorization, SignedRegistrySnapshot, sign_snapshot};
 
+use crate::daemon_fixture::Daemon;
 use crate::registry_fixture::{
     Device, author_tapp_version, registry_config, signed_entry_version, test_publisher,
 };
 
 const HANDSHAKE: Duration = Duration::from_millis(150);
 const ROUND_TRIP: Duration = Duration::from_millis(150);
-/// Installed apps the registry offers an update for: more than are
-/// downloaded at once, so later downloads can reuse a connection.
+/// Installed apps the registry offers an update for.
 const APPS: usize = 12;
 
 /// A loopback registry with a far-away registry's latency, keeping
@@ -78,8 +78,8 @@ impl FarRegistry {
     }
 
     fn serve(&self, mut stream: TcpStream) {
-        let far = self.far.load(Ordering::SeqCst);
-        if far {
+        // The handshake is one per connection, when the connection is the far one's.
+        if self.far.load(Ordering::SeqCst) {
             self.connections.fetch_add(1, Ordering::SeqCst);
             std::thread::sleep(HANDSHAKE);
         }
@@ -107,21 +107,13 @@ impl FarRegistry {
             let path = request.split_whitespace().nth(1).unwrap_or("/");
             let path = path.split('?').next().unwrap_or(path).to_owned();
             self.seen.lock().unwrap().push(path.clone());
-            if far {
+            // Read per request: a connection kept alive from before the registry turned far
+            // still carries a request the run is measuring.
+            if self.far.load(Ordering::SeqCst) {
                 self.requests.lock().unwrap().push(path.clone());
                 let open = self.open.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                 self.peak.fetch_max(open, Ordering::SeqCst);
                 std::thread::sleep(ROUND_TRIP);
-                // A download waits for a second one to be asked for, so
-                // downloads that overlap always do, however slow the machine,
-                // and ones that queue never do.
-                let deadline = tilo_test_env::hang_deadline();
-                while path.starts_with("/artifacts/")
-                    && self.peak.load(Ordering::SeqCst) < 2
-                    && Instant::now() < deadline
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
                 self.open.fetch_sub(1, Ordering::SeqCst);
             }
             let body = self.objects.lock().unwrap().get(&path).cloned();
@@ -225,16 +217,21 @@ fn app_update() -> std::process::Output {
 }
 
 #[test]
-fn an_update_fetches_only_what_changed_and_overlaps_the_downloads_it_needs() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one run installs, revalidates and updates over a far registry, each step asserted"
+)]
+fn an_update_fetches_only_what_changed_one_app_at_a_time() {
     let registry = FarRegistry::default();
     let base = registry.start();
     let owner = SigningKey::from_bytes(&[23_u8; 32]);
 
     let data = tempfile::tempdir().unwrap();
-    let _device = Device::new(
+    let device = Device::new(
         Some(registry_config("far", &base, &owner)),
         &[("XDG_DATA_HOME", data.path())],
     );
+    let _daemon = Daemon::start(device.apps.path());
 
     let versions = vec!["1.0.0"; APPS];
     let first = snapshot(publish(&registry, &base, &versions), &owner, None);
@@ -298,13 +295,14 @@ fn an_update_fetches_only_what_changed_and_overlaps_the_downloads_it_needs() {
         assert_eq!(row.version, expected, "{}", row.id);
     }
 
-    // Every app changed, over a far registry: one catalogue for the whole run,
-    // downloads that overlap instead of queueing, and one connection carrying
-    // the next download once open.
+    // Every app changed, over a far registry: each app's update fetches its package, the
+    // catalogue is revalidated rather than downloaded again, and the CLI waits for each one.
     let all_new = vec!["2.0.0"; APPS];
     let third = snapshot(publish(&registry, &base, &all_new), &owner, Some(&second));
     registry.put_catalogue(&third);
     registry.far.store(true, Ordering::SeqCst);
+    let entries_before = registry.requests_for("/entries");
+    let revalidated_before = registry.not_modified();
 
     let started = Instant::now();
     let update = app_update();
@@ -327,16 +325,22 @@ fn an_update_fetches_only_what_changed_and_overlaps_the_downloads_it_needs() {
          {elapsed:?}, {requests} requests on {connections} connections, at most {peak} at once"
     );
 
-    // One catalogue for the whole run, however many apps it updates.
-    assert_eq!(registry.requests_for("/entries"), 1);
     // Each package is one request: its compressed twin.
     assert_eq!(registry.requests_for("/artifacts/"), APPS);
-    // The downloads overlap rather than waiting app after app.
-    assert!(peak > 1, "downloads ran one at a time");
-    // A connection, once open, carries the next download: the catalogue's,
-    // and one per download running at once.
+    // The catalogue body is served once: each app's read of it is a conditional 304.
+    let entries = registry.requests_for("/entries") - entries_before;
+    let revalidated = registry.not_modified() - revalidated_before;
+    assert!(entries >= 1, "the catalogue was never read");
     assert!(
-        connections <= app_cli::install::PARALLEL_DOWNLOADS + 1,
+        revalidated + 1 >= entries,
+        "{entries} catalogue reads, only {revalidated} answered 304: the body was served again"
+    );
+    // The CLI waits for each app's update, so one download runs at a time.
+    assert_eq!(peak, 1, "downloads overlapped");
+    // Each app's update opens a few connections of its own — the catalogue's, its version
+    // index's and its download's — never one per request.
+    assert!(
+        connections <= 3 * APPS + 1,
         "{connections} connections for {requests} requests"
     );
 }

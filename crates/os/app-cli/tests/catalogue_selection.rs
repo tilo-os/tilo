@@ -400,6 +400,7 @@ tilo_test_env::scenario! {
             "tapp_root_hash_hex",
             "tapp_size_bytes",
             "tapp_blake3_hex",
+            "tapp_surface_hex",
             "architecture",
             "isa",
             "runtime",

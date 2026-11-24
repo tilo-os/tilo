@@ -805,45 +805,6 @@ pub fn stage(
     Ok(StagedPackage { file })
 }
 
-pub const PARALLEL_DOWNLOADS: usize = 8;
-
-/// Download the package of every app in `apps`, [`PARALLEL_DOWNLOADS`] at a
-/// time, and hand each to `ready` on the calling thread as soon as it is
-/// staged and checked (or has failed), with its index in `apps`, in the order
-/// they finish. `ready` runs while the rest are still downloading.
-///
-/// Updating many apps waits on the network, not on the installs: fetched one
-/// after another, every package costs at least a round trip to the store
-/// before its first byte, so a run of twenty apps waited twenty round trips
-/// in a row. The installer still runs one package at a time, as the store's
-/// lock requires.
-pub fn stage_each(
-    apps: &[&CatalogueApp],
-    mut ready: impl FnMut(usize, Result<StagedPackage, InstallError>),
-) {
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        let (sender, staged) = std::sync::mpsc::channel();
-        for _ in 0..PARALLEL_DOWNLOADS.min(apps.len()) {
-            let sender = sender.clone();
-            let next = &next;
-            scope.spawn(move || {
-                loop {
-                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(app) = apps.get(index) else { break };
-                    if sender.send((index, stage(app, &mut |_| {}))).is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        drop(sender);
-        for (index, result) in staged {
-            ready(index, result);
-        }
-    });
-}
-
 /// Download and atomically update an installed app from a verified offer.
 pub fn update_app_reporting(
     app: &CatalogueApp,

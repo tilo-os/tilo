@@ -21,6 +21,7 @@ use registry_types::{
     SignedRegistrySnapshot, VersionIndexFile, sign_entry,
 };
 
+use crate::daemon_fixture::Daemon;
 use crate::registry_fixture::{
     Device, author_tapp_version, native_target, registry_config, test_publisher,
 };
@@ -247,7 +248,16 @@ fn older_versions_install_and_roll_back_through_a_verified_version_index() {
     assert_eq!(current.compact.entries[0].entry.versions.len(), 1);
     serve(&routes, &current);
 
-    let _device = Device::new(Some(registry_config("local", &base_url, &owner)), &[]);
+    let data = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let device = Device::new(
+        Some(registry_config("local", &base_url, &owner)),
+        &[
+            ("XDG_DATA_HOME", data.path()),
+            ("XDG_CONFIG_HOME", config.path()),
+        ],
+    );
+    let _daemon = Daemon::start(device.apps.path());
 
     let listing = app_cli::available();
     assert!(listing.unreachable.is_empty(), "{:?}", listing.unreachable);
@@ -301,8 +311,20 @@ fn older_versions_install_and_roll_back_through_a_verified_version_index() {
     );
     assert_eq!(
         app_cli::installed_version(PACKAGE_ID).unwrap().as_deref(),
-        Some("1.1.0"),
-        "a rollback without --to goes to the previous release"
+        Some("1.0.0"),
+        "a rollback without --to goes to the version the workspace ran before"
+    );
+    // A version is one to go back to when the workspace ran it before this one: run 2.0.0
+    // again so 1.0.0 is named as a target.
+    let updated = app(&["update", PACKAGE_ID]);
+    assert!(
+        updated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&updated.stderr)
+    );
+    assert_eq!(
+        app_cli::installed_version(PACKAGE_ID).unwrap().as_deref(),
+        Some("2.0.0")
     );
     let rolled = app(&["rollback", PACKAGE_ID, "--to", "1.0.0"]);
     assert!(

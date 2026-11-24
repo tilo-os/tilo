@@ -29,6 +29,8 @@ use tilo_test_env::ScopedEnv;
 pub(crate) struct Daemon {
     _runtime: tempfile::TempDir,
     _content: tempfile::TempDir,
+    /// The runtime directory the test's programs find the daemon in, put back when it drops.
+    _env: ScopedEnv,
     stop: Arc<AtomicBool>,
     accepting: Option<std::thread::JoinHandle<()>>,
 }
@@ -41,16 +43,19 @@ struct State {
     uploads: Mutex<BTreeMap<String, Vec<u8>>>,
     puts: Mutex<BTreeMap<u64, Vec<u8>>>,
     next_put: AtomicU64,
+    /// The releases each app ran, oldest first, as the workspace's record keeps them.
+    history: Mutex<BTreeMap<String, Vec<Value>>>,
 }
 
 impl Daemon {
-    /// Start the daemon for `env`: a runtime directory the test's programs find it in, and the
-    /// store at `store` the changes are made to.
+    /// Start the daemon for the store at `store`, in a runtime directory this test's programs
+    /// find it in.
     ///
     /// The socket lives in a short directory under the system's temporary directory: a Unix
     /// socket's path is bounded, and a run's temporary directory can be long.
     #[must_use]
-    pub(crate) fn start(env: &mut ScopedEnv, store: &Path) -> Self {
+    pub(crate) fn start(store: &Path) -> Self {
+        let mut env = ScopedEnv::new();
         let runtime = tempfile::Builder::new()
             .prefix("tl")
             .tempdir_in("/tmp")
@@ -76,6 +81,7 @@ impl Daemon {
             uploads: Mutex::new(BTreeMap::new()),
             puts: Mutex::new(BTreeMap::new()),
             next_put: AtomicU64::new(1),
+            history: Mutex::new(BTreeMap::new()),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let accepting = {
@@ -99,6 +105,7 @@ impl Daemon {
         Self {
             _runtime: runtime,
             _content: content,
+            _env: env,
             stop,
             accepting: Some(accepting),
         }
@@ -237,14 +244,18 @@ fn do_action(state: &Arc<State>, path: &str, args: &Value) -> Result<Value, Stri
     } else if let Some(rest) = path.strip_prefix("workspace/apps/") {
         let (app, action) = rest.split_once('#').ok_or("an app's action names it")?;
         match action {
-            "uninstall" => apply(
-                state,
-                Change::Uninstall {
-                    app: app.to_owned(),
-                    saved_data: SavedData::Delete,
-                    dry_run: false,
-                },
-            ),
+            "uninstall" => {
+                let answer = apply(
+                    state,
+                    Change::Uninstall {
+                        app: app.to_owned(),
+                        saved_data: SavedData::Delete,
+                        dry_run: false,
+                    },
+                )?;
+                state.history.lock().expect("history").remove(app);
+                Ok(answer)
+            }
             "pin" | "unpin" => apply(
                 state,
                 Change::SetPinned {
@@ -252,6 +263,8 @@ fn do_action(state: &Arc<State>, path: &str, args: &Value) -> Result<Value, Stri
                     pinned: action == "pin",
                 },
             ),
+            "update" => install(state, args),
+            "earlier" => Ok(json!({ "releases": earlier(state, app) })),
             other => Err(format!("the daemon offers no {other} of an app")),
         }
     } else {
@@ -259,8 +272,9 @@ fn do_action(state: &Arc<State>, path: &str, args: &Value) -> Result<Value, Stri
     }
 }
 
-/// The workspace's install of the package file `args` names: its bytes were put first, and this
-/// device installs them against the publisher and root the workspace recorded.
+/// The workspace's install or update of the version `args` names: the bytes a caller put first,
+/// else the package the configured registries offer for the root and publisher the workspace
+/// recorded, after the runtimes it runs on.
 fn install(state: &Arc<State>, args: &Value) -> Result<Value, String> {
     let text = |name: &str| {
         args.get(name)
@@ -269,48 +283,200 @@ fn install(state: &Arc<State>, args: &Value) -> Result<Value, String> {
             .ok_or_else(|| format!("the install names no {name}"))
     };
     let app = text("app")?;
+    let version = text("version")?;
     let package = text("package")?;
     let publisher = text("publisher")?;
-    let file = text("file")?;
-    let dev = args.get("dev").and_then(Value::as_bool).unwrap_or(false);
     let surface = text("surface")?;
-    let bytes = state
-        .uploads
-        .lock()
-        .expect("uploads")
-        .get(&file)
-        .cloned()
-        .ok_or_else(|| format!("{file} is no file this device holds"))?;
-    let found = app_registry::publisher::entry::surface_hex(&bytes)
-        .map_err(|error| format!("{error:#}"))?;
-    if !found.eq_ignore_ascii_case(&surface) {
-        return Err(format!(
-            "{app} installs a package whose surface is not the one the workspace records"
-        ));
-    }
-    // The bytes a caller put are content this device holds, named by their hash: what the
-    // install names as `tilo.content:<hash>`.
-    write_content(state, &file, &bytes)?;
-    let (attestors, revoked) = trust();
-    let change = Change::Install {
-        file: Uploaded {
-            source: format!("tilo.content:{file}"),
-        },
-        trust: Trust {
-            require_package_root: Some(package),
-            require_publisher: Some(publisher),
-            require_attestor: None,
-            allow_self_signed: dev,
-            attestors,
-            revoked,
-        },
-        pinned: false,
-        replacement: Replacement::Replace,
-        ignore_missing_runtime: false,
-        dry_run: false,
-        payload_from: None,
+    let dev = args.get("dev").and_then(Value::as_bool).unwrap_or(false);
+    let (bytes, payload_from) = if let Some(file) = args.get("file").and_then(Value::as_str) {
+        (
+            state
+                .uploads
+                .lock()
+                .expect("uploads")
+                .get(file)
+                .cloned()
+                .ok_or_else(|| format!("{file} is no file this device holds"))?,
+            None,
+        )
+    } else {
+        let (bytes, registry) =
+            fetch_offered(&app, &package, &publisher, &surface, &state.content)?;
+        (bytes, Some(registry))
     };
-    apply(state, change)
+    keep_runtimes(state, &bytes)?;
+    let answer = install_package(
+        state,
+        &bytes,
+        &package,
+        &publisher,
+        &surface,
+        dev,
+        payload_from,
+    )?;
+    state
+        .history
+        .lock()
+        .expect("history")
+        .entry(app)
+        .or_default()
+        .push(json!({
+            "version": version,
+            "surface": surface,
+            "package": package,
+            "publisher": publisher,
+        }));
+    Ok(answer)
+}
+
+/// The bytes the enabled registries offer for the root and publisher the workspace recorded: the
+/// package of that exact version, downloaded and checked against its signed entry.
+fn fetch_offered(
+    app: &str,
+    package: &str,
+    publisher: &str,
+    surface: &str,
+    content: &Path,
+) -> Result<(Vec<u8>, String), String> {
+    let registries = app_cli::config::load_registries();
+    for registry in registries.enabled() {
+        let Ok(offers) = app_cli::version_offers(app, &registry.name) else {
+            continue;
+        };
+        let Some(offer) = offers.into_iter().find(|offer| {
+            offer.tapp_root_hash_hex.eq_ignore_ascii_case(package)
+                && offer.publisher_pubkey_hex.eq_ignore_ascii_case(publisher)
+        }) else {
+            continue;
+        };
+        if !offer.tapp_surface_hex.eq_ignore_ascii_case(surface) {
+            return Err(format!(
+                "{} offers version {} of {app} with another surface than the workspace records",
+                registry.name, offer.version
+            ));
+        }
+        let staged = tempfile::NamedTempFile::new_in(content).map_err(|error| error.to_string())?;
+        app_cli::install::fetch_verified(&offer, staged.path(), &mut |_| {})
+            .map_err(|error| error.user_message())?;
+        let bytes = std::fs::read(staged.path()).map_err(|error| error.to_string())?;
+        return Ok((bytes, registry.base_url.clone()));
+    }
+    Err(format!(
+        "no repository offers the version of {app} the workspace records"
+    ))
+}
+
+/// Install the runtimes the app of `bytes` runs on and requires, each that this device lacks,
+/// from the enabled registries: what the follower does before an app lands without them.
+fn keep_runtimes(state: &Arc<State>, bytes: &[u8]) -> Result<(), String> {
+    let tapp = tilo_app_package::tapp::read(
+        std::io::Cursor::new(bytes),
+        &mut tilo_app_package::blobs::DiscardBlobs,
+    )
+    .map_err(|error| error.to_string())?;
+    let manifest = &tapp.meta.manifest;
+    let mut wanted: Vec<String> = manifest
+        .target
+        .as_ref()
+        .map(|target| target.runtime.clone())
+        .filter(|runtime| !runtime.is_empty())
+        .into_iter()
+        .collect();
+    wanted.extend(
+        tilo_app_package::desktop::required_runtime_dependencies(manifest)
+            .iter()
+            .cloned(),
+    );
+    for runtime in wanted {
+        if app_cli::runtime_installed(&runtime) {
+            continue;
+        }
+        let offer = app_cli::runtime_offer_from_enabled(&runtime)?
+            .ok_or_else(|| format!("no repository offers the runtime {runtime}"))?;
+        let staged =
+            tempfile::NamedTempFile::new_in(&state.content).map_err(|error| error.to_string())?;
+        app_cli::install::fetch_verified(&offer, staged.path(), &mut |_| {})
+            .map_err(|error| error.user_message())?;
+        let bytes = std::fs::read(staged.path()).map_err(|error| error.to_string())?;
+        let payload_from = app_cli::config::load_registries()
+            .enabled()
+            .find(|registry| registry.name == offer.registry)
+            .map(|registry| registry.base_url.clone());
+        install_package(
+            state,
+            &bytes,
+            &offer.tapp_root_hash_hex,
+            &offer.publisher_pubkey_hex,
+            &offer.tapp_surface_hex,
+            false,
+            payload_from,
+        )?;
+    }
+    Ok(())
+}
+
+/// Install `bytes` against the package root, publisher and surface the workspace recorded.
+fn install_package(
+    state: &Arc<State>,
+    bytes: &[u8],
+    package: &str,
+    publisher: &str,
+    surface: &str,
+    dev: bool,
+    payload_from: Option<String>,
+) -> Result<Value, String> {
+    let found =
+        app_registry::publisher::entry::surface_hex(bytes).map_err(|error| format!("{error:#}"))?;
+    if !surface.is_empty() && !found.eq_ignore_ascii_case(surface) {
+        return Err("a package installs that is not the surface the workspace records".to_owned());
+    }
+    let hash = blake3::hash(bytes).to_hex().to_string();
+    write_content(state, &hash, bytes)?;
+    let (attestors, revoked) = trust();
+    apply(
+        state,
+        Change::Install {
+            file: Uploaded {
+                source: format!("tilo.content:{hash}"),
+            },
+            trust: Trust {
+                require_package_root: Some(package.to_owned()),
+                require_publisher: Some(publisher.to_owned()),
+                require_attestor: None,
+                allow_self_signed: dev,
+                attestors,
+                revoked,
+            },
+            pinned: false,
+            replacement: Replacement::Replace,
+            ignore_missing_runtime: false,
+            dry_run: false,
+            payload_from,
+        },
+    )
+}
+
+/// The releases `app` ran before the one it runs now, the most recent first: what going back a
+/// version goes back to.
+fn earlier(state: &Arc<State>, app: &str) -> Vec<Value> {
+    let ran = state
+        .history
+        .lock()
+        .expect("history")
+        .get(app)
+        .cloned()
+        .unwrap_or_default();
+    let current = ran.last().cloned();
+    let mut out: Vec<Value> = Vec::new();
+    for release in ran.iter().rev() {
+        if Some(release) == current.as_ref() {
+            continue;
+        }
+        if !out.contains(release) {
+            out.push(release.clone());
+        }
+    }
+    out
 }
 
 /// Make `change` to this device's store, answering what it said.
