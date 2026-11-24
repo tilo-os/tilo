@@ -110,7 +110,6 @@ members = [
     "apps/remote-model",
     "apps/remote-model-wasm",
     "apps/slides",
-    "apps/shortcuts",
     "apps/staging-handoff-model",
     "apps/terminal",
     "apps/totp",

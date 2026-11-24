@@ -453,10 +453,6 @@
       "libraries": 0,
       "tests": 108290528
     },
-    "shortcuts": {
-      "libraries": 28405858,
-      "tests": 1355995744
-    },
     "slides": {
       "libraries": 23611650,
       "tests": 330336264

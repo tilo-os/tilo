@@ -59,12 +59,6 @@ const APPS: &[App] = &[
         kind: "so.tilo.poker.table",
     },
     App {
-        package: "shortcuts",
-        bin: "shortcuts",
-        id: "so.tilo.shortcuts",
-        kind: "shortcuts.workbench",
-    },
-    App {
         package: "slides",
         bin: "slides",
         id: "so.tilo.slides",

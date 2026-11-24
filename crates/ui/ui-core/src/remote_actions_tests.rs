@@ -147,67 +147,7 @@ fn client() -> (Arc<FakeHost>, RemoteActions) {
 }
 
 tilo_test_env::scenario! {
-    fn a_catalogue_read_is_whole_bounded_and_refused_when_it_cannot_be;
-
-    phase a_catalogue_read_gathers_every_page_as_the_app;
-    {
-        let (provider, actions) = client();
-        let answer = actions.catalogue(CatalogueQuery::default());
-        let Arrival::Ready(page) = answer.get() else {
-            panic!("the catalogue is answered: {:?}", answer.get());
-        };
-        let ids: Vec<_> = page
-            .rows
-            .iter()
-            .map(|row| row.resource.id.clone())
-            .collect();
-        assert_eq!(ids, ["a", "b"]);
-        assert!(
-            page.exhausted,
-            "the aggregate retains authoritative completion"
-        );
-        assert!(page.next_cursor.is_empty());
-        assert!(!page.stale_cursor);
-        assert!(!page.budget_exhausted);
-        let seen = provider.seen.lock().unwrap();
-        assert_eq!(seen.len(), 2, "one request per page");
-        assert!(
-            seen.iter().all(
-                |caller| caller.acting().app().map(ToString::to_string).as_deref()
-                    == Some("so.tilo.example")
-            ),
-            "the app asks as itself"
-        );
-        assert!(!actions.is_busy());
-    }
-
-    phase incomplete_or_contradictory_catalogue_pages_never_publish_partial_offers;
-    {
-        for (exhausted, next_cursor) in [(false, Vec::new()), (true, vec![1])] {
-            let mut actions = RemoteActions::session();
-            let answer = actions.catalogue(CatalogueQuery::default());
-            let correlation = catalogue_correlation(&mut actions, "first catalogue request");
-            actions.handle_collab_event(&CollabEvent::RemoteAction {
-                message: RemoteActionMessage::CatalogueResponse {
-                    correlation,
-                    result: Ok(CataloguePage {
-                        revision: "r1".into(),
-                        rows: vec![row("partial-offer")],
-                        exhausted,
-                        next_cursor,
-                        ..CataloguePage::default()
-                    }),
-                },
-            });
-            assert!(matches!(
-                answer.get(),
-                Arrival::Failed(ActionCallError::Unavailable { reason })
-                    if reason.contains("inconsistent completion metadata")
-            ));
-            assert!(!actions.is_busy());
-            assert!(actions.take_collab_requests().is_empty());
-        }
-    }
+    fn a_catalogue_page_is_bounded_and_refused_when_it_cannot_be;
 
     phase a_single_page_catalogue_read_leaves_hierarchy_budget_with_its_caller;
     {
@@ -231,150 +171,13 @@ tilo_test_env::scenario! {
     phase a_provider_only_catalogue_request_keeps_the_wire_zero;
     {
         let mut actions = RemoteActions::session();
-        let _answer = actions.catalogue(CatalogueQuery {
+        let _answer = actions.catalogue_page(CatalogueQuery {
             max_results: 0,
             ..CatalogueQuery::default()
         });
         let query = catalogue_query(&mut actions, "one provider-only catalogue request");
         assert_eq!(query.max_results, 0);
         assert!(query.provider.is_none());
-    }
-
-    phase a_repeated_catalogue_cursor_is_refused_without_another_request;
-    {
-        let mut actions = RemoteActions::session();
-        let answer = actions.catalogue(CatalogueQuery::default());
-        let correlation = catalogue_correlation(&mut actions, "first catalogue request");
-        actions.handle_collab_event(&CollabEvent::RemoteAction {
-            message: RemoteActionMessage::CatalogueResponse {
-                correlation,
-                result: Ok(CataloguePage {
-                    revision: "r1".into(),
-                    rows: vec![row("a")],
-                    next_cursor: vec![1],
-                    ..CataloguePage::default()
-                }),
-            },
-        });
-        let correlation = catalogue_correlation(&mut actions, "second catalogue request");
-        actions.handle_collab_event(&CollabEvent::RemoteAction {
-            message: RemoteActionMessage::CatalogueResponse {
-                correlation,
-                result: Ok(CataloguePage {
-                    revision: "r1".into(),
-                    rows: vec![row("b")],
-                    next_cursor: vec![1],
-                    ..CataloguePage::default()
-                }),
-            },
-        });
-        assert!(matches!(
-            answer.get(),
-            Arrival::Failed(ActionCallError::Unavailable { reason })
-                if reason.contains("repeated a cursor")
-        ));
-        assert!(actions.take_collab_requests().is_empty());
-    }
-
-    phase a_catalogue_walk_has_a_total_page_bound_whatever_restarts_it;
-    // A walk that pages on, and one a provider keeps restarting as stale, share
-    // the one budget: neither may go on asking forever.
-    {
-        for restarting in [false, true] {
-            let mut actions = RemoteActions::session();
-            let answer = actions.catalogue(CatalogueQuery::default());
-            for page in 0..MAX_CATALOGUE_PAGES {
-                let correlation =
-                    catalogue_correlation(&mut actions, "catalogue request for a page");
-                actions.handle_collab_event(&CollabEvent::RemoteAction {
-                    message: RemoteActionMessage::CatalogueResponse {
-                        correlation,
-                        result: Ok(CataloguePage {
-                            revision: if restarting {
-                                format!("r{page}")
-                            } else {
-                                "r1".into()
-                            },
-                            rows: if restarting {
-                                Vec::new()
-                            } else {
-                                vec![row(&format!("row-{page}"))]
-                            },
-                            next_cursor: if restarting {
-                                Vec::new()
-                            } else {
-                                vec![u8::try_from(page + 1).unwrap()]
-                            },
-                            stale_cursor: restarting,
-                            ..CataloguePage::default()
-                        }),
-                    },
-                });
-            }
-            assert!(matches!(
-                answer.get(),
-                Arrival::Failed(ActionCallError::Unavailable { reason })
-                    if reason.contains("page budget")
-            ));
-            assert!(actions.take_collab_requests().is_empty());
-        }
-    }
-
-    phase an_unannounced_catalogue_revision_change_is_refused;
-    {
-        let mut actions = RemoteActions::session();
-        let answer = actions.catalogue(CatalogueQuery::default());
-        let correlation = catalogue_correlation(&mut actions, "first catalogue request");
-        actions.handle_collab_event(&CollabEvent::RemoteAction {
-            message: RemoteActionMessage::CatalogueResponse {
-                correlation,
-                result: Ok(CataloguePage {
-                    revision: "r1".into(),
-                    next_cursor: vec![1],
-                    ..CataloguePage::default()
-                }),
-            },
-        });
-        let correlation = catalogue_correlation(&mut actions, "second catalogue request");
-        actions.handle_collab_event(&CollabEvent::RemoteAction {
-            message: RemoteActionMessage::CatalogueResponse {
-                correlation,
-                result: Ok(CataloguePage {
-                    revision: "r2".into(),
-                    exhausted: true,
-                    ..CataloguePage::default()
-                }),
-            },
-        });
-        assert!(matches!(
-            answer.get(),
-            Arrival::Failed(ActionCallError::Unavailable { reason })
-                if reason.contains("changed revision")
-        ));
-    }
-
-    phase an_incomplete_catalogue_budget_response_is_never_reported_as_complete;
-    {
-        let mut actions = RemoteActions::session();
-        let answer = actions.catalogue(CatalogueQuery::default());
-        let correlation = catalogue_correlation(&mut actions, "catalogue request");
-        actions.handle_collab_event(&CollabEvent::RemoteAction {
-            message: RemoteActionMessage::CatalogueResponse {
-                correlation,
-                result: Ok(CataloguePage {
-                    revision: "r1".into(),
-                    rows: vec![row("partial")],
-                    exhausted: true,
-                    budget_exhausted: true,
-                    ..CataloguePage::default()
-                }),
-            },
-        });
-        assert!(matches!(
-            answer.get(),
-            Arrival::Failed(ActionCallError::Unavailable { reason })
-                if reason.contains("work budget")
-        ));
     }
 
     phase an_unanswered_catalogue_read_is_refused_after_its_wait;
@@ -384,7 +187,7 @@ tilo_test_env::scenario! {
         let clock = crate::background::Pumped::new();
         let _entered = clock.background().enter();
         let mut actions = RemoteActions::session();
-        let answer = actions.catalogue(CatalogueQuery::default());
+        let answer = actions.catalogue_page(CatalogueQuery::default());
         assert_eq!(
             actions.take_collab_requests().len(),
             1,
@@ -771,7 +574,7 @@ tilo_test_env::scenario! {
     phase the_session_transport_carries_requests_out_and_answers_back;
     {
         let mut actions = RemoteActions::session();
-        let answer = actions.catalogue(CatalogueQuery::default());
+        let answer = actions.catalogue_page(CatalogueQuery::default());
         let correlation = catalogue_correlation(&mut actions, "one catalogue request");
         assert!(actions.take_collab_requests().is_empty(), "sent once");
         actions.handle_collab_event(&CollabEvent::RemoteAction {
@@ -798,11 +601,11 @@ tilo_test_env::scenario! {
                 Arc::clone(&provider) as Arc<dyn ActionProvider + Send + Sync>,
                 Caller::local_app("so.tilo.example").in_workspace("workspace"),
             );
-            let answer = RemoteActions::current().catalogue(CatalogueQuery::default());
+            let answer = RemoteActions::current().catalogue_page(CatalogueQuery::default());
             assert!(matches!(answer.get(), Arrival::Ready(_)));
         }
         let mut after = RemoteActions::current();
-        let _pending = after.catalogue(CatalogueQuery::default());
+        let _pending = after.catalogue_page(CatalogueQuery::default());
         assert_eq!(
             after.take_collab_requests().len(),
             1,
@@ -1146,13 +949,13 @@ tilo_test_env::scenario! {
         let provider = Arc::new(FakeHost::default());
         // The window a desktop opens with is built before the desktop serves its windows.
         let early = RemoteActions::current();
-        let before = early.catalogue(CatalogueQuery::default());
+        let before = early.catalogue_page(CatalogueQuery::default());
         assert!(before.get().is_pending(), "nothing answers it yet");
         let _served = RemoteActions::enter(
             Arc::clone(&provider) as Arc<dyn ActionProvider + Send + Sync>,
             Caller::local_person("ada").in_workspace("workspace"),
         );
-        let under = early.catalogue(CatalogueQuery::default());
+        let under = early.catalogue_page(CatalogueQuery::default());
         assert!(matches!(under.get(), Arrival::Ready(_)));
         assert!(
             matches!(before.get(), Arrival::Ready(_)),
@@ -1167,7 +970,7 @@ tilo_test_env::scenario! {
         // carries the request, and the answer reaches the part that asked.
         let mut carried = RemoteActions::session();
         let _sharing = RemoteActions::carrying(carried.clone());
-        let answer = RemoteActions::current().catalogue(CatalogueQuery::default());
+        let answer = RemoteActions::current().catalogue_page(CatalogueQuery::default());
         assert!(answer.get().is_pending(), "nothing in the app answers it");
         let correlation = catalogue_correlation(&mut carried, "the request a later part made");
         carried.handle_collab_event(&CollabEvent::RemoteAction {
@@ -1196,7 +999,7 @@ tilo_test_env::scenario! {
             Arc::clone(&provider) as Arc<dyn ActionProvider + Send + Sync>,
             Caller::local_person("ada").in_workspace("workspace"),
         );
-        let _pending = session.catalogue(CatalogueQuery::default());
+        let _pending = session.catalogue_page(CatalogueQuery::default());
         assert_eq!(session.take_collab_requests().len(), 1);
     }
 

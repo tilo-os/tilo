@@ -3,7 +3,7 @@
 //! palette, scripts and agents use.
 
 use crate::time::{Duration, Instant};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tilo_actions::InvocationUpdate;
@@ -64,8 +64,6 @@ const OBSERVE_WAIT_MS: u32 = 10_000;
 /// How long a running invocation is left before it is observed again, for a provider that answers a waiting
 /// observe at once: one that predates waits.
 const OBSERVE_INTERVAL: Duration = Duration::from_millis(200);
-/// A remote publisher cannot keep an application walking an unbounded or cyclic catalogue.
-const MAX_CATALOGUE_PAGES: usize = 64;
 /// How long a followed read asks its provider to hold the answer for the next write. A provider a connection
 /// reaches caps it at what it holds any waiting answer for; a desktop that serves its windows in
 /// process holds it this long, so a record nobody writes costs its reader nothing in between.
@@ -188,13 +186,8 @@ enum Transport {
 }
 
 struct CatalogueWalk {
-    query: CatalogueQuery,
-    gathered: CataloguePage,
     answer: ArrivalWriter<CataloguePage, ActionCallError>,
-    pages_remaining: usize,
-    seen_cursors: HashSet<(Option<String>, Vec<u8>)>,
-    follow_pages: bool,
-    /// When the page asked for last is refused for want of an answer.
+    /// When the page asked for is refused for want of an answer.
     due: Instant,
 }
 
@@ -372,30 +365,24 @@ impl RemoteActions {
         self.inner.lock_recover()
     }
 
-    /// Read every page of `query` from the catalogue the app is offered.
-    #[must_use]
-    pub fn catalogue(&self, query: CatalogueQuery) -> CatalogueCall {
-        self.start_catalogue(query, true)
-    }
-
     /// Read exactly one bounded page of `query`. This is for clients that traverse a resource hierarchy
     /// and therefore must own one global page/work budget across parents.
     #[must_use]
     pub fn catalogue_page(&self, query: CatalogueQuery) -> CatalogueCall {
-        self.start_catalogue(query, false)
+        self.start_catalogue(query)
     }
 
-    fn start_catalogue(&self, query: CatalogueQuery, follow_pages: bool) -> CatalogueCall {
+    fn start_catalogue(&self, query: CatalogueQuery) -> CatalogueCall {
         let client = self.clone();
         let asked = query.clone();
         let answer = Arriving::pending(self.source()).on_retry(move |answer| {
-            client.ask_catalogue(answer, asked.clone(), follow_pages);
+            client.ask_catalogue(answer, asked.clone());
         });
-        self.ask_catalogue(&answer, query, follow_pages);
+        self.ask_catalogue(&answer, query);
         answer
     }
 
-    fn ask_catalogue(&self, answer: &CatalogueCall, query: CatalogueQuery, follow_pages: bool) {
+    fn ask_catalogue(&self, answer: &CatalogueCall, query: CatalogueQuery) {
         let writer = answer.writer();
         writer.pending(self.source());
         let background = crate::background::Background::current();
@@ -409,16 +396,10 @@ impl RemoteActions {
             if first.provider.is_some() || first.max_results != 0 {
                 first.max_results = first.max_results.clamp(1, MAX_CATALOGUE_PAGE);
             }
-            let seen_cursors = HashSet::from([(first.revision.clone(), first.cursor.clone())]);
             inner.catalogue.insert(
                 correlation,
                 CatalogueWalk {
-                    query: first.clone(),
-                    gathered: CataloguePage::default(),
                     answer: writer,
-                    pages_remaining: MAX_CATALOGUE_PAGES,
-                    seen_cursors,
-                    follow_pages,
                     due,
                 },
             );
@@ -791,86 +772,12 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             correlation,
             result,
         } => {
-            let mut walk = inner.catalogue.remove(&correlation)?;
-            let page = match result {
-                Ok(page) => page,
-                Err(error) => {
-                    walk.answer.fail(error);
-                    return None;
-                }
-            };
-            walk.pages_remaining = walk.pages_remaining.saturating_sub(1);
-            if !walk.follow_pages {
-                walk.answer.ready(page);
-                return None;
+            let walk = inner.catalogue.remove(&correlation)?;
+            match result {
+                Ok(page) => walk.answer.ready(page),
+                Err(error) => walk.answer.fail(error),
             }
-            if page.budget_exhausted {
-                walk.answer.fail(ActionCallError::Unavailable {
-                    reason: "catalogue provider exhausted its work budget".into(),
-                });
-                return None;
-            }
-            if !page.stale_cursor && page.exhausted != page.next_cursor.is_empty() {
-                walk.answer.fail(ActionCallError::Unavailable {
-                    reason: "catalogue provider returned inconsistent completion metadata".into(),
-                });
-                return None;
-            }
-            if !page.stale_cursor
-                && walk
-                    .query
-                    .revision
-                    .as_ref()
-                    .is_some_and(|revision| revision != &page.revision)
-            {
-                walk.answer.fail(ActionCallError::Unavailable {
-                    reason: "catalogue provider changed revision without a stale response".into(),
-                });
-                return None;
-            }
-            if page.stale_cursor {
-                walk.gathered = CataloguePage::default();
-                walk.query.cursor.clear();
-                walk.query.revision = None;
-                walk.seen_cursors.clear();
-            } else {
-                walk.gathered.revision.clone_from(&page.revision);
-                walk.gathered.rows.extend(page.rows);
-                if walk.gathered.providers.is_empty() {
-                    walk.gathered.providers = page.providers;
-                }
-                if page.exhausted {
-                    walk.gathered.exhausted = true;
-                    walk.answer.ready(walk.gathered);
-                    return None;
-                }
-                walk.query.cursor = page.next_cursor;
-                walk.query.revision = Some(page.revision);
-            }
-            if walk.pages_remaining == 0 {
-                walk.answer.fail(ActionCallError::Unavailable {
-                    reason: "catalogue traversal exceeded its page budget".into(),
-                });
-                return None;
-            }
-            let cursor = (walk.query.revision.clone(), walk.query.cursor.clone());
-            if !walk.seen_cursors.insert(cursor) {
-                walk.answer.fail(ActionCallError::Unavailable {
-                    reason: "catalogue traversal repeated a cursor".into(),
-                });
-                return None;
-            }
-            let next = inner.next_correlation;
-            inner.next_correlation = inner.next_correlation.wrapping_add(1);
-            let query = walk.query.clone();
-            let background = crate::background::Background::current();
-            walk.due = background.now() + CATALOGUE_WAIT;
-            background.wake_after(CATALOGUE_WAIT, inner.wake.clone());
-            inner.catalogue.insert(next, walk);
-            Some(RemoteActionMessage::CatalogueRequest {
-                correlation: next,
-                query,
-            })
+            None
         }
         RemoteActionMessage::Receipt(receipt) => {
             let invocation = receipt.invocation;

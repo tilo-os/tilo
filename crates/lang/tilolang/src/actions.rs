@@ -18,7 +18,8 @@ use crate::types::{EffectClass, MergeKind};
 pub const ACTIONS_APP: &str = "tilo.actions";
 
 /// One action the workspace's apps and the workspace itself publish, as `actions.catalogue`
-/// answers it.
+/// answers it. Its name is not `Action`: a package's `Action` is the language's own invocable
+/// action a view shows, and a record type of that name reads as that instead.
 pub const ACTION_TYPE: &str = "actions-action";
 /// One parameter of such an action.
 pub const PARAM_TYPE: &str = "actions-param";
@@ -71,7 +72,7 @@ fn catalogue_action() -> ActionMeta {
             ),
             param("app", "Option<Text>", "Only this app's actions, when named"),
         ],
-        result: Some("List<Action>".to_string()),
+        result: Some("List<Offered>".to_string()),
         class: EffectClass::Read,
         proposal: None,
         reaches: Vec::new(),
@@ -157,7 +158,7 @@ pub fn actions_meta() -> PackageMeta {
         types: vec![
             TypeMeta {
                 id: ACTION_TYPE.to_string(),
-                name: "Action".to_string(),
+                name: "Offered".to_string(),
                 doc: "One action the workspace offers: what it is called, where it is addressed, and what it takes."
                     .to_string(),
                 fields: vec![
@@ -192,9 +193,21 @@ pub fn actions_meta() -> PackageMeta {
                         "The resource it acts on, as a person reads it.",
                     ),
                     field(
+                        "actions-resource_kind",
+                        "resource_kind",
+                        "Text",
+                        "The kind of resource it acts on (`notes.note`), which a step that calls it names.",
+                    ),
+                    field(
+                        "actions-resource_id",
+                        "resource_id",
+                        "Text",
+                        "The resource it was listed on (`notes.note:1`), which a step calls it on.",
+                    ),
+                    field(
                         "actions-kind",
                         "kind",
-                        "ActionKind",
+                        "enum ActionKind",
                         "Whether it reads or changes something.",
                     ),
                     field(
@@ -275,7 +288,7 @@ mod tests {
     fn the_registry_package_declares_its_verbs_its_types_and_their_answers() {
         let meta = actions_meta();
         assert_eq!(meta.app, ACTIONS_APP);
-        for ty in ["Action", "ActionParam"] {
+        for ty in ["Offered", "ActionParam"] {
             assert!(
                 meta.types.iter().any(|declared| declared.name == ty),
                 "{ty}"
@@ -291,7 +304,7 @@ mod tests {
             .iter()
             .find(|action| action.id == CATALOGUE_ACTION)
             .expect("catalogue is declared");
-        assert_eq!(catalogue.result.as_deref(), Some("List<Action>"));
+        assert_eq!(catalogue.result.as_deref(), Some("List<Offered>"));
         assert_eq!(catalogue.class, EffectClass::Read);
         let call = meta
             .actions

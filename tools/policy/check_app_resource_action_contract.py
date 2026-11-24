@@ -602,7 +602,6 @@ LEGACY_API_BANS = {
 # runs steps of the catalogue. An address is its data, so it builds one; every
 # other old API is refused for it as for any app.
 PROTOCOL_ENDPOINTS: dict[str, str] = {
-    "shortcuts": "stores and runs steps that name other apps' published actions",
 }
 # Which matches of a legacy rule are the old API, given the file's code and
 # its raw text (same offsets): a `put` on a content store, a secret store or a

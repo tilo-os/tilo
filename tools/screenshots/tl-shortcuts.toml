@@ -1,0 +1,13 @@
+# Shortcuts (tilolang): the port's own scenarios, the states its shots show
+# (tools/screenshots/run.py). The app stages them from fixtures, so a shot
+# needs no other person and no live workspace.
+
+[[situation]]
+name = "a-shortcut-being-written"
+title = "A shortcut being written"
+scenario = "a shortcut being written"
+
+[[situation]]
+name = "a-saved-shortcut"
+title = "A saved shortcut"
+scenario = "a saved shortcut"

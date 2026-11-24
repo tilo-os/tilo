@@ -82,6 +82,8 @@ impl AppBrokerState {
                         "app_label": app_label(&row.app_id),
                         "label": action.action_label,
                         "resource": action.resource_label,
+                        "resource_kind": row.resource.kind,
+                        "resource_id": row.resource.id,
                         "kind": if action.contract.kind == ActionKind::Read { "read" } else { "effect" },
                         "params": action.params.iter().map(|param| serde_json::json!({
                             "name": param.name,

@@ -917,7 +917,6 @@ doc = false
 "sharded-slab-0_1_7" = { package = "sharded-slab", version = "^0.1.7", default-features = false, features = [] }
 "shell-words-1_1_1" = { package = "shell-words", version = "^1.1.1", default-features = false, features = ["default", "std"] }
 "shlex-1_3_0" = { package = "shlex", version = "^1.3.0", default-features = false, features = ["default", "std"] }
-"shortcuts" = { path = "../../apps/shortcuts", default-features = false, features = ["samples"] }
 "signal-hook-0_4_5" = { package = "signal-hook", version = "^0.4.5", default-features = false, features = ["channel", "default", "iterator"] }
 "signal-hook-registry-1_4_8" = { package = "signal-hook-registry", version = "^1.4.8", default-features = false, features = [] }
 "signature-2_2_0" = { package = "signature", version = "^2.2.0", default-features = false, features = ["alloc", "digest", "rand_core", "std"] }
@@ -3416,7 +3415,6 @@ doc = false
 "sharded-slab-0_1_7" = { package = "sharded-slab", version = "^0.1.7", default-features = false, features = [] }
 "shell-words-1_1_1" = { package = "shell-words", version = "^1.1.1", default-features = false, features = ["default", "std"] }
 "shlex-1_3_0" = { package = "shlex", version = "^1.3.0", default-features = false, features = ["default", "std"] }
-"shortcuts" = { path = "../../apps/shortcuts", default-features = false, features = ["samples"] }
 "signal-hook-0_4_5" = { package = "signal-hook", version = "^0.4.5", default-features = false, features = ["channel", "default", "iterator"] }
 "signal-hook-registry-1_4_8" = { package = "signal-hook-registry", version = "^1.4.8", default-features = false, features = [] }
 "signature-2_2_0" = { package = "signature", version = "^2.2.0", default-features = false, features = ["alloc", "digest", "rand_core", "std"] }
