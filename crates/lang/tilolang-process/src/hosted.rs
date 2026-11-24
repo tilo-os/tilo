@@ -750,6 +750,11 @@ impl Platform for HostPlatform {
         if app == crate::git_engine::APP {
             return crate::git_engine::call(app, op, input);
         }
+        // The Typst editor's typesetting, which keeps its pictures and PDF in this app's own
+        // content store as it answers.
+        if app == crate::typst_engine::APP {
+            return crate::typst_engine::call(self, op, input);
+        }
         tilolang_tilo::engine::answer(app, op, input)
     }
 

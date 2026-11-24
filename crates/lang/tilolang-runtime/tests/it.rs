@@ -99,6 +99,8 @@ mod engine;
 
 #[path = "e2e_store.rs"]
 mod e2e_store;
+#[path = "e2e_typst_editor.rs"]
+mod e2e_typst_editor;
 #[path = "effects.rs"]
 mod effects;
 #[path = "event_values.rs"]
@@ -129,6 +131,8 @@ mod outcomes;
 #[path = "outside.rs"]
 mod outside;
 mod page;
+#[path = "pdf.rs"]
+mod pdf;
 #[path = "programs.rs"]
 mod programs;
 #[path = "props.rs"]

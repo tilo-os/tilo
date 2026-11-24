@@ -106,12 +106,6 @@ const APPS: &[App] = &[
         id: "so.tilo.totp",
         kind: "totp.vault",
     },
-    App {
-        package: "typst-editor",
-        bin: "typst-editor",
-        id: "so.tilo.typst-editor",
-        kind: "typst-editor.workspace",
-    },
 ];
 
 /// Every app's package and entrypoint binary, as the run built them.

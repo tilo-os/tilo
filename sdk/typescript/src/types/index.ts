@@ -59,7 +59,6 @@ export * as store from "./store.ts";
 export * as tasks from "./tasks.ts";
 export * as terminal from "./terminal.ts";
 export * as totp from "./totp.ts";
-export * as typstEditor from "./typst_editor.ts";
 export * as videoEditor from "./video_editor.ts";
 export * as weather from "./weather.ts";
 export * as windows from "./windows.ts";

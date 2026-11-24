@@ -244,7 +244,6 @@ HEAVY_PACKAGES = {
     "tilo-doc-pdf",
     "tilo-session",
     "slides",
-    "typst-editor",
     "tilo-ui",
 }
 

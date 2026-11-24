@@ -185,6 +185,9 @@ pub struct CodeEditor {
     diagnostics: Vec<Diagnostic>,
     /// The pointer, for the diagnostic under it.
     hover: Option<Point>,
+    /// The place the view last asked to show, as it asked for it: the same place asked for again
+    /// is not gone to again, so a person's own scrolling is left alone.
+    pub(crate) revealed: Option<String>,
 }
 
 impl CodeEditor {
@@ -201,6 +204,7 @@ impl CodeEditor {
             max_lines: None,
             diagnostics: Vec::new(),
             hover: None,
+            revealed: None,
         }
     }
 
@@ -399,6 +403,32 @@ impl CodeEditor {
 
     pub fn selection(&self) -> Option<(usize, usize)> {
         self.inner.selection_range_public()
+    }
+
+    /// Show the place `place` names, written `line` or `line:column`, both counted from 1, and
+    /// put the caret there. The same place asked for twice is not gone to twice: a view that
+    /// wants the same place again (a heading chosen again) adds a count after it (`3:1:2`).
+    pub fn goto_place(&mut self, place: &str) {
+        let mut parts = place.split(':');
+        let line = parts
+            .next()
+            .and_then(|line| line.trim().parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1);
+        let column = parts
+            .next()
+            .and_then(|column| column.trim().parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1);
+        self.goto_line(line);
+        let start = self.cursor_pos();
+        let rest = self.inner.value().get(start..).unwrap_or_default();
+        let offset = rest
+            .char_indices()
+            .nth(column.saturating_sub(1))
+            .map_or(rest.len(), |(at, _)| at);
+        self.set_cursor_pos(start.saturating_add(offset));
+        self.revealed = Some(place.to_owned());
     }
 
     pub fn goto_line(&mut self, line_1based: usize) {

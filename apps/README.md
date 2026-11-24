@@ -161,7 +161,6 @@ touch. Expanded neighbouring targets must not overlap.
 | `notes`          | Collaborative block notes: nested note tree, rich Markdown editing, `[[Note]]` links, tables, formulas, images, metadata, history-aware actions, and host-owned Automerge storage.         |
 | `calendar`       | Calendar + task manager (Planify-style): month/week/day/agenda, recurrence, tasks; iCalendar interop and live CalDAV sync (PROPFIND/REPORT/ETag PUT, worker thread, `live` on by default). |
 | `contacts`       | Address book with vCard import/export.                                                                                                                                                     |
-| `typst-editor`   | Split-view Typst editor: source pane + live compiled preview (`typst` / `typst-render` / tiny-skia), diagnostics panel, page thumbnails, background compile.                               |
 | `shortcuts`      | Build and run shortcuts: pipelines of the actions your apps publish, typed bindings between steps, a grant review before saving.                                                           |
 
 ## Media

@@ -1603,6 +1603,13 @@
           "name": "read_only",
           "doc": "It is read and copied, never edited.",
           "type": "bool"
+        },
+        {
+          "name": "reveal",
+          "doc": "The place to show, written `line` or `line:column` counted from 1; the same place asked for again needs a count after it (`3:1:2`), so a person's own scrolling is left alone.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "bindings": [

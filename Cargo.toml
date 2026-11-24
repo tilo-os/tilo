@@ -125,7 +125,6 @@ members = [
     "apps/terminal",
     "apps/thumbnails",
     "apps/totp",
-    "apps/typst-editor",
     "apps/windows",
 
     # Agent
@@ -372,6 +371,7 @@ members = [
     "crates/platform/tilo-sandbox",
     "crates/platform/tilo-shm",
     "crates/engines/tilo-typst-fonts",
+    "crates/engines/typst-engine",
     "crates/desktop/tilo-wallpapers",
     "crates/sdk/zone-globe",
 

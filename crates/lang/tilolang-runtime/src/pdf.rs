@@ -170,7 +170,7 @@ impl Core {
                         let file = self
                             .keep_bytes("annotated.pdf", "application/pdf", &bytes)
                             .or_else(trap)?;
-                        self.ret_h(Value::file(file))
+                        self.result(Ok(Value::file(file)))
                     }
                     Err(why) => self.result(Err(why)),
                 }
@@ -182,7 +182,7 @@ impl Core {
                 match self.pdf.borrow().picture(&bytes, page, width) {
                     Ok(png) => {
                         let file = self.keep_bytes("page.png", "image/png", &png).or_else(trap)?;
-                        self.ret_h(Value::file(file))
+                        self.result(Ok(Value::file(file)))
                     }
                     Err(why) => self.result(Err(why)),
                 }

@@ -1,0 +1,33 @@
+[package]
+name = "tilo-typst"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+readme = "../../../docs/crates/supporting-crate.md"
+repository.workspace = true
+homepage.workspace = true
+description = "Typesetting as the device's work: a Typst document compiled, laid out, drawn and exported, for the app that asks (Tilo)"
+
+[dependencies]
+typst = "0.15"
+typst-layout = "0.15"
+typst-pdf = "0.15"
+typst-render = "0.15"
+comemo = "0.5"
+# Typst's bundled fonts, embedded here and by every native build alike.
+tilo-typst-fonts = { version = "0.1.0", path = "../tilo-typst-fonts" }
+image = { workspace = true, features = ["png"] }
+serde = { workspace = true, features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+# The system's colour-emoji face completes Typst's set on Windows, which ships none.
+fontdb = "0.23.0"
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+# The plugin module the wasm host's budget is tested with, written as WAT.
+wat = "1"
+
+[lints]
+workspace = true

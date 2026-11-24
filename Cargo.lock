@@ -21084,6 +21084,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-typst"
+version = "0.1.0"
+dependencies = [
+ "comemo",
+ "fontdb",
+ "image",
+ "serde",
+ "tilo-test-env",
+ "tilo-typst-fonts",
+ "typst",
+ "typst-layout",
+ "typst-pdf",
+ "typst-render",
+ "wat",
+]
+
+[[package]]
 name = "tilo-typst-engine"
 version = "0.1.0"
 dependencies = [
@@ -22268,6 +22285,7 @@ dependencies = [
  "tilo-test-http",
  "tilo-thumbnail",
  "tilo-tiles",
+ "tilo-typst",
  "tilo-ui",
  "tilo-video-edit",
  "tilo-video-picture",
@@ -23194,34 +23212,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bcee505dac6702dd1c5e65aa2e94a6179d19ee09e2e5637d7313db91765dc4e0"
 dependencies = [
  "bitflags 2.11.0",
-]
-
-[[package]]
-name = "typst-editor"
-version = "0.1.0"
-dependencies = [
- "comemo",
- "runtime-dylib",
- "serde_json",
- "tempfile",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-automerge-fork",
- "tilo-files",
- "tilo-page-raster",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-typst-engine",
- "tilo-typst-fonts",
- "tilo-vello",
- "tilo-winit",
- "typst",
- "typst-editor",
- "typst-layout",
- "typst-pdf",
- "typst-render",
- "wat",
- "workspace-hack",
 ]
 
 [[package]]
@@ -27663,6 +27653,7 @@ dependencies = [
  "tilo-tiles",
  "tilo-tray",
  "tilo-tts",
+ "tilo-typst",
  "tilo-typst-fonts",
  "tilo-ui",
  "tilo-ui-graph",
@@ -27773,7 +27764,6 @@ dependencies = [
  "typetag-impl",
  "typst",
  "typst-assets",
- "typst-editor",
  "typst-eval",
  "typst-html",
  "typst-layout",

@@ -125,6 +125,8 @@ tilo-capture = { path = "../../engines/tilo-capture", features = ["scanner", "ca
 tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
 tilo-ocr = { path = "../../engines/ocr" }
 tilo-doc-pdf = { path = "../../engines/tilo-doc-pdf" }
+# The Typst editor's typesetting: a source compiled, its pages drawn and its PDF written.
+tilo-typst = { version = "0.1.0", path = "../../engines/typst-engine" }
 image = { workspace = true, features = ["png"] }
 # The archives a package makes of its folder's entries and unpacks again, in pure Rust.
 tilo-archive = { version = "0.1.0", path = "../../engines/tilo-archive" }

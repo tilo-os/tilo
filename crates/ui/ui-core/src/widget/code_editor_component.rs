@@ -23,6 +23,9 @@ pub struct CodeEditorProps {
     pub gutter: bool,
     /// It is read and copied, never edited.
     pub read_only: bool,
+    /// The place to show, written `line` or `line:column` counted from 1; the same place asked for
+    /// again needs a count after it (`3:1:2`), so a person's own scrolling is left alone.
+    pub reveal: Option<String>,
 }
 
 impl Default for CodeEditorProps {
@@ -35,6 +38,7 @@ impl Default for CodeEditorProps {
             max_lines: None,
             gutter: true,
             read_only: false,
+            reveal: None,
         }
     }
 }
@@ -51,6 +55,7 @@ impl Described for CodeEditor {
             max_lines,
             gutter,
             read_only,
+            reveal,
         } = props;
         let mut editor = Self::from_state(&value.state)
             .with_gutter(gutter)
@@ -67,6 +72,9 @@ impl Described for CodeEditor {
         if read_only {
             editor = editor.read_only();
         }
+        if let Some(place) = reveal {
+            editor.goto_place(&place);
+        }
         editor
     }
 
@@ -79,6 +87,7 @@ impl Described for CodeEditor {
             max_lines,
             gutter,
             read_only,
+            reveal,
         } = props;
         if !self.inner.follows(&value.state) {
             self.inner.follow(&value.state);
@@ -90,6 +99,11 @@ impl Described for CodeEditor {
             self.inner.set_highlighter(language.highlighter());
         }
         self.set_read_only(read_only);
+        if let Some(place) = reveal
+            && self.revealed.as_deref() != Some(place.as_str())
+        {
+            self.goto_place(&place);
+        }
         self.min_lines = min_lines.map(|lines| usize::try_from(lines.max(1)).unwrap_or(1));
         self.max_lines = max_lines.map(|lines| usize::try_from(lines.max(1)).unwrap_or(1));
         true

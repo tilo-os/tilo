@@ -20556,84 +20556,6 @@
         "required": [],
         "description": ""
       },
-      "typst-editor.workspace.new-file.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "path": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "typst-editor.workspace.saved-at.Arguments": {
-        "type": "object",
-        "properties": {
-          "file": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "file",
-          "path"
-        ],
-        "description": ""
-      },
-      "typst-editor.workspace.load.Arguments": {
-        "type": "object",
-        "properties": {
-          "file": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "path": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "file",
-          "name",
-          "source"
-        ],
-        "description": ""
-      },
-      "typst-editor.workspace.close-file.Arguments": {
-        "type": "object",
-        "properties": {
-          "file": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "file"
-        ],
-        "description": ""
-      },
       "video-editor.project.set-frame-size.Arguments": {
         "type": "object",
         "properties": {
@@ -41185,30 +41107,6 @@
       "resource": "totp.vault",
       "action": "add-account",
       "arguments": "#/components/schemas/totp.vault.add-account.Arguments"
-    },
-    {
-      "app": "so.tilo.typst-editor",
-      "resource": "typst-editor.workspace",
-      "action": "new-file",
-      "arguments": "#/components/schemas/typst-editor.workspace.new-file.Arguments"
-    },
-    {
-      "app": "so.tilo.typst-editor",
-      "resource": "typst-editor.workspace",
-      "action": "saved-at",
-      "arguments": "#/components/schemas/typst-editor.workspace.saved-at.Arguments"
-    },
-    {
-      "app": "so.tilo.typst-editor",
-      "resource": "typst-editor.workspace",
-      "action": "load",
-      "arguments": "#/components/schemas/typst-editor.workspace.load.Arguments"
-    },
-    {
-      "app": "so.tilo.typst-editor",
-      "resource": "typst-editor.workspace",
-      "action": "close-file",
-      "arguments": "#/components/schemas/typst-editor.workspace.close-file.Arguments"
     },
     {
       "app": "so.tilo.video-editor",

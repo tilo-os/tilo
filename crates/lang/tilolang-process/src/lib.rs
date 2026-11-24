@@ -64,6 +64,8 @@ pub mod print_centre_engine;
 pub mod shell_page;
 pub mod stop;
 pub mod task;
+#[cfg(feature = "app-launch")]
+pub mod typst_engine;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(all(

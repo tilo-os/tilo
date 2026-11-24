@@ -34,7 +34,6 @@ exclude = [
     "slides",
     "terminal",
     "tilo-console",
-    "typst-editor",
 ]
 
 [advisories]

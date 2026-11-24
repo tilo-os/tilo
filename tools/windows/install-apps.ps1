@@ -2,7 +2,7 @@
 # Cap'n Proto, LLVM's llvm-readobj and the pinned Rust/MSVC toolchain must be on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'file-explorer', 'word-processor', 'terminal', 'ebook', 'clocks', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'feeds', 'totp', 'passwords', 'typst-editor', 'mail')]
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'file-explorer', 'word-processor', 'terminal', 'ebook', 'clocks', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'feeds', 'totp', 'passwords', 'mail')]
     [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'file-explorer', 'word-processor', 'terminal', 'ebook', 'clocks', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'feeds', 'totp'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'release',

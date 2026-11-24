@@ -1,0 +1,135 @@
+{
+  "app": "typst-editor",
+  "said": "Typst",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.typst-editor",
+    "package": "typst-editor"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Typst on an empty library",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": "New document"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "write",
+      "said": "Write a document and meet the page it typesets to",
+      "ops": [
+        {
+          "press": {
+            "tl": "New document"
+          }
+        },
+        {
+          "wait_for": "Untitled.typ"
+        },
+        {
+          "press": {
+            "tl": "Untitled.typ"
+          }
+        },
+        {
+          "wait_for": "ui.CodeEditor"
+        },
+        {
+          "type": {
+            "into": "ui.CodeEditor",
+            "text": "= A letter\n\nHello from Typst, typeset on this device.\n"
+          }
+        },
+        {
+          "wait_for": "Page 1 of 1"
+        }
+      ]
+    },
+    {
+      "id": "problem",
+      "said": "A broken line is a problem the window says",
+      "ops": [
+        {
+          "type": {
+            "into": "ui.CodeEditor",
+            "text": "\n#undefined_thing\n"
+          }
+        },
+        {
+          "wait_for": "This document does not typeset"
+        },
+        {
+          "press": {
+            "tl": "Problems"
+          }
+        },
+        {
+          "wait_for": "undefined"
+        }
+      ]
+    },
+    {
+      "id": "outline",
+      "said": "Read the document's headings from its source",
+      "ops": [
+        {
+          "press": {
+            "tl": "Outline"
+          }
+        },
+        {
+          "wait_for": "A letter"
+        }
+      ]
+    },
+    {
+      "id": "page",
+      "said": "Back to the page, wider",
+      "ops": [
+        {
+          "press": {
+            "tl": "The page"
+          }
+        },
+        {
+          "wait_for": "Page 1 of 1"
+        },
+        {
+          "press": {
+            "tl": "Zoom in"
+          }
+        },
+        {
+          "wait_for": "Page 1 of 1"
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same document in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        },
+        {
+          "wait_for": "Page 1 of 1"
+        }
+      ]
+    }
+  ]
+}

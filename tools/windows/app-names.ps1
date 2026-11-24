@@ -10,7 +10,6 @@ function Get-TiloWindowsAppName {
         'db-client' { 'Database Client' }
         'ebook' { 'Books' }
         'totp' { 'Authenticator' }
-        'typst-editor' { 'Typst' }
         default { (Get-Culture).TextInfo.ToTitleCase($Application) }
     }
 }

@@ -97,41 +97,6 @@ first_frame() (
   (( ${#failed[@]} == 0 )) || { echo "no first frame from: ${failed[*]}" >&2; exit 1; }
 )
 
-# Typst Editor typesets through its engine library.
-typst() (
-  set -euo pipefail
-  set -euo pipefail
-  if [[ ! -x $target/thin-app/typst-editor ]]; then
-    echo "typst-editor is not among this run's apps; nothing to typeset" | tee -a "$GITHUB_STEP_SUMMARY"
-    exit 0
-  fi
-  grep -Fxq libtilo_typst_engine.so $target/thin-app/runtime-engines \
-    || { echo "build-thin-apps.sh did not list libtilo_typst_engine.so" >&2; exit 1; }
-  libdir=$(rustc --print target-libdir)
-  driver=$(find /usr/share/vulkan/icd.d -name 'lvp_icd.*.json' -print -quit 2>/dev/null || true)
-  [[ -z $driver ]] || export VK_DRIVER_FILES=$driver WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=llvmpipe
-  runtime=$(mktemp -d)
-  chmod 700 "$runtime"
-  shot="$runtime/typst-editor.png"
-  # A release build carries no sample documents: the shot opens one of its own.
-  printf '= Release smoke\n\nTypeset by the engine library.\n' >"$runtime/smoke.typ"
-  status=0
-  XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="$target/thin-app:$libdir" LD_DEBUG=files \
-    timeout 300 $target/thin-app/typst-editor --shots="$shot" "$runtime/smoke.typ" \
-    >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
-  if (( status != 0 )) || [[ ! -s $shot ]]; then
-    grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
-    echo "typst-editor did not capture a typeset document (exit $status)" >&2
-    exit 1
-  fi
-  arrival=$(grep -Eo 'file=libtilo_typst_engine\.so \[0\];  needed by [^ ]*' \
-    "$runtime/loader.log" | head -1 || true)
-  [[ $arrival == *typst-editor* ]] \
-    || { echo "typst-editor typeset without loading libtilo_typst_engine.so itself: ${arrival:-not loaded}" >&2; exit 1; }
-  printf 'typst-editor typeset its first document through %s\n' "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
-  rm -rf "$runtime"
-)
-
 # Apps run their engine libraries. Settings has no probe (its binary is one
 # call into its engine library), Calendar none for the accounts engine, and Chat and the
 # on-screen keyboard none (build-thin-apps.sh runs those engines' own
@@ -209,9 +174,9 @@ engines() (
 failed=()
 # RELEASE_SMOKE_STEPS narrows the run to some of the steps (the size check on main takes the two
 # size budgets); a release runs them all.
-for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame typst engines}; do
+for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame engines}; do
   case $step in
-    tapp_size|runtime_size|loader_cost|first_frame|typst|engines) ;;
+    tapp_size|runtime_size|loader_cost|first_frame|engines) ;;
     *) printf 'unknown release smoke step: %s\n' "$step" >&2; exit 2 ;;
   esac
   printf '==> %s\n' "$step"

@@ -1297,6 +1297,7 @@ doc = false
 "tilo-tray" = { path = "../../crates/desktop/tray", default-features = false, features = [] }
 "tilo-tts" = { path = "../../crates/engines/tts", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../crates/engines/tilo-typst-fonts", default-features = false, features = [] }
+"tilo-typst" = { path = "../../crates/engines/typst-engine", default-features = false, features = [] }
 "tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "syntax-definitions", "test-support", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-kms" = { path = "../../crates/ui/ui-kms", default-features = false, features = [] }
@@ -1397,7 +1398,6 @@ doc = false
 "typetag-0_2_23" = { package = "typetag", version = "^0.2.23", default-features = false, features = [] }
 "typst-0_15_1" = { package = "typst", version = "^0.15.1", default-features = false, features = [] }
 "typst-assets-0_15_1" = { package = "typst-assets", version = "^0.15.1", default-features = false, features = ["fonts"] }
-"typst-editor" = { path = "../../apps/typst-editor", default-features = false, features = ["samples"] }
 "typst-eval-0_15_1" = { package = "typst-eval", version = "^0.15.1", default-features = false, features = [] }
 "typst-html-0_15_1" = { package = "typst-html", version = "^0.15.1", default-features = false, features = [] }
 "typst-layout-0_15_1" = { package = "typst-layout", version = "^0.15.1", default-features = false, features = [] }
@@ -3790,6 +3790,7 @@ doc = false
 "tilo-tray" = { path = "../../crates/desktop/tray", default-features = false, features = [] }
 "tilo-tts" = { path = "../../crates/engines/tts", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../crates/engines/tilo-typst-fonts", default-features = false, features = [] }
+"tilo-typst" = { path = "../../crates/engines/typst-engine", default-features = false, features = [] }
 "tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "realtime-video", "syntax-definitions", "test-support", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-kms" = { path = "../../crates/ui/ui-kms", default-features = false, features = [] }
@@ -3884,7 +3885,6 @@ doc = false
 "typetag-0_2_23" = { package = "typetag", version = "^0.2.23", default-features = false, features = [] }
 "typst-0_15_1" = { package = "typst", version = "^0.15.1", default-features = false, features = [] }
 "typst-assets-0_15_1" = { package = "typst-assets", version = "^0.15.1", default-features = false, features = ["fonts"] }
-"typst-editor" = { path = "../../apps/typst-editor", default-features = false, features = ["samples"] }
 "typst-eval-0_15_1" = { package = "typst-eval", version = "^0.15.1", default-features = false, features = [] }
 "typst-html-0_15_1" = { package = "typst-html", version = "^0.15.1", default-features = false, features = [] }
 "typst-layout-0_15_1" = { package = "typst-layout", version = "^0.15.1", default-features = false, features = [] }
