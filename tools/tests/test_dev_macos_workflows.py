@@ -30,7 +30,7 @@ class MacosAppsTests(unittest.TestCase):
             self.assertEqual(macos_apps(root), ["default-app", "mac-app"])
 
     def test_repository_has_macos_apps(self) -> None:
-        self.assertIn("calculator", macos_apps())
+        self.assertIn("totp", macos_apps())
 
 
 if __name__ == "__main__":
