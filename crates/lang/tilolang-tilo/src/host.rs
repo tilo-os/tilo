@@ -892,7 +892,9 @@ impl HostInner {
             }
             // The one line typed names nothing — only space and what the action's other
             // parameters take — so the action does not run and makes no change.
-            None => request.args.clone(),
+            None => {
+                request.args.clone()
+            }
         };
         Ok(DynAction {
             app: request.app.to_owned(),
@@ -944,8 +946,11 @@ impl HostInner {
         // What a person typed as one line, when the action takes an entry and the API was
         // given it: the words it holds fill the parameters they name, and the entry takes the
         // rest, so one line from a palette makes the same task as one from the app's entry.
+        // It is the call's only argument: a call that names its other parameters was given
+        // them, and reads its entry as the text it is, not as a line to fill the rest from.
         let entry = action.params.iter().find(|param| param.entry);
         let entry_text = entry
+            .filter(|_| request.args.len() == 1)
             .and_then(|param| request.args.get(&param.name))
             .and_then(Json::as_str);
         let mut computed = Vec::new();
