@@ -141,9 +141,6 @@ files = [
   # Source swaps materialize the pinned OS catalog; images already assemble
   # this direct tree with the runtime payload, sharing its font bytes.
   { from = "/usr/share/fonts/tilo/", to = "/usr/share/fonts/tilo/", tree = true, layer = "direct" },
-  # The window menu's view: the session starts it beside itself while the
-  # menu is up, so the menu is on screen exactly where its program is.
-  { from = to = "/usr/bin/tilo-window-menu", mode = "0755" },
   # The lock screen and the on-screen keyboard are surface apps of the session
   # too: it starts each one beside itself when what it shows is wanted, so
   # without them here a login has no lock and no keyboard. The keyboard's
