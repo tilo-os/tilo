@@ -1850,7 +1850,10 @@ mod tests {
     fn an_app_under_its_launcher_is_ended_as_the_persons_own_quit() {
         let mut spawner = Spawner::default();
         let launch = spawner
-            .start(&shell("sleep infinity & wait", BTreeMap::new()))
+            .start(&shell(
+                "sleep infinity >/dev/null 2>&1 & wait",
+                BTreeMap::new(),
+            ))
             .expect("starts");
         let app = child_of(launch.pid);
         assert!(
