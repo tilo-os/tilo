@@ -1487,7 +1487,7 @@ impl Daemon {
                 (&broker, &invocations, &apps),
                 &workspaces,
                 (&actor, founded, serves_pages),
-                &policy_origin,
+                (&policy_origin, &first),
             )?;
         }
         start_agents(&broker, &workspaces, &tickets, initiative);
@@ -4545,24 +4545,28 @@ fn serve_key_sessions(
     (broker, invocations, apps): (&BrokerHandle, &Arc<Invocations>, &Arc<apps::Apps>),
     workspaces: &Arc<ServiceWorkspaces>,
     (actor, founded, serving): (&str, Option<collab_types::WorkspaceId>, bool),
-    policy_origin: &tilo_workspace_service::apps::policy_clock::PolicyOrigin,
+    (policy_origin, first): (
+        &tilo_workspace_service::apps::policy_clock::PolicyOrigin,
+        &Arc<super::first_workspace::FirstWorkspace>,
+    ),
 ) -> io::Result<()> {
     let broker = broker
         .app_action_broker()
         .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
     let policy_time = policy_origin.capture().map_err(io::Error::other)?;
     let sessions: Arc<dyn crate::key_sessions::Sessions> = match founded {
-        Some(workspace) => {
-            let workspace = workspace.to_string();
-            let provider =
-                action_provider(&broker, workspaces, None, invocations, actor, &workspace)?;
-            Arc::new(host_runs::HostRuns {
-                provider,
-                workspace,
-                actor: actor.to_owned(),
-                policy_time,
-            })
-        }
+        // The person's workspace may not be founded yet: their desktop can still hand over the
+        // one it kept. Its dispatch is admitted when a key first reaches it, not here.
+        Some(workspace) => Arc::new(host_runs::HostRuns {
+            broker,
+            workspaces: Arc::clone(workspaces),
+            invocations: Arc::clone(invocations),
+            first: Arc::clone(first),
+            provider: std::sync::OnceLock::new(),
+            workspace: workspace.to_string(),
+            actor: actor.to_owned(),
+            policy_time,
+        }),
         None if serving => Arc::new(host_runs::KeptRuns {
             broker,
             workspaces: Arc::clone(workspaces),

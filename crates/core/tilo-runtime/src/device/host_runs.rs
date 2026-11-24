@@ -11,20 +11,51 @@ use super::services::RuntimeActionProvider;
 use super::services::action_provider;
 use super::workspaces::ServiceWorkspaces;
 use collab_types::WorkspaceId;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::invocation_record::Invocations;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::apps::collab_broker::AppActionBroker;
 
-/// The workspace a computer that founded its person's workspace answers: its keys' runs and
+/// The workspace a computer that founds its person's workspace answers: its keys' runs and
 /// its pages, all in that one workspace.
+///
+/// A new person's workspace is founded when it is first needed, not when the daemon starts:
+/// their desktop may still hand over the one it kept. So its dispatch is admitted when a key
+/// first reaches it, founding the workspace then if nothing came in.
 pub(super) struct HostRuns {
-    pub(super) provider: RuntimeActionProvider,
-    /// The workspace founded here, by its UUID.
+    pub(super) broker: AppActionBroker,
+    pub(super) workspaces: Arc<ServiceWorkspaces>,
+    pub(super) invocations: Arc<Invocations>,
+    pub(super) first: Arc<super::first_workspace::FirstWorkspace>,
+    /// The workspace's dispatch, once a key reached it.
+    pub(super) provider: OnceLock<RuntimeActionProvider>,
+    /// The person's workspace, by its UUID.
     pub(super) workspace: String,
     pub(super) actor: String,
     pub(super) policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+}
+
+impl HostRuns {
+    /// The person's workspace's dispatch: founded, and admitted for the person, the first time.
+    fn provider(&self) -> Result<RuntimeActionProvider, String> {
+        if let Some(provider) = self.provider.get() {
+            return Ok(provider.clone());
+        }
+        if self.first.get().is_none() {
+            self.first.found_blocking()?;
+        }
+        let provider = action_provider(
+            &self.broker,
+            &self.workspaces,
+            None,
+            &self.invocations,
+            &self.actor,
+            &self.workspace,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(self.provider.get_or_init(|| provider).clone())
+    }
 }
 
 impl crate::key_sessions::Sessions for HostRuns {
@@ -39,7 +70,7 @@ impl crate::key_sessions::Sessions for HostRuns {
         key: &DeviceCert,
     ) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
         let (run, caller) = self
-            .provider
+            .provider()?
             .agent_session(workspace, &self.actor, &self.policy_time, |_| {
                 (
                     tilo_mcp::devices::agent_id("agent", key),
@@ -54,7 +85,11 @@ impl crate::key_sessions::Sessions for HostRuns {
         if workspace != self.workspace {
             return None;
         }
-        let host: crate::key_sessions::SessionHost = Arc::new(self.provider.clone());
+        let provider = self
+            .provider()
+            .inspect_err(|error| tracing::warn!(%error, "the person's workspace has no dispatch"))
+            .ok()?;
+        let host: crate::key_sessions::SessionHost = Arc::new(provider);
         Some(host)
     }
 }

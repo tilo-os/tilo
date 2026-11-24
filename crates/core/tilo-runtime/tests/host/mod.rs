@@ -258,7 +258,11 @@ impl Host {
             .expect("the person founded here");
         let root = tilo_identity::store::load_from_path(active).unwrap();
         Self {
-            workspace: daemon.workspace().to_owned(),
+            // The person's workspace is founded the first time it is asked for, as their own
+            // `tilo` asks for it: nothing founds it at the daemon's start.
+            workspace: daemon
+                .workspace()
+                .expect("the person's workspace, founded when first asked for"),
             person: daemon.actor().to_owned(),
             daemon: Mutex::new(Some(daemon)),
             profile: profile.to_owned(),
