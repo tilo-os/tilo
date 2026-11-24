@@ -28,6 +28,9 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
             (root / "apps/example").mkdir(parents=True)
             (root / "apps/example/Cargo.toml").write_text('[package]\nname = "example"\n')
             (root / "apps/example/tilo-app.toml").write_text('bin = "bin/example"\n')
+            # A desktop app's crate builds its executable: one that does not is not a tapp.
+            (root / "apps/example/src").mkdir()
+            (root / "apps/example/src/main.rs").write_text("fn main() {}\n")
             (root / "bin").mkdir()
             (root / "bin/cargo").write_text(
                 f"#!{sys.executable}\n"
