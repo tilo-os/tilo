@@ -78,6 +78,10 @@ impl Driver {
 
     /// [`Self::start_bound_job_within`] or [`Self::start_bound_job_for`]: `instance` scopes the
     /// resources the call is admitted against to the component that publishes them, when one does.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the admission, the delivered call and its answer are one host call"
+    )]
     pub(super) fn start_job_within(
         &mut self,
         invoker: Option<tilo_actions::ActionInvoker>,
@@ -100,8 +104,8 @@ impl Driver {
             }
             None => self.resources(),
         };
-        let policy = tilo_actions::api::resolve(&resources, address)
-            .map(|spec| spec.confirmation_for_json(arguments));
+        let spec = tilo_actions::api::resolve(&resources, address);
+        let policy = spec.map(|spec| spec.confirmation_for_json(arguments));
         // A call that asks first and comes without the person's approve is refused for it before
         // anything else is said of it; the approve answers whatever the action asks, as the
         // broker takes the call sent again with it.
@@ -115,31 +119,6 @@ impl Driver {
             }
             (Some(_), None) => return Err(ApiError::ConfirmationRequired),
         };
-        let admitted =
-            tilo_actions::api::admit(&resources, address, arguments, confirmation.as_ref());
-        // An action the window's member may not take is left out of what it publishes; the caller
-        // is told so, saying why, as the workspace's API says it, and an action nothing publishes
-        // stays unknown.
-        if let Err(ApiError::Unknown(_)) = &admitted
-            && let Some(instance) = instance.or_else(|| self.component_instance_id())
-        {
-            return Err(crate::bound_dispatch::unoffered(
-                self.app.root_widget.as_ref(),
-                &self.app.state.doc,
-                address,
-                instance,
-            ));
-        }
-        admitted?;
-        // The broker answers a call of an action published to run on (a job, a stream) as
-        // accepted once it admitted it: whatever the app answers after is the job's end, however
-        // soon it comes.
-        let job = tilo_actions::api::resolve(&resources, address).is_some_and(|spec| {
-            !matches!(
-                spec.contract.execution,
-                tilo_actions::ExecutionMode::Immediate
-            )
-        });
         let (actor, context) = match invoker {
             Some(invoker) => (
                 invoker.acting.by.clone(),
@@ -160,6 +139,75 @@ impl Driver {
             }
             None => context,
         };
+        // An immediate document action is the app's own, as when its person makes it: it runs
+        // where the component publishes it, resolved and judged there, and answers once its change
+        // is made. A call of the app's own person never reaches the broker for one, and one the
+        // view's member makes runs under the permissions the view was opened with. Only a call the
+        // workspace carries — an effect, a job, or an action another workspace decides — is
+        // delivered, and answers once the window showed what it caused.
+        let runs_here = spec.is_some_and(|spec| {
+            spec.kind == tilo_actions::OperationKind::Document
+                && spec.contract.execution == tilo_actions::ExecutionMode::Immediate
+        }) && actor.member_id() == Some(&self.app.collaboration.local_author)
+            && self.component_instance_id().is_some()
+            && instance.is_none_or(|instance| self.component_instance_id() == Some(instance));
+        if runs_here {
+            // What the action says of itself as it stands still decides it: a call the app's own
+            // person makes is refused while it is unavailable, and one their grant withholds is
+            // left to the verdict that names the permission.
+            if let Some(tilo_actions::Availability::Unavailable { code, reason }) =
+                spec.map(|spec| &spec.contract.availability)
+                && code != tilo_actions::Availability::NOT_ALLOWED
+            {
+                return Err(ApiError::Unavailable {
+                    code: code.clone(),
+                    reason: reason.clone(),
+                });
+            }
+            let invocation = ambient
+                .and_then(|ambient| ambient.source_invocation)
+                .unwrap_or_default();
+            let started = self.start_own_call(
+                address,
+                arguments,
+                approval,
+                &actor,
+                context.as_ref(),
+                invocation,
+            )?;
+            return Ok((invocation, started));
+        }
+        let admitted =
+            tilo_actions::api::admit(&resources, address, arguments, confirmation.as_ref());
+        // An action the window's member may not take is left out of what it publishes, or listed
+        // to it as not allowed; either way the caller is told their permissions refuse it, saying
+        // why, as the workspace's API says it, and an action nothing publishes stays unknown.
+        if let Err(refusal) = &admitted
+            && (matches!(refusal, ApiError::Unknown(_))
+                || matches!(
+                    refusal,
+                    ApiError::Unavailable { code, .. }
+                        if code == tilo_actions::Availability::NOT_ALLOWED
+                ))
+            && let Some(instance) = instance.or_else(|| self.component_instance_id())
+        {
+            return Err(crate::bound_dispatch::unoffered(
+                self.app.root_widget.as_ref(),
+                &self.app.state.doc,
+                address,
+                instance,
+            ));
+        }
+        admitted?;
+        // The broker answers a call of an action published to run on (a job, a stream) as
+        // accepted once it admitted it: whatever the app answers after is the job's end, however
+        // soon it comes.
+        let job = tilo_actions::api::resolve(&resources, address).is_some_and(|spec| {
+            !matches!(
+                spec.contract.execution,
+                tilo_actions::ExecutionMode::Immediate
+            )
+        });
         let invocation = self.deliver_call(
             &address.resource,
             &address.action,
@@ -168,11 +216,40 @@ impl Driver {
             context,
         );
         if job {
-            return Ok((invocation, ResourceOperationStart::Accepted));
+            // A call that ended the moment it was delivered started no job: its caller hears
+            // what refused it now, as one refused before it started does, rather than a progress
+            // that lasts no longer than the call.
+            match self.job_end(invocation) {
+                Some(InvocationUpdate::Failed { error, .. }) if error.code == "unknown_action" => {
+                    // The app could not resolve what its own window listed: what its permissions
+                    // keep from the caller answers as that permission, not as no such action.
+                    let instance = instance.or_else(|| self.component_instance_id());
+                    return Err(instance.map_or_else(
+                        || super::jobs::failure_refusal(address, error),
+                        |instance| self.unoffered(address, instance),
+                    ));
+                }
+                Some(InvocationUpdate::Failed { error, .. }) => {
+                    return Err(super::jobs::failure_refusal(address, error));
+                }
+                Some(InvocationUpdate::Cancelled { message, .. }) => {
+                    return Err(ApiError::Failed(
+                        message.unwrap_or_else(|| "cancelled".to_owned()),
+                    ));
+                }
+                _ => return Ok((invocation, ResourceOperationStart::Accepted)),
+            }
         }
         let started = match self.job_end(invocation) {
             Some(InvocationUpdate::Succeeded { output, .. }) => {
                 ResourceOperationStart::Completed(output)
+            }
+            Some(InvocationUpdate::Failed { error, .. }) if error.code == "unknown_action" => {
+                let instance = instance.or_else(|| self.component_instance_id());
+                return Err(instance.map_or_else(
+                    || super::jobs::failure_refusal(address, error),
+                    |instance| self.unoffered(address, instance),
+                ));
             }
             Some(InvocationUpdate::Failed { error, .. }) => {
                 return Err(super::jobs::failure_refusal(address, error));
@@ -185,6 +262,55 @@ impl Driver {
             _ => ResourceOperationStart::Accepted,
         };
         Ok((invocation, started))
+    }
+
+    /// Run `address`, an immediate document action the app's own person makes, where the app
+    /// resolves and judges it, as its own press runs there: then the frame that shows what it
+    /// changed is the one whoever reads the app runs.
+    fn start_own_call(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
+        actor: &tilo_actions::Actor,
+        context: Option<&tilo_actions::ActionContext>,
+        invocation: InvocationId,
+    ) -> Result<ResourceOperationStart, ApiError> {
+        let argument = crate::app_core::json_argument(arguments);
+        let invoke = |driver: &mut Self| {
+            driver.app.invoke_resource_action(
+                crate::app_core::ResourceInvocation::new(address, actor)
+                    .argument(Some(&argument))
+                    .approval(approval)
+                    .invocation(Some(invocation))
+                    .ambient_context(context),
+            )
+        };
+        // A view operation that reads the laid-out view asks for that frame first, as the app's
+        // own API answers: the call runs again on the view it then stands on.
+        let started = crate::widget::resource_operation::laying_out_first(|| invoke(self));
+        match started {
+            Err(error) if crate::widget::resource_operation::asks_to_lay_out_first(&error) => {
+                self.relayout();
+                invoke(self)
+            }
+            other => other,
+        }
+    }
+
+    /// What a call of `address` at `instance` is told when the app could not resolve it: the
+    /// permission its publication keeps it from the caller, or that nothing publishes it.
+    fn unoffered(
+        &self,
+        address: &ActionAddress,
+        instance: crate::application::InstanceId,
+    ) -> ApiError {
+        crate::bound_dispatch::unoffered(
+            self.app.root_widget.as_ref(),
+            &self.app.state.doc,
+            address,
+            instance,
+        )
     }
 
     /// Run frames as an idle window does until the job `invocation` ended or `timeout` passed on
