@@ -68,8 +68,6 @@ mod e2e_file_picker;
 mod e2e_git_client;
 #[path = "e2e_hex_editor.rs"]
 mod e2e_hex_editor;
-#[path = "e2e_json_field.rs"]
-mod e2e_json_field;
 #[path = "e2e_layout.rs"]
 mod e2e_layout;
 #[path = "e2e_mail_files.rs"]
