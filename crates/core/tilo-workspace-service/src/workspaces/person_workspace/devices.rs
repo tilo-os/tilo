@@ -101,8 +101,6 @@ pub struct Devices {
 
 /// The longest a notification is shown on the person's other devices, ms.
 pub const MAX_NOTICE_SHOWN_MS: i64 = 15 * 60 * 1_000;
-/// The most notifications the record keeps shown at once.
-const MAX_NOTICES: usize = 256;
 /// The most actions a notification shown elsewhere offers.
 const MAX_NOTICE_ACTIONS: usize = 16;
 
@@ -1282,14 +1280,8 @@ impl Devices {
             until_ms,
             ..SharedNotice::default()
         };
-        let held = self.notices.len();
         match self.notices.get_mut(&id) {
             Some(kept) => *kept = notice,
-            None if held >= MAX_NOTICES => {
-                return Err(Refusal::new(
-                    "the person's devices show 256 notifications at most",
-                ));
-            }
             None => {
                 self.notices.push(id, notice);
             }

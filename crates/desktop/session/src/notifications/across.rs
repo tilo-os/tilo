@@ -23,10 +23,6 @@ use tilo_workspace_service::workspaces::person_workspace::devices::{
 use crate::PersonResources;
 use crate::platform::fabric::Continuity;
 
-/// The most notifications of this device one session keeps in the record at once: what fits on
-/// the other devices' banners and centres anyway.
-const MAX_PROJECTED: usize = 128;
-
 /// One notification of this device the record keeps.
 struct Projected {
     /// Its id in the record, hex.
@@ -123,7 +119,6 @@ impl Across {
         // other devices show the update in place.
         let id = match state.out.get(&daemon_id) {
             Some(projected) => id_of(&projected.id)?,
-            None if state.out.len() >= MAX_PROJECTED => return None,
             None => ContinuityNotificationId {
                 epoch: crate::platform::fabric::nonzero::<16>(),
                 token: crate::platform::fabric::nonzero::<16>(),
