@@ -85,9 +85,9 @@ impl<'a> Authority<'a> {
                         });
                     }
                     MemberId::Agent(_) | MemberId::Bot(_) => {
-                        others.push(
-                            software_party(member, node.acted_for_person(), policy, granted)
-                                .with_grants(answers.iter().copied()),
+                        others.extend(
+                            software_parties(member, node, policy, granted)
+                                .map(|party| party.with_grants(answers.iter().copied())),
                         );
                     }
                 },
@@ -121,21 +121,38 @@ pub fn granted_to(member: &MemberId) -> Grantee {
 }
 
 /// An agent's or bot's own grants: the workspace's naming it, and those its
-/// acting carries (`granted`, what its certificate's delegation gives it). An
-/// agent is the pair of its id and the person it acts for (`person`, whom its
-/// certificate chains to): only that person's grants and answers in the
-/// workspace reach it, and one acting for nobody holds none of them.
-fn software_party<'a>(
+/// acting carries (`granted`, what its certificate's delegation gives it).
+///
+/// An agent is the pair of its id and a person it acts for: only that
+/// person's grants and answers in the workspace reach the pair
+/// ([`WorkspacePolicy::party_of_agent`]). An agent acting for several people
+/// at once (a turn answering one person through another's agent, bounded by
+/// whoever saved its watch) is each of those pairs, and each bounds it on its
+/// own: what its own person answered for it refuses it whichever person's
+/// turn it answers, and no one's answer widens what another's refuses. One
+/// acting for nobody holds none of the workspace's grants for it.
+fn software_parties<'a>(
     member: &MemberId,
-    person: Option<&str>,
+    node: &crate::Acting,
     policy: &'a WorkspacePolicy,
     granted: &'a [Grant],
-) -> Party<'a> {
-    let party = match member {
-        MemberId::Agent(agent) => policy.party_of_agent(agent, person.unwrap_or_default()),
-        member => policy.party_of(granted_to(member)),
+) -> impl Iterator<Item = Party<'a>> {
+    let parties: Vec<Party<'a>> = match member {
+        MemberId::Agent(agent) => {
+            let mut people = node.people();
+            people.sort_unstable();
+            people.dedup();
+            if people.is_empty() {
+                people.push("");
+            }
+            people
+                .into_iter()
+                .map(|person| policy.party_of_agent(agent, person))
+                .collect()
+        }
+        member => vec![policy.party_of(granted_to(member))],
     };
-    party.with_grants(granted)
+    parties.into_iter().map(move |party| party.with_grants(granted))
 }
 
 /// One invocation, as admission weighs it.
@@ -353,6 +370,58 @@ mod tests {
                 answer(&unbounded, &policy, &[], ActionKind::Undoable),
                 Answer::Deny,
                 "an agent with no grants of its own does nothing"
+            );
+        }
+
+        phase an_agent_answering_someone_else_keeps_its_own_persons_refusal;
+        {
+            // The agent's certificate gives it the workspace; its own person, the owner, answers
+            // no for it on the whole workspace. Its turn answers the editor, through the owner.
+            let turn = [Grant::new(
+                "turn:scribe:0",
+                Grantee::agent("scribe"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Grantee::person("owner"),
+            )];
+            let answering_the_editor = Acting::agent("scribe")
+                .acting_for(Acting::person("editor"))
+                .agent_of("owner");
+            assert_eq!(
+                answer(&answering_the_editor, &policy(), &turn, ActionKind::Undoable),
+                Answer::Allow,
+                "both people and the agent's certificate allow it"
+            );
+            let mut refusing = policy();
+            refusing.grants.push(crate::agent_answers::grant(
+                WORKSPACE,
+                "scribe",
+                (&crate::agent_answers::AnswerScope::Workspace, ActionKind::Undoable),
+                Answer::Deny,
+                Grantee::person("owner"),
+            ));
+            assert_eq!(
+                answer(&answering_the_editor, &refusing, &turn, ActionKind::Undoable),
+                Answer::Deny,
+                "what its own person answered for it refuses it, whoever's turn it answers"
+            );
+            let mut widening = refusing.clone();
+            widening.grants.push(crate::agent_answers::grant(
+                WORKSPACE,
+                "scribe",
+                (
+                    &crate::agent_answers::AnswerScope::app("so.tilo.notes"),
+                    ActionKind::Undoable,
+                ),
+                Answer::Allow,
+                Grantee::person("editor"),
+            ));
+            assert_eq!(
+                answer(&answering_the_editor, &widening, &turn, ActionKind::Undoable),
+                Answer::Deny,
+                "the more specific yes of the person a turn answers widens nothing the agent's own \
+                 person refused"
             );
         }
 
