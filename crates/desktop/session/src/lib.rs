@@ -150,10 +150,7 @@ mod collaboration;
 #[cfg(target_os = "linux")]
 pub mod comforts;
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 mod config;
-#[cfg(target_os = "linux")]
-pub(crate) mod confirmation;
 #[cfg(target_os = "linux")]
 pub mod connectors;
 #[cfg(target_os = "linux")]

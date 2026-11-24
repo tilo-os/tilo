@@ -765,6 +765,25 @@ impl tilo_actions::remote::ActionProvider for ServicesOnDispatch {
         });
         answer
     }
+
+    /// A call is answered in its receipt, so no invocation is kept to look at later.
+    fn observe(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionCallError::UnknownInvocation,
+        ))
+    }
 }
 
 /// Serve the session's services on the device's dispatch over the shell link `daemon`, so the
