@@ -6,6 +6,7 @@ app so.tilo.browser "Browser" (
 )
 
 /// A site someone saved: where it is and what it is called.
+// The runtime bundle whose engine shows the page: the app's window runs where it does.
 type Bookmark (title: title) {
     url: Text
     title: Text
@@ -114,6 +115,9 @@ type Page (title: title) {
     /// download, a sign-in, a request leaving) is asked as the system's asked record instead.
     dialog: Option<DialogAsk> = .none
     menu: Option<MenuAsk> = .none
+    /// The files the page downloads, as its window last read them: engine state, never the
+    /// page's own record.
+    downloads: Collection<Download>
     /// How far the page has loaded, what it is zoomed to, and where the find bar stands.
     loading: Bool = false
     progress: Float = 0.0
@@ -180,6 +184,31 @@ type MenuRow (title: label) {
     separator: Bool = false
 }
 
+/// One file a page downloads: where it comes from, where it went, and how far it has come.
+/// Device state like the page's own questions: read from the engine when the page's window
+/// opens it and after each answer, never the page's own record.
+type Download (title: name) {
+    /// The engine's number for the transfer, which what the person does to it names.
+    transfer: Int
+    /// `awaiting`, `downloading`, `completed`, `failed` or `cancelled`.
+    state: Text
+    name: Text
+    url: Text
+    /// Where it was saved, once it is complete.
+    path: Text
+    /// Whether the engine can start it again after it failed.
+    retryable: Bool
+    /// How many bytes have come, of how many the engine knows: none when it does not.
+    received: Int
+    total: Int
+    error: Text
+
+    search {
+        sort name a_z
+        hide url
+    }
+}
+
 /// What a page is asked, as the window that holds it reads it: one operation and the fields it
 /// takes. A field left at its default is unsent, and the page reads it as absent.
 type Ask {
@@ -205,6 +234,8 @@ type Ask {
     url: Option<Text> = .none
     level: Option<Float> = .none
     values: Option<List<Text>> = .none
+    /// What each question of a form is answered with, by the question's name.
+    answers: Option<Map<Text>> = .none
     paths: Option<List<Text>> = .none
     steps: Option<List<Text>> = .none
     since: Option<Int> = .none
@@ -301,6 +332,8 @@ default view page_view for Page
 default view bookmark_page for Bookmark
 
 default view visit_page for Visit
+
+default view address_page for Address
 
 /// Opens a page in a window of its own. Every window of the app is one page; what it shows, its
 /// address and its own back and forward are the system's.
@@ -569,6 +602,30 @@ action submit_page(
     ask_page(p, request)
 }
 
+/// Answers a whole form of the page in one ask: each question's answer by its name, through the
+/// page's own validation, and the form's first button when `submit` is on. A form is named by
+/// the shape `read_page_forms` publishes for it.
+action fill_page_form(
+    p: Page,
+    form: Text,
+    answers: Map<Text>,
+    submit: Bool = false,
+    cross_origin: Bool = false,
+    frame: Option<Text> = .none,
+) -> Answer uses page (icon: .pen_tool, label: "Answer a form") {
+    let request = json.encode(
+        Ask(
+            op: "fill_form",
+            form: .some(form),
+            answers: .some(answers),
+            submit: submit,
+            cross_origin: cross_origin,
+            frame: frame,
+        ),
+    )
+    ask_page(p, request)
+}
+
 /// A trusted pointer gesture: press at the first point, move through the rest and release at
 /// the last, for drawing on canvases.
 action pointer_page(p: Page, steps: List<Text>, button: Text = "left") -> Answer uses page {
@@ -704,6 +761,11 @@ action refresh_page(p: Page) -> Answer uses page (
     let found = json_field(value, "find") ?? value
     p.find_at = json_number(found, "active").to_int()
     p.find_count = json_number(found, "count").to_int()
+    let held = downloads_of(value)
+    p.downloads.remove_where(d -> true)
+    for d in held {
+        p.downloads.insert(d)
+    }
     Answer(ok: true, message: "read")
 }
 
@@ -733,6 +795,48 @@ destructive action save_download(p: Page, id: Int, name: Text, url: Text) -> Ans
     shows: [name, url],
 ) {
     page_answered(page.call(json.encode(Ask(op: "answer_download", id: .some(id), allow: true))))
+}
+
+/// Turns down the file a page offers: nothing is saved, and the page is told so.
+action discard_download(p: Page, id: Int, name: Text = "") -> Answer uses page (
+    icon: .x,
+    label: "Do not save the download",
+    shows: [name],
+) {
+    page_answered(page.call(json.encode(Ask(op: "answer_download", id: .some(id), allow: false))))
+}
+
+/// Saves what an address serves into the browser's downloads.
+action download(p: Page, url: Text) -> Answer uses page (
+    icon: .download,
+    label: "Download an address",
+) {
+    require url.trim() != "" "Type the address to download"
+    ask_page(p, json.encode(Ask(op: "start_download", url: .some(url.trim()))))
+}
+
+/// Stops a download that is still going.
+action cancel_download(p: Page, d: Download) -> Answer uses page (
+    icon: .x,
+    label: "Cancel the download",
+) {
+    ask_page(p, json.encode(Ask(op: "cancel_download", id: .some(d.transfer))))
+}
+
+/// Starts a failed download again from the beginning.
+action retry_download(p: Page, d: Download) -> Answer uses page (
+    icon: .refresh,
+    label: "Retry the download",
+) {
+    ask_page(p, json.encode(Ask(op: "retry_download", id: .some(d.transfer))))
+}
+
+/// Stops every download this page has going.
+action cancel_all_downloads(p: Page) -> Answer uses page (
+    icon: .x,
+    label: "Cancel every download",
+) {
+    ask_page(p, json.encode(Ask(op: "cancel_all_downloads")))
 }
 
 /// Gives an extension the more access it asked for. The window raises it as the Browser's own
@@ -768,6 +872,16 @@ destructive action sign_in(
                 Ask(op: "answer_sign_in", id: .some(id), asker: .some(asker), typed: true),
             ),
         ),
+    )
+}
+
+/// Turns down a site's sign-in: nothing is sent, and the server shows its own page instead.
+action cancel_sign_in(p: Page, id: Int, asker: Text) -> Answer uses page (
+    icon: .x,
+    label: "Cancel the sign-in",
+) {
+    page_answered(
+        page.call(json.encode(Ask(op: "answer_sign_in", id: .some(id), asker: .some(asker)))),
     )
 }
 
@@ -812,6 +926,21 @@ action bookmark(b: Browser, url: Text, title: Option<Text> = .none) (
 action remove_bookmark(k: Bookmark) (icon: .trash, label: "Remove bookmark") {
     let b = root Browser
     b.bookmarks.remove(k)
+}
+
+/// Renames a saved page, when the person likes their own name for it better than its title.
+action name_bookmark(k: Bookmark, title: Text) (icon: .pen_tool, label: "Name this bookmark") {
+    require title.trim() != "" "A bookmark is called by some name"
+    k.title = title.trim()
+}
+
+/// Puts a bookmark in a folder of the person's library, such as `Work/Reading`, or at the top
+/// of the bookmarks when the folder is empty.
+action move_bookmark(k: Bookmark, folder: Text) (
+    icon: .folder,
+    label: "Put the bookmark in a folder",
+) {
+    k.folder = folder.trim()
 }
 
 /// Turns tracker protection off for one site, or back on. A site is named by its origin, so
@@ -921,6 +1050,69 @@ action add_address(b: Browser) -> Address (icon: .user_plus, label: "Add an addr
 action delete_address(a: Address) (icon: .trash, label: "Delete address") {
     let b = root Browser
     b.addresses.remove(a)
+}
+
+/// Fills a form of the page with a saved address, question by question, without sending it. The
+/// form is named by the shape its reading publishes (`RememberedForm.signature`, or the
+/// signature `read_page_forms` answers), and the page's own validation still decides whether it
+/// could be sent.
+action fill_address(p: Page, form: Text, a: Address) -> Answer uses page (
+    icon: .user,
+    label: "Fill the form with an address",
+) {
+    require not address_answers(forms_named(root Browser, form), a).keys().is_empty() "This form asks nothing an address answers"
+    let answers = address_answers(forms_named(root Browser, form), a)
+    ask_page(p, json.encode(Ask(op: "fill_form", form: .some(form), answers: .some(answers))))
+}
+
+/// What `a` answers the questions of a remembered form with, by each question's name: the ones
+/// an address answers nothing for are left out, so the page reads them as untouched.
+fn address_answers(questions: List<Question>, a: Address) -> Map<Text> {
+    let answers = Map<Text>()
+    for q in questions {
+        let answer = address_answer(a, q.name)
+        if answer != "" { answers.put(q.name, answer) }
+    }
+    answers
+}
+
+/// The questions the remembered form `signature` asks, empty when no site's form has that shape.
+fn forms_named(b: Browser, signature: Text) -> List<Question> {
+    match b.forms.find(f -> f.signature == signature) {
+        .some(f) => f.questions.filter(q -> true),
+        .none => [],
+    }
+}
+
+/// What an address answers a form's question with, read from the question's own name, or
+/// nothing when its name answers no part of an address.
+fn address_answer(a: Address, question: Text) -> Text {
+    let name = question.lower().replace("_", "").replace("-", "").replace(" ", "")
+    if name == "name" or name == "fullname" or name == "yourname" {
+        return a.full_name
+    }
+    if name == "givenname" or name == "firstname" {
+        return a.given_name
+    }
+    if name == "familyname" or name == "lastname" or name == "surname" {
+        return a.family_name
+    }
+    if name == "street" or name == "streetaddress" or name == "address" or name == "address1" {
+        return a.street
+    }
+    if name == "city" or name == "town" {
+        return a.city
+    }
+    if name == "region" or name == "state" or name == "province" {
+        return a.region
+    }
+    if name == "postalcode" or name == "postcode" or name == "zip" or name == "zipcode" {
+        return a.postal_code
+    }
+    if name == "country" or name == "countrycode" {
+        return a.country
+    }
+    ""
 }
 
 /// Names a visit, when the person likes their own name for a page better than its title.
@@ -1288,6 +1480,34 @@ fn json_flag(value: json.Value, key: Text) -> Bool {
     }
 }
 
+/// The downloads the page last reported, as its window reads them.
+fn downloads_of(value: json.Value) -> List<Download> {
+    let found: List<Download> = []
+    for held in json_arrays(json_field(value, "downloads") ?? value) {
+        let id = json_number(held, "id").to_int()
+        if id != 0 {
+            found = [
+                found,
+                [
+                    Download(
+                        transfer: id,
+                        state: json_text(held, "state"),
+                        name: json_text(held, "name"),
+                        url: json_text(held, "url"),
+                        path: json_text(held, "path"),
+                        retryable: json_flag(held, "retryable"),
+                        received: json_number(held, "received").to_int(),
+                        total: json_number(held, "total").to_int(),
+                        error: json_text(held, "error"),
+                    ),
+                ],
+            ]
+                .flat_map(x -> x)
+        }
+    }
+    found
+}
+
 /// What the page answered an answer to what it waited on: whether it took it. It changes nothing
 /// of the page's record, so the person's approve of it is the whole of what it does.
 fn page_answered(raw: Text) -> Answer {
@@ -1404,12 +1624,12 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
             on choose: set(reading, not reading).then(reader(p, not reading))
         }
         ui.MenuItem("Zoom in", icon: .plus) {
-            on choose: zoom(p, level * 1.1).then(set(level, level * 1.1))
+            on choose: zoom(p, zoomed_in(level)).then(set(level, zoomed_in(level)))
         }
         ui.MenuItem("Zoom out", icon: .minus) {
-            on choose: zoom(p, level / 1.1).then(set(level, level / 1.1))
+            on choose: zoom(p, zoomed_out(level)).then(set(level, zoomed_out(level)))
         }
-        ui.MenuItem("Actual size", icon: .zoom_in) {
+        ui.MenuItem(actual_size_label(level), icon: .zoom_in) {
             on choose: zoom(p, 1.0).then(set(level, 1.0))
         }
         if origin_of(p.url) != "" {
@@ -1437,7 +1657,7 @@ view page_view(p: Page) {
     state failed: Text = ""
     state finding: Bool = false
     state find_text: Text = ""
-    state zoom: Float = 1.0
+    state zoom: Float = p.zoom_level
     state reading: Bool = false
     state answer_text: Text = ""
     let b = root Browser
@@ -1498,6 +1718,9 @@ view page_view(p: Page) {
                         }
                         if p.find_count > 0 {
                             ui.Text("{p.find_at} of {p.find_count}")
+                        }
+                        ui.Button("Previous", icon: .arrow_up, role: .plain) {
+                            on press: find_in_page(p, find_text, forward: false, next: true)
                         }
                         ui.Button("Next", icon: .arrow_down, role: .plain) {
                             on press: find_in_page(p, find_text, next: true)
@@ -1579,6 +1802,18 @@ view page_view(p: Page) {
                         on dismiss: answer_page_dialog(p, ask.request, false).then(refresh_page(p))
                     }
                 }
+                if not p.downloads.is_empty() {
+                    stack(padding: .group) {
+                        ui.Section("Downloads") {
+                            for d in p.downloads {
+                                download_row(p, d)
+                            }
+                            ui.Button("Cancel every download", icon: .x, role: .plain) {
+                                on press: cancel_all_downloads(p)
+                            }
+                        }
+                    }
+                }
                 if not p.steps.is_empty() {
                     stack(padding: .group) {
                         ui.Section("What was done") {
@@ -1618,16 +1853,64 @@ view step_row(s: PageStep) {
     )
 }
 
-/// A bookmark's own window: where it is, and the way to take it back.
+/// A bookmark's own window: where it is, its name and folder, and the way to take it back.
 view bookmark_page(k: Bookmark) {
     std.page(k) {
         content: {
             ui.PropertyList {
                 ui.Property("Address", k.url, copyable: true)
-                ui.Property("Folder", if k.folder == "" { "Bookmarks" } else { k.folder })
+            }
+            ui.Section("Details") {
+                ui.ControlRow(label: "Name") {
+                    ui.TextInput(bind: k.title, fill: 1.0)
+                }
+                ui.ControlRow(label: "Folder") {
+                    ui.TextInput(bind: k.folder, placeholder: "Top of the bookmarks", fill: 1.0)
+                }
             }
             ui.Button("Remove bookmark", icon: .trash) {
                 on press: remove_bookmark(k)
+            }
+        }
+    }
+}
+
+/// An address the person fills forms with: what it is called, and the answer to each question a
+/// form asks. Every field answers the question of the same name.
+view address_page(a: Address) {
+    std.page(a) {
+        content: {
+            ui.Section("The address") {
+                ui.ControlRow(label: "Name for it") {
+                    ui.TextInput(bind: a.label, placeholder: "Home", fill: 1.0)
+                }
+                ui.ControlRow(label: "Full name") {
+                    ui.TextInput(bind: a.full_name, fill: 1.0)
+                }
+                ui.ControlRow(label: "Given name") {
+                    ui.TextInput(bind: a.given_name, fill: 1.0)
+                }
+                ui.ControlRow(label: "Family name") {
+                    ui.TextInput(bind: a.family_name, fill: 1.0)
+                }
+                ui.ControlRow(label: "Street") {
+                    ui.TextInput(bind: a.street, fill: 1.0)
+                }
+                ui.ControlRow(label: "City") {
+                    ui.TextInput(bind: a.city, fill: 1.0)
+                }
+                ui.ControlRow(label: "Region") {
+                    ui.TextInput(bind: a.region, fill: 1.0)
+                }
+                ui.ControlRow(label: "Postal code") {
+                    ui.TextInput(bind: a.postal_code, fill: 1.0)
+                }
+                ui.ControlRow(label: "Country") {
+                    ui.TextInput(bind: a.country, fill: 1.0)
+                }
+            }
+            ui.Button("Delete address", icon: .trash) {
+                on press: delete_address(a)
             }
         }
     }
@@ -1709,13 +1992,16 @@ view bookmark_row(k: Bookmark) {
     ui.ListRow(title: k.title, secondary: k.url, mark: .star)
 }
 
-/// An address's row in the settings: what the person calls it over the name it fills.
+/// An address's row in the settings: what the person calls it over the name it fills. Opening
+/// it edits its answers.
 view address_row(a: Address) {
     ui.ListRow(
         title: if a.label == "" { a.full_name } else { a.label },
         secondary: a.full_name,
         mark: .user,
-    )
+    ) {
+        on activate: open(a)
+    }
 }
 
 /// A remembered form: where it was read, what it asks and how often it was read.
@@ -1840,6 +2126,87 @@ view history_list(b: Browser, query: Text) {
             }
         }
     }
+}
+
+/// One file the page downloads: what it is called, how far it has come, and what the person may
+/// do with it now.
+view download_row(p: Page, d: Download) {
+    stack(padding: .related) {
+        ui.ListRow(
+            title: d.name,
+            secondary: download_secondary(d),
+            mark: if d.state == "failed" { .triangle_alert } else { .download },
+        )
+        if d.state == "downloading" and d.total > 0 {
+            ui.ProgressBar(value: d.received.to_float() / d.total.to_float(), label: "Downloading")
+        }
+        if d.state == "downloading" or d.state == "awaiting" {
+            ui.Button("Cancel", icon: .x, role: .plain) {
+                on press: cancel_download(p, d)
+            }
+        }
+        if d.state == "failed" and d.retryable {
+            ui.Button("Retry", icon: .refresh, role: .plain) {
+                on press: retry_download(p, d)
+            }
+        }
+    }
+}
+
+/// What a download says under its name: how far it has come, or how it ended.
+fn download_secondary(d: Download) -> Text {
+    if d.state == "downloading" {
+        if d.total > 0 {
+            "{size_text(d.received)} of {size_text(d.total)}"
+        } else { "{size_text(d.received)} downloaded" }
+    } else if d.state == "awaiting" {
+        "Waiting for where to save it"
+    } else if d.state == "completed" {
+        if d.path == "" { "Download complete" } else { "Saved to {d.path}" }
+    } else if d.state == "failed" {
+        if d.error == "" { "The download failed" } else { d.error }
+    } else if d.state == "cancelled" { "Cancelled" } else { d.state }
+}
+
+/// The next size up: 1.2 times the page's font, kept between a quarter and five times its own.
+fn zoomed_in(level: Float) -> Float {
+    clamped_zoom(level * 1.2)
+}
+
+/// The next size down, by the same steps.
+fn zoomed_out(level: Float) -> Float {
+    clamped_zoom(level / 1.2)
+}
+
+/// `level` kept to the sizes a person can still read a page at.
+fn clamped_zoom(level: Float) -> Float {
+    if level < 0.25 { 0.25 } else if level > 5.0 { 5.0 } else { level }
+}
+
+/// What the menu's reset row says: the size itself, or how far from it the page stands.
+fn actual_size_label(level: Float) -> Text {
+    if (level - 1.0).abs() < 0.01 {
+        return "Actual size"
+    }
+    let percent = (level * 100.0).round()
+    "Actual size ({percent}%)"
+}
+
+/// How many bytes come to a person: `812 B`, `4.2 KB`, `2.0 MB`.
+fn size_text(bytes: Int) -> Text {
+    if bytes < 1000 {
+        return "{bytes} B"
+    }
+    if bytes < 1000000 {
+        let tenths = bytes / 100
+        return "{tenths / 10}.{tenths % 10} KB"
+    }
+    if bytes < 1000000000 {
+        let tenths = bytes / 100000
+        return "{tenths / 10}.{tenths % 10} MB"
+    }
+    let tenths = bytes / 100000000
+    "{tenths / 10}.{tenths % 10} GB"
 }
 
 /// What a step says under its action: the element it acted on, or the address it went to.

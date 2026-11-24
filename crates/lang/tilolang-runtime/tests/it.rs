@@ -32,6 +32,8 @@ mod e2e_apps;
 mod e2e_backups;
 #[path = "e2e_blocks.rs"]
 mod e2e_blocks;
+#[path = "e2e_browser.rs"]
+mod e2e_browser;
 #[path = "e2e_calculator.rs"]
 mod e2e_calculator;
 #[path = "e2e_call_fn.rs"]
@@ -76,6 +78,8 @@ mod e2e_native_ui;
 mod e2e_notes;
 #[path = "e2e_scratchpad.rs"]
 mod e2e_scratchpad;
+#[path = "e2e_snippets.rs"]
+mod e2e_snippets;
 #[path = "e2e_speed_test.rs"]
 mod e2e_speed_test;
 #[path = "e2e_std.rs"]
@@ -88,8 +92,6 @@ mod e2e_todo;
 mod e2e_tool_context;
 #[path = "e2e_video_editor.rs"]
 mod e2e_video_editor;
-#[path = "e2e_snippets.rs"]
-mod e2e_snippets;
 #[path = "e2e_weather.rs"]
 mod e2e_weather;
 #[path = "engine.rs"]
