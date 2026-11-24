@@ -677,8 +677,7 @@ fn serve_control(path: &Path, state: Arc<CallsState>) -> Result<oneshot::Sender<
 async fn control_connection(mut stream: tokio::net::UnixStream, state: &CallsState) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let Ok(cred) = stream.peer_cred() else { return };
-    // SAFETY: geteuid takes no pointers.
-    if cred.uid() != unsafe { libc::geteuid() } {
+    if cred.uid() != rustix::process::geteuid().as_raw() {
         tracing::warn!("refused a calls control connection of another user");
         return;
     }
@@ -686,17 +685,17 @@ async fn control_connection(mut stream: tokio::net::UnixStream, state: &CallsSta
     let Ok(n) = stream.read(&mut buf).await else {
         return;
     };
-    let line = String::from_utf8_lossy(&buf[..n]);
+    let line = String::from_utf8_lossy(buf.get(..n).unwrap_or_default());
     let words: Vec<&str> = line.split_whitespace().collect();
-    if words.len() != 3 || words[0] != "calls" {
+    let ["calls", app, switch] = words.as_slice() else {
         let _ = stream.write_all(b"unknown\n").await;
         return;
-    }
-    if words[1] != state.app {
+    };
+    if *app != state.app {
         let _ = stream.write_all(b"another app\n").await;
         return;
     }
-    match words[2] {
+    match *switch {
         "on" => {
             state.live.store(true, Ordering::Relaxed);
             tracing::info!(app = %state.app, "udp lane open while a call is live");
