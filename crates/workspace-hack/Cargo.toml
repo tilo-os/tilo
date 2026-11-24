@@ -475,7 +475,6 @@ zerovec = { version = "0.11", default-features = false, features = ["alloc", "de
 zune-jpeg = { version = "0.5" }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
-accesskit = { version = "0.25", default-features = false, features = ["serde"] }
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 brotli = { version = "8" }
@@ -512,7 +511,6 @@ x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes
 x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
-accesskit = { version = "0.25", default-features = false, features = ["serde"] }
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 brotli = { version = "8" }
@@ -550,7 +548,6 @@ x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes
 x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
 
 [target.aarch64-unknown-linux-gnu.dependencies]
-accesskit = { version = "0.25", default-features = false, features = ["serde"] }
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 brotli = { version = "8" }
@@ -587,7 +584,6 @@ x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes
 x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
-accesskit = { version = "0.25", default-features = false, features = ["serde"] }
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 brotli = { version = "8" }

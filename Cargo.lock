@@ -26036,7 +26036,6 @@ dependencies = [
 name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
- "accesskit",
  "adblock",
  "aead 0.5.2",
  "aead 0.6.1",
