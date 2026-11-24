@@ -240,8 +240,6 @@ mod i18n;
 #[cfg(target_os = "linux")]
 pub mod identity;
 #[cfg(target_os = "linux")]
-mod identity_admin;
-#[cfg(target_os = "linux")]
 mod input_method;
 #[cfg(target_os = "linux")]
 mod input_sources;

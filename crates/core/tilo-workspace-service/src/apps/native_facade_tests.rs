@@ -101,18 +101,18 @@ impl NativeFacadeHostSteps {
 async fn signed_native_facade_runs_host_steps_with_original_certified_ownership() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use tilo_actions::remote::identity_admin;
+            use tilo_actions::remote::device_tickets;
             let env = Environment::new();
             let started = Arc::new(Mutex::new(Vec::new()));
             let providers = crate::workspaces::providers::Providers::default();
             providers.provide(
-                identity_admin::PROVIDER,
+                device_tickets::PROVIDER,
                 "so.tilo.settings",
                 crate::workspaces::providers::Reach::ThisDevice,
                 Arc::new(NativeFacadeHostSteps {
-                    provider: identity_admin::PROVIDER,
-                    resource: identity_admin::RESOURCE,
-                    action: identity_admin::LIST,
+                    provider: device_tickets::PROVIDER,
+                    resource: device_tickets::RESOURCE,
+                    action: device_tickets::IDENTITIES,
                     started: started.clone(),
                 }) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
             );
@@ -142,7 +142,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
                 .state
                 .verify_action_caller(&env.route.cluster_id, &evidence)
                 .unwrap();
-            for target in [identity_admin::target(identity_admin::LIST)] {
+            for target in [device_tickets::target(device_tickets::IDENTITIES)] {
                 let mut request = local_host_request(false);
                 request.target = target;
                 local_host_answer(native.invoke(&caller, request.clone()))
@@ -178,7 +178,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
             let started_before = started.lock().unwrap().len();
             *env.authority.certificate.lock().unwrap() = None;
             let mut request = local_host_request(false);
-            request.target = identity_admin::target(identity_admin::LIST);
+            request.target = device_tickets::target(device_tickets::IDENTITIES);
             assert!(
                 local_host_answer(native.invoke(&caller, request))
                     .await

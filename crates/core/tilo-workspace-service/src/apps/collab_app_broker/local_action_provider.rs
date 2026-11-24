@@ -607,7 +607,6 @@ impl ActionProvider for CertifiedLocalActionProvider {
         }
     }
 
-
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         self.check(caller).ok()?;
         self.state.action_observe(&self.effective, id)
@@ -681,7 +680,7 @@ fn certified_provider(provider: &str) -> bool {
     }
     matches!(
         provider,
-        tilo_actions::remote::identity_admin::PROVIDER
+        tilo_actions::remote::device_tickets::PROVIDER
             | tilo_actions::remote::server_account::PROVIDER
             | tilo_actions::remote::own_device::PROVIDER
     ) || provider.parse::<u64>().is_ok()

@@ -326,9 +326,23 @@ impl DaemonPlace {
     /// # Errors
     /// The daemon does not answer, or refused.
     pub fn act(&self, action: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+        self.ask(action, args).map_err(|refused| refused.message)
+    }
+
+    /// [`Self::act`], with the refusal's code beside its words, for a caller that answers one
+    /// refusal in its own way.
+    ///
+    /// # Errors
+    /// The daemon does not answer, or refused.
+    pub fn ask(
+        &self,
+        action: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, DeviceRefusal> {
         use std::io::{BufRead as _, Write as _};
-        let mut native = tilo_files::native::socket::connect(&self.native())
-            .map_err(|error| format!("Tilo isn't answering on this computer: {error}"))?;
+        let mut native = tilo_files::native::socket::connect(&self.native()).map_err(|error| {
+            DeviceRefusal::said(format!("Tilo isn't answering on this computer: {error}"))
+        })?;
         let line = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -338,18 +352,24 @@ impl DaemonPlace {
                 "args": args,
             }, "_meta": {"so.tilo.mcp": {"structured": true}}},
         });
-        writeln!(native, "{line}").map_err(|error| error.to_string())?;
+        writeln!(native, "{line}").map_err(|error| DeviceRefusal::said(error.to_string()))?;
         let mut answer = String::new();
         std::io::BufReader::new(native)
             .read_line(&mut answer)
-            .map_err(|error| error.to_string())?;
-        let answer: serde_json::Value = serde_json::from_str(answer.trim())
-            .map_err(|_| format!("Tilo answered something unreadable: {}", answer.trim()))?;
+            .map_err(|error| DeviceRefusal::said(error.to_string()))?;
+        let answer: serde_json::Value = serde_json::from_str(answer.trim()).map_err(|_| {
+            DeviceRefusal::said(format!(
+                "Tilo answered something unreadable: {}",
+                answer.trim()
+            ))
+        })?;
         if let Some(error) = answer.get("error") {
-            return Err(error
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .map_or_else(|| error.to_string(), str::to_owned));
+            return Err(DeviceRefusal::said(
+                error
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .map_or_else(|| error.to_string(), str::to_owned),
+            ));
         }
         let text = answer
             .pointer("/result/content/0/text")
@@ -366,13 +386,47 @@ impl DaemonPlace {
                 Ok(serde_json::from_str(text)
                     .unwrap_or_else(|_| serde_json::Value::String(text.to_owned())))
             }
-            _ => Err(typed
-                .pointer("/error/message")
-                .and_then(serde_json::Value::as_str)
-                .filter(|message| !message.is_empty())
-                .unwrap_or(text)
-                .to_owned()),
+            _ => Err(DeviceRefusal {
+                code: typed
+                    .pointer("/error/code")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(REFUSED)
+                    .to_owned(),
+                message: typed
+                    .pointer("/error/message")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|message| !message.is_empty())
+                    .unwrap_or(text)
+                    .to_owned(),
+            }),
         }
+    }
+}
+
+/// The code of a device action's refusal that named none.
+const REFUSED: &str = "refused";
+
+/// Why the daemon did not do a device action: its stable code, and its words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceRefusal {
+    pub code: String,
+    pub message: String,
+}
+
+impl DeviceRefusal {
+    /// A refusal said in `message` alone.
+    #[must_use]
+    pub fn said(message: String) -> Self {
+        Self {
+            code: REFUSED.to_owned(),
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for DeviceRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
     }
 }
 

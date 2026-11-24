@@ -1131,8 +1131,8 @@ stores it is the owner of (`accounts/`, with their vault), and, read-only, `stat
 selector, device fleets), the trust and revocation lists, the app registries, the session's
 settings records and anything added to the root later stay out. Settings lists, activates,
 removes and protects identities, lists and revokes devices and removes home servers through the
-host's `tilo.identity` actions (`tilo_session::identity_admin`), which sign with the root key on the
-host. Held by
+daemon's `tilo.device` actions (`devices#identities` and the rest), which sign with the root key in the
+daemon. Held by
 `workspace_confinement::settings_reaches_only_its_own_parts_of_the_session_configuration`. A
 read-only file bind holds the inode it found, so the Permissions pane shows the workspace tree as of the
 launch.

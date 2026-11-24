@@ -158,6 +158,15 @@ pub struct Party<'g> {
 
 /// What a device or a piece of software may do at most, whatever its grants
 /// say: the code's rule about the thing acting, not a grant anyone gave.
+///
+/// A capped call is not a refusal. The capped device hands the call on to one
+/// of the person's root-holding devices through the one dispatch, the same way
+/// `devices#update` hands an action to another of the person's devices, with no
+/// special relay; the call is an invocation record. The root-holding device
+/// asks the person once through the one ask and makes the change under its own
+/// key. The capped device follows the record and shows the outcome. If no
+/// root-holding device is reachable, the record stays asked and is answered
+/// when one comes online.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cap {
     /// What it may do to the workspace's content.

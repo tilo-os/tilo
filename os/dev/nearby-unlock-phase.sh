@@ -393,7 +393,7 @@ note "a server-shaped first boot enrolled its sibling slot and booted with A's a
 # The person's own device list is where a device is revoked, by its key: the
 # same step Settings' "Remove from your devices" takes.
 remove_args="$(jq -cn --arg device "$device" '{device: $device, reason: "retired", confirm: true}')"
-{ control_a raw "$(action_frame tilo.identity identity revoke "$remove_args")" \
+{ control_a raw "$(action_frame tilo.device devices revoke "$remove_args")" \
     > "$out/unlock-remove.txt" 2>&1 && action_completed "$out/unlock-remove.txt"; } || { cat "$out/unlock-remove.txt" >&2; die "A could not revoke B"; }
 # A refusal on the fleet is decided before the person is asked, so no sheet
 # stands: the boot says it was removed and waits for the passphrase.

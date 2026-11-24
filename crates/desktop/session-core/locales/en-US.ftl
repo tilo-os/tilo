@@ -366,15 +366,6 @@ notification-not-now = Not now
 
 # Your devices: administering your identities, as Settings asks the session
 # for them.
-search-action-identity-resource = Your identities
-search-action-identity-list = List your identities
-search-action-identity-list-subtitle = Show the identities on this device and which one new apps sign in as
-search-action-identity-activate = Use an identity for new apps
-search-action-identity-activate-subtitle = Sign apps you open from now on in as one of your identities
-search-action-identity-remove = Remove an identity from this device
-search-action-identity-remove-subtitle = Delete an identity you no longer use here, with its key
-search-action-identity-protect = Protect an identity's key
-search-action-identity-protect-subtitle = Move an identity's key from a plain file into protected storage
 
 
 # Workspace settings

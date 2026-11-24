@@ -26,7 +26,6 @@ use std::path::Path;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 use tilo_session_core::desktop::state::DesktopHandle;
-use tilo_user_identity::AgentScope;
 
 /// What a key the session makes begins with, so it is recognised wherever it leaks.
 const PREFIX: &str = "tilo_ak_";
@@ -34,23 +33,13 @@ const PREFIX: &str = "tilo_ak_";
 /// What separates the grant key derived from an agent key from any other use of its bytes.
 const GRANT_KEY_DOMAIN: &[u8] = b"tilo-agent-key-grant-v1\0";
 
-/// How long a certified grant lasts: an agent's grant expires
-/// ([`tilo_user_identity::MAX_AGENT_GRANT_LIFETIME_NS`] at most), and the session certifies it
-/// again as it starts once this much of it is left.
-const LIFETIME_NS: u64 = 30 * DAY_NS;
-const RENEW_WITHIN_NS: u64 = 7 * DAY_NS;
-const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
-
 /// Where the grant stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum GrantState {
     /// Not certified yet: the session has not learnt who its person is.
     Uncertified,
-    /// Certified by the person's root, of the identity `identity`, until `expires_at_ns`.
-    Certified {
-        identity: String,
-        expires_at_ns: u64,
-    },
+    /// Certified by the person's root until `expires_at_ns`.
+    Certified { expires_at_ns: u64 },
     /// The person revoked it.
     Revoked,
     /// The person's root could not certify it here, for this reason.
@@ -195,21 +184,21 @@ impl AgentKey {
         format!("agent-key-{}", short.get(..8).unwrap_or(&short))
     }
 
-    /// Have the person `person` 's root certify the grant, unless it is certified for long enough
-    /// already, revoked, or certifying failed: once per session start, when the session first
-    /// knows who its person is.
-    pub(crate) fn certify(&mut self, person: &str) {
+    /// Have the device certify the grant under the person's root, unless it is certified for long
+    /// enough already, revoked, or certifying failed: once per session start, when the session
+    /// first knows who its person is.
+    pub(crate) fn certify(&mut self) {
         if self.state != GrantState::Uncertified {
             return;
         }
-        self.state = match certify(self.grant, person) {
+        self.state = match certify(self.grant) {
             Ok(state) => state,
             Err(why) => {
                 tracing::warn!(%why, "MCP server: the agent key's grant is not certified");
                 GrantState::Failed(why)
             }
         };
-        if let GrantState::Certified { expires_at_ns, .. } = &self.state {
+        if let GrantState::Certified { expires_at_ns } = &self.state {
             tracing::info!(
                 agent = %self.agent(),
                 expires_at_ns,
@@ -229,12 +218,10 @@ impl AgentKey {
             )),
             GrantState::Failed(why) => Err(KeyRefusal::Uncertified(why.clone())),
             GrantState::Revoked => Err(KeyRefusal::Revoked),
-            GrantState::Certified {
-                identity,
-                expires_at_ns,
-            } => {
-                // The person may have revoked it since, from their device list.
-                if revoked(identity, &self.grant) {
+            GrantState::Certified { expires_at_ns } => {
+                // The person may have revoked it since, from their device list: the daemon that
+                // keeps their revocations says.
+                if matches!(certify(self.grant), Ok(GrantState::Revoked)) {
                     self.state = GrantState::Revoked;
                     return Err(KeyRefusal::Revoked);
                 }
@@ -270,65 +257,36 @@ fn now_ns() -> u64 {
     tilo_clock::unix_now_ns()
 }
 
-/// Whether `identity` 's fleet holds a revocation of `grant`.
-fn revoked(identity: &str, grant: &[u8; 32]) -> bool {
-    crate::identity_admin::fleet_store()
-        .ok()
-        .and_then(|fleets| fleets.load(identity).ok())
-        .is_some_and(|fleet| fleet.is_revoked(grant))
-}
-
-/// Certify `grant` as an agent's grant of the person `person` (their root key in hex), or find it
-/// certified for long enough already, or revoked.
-fn certify(grant: [u8; 32], person: &str) -> Result<GrantState, String> {
-    let registry = tilo_identity::store::IdentityRegistryStore::from_env()
-        .and_then(|store| store.load_reconciled())
-        .map_err(|error| format!("the person's identities could not be read: {error}"))?;
-    let profile = registry
-        .identities
-        .values()
-        // The session names its person by their root key in hex, which is their identity's id.
-        .find(|profile| profile.id == person || profile.person_id() == person)
-        .cloned()
-        .ok_or("this device does not hold the person's identity")?;
-    let fleets = crate::identity_admin::fleet_store()?;
-    let now = now_ns();
-    if let Ok(fleet) = fleets.load(&profile.id) {
-        if fleet.is_revoked(&grant) {
-            return Ok(GrantState::Revoked);
-        }
-        let lasting = fleet
-            .certificates
-            .iter()
-            .filter(|cert| cert.device_public_key == grant)
-            .filter_map(|cert| cert.expires_at_ns)
-            .max()
-            .filter(|expires| expires.saturating_sub(now) > RENEW_WITHIN_NS);
-        if let Some(expires_at_ns) = lasting {
-            return Ok(GrantState::Certified {
-                identity: profile.id,
-                expires_at_ns,
-            });
-        }
+/// Have this computer's daemon certify `grant` as an agent's grant of its person, with the root
+/// it keeps (`devices#certifyAgent`), or find it certified for long enough already, or revoked.
+fn certify(grant: [u8; 32]) -> Result<GrantState, String> {
+    let answer = tilo_api::daemon::this_computer()?.act(
+        tilo_device_identity::login::CERTIFY_AGENT,
+        serde_json::json!({ "grant": hex::encode(grant) }),
+    )?;
+    if answer.get("revoked").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Ok(GrantState::Revoked);
     }
-    let expires_at_ns = now.saturating_add(LIFETIME_NS);
-    let cert = fleets
-        .certify_agent_grant(
-            &profile.id,
-            grant,
-            AgentScope::AllWorkspaces,
-            "Agent key",
-            now,
-            expires_at_ns,
-        )
-        .map_err(|error| format!("the person's root did not certify it here: {error}"))?;
     // Every device of the person's lists it among their keys, as an agent's.
-    if let Ok(keys) = tilo_workspace_service::agents::agent_keys::this_device() {
+    if let Some(cert) = answer
+        .get("cert")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|cert| hex::decode(cert).ok())
+        .and_then(|cert| {
+            tilo_user_identity::canonical::from_canonical_bytes::<tilo_user_identity::DeviceCert>(
+                &cert,
+            )
+            .ok()
+        })
+        && let Ok(keys) = tilo_workspace_service::agents::agent_keys::this_device()
+    {
         keys.keep_key(&cert);
     }
     Ok(GrantState::Certified {
-        identity: profile.id,
-        expires_at_ns,
+        expires_at_ns: answer
+            .get("expires_at_ns")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("this computer's daemon named no time the key's certificate ends")?,
     })
 }
 
@@ -372,7 +330,11 @@ mod tests {
             key.admits(&text),
             Err(KeyRefusal::Uncertified("no root here".into()))
         );
-        assert_eq!(key.revoke(), None, "a grant never certified is no key to revoke");
+        assert_eq!(
+            key.revoke(),
+            None,
+            "a grant never certified is no key to revoke"
+        );
         assert_eq!(key.admits(&text), Err(KeyRefusal::Revoked));
     }
 }

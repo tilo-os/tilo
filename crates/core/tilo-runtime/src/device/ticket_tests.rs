@@ -1129,3 +1129,107 @@ async fn a_root_holders_login_at_a_server_names_it_among_the_persons_hosts() {
     let _ = router.shutdown().await;
     server.shutdown().await;
 }
+
+/// The person's recovery words and a backup of their root are handed to them once, in the answer
+/// to their call: what the daemon keeps of each call says only that it was given, so following
+/// the call afterwards finds no secret, and both actions say so on their surface.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
+    use tilo_actions::remote::ReceiptStatus;
+
+    let profile = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", profile.path())
+        .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+    // The person whose root this daemon keeps, as founding left it.
+    let identity_dir = tilo_identity::store::identity_dir_from_env().unwrap();
+    tilo_identity::provisioning::create_person(
+        &identity_dir,
+        &tilo_device_identity::IdentityPaths::under(profile.path().join("device")),
+        "Ada",
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
+
+    let workspace = tilo_desktop_model::WorkspaceId::new();
+    let (issuer, state, key, cert, _paths) =
+        super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
+    let place = tilo_device_identity::login::Place::at(
+        state.path().join("issuer"),
+        tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
+    );
+    let tickets = Tickets::new(
+        (key, cert),
+        issuer.endpoint(),
+        None,
+        root_in(state.path().to_path_buf()),
+        None,
+        Some(Arc::clone(&issuer)),
+        place,
+        issuer.copies().action_service(),
+    );
+
+    let page = super::ticket::catalogue(&tilo_actions::remote::CatalogueQuery::default());
+    for (action, args, field) in [
+        (
+            tilo_device_identity::login::RECOVERY_WORDS,
+            json!({}),
+            "words",
+        ),
+        (
+            tilo_device_identity::login::BACKUP,
+            json!({"passphrase": "a passphrase of some length"}),
+            "backup",
+        ),
+    ] {
+        let listed = page
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .find(|listed| listed.address.action == action)
+            .expect("the action is listed");
+        assert!(
+            listed.contract.answers_a_secret(),
+            "{action} says its answer is a secret"
+        );
+
+        let Value::Object(argument) = args else {
+            unreachable!("the arguments are an object");
+        };
+        let invocation = InvocationId::new();
+        let receipt = tickets
+            .invoke(&InvokeRequest {
+                on_behalf_of: None,
+                invocation,
+                target: RemoteActionTarget {
+                    provider: PROVIDER.to_owned(),
+                    address: tilo_actions::ActionAddress::new(RESOURCE, action),
+                },
+                argument: InvokeArgument::Json(argument),
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            })
+            .await
+            .expect("the action is answered");
+        let ReceiptStatus::Completed { output } = receipt.status else {
+            panic!("{action} was not answered at once: {:?}", receipt.status);
+        };
+        let secret = output.value.unwrap()[field]
+            .as_str()
+            .expect("the answer carries the secret")
+            .to_owned();
+        assert!(secret.len() > 32, "{action} answered {secret}");
+
+        // Following the call afterwards finds it given, and nothing of the secret.
+        let kept = tickets.observe(&invocation).expect("the call is known");
+        let kept = format!("{:?}", kept.update);
+        assert!(kept.contains("given"), "{kept}");
+        assert!(!kept.contains(&secret), "{action} kept its answer");
+    }
+    drop(env);
+}

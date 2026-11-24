@@ -760,6 +760,12 @@ pub const SCREEN_TAG: &str = "tilo.screen";
 /// ([`ActionContract::only_shows`]).
 pub const SCREEN_PLACE_TAG: &str = "tilo.screen.place";
 
+/// The contract tag of an action whose answer is a secret (recovery words, a sealed backup): it
+/// is handed to its caller once, and whatever dispatches it keeps no copy of it, in no cache of
+/// answers, invocation record or history. What is kept says only that it was given
+/// ([`ActionContract::answers_a_secret`]).
+pub const SECRET_ANSWER_TAG: &str = "tilo.answer.secret";
+
 /// The contract tag of an effect whose whole scope is the invoking
 /// person's own device: it touches nothing a workspace shares and no one else
 /// (their clipboard, their own appearance, a network test from their own
@@ -1029,6 +1035,11 @@ impl ActionContract {
     /// what it declares.
     pub fn only_shows(&self) -> bool {
         self.tags.iter().any(|tag| tag == SCREEN_TAG) && !self.shows_a_place()
+    }
+
+    /// Whether its answer is a secret, handed over once and kept nowhere ([`SECRET_ANSWER_TAG`]).
+    pub fn answers_a_secret(&self) -> bool {
+        self.tags.iter().any(|tag| tag == SECRET_ANSWER_TAG)
     }
 
     /// Whether the effect shows the row it is offered on, answered against its

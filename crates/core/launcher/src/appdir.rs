@@ -236,7 +236,7 @@ pub enum SessionBind {
 /// the settings document or its records (Settings reads and writes the session's settings through the
 /// shell's settings service on its collaboration channel, as every app does, with the reach the image
 /// grants the device's settings app), not the identity store (records, root secrets, the active
-/// selector, device fleets — the host administers them behind its `tilo.identity` actions), the trust
+/// selector, device fleets — the daemon administers them behind its `tilo.device` actions), the trust
 /// and revocation lists, the app registries, or a file added there later.
 pub const SESSION_SETTINGS_BINDS: &[(&str, SessionBind)] = &[
     ("accounts", SessionBind::Writable),

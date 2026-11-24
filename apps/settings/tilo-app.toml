@@ -17,7 +17,7 @@
 # every app does: `settings.system` asks for every section, which the
 # image grants to this package alone. The
 # identity store is the host's: Settings administers identities and devices
-# through the host's `tilo.identity` actions.
+# through the daemon's `tilo.device` actions.
 #
 
 

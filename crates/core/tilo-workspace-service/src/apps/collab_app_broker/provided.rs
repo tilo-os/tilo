@@ -922,7 +922,7 @@ mod identity_admin_tests {
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
         Completer, Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest, Outcome,
-        Pending, RemoteActionMessage, identity_admin, pending,
+        Pending, RemoteActionMessage, device_tickets, pending,
     };
 
     /// The host's identity store, in its place: it records each step it was
@@ -938,7 +938,7 @@ mod identity_admin_tests {
     fn providers(host: Arc<Host>) -> Providers {
         let providers = Providers::default();
         providers.provide(
-            identity_admin::PROVIDER,
+            device_tickets::PROVIDER,
             "so.tilo.settings",
             Reach::ThisDevice,
             host as Arc<dyn ActionProvider + Send + Sync>,
@@ -948,7 +948,7 @@ mod identity_admin_tests {
 
     fn contract(step: &str) -> tilo_actions::ActionContract {
         match step {
-            identity_admin::LIST => tilo_actions::ActionContract::view(),
+            device_tickets::IDENTITIES => tilo_actions::ActionContract::view(),
             _ => tilo_actions::ActionContract {
                 kind: tilo_actions::ActionKind::Outside,
                 risk: tilo_actions::RiskLevel::Privileged,
@@ -959,7 +959,7 @@ mod identity_admin_tests {
     }
 
     impl tilo_actions::remote::Admits for Host {
-        const PROVIDER: &'static str = identity_admin::PROVIDER;
+        const PROVIDER: &'static str = device_tickets::PROVIDER;
         const APP: &'static str = "so.tilo.settings";
 
         fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
@@ -993,14 +993,14 @@ mod identity_admin_tests {
 
     impl Host {
         fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
-            identity_admin::STEPS
+            device_tickets::IDENTITY_STEPS
                 .into_iter()
                 .map(|step| tilo_actions::ActionDescriptor {
                     did: None,
                     state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
-                    address: tilo_actions::ActionAddress::new(identity_admin::RESOURCE, step),
-                    resource_kind: identity_admin::RESOURCE.into(),
+                    address: tilo_actions::ActionAddress::new(device_tickets::RESOURCE, step),
+                    resource_kind: device_tickets::RESOURCE.into(),
                     resource_label: "Identities".into(),
                     action_label: step.into(),
                     keywords: Vec::new(),
@@ -1078,12 +1078,12 @@ mod identity_admin_tests {
             );
             let agent = Caller::local_agent("planner").in_workspace(workspace_id.clone());
             assert!(
-                invoked(&state, &agent, &request(identity_admin::LIST, None)).is_err(),
+                invoked(&state, &agent, &request(device_tickets::IDENTITIES, None)).is_err(),
                 "an agent outside any run takes no host step"
             );
             let person = Caller::local_person(owner).in_workspace(workspace_id);
             assert!(
-                invoked(&state, &person, &request(identity_admin::LIST, None)).is_err(),
+                invoked(&state, &person, &request(device_tickets::IDENTITIES, None)).is_err(),
                 "a person reaches a native host's steps only with the device's ownership"
             );
             assert!(host.started.lock().unwrap().is_empty());
@@ -1113,7 +1113,7 @@ mod identity_admin_tests {
             assert!(publishers.rows.is_empty(), "{:?}", publishers.rows);
             assert!(
                 publishers.providers.iter().any(|provider| {
-                    provider.provider == identity_admin::PROVIDER
+                    provider.provider == device_tickets::PROVIDER
                         && provider.app_id == "so.tilo.settings"
                         && provider.workspace == workspace
                         && provider.browsable
@@ -1122,13 +1122,13 @@ mod identity_admin_tests {
                 publishers.providers
             );
             let rows = ask(tilo_actions::remote::CatalogueQuery {
-                provider: Some(identity_admin::PROVIDER.into()),
+                provider: Some(device_tickets::PROVIDER.into()),
                 ..Default::default()
             });
             assert!(
                 rows.rows
                     .iter()
-                    .any(|row| row.provider == identity_admin::PROVIDER),
+                    .any(|row| row.provider == device_tickets::PROVIDER),
                 "{:?}",
                 rows.rows
             );
@@ -1147,7 +1147,7 @@ mod identity_admin_tests {
                 } else {
                     super::signed_test_support::Fixture::new_certified(services)
                 };
-                let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                let mut asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
                 assert_eq!(
                     f.query(&asked.target.provider).rows.is_empty(),
                     foreign,
@@ -1221,7 +1221,7 @@ mod identity_admin_tests {
                         super::signed_test_support::Fixture::new(services)
                     };
                     f.caller = f.caller.clone().in_new_execution();
-                    let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                    let asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
                     let (entered, blocked) = mpsc::sync_channel(0);
                     let (release, resume) = mpsc::sync_channel(0);
                     f.state
@@ -1244,7 +1244,7 @@ mod identity_admin_tests {
                         let asked = &asked;
                         let worker = scope.spawn(move || {
                             let registered = crate::workspaces::providers::Registered {
-                                provider: identity_admin::PROVIDER.into(),
+                                provider: device_tickets::PROVIDER.into(),
                                 app: "so.tilo.settings",
                                 reach: Reach::ThisDevice,
                                 answers: steps as Arc<dyn ActionProvider + Send + Sync>,
@@ -1297,7 +1297,7 @@ mod identity_admin_tests {
         InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
-            target: identity_admin::target(step),
+            target: device_tickets::target(step),
             argument: InvokeArgument::None,
             context: None,
             confirmation,
@@ -1335,7 +1335,7 @@ mod identity_admin_tests {
                 providers: Some(providers(host.clone())),
                 ..Default::default()
             });
-            let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+            let asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
             *host.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
             let receipt = f.invoke(&asked).unwrap();
             let accepted = f.assert_signed(&asked, false);
@@ -1375,7 +1375,7 @@ mod identity_admin_tests {
                     providers: Some(providers(host.clone())),
                     ..Default::default()
                 });
-                let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                let asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
                 f.invoke(&asked).unwrap();
                 // The service has accepted the effect; losing its answer does not
                 // prove that the effect failed or make it safe to repeat.
@@ -1419,7 +1419,7 @@ mod identity_admin_tests {
                     providers: Some(providers(host.clone())),
                     ..Default::default()
                 });
-                let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                let asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
                 if admission_failure {
                     f.fail_next_barrier();
                     assert!(f.invoke(&asked).is_err());
@@ -1463,7 +1463,7 @@ mod identity_admin_tests {
                     )
                     .unwrap();
                 }
-                let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                let asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
                 assert!(f.invoke(&asked).is_err());
                 assert!(host.started.lock().unwrap().is_empty());
                 assert!(f.state.remote_job(&f.caller, &asked.invocation).is_none());
@@ -1477,20 +1477,20 @@ mod identity_admin_tests {
             let person = Caller::local_person(owner.clone()).in_workspace(workspace.clone());
 
             let rows = state
-                .eager_catalogue(&person, RowScope::Provider(identity_admin::PROVIDER))
+                .eager_catalogue(&person, RowScope::Provider(device_tickets::PROVIDER))
                 .0;
             assert_eq!(
                 rows.len(),
-                identity_admin::STEPS.len(),
+                device_tickets::IDENTITY_STEPS.len(),
                 "every step is offered to the person here"
             );
             assert!(rows.iter().all(
-                |row| row.app_id == "so.tilo.settings" && row.provider == identity_admin::PROVIDER
+                |row| row.app_id == "so.tilo.settings" && row.provider == device_tickets::PROVIDER
             ));
 
             // Settings reaches the steps as the person using it, without
             // declaring `[actions] invoke`; another app does not.
-            let list = RemoteActionMessage::Invoke(request(identity_admin::LIST, None));
+            let list = RemoteActionMessage::Invoke(request(device_tickets::IDENTITIES, None));
             assert_eq!(
                 state
                     .app_api(&person, "so.tilo.settings", &list)
@@ -1501,9 +1501,9 @@ mod identity_admin_tests {
             assert!(state.app_api(&person, "so.tilo.notes", &list).is_err());
 
             for step in [
-                identity_admin::ACTIVATE,
-                identity_admin::REMOVE,
-                identity_admin::PROTECT,
+                device_tickets::USE_IDENTITY,
+                device_tickets::REMOVE_IDENTITY,
+                device_tickets::PROTECT_IDENTITY,
             ] {
                 assert_eq!(
                     invoked(&state, &person, &request(step, None)),
@@ -1514,14 +1514,14 @@ mod identity_admin_tests {
             assert!(host.started.lock().unwrap().is_empty(), "nothing started");
 
             // Listing asks nothing: the person sees their own identities.
-            invoked(&state, &person, &request(identity_admin::LIST, None)).expect("listed");
+            invoked(&state, &person, &request(device_tickets::IDENTITIES, None)).expect("listed");
             host.started.lock().unwrap().clear();
             host.answers.lock().unwrap().clear();
 
             let receipt = invoked(
                 &state,
                 &person,
-                &request(identity_admin::REMOVE, Some(Confirmation::Confirmed)),
+                &request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed)),
             )
             .expect("admitted");
             assert_eq!(
@@ -1529,7 +1529,7 @@ mod identity_admin_tests {
                 [(
                     workspace,
                     tilo_actions::MemberId::person(owner),
-                    identity_admin::REMOVE.to_owned()
+                    device_tickets::REMOVE_IDENTITY.to_owned()
                 )]
             );
             let job = state
@@ -1560,7 +1560,7 @@ mod identity_admin_tests {
             // hears of it.
             let stranger = Caller::local_person(hex::encode([7; 32])).in_workspace(workspace.clone());
             let offered = state
-                .eager_catalogue(&stranger, RowScope::Provider(identity_admin::PROVIDER))
+                .eager_catalogue(&stranger, RowScope::Provider(device_tickets::PROVIDER))
                 .0;
             assert!(
                 offered.iter().all(|row| row
@@ -1572,9 +1572,9 @@ mod identity_admin_tests {
                 "{offered:?}"
             );
             for step in [
-                identity_admin::ACTIVATE,
-                identity_admin::PROTECT,
-                identity_admin::REMOVE,
+                device_tickets::USE_IDENTITY,
+                device_tickets::PROTECT_IDENTITY,
+                device_tickets::REMOVE_IDENTITY,
             ] {
                 assert!(
                     invoked(
@@ -1592,13 +1592,13 @@ mod identity_admin_tests {
             let remote = Caller::authenticated([41; 32], [42; 32]).in_workspace(workspace);
             assert!(
                 state
-                    .eager_catalogue(&remote, RowScope::Provider(identity_admin::PROVIDER))
+                    .eager_catalogue(&remote, RowScope::Provider(device_tickets::PROVIDER))
                     .0
                     .is_empty()
             );
-            assert!(invoked(&state, &remote, &request(identity_admin::LIST, None)).is_err());
+            assert!(invoked(&state, &remote, &request(device_tickets::IDENTITIES, None)).is_err());
             let unconfined = Caller::local_person(owner);
-            assert!(invoked(&state, &unconfined, &request(identity_admin::LIST, None)).is_err());
+            assert!(invoked(&state, &unconfined, &request(device_tickets::IDENTITIES, None)).is_err());
             assert!(host.started.lock().unwrap().is_empty(), "nothing started");
         }
     }

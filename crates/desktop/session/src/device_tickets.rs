@@ -1,7 +1,8 @@
 //! The person's devices on this desktop: a ticket for a new computer (Settings' "Add a device",
-//! `tilo machine add`), and the names and revocations Settings' devices page asks for, answered
-//! by this computer's daemon, which holds the person's root and serves every device action
-//! (`devices#issue`, `devices#rename`, `devices#revoke`). The desktop only hands the call on.
+//! `tilo machine add`), the names and revocations Settings' devices page asks for, and the
+//! identities this device keeps (listing, using, removing and protecting one), answered by this
+//! computer's daemon, which holds the person's root and identity store and serves every device
+//! action. The desktop only hands the call on, so no app reads a secret or signs with the root.
 
 use std::sync::Arc;
 
@@ -46,7 +47,50 @@ fn descriptor(action: &str) -> ActionDescriptor {
         ParamType::Text,
         "The device's key, 64 hexadecimal characters, as the list of devices answers it.",
     );
+    // A change to one of the identities this device keeps, which the person confirms.
+    let change = |label: &'static str, description: &'static str| {
+        (
+            label,
+            description,
+            OperationKind::Effect,
+            ActionContract {
+                kind: ActionKind::Outside,
+                risk: RiskLevel::Privileged,
+                confirmation: ConfirmationPolicy::Confirm,
+                result: object(&["id"]),
+                ..ActionContract::default()
+            },
+            vec![
+                ActionParam::required("id", ParamType::Text, "The identity's id, as listed."),
+                ActionParam::required("confirm", ParamType::Boolean, "You confirm the change."),
+            ],
+        )
+    };
     let (label, description, kind, contract, params) = match action {
+        wire::IDENTITIES => (
+            "List your identities",
+            "Show the identities on this device and which one new apps sign in as.",
+            OperationKind::View,
+            ActionContract {
+                result: ResultSpec::Json {
+                    schema: serde_json::json!({ "type": "array", "items": { "type": "object" } }),
+                },
+                ..ActionContract::view()
+            },
+            Vec::new(),
+        ),
+        wire::USE_IDENTITY => change(
+            "Use an identity for new apps",
+            "Sign apps you open from now on in as one of your identities.",
+        ),
+        wire::REMOVE_IDENTITY => change(
+            "Remove an identity from this device",
+            "Delete an identity you no longer use here, with its key.",
+        ),
+        wire::PROTECT_IDENTITY => change(
+            "Protect an identity's key",
+            "Move an identity's key from a plain file into protected storage.",
+        ),
         wire::RENAME => (
             "Rename a device",
             "Name one of your devices in every list of them.",
@@ -119,7 +163,15 @@ fn descriptor(action: &str) -> ActionDescriptor {
 }
 
 /// The device actions this desktop answers.
-const ACTIONS: [&str; 3] = [wire::ISSUE, wire::RENAME, wire::REVOKE];
+const ACTIONS: [&str; 7] = [
+    wire::ISSUE,
+    wire::RENAME,
+    wire::REVOKE,
+    wire::IDENTITIES,
+    wire::USE_IDENTITY,
+    wire::REMOVE_IDENTITY,
+    wire::PROTECT_IDENTITY,
+];
 
 /// What a refused or failed device action answers.
 fn refused(message: impl Into<String>) -> tilo_actions::ActionFailure {
@@ -169,12 +221,12 @@ impl Admits for DeviceTickets {
                 return Err("a device action is asked with its arguments as an object".to_owned());
             }
         };
-        // What names and revokes the person's devices is theirs alone to ask: an agent or an app
-        // acting for nobody never does it through here.
-        if action == wire::RENAME || action == wire::REVOKE {
+        // What names and revokes the person's devices, and their identities, is theirs alone to
+        // ask: an agent or an app acting for nobody never does it through here.
+        if action != wire::ISSUE {
             tilo_broker_core::BrokerActor::for_caller(caller)
                 .direct_person()
-                .ok_or("only you name or revoke your devices")?;
+                .ok_or("only you administer your devices and identities")?;
         }
         // The daemon answers over its socket, which blocks: the call waits on a thread of its
         // own, not on the runtime that asked it.

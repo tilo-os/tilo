@@ -288,7 +288,7 @@ struct RemoteIdentityAdmin {
 
 impl RemoteIdentityAdmin {
     fn invoke(&self, step: &str, id: Option<&str>) -> IdentityCall {
-        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
+        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_tickets};
         let mut arguments = serde_json::Map::new();
         if let Some(id) = id {
             arguments.insert("id".into(), id.into());
@@ -298,7 +298,7 @@ impl RemoteIdentityAdmin {
             Confirmation::Confirmed
         });
         self.remote.invoke(
-            identity_admin::target(step),
+            device_tickets::target(step),
             if arguments.is_empty() {
                 InvokeArgument::None
             } else {
@@ -311,16 +311,25 @@ impl RemoteIdentityAdmin {
 
 impl IdentityAdmin for RemoteIdentityAdmin {
     fn list(&self) -> IdentityCall {
-        self.invoke(ui::tilo_actions::remote::identity_admin::LIST, None)
+        self.invoke(ui::tilo_actions::remote::device_tickets::IDENTITIES, None)
     }
     fn activate(&self, id: &str) -> IdentityCall {
-        self.invoke(ui::tilo_actions::remote::identity_admin::ACTIVATE, Some(id))
+        self.invoke(
+            ui::tilo_actions::remote::device_tickets::USE_IDENTITY,
+            Some(id),
+        )
     }
     fn remove(&self, id: &str) -> IdentityCall {
-        self.invoke(ui::tilo_actions::remote::identity_admin::REMOVE, Some(id))
+        self.invoke(
+            ui::tilo_actions::remote::device_tickets::REMOVE_IDENTITY,
+            Some(id),
+        )
     }
     fn protect(&self, id: &str) -> IdentityCall {
-        self.invoke(ui::tilo_actions::remote::identity_admin::PROTECT, Some(id))
+        self.invoke(
+            ui::tilo_actions::remote::device_tickets::PROTECT_IDENTITY,
+            Some(id),
+        )
     }
 }
 
@@ -1345,7 +1354,7 @@ mod tests {
         // identity actions: the list arrives as the host answers it, removal
         // carries the person's confirmation, and nothing reads the store.
         {
-            use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
+            use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_tickets};
             let host = Arc::new(IdentityHost::default());
             let remote = ui::RemoteActions::with_provider(
                 host.clone(),
@@ -1386,15 +1395,15 @@ mod tests {
             assert_eq!(
                 targets,
                 [
-                    identity_admin::LIST,
-                    identity_admin::REMOVE,
-                    identity_admin::ACTIVATE
+                    device_tickets::IDENTITIES,
+                    device_tickets::REMOVE_IDENTITY,
+                    device_tickets::USE_IDENTITY
                 ]
             );
             assert!(
                 asked
                     .iter()
-                    .all(|request| request.target.provider == identity_admin::PROVIDER)
+                    .all(|request| request.target.provider == device_tickets::PROVIDER)
             );
             assert_eq!(asked[1].confirmation, Some(Confirmation::Confirmed));
             assert_eq!(
@@ -1442,9 +1451,9 @@ mod tests {
                 ui::tilo_actions::remote::ActionCallError,
             >,
         > {
-            use ui::tilo_actions::remote::identity_admin;
+            use ui::tilo_actions::remote::device_tickets;
             let invocation = request.invocation;
-            let value = if request.target.address.action == identity_admin::LIST {
+            let value = if request.target.address.action == device_tickets::IDENTITIES {
                 serde_json::to_value(vec![identity("work", true)]).unwrap()
             } else {
                 serde_json::json!({ "id": "old" })

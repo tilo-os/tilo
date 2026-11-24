@@ -404,15 +404,6 @@ notification-not-now = Später
 
 # Deine Geräte: ein neues von einem deiner anderen koppeln und deine
 # Identitäten verwalten, wie die Einstellungen die Sitzung darum bitten.
-search-action-identity-resource = Deine Identitäten
-search-action-identity-list = Deine Identitäten anzeigen
-search-action-identity-list-subtitle = Die Identitäten auf diesem Gerät zeigen und mit welcher sich neue Apps anmelden
-search-action-identity-activate = Identität für neue Apps verwenden
-search-action-identity-activate-subtitle = Apps, die du ab jetzt öffnest, mit einer deiner Identitäten anmelden
-search-action-identity-remove = Identität von diesem Gerät entfernen
-search-action-identity-remove-subtitle = Eine Identität, die du hier nicht mehr nutzt, samt ihrem Schlüssel löschen
-search-action-identity-protect = Schlüssel einer Identität schützen
-search-action-identity-protect-subtitle = Den Schlüssel einer Identität aus einer einfachen Datei in geschützten Speicher verschieben
 
 
 # Workspace settings

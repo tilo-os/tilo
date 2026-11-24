@@ -32,9 +32,10 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    APPROVE, Approval, Approved, Approver, Asked, BACKUP, Declined, Device, Direction, Entry,
-    FOUND, ISSUE, LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS, PROVIDER, Place, RECOVERY_WORDS,
-    RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report, SCOPE, TICKET_LIFETIME_NS, Ticket, UPDATE,
+    APPROVE, Approval, Approved, Approver, Asked, BACKUP, CERTIFY_AGENT, Declined, Device,
+    Direction, Entry, FOUND, IDENTITIES, ISSUE, LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS,
+    PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE,
+    RESTORE, REVOKE, Report, SCOPE, TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
 };
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
@@ -254,6 +255,41 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             &[],
         ))),
         row(Some(descriptor(
+            CERTIFY_AGENT,
+            "Certify an agent's key",
+            "Certify the key of an agent that acts for the person, with the root kept here.",
+            &[ActionParam::required(
+                "grant",
+                ParamType::Text,
+                "The agent's grant key, as hex.",
+            )],
+        ))),
+        row(Some(descriptor(
+            IDENTITIES,
+            "List the identities",
+            "The person's identities this device keeps, without secrets, and which one new apps \
+                 sign in as.",
+            &[],
+        ))),
+        row(Some(descriptor(
+            USE_IDENTITY,
+            "Use an identity for new apps",
+            "Sign apps opened from now on in as this identity.",
+            &[IDENTITY_ID, IDENTITY_CONFIRM],
+        ))),
+        row(Some(descriptor(
+            REMOVE_IDENTITY,
+            "Remove an identity",
+            "Delete an identity, with its key, from this device.",
+            &[IDENTITY_ID, IDENTITY_CONFIRM],
+        ))),
+        row(Some(descriptor(
+            PROTECT_IDENTITY,
+            "Protect an identity's key",
+            "Move an identity's key from a plain file into protected storage.",
+            &[IDENTITY_ID, IDENTITY_CONFIRM],
+        ))),
+        row(Some(descriptor(
             BACKUP,
             "Back up the person",
             "A backup of the person's root kept here, sealed with a passphrase.",
@@ -299,7 +335,7 @@ fn descriptor(
     description: &str,
     params: &[ActionParam],
 ) -> ActionDescriptor {
-    ActionDescriptor {
+    let mut descriptor = ActionDescriptor {
         did: None,
         semantic_identity: None,
         address: tilo_actions::ActionAddress::new(RESOURCE, action),
@@ -329,8 +365,32 @@ fn descriptor(
         input: InputSpec::None,
         params: params.to_vec(),
         view: None,
+    };
+    if SECRET_ANSWERS.contains(&action) {
+        descriptor
+            .contract
+            .tags
+            .push(tilo_actions::SECRET_ANSWER_TAG.to_owned());
     }
+    descriptor
 }
+
+/// The identity an identity step names.
+const IDENTITY_ID: ActionParam = ActionParam::required(
+    "id",
+    ParamType::Text,
+    "The identity's id, as the list answers it.",
+);
+/// The person's explicit word for an identity change.
+const IDENTITY_CONFIRM: ActionParam = ActionParam::required(
+    "confirm",
+    ParamType::Boolean,
+    "The person confirms the change.",
+);
+
+/// The device actions whose answer is a secret ([`tilo_actions::SECRET_ANSWER_TAG`]): handed to
+/// the person once, and kept nowhere here.
+const SECRET_ANSWERS: [&str; 2] = [RECOVERY_WORDS, BACKUP];
 
 /// The person's root on this computer, read when a ticket is asked for: the store the daemon
 /// keeps, or a test's own.
@@ -621,6 +681,11 @@ impl Tickets {
                     | UPDATE
                     | RECOVERY_WORDS
                     | BACKUP
+                    | CERTIFY_AGENT
+                    | IDENTITIES
+                    | USE_IDENTITY
+                    | REMOVE_IDENTITY
+                    | PROTECT_IDENTITY
             )
     }
 
@@ -648,11 +713,15 @@ impl Tickets {
         // endpoint reached one of its relays, it would name only the network this device stands
         // in. It waits for the relay first, as an invitation does.
         let unreached = action == ISSUE && !wait && !reached(&self.0.endpoint);
+        // What only the person's root signs waits, asked, on a device that keeps none, while a
+        // device of theirs that keeps it is asked ([`manage::ROOT_ACTIONS`]).
+        let handed_on = action == CERTIFY_AGENT && !self.holds_root();
         let waiting = matches!(
             action.as_str(),
             LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE
         ) || wait
-            || unreached;
+            || unreached
+            || handed_on;
         if !waiting {
             let answer = match action.as_str() {
                 INFO => Ok(device_info(&self.0.place, &self.0.key)),
@@ -666,6 +735,10 @@ impl Tickets {
                 )
                 .map(|backup| json!({ "backup": hex::encode(backup) }))
                 .map_err(Into::into),
+                CERTIFY_AGENT => self.certify_agent(&args),
+                IDENTITIES | USE_IDENTITY | REMOVE_IDENTITY | PROTECT_IDENTITY => {
+                    super::services::identity_step(&action, &args).map_err(Into::into)
+                }
                 _ => self.issue(&args),
             };
             let update = match answer {
@@ -673,11 +746,18 @@ impl Tickets {
                 Err(error) => failed(invocation, &format!("{error:#}")),
             };
             let state = InvocationState::new(invocation, update);
-            self.0
-                .calls
-                .lock_recover()
-                .insert(invocation, state.clone());
-            return Pending::ready(Ok(state.receipt()));
+            let receipt = state.receipt();
+            // A secret is handed over in the receipt alone: what is kept of the call says only
+            // that it was given.
+            let kept = if SECRET_ANSWERS.contains(&action.as_str())
+                && matches!(state.update, InvocationUpdate::Succeeded { .. })
+            {
+                InvocationState::new(invocation, succeeded(invocation, json!({ "given": true })))
+            } else {
+                state
+            };
+            self.0.calls.lock_recover().insert(invocation, kept);
+            return Pending::ready(Ok(receipt));
         }
         let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
         let receipt = accepted.receipt();
@@ -689,7 +769,7 @@ impl Tickets {
                 PENDING => served.pending(&args).await,
                 APPROVE => served.approve(&args).await,
                 REPORTED => served.report(&args).await,
-                RENAME | REVOKE | UPDATE => served.manage(&action, &args).await,
+                RENAME | REVOKE | UPDATE | CERTIFY_AGENT => served.manage(&action, &args).await,
                 ISSUE if !wait => {
                     tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
                     served.issue(&args)
@@ -1091,10 +1171,15 @@ pub(crate) fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpd
 }
 
 pub(crate) fn failed(invocation: InvocationId, message: &str) -> InvocationUpdate {
+    failed_as(invocation, "device-action", message)
+}
+
+/// The device action `invocation` failed, with the refusal's stable `code`.
+pub(crate) fn failed_as(invocation: InvocationId, code: &str, message: &str) -> InvocationUpdate {
     InvocationUpdate::Failed {
         invocation,
         error: ActionFailure {
-            code: "device-action".to_owned(),
+            code: code.to_owned(),
             message: message.to_owned(),
             details: None,
             retryable: false,

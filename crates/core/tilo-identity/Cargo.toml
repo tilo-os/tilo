@@ -24,7 +24,7 @@ tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 collab-types = { path = "../collab-types" }
 tilo-action-policy = { path = "../action-policy" }
-# The answers the identity steps give every action API (`device_admin`).
+# The action context the broker's tests record changes under.
 tilo-actions = { path = "../actions" }
 # The pairing code every screen of a pairing shows (`certification_ceremony::pairing_code`).
 blake3.workspace = true

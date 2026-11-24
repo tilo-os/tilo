@@ -25,12 +25,14 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    ALREADY_A_PERSONS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE, RESTORE,
+    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE,
+    RESTORE,
 };
 use tilo_lock::MutexRecover as _;
 
 use super::ticket::{
-    INFO, device_info, device_only_catalogue, failed, logged_in, login_asked, provider, succeeded,
+    INFO, device_info, device_only_catalogue, failed, failed_as, logged_in, login_asked, provider,
+    succeeded,
 };
 
 /// The credential a ticket is handed to the daemon as, in `$CREDENTIALS_DIRECTORY`: what a
@@ -303,7 +305,7 @@ impl DeviceOnly {
     /// system unit the account that sets the computer up: named as `args`' `name` says, else as
     /// that account is. Their root is kept here and certifies this device's key, the daemon
     /// serves them from then on, and the account acts as them. Answers the person's id.
-    fn found(&self, args: &Value) -> Result<String, String> {
+    fn found(&self, args: &Value) -> Result<String, Refusal> {
         self.take_a_person(|seated| {
             let name = args
                 .get("name")
@@ -312,16 +314,37 @@ impl DeviceOnly {
                 .filter(|name| !name.is_empty())
                 .map_or_else(|| founder_name(seated.seat.uid), str::to_owned);
             super::services::found_a_person(self.keys(), &name)
-                .map_err(|error| format!("this device could not make a new person: {error}"))
+                .map_err(|error| format!("this device could not make a new person: {error}").into())
         })
     }
 
     /// Bring a person back on this device ([`RESTORE`]) from the recovery words or the backup
     /// `args` hold, as [`Self::found`] makes one: their root is kept here from then on.
-    fn restore(&self, args: &Value) -> Result<String, String> {
+    fn restore(&self, args: &Value) -> Result<String, Refusal> {
+        let another = || Refusal {
+            code: ANOTHER_PERSONS_WORDS,
+            message: "these recovery words are another person's than this computer's".to_owned(),
+        };
+        // Words of the person this device serves already bring nobody new: the account takes them
+        // up again. Anyone else's are refused as theirs.
+        if let (Some(person), Some(words)) =
+            (self.person(), args.get("words").and_then(Value::as_str))
+        {
+            return match tilo_identity::store::recovery_words_public_key(words) {
+                Ok(key) if key == person => Ok(hex::encode(person)),
+                Ok(_) => Err(another()),
+                Err(problem) => Err(problem.to_string().into()),
+            };
+        }
         self.take_a_person(|_| {
-            super::services::restore_a_person(self.keys(), args)
-                .map_err(|error| format!("this device could not bring the person back: {error}"))
+            super::services::restore_a_person(self.keys(), args).map_err(|error| {
+                match tilo_identity::store::recovery_words_error(&error) {
+                    Some(tilo_identity::store::RecoveryWordsError::DifferentIdentity {
+                        ..
+                    }) => another(),
+                    _ => format!("this device could not bring the person back: {error}").into(),
+                }
+            })
         })
     }
 
@@ -329,10 +352,10 @@ impl DeviceOnly {
     /// it is set up from, which acts as them from then on: the person's id.
     fn take_a_person(
         &self,
-        make: impl FnOnce(&crate::seats::Seated) -> Result<(), String>,
-    ) -> Result<String, String> {
+        make: impl FnOnce(&crate::seats::Seated) -> Result<(), Refusal>,
+    ) -> Result<String, Refusal> {
         if self.claimed() {
-            return Err(format!("{ALREADY_A_PERSONS}: it serves them"));
+            return Err(format!("{ALREADY_A_PERSONS}: it serves them").into());
         }
         let Some(seated) = self
             .1
@@ -340,7 +363,9 @@ impl DeviceOnly {
             .filter(|seated| seated.seats.founds(seated.seat))
         else {
             return Err(
-                "only the account this computer is set up from starts a person on it".to_owned(),
+                "only the account this computer is set up from starts a person on it"
+                    .to_owned()
+                    .into(),
             );
         };
         make(seated)?;
@@ -360,6 +385,22 @@ impl DeviceOnly {
         let said = logged_in(&device);
         *self.0.entered.lock_recover() = Some(device);
         Ok(said)
+    }
+}
+
+/// Why a person was not made or brought back on this device: the refusal's stable code, and its
+/// words.
+struct Refusal {
+    code: &'static str,
+    message: String,
+}
+
+impl From<String> for Refusal {
+    fn from(message: String) -> Self {
+        Self {
+            code: "device-action",
+            message,
+        }
     }
 }
 
@@ -477,26 +518,22 @@ impl ActionProvider for DeviceOnly {
                 });
                 Pending::ready(Ok(receipt))
             }
-            FOUND | RESTORE => Pending::ready(
-                {
-                    let args = match &request.argument {
-                        InvokeArgument::Json(argument) => Value::Object(argument.clone()),
-                        _ => Value::Null,
-                    };
-                    if address.action == FOUND {
-                        self.found(&args)
-                    } else {
-                        self.restore(&args)
-                    }
-                }
-                .map(|person| {
-                    self.keep(
-                        invocation,
-                        succeeded(invocation, serde_json::json!({ "person": person })),
-                    )
-                })
-                .map_err(|reason| ActionCallError::Refused { reason }),
-            ),
+            FOUND | RESTORE => {
+                let args = match &request.argument {
+                    InvokeArgument::Json(argument) => Value::Object(argument.clone()),
+                    _ => Value::Null,
+                };
+                let made = if address.action == FOUND {
+                    self.found(&args)
+                } else {
+                    self.restore(&args)
+                };
+                let update = match made {
+                    Ok(person) => succeeded(invocation, serde_json::json!({ "person": person })),
+                    Err(refusal) => failed_as(invocation, refusal.code, &refusal.message),
+                };
+                Pending::ready(Ok(self.keep(invocation, update)))
+            }
             _ => Pending::ready(Err(self.needs_a_person())),
         }
     }

@@ -1332,8 +1332,6 @@ fn broker_services(
             service: service.clone(),
             fabric: fabric.clone(),
         });
-    // The session decides who may administer a workspace's identity.
-    let layout_authority = std::sync::Arc::clone(&layout);
     let grants_layout = std::sync::Arc::clone(&layout);
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
@@ -1382,10 +1380,6 @@ fn broker_services(
     std::sync::Arc::new(crate::device_tickets::DeviceTickets).register(&providers);
     crate::machine_steps::MachineSteps::session(view.clone()).register(&providers);
     crate::model_steps::ModelSteps::session(engine.clone()).register(&providers);
-    std::sync::Arc::new(crate::identity_admin::BrokerApi {
-        layout: layout_authority,
-    })
-    .register(&providers);
     crate::server_account::ServerAccountApi::session().register(&providers);
     std::sync::Arc::new(tilo_workspace_service::agents::assistant::Transforms::new(
         service.clone(),
@@ -2509,9 +2503,9 @@ mod tests {
         let providers: Vec<&str> = registered.iter().map(|entry| entry.provider).collect();
         assert_eq!(
             providers.len(),
-            10,
-            "the providers this session answers are the workspace's activity, a ticket for a new \
-             computer, identity administration, the person's hosting account, the machines they \
+            9,
+            "the providers this session answers are the workspace's activity, the person's \
+             devices and identities, the person's hosting account, the machines they \
              planned, its own actions, its agents' transforms, the web its shortcuts reach, the \
              answers their triggers invoke and the workspace's models"
         );
@@ -2519,10 +2513,6 @@ mod tests {
             (
                 tilo_actions::remote::device_tickets::PROVIDER,
                 "Settings adds a device with a ticket",
-            ),
-            (
-                tilo_actions::remote::identity_admin::PROVIDER,
-                "Settings administers the person's devices",
             ),
             (
                 tilo_actions::remote::SESSION_ACTIONS_PROVIDER,

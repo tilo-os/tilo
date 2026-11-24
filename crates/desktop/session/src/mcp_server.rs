@@ -542,7 +542,7 @@ impl Loop {
         self.accept();
         self.environments.follow(handle, person);
         if let Some(key) = self.agent_key.as_mut() {
-            key.certify(person);
+            key.certify();
         }
         while let Ok(request) = self.asked.try_recv() {
             if request.key.is_some() {

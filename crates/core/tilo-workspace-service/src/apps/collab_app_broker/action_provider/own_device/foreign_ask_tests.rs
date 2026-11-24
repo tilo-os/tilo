@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::admitted::top_level;
-use tilo_actions::remote::identity_admin;
+use tilo_actions::remote::device_tickets;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Admitted, Caller, Completer, Confirmation,
     ConfirmationQuestion, InvokeArgument, InvokeRequest, Outcome, Pending, pending,
@@ -96,7 +96,7 @@ impl OwnDeviceActions for OwnDevices {
 struct Steps;
 
 impl tilo_actions::remote::Admits for Steps {
-    const PROVIDER: &'static str = identity_admin::PROVIDER;
+    const PROVIDER: &'static str = device_tickets::PROVIDER;
     const APP: &'static str = "so.tilo.settings";
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
@@ -121,10 +121,10 @@ impl Steps {
             semantic_identity: None,
             icon: None,
             address: tilo_actions::ActionAddress::new(
-                identity_admin::RESOURCE,
-                identity_admin::REMOVE,
+                device_tickets::RESOURCE,
+                device_tickets::REMOVE_IDENTITY,
             ),
-            resource_kind: identity_admin::RESOURCE.into(),
+            resource_kind: device_tickets::RESOURCE.into(),
             resource_label: "Identities".into(),
             action_label: "Remove".into(),
             keywords: Vec::new(),
@@ -148,7 +148,7 @@ impl Steps {
 fn providers() -> Providers {
     let providers = Providers::default();
     providers.provide(
-        identity_admin::PROVIDER,
+        device_tickets::PROVIDER,
         "so.tilo.settings",
         Reach::ThisDevice,
         Arc::new(Steps) as Arc<dyn ActionProvider + Send + Sync>,
@@ -161,7 +161,7 @@ fn request() -> InvokeRequest {
     InvokeRequest {
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
-        target: identity_admin::target(identity_admin::REMOVE),
+        target: device_tickets::target(device_tickets::REMOVE_IDENTITY),
         argument: InvokeArgument::None,
         context: None,
         confirmation: None,

@@ -27,8 +27,6 @@
 pub mod broker;
 pub mod certificates;
 pub mod certification_ceremony;
-#[cfg(not(target_family = "wasm"))]
-pub mod device_admin;
 pub mod device_fleet;
 pub mod identity_store;
 #[cfg(not(target_family = "wasm"))]

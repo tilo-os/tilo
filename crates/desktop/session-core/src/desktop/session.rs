@@ -15,8 +15,7 @@
 //! in progress, then done or refused, exactly as with a broker.
 //! The session also serves the workspace's activity, as a native session's broker does
 //! (`activity`), and carries the person's own asks of what only they reach
-//! (their MCP server, [`mcp_server::PROVIDER`], and their devices,
-//! [`identity_admin::PROVIDER`]) to the action API the desktop's host hands it
+//! (their MCP server, [`mcp_server::PROVIDER`]) to the action API the desktop's host hands it
 //! for each ([`DesktopSession::serve_person_api`]): the person's host, on a page.
 //! A window also reads what another app keeps through the session's record API, as it does through
 //! the workspace broker. The desktop holds those records itself, so the session takes the reads and
@@ -49,8 +48,8 @@ use tilo_actions::remote::{
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_resource,
-    formats, identity_admin, mcp_server, pending, person_accounts, person_models, person_telling,
-    person_vault, provider_workspace, server_account, session_actions, workspace_activity as wire,
+    formats, mcp_server, pending, person_accounts, person_models, person_telling, person_vault,
+    provider_workspace, server_account, session_actions, workspace_activity as wire,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -211,7 +210,7 @@ pub fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionCallErro
 
 /// The providers only the person reaches, each served by an action API the
 /// desktop's host hands the session ([`DesktopSession::serve_person_api`]).
-pub const PERSON_PROVIDERS: [&str; 2] = [mcp_server::PROVIDER, identity_admin::PROVIDER];
+pub const PERSON_PROVIDERS: [&str; 1] = [mcp_server::PROVIDER];
 
 /// What the workspace's server keeps for the people in it, asked of that
 /// server the way an action of a resource is ([`DesktopSession::serve_workspace_api`]):

@@ -50,6 +50,20 @@ pub const RECOVERY_WORDS: &str = "recoveryWords";
 /// The action a daemon that holds the person's root answers the person: their root sealed with
 /// `passphrase` into a portable backup, answered as `backup`, hex, for them to keep.
 pub const BACKUP: &str = "backup";
+/// The action a daemon that holds the person's root answers the person: certify the grant key of
+/// an agent that acts for them (`grant`, hex) with that root, unless it is revoked or certified
+/// for long enough already. Answers `{identity, expires_at_ns, cert?}`, or `{revoked: true}`.
+pub const CERTIFY_AGENT: &str = "certifyAgent";
+/// The actions a daemon answers the person about the identities it keeps: listing them without
+/// secrets, and using (new apps sign in as it), removing and protecting (its key moves into
+/// protected storage) identity `id`, each change with `confirm`.
+pub const IDENTITIES: &str = "identities";
+pub const USE_IDENTITY: &str = "useIdentity";
+pub const REMOVE_IDENTITY: &str = "removeIdentity";
+pub const PROTECT_IDENTITY: &str = "protectIdentity";
+/// The code [`RESTORE`] is refused with when the recovery words are another person's than the
+/// one this device serves.
+pub const ANOTHER_PERSONS_WORDS: &str = "another-persons-words";
 /// What [`FOUND`] is refused with on a device a person's certificate names already.
 pub const ALREADY_A_PERSONS: &str = "this device is a person's already";
 /// The action a daemon answers on its own workspace: what one of the person's devices is called

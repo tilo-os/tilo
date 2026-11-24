@@ -501,6 +501,18 @@ pub mod device_tickets {
     /// End one of the person's devices' logins (`device`, `reason`), signed by their root on the
     /// device that holds it.
     pub const REVOKE: &str = "revoke";
+    /// The person's identities this device keeps, without secrets.
+    pub const IDENTITIES: &str = "identities";
+    /// Sign new apps in as identity `id` (`confirm`).
+    pub const USE_IDENTITY: &str = "useIdentity";
+    /// Remove identity `id` from this device (`confirm`).
+    pub const REMOVE_IDENTITY: &str = "removeIdentity";
+    /// Move identity `id`'s key from a plain file into protected storage (`confirm`).
+    pub const PROTECT_IDENTITY: &str = "protectIdentity";
+    /// The identity steps, in the order a catalogue lists them. The daemon keeps the identity
+    /// store and takes every step, so no application reads a secret or signs with the root.
+    pub const IDENTITY_STEPS: [&str; 4] =
+        [IDENTITIES, USE_IDENTITY, REMOVE_IDENTITY, PROTECT_IDENTITY];
 
     #[must_use]
     pub fn target(action: &str) -> RemoteActionTarget {
@@ -678,40 +690,6 @@ pub mod migrations {
         RemoteActionTarget {
             provider: provider.clone(),
             address: ActionAddress::new(resource.as_str(), step),
-        }
-    }
-}
-
-/// Administering the person's identities on this device. The provider keeps
-/// the identity store — records, root secrets, the active selector — and runs
-/// every step, so no application reads a secret or signs with the root key.
-/// Their devices are [`device_tickets`]' actions. It is answered under the
-/// identity provider, which a caller names without reading a catalogue, for the
-/// person at this device in the workspace their connection was admitted to.
-pub mod identity_admin {
-    use super::{ActionAddress, RemoteActionTarget};
-
-    /// The provider that answers identity administration.
-    pub const PROVIDER: &str = "tilo.identity";
-    /// The resource the steps are actions of.
-    pub const RESOURCE: &str = "identity";
-    /// The person's identities on this device, without secrets.
-    pub const LIST: &str = "list";
-    /// Sign new apps in as identity `id`.
-    pub const ACTIVATE: &str = "activate";
-    /// Remove identity `id` from this device (`confirm`).
-    pub const REMOVE: &str = "remove";
-    /// Move identity `id`'s key from a plain file into protected storage.
-    pub const PROTECT: &str = "protect";
-
-    /// Every step, in the order a catalogue lists them.
-    pub const STEPS: [&str; 4] = [LIST, ACTIVATE, REMOVE, PROTECT];
-
-    #[must_use]
-    pub fn target(step: &str) -> RemoteActionTarget {
-        RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: ActionAddress::new(RESOURCE, step),
         }
     }
 }

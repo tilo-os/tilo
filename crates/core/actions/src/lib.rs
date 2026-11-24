@@ -218,8 +218,8 @@ pub use contract::{
     OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, ORIGIN_FACET, OUTSIDE_CAPABILITY_PREFIX,
     OWN_DEVICE_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, READERS_FACET, REQUIRES_HOST_PREFIX,
     REQUIRES_NATIVE_PATHS_TAG, RESOURCE_READ_TAG, ROUTED_CHANGE_TAG, ResultSpec, RetryPolicy,
-    RiskLevel, SCREEN_PLACE_TAG, SCREEN_TAG, SEARCH_KIND_PREFIX, SEARCH_TAG, UNTRUSTED_CONTENT_TAG,
-    action_node, phrase_is_meaningful, resource_node,
+    RiskLevel, SCREEN_PLACE_TAG, SCREEN_TAG, SEARCH_KIND_PREFIX, SEARCH_TAG, SECRET_ANSWER_TAG,
+    UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful, resource_node,
 };
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
 pub use entry::{

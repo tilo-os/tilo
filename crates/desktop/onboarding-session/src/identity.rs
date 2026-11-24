@@ -186,10 +186,10 @@ impl Onboarding {
 /// Why the ceremony could not finish.
 #[derive(Debug)]
 pub enum OnboardingError {
-    /// No `$HOME` / `$XDG_CONFIG_HOME`, so there's no user directory to write into — never guess a path for something this sensitive.
-    NoUserDirectory,
     /// Minting or writing failed.
     Mint(String),
+    /// This computer's daemon refused, for the reason its code names.
+    Refused(tilo_api::daemon::DeviceRefusal),
     /// The identity chain this device holds could not be taken up. `problem`
     /// tells the person what to do about it; `detail` is the diagnostic.
     Identity {
@@ -280,12 +280,8 @@ impl IdentityProblem {
 impl fmt::Display for OnboardingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OnboardingError::NoUserDirectory => write!(
-                f,
-                "no user config directory ($HOME / $XDG_CONFIG_HOME unset); refusing to guess \
-                 where a signing key belongs"
-            ),
             OnboardingError::Mint(e) => write!(f, "could not create the identity: {e}"),
+            OnboardingError::Refused(refusal) => write!(f, "{refusal}"),
             OnboardingError::Identity { detail, .. } => {
                 write!(f, "could not take up the identity: {detail}")
             }
@@ -306,7 +302,11 @@ const DAEMON_ANSWERING: std::time::Duration = std::time::Duration::from_secs(120
 ///
 /// The daemon does not answer or could not make the person, or what it made cannot be read.
 pub fn found_by_daemon(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
-    by_daemon(identity_dir, |daemon| daemon.found(None))
+    by_daemon(identity_dir, |daemon| {
+        daemon
+            .found(None)
+            .map_err(tilo_api::daemon::DeviceRefusal::said)
+    })
 }
 
 /// Have this computer's daemon bring the person back (`devices#restore`) from `args` (their
@@ -322,21 +322,20 @@ pub fn restore_by_daemon(
 ) -> Result<MintedIdentity, OnboardingError> {
     by_daemon(identity_dir, |daemon| {
         daemon
-            .act(tilo_device_identity::login::RESTORE, args)
+            .ask(tilo_device_identity::login::RESTORE, args)
             .map(drop)
     })
 }
 
 fn by_daemon(
     identity_dir: &Path,
-    ask: impl FnOnce(&tilo_api::daemon::DaemonPlace) -> Result<(), String>,
+    ask: impl FnOnce(&tilo_api::daemon::DaemonPlace) -> Result<(), tilo_api::daemon::DeviceRefusal>,
 ) -> Result<MintedIdentity, OnboardingError> {
-    tilo_api::daemon::this_computer()
-        .and_then(|daemon| {
-            daemon.wait_for_native(DAEMON_ANSWERING)?;
-            ask(&daemon)
-        })
+    let daemon = tilo_api::daemon::this_computer().map_err(OnboardingError::Mint)?;
+    daemon
+        .wait_for_native(DAEMON_ANSWERING)
         .map_err(OnboardingError::Mint)?;
+    ask(&daemon).map_err(OnboardingError::Refused)?;
     take_up(
         identity_dir,
         &tilo_identity::provisioning::collaboration_identity_paths(),

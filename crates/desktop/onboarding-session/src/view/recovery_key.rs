@@ -18,8 +18,16 @@ pub(super) fn import_recovery_words(
     import_dir: &Path,
     words: &str,
 ) -> Result<MintedIdentity, String> {
-    crate::identity::restore_by_daemon(import_dir, serde_json::json!({ "words": words }))
-        .map_err(|error| error.to_string())
+    crate::identity::restore_by_daemon(import_dir, serde_json::json!({ "words": words })).map_err(
+        |error| match error {
+            crate::identity::OnboardingError::Refused(refusal)
+                if refusal.code == tilo_device_identity::login::ANOTHER_PERSONS_WORDS =>
+            {
+                tilo_onboarding::t("onboarding-recovery-key-different")
+            }
+            error => error.to_string(),
+        },
+    )
 }
 
 /// The words of the recovery key of the person's root this computer's daemon keeps.

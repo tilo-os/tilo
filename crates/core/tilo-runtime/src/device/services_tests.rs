@@ -1333,3 +1333,64 @@ async fn shell_helper(role: &str) {
         );
     }
 }
+
+/// The identity steps Settings asks of the daemon: listing answers no secret and reads back as
+/// Settings reads it, and every change waits for the person's confirmation, which never removes
+/// the last identity.
+#[test]
+fn identity_steps_list_change_and_protect_the_store_without_answering_a_secret() {
+    use tilo_device_identity::login::{
+        IDENTITIES, PROTECT_IDENTITY, REMOVE_IDENTITY, USE_IDENTITY,
+    };
+    let profile = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", profile.path())
+        .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+    let dir = tilo_identity::store::identity_dir_from_env().unwrap();
+    tilo_identity::provisioning::create_person(
+        &dir,
+        &tilo_device_identity::IdentityPaths::under(profile.path().join("device")),
+        "Ada",
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
+
+    let listed = identity_step(IDENTITIES, &json!({})).expect("listed");
+    let entries = listed.as_array().expect("a list");
+    assert_eq!(entries.len(), 1, "{listed}");
+    assert_eq!(entries[0]["active"], true);
+    let summary: tilo_identity_client::IdentitySummary =
+        serde_json::from_value(entries[0].clone()).expect("Settings reads the answer back");
+    let text = listed.to_string();
+    assert!(
+        !text.contains("secret") && !text.contains("resource_path"),
+        "no secret or record path leaves the daemon: {text}"
+    );
+
+    let id = summary.id.as_str();
+    for step in [USE_IDENTITY, PROTECT_IDENTITY, REMOVE_IDENTITY] {
+        let unconfirmed = identity_step(step, &json!({ "id": id, "confirm": false }));
+        assert!(
+            unconfirmed
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("confirmation")),
+            "{step} waits for the person's confirmation: {unconfirmed:?}"
+        );
+    }
+    assert_eq!(
+        identity_step(USE_IDENTITY, &json!({ "id": id, "confirm": true })).expect("used"),
+        json!({ "id": id, "active": true })
+    );
+    let protected =
+        identity_step(PROTECT_IDENTITY, &json!({ "id": id, "confirm": true })).expect("protected");
+    assert_eq!(protected["id"], id);
+    assert!(
+        identity_step(REMOVE_IDENTITY, &json!({ "id": id, "confirm": true })).is_err(),
+        "the active, final identity stays"
+    );
+    assert_eq!(
+        tilo_identity::store::list_identities(&dir).unwrap().len(),
+        1
+    );
+}

@@ -275,6 +275,52 @@ fn root_record() -> io::Result<std::path::PathBuf> {
         })
 }
 
+/// Take identity step `action` (one of the `devices` identity actions) with `args` in the identity
+/// store this daemon keeps: list the identities without secrets, or, with the person's `confirm`,
+/// use, remove or protect identity `id`.
+///
+/// # Errors
+/// The step is not confirmed, names no identity, or the store refuses it.
+pub fn identity_step(action: &str, args: &Value) -> io::Result<Value> {
+    use tilo_device_identity::login::{
+        IDENTITIES, PROTECT_IDENTITY, REMOVE_IDENTITY, USE_IDENTITY,
+    };
+    use tilo_identity::store;
+    let dir = store::identity_dir_from_env()?;
+    if action == IDENTITIES {
+        return serde_json::to_value(store::list_identities(&dir)?).map_err(io::Error::other);
+    }
+    if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "an identity changes only with the person's explicit confirmation",
+        ));
+    }
+    let id = args
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "an identity id is required"))?;
+    match action {
+        USE_IDENTITY => {
+            store::set_active_identity(&dir, id)?;
+            Ok(json!({ "id": id, "active": true }))
+        }
+        REMOVE_IDENTITY => {
+            store::remove_identity(&dir, id)?;
+            Ok(json!({ "id": id, "removed": true }))
+        }
+        PROTECT_IDENTITY => {
+            Ok(json!({ "id": id, "protection": store::secure_identity(&dir, id)? }))
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("`{action}` is not an identity step"),
+        )),
+    }
+}
+
 /// Whether this daemon keeps its person's root.
 #[must_use]
 pub fn holds_a_root() -> bool {
@@ -307,6 +353,63 @@ pub fn backup(passphrase: &str) -> io::Result<Vec<u8>> {
             .and_then(|_| std::fs::read(&file));
     drop(std::fs::remove_file(&file));
     written
+}
+
+/// How long an agent's grant this daemon certifies lasts, and how much of it may be left when it
+/// is certified again.
+const AGENT_GRANT_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
+const AGENT_GRANT_RENEW_WITHIN_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
+
+/// Certify `grant`, an agent's grant key, with the person's root this daemon keeps, as the device
+/// certifies its own keys in `keys`: unless it is revoked (`{revoked: true}`), or certified for
+/// long enough already, which is answered as it stands.
+///
+/// # Errors
+/// This daemon keeps no root, or the root did not certify it.
+pub fn certify_agent(
+    keys: &tilo_device_identity::IdentityPaths,
+    grant: [u8; 32],
+) -> io::Result<Value> {
+    let record = root_record()?;
+    let dir = record
+        .parent()
+        .ok_or_else(|| io::Error::other("the root's record has no directory"))?;
+    let id = tilo_identity::store::IdentityRegistryStore::at(dir)
+        .load_reconciled()?
+        .identities
+        .into_values()
+        .find(|profile| profile.record_path == record)
+        .map(|profile| profile.id)
+        .ok_or_else(|| io::Error::other("the root's record is in no registry"))?;
+    let fleets = tilo_identity::device_fleet::DeviceFleetStore::at(dir, keys.clone());
+    let now = tilo_clock::unix_now_ns();
+    if let Ok(fleet) = fleets.load(&id) {
+        if fleet.is_revoked(&grant) {
+            return Ok(json!({ "revoked": true }));
+        }
+        let lasting = fleet
+            .certificates
+            .iter()
+            .filter(|cert| cert.device_public_key == grant)
+            .filter_map(|cert| cert.expires_at_ns)
+            .max()
+            .filter(|expires| expires.saturating_sub(now) > AGENT_GRANT_RENEW_WITHIN_NS);
+        if let Some(expires_at_ns) = lasting {
+            return Ok(json!({ "identity": id, "expires_at_ns": expires_at_ns }));
+        }
+    }
+    let expires_at_ns = now.saturating_add(AGENT_GRANT_LIFETIME_NS);
+    let cert = fleets.certify_agent_grant(
+        &id,
+        grant,
+        tilo_user_identity::AgentScope::AllWorkspaces,
+        "Agent key",
+        now,
+        expires_at_ns,
+    )?;
+    let cert = tilo_user_identity::canonical::canonical_bytes(&cert)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    Ok(json!({ "identity": id, "expires_at_ns": expires_at_ns, "cert": hex::encode(cert) }))
 }
 
 /// A file in `dir`, private to this daemon, that a backup passes through on its way in or out.
