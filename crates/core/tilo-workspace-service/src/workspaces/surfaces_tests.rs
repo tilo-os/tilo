@@ -22,9 +22,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_user_identity::DeviceCapabilities;
 
 use super::Workspaces;
-use super::fixtures::{
-    TestGroupKeys, admit_view_reader, device_cert, governor_with, test_host_holding,
-};
+use super::fixtures::{TestGroupKeys, governor_with, test_host_holding};
 
 const APP: &str = "so.tilo.test.older-version";
 const KIND: &str = "so.tilo.test.older-version.article";
@@ -98,12 +96,12 @@ async fn title(workspaces: &Workspaces, workspace: &str, record: &str) -> Option
         .and_then(|(value, _)| value.into_string().ok())
 }
 
-/// The write `member` makes of `record`, in the clear, naming `surface`: the version of the app
-/// that wrote it, whose bytes the content store keeps.
+/// The write `device`, the workspace's own, makes of `record`, in the clear, naming `surface`:
+/// the version of the app that wrote it, whose bytes the content store keeps.
 async fn write_naming(
     workspaces: &Workspaces,
     workspace: &str,
-    member: &SigningKey,
+    key: &SigningKey,
     record: &str,
     title: &str,
     surface: [u8; 32],
@@ -115,7 +113,7 @@ async fn write_naming(
         .expect("the record the earlier build wrote");
     let mut document = automerge::AutoCommit::load(&bytes).unwrap();
     document.set_actor(automerge::ActorId::from(
-        &member.verifying_key().to_bytes()[..],
+        &key.verifying_key().to_bytes()[..],
     ));
     document.put(automerge::ROOT, "title", title).unwrap();
     // Every change names who made it, and which field of which kind it edits.
@@ -126,7 +124,7 @@ async fn write_naming(
         .raw_bytes()
         .to_vec();
     let mutation = DocumentMutation::Incremental(change).encode().unwrap();
-    let author = collab_types::Ed25519PublicKey::from_bytes(member.verifying_key().to_bytes());
+    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = SignedOp::new_unsigned(
         mutation,
         collab_types::document_artifact_id(APP, workspace, record),
@@ -134,10 +132,11 @@ async fn write_naming(
         collab_types::document_attestation_id(APP, workspace, record),
         collab_types::OpKind::Change,
         tilo_clock::wall(),
-        1,
+        // The record's founding write was this device's first on its route.
+        2,
     )
     .with_surface(Some(surface));
-    collab_types::sign_op(&mut envelope, member).unwrap();
+    collab_types::sign_op(&mut envelope, key).unwrap();
     let message = NeighbourMsg::AppDocument {
         peer: tilo_peer_state::peer_handle(author.as_bytes()),
         app_id: APP.into(),
@@ -147,7 +146,7 @@ async fn write_naming(
         readers: None,
     };
     let body = postcard::to_stdvec(&message).unwrap();
-    let author = member.verifying_key().to_bytes();
+    let author = key.verifying_key().to_bytes();
     assert!(
         crate::surfaces::holds(&hex::encode(surface)),
         "the update keeps the earlier build's surface"
@@ -197,12 +196,6 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
             .is_ok(),
         "the workspace's channel keys are here"
     );
-    let (member_key, member) = device_cert(
-        &SigningKey::from_bytes(&[1; 32]),
-        "the earlier build's page",
-        DeviceCapabilities::member(),
-    );
-    admit_view_reader(&workspaces, &workspace, &key, &member).await;
     for at in 0..RECORDS {
         let record = format!("article-{at}");
         workspaces
@@ -255,15 +248,7 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
     // A change of the earlier build's still arriving names its surface: the update reads that
     // surface from the content store, in the form the earlier build kept it.
     let written = "Article 0, as the earlier build wrote it";
-    write_naming(
-        &workspaces,
-        &workspace,
-        &member_key,
-        "article-0",
-        written,
-        earlier,
-    )
-    .await;
+    write_naming(&workspaces, &workspace, &key, "article-0", written, earlier).await;
     assert_eq!(
         title(&workspaces, &workspace, "article-0").await.as_deref(),
         Some(written),
