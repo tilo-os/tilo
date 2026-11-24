@@ -42,13 +42,26 @@ pub(super) fn prepare_governance(
 /// the records one that starts the workspace over must still publish.
 pub(super) fn durable_messages(
     candidate: &StatePeer,
-    _peer: &StatePeer,
+    peer: &StatePeer,
     (_key, _now): (&SigningKey, SystemTime),
     _generation: u64,
 ) -> Vec<neighbour_wire::NeighbourMsg> {
-    // What the commit changed is the workspace change every device admits; a
-    // record's own writes reach its readers as its device sends them.
-    vec![candidate.workspace_message()]
+    // What the commit changed is the workspace change every device admits, and
+    // only that: the changes past what `peer` held. Sending the whole document
+    // at each commit would publish its history again every time, and the
+    // publication would grow with the square of the changes. A record's own
+    // writes reach its readers as its device sends them.
+    let Some(heads) = peer.workspace_heads() else {
+        return vec![candidate.workspace_message()];
+    };
+    let changes = candidate.workspace_changes_since(&heads);
+    if changes.is_empty() {
+        return Vec::new();
+    }
+    vec![neighbour_wire::NeighbourMsg::SyncResp {
+        changes,
+        workspace: candidate.workspace_id().to_owned(),
+    }]
 }
 
 /// The records `candidate`, a change built from `peer`, changes: what its
