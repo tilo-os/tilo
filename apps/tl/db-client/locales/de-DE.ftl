@@ -38,6 +38,10 @@ d-lkucdgg4-filter-row_count = Zeilenzahl
 
 d-qmrcvjjn = Name
 
+d-kdq23jfd = Schema
+
+d-wklm2rxq = Tabelle
+
 d-ffkug4qg = Typ
 
 d-ifa6r5by = Leer erlaubt
@@ -139,6 +143,9 @@ d-m2eenfte = Verbunden
 d-utbjkevx = Ansicht
 
 d-c5axoen6 = Tabellen
+
+d-solxuk72 = Katalogspalten
+    .doc = Die Spalten jeder Beziehung, mit dem Katalog gelesen, damit die Suche jede über ihren Namen findet und die Strukturansicht die der gewählten Tabelle hat.
 
 d-p5c7ywkh = Schlüssel
 
@@ -341,6 +348,7 @@ d-7xr4zpm5 = Zeilenzahl
     .doc = Die Zeilen, die ein `COUNT(*)` gefunden hat; nichts bei einer Sicht.
 
 d-txlcru2y = Spalteninfo
+    .doc = Eine Spalte einer Tabelle oder Sicht aus dem Katalog der offenen Verbindung, mit der Beziehung, in der sie steht: die Suche findet sie über ihren Namen und sagt, wo sie ist.
     .noun = { $count ->
         [one] Spalteninfo
        *[other] Spalteninfos
@@ -401,6 +409,7 @@ d-j7lrdytm = Geheimnis
 
 d-4vk72asw = Ausführung
     .doc = Eine Anweisung, die dieses Fenster ausgeführt hat, einen Tastendruck entfernt.
+    .untitled = Abfrage
     .noun = { $count ->
         [one] Ausführung
        *[other] Ausführungen
@@ -415,6 +424,7 @@ d-wdgtgr6r = Zeile
 
 d-j7kxfnjc = Ausgang
     .doc = Was eine Anweisung oder eine Tabellenseite geantwortet hat, mit den Worten, die das Fenster dafür zeigt.
+    .untitled = Ergebnis
     .noun = { $count ->
         [one] Ausgang
        *[other] Ausgänge
@@ -430,7 +440,8 @@ d-fywguxl3 = Reihenfolge
     .doc = Die Spalte, nach der die Person sortiert hat; leer für die eigene Reihenfolge der Anweisung.
 
 d-brwj3gzi = Sitzung
-    .doc = Das Fenster einer Person auf die Datenbanken dieses Geräts: die Verbindung, die es offen hat, was der Katalog enthält, welche Ansicht es zeigt und was seine letzten Anweisungen geantwortet haben.
+    .doc = Das Fenster einer Person auf die Datenbanken dieses Geräts: die Verbindung, die es offen hat, was der Katalog enthält, welche Ansicht es zeigt und was seine letzten Anweisungen geantwortet haben. Es gehört der lesenden Person, sodass zwei Personen an einem Arbeitsbereich nie gegenseitig ihre Seiten umblättern, und die Suche findet es über den Namen der Datenbank, die es geöffnet hat.
+    .untitled = Datenbankfenster
     .noun = { $count ->
         [one] Sitzung
        *[other] Sitzungen
@@ -444,9 +455,6 @@ d-l6ey6bmu = Kennung
 
 d-62jlzlao = Schemata
     .doc = Die Schemanamen, die der Katalog der offenen Verbindung enthält, und ihre Tabellen.
-
-d-qto4lhnk = Spalten
-    .doc = Die Spalten, Schlüssel und Indizes der gewählten Tabelle, gelesen, wenn sie gewählt wird.
 
 d-4e7a56ci = Versatz
     .doc = Die Zeile, die dieses Fenster zuerst zeigt, Seite für Seite gegangen, und wie viele eine Seite enthält.
@@ -602,10 +610,13 @@ d-2ofu7tby = Tabellen leeren
     .doc = Leert die Tabellen, die ein Fenster hält, damit ein erneut gelesener Katalog nie neben dem vorigen steht.
 
 d-oc3wtsgy = Struktur leeren
-    .doc = Leert die Spalten, Schlüssel und Indizes, die ein Fenster hält.
+    .doc = Leert die Schlüssel und Indizes der Beziehung, die das Fenster zuletzt gewählt hat.
+
+d-onfjtc3s = Spalten leeren
+    .doc = Leert die Spalten, die ein Fenster hält, damit ein erneut gelesener Katalog nie neben dem vorigen steht.
 
 d-alqiwzcs = Struktur laden
-    .doc = Liest die Spalten, Schlüssel und Indizes der gewählten Tabelle.
+    .doc = Liest die Schlüssel und Indizes der gewählten Tabelle; ihre Spalten kamen mit dem Katalog.
 
 d-ads5bu4r = Seite laden
     .doc = Lädt eine Seite der Zeilen der gewählten Tabelle.

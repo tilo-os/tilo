@@ -64,7 +64,7 @@ default view window for Database
 
 /// One table or view of an open connection's catalog.
 // ---------------------------------------------------------------- what the engine answers
-type TableInfo {
+type TableInfo (title: name) {
     schema: Text = "main"
     name: Text = ""
     /// `table` or `view`.
@@ -73,7 +73,11 @@ type TableInfo {
     row_count: Option<Int> = .none
 }
 
-type ColumnInfo {
+/// One column of a table or view of the open connection's catalog, with the relation it is in:
+/// search finds it by its name and says where it is.
+type ColumnInfo (title: name) {
+    schema: Text = "main"
+    table: Text = ""
     name: Text = ""
     decl_type: Text = ""
     nullable: Bool = true
@@ -126,15 +130,20 @@ type Opened {
 }
 
 /// A password this window keeps for a connection. It stays out of the shared connection the
-/// members see, so a connection is shared without its secret.
+/// members see, so a connection is shared without its secret, and the password is concealed:
+/// search never holds or finds it.
 // ---------------------------------------------------------------- this device's window
 type Secret {
     connection: Text = ""
     password: Text = ""
+
+    search {
+        conceal password
+    }
 }
 
 /// A statement this window ran, one press away again.
-type Run {
+type Run (title: summary, untitled: "Query") {
     connection: Text = ""
     sql: Text = ""
     summary: Text = ""
@@ -147,7 +156,7 @@ type Row {
 }
 
 /// What a statement or a table page answered, with the words the window shows of it.
-type Outcome {
+type Outcome (title: summary, untitled: "Result") {
     seq: Int merge counter
     columns: List<Text>
     numeric: List<Bool>
@@ -165,8 +174,9 @@ type Outcome {
 
 /// One person's window on this device's databases: the connection it has open, what the catalog
 /// holds, which view it shows and what its last statements answered. It is the reader's own, so
-/// two people at one workspace never turn each other's pages.
-type Session (readers: author) {
+/// two people at one workspace never turn each other's pages, and search finds it by the name of
+/// the database it has open.
+type Session (title: name, untitled: "Database window", readers: author) {
     /// The saved connection this device opened, by its id; empty while none is.
     open: Text = ""
     name: Text = ""
@@ -177,8 +187,9 @@ type Session (readers: author) {
     /// The schema names the open connection's catalog holds, and its tables.
     schemas: List<Text>
     tables: Collection<TableInfo>
-    /// The selected table's columns, keys and indexes, read when it is chosen.
-    columns: Collection<ColumnInfo>
+    /// Every relation's columns, read with the catalog, so search finds each one and the
+    /// structure view has the selected table's.
+    catalog_columns: Collection<ColumnInfo>
     keys: Collection<KeyInfo>
     indexes: Collection<IndexInfo>
     selected_schema: Text = ""
@@ -501,6 +512,9 @@ action disconnect(d: Database) {
     s.schemas = []
     s.selected_schema = ""
     s.selected_table = ""
+    // A closed connection's catalog is not the open one's: nothing of it is kept to be found.
+    clear_tables(s)
+    clear_columns(s)
     s.open = ""
     s.name = ""
     s.status = ""
@@ -743,15 +757,8 @@ action clear_tables(s: Session) {
     }
 }
 
-/// Empties the columns, keys and indexes a window holds.
+/// Empties the keys and indexes of the relation the window last chose.
 action clear_structure(s: Session) {
-    let old: List<ColumnInfo> = []
-    for one in s.columns {
-        old = old + [one]
-    }
-    for one in old {
-        s.columns.remove(one)
-    }
     let keys: List<KeyInfo> = []
     for one in s.keys {
         keys = keys + [one]
@@ -768,7 +775,19 @@ action clear_structure(s: Session) {
     }
 }
 
-/// Reads the selected table's columns, keys and indexes.
+/// Empties the columns a window holds, so a catalog read again never stands beside the one
+/// before.
+action clear_columns(s: Session) {
+    let old: List<ColumnInfo> = []
+    for one in s.catalog_columns {
+        old = old + [one]
+    }
+    for one in old {
+        s.catalog_columns.remove(one)
+    }
+}
+
+/// Reads the selected table's keys and indexes; its columns came with the catalog.
 action load_structure(d: Database) {
     let s = ensure_session(d)
     if not s.connected or s.selected_table == "" {
@@ -777,22 +796,7 @@ action load_structure(d: Database) {
     let ask = json.encode(
         TableAsk(connection: s.handle, schema: s.selected_schema, table: s.selected_table),
     )
-    match engine.call("columns", ask) {
-        .ok(text) => match json.decode<List<ColumnInfo>>(text) {
-            .ok(found) => {
-                clear_structure(s)
-                for one in found {
-                    s.columns.insert(one)
-                }
-            }
-            .err(why) => {
-                s.notice = why
-            }
-        },
-        .err(why) => {
-            s.notice = why
-        }
-    }
+    clear_structure(s)
     match engine.call("keys", ask) {
         .ok(text) => match json.decode<List<KeyInfo>>(text) {
             .ok(found) => {
@@ -962,6 +966,44 @@ action refresh_catalog(d: Database) {
                         s.selected_table = first.name
                         load_structure(d)
                     }
+                }
+                // Every relation's columns, so search finds each one by its name and the
+                // structure view holds the selected table's.
+                let every: List<ColumnInfo> = []
+                for t in found {
+                    let asked = json.encode(
+                        TableAsk(connection: s.handle, schema: t.schema, table: t.name),
+                    )
+                    match engine.call("columns", asked) {
+                        .ok(text) => match json.decode<List<ColumnInfo>>(text) {
+                            .ok(held) => {
+                                for one in held {
+                                    every = every
+                                        + [
+                                            ColumnInfo(
+                                                schema: t.schema,
+                                                table: t.name,
+                                                name: one.name,
+                                                decl_type: one.decl_type,
+                                                nullable: one.nullable,
+                                                primary_key: one.primary_key,
+                                                default_value: one.default_value,
+                                            ),
+                                        ]
+                                }
+                            }
+                            .err(why) => {
+                                s.notice = why
+                            }
+                        },
+                        .err(why) => {
+                            s.notice = why
+                        }
+                    }
+                }
+                clear_columns(s)
+                for one in every {
+                    s.catalog_columns.insert(one)
                 }
             }
             .err(why) => {
@@ -1212,6 +1254,8 @@ view window(d: Database) {
     state new_user: Text = ""
     state new_file: Text = ""
     state new_password: Text = ""
+    // A table system search chose opens here, showing its rows.
+    on show(t: TableInfo): browse(root Database, t)
     let asked = found.trim().lower()
     let listed = d.connections.filter(c -> asked == "" or c.name.lower().contains(asked))
     let tables = listing(current, asked)
@@ -1580,10 +1624,13 @@ view structure_tab(s: Session) {
             message: "Choose a table to see its structure.",
         )
     } else {
+        let columns = s.catalog_columns.filter(
+            c -> c.schema == s.selected_schema and c.table == s.selected_table,
+        )
         stack(gap: .section) {
             text(s.selected_schema + "." + s.selected_table, role: .title)
             ui.Section("Columns") {
-                if s.columns.is_empty() {
+                if columns.is_empty() {
                     ui.EmptyState("No columns read yet", icon: .table, inline: true)
                 } else {
                     ui.DataTable(name: "db.structure.columns") {
@@ -1594,7 +1641,7 @@ view structure_tab(s: Session) {
                             ui.DataTableColumn("Key")
                             ui.DataTableColumn("Default")
                         }
-                        for c in s.columns {
+                        for c in columns {
                             ui.DataTableRow(c) {
                                 cells: {
                                     ui.DataTableCell("Name", value: c.name)

@@ -911,6 +911,7 @@ readers = [
   "crates/lang/tilolang-tilo/tests/chat.rs",
   "crates/lang/tilolang-tilo/tests/chat_persona_shot.rs",
   "crates/lang/tilolang-tilo/tests/containers.rs",
+  "crates/lang/tilolang-tilo/tests/db_client_search.rs",
   "crates/lang/tilolang-tilo/tests/discord.rs",
   "crates/lang/tilolang-tilo/tests/discord_migration.rs",
   "crates/lang/tilolang-tilo/tests/disks.rs",

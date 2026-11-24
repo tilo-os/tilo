@@ -387,10 +387,10 @@ mod cases {
             }
         }
 
-        /// The columns the window read for the selected table.
+        /// Every relation's columns the window read with its catalog.
         fn columns(&self) -> Vec<ResourceRef> {
             let s = self.session();
-            match self.rt.read(&s, "columns").unwrap() {
+            match self.rt.read(&s, "catalog_columns").unwrap() {
                 Value::List(items) => items
                     .into_iter()
                     .filter_map(|item| match item {
@@ -398,14 +398,36 @@ mod cases {
                         _ => None,
                     })
                     .collect(),
-                other => panic!("columns read {other:?}"),
+                other => panic!("catalog_columns read {other:?}"),
             }
         }
 
-        /// Chooses the table the catalog lists as `schema.name`.
-        fn browse(&self, name: &str) {
+        /// The columns of the relation `schema.table`.
+        fn columns_of(&self, schema: &str, table: &str) -> Vec<ResourceRef> {
+            self.columns()
+                .into_iter()
+                .filter(|c| self.text(c, "schema") == schema && self.text(c, "table") == table)
+                .collect()
+        }
+
+        /// Whether the window shows the view `tab` names (`Tab.data`).
+        fn shows_tab(&self, tab: &str) -> bool {
+            let case = self
+                .app
+                .compiled
+                .ids
+                .get(tab)
+                .unwrap_or_else(|| panic!("no case {tab}"));
+            match self.rt.read(&self.session(), "tab").unwrap() {
+                Value::Enum(tab) => tab.variant == case,
+                other => panic!("tab reads {other:?}"),
+            }
+        }
+
+        /// The catalog's relation `schema.name`, as a record search hands over.
+        fn table(&self, name: &str) -> ResourceRef {
             let s = self.session();
-            let found = match self.rt.read(&s, "tables").unwrap() {
+            match self.rt.read(&s, "tables").unwrap() {
                 Value::List(items) => items
                     .into_iter()
                     .filter_map(|item| match item {
@@ -415,7 +437,12 @@ mod cases {
                     .find(|t| name.ends_with(&self.text(t, "name")))
                     .unwrap_or_else(|| panic!("{name} is in the catalog")),
                 other => panic!("tables read {other:?}"),
-            };
+            }
+        }
+
+        /// Chooses the table the catalog lists as `schema.name`.
+        fn browse(&self, name: &str) {
+            let found = self.table(name);
             self.with(
                 "browse",
                 &[("d", self.root_arg()), ("t", Value::resource(&found))],
@@ -604,12 +631,95 @@ mod cases {
             assert_eq!(c.text(&c.session(), "selected_table"), "artists");
             assert_eq!(c.number(&c.session(), "offset"), 0);
             // The page controls are dimmed when there is no other page, so nothing is asked.
-            let columns = c.columns();
+            let columns = c.columns_of("main", "artists");
             assert_eq!(columns.len(), 2, "{:?}", c.tables());
             let first = &columns[0];
             assert_eq!(c.text(first, "name"), "id");
             assert!(c.flag(first, "primary_key"));
             assert_eq!(c.text(first, "decl_type"), "INTEGER");
+            assert_eq!(c.text(first, "table"), "artists", "a column says its relation");
+        }
+
+        phase the_catalog_holds_every_relations_columns_and_the_structure_view_shows_the_chosen_one;
+        {
+            let c = Client::new();
+            c.connected();
+            c.run("CREATE TABLE artists (id INTEGER PRIMARY KEY, name TEXT NOT NULL)");
+            c.run("CREATE TABLE albums (id INTEGER PRIMARY KEY, artist_id INTEGER NOT NULL, title TEXT)");
+            c.with("refresh_catalog", &[("d", c.root_arg())]);
+            let tables = c.tables();
+            assert_eq!(tables.len(), 2, "{tables:?}");
+            let columns = c.columns();
+            assert_eq!(
+                columns.len(),
+                5,
+                "every relation's columns are read: {tables:?}\n{:?}",
+                columns
+                    .iter()
+                    .map(|one| {
+                        (
+                            c.text(one, "table"),
+                            c.text(one, "name"),
+                            c.text(one, "decl_type"),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            );
+            let albums = c.columns_of("main", "albums");
+            assert_eq!(
+                albums
+                    .iter()
+                    .map(|one| c.text(one, "name"))
+                    .collect::<Vec<_>>(),
+                ["id", "artist_id", "title"],
+                "each column is held with its table"
+            );
+            // The structure view draws the chosen table's columns from the same catalog.
+            c.browse("main.albums");
+            c.with(
+                "choose_tab",
+                &[("d", c.root_arg()), ("index", Value::Int(2))],
+            );
+            assert!(c.shows_tab("Tab.structure"), "the structure view is shown");
+            let window = c.window();
+            let tree = window.tree();
+            let words = dump(tree);
+            assert!(words.contains("Columns"), "{words}");
+            let cells: Vec<String> = of_kind(tree, "ui.DataTableCell")
+                .into_iter()
+                .filter_map(|node| node.props.get("value").and_then(Value::as_text))
+                .map(str::to_owned)
+                .collect();
+            assert!(cells.iter().any(|cell| cell == "artist_id"), "{cells:?}\n{words}");
+            assert!(cells.iter().any(|cell| cell == "INTEGER"), "{cells:?}\n{words}");
+            assert!(
+                !cells.iter().any(|cell| cell == "name"),
+                "another table's columns stay out of the structure view: {cells:?}"
+            );
+        }
+
+        phase a_table_search_chose_opens_on_its_rows;
+        {
+            let c = Client::new();
+            c.connected();
+            c.run("CREATE TABLE artists (id INTEGER PRIMARY KEY, name TEXT NOT NULL)");
+            c.run("INSERT INTO artists (name) VALUES ('Ada'), ('Grace')");
+            c.with("refresh_catalog", &[("d", c.root_arg())]);
+            c.with(
+                "choose_tab",
+                &[("d", c.root_arg()), ("index", Value::Int(0))],
+            );
+            let window = c.window();
+            let artists = c.table("main.artists");
+            assert!(
+                window.show(&artists).unwrap(),
+                "the window answers for a table search chose"
+            );
+            let session = c.session();
+            assert_eq!(c.text(&session, "selected_table"), "artists");
+            assert_eq!(c.text(&session, "selected_schema"), "main");
+            assert!(c.shows_tab("Tab.data"), "the rows the table holds are shown");
+            assert_eq!(c.rows("pages").len(), 2, "the table's rows are read");
         }
 
         phase the_result_is_copied_and_exported_as_a_csv_file;
@@ -720,11 +830,14 @@ mod cases {
             let c = Client::new();
             c.connected();
             c.run("CREATE TABLE gone (id INTEGER)");
+            assert!(!c.tables().is_empty(), "the open connection's catalog is held");
             c.with("disconnect", &[("d", c.root_arg())]);
             let session = c.session();
             assert!(!c.flag(&session, "connected"));
             assert_eq!(c.text(&session, "open"), "");
             assert_eq!(c.text(&session, "name"), "");
+            assert!(c.tables().is_empty(), "a closed connection keeps no catalog to find");
+            assert!(c.columns().is_empty(), "nor the columns of its relations");
             assert!(c.connections().len() == 1, "the saved connection stays");
         }
     }
