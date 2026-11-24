@@ -1252,6 +1252,14 @@ d-6oop3g3z = Schlüsselbilder
 
 d-werb5t7p-filter-track = Spur
 
+d-werb5t7p-filter-palette = Palette
+
+d-werb5t7p-filter-key_red = Schlüssel Rot
+
+d-werb5t7p-filter-key_green = Schlüssel Grün
+
+d-werb5t7p-filter-key_blue = Schlüssel Blau
+
 d-werb5t7p-filter-media = Quelle
 
 d-werb5t7p-filter-start = Anfang
@@ -1408,7 +1416,7 @@ d-s34s56u6 = Gelesenes übernehmen
 
 d-s34s56u6-m = Quelle
 
-d-s34s56u6-probed = Gelesen
+d-s34s56u6-said = Antwort
 
 d-trebb62h = Quelle prüfen
     .doc = Prüft, ob die Bytes einer Quelle hier sind: liest erneut, was sie sind, zeichnet ihr Vorschaubild und ihre Wellenform und markiert sie als nicht auf diesem Gerät, wenn die Engine sie nicht erreicht.
@@ -1538,20 +1546,15 @@ d-supdi5qb = Teilen bei
 
 d-supdi5qb-at = Bei
 
-d-u7przh43 = Clip löschen
-    .doc = Löscht einen Clip und den mit ihm verknüpften Ton.
-
-d-u7przh43-c = C
-
 d-lln5pwvg = Lücke schließen
-    .doc = Löscht einen Clip und schließt die Lücke, die er hinterlässt.
+    .doc = Löscht die Clips und schließt die Lücke, die jeder auf seiner Spur hinterlässt.
 
-d-lln5pwvg-c = C
+d-lln5pwvg-cs = Clips
 
 d-ecft5dqw = Verschieben
-    .doc = Verschiebt den Clip um Bilder auf der Zeitleiste.
+    .doc = Verschiebt die Clips um Bilder auf der Zeitleiste.
 
-d-ecft5dqw-c = C
+d-ecft5dqw-cs = Clips
 
 d-ecft5dqw-frames = Bilder
 
@@ -1760,6 +1763,22 @@ d-d4536bfd = Verlaufsworte
     .w-linear = Linear
 
 d-kga7o3ur = Fenster
+    .w-edit = Bearbeiten
+    .w-select-all-clips = Alle Clips auswählen
+    .w-copy = Kopieren
+    .w-paste-at-the-playhead = An der Abspielmarke einfügen
+    .w-duplicate = Duplizieren
+    .w-delete-and-close-the-gap = Löschen und Lücke schließen
+    .w-trim-the-start-to-the-playhead = Anfang zur Abspielmarke kürzen
+    .w-trim-the-end-to-the-playhead = Ende zur Abspielmarke kürzen
+    .w-nudge-a-frame-earlier = Ein Bild früher
+    .w-nudge-a-frame-later = Ein Bild später
+    .w-nudge-a-second-earlier = Eine Sekunde früher
+    .w-nudge-a-second-later = Eine Sekunde später
+    .w-previous-marker = Vorige Marke
+    .w-next-marker = Nächste Marke
+    .w-go-to-the-clip = Zum Clip gehen
+    .w-go-to-1-02-5 = Gehe zu 1:02.5
     .w-rendering-the-cut = Schnitt wird gerendert… { $pct } %
     .w-the-film-is-ready = { $name } — der Film ist fertig
     .w-video-editor = Videobearbeitung
@@ -2127,3 +2146,112 @@ d-x23sha6o-e = Effekt
 d-xiuhdj77-e = Effekt
 d-xiuhdj77-up = Nach oben
 d-xluldt6f-db = Pegel in dB
+
+d-j47xlg5b-with = Mit
+
+d-6rakzxl3 = Clips löschen
+    .doc = Löscht die Clips und den mit ihnen verknüpften Ton.
+
+d-6rakzxl3-cs = Clips
+
+d-kuigxhkm = Verschoben
+    .doc = Verschiebt die Clips und ihren verknüpften Ton gemeinsam um Sekunden und lehnt eine Überlappung mit einem bleibenden Clip ab.
+
+d-kuigxhkm-cs = Clips
+
+d-kuigxhkm-by = Um
+
+d-qi3ui4fs = Anfang zur Abspielmarke kürzen
+    .doc = Kürzt den Anfang jedes Clips, in dem die Abspielmarke steht, bis zur Abspielmarke.
+
+d-qi3ui4fs-cs = Clips
+
+d-qi3ui4fs-at = Bei
+
+d-cvwyptge = Ende zur Abspielmarke kürzen
+    .doc = Kürzt das Ende jedes Clips, in dem die Abspielmarke steht, bis zur Abspielmarke.
+
+d-cvwyptge-cs = Clips
+
+d-cvwyptge-at = Bei
+
+d-dpt2pbcu = Kopieren
+    .doc = Legt die Clips mit ihrem Aussehen, ihren Schlüsselbildern und Effekten in die Zwischenablage.
+
+d-dpt2pbcu-cs = Clips
+
+d-wugmiukh = Ausschneiden
+    .doc = Legt die Clips in die Zwischenablage und nimmt sie aus dem Schnitt.
+
+d-wugmiukh-cs = Clips
+
+d-n4ibspss = Spur zum Einfügen
+    .doc = Die Spur, auf die ein eingefügter Clip kommt: seine eigene, solange sie im Schnitt und offen ist, sonst die erste offene seiner Art, sonst eine neue.
+
+d-n4ibspss-track = Spur
+
+d-n4ibspss-form_named = Art
+
+d-wtvgvcst = Einfügen
+    .doc = Setzt kopierte Clips ab der Stelle ein, der früheste dort und die anderen im selben Abstand zu ihm; miteinander verknüpfte Clips bleiben verknüpft, nur miteinander.
+
+d-wtvgvcst-at = Bei
+
+d-xmmw6vam = Duplizieren
+    .doc = Setzt eine Kopie der Clips direkt hinter sie, auf dieselben Spuren.
+
+d-xmmw6vam-cs = Clips
+
+d-gwopftfd = Clip wiederherstellen
+    .doc = Macht den gespeicherten Clip auf der Spur, aus der Quelle, ab der Stelle, mit seinen Schlüsselbildern und Effekten.
+
+d-gwopftfd-saved = Gespeicherter Clip
+
+d-gwopftfd-track = Spur
+
+d-gwopftfd-media = Quelle
+
+d-gwopftfd-start = Anfang
+
+d-gwopftfd-link = Verknüpfung
+
+d-vnvnjpak = Kopierte Clips
+    .doc = Clips, wie eine Kopie sie in die Zwischenablage legt: jeder mit der Quelle und Spur, aus der er kam, damit ein Einfügen in denselben Schnitt sie wiederfindet.
+    .noun = { $count ->
+        [one] Kopie
+       *[other] Kopien
+    }
+
+d-vnb2e4hr = Art
+
+d-jrywinsx = Clips
+
+d-zi4ddgd7 = Kopierter Clip
+    .doc = Ein kopierter Clip: sein Aussehen, seine Zeiten und woher er kam.
+    .noun = { $count ->
+        [one] kopierter Clip
+       *[other] kopierte Clips
+    }
+
+d-zi4ddgd7-filter-clip = Clip
+
+d-fazzk3sz = Clip
+
+d-636l34ow = Quelle
+
+d-ebsvhwog = Pfad
+
+d-uuax3sh3 = Spur
+
+d-ep4wqebq = Art
+
+d-igcwp2fn = Effekte
+    .doc = Ein JSON-Text je Effekt des Clips, in Stapelreihenfolge.
+
+d-nayfykgr = Schlüssel Rot
+
+d-yl3a4tsd = Schlüssel Grün
+
+d-zwo6h7ka = Schlüssel Blau
+
+d-d6v4or6p = Palette

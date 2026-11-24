@@ -12,10 +12,10 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+    use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::host_work::EngineHost;
     use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-        ViewInstance,
+        AmStore, EnumValue, Held, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/video-editor/app.tl");
@@ -160,17 +160,43 @@ mod cases {
         }
     }
 
+    /// The person's clipboard, as the device answers it.
+    #[derive(Clone, Default)]
+    struct Selection(Rc<RefCell<Option<(String, Vec<u8>)>>>);
+
+    impl ClipboardHost for Selection {
+        fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
+            *self.0.borrow_mut() = Some((mime.to_owned(), bytes.to_vec()));
+            true
+        }
+
+        fn paste(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
+            let held = self.0.borrow().clone()?;
+            types
+                .iter()
+                .any(|kind| held.0.starts_with(kind))
+                .then_some(held)
+        }
+    }
+
     impl Studio {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let authority = TestAuthority::new();
+            let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let engine = Engine::default();
             rt.set_engine(engine.clone());
             let device = Device::default();
             rt.set_blobs(device.clone());
+            rt.set_clipboard(Selection::default());
             let playback = App::compile(PLAYBACK, &[]);
             playback.load(&rt);
             let app = App::compile(SOURCE, &[playback.meta().clone()]);
-            app.load(&rt);
+            // The app's code is trusted and the clipboard granted to it, as a person's press of
+            // Copy and Paste in its window grants it.
+            authority.trust(&app.load(&rt));
+            for action in ["copy_clips", "cut_clips", "paste_clips"] {
+                authority.grant_outside(&app.action(action));
+            }
             let root = rt.create_root("Editor").unwrap();
             Self {
                 rt,
@@ -378,6 +404,7 @@ mod cases {
                     Value::text(id.clone()),
                     Value::Float(0.0),
                     Value::Float(3.0),
+                    Value::List(Vec::new()),
                 ],
             );
             assert_eq!(s.number(&clip, "start"), 3.0, "moved along the timeline");
@@ -390,6 +417,7 @@ mod cases {
                     Value::text(id.clone()),
                     Value::Float(0.0),
                     Value::Float(-4.0),
+                    Value::List(Vec::new()),
                 ],
             );
             assert_eq!(s.number(&clip, "out_point"), 6.0, "trimmed from its tail");
@@ -789,6 +817,98 @@ mod cases {
                 "the inspector shows the clip that was pressed:\n{}",
                 dump(after.tree())
             );
+        }
+
+        phase the_timeline_chooses_many_and_the_clipboard_carries_them;
+        {
+            let s = Studio::new();
+            let (p, media, first) = s.placed();
+            let track = s.tracks(&p).into_iter().find(|t| s.text(t, "name") == "V1").unwrap();
+            s.place(&p, &media, &track, 12.0);
+            let second = s
+                .clips(&p)
+                .into_iter()
+                .find(|c| c.id_string() != first.id_string())
+                .expect("a second clip");
+            let window = s.window();
+            let drawing = of_kind(window.tree(), "ui.Drawing").remove(1);
+            // Each clip's body is a rounded rectangle, in the order the clips start.
+            let bodies: Vec<i64> = match drawing.props.get("shapes") {
+                Some(Value::List(shapes)) => shapes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, shape)| {
+                        matches!(shape, Value::Enum(e) if e.variant == "rect"
+                            && e.fields.values().any(|v| *v == Value::Float(0.05)))
+                    })
+                    .map(|(at, _)| i64::try_from(at).unwrap())
+                    .collect(),
+                other => panic!("the timeline draws {other:?}"),
+            };
+            assert_eq!(bodies.len(), 2, "two clips on the timeline");
+            let press = |at: i64, held: Held| {
+                let window = s.window();
+                let drawing = of_kind(window.tree(), "ui.Drawing").remove(1);
+                let done = window.fire_held(&drawing.key, "press", Some(&Value::Int(at)), None, held);
+                assert!(matches!(done, Ok(InvokeOutcome::Done(_))), "{done:?}");
+            };
+            let selected = || match s.window().view_state("selected") {
+                Some(Value::List(ids)) => ids
+                    .into_iter()
+                    .filter_map(|id| id.as_text().map(str::to_owned))
+                    .collect::<Vec<_>>(),
+                other => panic!("the selection reads {other:?}"),
+            };
+            press(bodies[0], Held::default());
+            assert_eq!(selected(), vec![first.id_string()], "a press chooses one clip");
+            press(bodies[1], Held { shift: true, ..Held::default() });
+            assert_eq!(
+                selected(),
+                vec![first.id_string(), second.id_string()],
+                "Shift adds the next one"
+            );
+            press(bodies[0], Held { command: true, ..Held::default() });
+            assert_eq!(selected(), vec![second.id_string()], "the command key takes one back out");
+            press(bodies[0], Held { command: true, ..Held::default() });
+
+            // The Edit menu acts on both: a copy carries them, a paste puts them at the playhead.
+            let both = Value::List(vec![Value::resource(&first), Value::resource(&second)]);
+            let brightness = Value::Enum(EnumValue {
+                ty: s.app.compiled.ids.get("Look").expect("Look").to_owned(),
+                variant: s.app.compiled.ids.get("Look.brightness").expect("brightness").to_owned(),
+                fields: std::collections::BTreeMap::default(),
+            });
+            s.call("set_look", vec![Value::resource(&first), brightness, Value::Float(0.8)]);
+            s.call("add_effect", vec![Value::resource(&first), Value::text("sepia")]);
+            let copied = s.call("copy_clips", vec![Value::resource(&p), both.clone()]);
+            assert!(matches!(copied, InvokeOutcome::Done(_)), "the copy ran: {copied:?}");
+            s.call("paste_clips", vec![Value::resource(&p), Value::Float(40.0)]);
+            let clips = s.clips(&p);
+            assert_eq!(clips.len(), 4, "the paste made two clips: {}", s.text(&p, "trouble"));
+            let mut starts: Vec<f64> = clips.iter().map(|c| s.number(c, "start")).collect();
+            starts.sort_by(f64::total_cmp);
+            assert_eq!(starts, vec![0.0, 12.0, 40.0, 52.0], "keeping their distance from the playhead");
+            let pasted = clips
+                .iter()
+                .find(|c| s.number(c, "start") == 40.0)
+                .expect("the pasted first clip");
+            assert_eq!(s.number(pasted, "brightness"), 0.8, "with its look");
+            assert_eq!(s.records(pasted, "effects").len(), 1, "and its effects");
+
+            // A nudge moves them together, a second's frames on; duplicate puts a copy right
+            // after them; delete takes them away.
+            let second_of_frames = s.number(&p, "fps").round() as i64;
+            s.call("nudge", vec![Value::resource(&p), both.clone(), Value::Int(second_of_frames)]);
+            assert_eq!(s.number(&first, "start"), 1.0, "a second later");
+            assert_eq!(s.number(&second, "start"), 13.0, "and the other with it");
+            s.call("duplicate_clips", vec![Value::resource(&p), both.clone()]);
+            assert_eq!(s.clips(&p).len(), 6);
+            assert!(
+                s.clips(&p).iter().any(|c| s.number(c, "start") == 23.0),
+                "the copy of the first starts where the second ended"
+            );
+            s.call("remove_clips", vec![Value::resource(&p), both]);
+            assert_eq!(s.clips(&p).len(), 4);
         }
     }
 }

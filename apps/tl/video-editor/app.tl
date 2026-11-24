@@ -527,8 +527,30 @@ type SavedClip {
     mask_feather: Float = 0.12
     mask_invert: Bool = false
     link: Text = ""
+    palette: Int = 0
+    key_red: Float = 0.06
+    key_green: Float = 0.72
+    key_blue: Float = 0.2
     /// One JSON text a key of the clip.
     keys: List<Text>
+    /// One JSON text an effect of the clip, in stack order.
+    effects: List<Text>
+}
+
+/// Clips as a copy puts them on the person's clipboard: each with the source and track it came
+/// from, so a paste into the same cut finds them again.
+type Copied {
+    kind: Text = ""
+    clips: List<Text>
+}
+
+/// One copied clip: its look and timing, and where it came from.
+type CopiedClip {
+    clip: SavedClip
+    media: Text = ""
+    path: Text = ""
+    track: Text = ""
+    form: Text = ""
 }
 
 type SavedMarker {
@@ -738,60 +760,145 @@ fn saved(p: Project) -> Saved {
                 ),
             ),
         ),
-        clips: p.clips.map(
-            c -> json.encode(
-                SavedClip(
-                    name: c.name,
-                    track: index_of_track(p, c.track),
-                    media: index_of_media(p, c.media),
-                    start: c.start,
-                    in_point: c.in_point,
-                    out_point: c.out_point,
-                    opacity: c.opacity,
-                    volume: c.volume,
-                    transition: c.transition,
-                    transition_duration: c.transition_duration,
-                    fade_in: c.fade_in,
-                    fade_out: c.fade_out,
-                    speed_rate: c.speed_rate,
-                    reverse: c.reverse,
-                    brightness: c.brightness,
-                    contrast: c.contrast,
-                    saturation: c.saturation,
-                    scale_x: c.scale_x,
-                    scale_y: c.scale_y,
-                    pos_x: c.pos_x,
-                    pos_y: c.pos_y,
-                    rotation: c.rotation,
-                    crop_left: c.crop_left,
-                    crop_right: c.crop_right,
-                    crop_top: c.crop_top,
-                    crop_bottom: c.crop_bottom,
-                    key_enabled: c.key_enabled,
-                    key_tolerance: c.key_tolerance,
-                    key_softness: c.key_softness,
-                    key_spill: c.key_spill,
-                    mask_shape: c.mask_shape,
-                    mask_x: c.mask_x,
-                    mask_y: c.mask_y,
-                    mask_w: c.mask_w,
-                    mask_h: c.mask_h,
-                    mask_rotation: c.mask_rotation,
-                    mask_feather: c.mask_feather,
-                    mask_invert: c.mask_invert,
-                    link: c.link,
-                    keys: c.keys.map(
-                        k -> json.encode(
-                            ShotKey(param: k.param, t: k.t, v: k.v, interp: k.interp),
-                        ),
-                    ),
-                ),
-            ),
-        ),
+        clips: p.clips.map(c -> json.encode(saved_clip(p, c))),
         markers: p.markers.map(
             k -> json.encode(SavedMarker(name: k.name, t: k.t, palette: k.palette, note: k.note)),
         ),
     )
+}
+
+/// A clip as a saved project and a copy keep it.
+fn saved_clip(p: Project, c: Clip) -> SavedClip {
+    SavedClip(
+        name: c.name,
+        track: index_of_track(p, c.track),
+        media: index_of_media(p, c.media),
+        start: c.start,
+        in_point: c.in_point,
+        out_point: c.out_point,
+        opacity: c.opacity,
+        volume: c.volume,
+        transition: c.transition,
+        transition_duration: c.transition_duration,
+        fade_in: c.fade_in,
+        fade_out: c.fade_out,
+        speed_rate: c.speed_rate,
+        reverse: c.reverse,
+        brightness: c.brightness,
+        contrast: c.contrast,
+        saturation: c.saturation,
+        scale_x: c.scale_x,
+        scale_y: c.scale_y,
+        pos_x: c.pos_x,
+        pos_y: c.pos_y,
+        rotation: c.rotation,
+        crop_left: c.crop_left,
+        crop_right: c.crop_right,
+        crop_top: c.crop_top,
+        crop_bottom: c.crop_bottom,
+        key_enabled: c.key_enabled,
+        key_tolerance: c.key_tolerance,
+        key_softness: c.key_softness,
+        key_spill: c.key_spill,
+        mask_shape: c.mask_shape,
+        mask_x: c.mask_x,
+        mask_y: c.mask_y,
+        mask_w: c.mask_w,
+        mask_h: c.mask_h,
+        mask_rotation: c.mask_rotation,
+        mask_feather: c.mask_feather,
+        mask_invert: c.mask_invert,
+        link: c.link,
+        palette: c.palette,
+        key_red: c.key_red,
+        key_green: c.key_green,
+        key_blue: c.key_blue,
+        keys: c.keys.map(
+            k -> json.encode(ShotKey(param: k.param, t: k.t, v: k.v, interp: k.interp)),
+        ),
+        effects: c.effects.map(
+            e -> json.encode(ShotEffect(id: e.id(), form: e.form, amount: e.amount)),
+        ),
+    )
+}
+
+/// Makes the clip `c` keeps on `track`, of `media`, at `start`, with its keys and effects.
+action restore_clip(
+    p: Project,
+    saved: Text,
+    track: Track,
+    media: Media,
+    start: Float,
+    link: Text,
+) -> Option<Clip> {
+    let c = match json.decode<SavedClip>(saved) {
+        .ok(c) => c,
+        .err(_) => {
+            return .none
+        }
+    }
+    let made = p.clips.insert(
+        Clip(
+            name: c.name,
+            track: track,
+            media: media,
+            start: start,
+            in_point: c.in_point,
+            out_point: c.out_point,
+            opacity: c.opacity,
+            volume: c.volume,
+            transition: c.transition,
+            transition_duration: c.transition_duration,
+            fade_in: c.fade_in,
+            fade_out: c.fade_out,
+            palette: c.palette,
+            speed_rate: c.speed_rate,
+            reverse: c.reverse,
+            brightness: c.brightness,
+            contrast: c.contrast,
+            saturation: c.saturation,
+            scale_x: c.scale_x,
+            scale_y: c.scale_y,
+            pos_x: c.pos_x,
+            pos_y: c.pos_y,
+            rotation: c.rotation,
+            crop_left: c.crop_left,
+            crop_right: c.crop_right,
+            crop_top: c.crop_top,
+            crop_bottom: c.crop_bottom,
+            key_enabled: c.key_enabled,
+            key_tolerance: c.key_tolerance,
+            key_softness: c.key_softness,
+            key_spill: c.key_spill,
+            key_red: c.key_red,
+            key_green: c.key_green,
+            key_blue: c.key_blue,
+            mask_shape: c.mask_shape,
+            mask_x: c.mask_x,
+            mask_y: c.mask_y,
+            mask_w: c.mask_w,
+            mask_h: c.mask_h,
+            mask_rotation: c.mask_rotation,
+            mask_feather: c.mask_feather,
+            mask_invert: c.mask_invert,
+            link: link,
+        ),
+    )
+    for text in c.keys {
+        match json.decode<ShotKey>(text) {
+            .ok(key) => made.keys.insert(
+                Key(param: key.param, t: key.t, v: key.v, interp: key.interp),
+            ),
+            .err(_) => {}
+        }
+    }
+    for text in c.effects {
+        match json.decode<ShotEffect>(text) {
+            .ok(effect) => made.effects.insert(Effect(form: effect.form, amount: effect.amount)),
+            .err(_) => {}
+        }
+    }
+    .some(made)
 }
 
 fn index_of_media(p: Project, m: Media) -> Int {
@@ -1494,57 +1601,7 @@ action open_project_file(e: Editor, file: File) -> Project (
             let media = p.media.at(c.media)
             if let track = track {
                 if let media = media {
-                    let opened = p.clips.insert(
-                        Clip(
-                            name: c.name,
-                            track: track,
-                            media: media,
-                            start: c.start,
-                            in_point: c.in_point,
-                            out_point: c.out_point,
-                            opacity: c.opacity,
-                            volume: c.volume,
-                            transition: c.transition,
-                            transition_duration: c.transition_duration,
-                            fade_in: c.fade_in,
-                            fade_out: c.fade_out,
-                            speed_rate: c.speed_rate,
-                            reverse: c.reverse,
-                            brightness: c.brightness,
-                            contrast: c.contrast,
-                            saturation: c.saturation,
-                            scale_x: c.scale_x,
-                            scale_y: c.scale_y,
-                            pos_x: c.pos_x,
-                            pos_y: c.pos_y,
-                            rotation: c.rotation,
-                            crop_left: c.crop_left,
-                            crop_right: c.crop_right,
-                            crop_top: c.crop_top,
-                            crop_bottom: c.crop_bottom,
-                            key_enabled: c.key_enabled,
-                            key_tolerance: c.key_tolerance,
-                            key_softness: c.key_softness,
-                            key_spill: c.key_spill,
-                            mask_shape: c.mask_shape,
-                            mask_x: c.mask_x,
-                            mask_y: c.mask_y,
-                            mask_w: c.mask_w,
-                            mask_h: c.mask_h,
-                            mask_rotation: c.mask_rotation,
-                            mask_feather: c.mask_feather,
-                            mask_invert: c.mask_invert,
-                            link: c.link,
-                        ),
-                    )
-                    for text in c.keys {
-                        match json.decode<ShotKey>(text) {
-                            .ok(key) => opened.keys.insert(
-                                Key(param: key.param, t: key.t, v: key.v, interp: key.interp),
-                            ),
-                            .err(_) => {}
-                        }
-                    }
+                    restore_clip(p, text, track, media, c.start, c.link)
                 }
             }
         }
@@ -1608,8 +1665,9 @@ action place_media(p: Project, m: Media, at: Float) -> Option<Clip> {
     return .some(place(p, m, made, at))
 }
 
-/// What a drag of the timeline committed: a clip moved or trimmed.
-action commit_drag(p: Project, grab: Text, clip: Text, from: Float, at: Float) {
+/// What a drag of the timeline committed: a clip moved or trimmed. A clip moved among `with`, the
+/// clips chosen, moves them all.
+action commit_drag(p: Project, grab: Text, clip: Text, from: Float, at: Float, with: List<Clip>) {
     let c = match clip_named(p, clip) {
         .some(c) => c,
         .none => {
@@ -1621,7 +1679,9 @@ action commit_drag(p: Project, grab: Text, clip: Text, from: Float, at: Float) {
         return
     }
     if grab == "move" {
-        shifted(p, c, c.start + at - from)
+        if with.len() > 1 and with.contains(c) {
+            moved(p, with, at - from)
+        } else { shifted(p, c, c.start + at - from) }
     } else if grab == "head" {
         let delta = at - from
         let source = (c.in_point + delta * rate(c)).clamp(0.0, c.out_point - smallest() * rate(c))
@@ -1642,6 +1702,40 @@ action commit_drag(p: Project, grab: Text, clip: Text, from: Float, at: Float) {
     redraw(p)
 }
 
+/// The clips `cs` and every clip linked to one of them: what moves or goes with them.
+fn with_links(p: Project, cs: List<Clip>) -> List<Clip> {
+    p.clips.filter(c -> cs.contains(c) or c.link != "" and cs.any(x -> x.link == c.link))
+}
+
+/// Moves the clips `cs`, and the sound linked to them, by `by` seconds together, refusing an
+/// overlap with a clip that stays.
+action moved(p: Project, cs: List<Clip>, by: Float) -> Bool {
+    let moving = with_links(p, cs)
+    if moving.any(c -> c.track.locked) {
+        trouble(p, "The track is locked")
+        return false
+    }
+    let delta = by.max(0.0 - (moving.map(c -> c.start).sort_by(t -> t).first() ?? 0.0))
+    for one in moving {
+        let start = one.start + delta
+        let end = clip_end(one) + delta
+        if p.clips.any(
+            c -> c.track == one.track
+                and not moving.contains(c)
+                and c.start < end
+                and clip_end(c) > start,
+        ) {
+            trouble(p, "There is no room there")
+            return false
+        }
+    }
+    for one in moving {
+        one.start = snap_time(p, (one.start + delta).max(0.0))
+    }
+    redraw(p)
+    true
+}
+
 /// Cuts the clip at the playhead in two.
 action split_clip(p: Project, c: Clip, at: Float) {
     if c.track.locked {
@@ -1658,42 +1752,262 @@ action cut_at(p: Project, at: Float) {
     }
 }
 
-/// Deletes a clip, and the sound linked to it with it.
-action remove_clip(p: Project, c: Clip) (icon: .trash_2, label: "Delete the clip") {
-    if c.track.locked {
+/// Deletes the clips, and the sound linked to them with them.
+destructive action remove_clips(p: Project, cs: List<Clip>) (
+    icon: .trash_2,
+    label: "Delete the clips",
+) {
+    let going = with_links(p, cs)
+    if going.any(c -> c.track.locked) {
         trouble(p, "The track is locked")
         return
     }
-    let group = c.link
-    p.clips.remove(c)
-    if group != "" {
-        for other in p.clips.filter(x -> x.link == group) {
-            p.clips.remove(other)
+    for c in going {
+        p.clips.remove(c)
+    }
+    redraw(p)
+}
+
+/// Deletes the clips and closes the gap each leaves behind it on its track.
+destructive action ripple_delete(p: Project, cs: List<Clip>) (
+    icon: .scissors,
+    label: "Close the gap",
+) {
+    if cs.any(c -> c.track.locked) {
+        trouble(p, "The track is locked")
+        return
+    }
+    for c in cs.sort_by(x -> 0.0 - x.start) {
+        let gap = shown(c)
+        let after = p.clips
+            .filter(x -> x.track == c.track and x.start >= clip_end(c))
+            .sort_by(x -> x.start)
+        p.clips.remove(c)
+        for x in after {
+            x.start = (x.start - gap).max(0.0)
         }
     }
     redraw(p)
 }
 
-/// Deletes a clip and closes the gap it leaves behind it.
-action ripple_delete(p: Project, c: Clip) (icon: .scissors, label: "Close the gap") {
-    if c.track.locked {
-        trouble(p, "The track is locked")
-        return
-    }
-    let gap = shown(c)
-    let after = p.clips
-        .filter(x -> x.track == c.track and x.start >= clip_end(c))
-        .sort_by(x -> x.start)
-    p.clips.remove(c)
-    for x in after {
-        x.start = (x.start - gap).max(0.0)
+/// Slips the clips along the timeline by frames.
+action nudge(p: Project, cs: List<Clip>, frames: Int) {
+    moved(p, cs, frames.to_float() / p.fps)
+}
+
+/// Trims the start of each clip the playhead stands in to the playhead.
+action trim_start(p: Project, cs: List<Clip>, at: Float) (
+    icon: .align_left,
+    label: "Trim the start to the playhead",
+) {
+    for c in cs.filter(x -> x.start < at and clip_end(x) > at and not x.track.locked) {
+        let gained = snap_time(p, at) - c.start
+        c.in_point = (c.in_point + gained * rate(c)).min(c.out_point - smallest() * rate(c))
+        c.start = snap_time(p, at)
     }
     redraw(p)
 }
 
-/// Slips the clip along the timeline by frames.
-action nudge(p: Project, c: Clip, frames: Int) {
-    shifted(p, c, c.start + frames.to_float() / p.fps)
+/// Trims the end of each clip the playhead stands in to the playhead.
+action trim_end(p: Project, cs: List<Clip>, at: Float) (
+    icon: .align_right,
+    label: "Trim the end to the playhead",
+) {
+    for c in cs.filter(x -> x.start < at and clip_end(x) > at and not x.track.locked) {
+        let lost = clip_end(c) - snap_time(p, at)
+        c.out_point = (c.out_point - lost * rate(c)).max(c.in_point + smallest() * rate(c))
+    }
+    redraw(p)
+}
+
+/// What a copy of the clips puts on the clipboard.
+fn copied(p: Project, cs: List<Clip>) -> Copied {
+    Copied(
+        kind: copied_kind(),
+        clips: cs
+            .sort_by(c -> c.start)
+            .map(
+                c -> json.encode(
+                    CopiedClip(
+                        clip: saved_clip(p, c),
+                        media: c.media.id(),
+                        path: c.media.path,
+                        track: c.track.id(),
+                        form: form_name(c.track.form),
+                    ),
+                ),
+            ),
+    )
+}
+
+/// What marks the clipboard's text as clips of this app.
+fn copied_kind() -> Text {
+    "so.tilo.video-editor/clips"
+}
+
+/// Puts the clips, with their looks, keys and effects, on the person's clipboard.
+action copy_clips(p: Project, cs: List<Clip>) uses clipboard (icon: .copy, label: "Copy") {
+    if cs.is_empty() {
+        return
+    }
+    clipboard.copy(json.encode(copied(p, cs)))
+}
+
+/// Puts the clips on the person's clipboard and takes them out of the cut.
+destructive action cut_clips(p: Project, cs: List<Clip>) uses clipboard (
+    icon: .scissors,
+    label: "Cut",
+) {
+    if cs.is_empty() {
+        return
+    }
+    if cs.any(c -> c.track.locked) {
+        trouble(p, "The track is locked")
+        return
+    }
+    clipboard.copy(json.encode(copied(p, cs)))
+    remove_clips(p, cs)
+}
+
+/// The track a pasted clip goes on: the one it came from while it is in this cut and open, else
+/// the first open one of its form, else a new one.
+action paste_track(p: Project, track: Text, form_named: Text) -> Track {
+    if let t = p.tracks.find(t -> t.id() == track and not t.locked) {
+        return t
+    }
+    let form = form_of(form_named)
+    if let t = p.tracks.find(t -> t.form == form and not t.locked) {
+        return t
+    }
+    add_track(p, form)
+}
+
+/// Places copied clips from `at`, the earliest there and the rest keeping their distance from
+/// it; clips linked to each other stay linked, to each other alone.
+action paste_clips(p: Project, at: Float) uses clipboard (icon: .clipboard_paste, label: "Paste") {
+    let text = clipboard.paste() ?? ""
+    let copy = match json.decode<Copied>(text) {
+        .ok(copy) => copy,
+        .err(_) => {
+            trouble(p, "The clipboard holds no clips")
+            return
+        }
+    }
+    if copy.kind != copied_kind() {
+        trouble(p, "The clipboard holds no clips")
+        return
+    }
+    let came: List<CopiedClip> = copy.clips.flat_map(
+        t -> match json.decode<CopiedClip>(t) {
+            .ok(c) => [c],
+            .err(_) => [],
+        },
+    )
+    let base = came.map(c -> c.clip.start).sort_by(t -> t).first() ?? 0.0
+    let fresh = "{p.clips.len()}"
+    for one in came {
+        let media = p.media.find(m -> m.id() == one.media)
+            ?? p.media.find(m -> one.path != "" and m.path == one.path)
+        if let media = media {
+            let track = paste_track(p, one.track, one.form)
+            let length = shown_saved(one.clip)
+            let start = free_at(
+                p,
+                track,
+                snap_time(p, (at + one.clip.start - base).max(0.0)),
+                length,
+            )
+            let link = if one.clip.link == "" { "" } else { "{one.clip.link}~{fresh}" }
+            restore_clip(p, json.encode(one.clip), track, media, start, link)
+        } else {
+            trouble(p, "A copied clip's source is not in this cut")
+        }
+    }
+    redraw(p)
+}
+
+/// How long a kept clip runs on the timeline.
+fn shown_saved(c: SavedClip) -> Float {
+    (c.out_point - c.in_point).max(0.0) / c.speed_rate.max(0.01)
+}
+
+/// Puts a copy of the clips right after them, on the same tracks.
+action duplicate_clips(p: Project, cs: List<Clip>) (icon: .copy, label: "Duplicate") {
+    if cs.is_empty() {
+        return
+    }
+    let lo = cs.map(c -> c.start).sort_by(t -> t).first() ?? 0.0
+    let hi = cs.map(c -> clip_end(c)).sort_by(t -> 0.0 - t).first() ?? 0.0
+    let offset = (hi - lo).max(smallest())
+    let fresh = "{p.clips.len()}"
+    for c in cs.sort_by(x -> x.start) {
+        let link = if c.link == "" { "" } else { "{c.link}~{fresh}" }
+        let start = free_at(p, c.track, snap_time(p, c.start + offset), shown(c))
+        restore_clip(p, json.encode(saved_clip(p, c)), c.track, c.media, start, link)
+    }
+    redraw(p)
+}
+
+/// Where the playhead goes from `at` to the next marked instant: a marker, or a clip's edge.
+fn next_mark(p: Project, at: Float) -> Float {
+    let marks = [p.markers.map(k -> k.t), p.clips.map(c -> c.start), p.clips.map(c -> clip_end(c))]
+        .flat_map(x -> x)
+        .filter(t -> t > at + 0.0001)
+        .sort_by(t -> t)
+    marks.first() ?? at
+}
+
+/// Where the playhead goes from `at` to the marked instant before it.
+fn previous_mark(p: Project, at: Float) -> Float {
+    let marks = [p.markers.map(k -> k.t), p.clips.map(c -> c.start), p.clips.map(c -> clip_end(c))]
+        .flat_map(x -> x)
+        .filter(t -> t < at - 0.0001)
+        .sort_by(t -> 0.0 - t)
+    marks.first() ?? 0.0
+}
+
+/// The time a typed timecode names: seconds (`12.5`), minutes and seconds (`1:02.5`), or hours,
+/// minutes, seconds and frames (`0:01:02:12`); `at` when it names none.
+fn timecode(p: Project, typed: Text, at: Float) -> Float {
+    let parts = typed.trim().split(":").map(x -> x.trim().to_float() ?? -1.0)
+    if parts.is_empty() or parts.any(x -> x < 0.0) {
+        return at
+    }
+    let n = parts.len()
+    let a = parts.at(0) ?? 0.0
+    let b = parts.at(1) ?? 0.0
+    let c = parts.at(2) ?? 0.0
+    let d = parts.at(3) ?? 0.0
+    if n == 1 {
+        a
+    } else if n == 2 {
+        a * 60.0 + b
+    } else if n == 3 {
+        a * 3600.0 + b * 60.0 + c
+    } else {
+        a * 3600.0 + b * 60.0 + c + d / p.fps.max(1.0)
+    }
+}
+
+/// The selection after a press on the clip `owner` (empty for none): the clip alone, or with Shift
+/// the selection and the clip, or with the command key the selection with the clip toggled.
+fn picked(pressed: host.Press, owners: List<Text>, selected: List<Text>) -> List<Text> {
+    let owner = owners.at(pressed.index) ?? ""
+    if owner == "" {
+        if pressed.shift or pressed.command { selected } else { [] }
+    } else if pressed.command {
+        if selected.contains(owner) {
+            selected.filter(x -> x != owner)
+        } else { [selected, [owner]].flat_map(x -> x) }
+    } else if pressed.shift {
+        if selected.contains(owner) { selected } else { [selected, [owner]].flat_map(x -> x) }
+    } else { [owner] }
+}
+
+/// The selection after a drag of `grabbed` ended: unchanged when the drag moved nothing or moved
+/// a chosen clip, else that clip alone.
+fn after_drag(selected: List<Text>, grabbed: Text, moved: Bool) -> List<Text> {
+    if grabbed == "" or not moved or selected.contains(grabbed) { selected } else { [grabbed] }
 }
 
 /// Sets the rate a clip plays at: 2 twice as fast and half as long, 0.5 in slow motion.
@@ -2562,29 +2876,13 @@ fn ticks_between(step: Float, from: Float, to: Float) -> List<Float> {
     offsets().map(i -> first + i * step).filter(t -> t >= 0.0 and t <= to)
 }
 
-/// The clip the shape at `i` belongs to, as the drawing the window shows names it.
-fn owner_at(
-    p: Project,
-    i: Int,
-    span: Float,
-    scroll: Float,
-    playhead: Float,
-    selected: Text,
-    drag_kind: Text,
-    drag_clip: Text,
-    drag_value: Float,
-) -> Text {
-    timeline(p, span, scroll, playhead, selected, drag_kind, drag_clip, drag_value).owners.at(i)
-        ?? ""
-}
-
 /// The tracks' shapes and, beside them, which clip each shows: what a press lands on.
 fn timeline(
     p: Project,
     span: Float,
     scroll: Float,
     playhead: Float,
-    selected: Text,
+    selected: List<Text>,
     drag_kind: Text,
     drag_clip: Text,
     drag_value: Float,
@@ -2650,7 +2948,7 @@ fn row_drawn(
     rows: Int,
     span: Float,
     scroll: Float,
-    selected: Text,
+    selected: List<Text>,
     drag_kind: Text,
     drag_clip: Text,
     drag_value: Float,
@@ -2699,7 +2997,7 @@ fn clip_drawn(
     tall: Float,
     span: Float,
     scroll: Float,
-    selected: Text,
+    selected: List<Text>,
     drag_kind: Text,
     drag_clip: Text,
     drag_value: Float,
@@ -2708,7 +3006,7 @@ fn clip_drawn(
     let end = start + shown(c)
     let x = x_of(start, span, scroll)
     let w = (x_of(end, span, scroll) - x).max(0.001)
-    let chosen = c.id() == selected
+    let chosen = selected.contains(c.id())
     let ink: ui.Ink = if chosen { .accent } else { palette_ink(c.palette) }
     let body = Drawn(
         shapes: [
@@ -2845,6 +3143,98 @@ fn waveform(
     [ui.Shape.path(points: points, stroke: .some(.ink), weight: .hairline)]
 }
 
+/// What can be done to the clips chosen on the timeline, each with its key.
+view edit_menu(
+    p: Project,
+    chosen: List<Clip>,
+    playhead: State<Float>,
+    selected: State<List<Text>>,
+    scroll: State<Float>,
+    span: Float,
+) {
+    let none = chosen.is_empty()
+    ui.MenuButton(std.say("Edit"), icon: .pencil) {
+        ui.MenuItem(std.say("Select all clips"), icon: .check, key: "Ctrl+A") {
+            on choose: set(selected, p.clips.map(c -> c.id()))
+        }
+        ui.MenuItem(std.say("Cut"), icon: .scissors, key: "Ctrl+X", disabled: none) {
+            on choose: cut_clips(p, chosen).then(set(selected, []))
+        }
+        ui.MenuItem(std.say("Copy"), icon: .copy, key: "Ctrl+C", disabled: none) {
+            on choose: copy_clips(p, chosen)
+        }
+        ui.MenuItem(std.say("Paste at the playhead"), icon: .clipboard_paste, key: "Ctrl+V") {
+            on choose: paste_clips(p, playhead)
+        }
+        ui.MenuItem(std.say("Duplicate"), icon: .copy, key: "Ctrl+D", disabled: none) {
+            on choose: duplicate_clips(p, chosen)
+        }
+        ui.MenuItem(
+            std.say("Delete"),
+            icon: .trash_2,
+            key: "Delete",
+            destructive: true,
+            disabled: none,
+        ) {
+            on choose: remove_clips(p, chosen).then(set(selected, []))
+        }
+        ui.MenuItem(
+            std.say("Delete and close the gap"),
+            icon: .scissors,
+            key: "Shift+Delete",
+            destructive: true,
+            disabled: none,
+        ) {
+            on choose: ripple_delete(p, chosen).then(set(selected, []))
+        }
+        ui.MenuItem(std.say("Trim the start to the playhead"), key: "i", disabled: none) {
+            on choose: trim_start(p, chosen, playhead)
+        }
+        ui.MenuItem(std.say("Trim the end to the playhead"), key: "o", disabled: none) {
+            on choose: trim_end(p, chosen, playhead)
+        }
+        ui.MenuItem(
+            std.say("Nudge a frame earlier"),
+            key: if none { .none } else { .some("Left") },
+            disabled: none,
+        ) {
+            on choose: nudge(p, chosen, -1)
+        }
+        ui.MenuItem(
+            std.say("Nudge a frame later"),
+            key: if none { .none } else { .some("Right") },
+            disabled: none,
+        ) {
+            on choose: nudge(p, chosen, 1)
+        }
+        ui.MenuItem(
+            std.say("Nudge a second earlier"),
+            key: if none { .none } else { .some("Shift+Left") },
+            disabled: none,
+        ) {
+            on choose: nudge(p, chosen, 0 - p.fps.round())
+        }
+        ui.MenuItem(
+            std.say("Nudge a second later"),
+            key: if none { .none } else { .some("Shift+Right") },
+            disabled: none,
+        ) {
+            on choose: nudge(p, chosen, p.fps.round())
+        }
+        ui.MenuItem(std.say("Previous marker"), icon: .chevron_left, key: ",") {
+            on choose: set(playhead, previous_mark(p, playhead))
+        }
+        ui.MenuItem(std.say("Next marker"), icon: .chevron_right, key: ".") {
+            on choose: set(playhead, next_mark(p, playhead))
+        }
+        if let c = chosen.last() {
+            ui.MenuItem(std.say("Go to the clip"), icon: .locate_fixed, key: "g") {
+                on choose: set(playhead, c.start).then(set(scroll, (c.start - span / 4.0).max(0.0)))
+            }
+        }
+    }
+}
+
 /// The editor: the bin on the left, the preview over the timeline in the middle, and the
 /// inspector on the right.
 // ---------------------------------------------------------------- the window
@@ -2852,7 +3242,7 @@ view window(e: Editor) {
     state playhead: Float = 0.0
     state span: Float = 20.0
     state scroll: Float = 0.0
-    state selected: Text = ""
+    state selected: List<Text> = []
     state picked_media: Text = ""
     state drag_kind: Text = ""
     state drag_clip: Text = ""
@@ -2868,7 +3258,8 @@ view window(e: Editor) {
         let rows = track_count(p)
         let height = 46.0 * rows.to_float().max(1.0) + 6.0
         let drawn = timeline(p, span, scroll, playhead, selected, drag_kind, drag_clip, drag_value)
-        let clip = clip_named(p, selected)
+        let chosen = p.clips.filter(c -> selected.contains(c.id()))
+        let clip = clip_named(p, selected.last() ?? "")
         let media = p.media.find(m -> m.id() == picked_media)
         let pct = percent(p)
         let title = if p.job != "" {
@@ -2894,7 +3285,7 @@ view window(e: Editor) {
                         for project in e.projects.sort_by(x -> x.name) {
                             ui.NavItem(project.id(), project.name, icon: .film, item: project) {
                                 on select: open_project(e, project)
-                                    .then(set(selected, ""))
+                                    .then(set(selected, []))
                                     .then(set(playhead, 0.0))
                             }
                         }
@@ -2988,6 +3379,7 @@ view window(e: Editor) {
                                     icon: .chevrons_left,
                                     icon_only: true,
                                     accessible_name: std.say("Jump to the start"),
+                                    key: "Home",
                                 ) {
                                     on press: preview(p, 0.0).then(set(playhead, 0.0))
                                 }
@@ -2996,6 +3388,9 @@ view window(e: Editor) {
                                     icon: .skip_back,
                                     icon_only: true,
                                     accessible_name: std.say("Back a second"),
+                                    key: if selected.is_empty() {
+                                        .some("Shift+Left")
+                                    } else { .none },
                                 ) {
                                     on press: preview(p, (playhead - 1.0).max(0.0))
                                         .then(
@@ -3007,6 +3402,7 @@ view window(e: Editor) {
                                     icon: .chevron_left,
                                     icon_only: true,
                                     accessible_name: std.say("Back a frame"),
+                                    key: if selected.is_empty() { .some("Left") } else { .none },
                                 ) {
                                     on press: preview(p, stepped(p, playhead, -1))
                                         .then(
@@ -3019,6 +3415,7 @@ view window(e: Editor) {
                                         icon: .pause,
                                         icon_only: true,
                                         accessible_name: std.say("Pause"),
+                                        key: "Space",
                                     ) {
                                         on press: set(playing, false)
                                     }
@@ -3028,6 +3425,7 @@ view window(e: Editor) {
                                         icon: .play,
                                         icon_only: true,
                                         accessible_name: std.say("Play the cut"),
+                                        key: "Space",
                                     ) {
                                         on press: session(e).then(set(playing, true))
                                     }
@@ -3037,6 +3435,7 @@ view window(e: Editor) {
                                         icon: .play,
                                         icon_only: true,
                                         accessible_name: std.say("Render and play the cut"),
+                                        key: "Space",
                                     ) {
                                         on press: preview_cut(p)
                                     }
@@ -3046,6 +3445,7 @@ view window(e: Editor) {
                                     icon: .chevron_right,
                                     icon_only: true,
                                     accessible_name: std.say("Forward a frame"),
+                                    key: if selected.is_empty() { .some("Right") } else { .none },
                                 ) {
                                     on press: preview(p, stepped(p, playhead, 1))
                                         .then(
@@ -3057,6 +3457,9 @@ view window(e: Editor) {
                                     icon: .skip_forward,
                                     icon_only: true,
                                     accessible_name: std.say("Forward a second"),
+                                    key: if selected.is_empty() {
+                                        .some("Shift+Right")
+                                    } else { .none },
                                 ) {
                                     on press: preview(p, playhead + 1.0)
                                         .then(
@@ -3068,6 +3471,7 @@ view window(e: Editor) {
                                     icon: .chevrons_right,
                                     icon_only: true,
                                     accessible_name: std.say("Jump to the end"),
+                                    key: "End",
                                 ) {
                                     on press: preview(p, total(p)).then(set(playhead, total(p)))
                                 }
@@ -3078,14 +3482,14 @@ view window(e: Editor) {
                                     secondary: true,
                                     numeric: true,
                                 )
-                                ui.Button(std.say("Mark in"), icon: .arrow_right) {
+                                ui.Button(std.say("Mark in"), icon: .arrow_right, key: "Shift+I") {
                                     on press: mark_in(p, playhead)
                                 }
-                                ui.Button(std.say("Mark out"), icon: .arrow_left) {
+                                ui.Button(std.say("Mark out"), icon: .arrow_left, key: "Shift+O") {
                                     on press: mark_out(p, playhead)
                                 }
                                 if p.mark_in >= 0.0 or p.mark_out >= 0.0 {
-                                    ui.Button(std.say("Clear"), icon: .x) {
+                                    ui.Button(std.say("Clear"), icon: .x, key: "Shift+X") {
                                         on press: clear_marks(p)
                                     }
                                 }
@@ -3139,6 +3543,7 @@ view window(e: Editor) {
                                     icon: .minus,
                                     icon_only: true,
                                     accessible_name: std.say("Zoom out"),
+                                    key: "-",
                                 ) {
                                     on press: set(span, (span * 2.0).clamp(1.0, 3600.0))
                                 }
@@ -3147,10 +3552,11 @@ view window(e: Editor) {
                                     icon: .plus,
                                     icon_only: true,
                                     accessible_name: std.say("Zoom in"),
+                                    key: "=",
                                 ) {
                                     on press: set(span, (span / 2.0).clamp(1.0, 3600.0))
                                 }
-                                ui.Button(std.say("Fit"), icon: .maximize) {
+                                ui.Button(std.say("Fit"), icon: .maximize, key: "z") {
                                     on press: set(span, total(p).max(2.0)).then(set(scroll, 0.0))
                                 }
                                 ui.Button(
@@ -3169,16 +3575,20 @@ view window(e: Editor) {
                                 ) {
                                     on press: set(scroll, scroll + span / 2.0)
                                 }
-                                ui.Button(std.say("Split"), icon: .scissors) {
-                                    on press: cut_at(p, playhead).then(set(selected, ""))
+                                ui.Button(std.say("Split"), icon: .scissors, key: "s") {
+                                    on press: cut_at(p, playhead).then(set(selected, []))
                                 }
-                                if let c = clip {
+                                if not chosen.is_empty() {
                                     ui.Button(std.say("Delete"), icon: .trash_2) {
-                                        on press: remove_clip(p, c).then(set(selected, ""))
+                                        on press: remove_clips(p, chosen).then(set(selected, []))
                                     }
                                 }
-                                ui.Button(std.say("Marker"), icon: .flag) {
+                                ui.Button(std.say("Marker"), icon: .flag, key: "m") {
                                     on press: add_marker(p, playhead)
+                                }
+                                edit_menu(p, chosen, playhead, selected, scroll, span)
+                                ui.TextInput(placeholder: std.say("Go to 1:02.5"), key: "Ctrl+G") {
+                                    on submit(typed): set(playhead, timecode(p, typed, playhead))
                                 }
                                 ui.Button(std.say("Add a video track"), icon: .plus) {
                                     on press: add_track(p, .video)
@@ -3214,20 +3624,7 @@ view window(e: Editor) {
                                 height: .some(height),
                                 motion: .still,
                             ) {
-                                on press(i): set(
-                                    selected,
-                                    owner_at(
-                                        p,
-                                        i,
-                                        span,
-                                        scroll,
-                                        playhead,
-                                        selected,
-                                        drag_kind,
-                                        drag_clip,
-                                        drag_value,
-                                    ),
-                                )
+                                on press(i): set(selected, picked(i, drawn.owners, selected))
                                 on drag_start(x, y): set(drag_origin, time_at(x, span, scroll))
                                     .then(
                                         set(drag_value, time_at(x, span, scroll)),
@@ -3251,10 +3648,18 @@ view window(e: Editor) {
                                         drag_clip,
                                         drag_origin,
                                         drag_value,
+                                        chosen,
                                     )
                                     .then(set(drag_kind, ""))
                                     .then(
-                                        set(selected, drag_clip),
+                                        set(
+                                            selected,
+                                            after_drag(
+                                                selected,
+                                                drag_clip,
+                                                drag_value != drag_origin,
+                                            ),
+                                        ),
                                     )
                             }
                         }
