@@ -593,9 +593,11 @@ fn a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run() -> 
     let file = profile.path().join("attached.refusal");
     let log_path = profile.path().join("attached.log");
     let log = std::fs::File::create(&log_path)?;
+    // As libtest names it: a module of `tests/it.rs`, without the test binary's crate root.
+    let module = module_path!();
     let name = format!(
         "{}::a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run",
-        module_path!()
+        module.split_once("::").map_or(module, |(_, within)| within)
     );
     let mut command = Command::new(std::env::current_exe()?);
     command
