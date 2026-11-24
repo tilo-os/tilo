@@ -4,7 +4,7 @@
 //! them beside the steps of this task.
 use super::*;
 use tilo_actions::remote::workspace_invocations::{
-    Invocation, InvocationBy, InvocationChange, InvocationStatus, Invocations,
+    Invocation, InvocationBy, InvocationChange, InvocationStatus,
 };
 
 /// [`Notes`] with the runs a workspace host keeps of what happened in it.
