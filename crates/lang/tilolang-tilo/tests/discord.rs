@@ -117,13 +117,21 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
         "{refused:?}"
     );
 
+    // Ada asks for the token: the person types it into their vault, and the program answers
+    // where it was kept.
+    match run(&ada, &person("ada"), "ask_token", vec![Value::resource(&account)]) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("ada asks for the token: {other:?}"),
+    }
+    ada.commit();
+    let token_press = text(&ada.host, &account, "setup_ask");
     match run(
         &ada,
         &bridge(),
         "keep_token",
         vec![
             Value::resource(&account),
-            Value::text("press-token"),
+            Value::text(token_press.as_str()),
             Value::text(ITEM),
         ],
     ) {
@@ -137,7 +145,7 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
         "keep_token",
         vec![
             Value::resource(&account),
-            Value::text("press-token"),
+            Value::text(token_press.as_str()),
             Value::text(ITEM),
         ],
     );
@@ -156,7 +164,10 @@ fn finding_the_servers_is_asked_for_and_answered_by_the_bridge() {
     assert_eq!(text(&ada.host, &account, "setup_wants"), "find");
     let press = text(&ada.host, &account, "setup_ask");
     assert!(!press.is_empty(), "the press has its own id");
-    assert_eq!(text(&ada.host, &account, "setup_person"), "ada");
+    assert!(
+        text(&ada.host, &account, "setup_person").contains("ada"),
+        "the press names the person who made it"
+    );
 
     // An answer to an older press changes nothing, and the person is never the one who answers.
     let refused = run(
@@ -253,13 +264,24 @@ fn only_the_workspaces_moderators_set_a_server_up() {
 
 /// Every setup answer is the bridge's alone: a person's call of one is refused with the reason.
 fn refused_bridge_steps(ada: &Replica, account: &ResourceRef) {
-    for step in ["keep_token", "found_servers", "found_channels", "setup_failed", "start_sign_in"] {
-        let refused = run(
-            ada,
-            &person("ada"),
-            step,
-            vec![Value::resource(account), Value::text("press")],
-        );
+    let digest = "0".repeat(64);
+    let steps: [(&str, Vec<Value>); 5] = [
+        ("keep_token", vec![Value::text(ITEM)]),
+        ("found_servers", vec![Value::List(vec![])]),
+        ("found_channels", vec![Value::List(vec![])]),
+        ("setup_failed", vec![Value::text("Discord could not be reached.")]),
+        (
+            "start_sign_in",
+            vec![
+                Value::text("https://discord.com/oauth2/authorize?client_id=1"),
+                Value::text(digest.as_str()),
+            ],
+        ),
+    ];
+    for (step, args) in steps {
+        let mut invited = vec![Value::resource(account), Value::text("press")];
+        invited.extend(args);
+        let refused = run(ada, &person("ada"), step, invited);
         assert!(
             matches!(&refused, Err(why) if why.contains("Only the bridge")),
             "{step}: {refused:?}"
