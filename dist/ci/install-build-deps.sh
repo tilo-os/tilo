@@ -260,6 +260,11 @@ arch)
         pipewire dbus xdg-dbus-proxy fontconfig freetype2 harfbuzz fuse3 libgcrypt
         gstreamer gst-plugins-base-libs
     )
+    # A fresh container has no local signing key in its keyring. Upgrading
+    # archlinux-keyring signs the new keys with it, and the upgrade fails without
+    # one, so initialize the keyring the image expects before the transaction.
+    pacman-key --init
+    pacman-key --populate archlinux
     # Under QEMU/PRoot, libalpm's faccessat probe cannot reopen sync databases
     # that were seeded by the host even though ordinary guest stat calls see
     # them. Refresh, upgrade, resolve, and install in one pacman transaction;
