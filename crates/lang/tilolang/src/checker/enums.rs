@@ -231,6 +231,8 @@ impl Checker<'_> {
             J::Bool(b) => ast::ExprKind::Bool(*b),
             J::Number(n) if matches!(ty, Ty::Float) => ast::ExprKind::Float(n.as_f64()?),
             J::Number(n) => ast::ExprKind::Int(n.as_i64()?),
+            // A field a case leaves out takes the text it names, as any other literal it names.
+            J::String(text) => ast::ExprKind::Str(vec![ast::StrPart::Lit(text.clone())]),
             J::Null => ast::ExprKind::Variant {
                 name: ast::Ident {
                     name: "none".into(),

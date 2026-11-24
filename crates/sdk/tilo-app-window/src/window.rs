@@ -3001,6 +3001,30 @@ impl ui::widget::FullscreenProvider for AppWindow {
     fn fullscreen_intent(&self) -> Option<bool> {
         fullscreen_intent_of(self.body.as_ref())
     }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        fullscreen_params_of(self.body.as_ref()).unwrap_or_else(|| {
+            ui::fullscreen::FullscreenRequest::mirror(ui::fullscreen::FullscreenTarget::Largest)
+        })
+    }
+}
+
+/// The request the view's fullscreen intent carries, wherever it stands in the tree: which
+/// screen a presentation fills, and whether it is the window or a surface of its own.
+fn fullscreen_params_of(root: &dyn Widget) -> Option<ui::fullscreen::FullscreenRequest> {
+    if let Some(provider) =
+        ui::widget::capability::capability::<dyn ui::widget::FullscreenProvider>(root)
+        && provider.fullscreen_intent().is_some()
+    {
+        return Some(provider.fullscreen_params());
+    }
+    let mut found = None;
+    root.for_each_child(&mut |child| {
+        if found.is_none() {
+            found = fullscreen_params_of(child);
+        }
+    });
+    found
 }
 
 /// A player in the view asked for picture-in-picture, at whatever depth the view's containers

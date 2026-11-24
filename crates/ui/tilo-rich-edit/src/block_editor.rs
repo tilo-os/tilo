@@ -610,6 +610,9 @@ pub struct BlockEditor {
     /// inside its line rect, and so the editor's one content edge.
     text_pad: f64,
     content_sized: bool,
+    /// The colour the words are painted in, where a view sets one (a slide's text box on its
+    /// deck's ground); the theme's text ink unless said.
+    ink: Option<vello::peniko::Color>,
     /// Reflow text blocks to the available width instead of giving each
     /// block a horizontally scrolling single line.
     wrap_lines: bool,
@@ -944,6 +947,7 @@ impl BlockEditor {
             handle_reveal: handle_reveal::HandleReveal::default(),
             mention_paint: None,
             text_align: ui::richtext::TextAlign::Left,
+            ink: None,
             font_scale: 1.0,
             zoom: 1.0,
             #[cfg(test)]
@@ -1719,6 +1723,30 @@ impl BlockEditor {
         self
     }
 
+    /// The look a view sets on the document as a whole: the size its body text takes, in points,
+    /// and how its paragraphs line up where they say nothing (`left`, `center`, `right`,
+    /// `justify`). A box that holds a slide's words is as large as the slide's author said, and
+    /// its title may centre while its body stays left.
+    pub fn set_look(&mut self, size: Option<f64>, align: Option<&str>) {
+        if let Some(px) = size {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a text size in points, far inside f32"
+            )]
+            self.set_body_size(px as f32);
+        }
+        if let Some(align) = align {
+            use ui::richtext::TextAlign;
+            let align = match align {
+                "center" | "centre" => TextAlign::Center,
+                "right" => TextAlign::Right,
+                "justify" | "justified" => TextAlign::Justified,
+                _ => TextAlign::Left,
+            };
+            self.set_text_align(align);
+        }
+    }
+
     pub fn set_text_align(&mut self, align: ui::richtext::TextAlign) {
         if self.text_align != align {
             self.text_align = align;
@@ -1729,6 +1757,20 @@ impl BlockEditor {
     #[must_use]
     pub fn text_align(&self) -> ui::richtext::TextAlign {
         self.text_align
+    }
+
+    /// Paint the words in `ink`, or the theme's text ink for `None`: a text box on a deck's own
+    /// ground keeps that ground's readable ink, whatever theme the reader uses.
+    pub fn set_ink(&mut self, ink: Option<vello::peniko::Color>) {
+        if self.ink != ink {
+            self.ink = ink;
+            self.dirty = true;
+        }
+    }
+
+    #[must_use]
+    pub fn ink(&self) -> Option<vello::peniko::Color> {
+        self.ink
     }
 
     /// Size body text at `px` logical pixels; every other kind keeps its
@@ -9548,6 +9590,15 @@ impl Widget for BlockEditor {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        // A view that sets the words' ink (a slide's text box on its own ground) paints them in
+        // it; the theme's text ink is what everything else reads.
+        let recoloured = self.ink.map(|ink| {
+            let mut recoloured = theme.clone();
+            recoloured.text_primary = ink;
+            recoloured.tokens.colors.text_primary = ink;
+            recoloured
+        });
+        let theme = recoloured.as_ref().unwrap_or(theme);
         let fallback_presence = ui::presence::PresenceCtx::default();
         let presence = env.presence.unwrap_or(&fallback_presence);
         #[cfg(test)]

@@ -37,6 +37,15 @@ pub struct BlockEditorProps {
     pub value: Option<RichText>,
     /// What to type, shown while the editor is empty.
     pub placeholder: Option<String>,
+    /// The size the document's body text takes, in points: a slide's text box sets its own, so
+    /// the words are as large on the slide as its author said. The theme's unless said.
+    pub size: Option<f64>,
+    /// The colour the words are painted in, `#rrggbb`: a text box on a deck's own ground keeps
+    /// that ground's readable ink. The theme's text ink unless said.
+    pub colour: Option<String>,
+    /// How its paragraphs line up, where no paragraph says: `left`, `center`, `right` or
+    /// `justify`. Left unless said.
+    pub align: Option<String>,
     /// A reference in the text was activated, carrying the reference.
     #[component(event(value = String))]
     pub open_reference: Event,
@@ -484,6 +493,9 @@ impl Described for BlockEditor {
             margin_bottom,
             margin_left,
             zoom,
+            size,
+            align,
+            colour,
             insert: _,
             link: _,
             link_to: _,
@@ -520,6 +532,8 @@ impl Described for BlockEditor {
         });
         editor.offer_slash(&slash, slash_image, slash_page);
         editor.set_image_store(Some(ui::pictures::Pictures::window().store().clone()));
+        editor.set_look(size, align.as_deref());
+        editor.set_ink(colour.as_deref().and_then(ui::color::parse_hex));
         if editing {
             editor.set_image_inserter(Some(picture_inserter()));
             editor.set_image_event(image);
@@ -575,6 +589,9 @@ impl Described for BlockEditor {
             margin_bottom,
             margin_left,
             zoom,
+            size,
+            align,
+            colour,
             insert,
             link,
             link_to,
@@ -599,6 +616,8 @@ impl Described for BlockEditor {
             page_count,
         });
         self.offer_slash(&slash, slash_image, slash_page);
+        self.set_look(size, align.as_deref());
+        self.set_ink(colour.as_deref().and_then(ui::color::parse_hex));
         self.set_find_replace_enabled(!showing);
         if !showing {
             // The view that bound the document hears of each picture that goes into it.

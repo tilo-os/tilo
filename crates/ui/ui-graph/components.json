@@ -2941,6 +2941,52 @@
       }
     },
     {
+      "name": "Fullscreen",
+      "doc": "A view shown filling the audience's screen while it is presented.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it is, for assistive technology and agents.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "showing",
+          "doc": "The view is presented: the window fills the screen until it is not.",
+          "type": "bool",
+          "required": true
+        },
+        {
+          "name": "screen",
+          "doc": "Which screen it fills: the audience's, unless said.",
+          "type": {
+            "choice": {
+              "name": "Screen",
+              "cases": [
+                "auto",
+                "largest",
+                "primary",
+                "primary_external"
+              ]
+            }
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "body",
+          "doc": "The view it presents.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "FunnelChart",
       "doc": "How many reach each stage of a sequence: the steps of a sign-up, a checkout, a build. Stages narrow as fewer arrive, each with the share of the one before it, or widen as a pyramid; each takes the next colour of the theme's palette.",
       "props": [
@@ -6735,6 +6781,104 @@
       }
     },
     {
+      "name": "Stage",
+      "doc": "A page of a fixed size, with what stands on it placed in the page's own coordinates.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the stage is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "canvas",
+          "doc": "The page's own size, its width then its height (a slide is 1280, 720).",
+          "type": {
+            "list": "int"
+          },
+          "required": true
+        },
+        {
+          "name": "zoom",
+          "doc": "How many logical pixels one page coordinate takes: the page is fitted to the stage's box, whole and centred, unless said.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "background",
+          "doc": "The colour the page itself is painted in, `#rrggbb` or `#rrggbbaa`; none leaves it clear.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "chosen",
+          "doc": "The place the view chose, by its item or key: drawn with its frame, so the person sees what they are working on.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "pins",
+          "doc": "What stands on the page, back to front.",
+          "accepts": {
+            "component": "StagePin"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "The person pressed the page's own empty surface and let go there, travelling no further than a click: carries the page point, its x then its y.",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "select",
+          "doc": "The person pressed a place: carries what it stands for and the page point.",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "moved",
+          "doc": "The person dragged a place to a new place on the page: carries what it stands for and its new page point. Reported as the hand moves, as one gesture, so everyone looking sees it move and one undo takes the whole move back.",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "resized",
+          "doc": "The person dragged a place's trailing edge, bottom edge or corner: carries what it stands for and its new width and height in page coordinates. Its top-leading corner stays.",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "context",
+          "doc": "The person pressed a place with the right button: carries what it stands for and the page point.",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "StatGroup",
       "doc": "Stat tiles that reflow by width: one row when they fit, then half per row (2 by 2 for four), then one per row; separated by space, never boxed.",
       "parts": [
@@ -8430,6 +8574,27 @@
         {
           "name": "placeholder",
           "doc": "What to type, shown while the editor is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "size",
+          "doc": "The size the document's body text takes, in points: a slide's text box sets its own, so the words are as large on the slide as its author said. The theme's unless said.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "colour",
+          "doc": "The colour the words are painted in, `#rrggbb`: a text box on a deck's own ground keeps that ground's readable ink. The theme's text ink unless said.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "align",
+          "doc": "How its paragraphs line up, where no paragraph says: `left`, `center`, `right` or `justify`. Left unless said.",
           "type": {
             "option": "text"
           }
@@ -10465,6 +10630,73 @@
       }
     },
     {
+      "name": "StagePin",
+      "doc": "What stands on the page: a text box, a shape, a picture — each a view of its own, at a place in the page's coordinates.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "x",
+          "doc": "The page point of its top-leading corner.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "y",
+          "doc": "The page's y of its top-leading corner.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "width",
+          "doc": "How wide it stands, in page coordinates.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "height",
+          "doc": "How tall it stands, in page coordinates.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "moves",
+          "doc": "The person drags it to move it: a press that travels moves the place with the hand, and a press that stays is the place's own (a text box puts the caret where it was clicked).",
+          "type": "bool"
+        },
+        {
+          "name": "item",
+          "doc": "What the place stands for, as the view names it: what choosing it, moving it, sizing it and pressing it with the right button report. Without it, the place's key.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        }
+      ],
+      "parts": [
+        {
+          "name": "body",
+          "doc": "What it shows.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "TabItem",
       "doc": "One tab of a frame: the resource it shows, and what its pill says.",
       "props": [
@@ -11685,6 +11917,65 @@
               "name": "colour",
               "ty": "text",
               "doc": "Its fill, `#rrggbb` or `#rrggbbaa`."
+            },
+            {
+              "name": "stroke_colour",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "Its outline, `#rrggbb`; none unless said."
+            },
+            {
+              "name": "stroke_width",
+              "ty": "float",
+              "default": {
+                "float": 0.0
+              },
+              "doc": "Its outline's width, a fraction of the box's shorter side."
+            }
+          ]
+        },
+        {
+          "name": "oval",
+          "doc": "An ellipse filled and outlined in colours of its own, not the theme's.",
+          "fields": [
+            {
+              "name": "cx",
+              "ty": "float"
+            },
+            {
+              "name": "cy",
+              "ty": "float"
+            },
+            {
+              "name": "rx",
+              "ty": "float"
+            },
+            {
+              "name": "ry",
+              "ty": "float"
+            },
+            {
+              "name": "colour",
+              "ty": "text",
+              "doc": "Its fill, `#rrggbb` or `#rrggbbaa`."
+            },
+            {
+              "name": "stroke_colour",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "Its outline, `#rrggbb`; none unless said."
+            },
+            {
+              "name": "stroke_width",
+              "ty": "float",
+              "default": {
+                "float": 0.0
+              },
+              "doc": "Its outline's width, a fraction of the box's shorter side."
             }
           ]
         },
@@ -11783,6 +12074,30 @@
                 "choice": "middle"
               },
               "doc": "Which side of it stands at (x, y)."
+            },
+            {
+              "name": "strong",
+              "ty": "bool",
+              "default": {
+                "bool": false
+              },
+              "doc": "Set heavier than its size alone."
+            },
+            {
+              "name": "italic",
+              "ty": "bool",
+              "default": {
+                "bool": false
+              },
+              "doc": "Set in italics."
+            },
+            {
+              "name": "wrap",
+              "ty": "float",
+              "default": {
+                "float": 0.0
+              },
+              "doc": "A width to break its lines within, a fraction of the box's; one line unless said."
             }
           ]
         }

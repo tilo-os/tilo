@@ -336,6 +336,48 @@ pub fn shape_description() -> EnumDescription {
                         default: None,
                         doc: "Its fill, `#rrggbb` or `#rrggbbaa`.".to_owned(),
                     },
+                    FieldDescription {
+                        name: "stroke_colour".to_owned(),
+                        ty: Type::Text,
+                        default: Some(Value::Text(String::new())),
+                        doc: "Its outline, `#rrggbb`; none unless said.".to_owned(),
+                    },
+                    FieldDescription {
+                        name: "stroke_width".to_owned(),
+                        ty: Type::Float,
+                        default: Some(Value::Float(0.0)),
+                        doc: "Its outline's width, a fraction of the box's shorter side."
+                            .to_owned(),
+                    },
+                ],
+            ),
+            case(
+                "oval",
+                "An ellipse filled and outlined in colours of its own, not the theme's.",
+                vec![
+                    float("cx", ""),
+                    float("cy", ""),
+                    float("rx", ""),
+                    float("ry", ""),
+                    FieldDescription {
+                        name: "colour".to_owned(),
+                        ty: Type::Text,
+                        default: None,
+                        doc: "Its fill, `#rrggbb` or `#rrggbbaa`.".to_owned(),
+                    },
+                    FieldDescription {
+                        name: "stroke_colour".to_owned(),
+                        ty: Type::Text,
+                        default: Some(Value::Text(String::new())),
+                        doc: "Its outline, `#rrggbb`; none unless said.".to_owned(),
+                    },
+                    FieldDescription {
+                        name: "stroke_width".to_owned(),
+                        ty: Type::Float,
+                        default: Some(Value::Float(0.0)),
+                        doc: "Its outline's width, a fraction of the box's shorter side."
+                            .to_owned(),
+                    },
                 ],
             ),
             case(
@@ -402,6 +444,16 @@ pub fn shape_description() -> EnumDescription {
                         default: Some(Value::Choice("middle".to_owned())),
                         doc: "Which side of it stands at (x, y).".to_owned(),
                     },
+                    flag("strong", "Set heavier than its size alone."),
+                    flag("italic", "Set in italics."),
+                    FieldDescription {
+                        default: Some(Value::Float(0.0)),
+                        ..float(
+                            "wrap",
+                            "A width to break its lines within, a fraction of the box's; one line \
+                             unless said.",
+                        )
+                    },
                 ],
             ),
         ],
@@ -454,6 +506,33 @@ impl PropType for Shape {
                 ));
             }
             Ok(value)
+        };
+        let optional_hex = |name: &str| -> Result<String, String> {
+            match field(name) {
+                None | Some(Value::None) => Ok(String::new()),
+                Some(Value::Text(value)) if value.is_empty() => Ok(String::new()),
+                Some(Value::Text(value)) => {
+                    if crate::color::parse_hex(value).is_none() {
+                        return Err(format!(
+                            "`{case}`'s `{name}` is a colour as `#rrggbb`, not `{value}`"
+                        ));
+                    }
+                    Ok(value.clone())
+                }
+                Some(_) => Err(format!("`{case}`'s `{name}` is a colour as `#rrggbb`")),
+            }
+        };
+        let optional_float = |name: &str, default: f64| -> Result<f64, String> {
+            match field(name) {
+                None | Some(Value::None) => Ok(default),
+                Some(Value::Float(v)) => Ok(*v),
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a fraction written as a whole number"
+                )]
+                Some(Value::Int(v)) => Ok(*v as f64),
+                Some(_) => Err(format!("`{case}`'s `{name}` is a number")),
+            }
         };
         let points = |name: &str| -> Result<Vec<f64>, String> {
             match field(name) {
@@ -547,6 +626,17 @@ impl PropType for Shape {
                 h: float("h")?,
                 round: float("round")?,
                 colour: hex("colour")?,
+                stroke_colour: optional_hex("stroke_colour")?,
+                stroke_width: optional_float("stroke_width", 0.0)?,
+            },
+            "oval" => Shape::Oval {
+                cx: float("cx")?,
+                cy: float("cy")?,
+                rx: float("rx")?,
+                ry: float("ry")?,
+                colour: hex("colour")?,
+                stroke_colour: optional_hex("stroke_colour")?,
+                stroke_width: optional_float("stroke_width", 0.0)?,
             },
             "stroke" => Shape::Stroke {
                 points: points("points")?,
@@ -559,6 +649,9 @@ impl PropType for Shape {
                 text: text("text")?,
                 colour: hex("colour")?,
                 size: float("size")?,
+                strong: flag("strong"),
+                italic: flag("italic"),
+                wrap: optional_float("wrap", 0.0)?,
                 anchor: match field("anchor") {
                     None | Some(Value::None) => Anchor::Middle,
                     Some(v) => Anchor::from_value(v)?,

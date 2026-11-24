@@ -175,7 +175,8 @@ pub enum Shape {
     },
     /// A box filled in a colour of its own rather than the theme's: `colour` is `#rrggbb` or
     /// `#rrggbbaa`. What shows someone's own mark-up over a picture keeps the colour the file or
-    /// the person gave it.
+    /// the person gave it. `stroke_colour` and `stroke_width` (a fraction of the box's shorter
+    /// side) draw its outline; an empty colour draws none.
     Area {
         x: f64,
         y: f64,
@@ -183,6 +184,19 @@ pub enum Shape {
         h: f64,
         round: f64,
         colour: String,
+        stroke_colour: String,
+        stroke_width: f64,
+    },
+    /// An ellipse filled and outlined in colours of its own: an oval on a slide, a dot on a chart,
+    /// a mark someone coloured.
+    Oval {
+        cx: f64,
+        cy: f64,
+        rx: f64,
+        ry: f64,
+        colour: String,
+        stroke_colour: String,
+        stroke_width: f64,
     },
     /// A line through `points`, x and y in turn, in a colour of its own. `width` is a fraction of
     /// the box's shorter side.
@@ -191,7 +205,9 @@ pub enum Shape {
         colour: String,
         width: f64,
     },
-    /// A text at (x, y) in a colour and size of its own: `size` is a fraction of the box's height.
+    /// A text at (x, y) in a colour, size and weight of its own: `size` is a fraction of the
+    /// box's height, and `wrap` a fraction of its width to break the lines within (`0` keeps one
+    /// line). A card's rank and suit, a label on a shape, a line of a paragraph a view sets.
     Label {
         x: f64,
         y: f64,
@@ -199,6 +215,9 @@ pub enum Shape {
         colour: String,
         size: f64,
         anchor: Anchor,
+        strong: bool,
+        italic: bool,
+        wrap: f64,
     },
     /// A picture at (x, y), covering (w, h). Its bytes are where `src` names them in the device's
     /// store, so a drawing carries an address and never its pixels.
@@ -240,14 +259,16 @@ impl Shape {
                     RoundedRect::from_rect(rect, radius).to_path(0.1),
                 ))
             }
-            Self::Ellipse { cx, cy, rx, ry, .. } => Some(Lowered::Area(
-                Ellipse::new(
-                    at(*cx, *cy),
-                    (rx * bounds.width(), ry * bounds.height()),
-                    0.0,
-                )
-                .to_path(0.1),
-            )),
+            Self::Ellipse { cx, cy, rx, ry, .. } | Self::Oval { cx, cy, rx, ry, .. } => {
+                Some(Lowered::Area(
+                    Ellipse::new(
+                        at(*cx, *cy),
+                        (rx * bounds.width(), ry * bounds.height()),
+                        0.0,
+                    )
+                    .to_path(0.1),
+                ))
+            }
             Self::Arc {
                 cx,
                 cy,
@@ -323,7 +344,9 @@ impl Shape {
             | Self::Area {
                 x, y, w, h, round, ..
             } => out.extend([*x, *y, *w, *h, *round]),
-            Self::Ellipse { cx, cy, rx, ry, .. } => out.extend([*cx, *cy, *rx, *ry]),
+            Self::Ellipse { cx, cy, rx, ry, .. } | Self::Oval { cx, cy, rx, ry, .. } => {
+                out.extend([*cx, *cy, *rx, *ry]);
+            }
             Self::Arc {
                 cx,
                 cy,
@@ -360,6 +383,7 @@ impl Shape {
                 }
             }
             Self::Ellipse { cx, cy, rx, ry, .. }
+            | Self::Oval { cx, cy, rx, ry, .. }
             | Self::Line {
                 x1: cx,
                 y1: cy,
@@ -418,6 +442,7 @@ impl Shape {
             | Self::Line { .. }
             | Self::Text { .. }
             | Self::Area { .. }
+            | Self::Oval { .. }
             | Self::Stroke { .. }
             | Self::Label { .. }
             | Self::Picture { .. } => None,
@@ -434,6 +459,7 @@ impl Shape {
             }
             Self::Text { .. }
             | Self::Area { .. }
+            | Self::Oval { .. }
             | Self::Stroke { .. }
             | Self::Label { .. }
             | Self::Picture { .. } => None,
@@ -686,6 +712,9 @@ impl Drawing {
                     colour,
                     size,
                     anchor,
+                    strong,
+                    italic,
+                    wrap,
                 } = shape
                 {
                     let ink = crate::color::parse_hex(colour)?;
@@ -697,7 +726,18 @@ impl Drawing {
                     let size_px = (size * bounds.height()) as f32;
                     style.size = size_px;
                     style.line_height = size_px * 1.2;
-                    let (width, height) = text_renderer.measure_style(text, None, &style);
+                    if *strong {
+                        style = style.strong();
+                    }
+                    if *italic {
+                        style = style.with_italic(true);
+                    }
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a text's column in a drawing, well inside f32"
+                    )]
+                    let max_width = (*wrap > 0.0).then(|| (wrap * bounds.width()) as f32);
+                    let (width, height) = text_renderer.measure_style(text, max_width, &style);
                     let (width, height) = (f64::from(width), f64::from(height));
                     let px = bounds.x0 + x * bounds.width();
                     let left = match anchor {
@@ -711,7 +751,7 @@ impl Drawing {
                         text,
                         ink,
                         transform.pre_translate((left, top).into()),
-                        None,
+                        max_width,
                         &style,
                     );
                     return Some(Rect::new(left, top, left + width, top + height));
@@ -721,10 +761,29 @@ impl Drawing {
                     return None;
                 };
                 match shape {
-                    Shape::Area { colour, .. } => {
+                    Shape::Area {
+                        colour,
+                        stroke_colour,
+                        stroke_width,
+                        ..
+                    }
+                    | Shape::Oval {
+                        colour,
+                        stroke_colour,
+                        stroke_width,
+                        ..
+                    } => {
                         if let Some(colour) = crate::color::parse_hex(colour) {
                             scene.fill(Fill::NonZero, transform, colour, None, &path);
                         }
+                        paint_own_stroke(
+                            scene,
+                            transform,
+                            bounds,
+                            &path,
+                            stroke_colour,
+                            *stroke_width,
+                        );
                         return None;
                     }
                     Shape::Stroke { colour, width, .. } => {
@@ -978,6 +1037,27 @@ impl Widget for Drawing {
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO || self.layout_dirty
     }
+}
+
+/// Stroke `path` in a colour of the shape's own, `width` a fraction of the drawing's shorter side.
+fn paint_own_stroke(
+    scene: &mut Scene,
+    transform: Affine,
+    bounds: Rect,
+    path: &BezPath,
+    colour: &str,
+    width: f64,
+) {
+    let Some(colour) = crate::color::parse_hex(colour) else {
+        return;
+    };
+    if width <= 0.0 {
+        return;
+    }
+    let stroke = Stroke::new((width * bounds.width().min(bounds.height())).max(0.5))
+        .with_caps(vello::kurbo::Cap::Round)
+        .with_join(vello::kurbo::Join::Round);
+    scene.stroke(&stroke, transform, colour, None, path);
 }
 
 /// What a washed path fills: a closed path itself, and under an open one the area down to the

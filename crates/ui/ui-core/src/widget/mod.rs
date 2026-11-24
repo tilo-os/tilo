@@ -2125,6 +2125,10 @@ mod bottom_sheet;
 pub use bottom_sheet::{BottomSheet, SheetDetent, SheetFrame, SheetGeometry, SheetInput};
 mod page_slide;
 pub use page_slide::{PageSlide, PageSlideProps};
+mod fullscreen_view;
+pub use fullscreen_view::{Fullscreen, FullscreenProps, Screen};
+mod stage;
+pub use stage::{Stage, StagePinProps, StageProps};
 mod sidebar;
 pub use sidebar::{
     DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_DOCKED_WIDTH, DEFAULT_DRAWER_WIDTH, SidebarDrawer,

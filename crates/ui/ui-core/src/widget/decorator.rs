@@ -670,6 +670,7 @@ concrete_decorator_widget!(super::media_transport::MediaTransport);
 concrete_decorator_widget!(super::window_search::QueryView);
 concrete_decorator_widget!(super::TabStrip);
 concrete_decorator_widget!(super::page_slide::PageSlide);
+concrete_decorator_widget!(super::fullscreen_view::Fullscreen);
 concrete_decorator_widget!([M: super::ListModel + 'static] super::VirtualList<M>);
 
 #[cfg(test)]
