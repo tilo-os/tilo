@@ -1557,6 +1557,11 @@ impl Workspaces {
         )?;
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
         self.absorb(workspace, device.device(), &body).await?;
+        // The workspace took the write: the devices it is linked to take it in as they would
+        // a member's, live, and one that links later from the store.
+        self.inner
+            .records
+            .carry(workspace_id, device.device(), &HostCommit { body })?;
         Ok(())
     }
 
