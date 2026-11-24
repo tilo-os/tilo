@@ -94,8 +94,9 @@ impl<'a> Authority<'a> {
                 // A visitor holds what the workspace opens to any key, and nothing else.
                 Actor::Visitor(_) => others.push(policy.party_of(Grantee::AnyKey)),
                 Actor::Automation(_) if owned => {}
-                // An app acting by itself holds no person's grants.
-                Actor::Automation(_) | Actor::App(_) => others.push(Party::default()),
+                // An app acting by itself holds the grants naming it, never a person's.
+                Actor::Automation(_) => others.push(Party::default()),
+                Actor::App(app) => others.push(policy.party_of(Grantee::app(app.as_str()))),
             }
         }
         let mut parts = person_parts.into_iter().chain(others);
@@ -213,8 +214,8 @@ pub fn admit_invocation(
 mod tests {
     use super::*;
     use crate::{
-        Acting, ActionKind, Answer, Context, Grant, KindSet, Role, SESSION_ANSWER_PREFIX, Verdict,
-        roles,
+        Acting, ActionKind, Answer, Context, Grant, Grantee, KindSet, Role, SESSION_ANSWER_PREFIX,
+        Verdict, roles,
     };
 
     const WORKSPACE: &str = "w";
@@ -296,6 +297,29 @@ mod tests {
                 answer(&agent_for_a_viewer, &policy, &turn, ActionKind::Undoable),
                 Answer::Deny,
                 "the viewer's grants decide too"
+            );
+        }
+
+        phase an_app_acting_by_itself_is_decided_by_the_grants_naming_it;
+        {
+            let app = Acting::by_app("so.tilo.notes");
+            assert_eq!(
+                answer(&app, &policy(), &[], ActionKind::Undoable),
+                Answer::Deny,
+                "an app holds no person's grants, the owner's included"
+            );
+            let mut policy = policy();
+            policy.grants.push(Grant::new(
+                "notes-keeps-its-records",
+                Grantee::app("so.tilo.notes"),
+                TreePath::workspace(WORKSPACE).app("so.tilo.notes"),
+                KindSet::UNDOABLE,
+                Answer::Allow,
+                Grantee::person("owner"),
+            ));
+            assert_eq!(
+                answer(&app, &policy, &[], ActionKind::Undoable),
+                Answer::Allow
             );
         }
 
