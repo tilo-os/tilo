@@ -539,6 +539,8 @@ d-utmybuy7 = Displays pane
     .w-colour-profile = Farbprofil
     .w-system-default = Systemstandard
     .w-the-colours-it-shows-as-the = Die Farben, die er zeigt, wie der Bildschirm vermessen wurde
+    .w-your-other-screens = Ihre anderen Bildschirme
+    .w-your-devices-screens-as-one-desktop = Die Bildschirme Ihrer Geräte als ein Schreibtisch, an dem der Zeiger zwischen ihnen wechselt. Ziehen Sie einen Bildschirm, um die Bildschirme dieses Geräts zu verschieben.
     .w-display-tools = Anzeigeprogramme
     .w-these-programs-can-make-risky-display = Diese Programme können riskante Bildschirmänderungen vornehmen, ohne dass Sie sie behalten müssen.
     .w-ask-again = Wieder fragen
@@ -1721,6 +1723,19 @@ d-hthmopna-picked = Gewählt
 d-hthmopna-start = Start
 
 d-hthmopna-let_go = Losgelassen
+
+d-y3ve5xob = Eine Gerätegruppe verschieben
+    .doc = Verschiebt das Gerät, dessen Bildschirm gezogen wurde, sodass dieser Bildschirm dort steht, wo der Zeiger losgelassen wurde, in den eigenen Pixeln des gemeinsamen Raums, auf ein kleines Raster gerundet. Jeder Bildschirm dieses Geräts wandert mit; ein zu kleiner Zug ist keine Änderung.
+
+d-y3ve5xob-night = Nachtlicht
+
+d-y3ve5xob-screens = Bildschirme
+
+d-y3ve5xob-picked = Gewählt
+
+d-y3ve5xob-start = Start
+
+d-y3ve5xob-let_go = Losgelassen
 
 d-rmuoshhm = Helligkeit von SDR-Inhalten setzen
     .doc = Wie hell gewöhnliche Inhalte in HDR aussehen, in cd/m²; 203 ist der Referenzweißwert, den HDR-Video erwartet.

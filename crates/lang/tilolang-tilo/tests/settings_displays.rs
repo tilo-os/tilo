@@ -46,7 +46,17 @@ fn settings() -> Host {
         };
         let _ = host.runtime().set_reading(&root, "{}");
     }
+    // The person's screens: the session publishes them even when it knows of none.
+    let _ = host
+        .runtime()
+        .set_reading(&person_displays(), r#"{"local":"","screens":[]}"#);
     host
+}
+
+/// The person's screens across their devices, as the session publishes them.
+fn person_displays() -> ResourceRef {
+    ResourceRef::parse_id("session:person-displays", "so.tilo.device#PersonDisplays")
+        .expect("a person displays resource")
 }
 
 /// This device's displays, as the session publishes them.
@@ -297,4 +307,45 @@ fn the_pane_asks_a_trusted_display_tool_again() {
     view.press(&again).expect("the tool is asked again");
     let asked = sent.asked("forget-display-tool");
     assert_eq!(arg(&asked, "tool"), Value::text("/usr/bin/kanshi"));
+}
+
+/// This laptop's panel and the tower computer's monitor, side by side in the person's layout.
+const PERSON_READING: &str = r#"{
+  "local": "laptop",
+  "screens": [
+    {
+      "device": "laptop", "output": "edid:panel", "name": "Built-in display",
+      "device_label": "Laptop", "local": true, "online": true,
+      "x": 0, "y": 0, "width": 1920, "height": 1200, "reachable": true
+    },
+    {
+      "device": "tower", "output": "edid:tower", "name": "Tower monitor",
+      "device_label": "Tower computer", "local": false, "online": true,
+      "x": 1920, "y": 0, "width": 1920, "height": 1080, "reachable": true
+    }
+  ]
+}"#;
+
+#[test]
+fn the_pane_shows_another_device_s_screens_where_they_stand() {
+    let host = settings();
+    host.runtime()
+        .set_reading(&displays(), READING)
+        .expect("the displays are set");
+    host.runtime()
+        .set_reading(&person_displays(), PERSON_READING)
+        .expect("the person's screens are set");
+    let view = displays_pane(&host);
+    let shown = texts(&view);
+    assert!(
+        shown.iter().any(|text| text
+            == "Your screens, left to right and top to bottom: Built-in display; Tower monitor on Tower computer"),
+        "{shown:?}"
+    );
+    assert!(shown.iter().any(|text| text == "Online"), "{shown:?}");
+    assert!(
+        !view.tree().of_kind("ui.Drawing").is_empty(),
+        "the person's screens are drawn as one layout: {:?}",
+        kinds(&view)
+    );
 }

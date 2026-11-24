@@ -188,6 +188,7 @@ session-magnifier-toggle = Turn the magnifier on or off
 session-magnifier-zoom-in = Magnify more
 session-magnifier-zoom-out = Magnify less
 session-displays = Displays
+session-person-displays = Your screens
 session-input-devices = Input devices
 session-privacy = Privacy
 session-workspace-access = Workspace access

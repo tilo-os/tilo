@@ -413,6 +413,44 @@ impl Mode {
     }
 }
 
+/// The person's screens across their devices, as one layout: every screen each device shows,
+/// where it stands in the shared space, and whether the pointer reaches it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct PersonDisplays {
+    /// This device, as the person's devices record names it.
+    pub local: String,
+    /// Every screen of theirs, this device's and the others'.
+    pub screens: Vec<SharedScreen>,
+}
+
+/// One screen of the person's shared layout.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one screen, read one at a time by a view"
+)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct SharedScreen {
+    /// The device that drives it, by its key in the person's devices.
+    pub device: String,
+    /// The device's stable output id.
+    pub output: String,
+    /// What a person knows it by.
+    pub name: String,
+    /// What a person calls the device that drives it.
+    pub device_label: String,
+    /// Whether it is a screen of this device.
+    pub local: bool,
+    /// Whether the device that drives it is on a session with this one.
+    pub online: bool,
+    /// Where it stands in the shared space, in logical pixels.
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+    /// Whether it meets a screen of another device along an edge, where the pointer crosses.
+    pub reachable: bool,
+}
+
 /// Which way a display's picture is turned, as `rotate` takes it.
 pub const TRANSFORMS: [&str; 4] = ["normal", "rotate-90", "rotate-180", "rotate-270"];
 
@@ -421,6 +459,16 @@ pub const TRANSFORMS: [&str; 4] = ["normal", "rotate-90", "rotate-180", "rotate-
 #[must_use]
 pub fn surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Reading, DisplaysAction>("displays", "Displays")
+}
+
+/// The person's screens across their devices, as a view reads them: the reading ([`PersonDisplays`]),
+/// with no verbs of its own. A screen's place is written through the display-placement section.
+#[must_use]
+pub fn person_displays_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<PersonDisplays, tilo_resource::NoEffect>(
+        "person-displays",
+        "Your screens",
+    )
 }
 
 /// The part's display, as a view reads it.

@@ -9130,8 +9130,7 @@
               "type": "int"
             }
           ]
-        }
-      ,
+        },
         {
           "id": "forget-display-tool",
           "label": "Let a display tool ask again",
@@ -9219,8 +9218,7 @@
           "stored": "value",
           "type": "bool",
           "readonly": true
-        }
-      ,
+        },
         {
           "path": "trusted_tools",
           "stored": "value",
@@ -9414,8 +9412,7 @@
               "type": "int"
             }
           ]
-        }
-      ,
+        },
         {
           "name": "TrustedTool",
           "doc": "A program this device trusts with its displays: one whose risky display changes apply without asking.",
@@ -9509,6 +9506,82 @@
           "stored": "value",
           "type": "text",
           "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "person-displays",
+      "label": "Your screens",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "local",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "screens",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SharedScreen"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "SharedScreen",
+          "doc": "One screen of the person's shared layout.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "output",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "device_label",
+              "type": "text"
+            },
+            {
+              "name": "local",
+              "type": "bool"
+            },
+            {
+              "name": "online",
+              "type": "bool"
+            },
+            {
+              "name": "x",
+              "type": "int"
+            },
+            {
+              "name": "y",
+              "type": "int"
+            },
+            {
+              "name": "width",
+              "type": "int"
+            },
+            {
+              "name": "height",
+              "type": "int"
+            },
+            {
+              "name": "reachable",
+              "type": "bool"
+            }
+          ]
         }
       ]
     },

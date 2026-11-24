@@ -193,6 +193,7 @@ session-magnifier-toggle = Lupe ein- oder ausschalten
 session-magnifier-zoom-in = Stärker vergrößern
 session-magnifier-zoom-out = Weniger vergrößern
 session-displays = Bildschirme
+session-person-displays = Ihre Bildschirme
 session-input-devices = Eingabegeräte
 session-privacy = Privatsphäre
 session-workspace-access = Zugriff im Arbeitsbereich

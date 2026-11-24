@@ -131,6 +131,11 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("battery_history", "BatteryHistory", "power:history"),
     ("power", "Power", "power"),
     ("displays", "Displays", "session:displays"),
+    (
+        "person_displays",
+        "PersonDisplays",
+        "session:person-displays",
+    ),
     ("screen", "Screen", "session:screen"),
     ("input_devices", "InputDevices", "session:input-devices"),
     ("keyboard", "Keyboard", "session:keyboard"),
