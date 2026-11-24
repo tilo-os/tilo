@@ -838,6 +838,10 @@ pub struct BlockEditor {
     /// The paper the document is set on, when a view asks for pages: the stack breaks the
     /// blocks into sheets and the draw puts the paper, the header and the footer under them.
     pages: Option<Pages>,
+    /// The view asking how many sheets the document fills (`page_count`), and the count it was
+    /// last told: a layout that fills the same number says nothing.
+    page_count_event: Option<ui::component::Event>,
+    published_page_count: Option<i64>,
     /// Presence keys from the host whose model owns the blocks
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
     presence_key: Option<present::PresenceKeyFn>,
@@ -1044,6 +1048,8 @@ impl BlockEditor {
             link_ask: None,
             page_block: None,
             pages: None,
+            page_count_event: None,
+            published_page_count: None,
             presence_key: None,
             body: None,
         };
@@ -1692,6 +1698,17 @@ impl BlockEditor {
     #[must_use]
     pub fn pages(&self) -> Option<&Pages> {
         self.pages.as_ref()
+    }
+
+    /// How many sheets the document fills at the width it was last laid out at: the count a
+    /// status bar writes as "Page N of M". Zero writes on one continuous page.
+    #[must_use]
+    pub fn page_count(&self) -> usize {
+        if self.pages.is_some() {
+            self.stack.pages.pages.len().max(1)
+        } else {
+            0
+        }
     }
 
     /// Align every line within the editor's width: a text box whose
@@ -8887,6 +8904,26 @@ impl BlockEditor {
             };
         }
         stack.width = Some(width);
+        self.publish_page_count();
+    }
+
+    /// Tell the view how many sheets the document fills, when that changed: a status bar reads
+    /// it as "Page N of M". One continuous page (no paper asked for) is none.
+    fn publish_page_count(&mut self) {
+        let pages = if self.pages.is_some() {
+            i64::try_from(self.stack.pages.pages.len())
+                .unwrap_or(i64::MAX)
+                .max(1)
+        } else {
+            0
+        };
+        if self.published_page_count == Some(pages) {
+            return;
+        }
+        self.published_page_count = Some(pages);
+        if let Some(event) = &self.page_count_event {
+            event.fire(Some(ui::component::Value::Int(pages)));
+        }
     }
 
     /// Each block's rectangle from the last stack, rounded exactly as Taffy

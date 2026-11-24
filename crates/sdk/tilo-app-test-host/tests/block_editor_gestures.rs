@@ -556,6 +556,27 @@ fn block_drag_escape_and_focus_loss_preserve_order() {
     }
 }
 
+/// A document set on paper reports how many sheets it fills, so a status bar can write "Page N
+/// of M"; one continuous page reports none.
+#[test]
+fn a_document_on_paper_reports_the_sheets_it_fills() {
+    let long = "A paragraph with enough words to wrap across the page when it is set narrow.\n\n"
+        .repeat(60);
+    let mut editor = ui::rich_edit::BlockEditor::from_markdown(&long).with_wrap_lines(true);
+    assert_eq!(editor.page_count(), 0, "one continuous page until paper is asked for");
+    editor.set_pages(ui::rich_edit::Pages::of("A4", "Writer", ""));
+    let mut editor = layout_block_editor(editor, 240.0);
+    let _ = block_scene(&mut editor);
+    let pages = editor.page_count();
+    assert!(pages > 1, "the document runs over several sheets: {pages}");
+
+    let mut shorter =
+        layout_block_editor(ui::rich_edit::BlockEditor::from_markdown("one line"), 240.0);
+    shorter.set_pages(ui::rich_edit::Pages::of("A4", "", ""));
+    let _ = block_scene(&mut shorter);
+    assert_eq!(shorter.page_count(), 1, "a short document fills one sheet");
+}
+
 /// Zooming sets every block larger and breaks the pages again; the range is 40% to 300%.
 #[test]
 fn zooming_sets_every_block_larger() {
