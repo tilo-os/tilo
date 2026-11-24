@@ -168,7 +168,7 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
                 }
             });
         host.daemon().serve_migrations();
-        let device = device_of(&engine(host.as_ref()).await);
+        let device = device_of(&engine(host.as_ref()));
         let steps_in = |named: &str| {
             let mut steps = Steps::new(
                 host.dispatch(),

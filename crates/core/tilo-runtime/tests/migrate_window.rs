@@ -27,32 +27,23 @@ const MIGRATE: &str = "so.tilo.migrate";
 /// The package a device's migrations are published as.
 const ENGINE: &str = "so.tilo.migrate.engine";
 
-/// Where this device's migrations answer, as the package code calls them by names it.
-pub(crate) async fn engine(host: &host::Host) -> String {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let page = host
-            .dispatch()
-            .query(&host.caller(), CatalogueQuery::default())
-            .await
-            .expect("the catalogue answers")
-            .expect("the catalogue lists what the device publishes");
-        let found = page
-            .packages
-            .iter()
-            .find(|package| package.app == ENGINE)
-            .and_then(|package| package.resources.first())
-            .map(|resource| resource.address.clone());
-        if let Some(address) = found {
-            return address;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the device never publishes its migrations: {:?}",
-            page.packages
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+/// Where this device's migrations answer: the address of the package the device registered them
+/// as, read from the registry the device hands its tilolang apps to compile their calls against,
+/// as the Migrations window's own calls are.
+pub(crate) fn engine(host: &host::Host) -> String {
+    let packages = host.daemon().workspaces().providers().packages();
+    packages
+        .iter()
+        .find(|package| package.app == ENGINE)
+        .and_then(|package| package.resources.first())
+        .map(|resource| resource.address.clone())
+        .unwrap_or_else(|| {
+            let registered: Vec<&str> = packages
+                .iter()
+                .map(|package| package.app.as_str())
+                .collect();
+            panic!("the device registers no migrations: {registered:?}")
+        })
 }
 
 /// What the agent's `tilo_do` of `action` on `path` answered: its value, or what it said when
@@ -238,7 +229,7 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
         let home = PathBuf::from(std::env::var_os("HOME").expect("the test's home"));
         tilo_migrate::thunderbird::fixture::write_sample_profile(&home);
         host.daemon().serve_migrations();
-        let engine = engine(host.as_ref()).await;
+        let engine = engine(host.as_ref());
         let agent = host.agent();
 
         // The agent reviews Thunderbird: the device writes the migration, and the window shows
