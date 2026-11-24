@@ -740,7 +740,7 @@ impl Instance {
             args: serde_json::Map::new(),
         };
         let payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
-        crate::share::answer(&payload, &self.app, self.link_home.as_ref())
+        crate::share::answer(&payload, app, self.link_home.as_ref())
     }
 
     /// Show what the person's own step made, as a press of the action that made it does: it

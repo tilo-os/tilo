@@ -125,6 +125,10 @@ tilolang-thread-replies = { $count ->
    *[other] { $count } replies
 }
 tilolang-make = Make
+# The system's command on every resource's menu, and what the window says once it ran.
+tilolang-copy-link = Copy link
+tilolang-link-copied = Link copied
+tilolang-link-not-copied = The clipboard did not take the link
 tilolang-from = From
 tilolang-linked = Made from this
 # A call held on a resource (a voice channel): the person's own controls, and what each person

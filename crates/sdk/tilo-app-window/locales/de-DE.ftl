@@ -108,6 +108,10 @@ tilolang-thread-replies = { $count ->
    *[other] { $count } Antworten
 }
 tilolang-make = Erstellen
+# The system's command on every resource's menu, and what the window says once it ran.
+tilolang-copy-link = Link kopieren
+tilolang-link-copied = Link kopiert
+tilolang-link-not-copied = Die Zwischenablage hat den Link nicht angenommen
 tilolang-from = Aus
 tilolang-linked = Daraus entstanden
 tilolang-call-join = Stumm beitreten

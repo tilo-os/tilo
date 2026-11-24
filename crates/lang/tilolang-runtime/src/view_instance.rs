@@ -15,7 +15,7 @@ use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
     ANSWER_ACTION, CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION,
-    CHOOSE_FOLDER_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
+    CHOOSE_FOLDER_ACTION, COPY_LINK_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
     RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
@@ -57,6 +57,9 @@ pub enum ViewEvent {
     /// `run_line(r, line)` was pressed: the window's host runs `line` as the person's own step,
     /// through the session's program host, and tells `lines_run(r)` what it answers.
     RunLine { target: ResourceRef, line: String },
+    /// Copy link was chosen on `target`, a resource of `app`: the window's host mints its link
+    /// and puts it on the person's clipboard.
+    CopyLink { target: ResourceRef, app: String },
 }
 
 /// A step of the person's own in the system's call held on a resource.
@@ -1007,6 +1010,7 @@ impl ViewInstance {
             THEN_ACTION => self.run_then(aref, gesture),
             SHORTCUT_ACTION => self.platform_shortcut(aref, gesture),
             ANSWER_ACTION => self.answer_steps(aref, gesture),
+            COPY_LINK_ACTION => self.copy_link(aref),
             CHOOSE_ACTION => self.platform_choose(aref, false),
             CHOOSE_FOLDER_ACTION => self.platform_choose(aref, true),
             SAVE_ACTION => self.platform_save(aref),
@@ -1057,6 +1061,18 @@ impl ViewInstance {
             });
             Ok(InvokeOutcome::Done(Value::Unit))
             }
+
+    /// Copy link was chosen on a resource: the window's host mints its link and copies it.
+    fn copy_link(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        let [Value::Ref(r), Value::Text(app)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed copy link".into()));
+        };
+        self.events.borrow_mut().push(ViewEvent::CopyLink {
+            target: ResourceRef::clone(&r.target),
+            app: app.clone(),
+        });
+        Ok(InvokeOutcome::Done(Value::Unit))
+    }
 
     fn undo_step(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
             let ask = match aref.args.as_slice() {

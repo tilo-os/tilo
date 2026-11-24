@@ -707,6 +707,8 @@ impl Instance {
                 ViewEvent::Call { target, step } => self.call_steps.push((target, step)),
                 // A line the person ran is the session's program host's to run: the host takes it.
                 ViewEvent::RunLine { target, line } => self.line_runs.push((target, line)),
+                // Copy link is the system's: the link is minted here and copied to the person.
+                ViewEvent::CopyLink { target, app } => self.copy_link(&target, &app),
                 ViewEvent::Seen { count } => {
                     self.seen_offer = true;
                     self.out.push(ToUi::Notice {
@@ -719,6 +721,31 @@ impl Instance {
                     });
                 }
             }
+        }
+    }
+
+    /// Put the link of `target`, a resource of `app`, on the person's clipboard, minted as other
+    /// devices and people open it ([`Self::share_link`]), and say that it is there, or why not.
+    fn copy_link(&mut self, target: &ResourceRef, app: &str) {
+        let resource = crate::publish::resource_id(app, &target.id_string());
+        let url = self.share_link(&resource).and_then(|output| {
+            output
+                .value
+                .as_ref()
+                .and_then(|value| value.get("url"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| "the host answered no link".to_owned())
+        });
+        match url {
+            Ok(url) if self.platform.copy_clipboard("text/plain", url.as_bytes()) => {
+                self.notice(Words::phrase("tilolang-link-copied"), ui::NoticeKind::Info);
+            }
+            Ok(_) => self.notice(
+                Words::phrase("tilolang-link-not-copied"),
+                ui::NoticeKind::Error,
+            ),
+            Err(why) => self.notice(Words::Plain(why), ui::NoticeKind::Error),
         }
     }
 

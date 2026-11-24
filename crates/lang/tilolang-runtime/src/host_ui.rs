@@ -33,6 +33,11 @@ pub const THEN_ACTION: &str = "$then";
 /// is refused or fails.
 pub const ANSWER_ACTION: &str = "$answer";
 
+/// The system's Copy link on a resource, which every menu of one offers: the window's host mints
+/// the link other devices and people open it by and puts it on the person's clipboard. Its
+/// arguments are the resource and the app whose resource it is.
+pub const COPY_LINK_ACTION: &str = "$copy-link";
+
 /// The action of a row's keys (`shortcut` on a `ui.ListItem`): run the action of the row's item
 /// the key pressed names, where it applies. Its arguments are the keys, each with what it runs,
 /// and the key pressed.

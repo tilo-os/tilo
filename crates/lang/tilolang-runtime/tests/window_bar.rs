@@ -284,8 +284,14 @@ mod cases {
             "the row opens with the actions its view placed, whole menu {labels:?}:\n{}",
             dump(tree)
         );
+        assert_eq!(
+            labels.last().map(String::as_str),
+            Some("Copy link"),
+            "the system's Copy link closes every row's menu, whole menu {labels:?}:\n{}",
+            dump(tree)
+        );
         assert!(
-            menu[6..]
+            menu[6..menu.len() - 1]
                 .iter()
                 .all(|item| item.props.get("group") == Some(&Value::text("More"))),
             "what the view left over stands behind its \"More\", whole menu {labels:?}:\n{}",
@@ -344,10 +350,11 @@ mod cases {
         let behind: Vec<String> = overflow.iter().map(|node| text_of(node, "label")).collect();
         assert_eq!(
             behind,
-            ["Delete finished tasks"],
+            ["Delete finished tasks", "Copy link"],
             "the bar's overflow button holds the actions the view placed, in its order, and then the \
              rest of what Tasks offers that the window does not already offer: New project is \
-             its Projects section's add, and stands there alone:\n{}",
+             its Projects section's add, and stands there alone; the system's Copy link of what \
+             the window shows closes it:\n{}",
             dump(tree)
         );
         assert!(
@@ -586,9 +593,9 @@ view note_page(n: Note) {
     tilo_test_env::scenario! {
         fn a_page_places_its_dots_and_a_bar_its_toggle;
 
-        phase a_page_whose_item_offers_nothing_shows_no_dots;
-        // A page whose item offers nothing shows no "…": the action API would open on nothing, taking a
-        // line of the page for a control with nothing behind it.
+        phase a_page_whose_app_offers_nothing_keeps_only_the_systems_copy_link;
+        // A page whose app offers nothing on its item still has the system's Copy link: its "…"
+        // holds that alone, and nothing of an app that wrote none.
         {
             const QUIET: &str = r#"
 app so.tilo.test.quiet "Quiet"
@@ -621,9 +628,15 @@ view quiet_page(q: Quiet) {
             let item = returned_ref(w.call("new", vec![Value::resource(&root)]));
             let window = w.window("quiet_page", &item);
             let tree = window.tree();
-            assert!(
-                of_kind(tree, "ui.MenuButton").is_empty(),
-                "an item with nothing to do shows no \"…\":\n{}",
+            let offered: Vec<String> = of_kind(tree, "ui.MenuButton")
+                .into_iter()
+                .flat_map(|menu| of_kind(menu, "ui.MenuItem"))
+                .map(|item| text_of(item, "label"))
+                .collect();
+            assert_eq!(
+                offered,
+                ["Copy link"],
+                "an item its app offers nothing on has the system's Copy link alone:\n{}",
                 dump(tree)
             );
             assert_eq!(

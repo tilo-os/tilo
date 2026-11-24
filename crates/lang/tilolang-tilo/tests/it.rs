@@ -27,6 +27,7 @@ mod chat_agents;
 mod chat_ban;
 mod chat_calls;
 mod chat_emoji;
+mod chat_copylink;
 mod chat_liveshare;
 mod chat_persona_shot;
 mod composer;
