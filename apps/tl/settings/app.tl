@@ -190,7 +190,7 @@ view settings_window(s: Settings) {
                     } else if s.pane == "updates" {
                         updates_pane()
                     } else if s.pane == "themes" {
-                        themes_pane()
+                        themes_pane(s)
                     } else if s.pane == "users" {
                         users_pane()
                     } else if s.pane == "about" {

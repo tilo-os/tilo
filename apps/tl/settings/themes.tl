@@ -3,7 +3,7 @@
 /// panel and an agent change the same field with the same edit, so the desktop takes it live
 /// and History keeps who changed it. An edit that would leave a pair of ink and surface under
 /// its contrast floor is refused, and the refusal names the pair.
-view themes_pane() {
+view themes_pane(s: Settings) {
     state editing: Text = ""
     state new_id: Text = ""
     state base: Text = "tilo-dark"
@@ -70,7 +70,7 @@ view themes_pane() {
             // A theme saved with Export on another workspace, taken in whole: every role, tuned
             // value and glass shader, under an id made from its name.
             ui.Button("Import", icon: .upload, size: .small) {
-                on press: file.choose(import_theme(a), accept: [".theme.json", "application/json"])
+                on press: file.choose(import_theme(s), accept: [".theme.json", "application/json"])
             }
         }
     }
@@ -448,11 +448,11 @@ fn preset_ids() -> List<Text> {
 /// Takes in a theme saved with Export, from this workspace or another: every role, tuned value
 /// and glass shader, once it is admitted and keeps every contrast floor. Importing names it by
 /// its own name, so what a person exported under a name comes back under one.
-action import_theme(a: settings.AppearancePrefs, file: File) (
+action import_theme(s: Settings, file: File) (
     icon: .upload,
     label: "Import a theme…",
     did: "imported a theme",
-    opens: [".theme.json", "application/json"],
+    opens: ["application/json"],
 ) {
     let text = match file.text() {
         .ok(said) => said,
@@ -461,5 +461,5 @@ action import_theme(a: settings.AppearancePrefs, file: File) (
     if text == "" {
         return
     }
-    settings.import_theme(a, id: "", document: text)
+    settings.import_theme(settings.appearance, id: "", document: text)
 }
