@@ -45,6 +45,12 @@ test-support = ["tilo-runtime/test-support"]
 name = "it"
 path = "tests/it.rs"
 
+# A test of its own: it installs the process's app surface set, as the daemon's program does,
+# and a binary of its own keeps that from deciding the other tests' writes.
+[[test]]
+name = "agent_record"
+path = "tests/agent_record.rs"
+
 [dependencies]
 tilo-runtime = { path = "../../core/tilo-runtime" }
 # The collaboration client the SDK app the process tests install uses, without the toolkit: an
