@@ -318,6 +318,19 @@ impl RevocationList {
         self.entries.values()
     }
 
+    /// The entry that retires `device`, a device of `user`, because their root
+    /// took it back ([`RevocationReason::Retired`]): what a device is told with,
+    /// so it keeps the entry and refuses its own key everywhere it is due.
+    /// `None` when the list holds no entry for the device, or holds one for
+    /// another reason: a key lost, stolen or compromised is told only that it
+    /// was removed, and the entry's reason is its person's.
+    #[must_use]
+    pub fn retired(&self, user: &[u8; 32], device: &[u8; 32]) -> Option<&RevocationEntry> {
+        self.entries
+            .get(&(*user, *device))
+            .filter(|entry| entry.reason == RevocationReason::Retired)
+    }
+
     /// Number of entries in the list: one per root and revoked device.
     pub fn len(&self) -> usize {
         self.entries.len()

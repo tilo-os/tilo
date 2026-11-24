@@ -895,6 +895,9 @@ struct Inner {
     /// frame reaches every reader, and a reader that falls behind holds the
     /// links back rather than losing one.
     content_readers: Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<Heard>>>>,
+    /// The asks for content no link could carry yet ([`Waiting`]): sent as the
+    /// first link that carries content registers.
+    content_waiting: Arc<std::sync::Mutex<Vec<Waiting>>>,
     /// Counts the links that started carrying content ([`DirectSync::content_linked`]).
     content_linked: watch::Sender<u64>,
     /// What the devices at this device's links' other ends answered of its writes.
@@ -1007,6 +1010,7 @@ impl DirectSync {
             heard: broadcast::channel(OUTGOING).0,
             content_links: Arc::default(),
             content_readers: Arc::default(),
+            content_waiting: Arc::default(),
             content_linked: watch::channel(0).0,
             answered: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
@@ -1039,6 +1043,7 @@ impl DirectSync {
             heard: self.0.heard.clone(),
             content_links: Arc::clone(&self.0.content_links),
             content_readers: Arc::clone(&self.0.content_readers),
+            content_waiting: Arc::clone(&self.0.content_waiting),
             content_linked: self.0.content_linked.clone(),
             answered: self.0.answered.clone(),
             changed: self.0.changed.clone(),
@@ -1395,8 +1400,10 @@ impl DirectSync {
                 message,
                 published: true,
             };
-            for link in self.content_targets(&authored, None) {
-                link.queue_now(authored.clone());
+            // An ask no link can carry yet is kept for the first one that can: the link a session
+            // asks on is dialled before its content stream starts.
+            if !self.route_content_now(&authored, None) {
+                self.hold_content(authored, None);
             }
             return Ok(());
         }
@@ -1426,15 +1433,14 @@ impl DirectSync {
         if !content_frame(&message) {
             return Err(format!("{} is no content frame", message.kind()));
         }
-        self.route_content(
-            Authored {
-                from: self.device(),
-                message,
-                published: true,
-            },
-            None,
-        )
-        .await;
+        let authored = Authored {
+            from: self.device(),
+            message,
+            published: true,
+        };
+        if !self.route_content(authored.clone(), None).await {
+            self.hold_content(authored, None);
+        }
         Ok(())
     }
 
@@ -1457,17 +1463,94 @@ impl DirectSync {
             .filter(|link| {
                 Some(link.remote) != came_by
                     && !already_theirs(authored, link.remote)
-                    && content_reaches(&authored.message, link.remote)
+                    && (content_reaches(&authored.message, link.remote)
+                        // An answer to a device this one is not linked to goes on every link of
+                        // a device that is no host: the workspace's host hands it to whoever asked,
+                        // and a reader that asked no such thing passes it over
+                        // ([`Self::tell_content`]). A host sends an answer to its asker alone,
+                        // never to every member it carries for.
+                        || (content_answer(&authored.message) && !self.fans_out()))
             })
             .cloned()
             .collect()
     }
 
     /// Queue `authored`, a content frame, on each link it goes to
-    /// ([`Self::content_targets`]), waiting for room on each.
-    async fn route_content(&self, authored: Authored, came_by: Option<[u8; 32]>) {
-        for link in self.content_targets(&authored, came_by) {
+    /// ([`Self::content_targets`]), waiting for room on each; answers whether a
+    /// link took it.
+    async fn route_content(&self, authored: Authored, came_by: Option<[u8; 32]>) -> bool {
+        let targets = self.content_targets(&authored, came_by);
+        let went = !targets.is_empty();
+        for link in targets {
             link.queue(authored.clone()).await;
+        }
+        went
+    }
+
+    /// [`Self::route_content`] without waiting for room: a caller that cannot
+    /// wait sends its frame at a time ([`DirectSync::send`], and what
+    /// [`Self::flush_content`] was holding).
+    fn route_content_now(&self, authored: &Authored, came_by: Option<[u8; 32]>) -> bool {
+        let targets = self.content_targets(authored, came_by);
+        let went = !targets.is_empty();
+        for link in targets {
+            link.queue_now(authored.clone());
+        }
+        went
+    }
+
+    /// Keep `authored`, an ask for content no link could carry, for the first
+    /// link that does ([`Self::flush_content`]). An answer no link takes is
+    /// dropped instead: the link of the device that asked ended with its ask.
+    fn hold_content(&self, authored: Authored, asker: Option<[u8; 32]>) {
+        if !matches!(&authored.message, NeighbourMsg::DocumentContentWant { .. }) {
+            return;
+        }
+        let mut waiting = self.0.content_waiting.lock_recover();
+        if !waiting.iter().any(|held| {
+            held.authored.from == authored.from && held.authored.message == authored.message
+        }) {
+            waiting.push(Waiting { authored, asker });
+        }
+    }
+
+    /// Send the asks held for a content link ([`Self::hold_content`]) on the
+    /// links that carry content now: a workspace's devices link at their own
+    /// pace, and the one that keeps what an ask names may link after it. An ask
+    /// still with no link to carry it keeps waiting.
+    fn flush_content(&self) {
+        let waiting = std::mem::take(&mut *self.0.content_waiting.lock_recover());
+        if waiting.is_empty() {
+            return;
+        }
+        let linked: Vec<[u8; 32]> = self
+            .0
+            .content_links
+            .lock_recover()
+            .iter()
+            .map(|link| link.remote)
+            .collect();
+        let mut kept = Vec::new();
+        for held in waiting {
+            if held.asker.is_some_and(|asker| !linked.contains(&asker)) {
+                continue;
+            }
+            if !self.route_content_now(&held.authored, None) {
+                kept.push(held);
+            }
+        }
+        if kept.is_empty() {
+            return;
+        }
+        let mut waiting = self.0.content_waiting.lock_recover();
+        for held in kept {
+            // An ask another task held in the meantime is kept once.
+            if !waiting.iter().any(|there| {
+                there.authored.from == held.authored.from
+                    && there.authored.message == held.authored.message
+            }) {
+                waiting.push(held);
+            }
         }
     }
 
@@ -3081,14 +3164,17 @@ impl DirectSync {
             return;
         }
         if self.fans_out() {
-            self.route_content(
-                Authored {
-                    published: false,
-                    ..authored.clone()
-                },
-                Some(remote),
-            )
-            .await;
+            let carried = Authored {
+                published: false,
+                ..authored.clone()
+            };
+            // An ask no other link can carry yet waits for one that can
+            // ([`Self::flush_content`]): a workspace's devices link at their own pace, and the
+            // device that keeps what the ask names may link after it.
+            if !self.route_content(carried.clone(), Some(remote)).await {
+                self.hold_content(carried, Some(remote));
+                self.flush_content();
+            }
         }
         // Every reader here takes what it asked for and passes over the rest: a
         // host's server asks under a key of its own, so whether an answer is
@@ -4120,6 +4206,28 @@ fn content_reaches(message: &NeighbourMsg, device: [u8; 32]) -> bool {
     }
 }
 
+/// Whether `message` answers an ask for content: a piece of it, a device's
+/// word that it lacks it, or its refusal of the ask.
+fn content_answer(message: &NeighbourMsg) -> bool {
+    matches!(
+        message,
+        NeighbourMsg::DocumentContentPiece { .. }
+            | NeighbourMsg::DocumentContentLacks { .. }
+            | NeighbourMsg::DocumentContentRefused { .. }
+    )
+}
+
+/// An ask for content no link could carry when it came: kept until a link that
+/// carries content registers ([`DirectSync::flush_content`]), so an ask made as
+/// a workspace's devices link is not dropped before the one that keeps what it
+/// names is linked.
+struct Waiting {
+    authored: Authored,
+    /// The link the ask came by, when another device asked: an ask whose asker's
+    /// link ended is answered nowhere. A device's own ask waits for any link.
+    asker: Option<[u8; 32]>,
+}
+
 /// One link's queue of content frames for its content stream, and the room
 /// left in it: a sender that finds none waits ([`Self::queue`]).
 #[derive(Clone)]
@@ -4174,6 +4282,8 @@ impl ContentLinked {
         let room = Arc::clone(&link.room);
         sync.0.content_links.lock_recover().push(link);
         sync.0.content_linked.send_modify(bump);
+        // The asks that waited for a link that carries content go on this one.
+        sync.flush_content();
         Self {
             links: Arc::clone(&sync.0.content_links),
             room,
@@ -4521,8 +4631,12 @@ mod tests {
 
         // A host carries its members' frames on: one whose author is no device
         // of the workspace is refused all the same.
-        sync.take_content(member, LinkAdmit::dialling(), want(stranger, stranger, "aa"))
-            .await;
+        sync.take_content(
+            member,
+            LinkAdmit::dialling(),
+            want(stranger, stranger, "aa"),
+        )
+        .await;
         sync.take_content(member, admit, want(member, stranger, "bb"))
             .await;
         sync.take_content(member, admit, want(member, member, "cc"))

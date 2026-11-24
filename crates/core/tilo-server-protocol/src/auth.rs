@@ -43,8 +43,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use tilo_user_identity::{
-    DeviceCert, DeviceCertError, RevocationEntry, RevocationList, RevocationReason,
-    verify_device_cert_at,
+    DeviceCert, DeviceCertError, RevocationEntry, RevocationList, verify_device_cert_at,
 };
 
 use crate::policy::TrustPolicy;
@@ -700,13 +699,7 @@ pub fn server_refusal(
 ) -> Option<HelloRefused> {
     let refusal = HelloRefusal::said_of(error, &hello.cert, identity.own_user, trust)?;
     let retired = (refusal == HelloRefusal::DeviceRevoked)
-        .then(|| {
-            revocations.iter().find(|entry| {
-                entry.reason == RevocationReason::Retired
-                    && (entry.user_public_key, entry.revoked_device_public_key)
-                        == (hello.cert.user_public_key, hello.cert.device_public_key)
-            })
-        })
+        .then(|| revocations.retired(&hello.cert.user_public_key, &hello.cert.device_public_key))
         .flatten()
         .cloned();
     Some(build_hello_refused(

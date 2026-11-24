@@ -221,6 +221,26 @@ impl DenyReason {
         }
     }
 
+    /// The refusal `peer` is sent for `self`, the reason a workspace turns it
+    /// away: a device whose key its person's root retired is told with the entry
+    /// that retires it, as a refused hello is
+    /// ([`tilo_server_protocol::auth::server_refusal`]), so the device keeps the
+    /// entry and refuses its own key rather than asking its host again. Every
+    /// other denial is [`Self::refusal`]'s.
+    #[must_use]
+    pub fn refusal_for(
+        self,
+        peer: &AuthenticatedPeer,
+        revocations: &RevocationList,
+    ) -> tilo_server_protocol::refusal::Refusal {
+        if self == Self::Revoked
+            && let Some(entry) = revocations.retired(&peer.user_public_key, &peer.device_public_key)
+        {
+            return tilo_server_protocol::refusal::Refusal::Revoked(Box::new(entry.clone()));
+        }
+        self.refusal()
+    }
+
     /// The refusal as text, for the log.
     pub const fn reason(self) -> &'static str {
         match self {
