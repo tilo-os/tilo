@@ -112,9 +112,7 @@ engines() (
   set -euo pipefail
   libdir=$(rustc --print target-libdir)
   failed=0
-  for probe in "settings libtilo_accounts_engine.so via:libtilo_settings_engine.so" \
-               "settings libtilo_settings_engine.so" \
-               "calendar libtilo_accounts_engine.so" \
+  for probe in "calendar libtilo_accounts_engine.so" \
                "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "chat libtilo_emoji_engine.so" \
                "osk libtilo_emoji_engine.so" \

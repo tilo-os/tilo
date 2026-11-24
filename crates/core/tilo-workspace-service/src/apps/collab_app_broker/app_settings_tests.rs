@@ -452,63 +452,6 @@ tilo_test_env::scenario! {
         assert_eq!(records.load()["appearance"]["high_contrast"], true);
     }
 
-    phase model_providers_sets_the_providers_only_as_their_rules_allow;
-    // Model Providers sets the model providers through their setters, held to the rules the
-    // providers keep: within bounds, and the provisioner's signed models left as they are. It
-    // sets nothing else.
-    {
-        use agent_provider_config::{ModelDescriptor, ProviderConfig, ProviderProfile, SETTINGS_SECTION};
-        let records = session(std::path::Path::new(""));
-        let providers: AppSettingsHandle = AppSettingsServer::new(
-            tilo_app_id::apps::MODEL_PROVIDERS,
-            Arc::clone(&records) as Arc<dyn SettingsSource>,
-            admitted(),
-        )
-        .with_grants(
-            agent_provider_config::management::SETTERS
-                .iter()
-                .map(|&grant| grant.to_owned())
-                .collect(),
-        )
-        .with_check(Arc::new(agent_provider_config::management::check_write))
-        .into();
-        let written = |config: &ProviderConfig| {
-            let scratch = HostDocument::new(Map::new(), |_| Ok(()));
-            config.save_in(&scratch).unwrap();
-            serde_json::to_vec(&scratch.load()[SETTINGS_SECTION]).unwrap()
-        };
-        let mut profile = ProviderProfile::local_vllm();
-        profile.id = "on-this-device".into();
-        profile.models.push(ModelDescriptor::new("first"));
-        let config = ProviderConfig {
-            profiles: vec![profile],
-            ..ProviderConfig::default()
-        };
-        let mut forged = config.clone();
-        forged.profiles[0].models[0].revision = Some("a".repeat(40));
-        run(async {
-            providers
-                .update(SETTINGS_SECTION, &written(&config), None)
-                .await
-                .unwrap();
-            let refused = providers
-                .update(SETTINGS_SECTION, &written(&forged), None)
-                .await
-                .unwrap_err();
-            assert!(refused.contains("model providers"), "{refused}");
-            assert!(
-                providers
-                    .update("appearance", br#"{"mode": "dark"}"#, None)
-                    .await
-                    .is_err(),
-                "the person's look is not Model Providers' to set"
-            );
-        });
-        let kept = ProviderConfig::load_in(records.as_ref());
-        assert_eq!(kept.profiles[0].id, "on-this-device");
-        assert_eq!(kept.profiles[0].models[0].revision, None, "no signed model was minted");
-        assert!(records.load().get("appearance").is_none());
-    }
 }
 
 tilo_test_env::scenario! {

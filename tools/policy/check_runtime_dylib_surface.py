@@ -138,17 +138,6 @@ ENGINES = {
     "browser-continuity": "the import from another browser's profile, which only the importing "
                           "program links (the runtime keeps browser-continuity-core)",
     "app-catalogue": "the Store's catalogue, which only the Store links",
-    "tilo-settings-engine": "Settings' engine library (libtilo_settings_engine.so)",
-    "settings": "Settings' own library, which the app runs from libtilo_settings_engine.so",
-    "tilo-ntfs-mount": "the NTFS mount protocol, which Settings loads from libtilo_settings_engine.so",
-    "tilo-wallpapers": "the wallpaper catalogue, which Settings loads from libtilo_settings_engine.so",
-    "tilo-accessibility-settings": "the accessibility settings, which Settings loads from "
-                                   "libtilo_settings_engine.so",
-    "tilo-pc-keyboard-geometry": "the PC keyboard outlines, which Settings loads from "
-                                 "libtilo_settings_engine.so",
-    "tilo-zone-globe": "the time-zone globe, which Settings loads from libtilo_settings_engine.so",
-    "settings-sections": "the settings sections as resource models, which Settings loads from "
-                         "libtilo_settings_engine.so",
     # The catalogue itself is no longer here: every text field resolves
     # `:name:` and the picker opens for every app, so `emoji` is the
     # toolkit's (crates/ui/ui-core) and belongs in the runtime every app

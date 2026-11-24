@@ -1,0 +1,479 @@
+{
+  "resources": [
+    {
+      "kind": "models",
+      "label": "Model providers",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "list",
+          "label": "List model providers",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "add-provider",
+          "label": "Add a model provider",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "name",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "protocol",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "endpoint",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "headers",
+              "required": false,
+              "type": {
+                "list": {
+                  "named": "RequestHeader"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "set-key",
+          "label": "Keep a provider's key",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "provider",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "key",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "remove-key",
+          "label": "Remove a provider's key",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "provider",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "remove-provider",
+          "label": "Remove a model provider",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "provider",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "add-preset",
+          "label": "Add a ready-made provider",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "preset",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-enabled",
+          "label": "Offer a provider to agents, or stop",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "provider",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "enabled",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "refresh-models",
+          "label": "Ask a provider for its models",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "provider",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "add-model",
+          "label": "Add a model a provider lists nowhere",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "provider",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "model",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-default",
+          "label": "Choose the model work runs on",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "provider",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "model",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-assignment",
+          "label": "Choose the model one kind of work runs on",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "kind",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "provider",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "model",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-assignments",
+          "label": "Choose one model for several kinds of work",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "kinds",
+              "required": true,
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "provider",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "model",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-reasoning",
+          "label": "Choose how hard a provider's models think",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "provider",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "effort",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "begin-sign-in",
+          "label": "Begin signing in to a provider",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "using",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "wait-sign-in",
+          "label": "Wait for a provider sign-in",
+          "kind": "read",
+          "params": [
+            {
+              "name": "signIn",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "cancel-sign-in",
+          "label": "Stop waiting for a provider sign-in",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "signIn",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "providers",
+          "title": "The providers the workspace keeps, in their own order.",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "ProviderView"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "defaultProvider",
+          "title": "The provider work runs on when no kind names one.",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "assignments",
+          "title": "The provider and model each kind of work runs on.",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Assignment"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "presets",
+          "title": "The providers a person can add by name, without signing in.",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "ProviderPreset"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "ProviderView",
+          "doc": "One provider the workspace keeps, and the models agents may use from it.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text",
+              "title": "The provider's id, as every action names it."
+            },
+            {
+              "name": "name",
+              "type": "text",
+              "title": "What the person calls it."
+            },
+            {
+              "name": "protocol",
+              "type": {
+                "named": "Protocol"
+              },
+              "title": "How it is spoken to."
+            },
+            {
+              "name": "endpoint",
+              "type": "text",
+              "title": "The base URL every request goes to."
+            },
+            {
+              "name": "configured",
+              "type": "bool",
+              "title": "Whether the workspace's vault keeps a key for it."
+            },
+            {
+              "name": "enabled",
+              "type": "bool",
+              "title": "Whether its models are offered to agents."
+            },
+            {
+              "name": "signsIn",
+              "type": "bool",
+              "title": "Whether it is reached by signing in to an account."
+            },
+            {
+              "name": "models",
+              "type": {
+                "list": {
+                  "named": "OfferedModel"
+                }
+              },
+              "title": "The models it offers."
+            },
+            {
+              "name": "defaultModel",
+              "type": {
+                "option": "text"
+              },
+              "title": "The model its agent runs when nothing else is chosen."
+            },
+            {
+              "name": "reasoning",
+              "type": {
+                "option": "text"
+              },
+              "title": "How hard its models are asked to think, where the person chose."
+            },
+            {
+              "name": "headers",
+              "type": {
+                "list": {
+                  "named": "RequestHeader"
+                }
+              },
+              "title": "Headers sent with every request beside its key."
+            }
+          ]
+        },
+        {
+          "name": "OfferedModel",
+          "doc": "One model a provider offers.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text",
+              "title": "The model's id, as the provider's API names it."
+            },
+            {
+              "name": "label",
+              "type": "text",
+              "title": "What it is called."
+            }
+          ]
+        },
+        {
+          "name": "RequestHeader",
+          "doc": "A header a provider is sent with every request: a setting, never its key.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text",
+              "title": "The header's name."
+            },
+            {
+              "name": "value",
+              "type": "text",
+              "title": "Its value."
+            }
+          ]
+        },
+        {
+          "name": "Assignment",
+          "doc": "The provider and model one kind of work runs on.",
+          "fields": [
+            {
+              "name": "kind",
+              "type": "text",
+              "title": "The kind of work."
+            },
+            {
+              "name": "provider",
+              "type": "text",
+              "title": "The provider's id."
+            },
+            {
+              "name": "model",
+              "type": "text",
+              "title": "The model's id."
+            }
+          ]
+        },
+        {
+          "name": "ProviderPreset",
+          "doc": "A provider the catalogue knows, which a person may add by its name.",
+          "fields": [
+            {
+              "name": "preset",
+              "type": "text",
+              "title": "The name `add-preset` takes."
+            },
+            {
+              "name": "name",
+              "type": "text",
+              "title": "What people call it."
+            },
+            {
+              "name": "description",
+              "type": "text",
+              "title": "What it is, in one line."
+            },
+            {
+              "name": "protocol",
+              "type": {
+                "named": "Protocol"
+              },
+              "title": "How it is spoken to."
+            }
+          ]
+        },
+        {
+          "name": "Protocol",
+          "doc": "How a provider is spoken to over HTTP.",
+          "cases": [
+            {
+              "name": "open-ai-compatible",
+              "label": "OpenAI-compatible"
+            },
+            {
+              "name": "anthropic",
+              "label": "Anthropic"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

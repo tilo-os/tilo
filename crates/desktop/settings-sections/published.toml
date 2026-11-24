@@ -1414,103 +1414,6 @@ fields = [
 ]
 
 [[resources]]
-kind = "settings.agent-provider-setup"
-label = "Agent provider setup"
-version = 1
-fields = [
-  { path = "providers", type = { list = { named = "AgentProviderShown" } }, readonly = true },
-  { path = "default_provider", type = "text", readonly = true },
-  { path = "presets", type = { list = { named = "AgentProviderPresetShown" } }, readonly = true },
-]
-
-[[resources.verbs]]
-id = "add-provider"
-kind = "outside"
-params = [
-  { name = "preset", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "set-provider-enabled"
-kind = "outside"
-params = [
-  { name = "provider", type = "text", required = true, schema = { type = "string" } },
-  { name = "on", type = "bool", required = true, schema = { type = "boolean" } },
-]
-
-[[resources.verbs]]
-id = "set-provider-details"
-kind = "outside"
-params = [
-  { name = "provider", type = "text", required = true, schema = { type = "string" } },
-  { name = "label", type = "text", required = true, schema = { type = "string" } },
-  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
-  { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-]
-
-[[resources.verbs]]
-id = "set-provider-protocol"
-kind = "outside"
-params = [
-  { name = "provider", type = "text", required = true, schema = { type = "string" } },
-  { name = "protocol", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "set-provider-model"
-kind = "outside"
-params = [
-  { name = "provider", type = "text", required = true, schema = { type = "string" } },
-  { name = "model", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "set-default-provider"
-kind = "outside"
-params = [
-  { name = "provider", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "refresh-providers"
-kind = "read"
-
-[[resources.types]]
-name = "AgentProviderModelShown"
-fields = [
-  { name = "id", type = "text" },
-  { name = "label", type = "text" },
-]
-
-[[resources.types]]
-name = "AgentProviderPresetShown"
-fields = [
-  { name = "slug", type = "text" },
-  { name = "label", type = "text" },
-  { name = "description", type = "text" },
-  { name = "protocol", type = "text" },
-  { name = "authentication", type = "text" },
-]
-
-[[resources.types]]
-name = "AgentProviderShown"
-fields = [
-  { name = "id", type = "text" },
-  { name = "label", type = "text" },
-  { name = "protocol", type = "text" },
-  { name = "endpoint", type = "text" },
-  { name = "location", type = "text" },
-  { name = "enabled", type = "bool" },
-  { name = "models", type = { list = { named = "AgentProviderModelShown" } } },
-  { name = "model", type = "text" },
-  { name = "model_label", type = "text" },
-  { name = "in_use", type = "bool" },
-  { name = "authentication", type = "text" },
-  { name = "key", type = "text" },
-  { name = "sign_in", type = "text" },
-]
-
-[[resources]]
 kind = "settings.shortcuts-table"
 label = "Keyboard shortcuts"
 version = 1
@@ -1692,11 +1595,6 @@ published = "devices/{device}/settings/network-usage"
 name = "agent_models"
 kind = "settings.agent-models"
 published = "settings/agent-models"
-
-[[roots]]
-name = "agent_provider_setup"
-kind = "settings.agent-provider-setup"
-published = "settings/agent-provider-setup"
 
 [[roots]]
 name = "shortcuts_table"

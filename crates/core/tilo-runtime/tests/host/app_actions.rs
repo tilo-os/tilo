@@ -53,12 +53,6 @@ const APPS: &[App] = &[
         kind: "tilo.messages",
     },
     App {
-        package: "model-providers",
-        bin: "model-providers",
-        id: "so.tilo.model-providers",
-        kind: "model-providers.root",
-    },
-    App {
         package: "poker",
         bin: "poker",
         id: "so.tilo.poker",

@@ -593,7 +593,6 @@ doc = false
 "miracast-0_1_0" = { package = "miracast", path = "../../vendor/miracast", default-features = false, features = ["gstreamer", "networkmanager"] }
 "ml-dsa-0_1_1" = { package = "ml-dsa", version = "^0.1.1", default-features = false, features = ["alloc", "default", "getrandom", "pkcs8", "rand_core"] }
 "ml-kem-0_3_2" = { package = "ml-kem", version = "^0.3.2", default-features = false, features = ["alloc", "default", "hazmat"] }
-"model-providers" = { path = "../../apps/model-providers", default-features = false, features = [] }
 "moderation-model" = { path = "../../apps/moderation-model", default-features = false, features = [] }
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
@@ -757,7 +756,6 @@ doc = false
 "protobuf-3_7_2" = { package = "protobuf", version = "^3.7.2", default-features = false, features = ["default"] }
 "protobuf-json-mapping-3_7_2" = { package = "protobuf-json-mapping", version = "^3.7.2", default-features = false, features = [] }
 "protobuf-support-3_7_2" = { package = "protobuf-support", version = "^3.7.2", default-features = false, features = [] }
-"provider-settings-ui" = { path = "../../crates/integrations/provider-settings-ui", default-features = false, features = [] }
 "psl-2_1_190" = { package = "psl", version = "^2.1.190", default-features = false, features = ["default", "helpers"] }
 "psl-types-2_0_11" = { package = "psl-types", version = "^2.0.11", default-features = false, features = [] }
 "psm-0_1_31" = { package = "psm", version = "^0.1.31", default-features = false, features = [] }
@@ -3100,7 +3098,6 @@ doc = false
 "miracast-0_1_0" = { package = "miracast", path = "../../vendor/miracast", default-features = false, features = ["gstreamer", "networkmanager"] }
 "ml-dsa-0_1_1" = { package = "ml-dsa", version = "^0.1.1", default-features = false, features = ["alloc", "default", "getrandom", "pkcs8", "rand_core"] }
 "ml-kem-0_3_2" = { package = "ml-kem", version = "^0.3.2", default-features = false, features = ["alloc", "default", "hazmat"] }
-"model-providers" = { path = "../../apps/model-providers", default-features = false, features = [] }
 "moderation-model" = { path = "../../apps/moderation-model", default-features = false, features = [] }
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
@@ -3258,7 +3255,6 @@ doc = false
 "protobuf-3_7_2" = { package = "protobuf", version = "^3.7.2", default-features = false, features = ["default"] }
 "protobuf-json-mapping-3_7_2" = { package = "protobuf-json-mapping", version = "^3.7.2", default-features = false, features = [] }
 "protobuf-support-3_7_2" = { package = "protobuf-support", version = "^3.7.2", default-features = false, features = [] }
-"provider-settings-ui" = { path = "../../crates/integrations/provider-settings-ui", default-features = false, features = ["test-support"] }
 "psl-2_1_190" = { package = "psl", version = "^2.1.190", default-features = false, features = ["default", "helpers"] }
 "psl-types-2_0_11" = { package = "psl-types", version = "^2.0.11", default-features = false, features = [] }
 "psm-0_1_31" = { package = "psm", version = "^0.1.31", default-features = false, features = [] }

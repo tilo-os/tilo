@@ -337,10 +337,6 @@
       "libraries": 26628808,
       "tests": 310172360
     },
-    "model-providers": {
-      "libraries": 104736,
-      "tests": 5713072
-    },
     "moderation-model": {
       "libraries": 4609223,
       "tests": 129837376
@@ -396,10 +392,6 @@
     "print-centre": {
       "libraries": 9514892,
       "tests": 353281408
-    },
-    "provider-settings-ui": {
-      "libraries": 11242707,
-      "tests": 292788328
     },
     "registry-server": {
       "libraries": 35561265,
@@ -1272,10 +1264,6 @@
     "tilo-flight-log": {
       "libraries": 4693394,
       "tests": 59432784
-    },
-    "tilo-settings-engine": {
-      "libraries": 0,
-      "tests": 2852000
     },
     "tilo-settings-records": {
       "libraries": 387791,

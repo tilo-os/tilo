@@ -1270,6 +1270,24 @@ fn providers_of(config: &agent_provider_config::ProviderConfig) -> ModelProvider
                 model: chosen.model.clone(),
             })
             .collect(),
+        presets: agent_provider_config::presets::Preset::ALL
+            .iter()
+            .copied()
+            .filter(|preset| !preset.signs_in_only())
+            .map(|preset| model_providers::ProviderPreset {
+                preset: preset.slug().to_owned(),
+                name: preset.label().to_owned(),
+                description: preset.description().to_owned(),
+                protocol: match preset.protocol() {
+                    agent_provider_config::ProviderProtocol::OpenAiCompatible => {
+                        model_providers::Protocol::OpenAiCompatible
+                    }
+                    agent_provider_config::ProviderProtocol::Anthropic => {
+                        model_providers::Protocol::Anthropic
+                    }
+                },
+            })
+            .collect(),
     }
 }
 
@@ -1288,6 +1306,7 @@ pub(super) fn view_of(profile: &agent_provider_config::ProviderProfile) -> Provi
         },
         endpoint: profile.endpoint.clone(),
         configured: key_kept(profile),
+        enabled: profile.enabled,
         signs_in: profile.sign_in.is_some(),
         models: profile
             .models
@@ -1524,6 +1543,33 @@ pub(super) fn add_provider(
     };
     let view = view_of(&profile);
     config.profiles.push(profile);
+    save_provider_config(root, &config)?;
+    Ok(view)
+}
+
+/// Offer `setting`'s provider to the workspace's agents, or stop offering it, and answer the
+/// provider as kept. A provider stopped keeps its key and its models; the kinds of work assigned
+/// to it follow the default again, so no work runs on a provider the person stopped.
+pub(super) fn set_enabled(
+    root: &Path,
+    setting: &model_providers::SetEnabled,
+) -> Result<ProviderView, String> {
+    let mut config = provider_config(root);
+    let profile = config
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == setting.provider)
+        .ok_or_else(|| "That provider is not kept here".to_owned())?;
+    profile.enabled = setting.enabled;
+    let view = view_of(profile);
+    if !setting.enabled {
+        if config.default_profile.as_deref() == Some(setting.provider.as_str()) {
+            config.default_profile = None;
+        }
+        config
+            .interaction_models
+            .retain(|_, chosen| chosen.profile != setting.provider);
+    }
     save_provider_config(root, &config)?;
     Ok(view)
 }

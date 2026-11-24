@@ -75,10 +75,6 @@ pub fn surface() -> (Vec<ui::tilo_resource::Surface>, Vec<Root>) {
         service::agent_models::surface(),
     ));
     places.push((
-        service::providers::RESOURCE.to_owned(),
-        service::providers::surface(),
-    ));
-    places.push((
         service::shortcuts_table::RESOURCE.to_owned(),
         service::shortcuts_table::surface(),
     ));

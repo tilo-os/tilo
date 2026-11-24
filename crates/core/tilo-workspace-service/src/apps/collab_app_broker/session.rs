@@ -394,8 +394,6 @@ pub(super) fn app_settings_capability(
         ));
     }
     let app_id = route.app_id.clone();
-    // An app that administers the model providers sets them only as their own rules allow.
-    let providers = app_id == tilo_app_id::apps::MODEL_PROVIDERS;
     let grants = settings_grants(state, &route, &identity);
     let authority = display_authority(state, &route, &identity);
     let revalidate: runtime_collab::settings::host::Revalidate = {
@@ -410,15 +408,15 @@ pub(super) fn app_settings_capability(
     // A host keeping the person's settings itself answers them from its source; the device's
     // daemon asks the seat, which keeps them in the person's own home.
     let Some(source) = state.services.settings.clone() else {
-        let seat = state.seat().ok_or_else(|| {
-            BrokerError::failed("this host keeps no settings for apps".into())
-        })?;
+        let seat = state
+            .seat()
+            .ok_or_else(|| BrokerError::failed("this host keeps no settings for apps".into()))?;
         return Ok(AppSettings::Seat {
             settings: crate::apps::seat::SeatSettings {
                 seat,
                 app_id,
                 grants,
-                providers,
+                providers: false,
                 display: authority,
             },
             revalidate,
@@ -434,11 +432,7 @@ pub(super) fn app_settings_capability(
     let server = runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
         .with_grants(grants)
         .with_display(display);
-    Ok(AppSettings::Local(if providers {
-        server.with_check(Arc::new(agent_provider_config::management::check_write))
-    } else {
-        server
-    }))
+    Ok(AppSettings::Local(server))
 }
 
 /// One app's settings, as the broker answers its calls on them.
@@ -552,9 +546,8 @@ impl AppLiveActivity {
 
 /// The setters of the settings the app `route` certifies may invoke: every one for the device's
 /// settings app, when its signed manifest asks for them (`settings.system`) and the image grants
-/// it them (the launcher lists the capability for that package alone); the model providers' for
-/// Model Providers; none otherwise. An agent working in an app never sets more than the app's own
-/// preferences.
+/// it them (the launcher lists the capability for that package alone); none otherwise. An agent
+/// working in an app never sets more than the app's own preferences.
 pub(super) fn settings_grants(
     state: &Arc<AppBrokerState>,
     route: &CrdtRoute,
@@ -574,8 +567,6 @@ pub(super) fn settings_grants(
             .any(|capability| capability == settings_store::workspace::SET_EVERY_SETTING)
     }) {
         settings_store::workspace::EVERY_SETTER
-    } else if route.app_id == tilo_app_id::apps::MODEL_PROVIDERS && installed(&|_| true) {
-        agent_provider_config::management::SETTERS
     } else {
         &[]
     };

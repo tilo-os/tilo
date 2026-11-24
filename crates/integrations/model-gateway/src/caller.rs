@@ -5,7 +5,7 @@ use tilo_app_id::apps;
 
 /// The exact launcher identities admitted as provider control panels.
 pub fn provider_admin_app(app_id: &str) -> bool {
-    matches!(app_id, apps::SETTINGS | apps::MODEL_PROVIDERS)
+    matches!(app_id, apps::SETTINGS)
 }
 
 /// Chat can generate conversation text, not execute tools or replay tool history.
@@ -109,13 +109,12 @@ mod tests {
 
         phase provider_control_panel_identity_is_exact;
         {
-            for app in ["so.tilo.settings", "so.tilo.model-providers"] {
+            for app in ["so.tilo.settings"] {
                 assert!(provider_admin_app(app));
             }
             for app in [
-                "model-providers",
-                "Model Providers",
-                "so.tilo.model-providers.evil",
+                "settings",
+                "Settings",
                 "so.tilo.settings.evil",
                 "so.tilo.chat",
                 "so.tilo.agent",

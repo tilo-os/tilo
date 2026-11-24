@@ -113,7 +113,6 @@ SCANNED += (
 )
 # Crates of the same kind that live in other groups.
 SCANNED += (
-    Path("crates/integrations/provider-settings-ui"),
     Path("crates/os/console-control"),
     Path("crates/os/greetd-client"),
     Path("crates/os/greeter"),

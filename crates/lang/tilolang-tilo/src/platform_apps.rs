@@ -29,6 +29,11 @@ pub const DEVICE_APP: &str = "so.tilo.device";
 /// at the person's word.
 pub const MCP_SERVER_APP: &str = "tilo.mcp-server";
 
+/// The app a workspace's model providers are published as: `use tilo.models`. The host that
+/// runs the workspace keeps the providers, their keys in its vault, and the model each kind of
+/// work runs on; a window reads them as `models.models` and changes them through its verbs.
+pub const MODELS_APP: &str = "tilo.models";
+
 /// The app the workspace's activity is published as: `use so.tilo.history`. The app whose window
 /// shows it is `so.tilo.activity`, and it reads this package (`history.history`, and the range a
 /// view names of it) as any other package it uses.
@@ -168,6 +173,9 @@ pub fn workspace_members() -> crate::runtime::ResourceRef {
 
 /// The MCP server's root, the one resource every grant and every verb of it is on.
 const MCP_SERVER_ROOTS: &[(&str, &str, &str)] = &[("server", "Server", "mcp.server")];
+
+/// The model providers' root, the one resource every provider and every verb of them is on.
+const MODELS_ROOTS: &[(&str, &str, &str)] = &[("models", "Models", "models")];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
     ("image_model", "ImageModel", "vision:vision.image-model"),
     ("analysis", "Analysis", "vision:vision.analysis"),
@@ -316,6 +324,18 @@ const PUBLISHED: &[Published] = &[
         // What the server lets in reads as, written beside the host that serves it.
         files: &[include_str!(
             "../../../core/tilo-workspace-service/mcp-server-surface.json"
+        )],
+        described: false,
+        listed: &[],
+    },
+    Published {
+        app: MODELS_APP,
+        title: "Model providers",
+        kinds: &[],
+        roots: MODELS_ROOTS,
+        // What a workspace's providers read as, written beside the service that keeps them.
+        files: &[include_str!(
+            "../../../core/tilo-workspace-service/models-surface.json"
         )],
         described: false,
         listed: &[],

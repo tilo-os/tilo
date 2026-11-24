@@ -7,6 +7,7 @@ app so.tilo.settings "Settings" (
 
 use so.tilo.settings.sections as settings
 use so.tilo.device as device
+use tilo.models as models
 
 /// The window's root. Settings keeps nothing of its own here: every row below changes a
 /// resource the session publishes — the person's appearance, notification, accessibility and

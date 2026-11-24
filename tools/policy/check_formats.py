@@ -103,7 +103,6 @@ SCOPES += (
     Path("crates/integrations/messaging-service"),
     Path("crates/os/tilo-ntfs-helper"),
     Path("crates/os/tilo-ntfs-protocol"),
-    Path("crates/integrations/provider-settings-ui"),
 )
 # The formatter itself, its toolkit-free half, and the clock it formats times of day with.
 FORMATTER = (

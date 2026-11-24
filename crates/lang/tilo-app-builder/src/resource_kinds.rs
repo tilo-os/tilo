@@ -83,7 +83,7 @@ fn implements_chained(dir: &Path) -> Result<bool> {
 /// The kinds the app at `app_dir` holds through the local crates it depends
 /// on directly, less those another app holds: a crate another app is also
 /// built from names it in `[package.metadata.tilo] apps`, and the kinds that
-/// app's name is the namespace of (`model-providers.root`) are that app's.
+/// app's name is the namespace of (`poker.root`) are that app's.
 fn dependency_kinds(app_dir: &Path) -> Result<Vec<String>> {
     let app = package_name(&read_manifest(app_dir)?);
     let mut kinds = Vec::new();

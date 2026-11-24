@@ -81,7 +81,7 @@ fn runtime(layer: &Path, work: &Path, case: &str) -> String {
         .public_key_hex();
     let mut includes = vec![library];
     if case == "engine_app" {
-        let engine = work.join("libtilo_settings_engine.so");
+        let engine = work.join("libtilo_highlight_engine.so");
         fs::write(&engine, elf(&["libruntime_dylib.so"], false)).unwrap();
         includes.push(engine);
     }
@@ -296,9 +296,9 @@ fn pin(layer: &Path, name: &str, key: &str) {
 /// The libraries a fixture app's entry links.
 fn app_needs(case: &str) -> &'static [&'static str] {
     match case {
-        // An app whose code is an engine the cohort ships (Settings): its
-        // entry links the engine dylib, and that links the toolkit.
-        "engine_app" => &["libtilo_settings_engine.so"],
+        // An app whose code is an engine the cohort ships: its entry links the
+        // engine dylib, and that links the toolkit.
+        "engine_app" => &["libtilo_highlight_engine.so"],
         // An app that links no toolkit at all.
         "no_toolkit" => &[],
         _ => &["libruntime_dylib.so"],

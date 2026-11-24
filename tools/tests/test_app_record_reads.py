@@ -34,7 +34,7 @@ impl Calculator {}
 
 READS_UI_HELPER = '''
 #[resource(
-    kind = "model-providers.root",
+    kind = "messages.thread",
     read_content = ui::tilo_resource::read::fields
 )]
 impl Providers {}
@@ -74,7 +74,7 @@ class RecordReadsTests(unittest.TestCase):
     def test_a_record_that_names_the_direct_helper_is_fine(self):
         root = self.fixture({
             "apps/calculator/src/resource.rs": READS_DIRECT_HELPER,
-            "crates/integrations/provider-settings-ui/src/app.rs": READS_UI_HELPER,
+            "crates/desktop/settings-sections/src/providers.rs": READS_UI_HELPER,
         })
         self.assertEqual(record_reads.check(root), [])
 

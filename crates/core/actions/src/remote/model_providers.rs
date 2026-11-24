@@ -49,6 +49,9 @@ pub const REMOVE_PROVIDER: &str = "remove-provider";
 /// endpoint and where it lists its models are the catalogue's. Answers it as
 /// a [`ProviderView`].
 pub const ADD_PRESET: &str = "add-preset";
+/// Offer a provider's models to the workspace's agents, or stop
+/// ([`SetEnabled`]), answering the provider as a [`ProviderView`].
+pub const SET_ENABLED: &str = "set-enabled";
 /// Ask a provider (`provider`) for the models it offers, with the key the
 /// vault keeps for it, and keep that list: a [`ListedModels`].
 pub const REFRESH_MODELS: &str = "refresh-models";
@@ -136,6 +139,10 @@ pub struct ProviderView {
     /// Whether the person's vault keeps an API key for it, or the grant of
     /// the account it signs in with.
     pub configured: bool,
+    /// Whether agents may use it. A provider the person stopped offering keeps
+    /// its key and its models, and no kind of work is assigned to it.
+    #[serde(default)]
+    pub enabled: bool,
     /// Whether it is reached by signing in to an account ([`BEGIN_SIGN_IN`])
     /// rather than with an API key.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -174,6 +181,24 @@ pub struct ModelProviders {
     /// `subtask`, `request`, `classifier`, `dictation`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assignments: Vec<Assignment>,
+    /// The providers a person can add without signing in: the catalogue's,
+    /// where a workspace has none of them yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<ProviderPreset>,
+}
+
+/// A provider the catalogue knows, which a person may add by its name
+/// ([`ADD_PRESET`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderPreset {
+    /// The name [`ADD_PRESET`] takes.
+    pub preset: String,
+    /// What people call it.
+    pub name: String,
+    /// What it is, in one line.
+    pub description: String,
+    pub protocol: Protocol,
 }
 
 /// The model one kind of work runs on.
@@ -250,6 +275,14 @@ pub struct SetAssignment {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AddPreset {
     pub preset: String,
+}
+
+/// A provider to offer to the workspace's agents, or to stop offering.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetEnabled {
+    pub provider: String,
+    pub enabled: bool,
 }
 
 /// A provider after its models were asked for ([`REFRESH_MODELS`]).
@@ -405,6 +438,7 @@ mod tests {
             protocol: Protocol::OpenAiCompatible,
             endpoint: "https://api.openai.com/v1".into(),
             configured: true,
+            enabled: true,
             models: vec![OfferedModel {
                 id: "gpt".into(),
                 label: "GPT".into(),

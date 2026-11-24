@@ -12,7 +12,7 @@ actions to take on it.
 
 So every record this tree publishes answers a read, or declares that it does
 not: the apps under `apps/`, and
-the shared crates that declare an app's record for it (`model-providers`, the
+the shared crates that declare an app's record for it (`messages`, the
 Contact identities and workspace agents and emoji an app keeps beside its own,
 the person's accounts, a shell's environment). A record that truly has no
 content to answer is still not left out silently: it answers with what it holds

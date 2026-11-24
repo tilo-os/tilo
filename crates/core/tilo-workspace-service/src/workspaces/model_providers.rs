@@ -29,7 +29,8 @@ use agent_provider_config::{
 use serde_json::Value;
 use tilo_actions::remote::model_providers::{
     self, AddModel, AddPreset, BeginSignIn, ListedModels, ListingProblem, ModelProviders,
-    ProviderView, SetAssignment, SetAssignments, SetDefault, SetKey, SetReasoning, WaitSignIn,
+    ProviderView, SetAssignment, SetAssignments, SetDefault, SetEnabled, SetKey, SetReasoning,
+    WaitSignIn,
 };
 use tilo_actions::remote::workspace_invocations::Spend;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
@@ -42,7 +43,8 @@ use super::Workspaces;
 use super::model_answers::Models;
 use super::person_settings::{
     ProviderKeys, add_provider, answer, argument, provider_argument, provider_config, providers,
-    remove_key, remove_provider, save_provider_config, set_assignment, set_key, view_of,
+    remove_key, remove_provider, save_provider_config, set_assignment, set_enabled, set_key,
+    view_of,
 };
 use super::workspace_stores::Store;
 
@@ -79,6 +81,13 @@ impl Reach {
 }
 
 impl Workspaces {
+    /// The providers `workspace` (its id) keeps, as `models` reads them to the apps this host
+    /// serves: the same list [`model_providers::LIST`] answers, and no key in it.
+    #[must_use]
+    pub fn models_reading(&self, workspace: &str) -> Value {
+        serde_json::to_value(providers(&self.workspace_root(workspace))).unwrap_or(Value::Null)
+    }
+
     /// What this host keeps and asks for its workspaces' providers: https
     /// addresses on the internet, and its own network too where its
     /// operator lets it call there.
@@ -190,6 +199,10 @@ impl Workspaces {
             model_providers::ADD_PRESET => {
                 let adding: AddPreset = argument(request, "a provider to add")?;
                 answer(&add_preset(&root, &adding))
+            }
+            model_providers::SET_ENABLED => {
+                let setting: SetEnabled = argument(request, "a provider to offer to agents")?;
+                answer(&set_enabled(&root, &setting))
             }
             model_providers::SET_KEY => {
                 let setting: SetKey = argument(request, "a key to keep")?;
@@ -741,6 +754,9 @@ fn set_default(root: &Path, choosing: &SetDefault) -> Result<ModelProviders, Str
         .iter_mut()
         .find(|profile| profile.id == choosing.provider)
         .ok_or_else(not_kept)?;
+    if !profile.enabled {
+        return Err("That provider is not offered to agents".into());
+    }
     if !profile
         .models
         .iter()

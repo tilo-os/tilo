@@ -2201,6 +2201,10 @@ fn broker_services(
     // daemon already answers.
     let mcp_server: Arc<dyn PublishedResources> =
         Arc::new(super::mcp_server::published(parts.workspaces));
+    // The workspace's model providers: the providers a person set up, their models and what runs
+    // where, read where this device's workspace service keeps them. A key never reads back,
+    // and its verbs stay the action API's.
+    let models: Arc<dyn PublishedResources> = Arc::new(super::models::published(parts.workspaces));
     let published: Arc<dyn PublishedResources> = Arc::new(
         super::published::Published::new()
             .serving(
@@ -2218,6 +2222,7 @@ fn broker_services(
                 super::live::Published::of(parts.workspaces.copies()),
             )
             .serving(&[super::mcp_server::SERVER], mcp_server)
+            .serving(&[tilo_actions::remote::model_providers::RESOURCE], models)
             .serving_the_rest(Arc::new(
                 tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
             )),

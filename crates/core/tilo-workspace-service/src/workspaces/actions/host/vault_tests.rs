@@ -1530,3 +1530,125 @@ async fn a_host_kept_from_passwords_signs_in_with_none_of_the_vaults_entries() {
     );
     server.shutdown().await;
 }
+
+/// The models' reading and their edits are one resource's: a provider added reads as itself,
+/// its key kept and cleared reads as configured or not, stopping it offering its models reads
+/// as such, and removing it takes it out of the reading and its key out of the vault. The key
+/// travels in and is in no reading, no listing and no file the workspace keeps.
+#[tokio::test]
+async fn a_models_key_is_kept_and_cleared_as_the_reading_says() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (_workspace, workspace_id, service) = governed(workspaces).await;
+    // The person managing their own workspace's providers, on a device of their own: the vault
+    // they write is theirs, and the models they choose are the workspace's.
+    let ada = owner.clone();
+    let as_ada = caller(&ada);
+    let who = (&ada, &as_ada);
+    let provider = a_provider(&service, workspace_id, who).await;
+    let reading = || workspaces.models_reading(&workspace_id.to_string());
+    let listed = |reading: &Value| {
+        reading["providers"]
+            .as_array()
+            .expect("providers")
+            .iter()
+            .find(|shown| shown["id"] == json!(provider))
+            .cloned()
+    };
+
+    let shown = listed(&reading()).expect("the provider the person added is listed");
+    assert_eq!(shown["configured"], json!(false), "no key is kept yet");
+    assert_eq!(shown["enabled"], json!(true));
+
+    let kept = ask_at(
+        &service,
+        workspace_id,
+        who,
+        model_providers::target(model_providers::SET_KEY),
+        json!({"provider": provider, "key": KEY}),
+    )
+    .await
+    .expect("the person keeps their key");
+    assert_eq!(kept["configured"], json!(true), "{kept}");
+    assert!(!kept.to_string().contains(KEY), "the key never reads back");
+    let shown = listed(&reading()).expect("the provider is listed");
+    assert_eq!(shown["configured"], json!(true), "{shown}");
+    assert!(
+        !reading().to_string().contains(KEY) && !shown.to_string().contains(KEY),
+        "no reading carries a key"
+    );
+    assert!(
+        files_holding(dir.path(), KEY.as_bytes()).is_empty(),
+        "the key is sealed in the workspace's vault, in no file the workspace keeps"
+    );
+
+    let cleared = ask_at(
+        &service,
+        workspace_id,
+        who,
+        model_providers::target(model_providers::REMOVE_KEY),
+        json!({"provider": provider}),
+    )
+    .await
+    .expect("the person clears it");
+    assert_eq!(cleared["configured"], json!(false), "{cleared}");
+    let shown = listed(&reading()).expect("the provider is listed");
+    assert_eq!(shown["configured"], json!(false), "{shown}");
+
+    let stopped = ask_at(
+        &service,
+        workspace_id,
+        who,
+        model_providers::target(model_providers::SET_ENABLED),
+        json!({"provider": provider, "enabled": false}),
+    )
+    .await
+    .expect("the person stops offering it");
+    assert_eq!(stopped["enabled"], json!(false), "{stopped}");
+    let shown = listed(&reading()).expect("the provider is listed");
+    assert_eq!(shown["enabled"], json!(false), "{shown}");
+
+    // A provider the person stopped cannot be the one agents answer with.
+    let refused = ask_at(
+        &service,
+        workspace_id,
+        who,
+        model_providers::target(model_providers::SET_DEFAULT),
+        json!({"provider": provider, "model": "any"}),
+    )
+    .await;
+    assert!(
+        matches!(
+            &refused,
+            Err(ActionCallError::Refused { reason }) if reason == "That provider is not offered to agents"
+        ),
+        "a stopped provider is no default: {refused:?}"
+    );
+
+    ask_at(
+        &service,
+        workspace_id,
+        who,
+        model_providers::target(model_providers::SET_KEY),
+        json!({"provider": provider, "key": KEY}),
+    )
+    .await
+    .expect("its key is kept again");
+    let left = ask_at(
+        &service,
+        workspace_id,
+        who,
+        model_providers::target(model_providers::REMOVE_PROVIDER),
+        json!({"provider": provider}),
+    )
+    .await
+    .expect("the person removes it");
+    assert_eq!(left["providers"], json!([]), "it is gone from the reading");
+    assert!(
+        files_holding(dir.path(), KEY.as_bytes()).is_empty(),
+        "its key went with it"
+    );
+    server.shutdown().await;
+}

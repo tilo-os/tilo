@@ -49,6 +49,8 @@ mod live;
 pub(crate) mod local;
 mod mcp_server;
 pub(crate) mod migrate;
+/// The workspace's model providers, read by the apps attached here as `models`.
+mod models;
 pub mod nearby;
 mod offload_place;
 mod own_device;

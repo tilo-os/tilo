@@ -379,7 +379,7 @@ case "$TILO_RUST_LTO" in \
          *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be cargo, clean or content' >&2; exit 1 ;; \
        esac \
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="camera/live-capture,settings/runtime-engine,model-providers/runtime-engine,messages/runtime-engine,osk/runtime-engine" \
+    && APP_FEATURES="camera/live-capture,settings/runtime-engine,messages/runtime-engine,osk/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \

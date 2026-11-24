@@ -741,7 +741,6 @@ LIBRARY_SKIP += (
 )
 # Crates of the same kind that live in other groups.
 LIBRARY_SKIP += (
-    "crates/integrations/provider-settings-ui/",
     "crates/os/console-control/",
     "crates/os/greetd-client/",
     "crates/os/greeter/",

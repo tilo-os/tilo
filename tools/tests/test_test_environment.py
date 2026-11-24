@@ -193,7 +193,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # launcher a desktop starts them from first.
         vault = scripts.pop("vault-siblings")
         self.assertEqual(vault["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                            "passwords:passwords", "model-providers:model-providers",
+                                            "passwords:passwords",
                                             "launcher:tilo-launcher"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
@@ -262,7 +262,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(opened["command"], ["bash", "tools/build-sibling-binaries.sh",
                                              "tilo-runtime:tilo-runtime",
                                              "passwords:passwords",
-                                             "model-providers:model-providers",
                                              "launcher:tilo-launcher"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]

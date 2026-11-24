@@ -1463,7 +1463,10 @@ impl Device {
         let listening = format!("TILO_TEST_CONTROL={}", control.display());
         let (tell, told) = mpsc::channel();
 
-        let mut daemon = Command::new(tilo_test_env::sibling_binary("tilo-runtime", "tilo-runtime"));
+        let mut daemon = Command::new(tilo_test_env::sibling_binary(
+            "tilo-runtime",
+            "tilo-runtime",
+        ));
         self.device_env(&mut daemon, &logs);
         daemon
             // The daemon starts this test's build of the session as the person's shell.
@@ -1915,11 +1918,6 @@ impl Device {
         super::dev_apps::install_named(&self.store(), &["so.tilo.passwords"]);
     }
 
-    /// Install Model Providers in this device's store, as a device with the app installed has it.
-    pub fn install_model_providers(&self) {
-        self.install("so.tilo.model-providers", model_providers_install());
-    }
-
     /// What this device lists for the running `app`'s `operation`, once the app published it: a
     /// provider the session names by the app's live connection.
     pub fn app_action(&self, app: &str, operation: &str) -> RemoteActionTarget {
@@ -2364,23 +2362,6 @@ fn end_group(mut child: Child) {
     }
 }
 
-/// The payload Passwords is installed from here ([`stage`]), with the digest of its signed root.
-/// The payload Model Providers is installed from here ([`stage`]), with the digest of its signed
-/// root.
-fn model_providers_install() -> &'static (PathBuf, String) {
-    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
-    INSTALL.get_or_init(|| {
-        stage(
-            "model-providers",
-            &[(
-                tilo_test_env::sibling_binary("model-providers", "model-providers"),
-                "model-providers",
-            )],
-        )
-    })
-}
-
-/// The payload Tasks is installed from here ([`stage`]), with the digest of its signed root.
 /// `app`'s payload staged in the build's own directory, as an install leaves a package: its
 /// manifest and the surface its package ships, the signed root and collection an install writes
 /// beside them, and each of `programs` the run built, hardlinked under `bin/` so a device pays for

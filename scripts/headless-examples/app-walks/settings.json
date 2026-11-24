@@ -208,6 +208,25 @@
         }
       ],
       "budget_ms": 20000
+    },
+    {
+      "id": "agent-models",
+      "said": "Open Agent models and see the workspace's providers, and how to add one",
+      "ops": [
+        {
+          "press": "Agent models"
+        },
+        {
+          "wait_for": "Providers"
+        },
+        {
+          "must": [
+            "Providers",
+            "Add a provider"
+          ]
+        }
+      ],
+      "budget_ms": 20000
     }
   ]
 }

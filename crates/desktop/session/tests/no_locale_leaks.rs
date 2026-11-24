@@ -92,14 +92,6 @@ const WINDOWS: &[Window] = &[
             catalogue!("/../../../apps/tl/settings/locales/de-DE.ftl"),
         )),
     },
-    Window {
-        name: "Settings' providers",
-        source: catalogue!("/../../integrations/provider-settings-ui/locales/en-US.ftl"),
-        german: Some((
-            "de-DE",
-            catalogue!("/../../integrations/provider-settings-ui/locales/de-DE.ftl"),
-        )),
-    },
 ];
 
 /// Every key a window can draw: its own words and the shared ones (the toolkit's labels, the

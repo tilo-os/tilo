@@ -56,7 +56,7 @@ use crate::common::people::{Device, Person};
 /// The installed apps this test opens: the apps of other packages that the run builds for
 /// `tilo-session` (t.toml's `starts`) and whose harness installs a real package and starts it in
 /// a session.
-const APPS: [&str; 2] = ["so.tilo.passwords", "so.tilo.model-providers"];
+const APPS: [&str; 1] = ["so.tilo.passwords"];
 
 /// The seeded tilolang apps this test opens, by package id: the apps of `apps/tl` a device
 /// carries in place of the Rust apps they replaced, each an installed package of its own.
@@ -81,7 +81,6 @@ enum Kind {
 fn install(device: &Device, app: &str) {
     match app {
         "so.tilo.passwords" => device.install_passwords(),
-        "so.tilo.model-providers" => device.install_model_providers(),
         other => panic!("no install for {other}, which this test names in APPS"),
     }
 }

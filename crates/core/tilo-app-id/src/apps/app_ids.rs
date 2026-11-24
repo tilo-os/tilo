@@ -34,7 +34,6 @@ first_party_apps! {
     MAPS => "so.tilo.maps",
     MESSAGES => "so.tilo.messages",
     MIGRATE => "so.tilo.migrate",
-    MODEL_PROVIDERS => "so.tilo.model-providers",
     MONITOR => "so.tilo.monitor",
     MUSIC => "so.tilo.music",
     NOTES => "so.tilo.notes",

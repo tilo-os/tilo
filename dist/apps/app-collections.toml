@@ -21,9 +21,6 @@ include = ["tl-files", "tl-settings", "terminal"]
 
 [features]
 # Typst from its engine library beside the runtime.
-# The provider panel from the Settings engine library, which holds it for
-# Settings.
-model-providers = ["runtime-engine"]
 # The contact directory from its engine library beside the runtime.
 messages = ["runtime-engine"]
 # The emoji catalogue, with its names in every locale, from its engine library

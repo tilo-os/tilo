@@ -171,6 +171,52 @@ fn the_mcp_server_is_a_platform_package_an_app_reads() {
     }
 }
 
+/// A workspace's model providers are one of the platform's packages: a window reads the
+/// providers, their models and what runs where as `models.models`, and changes them through the
+/// resource's own verbs.
+#[test]
+fn the_workspaces_model_providers_are_a_platform_package_an_app_reads() {
+    let platform =
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+    let models = platform
+        .into_iter()
+        .find(|meta| meta.app == tilolang_tilo::platform_apps::MODELS_APP)
+        .expect("the model providers are one of the platform's packages");
+    let root = models
+        .named_roots
+        .iter()
+        .find(|root| root.published.as_deref() == Some("models"))
+        .expect("they read under `models`");
+    assert!(
+        models
+            .types
+            .iter()
+            .any(|ty| ty.id == root.ty && ty.name == "Models"),
+        "the root is the models' own type"
+    );
+    for verb in [
+        "set-key",
+        "remove-key",
+        "remove-provider",
+        "add-preset",
+        "set-default",
+    ] {
+        let id = tilolang_tilo::catalogue::action_id(
+            &models.app,
+            &tilolang_tilo::catalogue::verb_id("Models", verb),
+        );
+        assert!(
+            models.actions.iter().any(|action| action.id == id),
+            "the models publish `{verb}` among {:?}",
+            models
+                .actions
+                .iter()
+                .map(|action| &action.id)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 #[test]
 fn a_type_the_platform_cannot_read_is_named_with_where_it_is() {
     let bundle = today();

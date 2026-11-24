@@ -508,7 +508,7 @@ packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
 features = [
   "camera/live-capture", "settings/runtime-engine",
-  "model-providers/runtime-engine", "messages/runtime-engine", "osk/runtime-engine",
+  "messages/runtime-engine", "osk/runtime-engine",
 ]
 layer = "direct"
 files = [

@@ -13,13 +13,13 @@ configured and then work on their own (`tilo-vm vm branch`, docs/architecture/wo
 1. `box` boots and records its machine; a person signs in as the VM's person
    (`account create --identity device`: the session's own onboarding creates the identity in the
    machine's identity tree and certifies the machine) and sets the box up: a Secret Service
-   secret, a model provider's API key in their vault, a login in their passwords vault,
+   secret, a login in their passwords vault,
    `~/.gitconfig`, an SSH key, and a workspace of their own with a window on its shell.
 2. `box` is stopped and branched into `a` and `b`, all three on one local network beside their
    own way out; they boot (b once box has done its part, where the host has no room for three).
 3. Each branch has a device key of its own (the source's and the other branch's differ), a
    machine record of its own UUID, a valid certificate under the same person's root, the
-   person's secret, API key, passwords vault, SSH key and git config readable as them, and a
+   person's secret, passwords vault, SSH key and git config readable as them, and a
    machine id and SSH host keys of its own; `box` keeps its own.
 4. `box` and `a` hold the workspace: a window opened on either shows on the other, also
    after both reboot.
@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
-import hashlib
 import json
 import os
 import shlex
@@ -64,9 +63,6 @@ SECRET_ATTRS = {"service": "tilo-e2e-branch", "account": "person"}
 GIT_NAME, GIT_EMAIL = "Ada Branch", "ada@branch.example"
 PASSWORD_TITLE = "Branch e2e mail"
 PASSWORDS = "so.tilo.passwords"
-PROVIDER_LABEL = "Branch e2e"
-PROVIDER_MODEL = "e2e-branch"
-MODEL_PORT = 18431
 
 
 class Failed(Exception):
@@ -238,35 +234,6 @@ elif cmd == "get":
 '''
 
 
-# As root: a loopback OpenAI-compatible endpoint that lists one model to a caller presenting
-# the API key whose digest is in /run/e2e-model.digest, and refuses anyone else. It logs
-# whether each request's key was the one stored, never the key.
-MODEL_SERVER = r'''
-import hashlib, http.server, json, sys
-want = open("/run/e2e-model.digest").read().strip()
-
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
-
-    def do_GET(self):
-        auth = self.headers.get("authorization") or ""
-        key = auth[7:] if auth.lower().startswith("bearer ") else auth
-        ok = bool(key) and hashlib.sha256(key.encode()).hexdigest() == want
-        with open("/run/e2e-model.log", "a") as log:
-            log.write(f"{self.path} key={'stored' if ok else ('other' if key else 'none')}\n")
-        body = json.dumps({"object": "list", "data": [{"id": "__MODEL__", "object": "model"}]} if ok
-                          else {"error": {"message": "invalid api key"}}).encode()
-        self.send_response(200 if ok else 401)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-
-http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
-'''
 
 
 def fields(text: str) -> dict:
@@ -593,17 +560,6 @@ def configure(facts: dict, run: Run) -> None:
     expect(p.get("SSH-KEY"), "no SSH key")
 
 
-def configure_provider(facts: dict, run: Run) -> None:
-    """A model provider's API key, saved through Settings into their vault."""
-    box = run.vm(SOURCE)
-    key = "sk-e2e-" + os.urandom(18).hex()
-    digest = hashlib.sha256(key.encode()).hexdigest()
-    serve_model(box, digest)
-    add_provider(box, key)
-    facts["provider"] = provider_answers(box)
-    facts["api_key_digest"] = digest
-
-
 def configure_passwords(facts: dict, run: Run) -> None:
     """A login in their passwords vault, saved through Passwords' own save-login action."""
     box = run.vm(SOURCE)
@@ -706,17 +662,6 @@ def act(vm: TiloVm, provider: str, resource: str, action: str, args: dict | None
     return vm.invoke_row(rows[0], args, wait_ms=20000 if wait else 0)
 
 
-# -- a model provider's API key, through Settings ------------------------------------
-
-
-def serve_model(vm: TiloVm, key_digest: str) -> None:
-    """The loopback endpoint the provider points at, as root, for this boot."""
-    vm.root_exec(f"printf %s {key_digest} > /run/e2e-model.digest && rm -f /run/e2e-model.log && "
-                 "cat > /run/e2e-model.py <<'EOF'\n" + MODEL_SERVER.replace("__MODEL__", PROVIDER_MODEL)
-                 + "\nEOF\nsystemctl stop e2e-model.service 2>/dev/null; systemctl reset-failed e2e-model.service "
-                 f"2>/dev/null; systemd-run --unit e2e-model --quiet python3 -I /run/e2e-model.py {MODEL_PORT}")
-
-
 def listed_actions(vm: TiloVm, *query: str) -> list[dict]:
     """Every row the desktop lists for `query`, page after page: a page holds at most 256 rows
     (`MAX_CATALOGUE_PAGE`), and the shell's own chrome fills most of the first."""
@@ -765,54 +710,6 @@ def app_action(vm: TiloVm, query: str, action: str, args: dict | None = None, pa
 def open_app(vm: TiloVm, app: str) -> Invoked:
     """Open `app` in the shown strip, as the shell's own Open an app does."""
     return act(vm, "so.tilo.session", "desktop:chrome", "open-app", {"app": app}, wait=True)
-
-
-def open_provider_settings(vm: TiloVm) -> None:
-    """The model providers' settings: the app a person adds a provider and its key in."""
-    if not app_rows(vm, "", "add-provider"):
-        open_app(vm, "so.tilo.model-providers")
-    if not wait_until(lambda: app_rows(vm, "", "add-provider"), 60, interval=1.0):
-        keep_actions(run_of[vm.vm], vm.vm, "S03b")
-        raise Failed(f"the model providers' window is open on {vm.vm}, but the desktop lists "
-                           "none of its actions (an open app's own actions are not among them), so "
-                           "no key can be saved without a person's hands")
-
-
-def provider_part(vm: TiloVm) -> str | None:
-    rows = app_rows(vm, PROVIDER_LABEL, "list-provider-models")
-    return address(rows[0])[0] if rows else None
-
-
-def add_provider(vm: TiloVm, key: str) -> str:
-    """An OpenAI-compatible provider at the loopback endpoint, with `key` saved in the
-    person's vault through Settings' own actions. Its record part."""
-    open_provider_settings(vm)
-    before = {address(r)[0] for r in app_rows(vm, "", "set-provider-details")}
-    app_action(vm, "Add provider", "add-provider", {"preset": "openai-compatible"})
-    new = wait_until(lambda: [r for r in app_rows(vm, "", "set-provider-details")
-                              if address(r)[0] not in before],
-                     30, interval=1.0)
-    expect(new, "Settings shows no row for the provider it added")
-    part = address(new[0])[0]
-    app_action(vm, "", "set-provider-details", {"label": PROVIDER_LABEL,
-               "endpoint": f"http://127.0.0.1:{MODEL_PORT}/v1", "model": PROVIDER_MODEL}, part)
-    app_action(vm, "", "save-provider-key", {"key": key}, part)
-    return part
-
-
-def provider_answers(vm: TiloVm) -> dict:
-    """Settings' Test connection for the provider: the gateway asks the endpoint for its models
-    with the key it reads from the person's vault. Whether the endpoint saw the stored key."""
-    open_provider_settings(vm)
-    part = wait_until(lambda: provider_part(vm), 30, interval=1.0)
-    expect(part, f"Settings on {vm.vm} lists no provider {PROVIDER_LABEL!r}")
-    answer = app_action(vm, "", "list-provider-models", None, part)
-    log = vm.root_exec("cat /run/e2e-model.log 2>/dev/null; true")
-    expect("key=stored" in log, f"the endpoint never saw the stored key from {vm.vm}: {log.strip()!r}; "
-                                f"the action answered {json.dumps(answer)[:600]}")
-    expect(PROVIDER_MODEL in json.dumps(answer), f"Test connection listed no {PROVIDER_MODEL}: "
-                                                 f"{json.dumps(answer)[:600]}")
-    return {"endpoint_saw": sorted(set(log.split()))[:6]}
 
 
 # -- the workspace and its shell -------------------------------------------------------
@@ -1135,7 +1032,7 @@ def judge_machine(facts: dict, run: Run, name: str, source: dict, others: dict) 
 
 
 def judge_person(facts: dict, run: Run, name: str, source_person: dict, source_ident: dict,
-                 devices: dict, key_digest: str | None, passwords: list[str] | None) -> dict:
+                 devices: dict, passwords: list[str] | None) -> dict:
     vm = run.vm(name)
     # The certificate a branch without its root in the system tree gets at the person's
     # next sign-in; this one holds it, so the boot issued it. Give the session a moment.
@@ -1164,12 +1061,6 @@ def judge_person(facts: dict, run: Run, name: str, source_person: dict, source_i
     for key in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY", "T-CONFIG"):
         if p.get(key) != source_person.get(key):
             problems.append(f"{key}: {p.get(key)!r}, on the source {source_person.get(key)!r}")
-    if key_digest:
-        serve_model(vm, key_digest)
-        try:
-            facts["provider"] = provider_answers(vm)
-        except (Failed, VmError) as exc:
-            problems.append(f"the model provider's API key: {exc}")
     if passwords:
         try:
             open_passwords(vm)
@@ -1227,7 +1118,6 @@ def steps(run: Run, args) -> None:
     # yet waits for the workspace's host, and b boots while box, the host, is stopped.
     run.step("S03c", "the person makes a workspace on box and opens a window on its shell",
              configure_workspace, run)
-    run.step("S03b", "the person saves a model provider's API key through Settings", configure_provider, run)
     run.step("S03d", "the person saves a login in their passwords vault", configure_passwords, run)
     try:
         source = machine_facts(run, SOURCE, "S03-box-source")
@@ -1236,8 +1126,6 @@ def steps(run: Run, args) -> None:
         run.step("S03d", "box's facts before the branch", lambda f: (_ for _ in ()).throw(exc))
         return
     source_ident = source_person.get("identity") or {}
-    key_digest = next((s["facts"].get("api_key_digest") for s in run.steps
-                       if s["id"] == "S03b" and s["status"] == "pass"), None)
     passwords = next((s["facts"].get("password_items") for s in run.steps
                       if s["id"] == "S03d" and s["status"] == "pass"), None)
     log_sync(run.vm(SOURCE))
@@ -1260,8 +1148,8 @@ def steps(run: Run, args) -> None:
             devices[name] = m or machine_facts(run, name, f"S06-{name}")
         for name in names:
             run.step(f"S07-{name}", f"{name}: a valid certificate under the person's root, and the "
-                     "person's secret, API key, SSH key and git config", judge_person, run, name,
-                     source_person, source_ident, devices, key_digest, passwords)
+                     "person's secret, SSH key and git config", judge_person, run, name,
+                     source_person, source_ident, devices, passwords)
 
     run.step("S05", "box boots beside them", boot, run, (SOURCE,))
     judge(first)

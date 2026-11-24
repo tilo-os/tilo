@@ -53,8 +53,6 @@ description = "Search and understand system logs without a wall of noise."
 description = "Keep direct conversations together with a clear choice of contact and messaging account."
 [apps.maps]
 description = "Find places, plan routes, and orient yourself visually."
-[apps.model-providers]
-description = "Add AI model providers, keep their keys on this device, and choose the models your agents use."
 [apps.monitor]
 description = "Watch processes, memory, storage, and system resources."
 [apps.osk]

@@ -36,7 +36,6 @@ pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.mail",
     "so.tilo.maps",
     "so.tilo.messages",
-    "so.tilo.model-providers",
     "so.tilo.monitor",
     "so.tilo.music",
     "so.tilo.notes",

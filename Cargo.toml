@@ -106,7 +106,6 @@ members = [
     "apps/moderation-model",
     "apps/messages",
     "apps/imager",
-    "apps/model-providers",
     "apps/remote",
     "apps/remote-model",
     "apps/remote-model-wasm",
@@ -126,7 +125,6 @@ members = [
     "crates/integrations/provider-config",
 
     # SDK
-    "crates/integrations/provider-settings-ui",
     "crates/ui/font-catalog",
     "crates/sdk/runner-native",
     "crates/sdk/tilo-app",
@@ -379,7 +377,6 @@ members = [
     "crates/engines/loadable/contact-directory",
     "crates/engines/loadable/emoji",
     "crates/engines/loadable/highlight",
-    "crates/engines/loadable/settings",
     "crates/engines/loadable/theme-painter",
     "crates/engines/loadable/wasm",
     "crates/core/runtime-fs",

@@ -342,8 +342,6 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
 const LIST_LOGINS: &str = "list-logins";
 /// Passwords, as the person's devices install it.
 const PASSWORDS: &str = "so.tilo.passwords";
-/// Model Providers, as the person's devices install it.
-const MODEL_PROVIDERS: &str = "so.tilo.model-providers";
 /// The login Ada saves before her laptop is copied.
 const LOGIN: &str = "Branch mail";
 
@@ -375,14 +373,13 @@ fn logins(device: &Device) -> Vec<String> {
 /// What a person keeps in their vault on one device is theirs on a machine copied from it: Ada
 /// saves a login through Passwords' own action with the host up, her laptop is copied and the copy
 /// re-keyed, and the copy, started with the host up and the laptop booted beside it as a branch
-/// is, lists that login and runs Model Providers' actions (`e2e-branch` S07).
+/// is, lists that login (`e2e-branch` S07).
 #[test]
-fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
+fn a_copy_lists_the_logins_its_source_saved() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
     let mut laptop = ada.device("Ada's laptop");
     laptop.install_passwords();
-    laptop.install_model_providers();
     let hers = site.invite(ada.public, Role::Editor);
     laptop.join(&hers);
     laptop.wait_holding(&site.workspace);
@@ -411,16 +408,6 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
         laptop.warnings()
     );
     assert!(logins(&laptop).contains(&LOGIN.to_owned()));
-    laptop.open(MODEL_PROVIDERS);
-    laptop.wait_for_window(MODEL_PROVIDERS);
-    // Model Providers on a device whose providers no server keeps shows the person's own models
-    // and answers a read of them; adding a provider is the panel a server's gateway answers.
-    let providers = laptop.app_act(MODEL_PROVIDERS, "read-providers", &serde_json::json!({}));
-    assert!(
-        providers["update"]["state"].is_string(),
-        "the laptop's Model Providers ran its action: {providers}"
-    );
-
     laptop.stop();
     let (mut copy, _) = ada.branch(&laptop);
     start(&mut copy, &site);
@@ -437,14 +424,6 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
         "the copy's Passwords lists {listed:?}, not the login its source saved\n{}\nthe laptop warned:\n{}",
         copy.warnings(),
         laptop.warnings()
-    );
-    copy.open(MODEL_PROVIDERS);
-    copy.wait_for_window(MODEL_PROVIDERS);
-    let providers = copy.app_act(MODEL_PROVIDERS, "read-providers", &serde_json::json!({}));
-    assert!(
-        providers["update"]["state"].is_string(),
-        "the copy's Model Providers ran its action: {providers}\n{}",
-        copy.warnings()
     );
 }
 

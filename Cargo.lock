@@ -8498,16 +8498,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "model-providers"
-version = "0.1.0"
-dependencies = [
- "provider-settings-ui",
- "runtime-dylib",
- "tilo-app",
- "workspace-hack",
-]
-
-[[package]]
 name = "moderation-model"
 version = "0.1.0"
 dependencies = [
@@ -11438,21 +11428,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
 dependencies = [
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "provider-settings-ui"
-version = "0.1.0"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "tilo-agent-provider-config",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-taffy",
- "workspace-hack",
- "zeroize",
 ]
 
 [[package]]
@@ -20472,24 +20447,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-settings-engine"
-version = "0.1.0"
-dependencies = [
- "model-providers",
- "provider-settings-ui",
- "runtime-dylib",
- "settings-sections",
- "tilo-accessibility-settings",
- "tilo-accounts-engine",
- "tilo-app",
- "tilo-ntfs-mount",
- "tilo-pc-keyboard-geometry",
- "tilo-wallpapers",
- "tilo-zone-globe",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-settings-model"
 version = "0.1.0"
 dependencies = [
@@ -26741,7 +26698,6 @@ dependencies = [
  "miracast",
  "ml-dsa",
  "ml-kem",
- "model-providers",
  "moderation-model",
  "module-lattice",
  "moka",
@@ -26937,7 +26893,6 @@ dependencies = [
  "protobuf-json-mapping",
  "protobuf-parse",
  "protobuf-support",
- "provider-settings-ui",
  "psl",
  "psl-types",
  "psm",

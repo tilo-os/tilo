@@ -990,12 +990,6 @@ inputs = ["crates/desktop/onboarding/src/"]
 readers = ["crates/desktop/onboarding-walk/tests/names.rs"]
 
 [[cargo]]
-package = "provider-settings-ui"
-# The provider screenshots list the models of the provider config's recorded OpenRouter answer.
-inputs = ["crates/integrations/provider-config/tests/fixtures/openrouter-models.json"]
-readers = ["crates/integrations/provider-settings-ui/src/app_tests.rs"]
-
-[[cargo]]
 package = "tilo-esp-write"
 # The ESP writer's tests run tilo-deployment's boot-counter pass, which reads
 # its UKIs with the built helper as tilo-uki-cmdline. The editor's own tests
@@ -1292,7 +1286,6 @@ inputs = [
   "crates/engines/tilo-typst-fonts/",
   "crates/lang/tilolang-process/",
   "crates/lang/tilolang-tilo/",
-  "crates/integrations/provider-settings-ui/",
   "crates/integrations/account-probe/",
   "crates/os/imager-backend/",
   "crates/integrations/mail-engine/",

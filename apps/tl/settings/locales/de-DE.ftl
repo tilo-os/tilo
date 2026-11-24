@@ -38,6 +38,12 @@ d-qp5i5mvo-percent = Prozent
 d-wcj2cd57 = Export a theme
     .doc = Das Thema als Datei: was das Exportieren speichert und das Importieren in einem anderen Arbeitsbereich liest.
 
+d-7q2etwl5 = Ein Theme importieren…
+    .doc = Nimmt ein mit Export gespeichertes Theme an, aus diesem Arbeitsbereich oder einem anderen: jede Rolle, jeder abgestimmte Wert und jeder Glaseffekt, sobald es angenommen ist und jeden Kontrastwert einhält.
+    .did = hat ein Theme importiert
+
+d-7q2etwl5-file = Datei
+
 d-wcj2cd57-t = Um
 
 d-6hknmq22 = Accessibility pane
@@ -124,13 +130,20 @@ d-epn7dy5e = Agent models pane
     .w-redo-the-choice = Die Wahl wiederherstellen
     .w-providers = Anbieter
     .w-no-model-provider-is-set-up = In diesem Arbeitsbereich ist noch kein Modellanbieter eingerichtet.
-    .w-more-for = Mehr zu { $label }
+    .w-more-for = Mehr zu { $name }
     .w-stop-offering-it-to-agents = Nicht mehr für Agenten anbieten
     .w-offer-it-to-agents = Für Agenten anbieten
     .w-make-it-the-default = Als Standard festlegen
+    .w-ask-it-for-its-models-again = Erneut nach seinen Modellen fragen
+    .w-remove-its-key = Seinen Schlüssel entfernen
+    .w-keep-its-key = Seinen Schlüssel speichern
+    .w-remove-this-provider = Diesen Anbieter entfernen
+    .w-the-key-gave-you = Der Schlüssel, den { $name } dir gegeben hat
+    .w-keep-the-key = Schlüssel speichern
+    .w-cancel = Abbrechen
     .w-agents-use-this-one = Agenten verwenden diesen
     .w-add-a-provider = Anbieter hinzufügen
-    .w-a-provider-where-models-answer-directly = Ein Anbieter, bei dem Modelle direkt antworten: eine gehostete API mit Schlüssel oder ein Server auf diesem Gerät oder in deinem Netz.
+    .w-a-provider-where-models-answer-directly = Ein Anbieter, bei dem Modelle direkt antworten: eine gehostete API mit Schlüssel oder ein Server auf diesem Gerät oder in deinem Netz. Der Schlüssel wird im Tresor dieses Arbeitsbereichs gehalten, nie in diesem Fenster.
 
 d-i67tvpqg = Settings window
     .w-settings = Einstellungen
@@ -1092,6 +1105,7 @@ d-ozpkxud5 = Themes pane
     .w-a-name-for-it-such-as = Ein Name dafür, etwa harbour
     .w-start-from = Starten von
     .w-new-theme = Neues Design
+    .w-import = Importieren
     .w-name-and-polarity = Name und Helligkeit
     .w-name = Bis
     .w-what-the-theme-is-called = Wie das Thema heißt

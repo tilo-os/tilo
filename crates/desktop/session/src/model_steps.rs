@@ -9,8 +9,10 @@
 //! ([`WorkspaceView::ask_in`]): where it keeps the workspace, or of the device keeping it. The
 //! agents of the workspace answer on what is chosen here.
 //!
-//! A key is never typed through here: it is kept by the vault the workspace has, and only its
-//! item is named ([`model_providers::SET_KEY_FROM_ITEM`]).
+//! A key typed in the person's own window is carried here to the workspace's host, which seals
+//! it in the workspace's vault: a reading never says what it is, and no other app of the
+//! workspace is shown it. A key the vault already keeps is named by its item
+//! ([`model_providers::SET_KEY_FROM_ITEM`]) instead.
 
 use std::sync::Arc;
 
@@ -30,7 +32,7 @@ use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 use crate::workspace_view::WorkspaceView;
 
 /// Each step, with what it is called and whether it only reads.
-const STEPS: [(&str, &str, bool); 16] = [
+const STEPS: [(&str, &str, bool); 18] = [
     (
         model_providers::LIST,
         "List the workspace's model providers",
@@ -43,11 +45,25 @@ const STEPS: [(&str, &str, bool); 16] = [
         false,
     ),
     (
+        model_providers::SET_ENABLED,
+        "Offer a model provider to agents, or stop",
+        false,
+    ),
+    (
+        model_providers::SET_KEY,
+        "Keep a model provider's key",
+        false,
+    ),
+    (
         model_providers::SET_KEY_FROM_ITEM,
         "Use a key the vault keeps for a provider",
         false,
     ),
-    (model_providers::REMOVE_KEY, "Forget a provider's key", false),
+    (
+        model_providers::REMOVE_KEY,
+        "Forget a provider's key",
+        false,
+    ),
     (
         model_providers::REMOVE_PROVIDER,
         "Remove a model provider",
@@ -58,7 +74,11 @@ const STEPS: [(&str, &str, bool); 16] = [
         "Read a provider's models again",
         false,
     ),
-    (model_providers::ADD_MODEL, "Add a model to a provider", false),
+    (
+        model_providers::ADD_MODEL,
+        "Add a model to a provider",
+        false,
+    ),
     (
         model_providers::SET_DEFAULT,
         "Choose the workspace's model",
