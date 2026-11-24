@@ -611,6 +611,8 @@ pub struct Heard {
 pub struct Reader {
     link: DirectSync,
     heard: broadcast::Receiver<Heard>,
+    /// The content frames the links bring, none dropped ([`Inner::content_readers`]).
+    content: tokio::sync::mpsc::Receiver<Heard>,
     /// Where this reader stands in the workspace's retained history.
     cursors: Vec<Cursor>,
     /// The frames the last catch-up handed, whose copy still in the channel
@@ -632,7 +634,12 @@ impl Reader {
             if let Some(heard) = self.pending.pop_front() {
                 return Some(heard);
             }
-            match self.heard.recv().await {
+            let heard = tokio::select! {
+                biased;
+                heard = self.heard.recv() => heard,
+                Some(content) = self.content.recv() => return Some(content),
+            };
+            match heard {
                 Ok(heard) => {
                     if let Ok(frame) = Frame::of(&heard.message) {
                         if self.caught.remove(&(frame.lineage, frame.seq)) {
@@ -757,7 +764,16 @@ impl Pairing {
         holder.0.caught_up.send_replace(true);
         let to_holder = forward(live_mine, &member, &holder, false);
         let to_member = forward(live_theirs, &holder, &member, false);
-        tokio::try_join!(to_holder, to_member)?;
+        let (content_to_holder, to_holder_queue) = ContentLink::new(theirs);
+        let _content_to_holder = ContentLinked::new(&member, content_to_holder);
+        let (content_to_member, to_member_queue) = ContentLink::new(own);
+        let _content_to_member = ContentLinked::new(&holder, content_to_member);
+        tokio::try_join!(
+            to_holder,
+            to_member,
+            carry_content(to_holder_queue, &holder, own),
+            carry_content(to_member_queue, &member, theirs),
+        )?;
         Ok(())
     }
 }
@@ -820,7 +836,7 @@ async fn answering(
     if !answers {
         return Ok((None, Box::pin(answer_all(None, answered))));
     }
-    let stream = transport.open_uni().await?;
+    let stream = open_stream(transport, ANSWERS_STREAM).await?;
     Ok((
         Some(answering),
         Box::pin(answer_all(Some(stream), answered)),
@@ -872,6 +888,15 @@ struct Inner {
     store: Option<Arc<Store>>,
     outgoing: broadcast::Sender<Authored>,
     heard: broadcast::Sender<Heard>,
+    /// Each link's queue of content frames ([`ContentLink`]): content travels
+    /// apart from the workspace's frames, on a stream of its own per link, so
+    /// a bulk transfer never holds a record's write back and no content frame
+    /// is dropped for a link that falls behind.
+    content_links: Arc<std::sync::Mutex<Vec<ContentLink>>>,
+    /// Where each [`Reader`] takes the content frames the links bring: every
+    /// frame reaches every reader, and a reader that falls behind holds the
+    /// links back rather than losing one.
+    content_readers: Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<Heard>>>>,
     /// What the devices at this device's links' other ends answered of its writes.
     answered: broadcast::Sender<Answered>,
     changed: watch::Sender<u64>,
@@ -979,6 +1004,8 @@ impl DirectSync {
             store: None,
             outgoing: broadcast::channel(OUTGOING).0,
             heard: broadcast::channel(OUTGOING).0,
+            content_links: Arc::default(),
+            content_readers: Arc::default(),
             answered: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
             caught_up: watch::channel(false).0,
@@ -1007,6 +1034,8 @@ impl DirectSync {
             store: self.0.store.clone(),
             outgoing: self.0.outgoing.clone(),
             heard: self.0.heard.clone(),
+            content_links: Arc::clone(&self.0.content_links),
+            content_readers: Arc::clone(&self.0.content_readers),
             answered: self.0.answered.clone(),
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
@@ -1233,8 +1262,11 @@ impl DirectSync {
     /// ([`Reader::recv`]).
     #[must_use]
     pub fn reader(&self) -> Reader {
+        let (content, taken) = tokio::sync::mpsc::channel(READER_CONTENT);
+        self.0.content_readers.lock_recover().push(content);
         Reader {
             heard: self.heard(),
+            content: taken,
             cursors: self.cursors(),
             link: self.clone(),
             caught: std::collections::BTreeSet::new(),
@@ -1333,6 +1365,19 @@ impl DirectSync {
     ///
     /// The frame could not be kept.
     pub fn send(&self, message: NeighbourMsg) -> Result<(), String> {
+        // Content goes on each link's own content stream, never kept: one that
+        // sends much of it waits for room with [`Self::send_content`].
+        if content_frame(&message) {
+            let authored = Authored {
+                from: self.device(),
+                message,
+                published: true,
+            };
+            for link in self.content_targets(&authored, None) {
+                link.queue_now(authored.clone());
+            }
+            return Ok(());
+        }
         #[cfg(not(target_arch = "wasm32"))]
         self.keep(&message, false)
             .map_err(|error| error.to_string())?;
@@ -1344,6 +1389,70 @@ impl DirectSync {
             published: true,
         });
         Ok(())
+    }
+
+    /// Send `message`, an ask for content or an answer to one, to the links it
+    /// reaches as [`Self::send`] does, waiting while a link's queue is full:
+    /// an ask reaches every link, an answer the link of the device that asked.
+    /// What waits is what holds the sender back, so a device answering many
+    /// asks sends no faster than the link carries.
+    ///
+    /// # Errors
+    ///
+    /// `message` is no content frame.
+    pub async fn send_content(&self, message: NeighbourMsg) -> Result<(), String> {
+        if !content_frame(&message) {
+            return Err(format!("{} is no content frame", message.kind()));
+        }
+        self.route_content(
+            Authored {
+                from: self.device(),
+                message,
+                published: true,
+            },
+            None,
+        )
+        .await;
+        Ok(())
+    }
+
+    /// The links `authored`, a content frame, goes to: an ask to every link
+    /// but the one it came by (`came_by`) and its asker's, an answer to its
+    /// asker's link alone.
+    fn content_targets(&self, authored: &Authored, came_by: Option<[u8; 32]>) -> Vec<ContentLink> {
+        self.0
+            .content_links
+            .lock_recover()
+            .iter()
+            .filter(|link| {
+                Some(link.remote) != came_by
+                    && !already_theirs(authored, link.remote)
+                    && content_reaches(&authored.message, link.remote)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Queue `authored`, a content frame, on each link it goes to
+    /// ([`Self::content_targets`]), waiting for room on each.
+    async fn route_content(&self, authored: Authored, came_by: Option<[u8; 32]>) {
+        for link in self.content_targets(&authored, came_by) {
+            link.queue(authored.clone()).await;
+        }
+    }
+
+    /// Hand `heard`, a content frame a link brought, to every reader, waiting
+    /// for each to have room: what holds the link's stream, and so the device
+    /// sending, back.
+    async fn tell_content(&self, heard: Heard) {
+        let readers = {
+            let mut readers = self.0.content_readers.lock_recover();
+            readers.retain(|reader| !reader.is_closed());
+            readers.clone()
+        };
+        for reader in readers {
+            let _ = reader.send(heard.clone()).await;
+        }
     }
 
     /// Carry `message`, `from`'s signed frame this device took in apart from
@@ -2015,11 +2124,18 @@ impl DirectSync {
             catch_up = catch_up.len(),
             "a direct link starts"
         );
-        let send = transport.open_uni().await?;
+        let send = open_stream(transport, FRAMES_STREAM).await?;
         // Both ends answer each other's writes, except a device that takes the
         // records only as it opens them: it keeps no copy of the workspace, so
         // its taking a write in is no write reaching the workspace.
         let (answering, answer_all) = answering(transport, !(dialing && self.0.opens)).await?;
+        // Content goes on a stream of its own, from a queue that waits when
+        // full: what a bulk transfer sends never holds back a record's write,
+        // and none of it is dropped.
+        let content_send = open_stream(transport, CONTENT_STREAM).await?;
+        let (content_link, content_queue) = ContentLink::new(remote);
+        let _content_link = ContentLinked::new(self, content_link);
+        let content_out = Box::pin(write_content(self, content_send, remote, content_queue));
         // What this link alone carries, besides what every link does: this
         // device's asks for the other's state, and its answers to the other's.
         let (own, only_here) = tokio::sync::mpsc::unbounded_channel();
@@ -2142,6 +2258,7 @@ impl DirectSync {
             result = receiving => result,
             result = sending => result,
             result = answer_all => result,
+            result = content_out => result,
             result = history => result,
             Some(reason) = ending => Err(refuse(transport, &reason)),
             Some(reason) = ended => Err(refuse(transport, &reason)),
@@ -2850,11 +2967,20 @@ impl DirectSync {
         answering: Answering<'_>,
         admit: LinkAdmit,
     ) -> Result<(), String> {
-        let mut recv = transport.accept_uni().await?;
+        let (frames_stream, frames_accepted) = tokio::sync::oneshot::channel();
+        let (answers_stream, answers_accepted) = tokio::sync::oneshot::channel();
+        let (content_stream, content_accepted) = tokio::sync::oneshot::channel();
+        let sorting = Box::pin(sort_streams(
+            transport,
+            [frames_stream, answers_stream, content_stream],
+        ));
         // Frames are taken off the stream as they are admitted; only the
         // app writes held for the history pile up while it is read.
         let (read, frames) = tokio::sync::mpsc::channel(1);
         let reading = async move {
+            let Ok(mut recv) = frames_accepted.await else {
+                return std::future::pending().await;
+            };
             while let Some(authored) = read_authored(&mut recv).await? {
                 if read.send(authored).await.is_err() {
                     break;
@@ -2872,7 +2998,76 @@ impl DirectSync {
         };
         tokio::select! {
             result = received => result,
-            result = Box::pin(self.take_answers(transport)) => result,
+            result = Box::pin(self.take_answers(answers_accepted)) => result,
+            result = Box::pin(self.receive_content(content_accepted, remote, admit)) => result,
+            result = sorting => result,
+        }
+    }
+
+    /// Take the content frames the device at the link's other end sends on
+    /// its content stream, each as [`Self::take_content`] does, one at a time:
+    /// a reader with no room holds the stream, and so its sender, back.
+    async fn receive_content(
+        &self,
+        stream: tokio::sync::oneshot::Receiver<StreamRecv>,
+        remote: [u8; 32],
+        admit: LinkAdmit,
+    ) -> Result<(), String> {
+        let Ok(mut recv) = stream.await else {
+            return std::future::pending().await;
+        };
+        while let Some(authored) = read_authored(&mut recv).await? {
+            self.take_content(remote, admit, authored).await;
+        }
+        std::future::pending().await
+    }
+
+    /// Take in `authored`, a content frame `remote` sent: refused unless the
+    /// link's device may send it ([`LinkAdmit::permits`]) and its author is a
+    /// device of the workspace, as every frame a link brings is. The
+    /// workspace's host carries it on to the links it goes to
+    /// ([`Self::content_targets`]); the readers here take an ask, and an
+    /// answer to this device's own.
+    async fn take_content(&self, remote: [u8; 32], admit: LinkAdmit, authored: Authored) {
+        let refused = if !content_frame(&authored.message) {
+            Some("a link's content stream carried another frame".to_owned())
+        } else if !admit.permits(self.device(), remote, &authored) {
+            Some("the link's device may not send it".to_owned())
+        } else {
+            self.admits(authored.from, false).err()
+        };
+        if let Some(reason) = refused {
+            tracing::warn!(
+                workspace = ?self.workspace().ok(),
+                remote = %short(&remote),
+                from = %short(&authored.from),
+                kind = authored.message.kind(),
+                %reason,
+                "a link sent a content frame that is refused"
+            );
+            return;
+        }
+        let here = content_reaches(&authored.message, self.device());
+        if self.fans_out() {
+            self.route_content(
+                Authored {
+                    published: false,
+                    ..authored.clone()
+                },
+                Some(remote),
+            )
+            .await;
+        }
+        if here {
+            self.tell_content(Heard {
+                author: authored.from,
+                message: authored.message,
+                landed: false,
+                retained: false,
+                report: Err(crate::AdmissionError::malformed(NOT_WORKSPACE_STATE)),
+                fresh: true,
+            })
+            .await;
         }
     }
 
@@ -2880,8 +3075,13 @@ impl DirectSync {
     /// writes, on the stream it opens after its frames', and keep each at this
     /// device's store ([`crate::reach`]). A device that answers nothing opens
     /// no such stream, and this waits for the link to end.
-    async fn take_answers(&self, transport: &dyn Transport) -> Result<(), String> {
-        let mut recv = transport.accept_uni().await?;
+    async fn take_answers(
+        &self,
+        stream: tokio::sync::oneshot::Receiver<StreamRecv>,
+    ) -> Result<(), String> {
+        let Ok(mut recv) = stream.await else {
+            return std::future::pending().await;
+        };
         while let Some(bytes) = crate::frames::read_frame(&mut recv, MAX_FRAME_BYTES).await? {
             let answered: Answered =
                 postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
@@ -3770,6 +3970,31 @@ async fn forward(
     }
 }
 
+/// Hand each content frame `queued` holds for `device`, from the device `from`
+/// it pairs with in this process, to `device` as its link would
+/// ([`DirectSync::take_content`]).
+#[cfg(not(target_arch = "wasm32"))]
+async fn carry_content(
+    mut queued: tokio::sync::mpsc::UnboundedReceiver<Queued>,
+    device: &DirectSync,
+    from: [u8; 32],
+) -> Result<(), String> {
+    while let Some((authored, room)) = queued.recv().await {
+        device
+            .take_content(
+                from,
+                LinkAdmit::dialling(),
+                Authored {
+                    published: false,
+                    ..authored
+                },
+            )
+            .await;
+        drop(room);
+    }
+    std::future::pending().await
+}
+
 /// Whether `error` refused a frame only for arriving after the live window: a write judged live
 /// (one not its author's own on a link to its host, [`DirectSync::member_history`]) that waited
 /// somewhere on its way. That says nothing of the write, so it is
@@ -3784,6 +4009,173 @@ fn arrived_late(error: &crate::AdmissionError) -> bool {
 /// Why a link to a device ends, or is refused: the workspace removed its
 /// person.
 pub const REMOVED: &str = "the workspace removed the device's person";
+
+/// What a link's one-way stream carries, named by the byte it opens with: its
+/// device's frames, its answers to the other device's writes, and content.
+const FRAMES_STREAM: u8 = 0;
+const ANSWERS_STREAM: u8 = 1;
+const CONTENT_STREAM: u8 = 2;
+
+/// The content frames a link holds for its stream before a sender waits: a
+/// few answers' pieces, so a link to a slow device holds little and its
+/// senders slow to its pace.
+const LINK_CONTENT: usize = 256;
+
+/// The content frames a reader holds before the links bringing them wait.
+const READER_CONTENT: usize = 256;
+
+/// Open a one-way stream on `transport` for what `kind` names
+/// ([`FRAMES_STREAM`]): the other device sorts its streams by that byte
+/// ([`sort_streams`]), whichever order they reach it in.
+async fn open_stream(transport: &dyn Transport, kind: u8) -> Result<StreamSend, String> {
+    use tokio::io::AsyncWriteExt as _;
+    let mut send = transport.open_uni().await?;
+    send.write_all(&[kind])
+        .await
+        .map_err(|error| error.to_string())?;
+    send.flush().await.map_err(|error| error.to_string())?;
+    Ok(send)
+}
+
+/// Hand each one-way stream the other device opens on `transport` to the
+/// slot its first byte names ([`open_stream`]), until every slot has its
+/// stream; then wait for the link to end.
+async fn sort_streams(
+    transport: &dyn Transport,
+    slots: [tokio::sync::oneshot::Sender<StreamRecv>; 3],
+) -> Result<(), String> {
+    use tokio::io::AsyncReadExt as _;
+    let mut slots = slots.map(Some);
+    while slots.iter().any(Option::is_some) {
+        let mut recv = transport.accept_uni().await?;
+        let mut kind = [0_u8];
+        recv.read_exact(&mut kind)
+            .await
+            .map_err(|error| error.to_string())?;
+        let slot = slots
+            .get_mut(usize::from(kind[0]))
+            .and_then(Option::take)
+            .ok_or("the other device opened a stream the link does not carry")?;
+        let _ = slot.send(recv);
+    }
+    std::future::pending().await
+}
+
+/// Whether `message` is content: an ask for a blob a record names, or an
+/// answer to one. Content goes on each link's content stream
+/// ([`ContentLink`]), never with the workspace's frames.
+fn content_frame(message: &NeighbourMsg) -> bool {
+    matches!(
+        message,
+        NeighbourMsg::DocumentContentWant { .. }
+            | NeighbourMsg::DocumentContentPiece { .. }
+            | NeighbourMsg::DocumentContentLacks { .. }
+            | NeighbourMsg::DocumentContentRefused { .. }
+    )
+}
+
+/// Whether content `message` goes to `device`: an answer to the device that
+/// asked, in the handle the workspace knows it by, and an ask to any device,
+/// which may answer it.
+fn content_reaches(message: &NeighbourMsg, device: [u8; 32]) -> bool {
+    match message {
+        NeighbourMsg::DocumentContentPiece { requester, .. }
+        | NeighbourMsg::DocumentContentLacks { requester, .. }
+        | NeighbourMsg::DocumentContentRefused { requester, .. } => {
+            *requester == peer_handle(&device)
+        }
+        _ => true,
+    }
+}
+
+/// One link's queue of content frames for its content stream, and the room
+/// left in it: a sender that finds none waits ([`Self::queue`]).
+#[derive(Clone)]
+struct ContentLink {
+    /// The device on the link's other end.
+    remote: [u8; 32],
+    queue: tokio::sync::mpsc::UnboundedSender<Queued>,
+    room: Arc<tokio::sync::Semaphore>,
+}
+
+/// A content frame waiting for a link's stream, with the room it takes in the
+/// link's queue, if it took any ([`ContentLink::queue_now`] takes none).
+type Queued = (Authored, Option<tokio::sync::OwnedSemaphorePermit>);
+
+impl ContentLink {
+    fn new(remote: [u8; 32]) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Queued>) {
+        let (queue, queued) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Self {
+                remote,
+                queue,
+                room: Arc::new(tokio::sync::Semaphore::new(LINK_CONTENT)),
+            },
+            queued,
+        )
+    }
+
+    /// Queue `authored` once the link has room for it; a link that ended
+    /// takes nothing more, and its device asks again on the next.
+    async fn queue(&self, authored: Authored) {
+        let Ok(room) = Arc::clone(&self.room).acquire_owned().await else {
+            return;
+        };
+        let _ = self.queue.send((authored, Some(room)));
+    }
+
+    /// Queue `authored` now, room or not: what a caller that cannot wait
+    /// sends ([`DirectSync::send`]), a frame at a time.
+    fn queue_now(&self, authored: Authored) {
+        let _ = self.queue.send((authored, None));
+    }
+}
+
+/// A link's [`ContentLink`] among its device's, for as long as the link runs.
+struct ContentLinked {
+    links: Arc<std::sync::Mutex<Vec<ContentLink>>>,
+    room: Arc<tokio::sync::Semaphore>,
+}
+
+impl ContentLinked {
+    fn new(sync: &DirectSync, link: ContentLink) -> Self {
+        let room = Arc::clone(&link.room);
+        sync.0.content_links.lock_recover().push(link);
+        Self {
+            links: Arc::clone(&sync.0.content_links),
+            room,
+        }
+    }
+}
+
+impl Drop for ContentLinked {
+    fn drop(&mut self) {
+        self.links
+            .lock_recover()
+            .retain(|link| !Arc::ptr_eq(&link.room, &self.room));
+        // A sender waiting for room on the link that ended waits no more.
+        self.room.close();
+    }
+}
+
+/// Write each content frame `queued` holds on `send`, the link's content
+/// stream, in the order they were queued, until the workspace removes the
+/// device on the other end.
+async fn write_content(
+    link: &DirectSync,
+    mut send: StreamSend,
+    remote: [u8; 32],
+    mut queued: tokio::sync::mpsc::UnboundedReceiver<Queued>,
+) -> Result<(), String> {
+    while let Some((authored, room)) = queued.recv().await {
+        if link.removed(remote) {
+            return Err(REMOVED.into());
+        }
+        write_authored(&mut send, &authored).await?;
+        drop(room);
+    }
+    std::future::pending().await
+}
 
 /// Why a channel's governance is never admitted into the workspace: what a
 /// [`Heard`] carrying it reports.
