@@ -137,7 +137,7 @@ fn engine_key(key: Key) -> crate::input::Key {
 }
 
 fn held(held: Held) -> crate::input::Held {
-    crate::input::Held::new(held.shift, held.alt, held.ctrl, held.sup)
+    crate::input::Held::from([held.shift, held.alt, held.ctrl, held.sup])
 }
 
 fn button(button: Button) -> crate::input::Button {
