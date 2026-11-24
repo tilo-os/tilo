@@ -20,7 +20,7 @@ use tilolang_tilo::runtime::ids::MemberId;
 use ui::headless::FrameHarness;
 
 const CHAT: &str = "so.tilo.chat";
-const SOURCE: &str = concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl"));
+const SOURCE: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 /// A member's picture, and the agent's persona.
 const MEMBER: &str = ui::headless::FIXTURE_PICTURE;

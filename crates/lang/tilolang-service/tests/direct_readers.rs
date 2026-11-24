@@ -20,7 +20,7 @@ use tilolang_tilo::runtime::ids::{AppId, MemberId};
 use crate::fixtures::{Replica, target};
 
 const CHAT: (&str, &str) = (
-    concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl")),
+    include_str!("../../../../apps/tl/chat/app.tl"),
     include_str!("../../../../apps/tl/chat/app.ids"),
 );
 const BEFORE: (&str, &str) = (

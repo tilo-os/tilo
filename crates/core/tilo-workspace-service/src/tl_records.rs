@@ -212,12 +212,12 @@ pub struct Declared {
 /// The sources of the packages built into this build, each app after those it uses.
 const BUILT_IN: &[&[(&str, &str)]] = &[
     &[(
-        concat!(
-            include_str!("../../../../apps/tl/chat/app.tl"),
-            "\n",
-            include_str!("../../../../apps/tl/chat/discord.tl")
-        ),
+        include_str!("../../../../apps/tl/chat/app.tl"),
         include_str!("../../../../apps/tl/chat/app.ids"),
+    )],
+    &[(
+        include_str!("../../../../apps/tl/discord/app.tl"),
+        include_str!("../../../../apps/tl/discord/app.ids"),
     )],
     &[
         (

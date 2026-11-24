@@ -959,7 +959,7 @@ fn a_surface_names_the_app_in_the_readers_words() {
 /// host links.
 #[test]
 fn a_package_keeping_a_workspace_record_publishes_its_surface() {
-    const CHAT: &str = concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl"));
+    const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
     const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
     let kinds = |meta: &Meta| -> Vec<String> {
         let bytes = surface_toml(&[meta], &SourceWords).unwrap();

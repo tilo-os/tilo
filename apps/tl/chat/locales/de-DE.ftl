@@ -130,14 +130,6 @@ d-zevnbs3i = Art
 
 d-3hkzkqvr = Text
 
-d-fp7zx7jn = Fähigkeit
-    .doc = Wie eine Art Arbeit in diesem Arbeitsbereich getan wird: was eine Person einmal festhält und was ein Agent liest, bevor er diese Arbeit beginnt.
-    .noun = { $count ->
-        [one] Fähigkeit
-       *[other] Fähigkeiten
-    }
-    .untitled = Neue Fähigkeit
-
 d-gfk6pm4a = Name
     .doc = Wie sie heißt, in wenigen Worten: womit ein Agent sie benennt.
 

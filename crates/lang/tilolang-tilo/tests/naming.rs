@@ -14,7 +14,7 @@ use tilolang_tilo::publish::{PlanRequest, Planner, Publications};
 use crate::fixtures::Replica;
 
 const CHAT: (&str, &str) = (
-    concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl")),
+    include_str!("../../../../apps/tl/chat/app.tl"),
     include_str!("../../../../apps/tl/chat/app.ids"),
 );
 const APP: &str = "so.tilo.chat";

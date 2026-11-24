@@ -62,13 +62,9 @@ pub const MAIL: (&str, &str) = (
 /// The packages a host loads to run Mail.
 pub const MAIL_SET: &[(&str, &str)] = &[CONTACTS, MAIL];
 
-/// The Chat package (`apps/tl/chat`): its app and the Discord account it bridges.
+/// The Chat package (`apps/tl/chat`): its own app, with no service's records in it.
 pub const CHAT: (&str, &str) = (
-    concat!(
-        include_str!("../../../../apps/tl/chat/app.tl"),
-        "\n",
-        include_str!("../../../../apps/tl/chat/discord.tl")
-    ),
+    include_str!("../../../../apps/tl/chat/app.tl"),
     include_str!("../../../../apps/tl/chat/app.ids"),
 );
 

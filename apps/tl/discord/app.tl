@@ -1,3 +1,10 @@
+app so.tilo.discord "Discord" (
+    icon: .discord,
+    category: .network,
+    tagline: "Discord servers in the workspace's conversations",
+    keywords: ["discord", "chat", "server", "channels"],
+)
+
 /// A connected Discord account: the server it bridges, what the bridge knows of both sides, and
 /// who here linked their Discord account. A server's categories are Chat's categories and its
 /// channels Chat's channels, so the sidebar lists them as any other conversation; this holds
@@ -409,22 +416,36 @@ type Perform {
     op: Text
 }
 
-/// Chat's Discord place: the account's page once one is connected, and the one entry that
-/// connects it before that.
-/// Whether `who` is Chat itself, carrying the bridge's own changes to Discord.
+/// The servers this app bridges: one account per connected Discord server.
+type Accounts {
+    accounts: Collection<Discord>
+}
+
+root accounts: Accounts
+
+/// Whether `who` has the workspace's moderating role.
+fn moderates(who: Actor) -> Bool {
+    let role = who.role() ?? ""
+    role == "moderator" or role == "owner"
+}
+
+/// Whether `who` is the bridge's own program, carrying the workspace's changes to Discord.
 fn bridge(who: Actor) -> Bool {
-    who.id() == "\{\"app\":\"so.tilo.chat\"\}"
+    who.id() == "\{\"app\":\"so.tilo.discord\"\}"
 }
 
 /// Whether `who` may change the bridge's own setup and server on Discord: the workspace's
-/// moderators, or the bridge itself as it carries Chat's changes there.
+/// moderators, or the bridge itself as it carries the workspace's changes there.
 fn may_configure(who: Actor) -> Bool {
     bridge(who) or moderates(who)
 }
 
 // ---- the page ---------------------------------------------------------------------------
-view discord(all: Conversations) {
-    if let d = all.discord.first() {
+
+/// The bridge's window: the connected server, or the empty state that connects one.
+default view accounts_view for Accounts
+view accounts_view(accounts: Accounts) {
+    if let d = accounts.accounts.first() {
         account(d)
     } else {
         ui.EmptyState(
@@ -432,14 +453,14 @@ view discord(all: Conversations) {
             icon: .message_circle,
             message: "Its channels become conversations here, and what people say on either side shows on both.",
         )
-        std.add_entry("Connect Discord", begin_setup(all))
+        std.add_entry("Connect Discord", begin_setup(accounts))
     }
 }
 
 /// Starts the account: the record the setup writes into.
-action begin_setup(all: Conversations) -> Discord (icon: .plug, label: "Connect Discord") {
+action begin_setup(accounts: Accounts) -> Discord (icon: .plug, label: "Connect Discord") {
     require moderates(invoker) "Only the workspace's moderators connect a Discord server"
-    all.discord.insert(Discord(name: "Discord", setup_open: true))
+    accounts.accounts.insert(Discord(name: "Discord", setup_open: true))
 }
 
 /// One Discord account's page: what the bridge knows, the people here who linked an account,
@@ -605,155 +626,25 @@ view setup_dialog(d: Discord) {
     }
 }
 
-// ---- what Chat's own actions carry ------------------------------------------------
-//
-// Chat's send, edit, delete, react and start_thread hand what they wrote to the bridge, so a
-// bridged conversation is said on Discord as it is said here. Each is the app's own path: the
-// calls to Discord a plan makes stay the bridge's alone.
-
-/// The published id of a conversation a message went into.
-fn conversation_id(to: TextChannel | Thread | Direct) -> Text {
-    match to {
-        c: TextChannel => published(c.id),
-        t: Thread => published(t.id),
-        d: Direct => published(d.id),
-    }
-}
-
-/// The conversation whose messages hold `m`, as Chat names it; empty when none does.
-fn conversation_of(all: Conversations, m: Message) -> Text {
-    let found = ""
-    for place in all.channels {
-        match place {
-            ch: TextChannel => {
-                if ch.messages.any(x -> x == m) {
-                    found = published(ch.id)
-                }
-                for t in ch.threads.filter(t -> t.messages.any(x -> x == m)) {
-                    found = published(t.id)
-                }
-            }
-            cat: Category => {
-                for place in cat.channels {
-                    match place {
-                        tc: TextChannel => {
-                            if tc.messages.any(x -> x == m) {
-                                found = published(tc.id)
-                            }
-                            for t in tc.threads.filter(t -> t.messages.any(x -> x == m)) {
-                                found = published(t.id)
-                            }
-                        }
-                        v: VoiceChannel => {}
-                    }
-                }
-            }
-            d: Direct => {
-                if d.messages.any(x -> x == m) {
-                    found = published(d.id)
-                }
-                for t in d.threads.filter(t -> t.messages.any(x -> x == m)) {
-                    found = published(t.id)
-                }
-            }
-            v: VoiceChannel => {}
-        }
-    }
-    found
-}
-
-/// A message written here, carried to its conversation there.
-action bridge_sent(all: Conversations, conversation: Text, m: Message) {
-    if let d = all.discord.first() {
-        if let c = carried(d, conversation) {
-            carry_message(d, c, m)
-        }
-    }
-}
-
-/// A change to a message here, carried.
-action bridge_edited(all: Conversations, m: Message) {
-    if let d = all.discord.first() {
-        if let c = carried(d, conversation_of(all, m)) {
-            if let map = mapping(d, .message, published(m.id())) {
-                carry_edit(d, c, m, map.discord)
-            }
-        }
-    }
-}
-
-/// A deletion here, carried.
-action bridge_deleted(all: Conversations, conversation: Text, m: Message) {
-    if let d = all.discord.first() {
-        if let c = carried(d, conversation) {
-            if let map = mapping(d, .message, published(m.id())) {
-                carry_delete(d, c, map.discord, c.webhook)
-            }
-        }
-    }
-}
-
-/// A reaction added here, or taken back, carried.
-action bridge_reacted(all: Conversations, m: Message, emoji: Text, added: Bool) {
-    if let d = all.discord.first() {
-        if let c = carried(d, conversation_of(all, m)) {
-            if let map = mapping(d, .message, published(m.id())) {
-                carry_reaction(d, c, map.discord, emoji, added)
-            }
-        }
-    }
-}
-
-/// A thread started here on a message, carried: the message it grows from is the one there.
-action bridge_threaded(all: Conversations, conversation: Text, root: Message, t: Thread) {
-    if let d = all.discord.first() {
-        if let c = carried(d, conversation) {
-            if let map = mapping(d, .message, published(root.id())) {
-                carry_thread(d, c, map.discord, t)
-            }
-        }
-    }
-}
-
-/// Starts a thread on a message there.
-action carry_thread(d: Discord, c: Carried, there: Text, t: Thread) {
-    outside(
-        "discord.perform",
-        json.encode(
-            Perform(
-                account: d.id(),
-                op: json.encode(
-                    StartThreadOp(
-                        channel: c.channel,
-                        message: there,
-                        name: t.name,
-                        tilo: published(t.id()),
-                    ),
-                ),
-            ),
-        ),
-    )
-}
-
-/// A message's words as Discord takes them: 2000 characters at most, the rest said by the cut.
-fn fitted(text: Text) -> Text {
-    if text.len() <= 2000 {
-        text
-    } else {
-        "{text.slice(0, 1999)}…"
-    }
-}
-
-/// A conversation the bridge carries: its channel there, the channel's webhook, and the thread
-/// when the conversation is one.
-type Carried {
-    channel: Text
-    webhook: Text = ""
-    thread: Text = ""
-}
-
 /// What the account calls a linked account: the name it shows, else its Discord user name.
 // ---- helpers ----------------------------------------------------------------------------
+
+/// Whether an op names no Discord object: one that is made afresh.
+fn fresh(value: Option<Text>) -> Bool {
+    match value {
+        .none => true,
+        .some(_) => false,
+    }
+}
+
+/// An option's text, when it has one: what a guard reads an op's absent id or parent as.
+fn or_empty(value: Option<Text>) -> Text {
+    match value {
+        .some(text) => text,
+        .none => "",
+    }
+}
+
 fn shown_name(l: Link) -> Text {
     if l.display_name != "" { l.display_name } else { l.user_name }
 }
@@ -851,27 +742,6 @@ fn stands(expires: Text, at: Time) -> Bool {
     if let when = Time.parse(expires, near: at) { at <= when } else { false }
 }
 
-/// The Discord channel a conversation is carried to, and its webhook, when the bridge carries
-/// it.
-fn carried(d: Discord, conversation: Text) -> Option<Carried> {
-    if let ch = mapping(d, .channel, conversation) {
-        if let hook = d.map.find(m -> m.kind == .webhook and m.tilo == conversation) {
-            Carried(channel: ch.discord, webhook: hook.discord)
-        } else if let thread = mapping(d, .thread, conversation) {
-            if let root = d.map.find(m -> m.kind == .webhook and m.tilo == thread.root) {
-                Carried(channel: thread.discord, webhook: root.discord)
-            } else { .none }
-        } else { .none }
-    } else if let thread = mapping(d, .thread, conversation) {
-        if let root = d.map.find(m -> m.kind == .channel and m.tilo == thread.root) {
-            if let hook = d.map.find(m -> m.kind == .webhook and m.tilo == thread.root) {
-                Carried(channel: thread.discord, webhook: hook.discord, thread: thread.discord)
-            } else { .none }
-        } else { .none }
-    } else { .none }
-}
-
-/// Opens the setup dialog.
 // ---- connecting the account -------------------------------------------------------------
 action open_setup(d: Discord) (icon: .plug, label: "Connect Discord") {
     d.setup_open = true
@@ -1069,160 +939,6 @@ action unmap(d: Discord, kind: MappedKind, tilo: Text, keep_apart: Bool = false)
     }
 }
 
-/// Carries a message written here to its conversation there. The origin queues this for every
-/// message written in a bridged conversation that has no mapping yet.
-// ---- what Chat's people do reaches Discord ----------------------------------------------
-action carry_message(d: Discord, c: Carried, m: Message) {
-    require c.channel != "" "The conversation is not bridged"
-    let who = created(m)?.who ?? invoker
-    let author = author_of(d, who, m.by)
-    outside(
-        "discord.perform",
-        json.encode(
-            Perform(
-                account: d.id(),
-                op: json.encode(
-                    SendOp(
-                        channel: c.channel,
-                        webhook: c.webhook,
-                        thread: thread_of(c),
-                        username: author.name,
-                        avatar_url: if author.avatar == "" { .none } else { .some(author.avatar) },
-                        content: fitted(m.body.text),
-                        attachments: m.attachments.map(
-                            f -> OutAttachment(blob: bare_blob(f.blob), name: f.name, size: f.size),
-                        ),
-                        tilo: published(m.id()),
-                    ),
-                ),
-            ),
-        ),
-    )
-}
-
-/// Carries a change to a message written here.
-action carry_edit(d: Discord, c: Carried, m: Message, there: Text) {
-    outside(
-        "discord.perform",
-        json.encode(
-            Perform(
-                account: d.id(),
-                op: json.encode(
-                    EditOp(
-                        channel: c.channel,
-                        webhook: c.webhook,
-                        message: there,
-                        thread: thread_of(c),
-                        content: m.body.text,
-                    ),
-                ),
-            ),
-        ),
-    )
-}
-
-/// Carries a message's deletion.
-action carry_delete(d: Discord, c: Carried, there: Text, webhook: Text) {
-    outside(
-        "discord.perform",
-        json.encode(
-            Perform(
-                account: d.id(),
-                op: json.encode(
-                    DeleteOp(
-                        channel: c.channel,
-                        webhook: if webhook == "" { .none } else { .some(webhook) },
-                        message: there,
-                        thread: thread_of(c),
-                    ),
-                ),
-            ),
-        ),
-    )
-}
-
-/// Puts the bot's reaction on a message there, or takes it back.
-action carry_reaction(d: Discord, c: Carried, there: Text, emoji: Text, add: Bool) {
-    outside(
-        "discord.perform",
-        json.encode(
-            Perform(
-                account: d.id(),
-                op: json.encode(
-                    ReactOp(
-                        op: if add { "react" } else { "unreact" },
-                        channel: c.channel,
-                        message: there,
-                        emoji: emoji,
-                    ),
-                ),
-            ),
-        ),
-    )
-}
-
-/// Who a message here is on Discord: the account the person linked, else the workspace's name
-/// for them.
-type There {
-    name: Text
-    avatar: Text
-}
-
-/// [`There`] for `who`: its linked Discord account's name and avatar, else the name the message
-/// says it was written under.
-fn author_of(d: Discord, who: Actor, said: Text) -> There {
-    if let l = d.links.find(l -> l.person == who.id()) {
-        There(name: shown_name(l), avatar: avatar_url(l))
-    } else if said != "" { There(name: said) } else { There(name: who.name()) }
-}
-
-/// Whether an op names no Discord object: one that is made afresh.
-fn fresh(value: Option<Text>) -> Bool {
-    match value {
-        .none => true,
-        .some(_) => false,
-    }
-}
-
-/// An option's text, when it has one: what a guard reads an op's absent id or parent as.
-fn or_empty(value: Option<Text>) -> Text {
-    match value {
-        .some(text) => text,
-        .none => "",
-    }
-}
-
-/// The thread an op goes in, from a conversation carried there; none for a channel.
-fn thread_of(c: Carried) -> Option<Text> {
-    if c.thread == "" { .none } else { .some(c.thread) }
-}
-
-/// A file's bytes as Discord's worker reads them: the bare blake3 hex of the content address.
-fn bare_blob(address: Text) -> Text {
-    let scheme = "tilo-blob://"
-    if address.starts_with(scheme) {
-        address.slice(scheme.len(), address.len())
-    } else {
-        address
-    }
-}
-
-/// Where Discord serves a linked account's avatar.
-fn avatar_url(l: Link) -> Text {
-    if l.avatar == "" {
-        ""
-    } else {
-        "https://cdn.discordapp.com/avatars/{l.discord_user}/{l.avatar}.png?size=128"
-    }
-}
-
-/// A message's published id, as Chat's records name it.
-fn published(id: Text) -> Text {
-    if id.starts_with("tl:") { id } else { "tl:so.tilo.chat:{id}" }
-}
-
-/// Starts linking the person's Discord account: the consent page to open, with this person's
-/// state, which the account keeps hashed.
 // ---- linking accounts -------------------------------------------------------------------
 action begin_connect(d: Discord, state_sha256: Text) uses time {
     require d.guild_id != "" "This workspace is not bridged to a Discord server"

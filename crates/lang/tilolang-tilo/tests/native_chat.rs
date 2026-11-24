@@ -17,7 +17,7 @@ use crate::fixtures::{Replica, target};
 
 const CHAT_APP: &str = "so.tilo.chat";
 const CHAT: (&str, &str) = (
-    concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl")),
+    include_str!("../../../../apps/tl/chat/app.tl"),
     include_str!("../../../../apps/tl/chat/app.ids"),
 );
 

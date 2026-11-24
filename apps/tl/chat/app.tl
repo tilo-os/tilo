@@ -14,9 +14,6 @@ app so.tilo.chat "Chat" (
 type Conversations {
     channels: Collection<Category | TextChannel | VoiceChannel | Direct>
     skills: Collection<Skill>
-    /// The Discord accounts the workspace connected: their servers' channels and their direct
-    /// messages are conversations here too.
-    discord: Collection<Discord>
 }
 
 root conversations: Conversations
@@ -26,6 +23,11 @@ type Category {
     name: Text
     /// The server's channels.
     channels: Collection<TextChannel | VoiceChannel>
+    /// The outside service this conversation is carried to, as its people read it ("Discord");
+    /// empty for one that stays here.
+    service: Text = ""
+    /// Its id there, when a bridge carries it: the channel, category or conversation there.
+    outside_id: Text = ""
 }
 
 /// A place to talk live: joining it puts the person in its call, the system's, with whoever else
@@ -33,6 +35,11 @@ type Category {
 /// workspace's.
 type VoiceChannel {
     name: Text
+    /// The outside service this conversation is carried to, as its people read it ("Discord");
+    /// empty for one that stays here.
+    service: Text = ""
+    /// Its id there, when a bridge carries it: the channel, category or conversation there.
+    outside_id: Text = ""
 }
 
 /// Messages in one stream; any message can start a thread. A post is a change of its channel,
@@ -54,6 +61,29 @@ type TextChannel {
     search {
         kind conversation
     }
+    /// The outside service this conversation is carried to, as its people read it ("Discord");
+    /// empty for one that stays here.
+    service: Text = ""
+    /// Its id there, when a bridge carries it: the channel, category or conversation there.
+    outside_id: Text = ""
+}
+
+/// Who wrote a message somewhere else, as that place shows them: a bridge's generic outside
+/// author, never one service's shape.
+type OutsideAuthor {
+    /// The name they go by there.
+    name: Text
+    /// The address of their picture there, empty for none.
+    avatar: Text = ""
+    /// What the place they wrote from is called, as its people read it ("Discord").
+    service: Text = ""
+}
+
+/// A picture a message from outside carries in its words: a custom emoji of that service.
+type OutsideEmoji {
+    name: Text
+    /// The address of its picture.
+    picture: Text
 }
 
 /// A message. Who wrote it, when, and its edits come from the log.
@@ -78,6 +108,12 @@ type Message {
     /// their own views, and its author is whoever sent the message. Empty for a message that
     /// sends none.
     sent_view: Text
+    /// Who wrote it, when it was written somewhere else: as that place shows them, with the
+    /// picture they wear there and the service's name. None for a message written here.
+    outside: Option<OutsideAuthor> = .none
+    /// The pictures its words carry from where it was written: that service's custom emoji,
+    /// each drawn by the address it gives.
+    outside_emoji: Collection<OutsideEmoji>
     /// Who wrote it where it was written, as that place named them, for a message carried over
     /// from the native Chat or relayed from another service: its own history names whoever
     /// carried or relayed it.
@@ -157,6 +193,11 @@ type Direct (readers: people) {
         kind conversation
         people people
     }
+    /// The outside service this conversation is carried to, as its people read it ("Discord");
+    /// empty for one that stays here.
+    service: Text = ""
+    /// Its id there, when a bridge carries it: the channel, category or conversation there.
+    outside_id: Text = ""
 }
 
 /// A file a message carries, as the place it was copied from keeps it: its name, what it is, how
@@ -188,6 +229,53 @@ type Part {
 
 /// How one kind of work is done in this workspace: what a person writes down once, and what an
 /// agent reads before it starts that work.
+/// Carries a conversation to an outside service: its name as people read it ("Discord") and
+/// the id it has there. The bridge's own actions keep what joins the two sides; this is what
+/// every view reads to show the place a conversation is also said in.
+action bridge(c: TextChannel | VoiceChannel | Category | Direct, service: Text, outside_id: Text = "") {
+    require service.trim() != "" "Say which service carries the conversation"
+    match c {
+        ch: TextChannel => {
+            ch.service = service.trim()
+            ch.outside_id = outside_id
+        }
+        v: VoiceChannel => {
+            v.service = service.trim()
+            v.outside_id = outside_id
+        }
+        category: Category => {
+            category.service = service.trim()
+            category.outside_id = outside_id
+        }
+        d: Direct => {
+            d.service = service.trim()
+            d.outside_id = outside_id
+        }
+    }
+}
+
+/// Keeps a conversation here: no service carries it any more.
+action unbridge(c: TextChannel | VoiceChannel | Category | Direct) {
+    match c {
+        ch: TextChannel => {
+            ch.service = ""
+            ch.outside_id = ""
+        }
+        v: VoiceChannel => {
+            v.service = ""
+            v.outside_id = ""
+        }
+        category: Category => {
+            category.service = ""
+            category.outside_id = ""
+        }
+        d: Direct => {
+            d.service = ""
+            d.outside_id = ""
+        }
+    }
+}
+
 type Skill (untitled: "New skill") {
     /// What it is called, in a few words: what an agent names it by.
     name: Text
@@ -778,8 +866,6 @@ action send(
             Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()),
         )
     }
-    // Said on Discord too, when the conversation is bridged.
-    bridge_sent(root Conversations, conversation_id(to), sent)
     sent
 }
 
@@ -838,6 +924,9 @@ action relay(
     written: Int = 0,
     attachments: List<File> = [],
     reply_to: Option<Message> = .none,
+    avatar: Text = "",
+    service: Text = "",
+    outside_emoji: List<OutsideEmoji> = [],
 ) -> Message (icon: .send, label: "Relay", did: "relayed a message") {
     require by.trim() != "" "Say who wrote the message"
     let m = Message(
@@ -846,6 +935,11 @@ action relay(
         by: by.trim(),
         written_in: written_in,
         written: written,
+        outside: .some(OutsideAuthor(
+            name: by.trim(),
+            avatar: avatar,
+            service: if service == "" { written_in } else { service },
+        )),
     )
     let sent = match to {
         c: TextChannel => c.messages.insert(m),
@@ -858,6 +952,9 @@ action relay(
         sent.attachments.insert(
             Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()),
         )
+    }
+    for e in outside_emoji {
+        sent.outside_emoji.insert(e)
     }
     sent
 }
@@ -957,7 +1054,6 @@ action edit(m: Message, body: RichText = m.body, turn: Text = m.turn) (
     require not body.is_empty() "Type a message first"
     m.body = body
     m.turn = turn
-    bridge_edited(root Conversations, m)
 }
 
 /// Deletes a message from the channel or thread it is in. Its author, or anyone the
@@ -988,7 +1084,6 @@ destructive action delete(to: TextChannel | Thread | Direct, m: Message) (
             d.messages.remove(m)
         }
     }
-    bridge_deleted(root Conversations, conversation_id(to), m)
 }
 
 /// Pins a message to its channel, or unpins it.
@@ -1004,7 +1099,6 @@ action pin(m: Message, pinned: Bool = not m.pinned) (
 action react(m: Message, emoji: Text) (icon: .smile_plus, label: "React") {
     let mine = if let who = m.reactions.get(emoji) { who.any(p -> p == invoker) } else { false }
     if mine { m.reactions.remove(emoji, invoker) } else { m.reactions.add(emoji, invoker) }
-    bridge_reacted(root Conversations, m, emoji, not mine)
 }
 
 /// Reports a message of a conversation to the workspace's moderators, saying why when the
@@ -1061,7 +1155,6 @@ action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.exc
             t
         }
     }
-    bridge_threaded(root Conversations, conversation_id(c), m, made)
     made
 }
 
@@ -1352,11 +1445,6 @@ view sidebar(all: Conversations) {
                     ui.NavSection("Workspace") {
                         ui.NavItem("/skills", "Workspace skills", icon: .sparkles) {
                             on select: set(shown, "/skills").then(open(all, view: skills))
-                        }
-                        // The Discord accounts the workspace connected: their server's
-                        // channels and their direct messages are conversations here too.
-                        ui.NavItem("/discord", "Discord", icon: .message_circle) {
-                            on select: set(shown, "/discord").then(open(all, view: discord))
                         }
                     }
                 }
@@ -1678,7 +1766,14 @@ view message(
         std.quote(r)
     }
     std.origin(m)
-    if m.by != "" {
+    if let o = m.outside {
+        row(gap: .tight, align: .center) {
+            if o.avatar != "" {
+                ui.Avatar(name: o.name, picture: o.avatar)
+            }
+            ui.Text("{o.name} wrote this in {o.service}", role: .caption, secondary: true)
+        }
+    } else if m.by != "" {
         ui.Text("{m.by} wrote this in {m.written_in}", role: .caption, secondary: true)
     }
     if m.pinned {
@@ -1699,6 +1794,13 @@ view message(
     }
     for f in m.attachments {
         ui.Link(f.blob, label: f.name)
+    }
+    if not m.outside_emoji.is_empty() {
+        row(gap: .tight, align: .center) {
+            for e in m.outside_emoji {
+                ui.Avatar(name: ":{e.name}:", picture: e.picture, square: true)
+            }
+        }
     }
     if m.reacted != "" {
         ui.Text(m.reacted, role: .caption, secondary: true)
@@ -1933,6 +2035,27 @@ scenario "a team's channels" -> TextChannel {
 
 /// A message made from another: the one it was made from draws the made message as a card, as
 /// picking the message a menu's Make is open on makes it.
+/// A conversation a bridge carries, with a message from outside it: its author as that place
+/// shows them, and a custom emoji carried in their words.
+scenario "a message from Discord" -> TextChannel {
+    let mia = person("Mia")
+    let design = invoke(new_channel(conversations, "design"))
+    invoke(bridge(design, "Discord", outside_id: "456"), by: mia)
+    invoke(
+        relay(
+            design,
+            RichText("Look at this :party:!"),
+            by: "Ada (Discord)",
+            written_in: "Discord",
+            avatar: "https://cdn.discordapp.com/avatars/1/abc.png",
+            service: "Discord",
+            outside_emoji: [OutsideEmoji(name: "party", picture: "https://cdn.discordapp.com/emojis/2.png")],
+        ),
+        by: mia,
+    )
+    design
+}
+
 scenario "a message made from another" -> TextChannel {
     let design = new_channel(conversations, "design")
     let ask = send(design, RichText("Can we move the account step to the end?"))

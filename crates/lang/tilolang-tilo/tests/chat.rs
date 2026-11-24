@@ -10,7 +10,7 @@ use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
 use crate::fixtures::{Replica, target};
 
-const CHAT: &str = concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl"));
+const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const APP: &str = "so.tilo.chat";
 
@@ -2164,4 +2164,121 @@ fn what_a_bridged_conversation_says_is_carried_to_discord() {
     let content = send["content"].as_str().unwrap_or_default();
     assert_eq!(content.chars().count(), 2000, "cut to what Discord takes");
     assert!(content.ends_with('…'), "the cut says so: {content}");
+}
+
+/// The bridge package is its own app: the service's records and views live there, and Chat stays
+/// general — no service type, no per-service field. A message from outside shows its author's
+/// picture and the emoji it carries through Chat's own outside-author fields.
+const DISCORD: &str = include_str!("../../../../apps/tl/discord/app.tl");
+const DISCORD_IDS: &str = include_str!("../../../../apps/tl/discord/app.ids");
+
+#[test]
+fn chat_holds_no_service_type_and_shows_an_outside_author_from_its_own_fields() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let meta = ada.host.package(APP).unwrap().meta;
+    assert!(
+        !meta.types.iter().any(|t| t.name == "Discord"),
+        "Chat holds no Discord type"
+    );
+    let conversations = meta
+        .types
+        .iter()
+        .find(|t| t.name == "Conversations")
+        .expect("Conversations");
+    assert!(
+        !conversations.fields.iter().any(|f| f.name == "discord"),
+        "Conversations carries no service collection"
+    );
+
+    // The bridge is a package of its own, with the service's records.
+    let (bridge, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
+    let bridge_meta = bridge
+        .host
+        .package("so.tilo.discord")
+        .expect("the Discord package")
+        .meta;
+    for name in ["Accounts", "Discord", "Mapping", "Link", "DChannel", "DRole"] {
+        assert!(
+            bridge_meta.types.iter().any(|t| t.name == name),
+            "the bridge package declares {name}"
+        );
+    }
+
+    // A message from outside, as the scenario relays it: the author's picture, the service's
+    // name, and the pictures its words carry.
+    // The workspace's conversations root stands first, as a window opens it.
+    let _ = ada.host.root_of(APP).unwrap();
+    ada.commit();
+    let scenario = meta
+        .scenarios
+        .iter()
+        .find(|s| s.name == "a message from Discord")
+        .expect("the scenario")
+        .action
+        .clone();
+    let channel = match ada.host.runtime().invoke_action(
+        &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        (scenario.as_str(), vec![]),
+    ) {
+        Ok(InvokeOutcome::Done(value)) => value,
+        other => panic!("the scenario runs: {other:?}"),
+    };
+    ada.commit();
+    let mut view = ada.host.open_resource(&target(&channel), None).unwrap();
+    let rows = rows(&mut view);
+    let mut said: Vec<String> = rows.iter().flat_map(texts).collect();
+    let nodes: Vec<tilolang_runtime::UiNode> = rows
+        .iter()
+        .flat_map(|row| crate::fixtures::nodes(row).into_iter().cloned().collect::<Vec<_>>())
+        .collect();
+    said.extend(texts(view.tree()));
+    assert!(
+        said.iter().any(|text| text.contains("wrote this in Discord")),
+        "the outside author and the service: {said:?}"
+    );
+    let pictures: Vec<String> = nodes
+        .into_iter()
+        .filter(|node| node.kind == "ui.Avatar")
+        .filter_map(|node| node.props.get("picture").cloned())
+        .filter_map(|value| match value {
+            Value::Text(text) => Some(text),
+            Value::Opt(Some(inner)) => match *inner {
+                Value::Text(text) => Some(text),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert!(
+        pictures
+            .iter()
+            .any(|picture| picture == "https://cdn.discordapp.com/avatars/1/abc.png"),
+        "the author's picture: {pictures:?}"
+    );
+    assert!(
+        pictures
+            .iter()
+            .any(|picture| picture == "https://cdn.discordapp.com/emojis/2.png"),
+        "the emoji the message carries: {pictures:?}"
+    );
+
+    // The bridge mark is a generic conversation field, set by Chat's own verb.
+    let Value::Ref(reference) = &channel else {
+        panic!("a channel is a reference: {channel:?}");
+    };
+    let channel_ty = meta
+        .types
+        .iter()
+        .find(|t| t.id == reference.target.ty)
+        .expect("the channel's type");
+    let service = channel_ty
+        .fields
+        .iter()
+        .find(|f| f.name == "service")
+        .expect("a service field");
+    assert_eq!(
+        ada.host.runtime().read(&reference.target, &service.id).unwrap(),
+        Value::Text("Discord".to_owned()),
+        "the channel says the service it is carried to"
+    );
 }
