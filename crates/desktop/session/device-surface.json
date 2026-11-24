@@ -5406,6 +5406,1119 @@
       ]
     },
     {
+      "kind": "speakers",
+      "label": "Speakers",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "create-group",
+          "label": "Form a group of speakers across the person's devices",
+          "description": "Form a group of speakers across the person's devices",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "members",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "device": {
+                      "type": "string",
+                      "description": "The device's fabric id, as the reading lists it."
+                    },
+                    "output": {
+                      "type": "string",
+                      "description": "The output's selector, as the reading lists it."
+                    },
+                    "role": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "left"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "right"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "center"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "lfe"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "surround-left"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "surround-right"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "role",
+                            "x_mm",
+                            "y_mm",
+                            "z_mm"
+                          ],
+                          "properties": {
+                            "x_mm": {
+                              "type": "integer",
+                              "minimum": -2147483648,
+                              "maximum": 2147483647
+                            },
+                            "y_mm": {
+                              "type": "integer",
+                              "minimum": -2147483648,
+                              "maximum": 2147483647
+                            },
+                            "z_mm": {
+                              "type": "integer",
+                              "minimum": -2147483648,
+                              "maximum": 2147483647
+                            },
+                            "role": {
+                              "type": "string",
+                              "const": "room"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "Millimetres from the listening position: `x` right, `y` ahead, `z` up."
+                        }
+                      ],
+                      "description": "Where a speaker stands in a group: a named channel, or a point in the room around the person."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "One speaker of a group as an action names it: the device, which of its outputs, and where it stands."
+                }
+              },
+              "type": {
+                "list": {
+                  "named": "SpeakerMemberChoice"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "update-group",
+          "label": "Change a group's name or its speakers",
+          "description": "Change a group's name or its speakers",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "group",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "members",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "device": {
+                      "type": "string",
+                      "description": "The device's fabric id, as the reading lists it."
+                    },
+                    "output": {
+                      "type": "string",
+                      "description": "The output's selector, as the reading lists it."
+                    },
+                    "role": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "left"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "right"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "center"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "lfe"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "surround-left"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "const": "surround-right"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [
+                            "role"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "role",
+                            "x_mm",
+                            "y_mm",
+                            "z_mm"
+                          ],
+                          "properties": {
+                            "x_mm": {
+                              "type": "integer",
+                              "minimum": -2147483648,
+                              "maximum": 2147483647
+                            },
+                            "y_mm": {
+                              "type": "integer",
+                              "minimum": -2147483648,
+                              "maximum": 2147483647
+                            },
+                            "z_mm": {
+                              "type": "integer",
+                              "minimum": -2147483648,
+                              "maximum": 2147483647
+                            },
+                            "role": {
+                              "type": "string",
+                              "const": "room"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "Millimetres from the listening position: `x` right, `y` ahead, `z` up."
+                        }
+                      ],
+                      "description": "Where a speaker stands in a group: a named channel, or a point in the room around the person."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "One speaker of a group as an action names it: the device, which of its outputs, and where it stands."
+                }
+              },
+              "type": {
+                "list": {
+                  "named": "SpeakerMemberChoice"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "delete-group",
+          "label": "Remove a group",
+          "description": "Remove a group",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "group",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "identify",
+          "label": "Play a short sound on one output, so the person can tell which speaker it is",
+          "description": "Play a short sound on one output, so the person can tell which speaker it is",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "output",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "start-calibration",
+          "label": "Measure every speaker of a group with the microphones of the person's devices",
+          "description": "Measure every speaker of a group with the microphones of the person's devices",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "group",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "excluded",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "listening",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "cancel-calibration",
+          "label": "Stop a run without keeping anything it measured",
+          "description": "Stop a run without keeping anything it measured",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "group",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "apply-calibration",
+          "label": "Keep what a run measured",
+          "description": "Keep what a run measured",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "group",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "revert-calibration",
+          "label": "Put back the correction from before the last one kept",
+          "description": "Put back the correction from before the last one kept",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "group",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "dismiss-calibration",
+          "label": "Forget a finished measurement without keeping it",
+          "description": "Forget a finished measurement without keeping it",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "group",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "use-as-output",
+          "label": "Play everything this device plays on a group, as on a chosen output",
+          "description": "Play everything this device plays on a group, as on a chosen output",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "group",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "stop-using-as-output",
+          "label": "Play on this device's own outputs again",
+          "description": "Play on this device's own outputs again",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "media_enabled",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "devices",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SpeakerDevice"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "groups",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SpeakerGroup"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "calibrations",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SpeakerCalibration"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "CalibrationMember",
+          "doc": "One speaker in a calibration run.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "CalibrationMemberState"
+              }
+            },
+            {
+              "name": "before",
+              "type": {
+                "named": "SpeakerTrim"
+              }
+            },
+            {
+              "name": "after",
+              "type": {
+                "option": {
+                  "named": "SpeakerTrim"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "CalibrationMemberState",
+          "doc": "What one speaker of a calibration run has measured.",
+          "cases": [
+            {
+              "name": "waiting",
+              "label": "Waiting"
+            },
+            {
+              "name": "measuring",
+              "label": "Measuring"
+            },
+            {
+              "name": "measured",
+              "label": "Measured",
+              "fields": [
+                {
+                  "name": "delay_ms",
+                  "type": "float"
+                },
+                {
+                  "name": "level_db",
+                  "type": "float"
+                },
+                {
+                  "name": "output_latency_ms",
+                  "type": {
+                    "option": "float"
+                  }
+                },
+                {
+                  "name": "acoustic_ms",
+                  "type": {
+                    "option": "float"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "failed",
+              "label": "Failed",
+              "fields": [
+                {
+                  "name": "reason",
+                  "type": "text"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "CalibrationMicrophone",
+          "doc": "One microphone in a calibration run.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "listening",
+              "type": "bool"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "CalibrationMicrophoneState"
+              }
+            }
+          ]
+        },
+        {
+          "name": "CalibrationMicrophoneState",
+          "doc": "What one microphone contributed to a run.",
+          "cases": [
+            {
+              "name": "awaiting-consent",
+              "label": "Awaiting consent"
+            },
+            {
+              "name": "declined",
+              "label": "Declined"
+            },
+            {
+              "name": "listening",
+              "label": "Listening"
+            },
+            {
+              "name": "used",
+              "label": "Used",
+              "fields": [
+                {
+                  "name": "heard",
+                  "type": "int"
+                },
+                {
+                  "name": "rejected",
+                  "type": "int"
+                }
+              ]
+            },
+            {
+              "name": "not-heard",
+              "label": "Not heard"
+            },
+            {
+              "name": "failed",
+              "label": "Failed",
+              "fields": [
+                {
+                  "name": "reason",
+                  "type": "text"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "CalibrationPhase",
+          "doc": "Where a group's calibration run stands.",
+          "cases": [
+            {
+              "name": "waiting-for-microphones",
+              "label": "Waiting for microphones"
+            },
+            {
+              "name": "measuring",
+              "label": "Measuring"
+            },
+            {
+              "name": "proposed",
+              "label": "Proposed"
+            },
+            {
+              "name": "applied",
+              "label": "Applied"
+            },
+            {
+              "name": "failed",
+              "label": "Failed"
+            }
+          ]
+        },
+        {
+          "name": "SpeakerCalibration",
+          "doc": "One group's calibration run.",
+          "fields": [
+            {
+              "name": "group",
+              "type": "text"
+            },
+            {
+              "name": "phase",
+              "type": {
+                "named": "CalibrationPhase"
+              }
+            },
+            {
+              "name": "members",
+              "type": {
+                "list": {
+                  "named": "CalibrationMember"
+                }
+              }
+            },
+            {
+              "name": "microphones",
+              "type": {
+                "list": {
+                  "named": "CalibrationMicrophone"
+                }
+              }
+            },
+            {
+              "name": "listening_label",
+              "type": "text"
+            },
+            {
+              "name": "message",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "SpeakerDevice",
+          "doc": "One of the person's devices, with what it can play and hear.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "online",
+              "type": "bool"
+            },
+            {
+              "name": "local",
+              "type": "bool"
+            },
+            {
+              "name": "can_join",
+              "type": "bool"
+            },
+            {
+              "name": "outputs",
+              "type": {
+                "list": {
+                  "named": "SpeakerEndpoint"
+                }
+              }
+            },
+            {
+              "name": "microphones",
+              "type": {
+                "list": {
+                  "named": "SpeakerEndpoint"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "SpeakerEndpoint",
+          "doc": "One endpoint a device plays through or records from.",
+          "fields": [
+            {
+              "name": "selector",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "is_default",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "SpeakerGroup",
+          "doc": "A group of speakers across the person's devices playing as one.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "leader_label",
+              "type": "text"
+            },
+            {
+              "name": "led_here",
+              "type": "bool"
+            },
+            {
+              "name": "members",
+              "type": {
+                "list": {
+                  "named": "SpeakerMember"
+                }
+              }
+            },
+            {
+              "name": "playback",
+              "type": {
+                "option": {
+                  "named": "SpeakerPlayback"
+                }
+              }
+            },
+            {
+              "name": "output_here",
+              "type": "bool"
+            },
+            {
+              "name": "microphones",
+              "type": {
+                "list": {
+                  "named": "SpeakerMicrophone"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "SpeakerMember",
+          "doc": "One speaker of a group.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "device_label",
+              "type": "text"
+            },
+            {
+              "name": "output",
+              "type": "text"
+            },
+            {
+              "name": "output_label",
+              "type": "text"
+            },
+            {
+              "name": "role",
+              "type": {
+                "named": "SpeakerRole"
+              }
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "SpeakerMemberState"
+              }
+            },
+            {
+              "name": "trim",
+              "type": {
+                "named": "SpeakerTrim"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SpeakerMemberChoice",
+          "doc": "One speaker of a group as an action names it: the device, which of its outputs, and where it stands.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "output",
+              "type": "text"
+            },
+            {
+              "name": "role",
+              "type": {
+                "named": "SpeakerRole"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SpeakerMemberState",
+          "doc": "Where one member of a group stands right now.",
+          "cases": [
+            {
+              "name": "ready",
+              "label": "Ready"
+            },
+            {
+              "name": "awaiting-consent",
+              "label": "Awaiting consent"
+            },
+            {
+              "name": "offline",
+              "label": "Offline"
+            },
+            {
+              "name": "output-missing",
+              "label": "Output missing"
+            },
+            {
+              "name": "unavailable",
+              "label": "Unavailable"
+            },
+            {
+              "name": "not-certified",
+              "label": "Not certified"
+            }
+          ]
+        },
+        {
+          "name": "SpeakerMicrophone",
+          "doc": "One device's microphone, as a candidate to calibrate a group with.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "device_label",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "local",
+              "type": "bool"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "SpeakerMicrophoneState"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SpeakerMicrophoneState",
+          "doc": "Whether one device's microphone can listen while a group is calibrated.",
+          "cases": [
+            {
+              "name": "ready",
+              "label": "Ready"
+            },
+            {
+              "name": "not-asked",
+              "label": "Not asked"
+            },
+            {
+              "name": "asked",
+              "label": "Asked"
+            },
+            {
+              "name": "declined",
+              "label": "Declined"
+            },
+            {
+              "name": "offline",
+              "label": "Offline"
+            },
+            {
+              "name": "unavailable",
+              "label": "Unavailable"
+            }
+          ]
+        },
+        {
+          "name": "SpeakerPlayback",
+          "doc": "What plays on a group right now, most urgent state.",
+          "cases": [
+            {
+              "name": "playing",
+              "label": "Playing"
+            },
+            {
+              "name": "connecting",
+              "label": "Connecting"
+            },
+            {
+              "name": "syncing-clocks",
+              "label": "Syncing clocks"
+            },
+            {
+              "name": "clock-failed",
+              "label": "Clock failed",
+              "fields": [
+                {
+                  "name": "reason",
+                  "type": "text"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "SpeakerRole",
+          "doc": "Where a speaker stands in a group: a named channel, or a point in the room around the person.",
+          "cases": [
+            {
+              "name": "left",
+              "label": "Left"
+            },
+            {
+              "name": "right",
+              "label": "Right"
+            },
+            {
+              "name": "center",
+              "label": "Center"
+            },
+            {
+              "name": "lfe",
+              "label": "Lfe"
+            },
+            {
+              "name": "surround-left",
+              "label": "Surround left"
+            },
+            {
+              "name": "surround-right",
+              "label": "Surround right"
+            },
+            {
+              "name": "room",
+              "label": "Room",
+              "fields": [
+                {
+                  "name": "x_mm",
+                  "type": "int"
+                },
+                {
+                  "name": "y_mm",
+                  "type": "int"
+                },
+                {
+                  "name": "z_mm",
+                  "type": "int"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "SpeakerTrim",
+          "doc": "A member's calibration correction, in display units.",
+          "fields": [
+            {
+              "name": "delay_ms",
+              "type": "float"
+            },
+            {
+              "name": "gain_db",
+              "type": "float"
+            },
+            {
+              "name": "eq_bands",
+              "type": "int"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "quick-settings",
       "label": "Quick settings",
       "version": 1,
