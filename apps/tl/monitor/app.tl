@@ -128,17 +128,19 @@ fn matches(process: device.Process, query: Text) -> Bool {
 
 /// The processes under `parent`, flattened depth first, each with how deep it stands. A process
 /// the filter leaves out is not drawn, but its children still are, at its own depth: what the
-/// person typed is found wherever it stands in the tree.
+/// person typed is found wherever it stands in the tree. `left` is how many steps the walk has:
+/// one per process, so a table whose parents run in a circle ends rather than walking it twice.
 fn tree_rows(
     all: List<device.Process>,
     parent: Int,
     depth: Int,
+    left: Int,
     key: Text,
     descending: Bool,
     kernel: Bool,
     query: Text,
 ) -> List<Row> {
-    if depth > 32 {
+    if left == 0 {
         []
     } else {
         let blood = all.filter(
@@ -159,11 +161,11 @@ fn tree_rows(
                             ),
                         ),
                     ],
-                    tree_rows(all, process.pid, depth + 1, key, descending, kernel, query),
+                    tree_rows(all, process.pid, depth + 1, left - 1, key, descending, kernel, query),
                 ]
                     .flat_map(one -> one)
             } else {
-                tree_rows(all, process.pid, depth, key, descending, kernel, query)
+                tree_rows(all, process.pid, depth, left - 1, key, descending, kernel, query)
             },
         )
     }
@@ -345,7 +347,16 @@ view processes_pane(
                 ui.Text("{now.processes.len()} processes", role: .caption, secondary: true)
             }
             let rows = if tree {
-                tree_rows(now.processes, 0, 0, sort, descending, kernel, filter)
+                tree_rows(
+                    now.processes,
+                    0,
+                    0,
+                    now.processes.len() + 1,
+                    sort,
+                    descending,
+                    kernel,
+                    filter,
+                )
             } else {
                 flat_rows(now.processes, sort, descending, kernel, filter)
             }

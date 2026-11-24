@@ -720,8 +720,8 @@ impl ViewInstance {
         let Some(root) = self.live.bound(crate::live::ROOT) else {
             return state.to_owned();
         };
-        let (view, name) = match state.split_once('.') {
-            Some((view, name)) => (Some(view), name),
+        let (named_view, name) = match state.split_once('.') {
+            Some((named_view, name)) => (Some(named_view), name),
             None => (None, state),
         };
         let registry = self.core.registry.borrow();
@@ -729,12 +729,12 @@ impl ViewInstance {
             return state.to_owned();
         };
         let mut found: Option<&str> = None;
-        for view in package.meta.views.iter().filter(|candidate| {
-            view.map_or(candidate.id == root.target.view, |chosen| {
+        for candidate in package.meta.views.iter().filter(|candidate| {
+            named_view.map_or(candidate.id == root.target.view, |chosen| {
                 candidate.name == chosen
             })
         }) {
-            for declared in view.state.iter().filter(|declared| declared.name == name) {
+            for declared in candidate.state.iter().filter(|declared| declared.name == name) {
                 match found {
                     // One name, two declarations: the caller names the view it means.
                     Some(held) if held != declared.id => return state.to_owned(),
