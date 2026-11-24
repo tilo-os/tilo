@@ -273,6 +273,10 @@ fn connector_origins(origins: &[&str]) -> String {
 /// The manifest of the app `meta` is, signed by `publisher` (hex Ed25519 key), with the name the
 /// app gives itself in every language `catalogues` translates it in.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the manifest is written field by field, in the order the file reads"
+)]
 pub fn manifest_text(
     meta: &PackageMeta,
     accessibility: Option<&AtspiAcceptance>,
