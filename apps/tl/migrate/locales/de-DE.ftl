@@ -228,8 +228,6 @@ d-skk653vz = Lauf vergessen
 
 d-skk653vz-run = Lauf
 
-d-tjc4gwos = Auswählen
-
 d-rzpx6bzh = Beenden
 
 d-vzbtgrfk = Umzüge

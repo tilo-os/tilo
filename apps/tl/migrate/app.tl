@@ -181,7 +181,6 @@ action unreadable(g: Migration, what: Text) {
 action choose(g: Migration, i: Item, chosen: Bool = not i.chosen) (
     icon: .check,
     label: "Bring in",
-    on: i.chosen,
 ) {
     engine.choose(source: g.source, items: [i.key], leave_out: not chosen)
 }

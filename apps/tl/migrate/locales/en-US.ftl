@@ -3,6 +3,8 @@
 
 d-so-tilo-migrate = Migrations
 
+d-so-tilo-migrate-keywords = migrate, import, move, bring in, thunderbird, browsers, cloud storage
+
 d-fosjwamu = Item
     .doc = Something the review found in the source: an account, a folder, an address book, a calendar.
     .noun = { $count ->
@@ -99,6 +101,9 @@ d-c6gmooon = Run title
 
 d-v6notall = Failure
 
+d-6tvxvli7 = Refused
+    .doc = Why the device refused the last step asked of the migration; empty once a step goes through.
+
 d-wtqlrste = Brought
     .doc = How many of each kind the last run brought in.
 
@@ -183,12 +188,14 @@ d-54ygmmcv = Unreadable
 d-54ygmmcv-what = What
 
 d-vnfd46in = Bring in
-    .doc = Chooses an item to be brought in, or leaves it out.
+    .doc = Chooses an item of `g` to be brought in, or leaves it out: the device that holds the data keeps the choice, and the migration follows it there, as `choose_keys`.
+
+d-vnfd46in-i = I
 
 d-vnfd46in-chosen = Chosen
 
 d-453xvewh = Choose keys
-    .doc = Chooses the items whose keys are `keys`, or leaves them out; with `only`, every other item is left out.
+    .doc = The device chose the items whose keys are `keys`, or left them out; with `only`, every other item is left out.
 
 d-453xvewh-keys = Keys
 
@@ -197,7 +204,7 @@ d-453xvewh-chosen = Chosen
 d-453xvewh-only = Only
 
 d-6owc7q4m = Begun
-    .doc = The device began the run `run`: it is running, and what the last run brought is cleared.
+    .doc = The device began the run `run`, or resumed it: it is running.
 
 d-6owc7q4m-run = Run
 
@@ -229,7 +236,28 @@ d-skk653vz = Forgot run
 
 d-skk653vz-run = Run
 
-d-tjc4gwos = Choose~present
+d-suc576de = Refused
+    .doc = The device refused a step asked of `g`, for `why`: nothing chosen to bring in, a source it cannot read, a run it cannot take back.
+
+d-suc576de-why = Why
+
+d-mc6o2yv4 = Look again
+    .doc = Read `g`'s source again: what it holds now is what there is to choose from.
+    .did = looked at a source again
+
+d-z7l36mcv = Start
+    .doc = Bring in what is chosen of `g`'s source: the device that holds the data runs it as one run, and the migration follows it there, as `begun`, `landed` and `ended`.
+    .did = started bringing in
+
+d-b6a4nblx = Stop
+    .doc = Stop `g`'s run after the item it is on: what it brought stays, and starting again resumes it.
+    .did = stopped bringing in
+
+d-x6sqvfbn = Undo
+    .doc = Take what the run `r` brought in back out of the workspace.
+    .did = took a run back
+
+d-x6sqvfbn-r = R
 
 d-rzpx6bzh = Ended~present
 
@@ -247,10 +275,17 @@ d-m6xdvzmk = Migration page
 
 d-zwcqzi7i = Run status
     .w-bringing-in = Bringing in
+    .w-stop = Stop
+    .w-resume = Resume
+    .w-try-again = Try again
+    .w-bring-in = Bring in
+    .w-look-again = Look again
     .w-the-run-stopped-on-an-error = The run stopped on an error
+    .w-that-could-not-be-done = That could not be done
     .w-already-here = { $already_there } already here
 
 d-toxseay6 = Item row
 
 d-htm3bmqz = Run row
     .w-items = { $len } items
+    .w-undo = Undo

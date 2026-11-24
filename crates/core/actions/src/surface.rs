@@ -231,7 +231,12 @@ pub fn param_type(param: &crate::ActionParam) -> FieldType {
         ParamType::Integer => FieldType::Int,
         ParamType::Number => FieldType::Float,
         ParamType::Boolean => FieldType::Bool,
-        ParamType::Object | ParamType::Array => FieldType::Any,
+        // A list or object whose schema says what it holds is typed by it, so code can give it
+        // (`List<Text>`); one that says nothing is any JSON value.
+        ParamType::Object | ParamType::Array => param
+            .schema
+            .as_deref()
+            .map_or(FieldType::Any, FieldType::from_schema),
     }
 }
 

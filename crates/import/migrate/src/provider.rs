@@ -209,6 +209,8 @@ fn declared() -> Vec<Declared> {
              onedrive, dropbox, icloud, nextcloud, webdav, outline, linear or forgejo.",
         )
     };
+    // Item keys are text, so code calls `choose` with a `List<Text>` (the window's checkbox).
+    let texts = || serde_json::json!({"type": "array", "items": {"type": "string"}});
     vec![
         Declared {
             id: "sources",
@@ -291,7 +293,8 @@ fn declared() -> Vec<Declared> {
                     "Items by the key a review lists them under, of any depth for a cloud \
                      drive: a folder brings everything under it, and `path:Work/Essay.docx` \
                      names an item by its path in the drive.",
-                ),
+                )
+                .with_schema(texts()),
                 ActionParam::optional(
                     "account",
                     ParamType::Text,
@@ -301,7 +304,8 @@ fn declared() -> Vec<Declared> {
                     "items",
                     ParamType::Array,
                     "Items by the key the review lists; for home, also a folder by its path.",
-                ),
+                )
+                .with_schema(texts()),
                 ActionParam::optional("leave_out", ParamType::Boolean, "Leave these out instead."),
                 ActionParam::optional(
                     "only",
