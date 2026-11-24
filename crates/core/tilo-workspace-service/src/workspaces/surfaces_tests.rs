@@ -180,6 +180,9 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
         Some(earlier),
         "this build names a surface of its own for the app"
     );
+    // The update's start keeps the surfaces its content store holds; the process it runs as the
+    // earlier build's device names that build's surface in what it writes.
+    crate::surfaces::decide_receipt(&store);
     tilo_peer_state::decide_with_surfaces(
         collab_types::Surfaces::from_source(Arc::new(collab_types::surface::ContentSurfaces::new(
             |record, hash| crate::surfaces::kept(record.app, hash),
