@@ -173,6 +173,20 @@ class ThePackagesAWalkInstalls(unittest.TestCase):
         self.assertEqual(walk.tapp_name("files"), "file-explorer")
 
 
+class TheFramesTheDriverSends(unittest.TestCase):
+    """The driver speaks the action model's frame version, which the session refuses any other
+    of: when the Rust side moved to 5 and the driver kept 4, every walk's first launch was
+    refused and no walk opened an app."""
+
+    def test_the_driver_sends_the_version_the_action_model_reads(self):
+        import re
+        import real_apps
+        remote = (HERE.parents[1] / "crates/core/actions/src/remote.rs").read_text()
+        version = re.search(r"pub const REMOTE_ACTIONS_VERSION: u16 = (\d+);", remote)
+        self.assertIsNotNone(version, "remote.rs names REMOTE_ACTIONS_VERSION")
+        self.assertEqual(real_apps.FRAME_VERSION, int(version.group(1)))
+
+
 class TheSessionAWalkStartsIn(unittest.TestCase):
     """Every walk's own session starts from the environment app-walk.py gives it, a walk of
     one device included: that one has no device environment, and its start crashed on it."""
