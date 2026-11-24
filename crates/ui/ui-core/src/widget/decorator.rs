@@ -494,6 +494,7 @@ decorator_trait! {
 
     ref {
         fn focus_reveal_context() -> Option<vello::kurbo::Rect>;
+        fn own_actions() -> Vec<crate::widget::OwnAction>;
         #[doc(hidden)]
         fn resets_binding_inheritance() -> bool;
         #[doc(hidden)]
