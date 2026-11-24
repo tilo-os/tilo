@@ -813,3 +813,12 @@ d-3n3wrhwy = Antwortkopfzeilen
     .w-response-headers = Antwortkopfzeilen
     .w-name = Name
     .w-value = Wert
+
+d-t7bbwzg4 = Builder
+    .doc = Die Anfrageanlage des Arbeitsbereichs: die Anfrage, die gerade getippt wird, überschrieben, wenn eine andere geöffnet wird.
+
+d-vyss2ux2-filter-builder = Builder
+
+d-obhk4ydu-answer = Antwort
+
+d-54zyn23o-answer = Antwort
