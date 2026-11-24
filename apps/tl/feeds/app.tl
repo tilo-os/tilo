@@ -508,6 +508,14 @@ action refresh_ended(lib: Library, j: host.Job) {
     if lib.refresh.job != j.id {
         return
     }
+    // How far it got, as it ended: the window reads a finished refresh from it.
+    match json.decode<Job>(j.detail) {
+        .ok(job) => {
+            lib.refresh.done = job.done
+            lib.refresh.total = job.total
+        }
+        .err(_) => {}
+    }
     if j.state == .done or j.state == .cancelled {
         lib.refresh.state = "done"
         lib.refresh.job = ""
