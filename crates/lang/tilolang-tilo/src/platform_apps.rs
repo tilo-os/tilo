@@ -976,6 +976,74 @@ mod tests {
         }
     }
 
+    /// Every type a published surface declares is the type the package declares under that
+    /// name: a type another reading's type or kind already takes is renamed after its kind
+    /// (`<Kind><Name>`), and `device.<Name>` would silently read another record. A new clash
+    /// fails here, naming it.
+    #[test]
+    fn every_device_type_keeps_the_name_its_surface_gives() {
+        // The clashes the device already has: the system monitor's own battery and network
+        // readings, beside the device's battery and connectivity readings.
+        const RENAMED: &[(&str, &str)] = &[("processes", "Battery"), ("processes", "Network")];
+        let published = PUBLISHED
+            .iter()
+            .find(|published| published.app == DEVICE_APP)
+            .expect("the device is one of the platform's apps");
+        let mut surfaces = Vec::new();
+        for file in published.files {
+            surfaces.extend(
+                surfaces_of(file)
+                    .unwrap_or_else(|why| panic!("the device's surface does not read: {why}")),
+            );
+        }
+        let meta = package_of(published.app, published.title, &surfaces);
+        // The names a type's fields or cases carry, in the order and spelling the package
+        // declares them: nested fields are the type's own and no field of the record.
+        let names = |names: &mut dyn Iterator<Item = &str>| -> Vec<String> {
+            // A row's `$address` is where its actions are called, not a field code reads;
+            // a nested field belongs to the type it names, not to the record.
+            let mut names: Vec<String> = names
+                .map(|name| name.replace('-', "_"))
+                .filter(|name| !name.contains('.') && !name.starts_with('$'))
+                .collect();
+            names.sort();
+            names
+        };
+        for surface in &surfaces {
+            for ty in &surface.types {
+                if RENAMED.contains(&(surface.kind.as_str(), ty.name.as_str())) {
+                    continue;
+                }
+                // A resource kind's own type may repeat a named type's name with the same
+                // fields (`saved-network` and the network reading's `SavedNetwork`); any type of
+                // the name with the fields the surface declares is the one code reads.
+                let kept = if ty.is_enum() {
+                    let want = names(&mut ty.cases.iter().map(|case| case.name.as_str()));
+                    meta.enums.iter().any(|declared| {
+                        declared.name == ty.name
+                            && names(&mut declared.variants.iter().map(|case| case.name.as_str()))
+                                == want
+                    })
+                } else {
+                    let want = names(&mut ty.fields.iter().map(|field| field.name.as_str()));
+                    meta.types.iter().any(|declared| {
+                        declared.name == ty.name
+                            && names(&mut declared.fields.iter().map(|field| field.name.as_str()))
+                                == want
+                    })
+                };
+                assert!(
+                    kept,
+                    "the `{}` reading's `{}` is not the type the device declares as `{}`: another \
+                     reading's type of that name takes it, and the catalogue renames one of them \
+                     after its kind, so `device.{}` stops reading this one. Give one of them \
+                     another name",
+                    surface.kind, ty.name, ty.name, ty.name
+                );
+            }
+        }
+    }
+
     /// Code reads the catalogue and calls an action by address: the two verbs and the record
     /// they answer compile against the packages the platform publishes.
     #[test]
