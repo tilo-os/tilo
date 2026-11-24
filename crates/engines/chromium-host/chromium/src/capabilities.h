@@ -105,6 +105,7 @@ class Downloads final : public CefDownloadHandler {
     const bool was_busy=OwnerBusy(owner);
     slots_.Promote(id);
     Transfer transfer;if(staged){transfer=early->second;early_.erase(early);}transfer.owner=owner;transfer.before=callback;transfer.name=name;transfer.chosen=chosen;transfer.url=url;transfer.retryable=retryable;
+    if(tell.expected) transfer.extension=true;
     transfers_[id]=std::move(transfer);
     OwnerStateChanged(owner,was_busy);
     auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("url",url);d->SetString("name",name);emit_("download_prompt",d);Changed();
@@ -124,11 +125,32 @@ class Downloads final : public CefDownloadHandler {
     auto it=transfers_.find(id);if(it==transfers_.end() || it->second.approved) return;
     if(it->second.held) {it->second.held=false;TellHold(it->second,HoldEnding(allow,reason),false,{});}
     if(!allow) { CancelDownload(id);return; }
-    // Chromium saves nothing: the Browser's own download fetches the file, as a job that
-    // outlives this tab, with what the page's request would have carried.
-    const int owner=it->second.owner;const std::string url=it->second.url,name=it->second.name;
-    CancelDownload(id);
-    if(fetch_) fetch_(owner,id,url,name);
+    // A page's download Chromium does not save: the Browser's own download fetches the file,
+    // as a job that outlives this tab, with what the page's request would have carried.
+    if(!it->second.extension) {
+      const int owner=it->second.owner;const std::string url=it->second.url,name=it->second.name;
+      CancelDownload(id);
+      if(fetch_) fetch_(owner,id,url,name);
+      return;
+    }
+    std::error_code ec;std::filesystem::create_directories(downloads_,ec);
+    // A download must never fill the disk; refuse it before writing a byte.
+    if(!ec) {
+      const auto& t=it->second;
+      const uint64_t remaining=t.total>t.received?static_cast<uint64_t>(t.total-t.received):0;
+      if(auto free=tilo::AvailableBytes(downloads_)) {
+        auto why=tilo::SpaceRefusal(remaining,*free);
+        if(!why.empty()) { Finish(id,"failed",why);return; }
+      }
+    }
+    // mkdtemp atomically reserves a private destination. Untrusted suggested
+    // names cannot traverse or overwrite an existing file, even on repetition.
+    std::string directory=downloads_+"/tilo-download-XXXXXX";
+    if(ec || !mkdtemp(directory.data())) { Finish(id,"failed","Cannot create download directory");return; }
+    it->second.approved=true;
+    auto callback=it->second.before;it->second.before=nullptr;
+    callback->Continue(directory+"/"+it->second.name,false);
+    Changed();
   }
   void CancelDownload(int id) {
     auto it=transfers_.find(id);if(it==transfers_.end()) return;
@@ -162,7 +184,7 @@ class Downloads final : public CefDownloadHandler {
       // it goes, as Chrome names a download that failed as it started.
       const int owner=owner_(browser);
       auto expected=TakeExpected(owner,item);
-      Stage(owner,id,item,callback,expected?expected->name:std::string());
+      Stage(owner,id,item,callback,expected?expected->name:std::string(),expected.has_value());
       if(expected) expected->done(id,"");
       return;
     }
@@ -186,14 +208,14 @@ class Downloads final : public CefDownloadHandler {
     Finish(id,state,state=="failed"?InterruptMessage(item->GetInterruptReason()):"");
   }
   // A download Chromium reports before asking where to save it.
-  void Stage(int owner,int id,CefRefPtr<CefDownloadItem> item,CefRefPtr<CefDownloadItemCallback> callback,const std::string& chosen) {
+  void Stage(int owner,int id,CefRefPtr<CefDownloadItem> item,CefRefPtr<CefDownloadItemCallback> callback,const std::string& chosen,bool extension) {
     if(!item->IsInProgress()) return;
     if(!accepting_ || !owner || !eligible_(owner) || !can_reserve_(owner)) {
       callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download owner unavailable");return;
     }
     if(!slots_.Stage(id,owner)){callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download limit reached (32 active transfers)");return;}
     const bool was_busy=OwnerBusy(owner);
-    Transfer transfer;transfer.owner=owner;transfer.active=callback;
+    Transfer transfer;transfer.owner=owner;transfer.active=callback;transfer.extension=extension;
     if(!chosen.empty()) transfer.chosen=FileName(chosen);
     Merge(transfer,item);early_[id]=std::move(transfer);
     OwnerStateChanged(owner,was_busy);
@@ -217,6 +239,8 @@ class Downloads final : public CefDownloadHandler {
  private:
   // `chosen`: the name an extension asked for, which the download keeps.
   struct Transfer {int owner=0;CefRefPtr<CefBeforeDownloadCallback> before;CefRefPtr<CefDownloadItemCallback> active;std::string name,chosen,url,path;int64_t received=0,total=0;bool retryable=false,approved=false,cancel_requested=false,cancel_sent=false;std::string space_error;
+    // An extension asked for it (`chrome.downloads`) and follows it: Chromium saves it.
+    bool extension=false;
     // A window an agent operates holds it for the person, and nobody has answered yet.
     bool held=false;};
   // What the record of the tab that started a held download is told of it:

@@ -73,11 +73,17 @@ class Request(unittest.TestCase):
 
     @staticmethod
     def ended(host, download_id):
-        return host.until(
-            lambda event: event["event"] == "download"
-            and event["id"] == download_id
-            and event["state"] == "cancelled"
-        )
+        """Its offer ended, also when that was told while the test waited for another event."""
+
+        def cancelled(event):
+            return (
+                event["event"] == "download"
+                and event["id"] == download_id
+                and event["state"] == "cancelled"
+            )
+
+        if not any(cancelled(event) for event in host.seen):
+            host.until(cancelled)
 
     def test_a_saved_download_goes_to_its_tab_with_the_sites_cookies(self):
         host = self.host()

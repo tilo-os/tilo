@@ -215,27 +215,17 @@ class Capabilities(unittest.TestCase):
         self.assertEqual(self.status(self.url,3)['permissions']['notifications'],'blocked')
         self.assertEqual(self.query('Notification.permission'),'denied')
 
-    def test_download_waits_for_accept_and_saves_exact_bytes(self):
+    def test_download_waits_for_accept_and_is_handed_to_its_tab(self):
         self.h.navigate(self.url+'/')
         self.h.send(op='mouse_button',button='left',down=True,x=35,y=58)
         self.h.send(op='mouse_button',button='left',down=False,x=35,y=58)
         event=self.h.until(lambda e:e['event']=='download_prompt',timeout=5)
         self.assertNotIn('/',event['name'])
-        name=event['name']
         self.h.send(op='download_answer',id=event['id'],allow=True)
-        done=self.h.until(lambda e:e['event']=='download' and e['state']=='complete')
-        saved=Path(done['path'])
-        self.assertEqual(saved.read_bytes(),PAYLOAD)
-        self.assertEqual(saved.name,name)
-        # Each accepted download has an exclusive directory, never replaces a file.
-        self.h.navigate(self.url+'/')
-        self.h.send(op='mouse_button',button='left',down=True,x=35,y=58)
-        self.h.send(op='mouse_button',button='left',down=False,x=35,y=58)
-        event=self.h.until(lambda e:e['event']=='download_prompt')
-        self.h.send(op='download_answer',id=event['id'],allow=True)
-        other=self.h.until(lambda e:e['event']=='download' and e['state']=='complete')
-        self.assertNotEqual(other['path'],str(saved))
-        self.assertEqual(saved.read_bytes(),PAYLOAD)
+        # The Browser fetches it as a job of its own: the engine hands it over and saves nothing.
+        handed=self.h.until(lambda e:e['event']=='download_request' and e['id']==event['id'])
+        self.assertEqual((handed['name'],handed['url']),(event['name'],event['url']))
+        self.assertFalse(any(e['event']=='download' and e.get('state')=='complete' for e in self.h.seen))
     def test_declined_download_is_cancelled_without_a_saved_file(self):
         self.h.navigate(self.url+'/')
         self.h.send(op='mouse_button',button='left',down=True,x=35,y=58)
