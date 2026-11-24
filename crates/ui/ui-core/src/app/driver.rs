@@ -1083,6 +1083,13 @@ impl Driver {
 
     fn press_at(&mut self, point: Point, button: winit::event::MouseButton) {
         let (x, y) = self.device(point.x, point.y);
+        // A press and its release are one interaction: the frame the pointer move asks for runs
+        // after both reach the app, as a window's next frame takes them up together, so a widget
+        // a frame replaces between them does not lose the press to its successor.
+        let coalesced = self.coalesces_input();
+        if !coalesced {
+            self.set_coalesce_input_frames(true);
+        }
         self.send(&crate::synthetic_input::cursor_moved(x, y));
         self.send(&crate::synthetic_input::mouse_input(
             ElementState::Pressed,
@@ -1092,6 +1099,10 @@ impl Driver {
             ElementState::Released,
             button,
         ));
+        if !coalesced {
+            self.set_coalesce_input_frames(false);
+            let _ = self.poll_frame();
+        }
     }
 
     /// Move the pointer to logical `(x, y)` and press and release the left button there.
@@ -1309,9 +1320,9 @@ impl Driver {
         &self.app.state
     }
 
-    /// The live document, to change between frames.
+    /// The live document, to change between frames. A change here schedules no frame of its
+    /// own: whoever changed it runs the frame that shows it, as a host does for its own writes.
     pub fn state_mut(&mut self) -> &mut State {
-        self.app.needs_sync = true;
         &mut self.app.state
     }
 
@@ -2765,16 +2776,14 @@ impl Driver {
     /// Where the app sends the actions it does not run itself.
     ///
     /// # Errors
-    /// While the app has actions pending: replacing the transport then would lose them.
+    /// While the app has actions running: replacing the transport then would lose their answers.
+    /// What its widgets queued but no pass has dispatched yet is not such a call: it runs on the
+    /// transport the app holds when it is dispatched, which may be this one.
     pub fn set_action_transport(
         &mut self,
         transport: Box<dyn tilo_actions::ActionTransport>,
     ) -> Result<(), String> {
-        if !self.app.actions.bound_invocations.is_empty()
-            || crate::widget::controls::has_pending_control_invocation(
-                self.app.root_widget.as_ref(),
-            )
-        {
+        if !self.app.actions.bound_invocations.is_empty() {
             return Err("cannot replace transport while actions are pending".into());
         }
         self.app.set_action_transport(transport);
