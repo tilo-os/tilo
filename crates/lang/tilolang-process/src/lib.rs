@@ -277,7 +277,7 @@ pub type PatchConnection = tilo_socket::Stream;
 pub fn patch_connection(handed: Descriptor) -> std::io::Result<PatchConnection> {
     #[cfg(unix)]
     {
-        tilo_render_protocol::channel::Channel::from_socket(handed)
+        tilo_render_protocol::channel::Channel::from_socket(handed.into())
     }
     #[cfg(windows)]
     {
@@ -297,7 +297,7 @@ pub(crate) fn patch_transport(
     {
         let watched = std::os::fd::AsFd::as_fd(&connection).try_clone_to_owned()?;
         let transport = tilo_render_protocol::patch::unix::ChannelTransport::new(connection)?;
-        Ok((Box::new(transport), watched))
+        Ok((Box::new(transport), watched.into()))
     }
     #[cfg(windows)]
     {
@@ -1071,7 +1071,7 @@ impl TilolangProcess {
             hosted.speak(&language);
         }
         let mut hosted = match opening.identity.take() {
-            Some(identity) => hosted.holding_identity(identity),
+            Some(identity) => hosted.holding_identity(identity.into()),
             None => hosted,
         };
         // What a window was asked to show: an instance that shows nothing opens on nothing.
@@ -1358,8 +1358,11 @@ fn arrived_early(
 fn module_bundle(fd: &Descriptor, len: u64) -> Result<Bundle, AdmitError> {
     let module_error = |error: &dyn std::fmt::Display| AdmitError::Module(error.to_string());
     let len = usize::try_from(len).map_err(|error| module_error(&error))?;
-    let mapping =
-        tilo_shm::Mapping::map_sealed(fd, true, len, len).map_err(|error| module_error(&error))?;
+    // The mapping opens the file for itself: it takes a descriptor of its own, so the one the
+    // session handed stays the instance's to close.
+    let sealed: std::os::fd::OwnedFd = fd.try_clone().map_err(|error| module_error(&error))?.into();
+    let mapping = tilo_shm::Mapping::map_sealed(&sealed, true, len, len)
+        .map_err(|error| module_error(&error))?;
     let bytes = mapping
         .get(0, len)
         .ok_or_else(|| AdmitError::Module("the module is shorter than it says".to_owned()))?;

@@ -377,7 +377,7 @@ pub fn start(
         (phrases, host.formats()),
         wake,
     );
-    host.add(hosted, Some(watched));
+    host.add(hosted, Some(watched.into()));
     Ok((host, theirs))
 }
 
@@ -769,6 +769,8 @@ impl HostedWindow {
                         return false;
                     }
                 };
+                #[cfg(unix)]
+                let watched: std::os::fd::OwnedFd = watched.into();
                 let watch = Watch::start(watched, wake);
                 let mut view = AppWindow::new(transport, Vec::new());
                 // A floating surface the view asks for mirrors its app's own player.

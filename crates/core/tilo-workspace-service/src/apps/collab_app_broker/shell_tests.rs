@@ -627,7 +627,7 @@ async fn only_the_shell_hands_the_device_processes_an_instance() {
     use runtime_portal::device_processes::{FromDevice, ToDevice};
     use runtime_portal::packet::Packet as _;
     let device = device_with_shell().await;
-    let ask = |connection: std::os::fd::OwnedFd| {
+    let ask = |connection: runtime_portal::packet::Descriptor| {
         tokio::task::spawn_blocking(move || {
             ToDevice::Running.send(&connection)?;
             FromDevice::receive(&connection)
@@ -672,7 +672,7 @@ async fn only_the_shell_hands_the_device_processes_an_instance() {
     );
     let connection = shell.processes().await.unwrap();
     assert_eq!(
-        ask(connection).await.unwrap().unwrap(),
+        ask(connection.into()).await.unwrap().unwrap(),
         Some(FromDevice::Running(Vec::new())),
         "the shell's connection reaches the processes"
     );
