@@ -853,6 +853,340 @@
           "description": "Turn airplane mode off when it is on, and on when it is off.",
           "kind": "outside",
           "params": []
+        },
+        {
+          "id": "set-mobile-metered",
+          "label": "Count mobile data against a limit, or let the network say",
+          "description": "Count mobile data against a limit, or let the network say.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "metered",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-network-ipv4",
+          "label": "Set the IPv4 address",
+          "description": "Set how a saved network gets its IPv4 address: automatically, or the addresses, gateway and name servers given.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "automatic",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            },
+            {
+              "name": "addresses",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "gateway",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "dns",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "set-network-ipv6",
+          "label": "Set the IPv6 address",
+          "description": "Set how a saved network gets its IPv6 address.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "method",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "addresses",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "gateway",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "dns",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "set-network-dns",
+          "label": "Set the name servers",
+          "description": "Set the name servers a saved network uses; none takes the network's.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "servers",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "set-network-policy",
+          "label": "Change how the network is used",
+          "description": "Change how a saved network is used: whether it is metered, the hardware address this device shows it, its proxy, its priority and whether its name is hidden. What is left out stays as it is.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "metered",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "mac_address",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "proxy",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "proxy_address",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "browser_only",
+              "required": false,
+              "schema": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "bool"
+              }
+            },
+            {
+              "name": "priority",
+              "required": false,
+              "schema": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "hidden",
+              "required": false,
+              "schema": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "bool"
+              }
+            }
+          ]
+        },
+        {
+          "id": "set-enterprise-identity",
+          "label": "Set the 802.1X identity",
+          "description": "Change who a work or school network knows this device as, and the certificate it checks the network with.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "identity",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "ca_certificate",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-wifi-password",
+          "label": "Change the Wi-Fi password",
+          "description": "Change the password a saved Wi-Fi network joins with.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "password",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
         }
       ],
       "fields": [
@@ -1075,6 +1409,34 @@
           ]
         },
         {
+          "name": "SavedIpv4",
+          "doc": "How a saved network's addresses are set.",
+          "fields": [
+            {
+              "name": "automatic",
+              "type": "bool"
+            },
+            {
+              "name": "addresses",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "gateway",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "dns",
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        },
+        {
           "name": "SavedKind",
           "doc": "What kind of connection a saved network is.",
           "cases": [
@@ -1149,6 +1511,14 @@
             {
               "name": "hidden",
               "type": "bool"
+            },
+            {
+              "name": "ipv4",
+              "type": {
+                "option": {
+                  "named": "SavedIpv4"
+                }
+              }
             }
           ]
         },
@@ -1351,38 +1721,6 @@
           "params": []
         },
         {
-          "id": "connect",
-          "label": "Connect the accessory",
-          "description": "Connect a paired accessory.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "address",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "id": "disconnect",
-          "label": "Disconnect the accessory",
-          "description": "Disconnect an accessory.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "address",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
-            }
-          ]
-        },
-        {
           "id": "scan",
           "label": "Look for accessories",
           "description": "Look for accessories in reach, or stop looking.",
@@ -1395,39 +1733,6 @@
                 "type": "boolean"
               },
               "type": "bool"
-            }
-          ]
-        },
-        {
-          "id": "pair",
-          "label": "Pair a device",
-          "description": "Pair a device in reach: `BlueZ` bonds with it, trusting it and connecting it. What the device asks to compare is a question the person answers.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "address",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "id": "forget",
-          "label": "Forget the device",
-          "description": "Forget a device: its bond, its keys and its trust go, so it must be paired again from scratch.",
-          "kind": "outside",
-          "destructive": true,
-          "params": [
-            {
-              "name": "address",
-              "required": true,
-              "schema": {
-                "type": "string"
-              },
-              "type": "text"
             }
           ]
         }
@@ -1494,6 +1799,12 @@
           "doc": "One paired Bluetooth accessory.",
           "fields": [
             {
+              "name": "$address",
+              "type": {
+                "resource": "so.tilo.connectivity.bluetooth-accessory"
+              }
+            },
+            {
               "name": "name",
               "type": "text"
             },
@@ -1518,6 +1829,12 @@
           "doc": "A Bluetooth device in reach that is not paired.",
           "fields": [
             {
+              "name": "$address",
+              "type": {
+                "resource": "so.tilo.connectivity.bluetooth-nearby"
+              }
+            },
+            {
               "name": "name",
               "type": "text"
             },
@@ -1536,23 +1853,161 @@
       ]
     },
     {
-      "kind": "vpn",
-      "label": "VPN",
+      "kind": "so.tilo.connectivity.bluetooth-accessory",
+      "label": "Bluetooth accessory",
       "version": 1,
       "verbs": [
         {
-          "id": "set-vpn",
-          "label": "Connect or disconnect a VPN",
-          "description": "Connect or disconnect a VPN profile.",
+          "id": "connect",
+          "label": "Connect the accessory",
+          "description": "Connect the accessory.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "disconnect",
+          "label": "Disconnect the accessory",
+          "description": "Disconnect the accessory.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "forget",
+          "label": "Forget the device",
+          "description": "Forget the accessory: its bond, its keys and its trust go, so it must be paired again from scratch.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        }
+      ],
+      "fields": []
+    },
+    {
+      "kind": "so.tilo.connectivity.bluetooth-nearby",
+      "label": "Bluetooth device",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "pair",
+          "label": "Pair a device",
+          "description": "Pair the device: `BlueZ` bonds with it, trusting it and connecting it. What the device asks to compare is a question the person answers.",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": []
+    },
+    {
+      "kind": "modem",
+      "label": "Modem",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "refresh-modems",
+          "label": "Read the modems and their SIMs again",
+          "description": "Read the modems and their SIMs again.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "unlock-sim",
+          "label": "Unlock a SIM with its PIN",
+          "description": "Unlock a SIM with its PIN.",
           "kind": "outside",
           "params": [
             {
-              "name": "profile",
-              "required": true,
+              "name": "sim",
+              "required": false,
               "schema": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "pin",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "unblock-sim",
+          "label": "Unblock a SIM with its PUK, choosing a new PIN",
+          "description": "Unblock a SIM with its PUK, choosing a new PIN.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "sim",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "puk",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "pin",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "set-sim-pin-lock",
+          "label": "Ask for the SIM's PIN when the device starts, or stop asking",
+          "description": "Ask for the SIM's PIN when the device starts, or stop asking.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "sim",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "on",
@@ -1561,9 +2016,517 @@
                 "type": "boolean"
               },
               "type": "bool"
+            },
+            {
+              "name": "pin",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
+        {
+          "id": "change-sim-pin",
+          "label": "Change the SIM's PIN",
+          "description": "Change the SIM's PIN.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "sim",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "old_pin",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "new_pin",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "use-sim",
+          "label": "Use a SIM for mobile data, on a modem with several",
+          "description": "Use a SIM for mobile data, on a modem with several.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "sim",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-preferred-network",
+          "label": "Choose the network types the modem may use",
+          "description": "Choose the network types the modem may use.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "network",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "available",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "modems",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "ModemUnit"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "ModemFailure",
+          "doc": "Why a modem cannot be used.",
+          "cases": [
+            {
+              "name": "sim-missing",
+              "label": "Sim missing"
+            },
+            {
+              "name": "sim-error",
+              "label": "Sim error"
+            },
+            {
+              "name": "esim-without-profiles",
+              "label": "Esim without profiles"
+            },
+            {
+              "name": "other",
+              "label": "Other"
+            }
+          ]
+        },
+        {
+          "name": "ModemSim",
+          "doc": "One SIM a modem holds.",
+          "fields": [
+            {
+              "name": "path",
+              "type": "text"
+            },
+            {
+              "name": "slot",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "active",
+              "type": "bool"
+            },
+            {
+              "name": "operator",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": {
+                "named": "SimKind"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ModemState",
+          "doc": "What a modem is doing (`MMModemState`).",
+          "cases": [
+            {
+              "name": "failed",
+              "label": "Failed"
+            },
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            },
+            {
+              "name": "initializing",
+              "label": "Initializing"
+            },
+            {
+              "name": "locked",
+              "label": "Locked"
+            },
+            {
+              "name": "disabled",
+              "label": "Disabled"
+            },
+            {
+              "name": "enabled",
+              "label": "Enabled"
+            },
+            {
+              "name": "searching",
+              "label": "Searching"
+            },
+            {
+              "name": "registered",
+              "label": "Registered"
+            },
+            {
+              "name": "connected",
+              "label": "Connected"
+            },
+            {
+              "name": "disconnecting",
+              "label": "Disconnecting"
+            },
+            {
+              "name": "connecting",
+              "label": "Connecting"
+            }
+          ]
+        },
+        {
+          "name": "ModemUnit",
+          "doc": "One modem and its SIM slots.",
+          "fields": [
+            {
+              "name": "path",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "ModemState"
+              }
+            },
+            {
+              "name": "failure",
+              "type": {
+                "option": {
+                  "named": "ModemFailure"
+                }
+              }
+            },
+            {
+              "name": "lock",
+              "type": {
+                "named": "SimLock"
+              }
+            },
+            {
+              "name": "retries",
+              "type": {
+                "named": "Retries"
+              }
+            },
+            {
+              "name": "pin-enabled",
+              "type": {
+                "option": "bool"
+              }
+            },
+            {
+              "name": "signal",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "technology",
+              "type": {
+                "option": {
+                  "named": "Technology"
+                }
+              }
+            },
+            {
+              "name": "operator",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "registration",
+              "type": {
+                "named": "Registration"
+              }
+            },
+            {
+              "name": "network-type",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "network-types",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "sims",
+              "type": {
+                "list": {
+                  "named": "ModemSim"
+                }
+              }
+            },
+            {
+              "name": "numbers",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "received",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "sent",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Registration",
+          "doc": "Which network the modem stands on.",
+          "cases": [
+            {
+              "name": "idle",
+              "label": "Idle"
+            },
+            {
+              "name": "home",
+              "label": "Home"
+            },
+            {
+              "name": "roaming",
+              "label": "Roaming"
+            },
+            {
+              "name": "searching",
+              "label": "Searching"
+            },
+            {
+              "name": "denied",
+              "label": "Denied"
+            },
+            {
+              "name": "emergency-only",
+              "label": "Emergency only"
+            },
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            }
+          ]
+        },
+        {
+          "name": "Retries",
+          "doc": "How many tries a locked SIM has left.",
+          "fields": [
+            {
+              "name": "pin",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "puk",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SimKind",
+          "doc": "What kind of SIM it is.",
+          "cases": [
+            {
+              "name": "physical",
+              "label": "Physical"
+            },
+            {
+              "name": "esim",
+              "label": "Esim"
+            },
+            {
+              "name": "esim-without-profile",
+              "label": "Esim without profile"
+            },
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            }
+          ]
+        },
+        {
+          "name": "SimLock",
+          "doc": "What a SIM asks for before the modem can be used.",
+          "cases": [
+            {
+              "name": "none",
+              "label": "None"
+            },
+            {
+              "name": "pin",
+              "label": "Pin"
+            },
+            {
+              "name": "puk",
+              "label": "Puk"
+            },
+            {
+              "name": "other",
+              "label": "Other"
+            }
+          ]
+        },
+        {
+          "name": "Technology",
+          "doc": "How the modem reaches the network.",
+          "cases": [
+            {
+              "name": "gsm",
+              "label": "Gsm"
+            },
+            {
+              "name": "gprs",
+              "label": "Gprs"
+            },
+            {
+              "name": "edge",
+              "label": "Edge"
+            },
+            {
+              "name": "cdma",
+              "label": "Cdma"
+            },
+            {
+              "name": "umts",
+              "label": "Umts"
+            },
+            {
+              "name": "hspa",
+              "label": "Hspa"
+            },
+            {
+              "name": "hspa-plus",
+              "label": "Hspa plus"
+            },
+            {
+              "name": "ev-do",
+              "label": "Ev do"
+            },
+            {
+              "name": "lte",
+              "label": "Lte"
+            },
+            {
+              "name": "nr5g",
+              "label": "Nr5g"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "vpn",
+      "label": "VPN",
+      "version": 1,
+      "verbs": [
         {
           "id": "import-vpn",
           "label": "Add a VPN from a file",
@@ -1595,16 +2558,356 @@
               "type": "text"
             }
           ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "profiles",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "VpnProfile"
+            }
+          },
+          "readonly": true
         },
         {
-          "id": "forget-vpn",
-          "label": "Remove the VPN",
-          "description": "Remove a VPN profile from this device.",
+          "path": "plugins",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "VpnPluginKind"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "generated-key",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "VpnPluginKind",
+          "doc": "One kind of VPN this device can set up.",
+          "fields": [
+            {
+              "name": "service",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "VpnProfile",
+          "doc": "One VPN profile, with the settings its own page changes.",
+          "fields": [
+            {
+              "name": "$address",
+              "type": {
+                "resource": "so.tilo.connectivity.vpn-profile"
+              }
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "service",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "connected",
+              "type": "bool"
+            },
+            {
+              "name": "autoconnect",
+              "type": "bool"
+            },
+            {
+              "name": "all-traffic",
+              "type": "bool"
+            },
+            {
+              "name": "addresses",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "dns",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "mtu",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "endpoint",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "allowed-ips",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "peer-public-key",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "keepalive",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "so.tilo.connectivity.vpn-profile",
+      "label": "VPN profile",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "connect",
+          "label": "Connect the VPN",
+          "description": "Connect the VPN.",
           "kind": "outside",
-          "destructive": true,
+          "params": []
+        },
+        {
+          "id": "disconnect",
+          "label": "Disconnect the VPN",
+          "description": "Disconnect the VPN.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "edit",
+          "label": "Change the VPN",
+          "description": "Change the profile. What is left out stays as it is.",
+          "kind": "outside",
           "params": [
             {
-              "name": "profile",
+              "name": "name",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "autoconnect",
+              "required": false,
+              "schema": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "bool"
+              }
+            },
+            {
+              "name": "all_traffic",
+              "required": false,
+              "schema": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "bool"
+              }
+            },
+            {
+              "name": "dns",
+              "required": false,
+              "schema": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "option": {
+                  "list": "text"
+                }
+              }
+            },
+            {
+              "name": "mtu",
+              "required": false,
+              "schema": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "endpoint",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "allowed_ips",
+              "required": false,
+              "schema": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "option": {
+                  "list": "text"
+                }
+              }
+            },
+            {
+              "name": "keepalive",
+              "required": false,
+              "schema": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "id": "forget",
+          "label": "Remove the VPN",
+          "description": "Remove the profile from this device.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        }
+      ],
+      "fields": []
+    },
+    {
+      "kind": "tethering",
+      "label": "Tethering",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "set-hotspot",
+          "label": "Share the connection over Wi-Fi",
+          "description": "Share this device's connection over a Wi-Fi hotspot, or stop.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "configure-hotspot",
+          "label": "Set up the hotspot",
+          "description": "Name the hotspot, choose its band and set its password, then share the connection over it.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "password",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "band",
               "required": true,
               "schema": {
                 "type": "string"
@@ -1616,11 +2919,39 @@
       ],
       "fields": [
         {
-          "path": "profiles",
+          "path": "available",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "hotspot",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "name",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "band",
+          "stored": "value",
+          "type": {
+            "named": "Band"
+          },
+          "readonly": true
+        },
+        {
+          "path": "clients",
           "stored": "value",
           "type": {
             "list": {
-              "named": "VpnProfile"
+              "named": "Client"
             }
           },
           "readonly": true
@@ -1644,24 +2975,36 @@
       ],
       "types": [
         {
-          "name": "VpnProfile",
-          "doc": "One VPN profile.",
+          "name": "Band",
+          "doc": "Which band the hotspot uses.",
+          "cases": [
+            {
+              "name": "automatic",
+              "label": "Automatic"
+            },
+            {
+              "name": "two-point-four",
+              "label": "Two point four"
+            },
+            {
+              "name": "five",
+              "label": "Five"
+            }
+          ]
+        },
+        {
+          "name": "Client",
+          "doc": "A device sharing the hotspot.",
           "fields": [
             {
-              "name": "name",
+              "name": "address",
               "type": "text"
             },
             {
-              "name": "id",
-              "type": "text"
-            },
-            {
-              "name": "kind",
-              "type": "text"
-            },
-            {
-              "name": "connected",
-              "type": "bool"
+              "name": "signal",
+              "type": {
+                "option": "int"
+              }
             }
           ]
         }
@@ -1855,6 +3198,3745 @@
               "label": "Performance"
             }
           ]
+        }
+      ]
+    },
+    {
+      "kind": "printers",
+      "label": "Printers",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "find",
+          "label": "Find printers",
+          "description": "Look for printers on the network.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "add",
+          "label": "Add a printer",
+          "description": "Print to a printer found on the network, under the name it is known by here.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "uri",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "remove",
+          "label": "Remove the printer",
+          "description": "Stop printing to a queue.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "printer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-default",
+          "label": "Use this printer first",
+          "description": "Send new jobs to this queue unless another is chosen.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "printer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-media",
+          "label": "Change the paper size",
+          "description": "Print to a queue on another paper size.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "printer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "media",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-paused",
+          "label": "Pause the printer",
+          "description": "Hold a queue's work, or let it print again.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "printer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "paused",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "cancel-job",
+          "label": "Cancel the print job",
+          "description": "Take a job out of its queue.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "job",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "retry-job",
+          "label": "Print the job again",
+          "description": "Send a stopped job to its printer again.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "job",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "serving",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "queues",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "PrinterQueue"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "jobs",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "PrintJob"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "nearby",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "DiscoveredPrinter"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "DiscoveredPrinter",
+          "doc": "A printer found on the network that this computer does not print to yet.",
+          "fields": [
+            {
+              "name": "uri",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "location",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "JobState",
+          "doc": "How a job stands.",
+          "cases": [
+            {
+              "name": "waiting",
+              "label": "Waiting"
+            },
+            {
+              "name": "held",
+              "label": "Held"
+            },
+            {
+              "name": "printing",
+              "label": "Printing"
+            },
+            {
+              "name": "stopped",
+              "label": "Stopped"
+            },
+            {
+              "name": "cancelled",
+              "label": "Cancelled"
+            },
+            {
+              "name": "failed",
+              "label": "Failed"
+            },
+            {
+              "name": "printed",
+              "label": "Printed"
+            }
+          ]
+        },
+        {
+          "name": "PrintJob",
+          "doc": "A job: one document in a queue.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "owner",
+              "type": "text"
+            },
+            {
+              "name": "size_bytes",
+              "type": "int"
+            },
+            {
+              "name": "submitted",
+              "type": "text"
+            },
+            {
+              "name": "destination",
+              "type": "text"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "JobState"
+              }
+            },
+            {
+              "name": "progress",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "name": "PrinterQueue",
+          "doc": "A queue: one printer this computer sends jobs to.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "QueueState"
+              }
+            },
+            {
+              "name": "default",
+              "type": "bool"
+            },
+            {
+              "name": "accepting",
+              "type": "bool"
+            },
+            {
+              "name": "reason",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "supplies",
+              "type": {
+                "list": {
+                  "named": "PrinterSupply"
+                }
+              }
+            },
+            {
+              "name": "reachable",
+              "type": "bool"
+            },
+            {
+              "name": "media",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "default_media",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "PrinterSupply",
+          "doc": "What a queue's device says its consumables hold: a toner or ink cartridge, the paper.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "color",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "level",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "name": "QueueState",
+          "doc": "How a queue stands.",
+          "cases": [
+            {
+              "name": "ready",
+              "label": "Ready"
+            },
+            {
+              "name": "printing",
+              "label": "Printing"
+            },
+            {
+              "name": "paused",
+              "label": "Paused"
+            },
+            {
+              "name": "offline",
+              "label": "Offline"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "users",
+      "label": "Users",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "add",
+          "label": "Add an account",
+          "description": "Create a login account with the person's name and a password.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "username",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "full_name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "password",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-admin",
+          "label": "Make the account an administrator",
+          "description": "Make an account an administrator, or a standard account.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "user",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "admin",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-automatic-login",
+          "label": "Sign in without a password",
+          "description": "Sign an account in without its password when the device starts.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "user",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "remove",
+          "label": "Remove the account",
+          "description": "Remove an account, keeping its home folder or removing it too.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "user",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "keep_files",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "serving",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "accounts",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "LocalAccount"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "read_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "LocalAccount",
+          "doc": "A local login account.",
+          "fields": [
+            {
+              "name": "username",
+              "type": "text"
+            },
+            {
+              "name": "full_name",
+              "type": "text"
+            },
+            {
+              "name": "uid",
+              "type": "int"
+            },
+            {
+              "name": "admin",
+              "type": "bool"
+            },
+            {
+              "name": "current",
+              "type": "bool"
+            },
+            {
+              "name": "automatic_login",
+              "type": "bool"
+            },
+            {
+              "name": "automatic_login_error",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "drives",
+      "label": "Drives",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "refresh",
+          "label": "Look for drives",
+          "description": "Read the drives and their remembered choices again.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "mount",
+          "label": "Open the drive",
+          "description": "Open a drive, in the mode chosen, remembering the choice when asked to.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "drive",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "safely",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            },
+            {
+              "name": "remember",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "unmount",
+          "label": "Close the drive",
+          "description": "Close a drive that is open.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "drive",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "forget",
+          "label": "Forget this drive",
+          "description": "Forget a remembered drive: it is asked about again the next time.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "grant",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-mode",
+          "label": "How the drive opens",
+          "description": "Open a remembered drive safely or with the faster driver from its next opening on.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "grant",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "safely",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "serving",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "read_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "drives",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Drive"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "remembered",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "RememberedDrive"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Drive",
+          "doc": "An NTFS volume attached now.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "size_bytes",
+              "type": "int"
+            },
+            {
+              "name": "placement",
+              "type": {
+                "named": "Placement"
+              }
+            },
+            {
+              "name": "hot_added",
+              "type": "bool"
+            },
+            {
+              "name": "remembered",
+              "type": {
+                "option": {
+                  "named": "Remembered"
+                }
+              }
+            },
+            {
+              "name": "needs_consent",
+              "type": "bool"
+            },
+            {
+              "name": "preselect",
+              "type": {
+                "named": "DriveMode"
+              }
+            },
+            {
+              "name": "can_remember",
+              "type": {
+                "named": "RememberOffer"
+              }
+            },
+            {
+              "name": "mounted",
+              "type": {
+                "option": {
+                  "named": "Mounted"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "DriveMode",
+          "doc": "How a drive is opened: the faster kernel driver, or a confined userspace one for drives the person does not know.",
+          "cases": [
+            {
+              "name": "open",
+              "label": "Open"
+            },
+            {
+              "name": "open_safely",
+              "label": "Open safely"
+            }
+          ]
+        },
+        {
+          "name": "Mounted",
+          "doc": "A drive that is open and where.",
+          "fields": [
+            {
+              "name": "path",
+              "type": "text"
+            },
+            {
+              "name": "mode",
+              "type": {
+                "named": "DriveMode"
+              }
+            },
+            {
+              "name": "read_only",
+              "type": {
+                "option": {
+                  "named": "ReadOnlyReason"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Placement",
+          "doc": "Where a drive sits.",
+          "cases": [
+            {
+              "name": "internal",
+              "label": "Internal"
+            },
+            {
+              "name": "external",
+              "label": "External"
+            }
+          ]
+        },
+        {
+          "name": "ReadOnlyReason",
+          "doc": "Why a drive opened read-only.",
+          "cases": [
+            {
+              "name": "windows_hibernated",
+              "label": "Windows hibernated"
+            },
+            {
+              "name": "windows_not_shut_down",
+              "label": "Windows not shut down"
+            },
+            {
+              "name": "needs_check",
+              "label": "Needs check"
+            }
+          ]
+        },
+        {
+          "name": "RememberOffer",
+          "doc": "What the person may choose to remember about a drive.",
+          "cases": [
+            {
+              "name": "nothing",
+              "label": "Nothing"
+            },
+            {
+              "name": "open_safely",
+              "label": "Open safely"
+            },
+            {
+              "name": "any_mode",
+              "label": "Any mode"
+            }
+          ]
+        },
+        {
+          "name": "Remembered",
+          "doc": "What the person chose to remember about a drive.",
+          "fields": [
+            {
+              "name": "grant",
+              "type": "text"
+            },
+            {
+              "name": "mode",
+              "type": {
+                "named": "DriveMode"
+              }
+            }
+          ]
+        },
+        {
+          "name": "RememberedDrive",
+          "doc": "A drive the person chose to remember.",
+          "fields": [
+            {
+              "name": "grant",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "placement",
+              "type": {
+                "named": "Placement"
+              }
+            },
+            {
+              "name": "mode",
+              "type": {
+                "named": "DriveMode"
+              }
+            },
+            {
+              "name": "mounted",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "scanners",
+      "label": "Scanners",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "find-scanners",
+          "label": "Find scanners",
+          "description": "Look for scanners on this machine again.",
+          "kind": "read",
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "available",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "found",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "ScannerShown"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "ScannerShown",
+          "doc": "One document scanner this computer can reach.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "description",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "storage",
+      "label": "Storage",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "scan",
+          "label": "Scan the storage",
+          "description": "Read what the disk holds again.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "clear-cache",
+          "label": "Clear the cache",
+          "description": "Remove the apps' caches, which download again when they are needed.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "disk",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "DiskUsage"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "categories",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "CategoryUsage"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "largest",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "StoredItem"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "cache_bytes",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "scanned",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "read_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "CategoryUsage",
+          "doc": "What one kind of item takes: installed apps, app data, cache or synced files.",
+          "fields": [
+            {
+              "name": "category",
+              "type": "text"
+            },
+            {
+              "name": "bytes",
+              "type": "int"
+            },
+            {
+              "name": "files",
+              "type": "int"
+            },
+            {
+              "name": "reclaimable",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "DiskUsage",
+          "doc": "How full the disk the person's files live on is.",
+          "fields": [
+            {
+              "name": "total_bytes",
+              "type": "int"
+            },
+            {
+              "name": "free_bytes",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "StoredItem",
+          "doc": "One of the largest items the scan found.",
+          "fields": [
+            {
+              "name": "category",
+              "type": "text"
+            },
+            {
+              "name": "owner",
+              "type": "text"
+            },
+            {
+              "name": "bytes",
+              "type": "int"
+            },
+            {
+              "name": "files",
+              "type": "int"
+            },
+            {
+              "name": "reclaimable",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "disk-unlock",
+      "label": "Disk unlock",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "refresh",
+          "label": "Look for encrypted volumes",
+          "description": "Read the enrolled volumes again.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "set-networks",
+          "label": "Networks early boot may join",
+          "description": "Choose the whole list of Wi-Fi connections a volume may use at boot: the complete new list, so a replay asks for one definite state.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "volume",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "networks",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "volumes",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "UnlockVolume"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "saved_networks",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "scanned",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "read_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Sealing",
+          "doc": "How a volume keeps the half of its key its siblings release.",
+          "cases": [
+            {
+              "name": "tpm2",
+              "label": "Tpm2"
+            },
+            {
+              "name": "cleartext",
+              "label": "Cleartext"
+            }
+          ]
+        },
+        {
+          "name": "UnlockVolume",
+          "doc": "An encrypted volume enrolled for sibling unlock.",
+          "fields": [
+            {
+              "name": "volume",
+              "type": "text"
+            },
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "keyslot",
+              "type": "int"
+            },
+            {
+              "name": "sealing",
+              "type": {
+                "named": "Sealing"
+              }
+            },
+            {
+              "name": "networks",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "siblings",
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "host-info",
+      "label": "About this device",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "refresh",
+          "label": "Read the system facts again",
+          "description": "Read the facts again: the uptime moves, and the system may have changed.",
+          "kind": "read",
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "pretty_name",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "kernel",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "uptime",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "hostname",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "arch",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "cpu",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "memory",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "unknown",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "codec-pack",
+      "label": "Media codecs",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "install",
+          "label": "Install the media codecs",
+          "description": "Install the codecs, or try again after a failure.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "remove",
+          "label": "Remove the media codecs",
+          "description": "Remove the codecs.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        },
+        {
+          "id": "refresh",
+          "label": "Check the codecs again",
+          "description": "Check whether the hardware part is available again.",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "available",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "state",
+          "stored": "value",
+          "type": {
+            "named": "CodecState"
+          },
+          "readonly": true
+        },
+        {
+          "path": "hardware",
+          "stored": "value",
+          "type": {
+            "named": "HardwareVideo"
+          },
+          "readonly": true
+        },
+        {
+          "path": "summary",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "offered",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "CodecState",
+          "doc": "What the extension is doing.",
+          "cases": [
+            {
+              "name": "not-installed",
+              "label": "Not installed"
+            },
+            {
+              "name": "waiting-for-network",
+              "label": "Waiting for network"
+            },
+            {
+              "name": "installing",
+              "label": "Installing"
+            },
+            {
+              "name": "installed",
+              "label": "Installed"
+            },
+            {
+              "name": "removing",
+              "label": "Removing"
+            },
+            {
+              "name": "failed",
+              "label": "Failed"
+            }
+          ]
+        },
+        {
+          "name": "HardwareVideo",
+          "doc": "How the hardware part (the matching Mesa VA-API driver) stands.",
+          "cases": [
+            {
+              "name": "enabled",
+              "label": "Enabled"
+            },
+            {
+              "name": "waiting",
+              "label": "Waiting"
+            },
+            {
+              "name": "off",
+              "label": "Off"
+            },
+            {
+              "name": "unsupported",
+              "label": "Unsupported"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "windows-compat",
+      "label": "Windows support",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "install",
+          "label": "Install Windows support",
+          "description": "Download and install the compatibility layer, after the size is shown.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "remove",
+          "label": "Remove Windows support",
+          "description": "Remove it; Windows apps and their disks are not touched.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "available",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "state",
+          "stored": "value",
+          "type": {
+            "named": "WindowsState"
+          },
+          "readonly": true
+        },
+        {
+          "path": "summary",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "size",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "WindowsState",
+          "doc": "How the compatibility layer stands.",
+          "cases": [
+            {
+              "name": "ready",
+              "label": "Ready"
+            },
+            {
+              "name": "needs-install",
+              "label": "Needs install"
+            },
+            {
+              "name": "installing",
+              "label": "Installing"
+            },
+            {
+              "name": "waiting-for-network",
+              "label": "Waiting for network"
+            },
+            {
+              "name": "failed",
+              "label": "Failed"
+            },
+            {
+              "name": "not-offered",
+              "label": "Not offered"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "firmware",
+      "label": "Firmware",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "refresh",
+          "label": "Refresh the firmware list",
+          "description": "Read fwupd's metadata again, then the updates it offers.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "install",
+          "label": "Install the firmware updates",
+          "description": "Install every firmware update offered now.",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "available",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "updates",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "FirmwareUpdate"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "history",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "FirmwareHistoryEntry"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "installing",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "FirmwareHistoryEntry",
+          "doc": "One firmware install this machine made.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "from_version",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "to_version",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "state",
+              "type": "text"
+            },
+            {
+              "name": "error",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "FirmwareUpdate",
+          "doc": "One firmware update `fwupd` offers.",
+          "fields": [
+            {
+              "name": "device_id",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "current_version",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "new_version",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "description",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "urgency",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "problems",
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "containers",
+      "label": "Containers",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "refresh",
+          "label": "Read the engine again",
+          "description": "Read the engine again.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "start",
+          "label": "Start a stopped container",
+          "description": "Start a stopped container.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "container",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "stop",
+          "label": "Stop a running container",
+          "description": "Stop a running container.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "container",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "restart",
+          "label": "Restart a container",
+          "description": "Restart a container.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "container",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "pause",
+          "label": "Hold a container's processes",
+          "description": "Hold a container's processes.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "container",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "unpause",
+          "label": "Let a paused container run again",
+          "description": "Let a paused container run again.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "container",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "remove",
+          "label": "Remove a container",
+          "description": "Remove a container.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "container",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "pull",
+          "label": "Fetch an image",
+          "description": "Fetch an image.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "image",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "tag",
+          "label": "Give an image another reference",
+          "description": "Give an image another reference.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "image",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "tag",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "remove-image",
+          "label": "Remove an image",
+          "description": "Remove an image.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "image",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "create-volume",
+          "label": "Make a volume",
+          "description": "Make a volume.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "remove-volume",
+          "label": "Remove a volume",
+          "description": "Remove a volume.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "volume",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "create",
+          "label": "Run an image as a new container",
+          "description": "Run an image as a new container.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "image",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "ports",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "env",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "volumes",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "command",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "serving",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "connection",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "live",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "containers",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Container"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "images",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Image"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "volumes",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Volume"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "distroboxes",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "DistroBox"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Container",
+          "doc": "A container, as podman lists it.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "image",
+              "type": "text"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "ContainerState"
+              }
+            },
+            {
+              "name": "status_detail",
+              "type": "text"
+            },
+            {
+              "name": "command",
+              "type": "text"
+            },
+            {
+              "name": "created",
+              "type": "text"
+            },
+            {
+              "name": "ports",
+              "type": {
+                "list": {
+                  "named": "PortMapping"
+                }
+              }
+            },
+            {
+              "name": "mounts",
+              "type": {
+                "list": {
+                  "named": "Mount"
+                }
+              }
+            },
+            {
+              "name": "env",
+              "type": {
+                "list": {
+                  "named": "Named"
+                }
+              }
+            },
+            {
+              "name": "labels",
+              "type": {
+                "list": {
+                  "named": "Named"
+                }
+              }
+            },
+            {
+              "name": "stats",
+              "type": {
+                "named": "ContainerStats"
+              }
+            },
+            {
+              "name": "logs",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "logs_error",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "logs_fetched_unix_ms",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ContainerState",
+          "doc": "How a container stands, normalised across what podman reports.",
+          "cases": [
+            {
+              "name": "running",
+              "label": "Running"
+            },
+            {
+              "name": "exited",
+              "label": "Exited"
+            },
+            {
+              "name": "created",
+              "label": "Created"
+            },
+            {
+              "name": "paused",
+              "label": "Paused"
+            },
+            {
+              "name": "restarting",
+              "label": "Restarting"
+            },
+            {
+              "name": "dead",
+              "label": "Dead"
+            }
+          ]
+        },
+        {
+          "name": "ContainerStats",
+          "doc": "The latest resource sample; a stopped container reports none.",
+          "fields": [
+            {
+              "name": "available",
+              "type": "bool"
+            },
+            {
+              "name": "cpu_percent",
+              "type": "float"
+            },
+            {
+              "name": "mem_bytes",
+              "type": "int"
+            },
+            {
+              "name": "mem_limit_bytes",
+              "type": "int"
+            },
+            {
+              "name": "net_rx_bytes",
+              "type": "int"
+            },
+            {
+              "name": "net_tx_bytes",
+              "type": "int"
+            },
+            {
+              "name": "block_read_bytes",
+              "type": "int"
+            },
+            {
+              "name": "block_write_bytes",
+              "type": "int"
+            },
+            {
+              "name": "pids",
+              "type": "int"
+            },
+            {
+              "name": "fetched_unix_ms",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "name": "DistroBox",
+          "doc": "A tightly integrated container, listed apart because its verbs differ.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "image",
+              "type": "text"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "ContainerState"
+              }
+            },
+            {
+              "name": "status_detail",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Image",
+          "doc": "An image in the engine's store.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "repository",
+              "type": "text"
+            },
+            {
+              "name": "tag",
+              "type": "text"
+            },
+            {
+              "name": "size_bytes",
+              "type": "int"
+            },
+            {
+              "name": "created",
+              "type": "text"
+            },
+            {
+              "name": "in_use_by",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "Mount",
+          "doc": "A mount in a container.",
+          "fields": [
+            {
+              "name": "source",
+              "type": "text"
+            },
+            {
+              "name": "destination",
+              "type": "text"
+            },
+            {
+              "name": "read_only",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Named",
+          "doc": "A named value: an environment entry, a label.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "value",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "PortMapping",
+          "doc": "A published port.",
+          "fields": [
+            {
+              "name": "host_port",
+              "type": "int"
+            },
+            {
+              "name": "container_port",
+              "type": "int"
+            },
+            {
+              "name": "protocol",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Volume",
+          "doc": "A volume the engine holds.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "driver",
+              "type": "text"
+            },
+            {
+              "name": "mountpoint",
+              "type": "text"
+            },
+            {
+              "name": "created",
+              "type": "text"
+            },
+            {
+              "name": "in_use_by",
+              "type": "int"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "processes",
+      "label": "Processes",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "refresh",
+          "label": "Read the machine and its processes again",
+          "description": "Read the machine and its processes again.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "end",
+          "label": "End a process",
+          "description": "Ask a process to close, as quitting it would.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "process",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "kill",
+          "label": "Kill a process",
+          "description": "End a process at once.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "process",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "end-app",
+          "label": "End an app",
+          "description": "Ask every process of an app to close.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "application",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-interval",
+          "label": "How often the machine is read",
+          "description": "Read the machine every `ms` milliseconds, or stop reading while 0.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "ms",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "type": "int"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "serving",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "read_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "sampled_ms",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "interval_ms",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "paused",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "machine",
+          "stored": "value",
+          "type": {
+            "named": "Machine"
+          },
+          "readonly": true
+        },
+        {
+          "path": "processes",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Process"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "apps",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "AppUsage"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "AppUsage",
+          "doc": "A running app, its processes' use together.",
+          "fields": [
+            {
+              "name": "app_id",
+              "type": "text"
+            },
+            {
+              "name": "processes",
+              "type": "int"
+            },
+            {
+              "name": "cpu",
+              "type": "float"
+            },
+            {
+              "name": "memory_bytes",
+              "type": "int"
+            },
+            {
+              "name": "endable",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Battery",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "percent",
+              "type": {
+                "option": "float"
+              }
+            },
+            {
+              "name": "status",
+              "type": "text"
+            },
+            {
+              "name": "power_watts",
+              "type": {
+                "option": "float"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cpu",
+          "doc": "Processor load in percent of each core, and of all of them.",
+          "fields": [
+            {
+              "name": "total",
+              "type": "float"
+            },
+            {
+              "name": "per_core",
+              "type": {
+                "list": "float"
+              }
+            },
+            {
+              "name": "history",
+              "type": {
+                "list": "float"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Disk",
+          "doc": "One disk and what it holds.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "mount",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "total_bytes",
+              "type": "int"
+            },
+            {
+              "name": "used_bytes",
+              "type": "int"
+            },
+            {
+              "name": "read_per_sec",
+              "type": "float"
+            },
+            {
+              "name": "write_per_sec",
+              "type": "float"
+            }
+          ]
+        },
+        {
+          "name": "Gpu",
+          "fields": [
+            {
+              "name": "driver",
+              "type": "text"
+            },
+            {
+              "name": "busy_percent",
+              "type": {
+                "option": "float"
+              }
+            },
+            {
+              "name": "memory_used",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "memory_total",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Interface",
+          "doc": "One network interface's throughput.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "rx_per_sec",
+              "type": "float"
+            },
+            {
+              "name": "tx_per_sec",
+              "type": "float"
+            }
+          ]
+        },
+        {
+          "name": "Machine",
+          "doc": "The machine itself.",
+          "fields": [
+            {
+              "name": "hostname",
+              "type": "text"
+            },
+            {
+              "name": "kernel",
+              "type": "text"
+            },
+            {
+              "name": "cpu_model",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "logical_cpus",
+              "type": "int"
+            },
+            {
+              "name": "uptime_secs",
+              "type": "int"
+            },
+            {
+              "name": "cpu",
+              "type": {
+                "named": "Cpu"
+              }
+            },
+            {
+              "name": "load_average",
+              "type": {
+                "list": "float"
+              }
+            },
+            {
+              "name": "memory",
+              "type": {
+                "named": "Memory"
+              }
+            },
+            {
+              "name": "pressure",
+              "type": {
+                "option": {
+                  "named": "Pressure"
+                }
+              }
+            },
+            {
+              "name": "disks",
+              "type": {
+                "list": {
+                  "named": "Disk"
+                }
+              }
+            },
+            {
+              "name": "disk_read_history",
+              "type": {
+                "list": "float"
+              }
+            },
+            {
+              "name": "disk_write_history",
+              "type": {
+                "list": "float"
+              }
+            },
+            {
+              "name": "network",
+              "type": {
+                "named": "Network"
+              }
+            },
+            {
+              "name": "gpus",
+              "type": {
+                "list": {
+                  "named": "Gpu"
+                }
+              }
+            },
+            {
+              "name": "batteries",
+              "type": {
+                "list": {
+                  "named": "Battery"
+                }
+              }
+            },
+            {
+              "name": "thermal",
+              "type": {
+                "list": {
+                  "named": "Thermal"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Memory",
+          "doc": "Memory and swap, in bytes.",
+          "fields": [
+            {
+              "name": "total",
+              "type": "int"
+            },
+            {
+              "name": "available",
+              "type": "int"
+            },
+            {
+              "name": "swap_total",
+              "type": "int"
+            },
+            {
+              "name": "swap_free",
+              "type": "int"
+            },
+            {
+              "name": "history",
+              "type": {
+                "list": "float"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Network",
+          "doc": "The machine's network throughput, and its history.",
+          "fields": [
+            {
+              "name": "rx_per_sec",
+              "type": "float"
+            },
+            {
+              "name": "tx_per_sec",
+              "type": "float"
+            },
+            {
+              "name": "rx_history",
+              "type": {
+                "list": "float"
+              }
+            },
+            {
+              "name": "tx_history",
+              "type": {
+                "list": "float"
+              }
+            },
+            {
+              "name": "interfaces",
+              "type": {
+                "list": {
+                  "named": "Interface"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pressure",
+          "fields": [
+            {
+              "name": "cpu",
+              "type": {
+                "named": "PressureLine"
+              }
+            },
+            {
+              "name": "memory",
+              "type": {
+                "named": "PressureLine"
+              }
+            },
+            {
+              "name": "io",
+              "type": {
+                "named": "PressureLine"
+              }
+            }
+          ]
+        },
+        {
+          "name": "PressureLine",
+          "doc": "Pressure stall information: the share of the last ten seconds in which work waited.",
+          "fields": [
+            {
+              "name": "some_avg10",
+              "type": "float"
+            },
+            {
+              "name": "full_avg10",
+              "type": {
+                "option": "float"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Process",
+          "doc": "One process, as the table shows it.",
+          "fields": [
+            {
+              "name": "pid",
+              "type": "int"
+            },
+            {
+              "name": "ppid",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "started_at",
+              "type": "int"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "app_id",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "user",
+              "type": "text"
+            },
+            {
+              "name": "cpu",
+              "type": "float"
+            },
+            {
+              "name": "memory_bytes",
+              "type": "int"
+            },
+            {
+              "name": "virtual_bytes",
+              "type": "int"
+            },
+            {
+              "name": "threads",
+              "type": "int"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "ProcessState"
+              }
+            },
+            {
+              "name": "run_secs",
+              "type": "int"
+            },
+            {
+              "name": "kernel_thread",
+              "type": "bool"
+            },
+            {
+              "name": "endable",
+              "type": "bool"
+            },
+            {
+              "name": "cpu_history",
+              "type": {
+                "list": "float"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ProcessState",
+          "doc": "How a process stands.",
+          "cases": [
+            {
+              "name": "running",
+              "label": "Running"
+            },
+            {
+              "name": "sleeping",
+              "label": "Sleeping"
+            },
+            {
+              "name": "waiting",
+              "label": "Waiting"
+            },
+            {
+              "name": "stopped",
+              "label": "Stopped"
+            },
+            {
+              "name": "zombie",
+              "label": "Zombie"
+            },
+            {
+              "name": "idle",
+              "label": "Idle"
+            },
+            {
+              "name": "dead",
+              "label": "Dead"
+            }
+          ]
+        },
+        {
+          "name": "Thermal",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "celsius",
+              "type": "float"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "disks",
+      "label": "Drives",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "refresh",
+          "label": "Read the drives again",
+          "description": "Read the drives and partitions again.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "mount",
+          "label": "Open the drive",
+          "description": "Open a partition, or a whole drive, at its filesystem.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "unmount",
+          "label": "Close the drive",
+          "description": "Close a mounted partition.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "format",
+          "label": "Erase the drive and write a new filesystem",
+          "description": "Erase a partition, or a whole drive, and write a new filesystem on it.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "filesystem",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "benchmark",
+          "label": "Measure the drive",
+          "description": "Measure the drive's read speed.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "eject",
+          "label": "Eject the drive",
+          "description": "Power a removable drive off so it can be pulled out.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "serving",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "read_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "drives",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Drive"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "benchmark",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Benchmark"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Benchmark",
+          "doc": "A drive's or partition's read and seek rates, from the last benchmark.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "read_per_sec",
+              "type": "float"
+            },
+            {
+              "name": "reads_per_sec",
+              "type": "float"
+            }
+          ]
+        },
+        {
+          "name": "DiskHealth",
+          "doc": "What a drive reports of its own health: SMART, or the `NVMe` health log.",
+          "fields": [
+            {
+              "name": "supported",
+              "type": "bool"
+            },
+            {
+              "name": "failing",
+              "type": "bool"
+            },
+            {
+              "name": "warnings",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "temperature_c",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "power_on_hours",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "power_cycles",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "percent_used",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "available_spare",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "bytes_written",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "bytes_read",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "media_errors",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "bad_sectors",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "self_test",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Drive",
+          "doc": "One drive and its partitions.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "model",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "serial",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "transport",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "size_bytes",
+              "type": "int"
+            },
+            {
+              "name": "rotational",
+              "type": "bool"
+            },
+            {
+              "name": "removable",
+              "type": "bool"
+            },
+            {
+              "name": "read_only",
+              "type": "bool"
+            },
+            {
+              "name": "fstype",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "mountpoint",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "partitions",
+              "type": {
+                "list": {
+                  "named": "Partition"
+                }
+              }
+            },
+            {
+              "name": "health",
+              "type": {
+                "option": {
+                  "named": "DiskHealth"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Partition",
+          "doc": "One partition of a drive.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "fstype",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "part_type_name",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "size_bytes",
+              "type": "int"
+            },
+            {
+              "name": "used_bytes",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "mountpoint",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "uuid",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "system-update",
+      "label": "System update",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "update-now",
+          "label": "Update now",
+          "description": "Fetch and apply the newest system now.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "restart-desktop",
+          "label": "Restart the desktop",
+          "description": "Restart the desktop onto the new interface to finish the system update, with the windows it has open reopened.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "restart-to-update",
+          "label": "Restart to update",
+          "description": "Restart the device to finish the system update.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        },
+        {
+          "id": "rollback",
+          "label": "Go back to the previous system",
+          "description": "Go back to the system this machine ran before, and restart into it.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "booted",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Deployment"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "staged",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Deployment"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "rollback",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Deployment"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "applied",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "desktop-pending",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "restart-needed",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "failed",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "updating",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "firmware",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
+        },
+        {
+          "path": "fell-back",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Fallback"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Deployment",
+          "doc": "One deployment of the system: the image it was made from.",
+          "fields": [
+            {
+              "name": "image",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "digest",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "version",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "built",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fallback",
+          "doc": "A deployment this machine went back from: it did not start within its tries, so the boot loader started the previous one and the machine settled on it.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "image",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "version",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "tries",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "running",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "summary",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "time-zone",
+      "label": "Time zone",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "set-zone",
+          "label": "Set the time zone",
+          "description": "Set the time zone; it no longer follows where the device is.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "zone",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-automatic-zone",
+          "label": "Follow the device's place",
+          "description": "Let the time zone follow where the device is, or stop.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-network-time",
+          "label": "Set the clock from the network",
+          "description": "Set the clock from the network, or stop.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "zone",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "automatic",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "network-time",
+          "stored": "value",
+          "type": {
+            "option": "bool"
+          },
+          "readonly": true
+        },
+        {
+          "path": "synchronized",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
         }
       ]
     },
