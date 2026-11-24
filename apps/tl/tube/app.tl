@@ -1043,7 +1043,7 @@ migration action carry_native_tube(yt: YouTube) uses time {
         }
         // Where each video was left, in milliseconds, as the native app kept it: an unfinished
         // video resumes there once the service answers with its length.
-        let left = kept.entries.get("history_positions") ?? Map<Text>()
+        let left = kept.entries.get("positions") ?? Map<Text>()
         for key in left.keys() {
             let ms = (left.get(key) ?? "").to_int() ?? 0
             if let h = yt.history.find(x -> x.key == key) {

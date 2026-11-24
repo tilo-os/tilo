@@ -1,10 +1,12 @@
 //! A workspace the native Tube wrote, opened by the tilolang Tube: its migration carries the
-//! channels subscribed to, the videos liked and kept for later, and the watch history over once,
-//! each watch at the time it was watched. The native app's documents are read, never written.
+//! channels subscribed to, the videos liked and kept for later, the comment liked, and the watch
+//! history over once, each watch at the time it was watched and where an unfinished video was
+//! left. The native app's documents are read, never written.
 //!
-//! `legacy/rust_tube.hex` is what the native app's own model wrote: its library and its watch
-//! history, one document a line (its id, a tab, the saved document as hex), made by its verbs and
-//! edits.
+//! `legacy/rust_tube.hex` is what the native app's own model wrote: its library (two channels
+//! subscribed to and one taken back, a video liked and one kept for later, a comment liked) and
+//! its watch history (three videos watched, one forgotten again, one left partway through), one
+//! document a line (its id, a tab, the saved document as hex), made by its verbs and edits.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -50,43 +52,6 @@ fn native_documents() -> Vec<(String, automerge::AutoCommit)> {
             (id.to_owned(), doc)
         })
         .collect()
-}
-
-/// The documents the native Tube kept, with where it had left an unfinished video: the field its
-/// model kept beside the history, so a person's place in a video is the history's too.
-fn native_documents_with_a_position(
-    key: &str,
-    milliseconds: i64,
-) -> Vec<(String, automerge::AutoCommit)> {
-    let mut documents = native_documents();
-    for (_id, doc) in &mut documents {
-        // The watch-history document is the one that holds the watched map, and the places
-        // beside it: where the model kept where each unfinished video was left.
-        let holds_watched = matches!(
-            automerge::ReadDoc::get(doc, &automerge::ROOT, "watched"),
-            Ok(Some((automerge::Value::Object(automerge::ObjType::Map), _)))
-        );
-        if holds_watched {
-            let positions = automerge::transaction::Transactable::put_object(
-                doc,
-                automerge::ROOT,
-                "history_positions",
-                automerge::ObjType::Map,
-            )
-            .unwrap();
-            automerge::transaction::Transactable::put(doc, &positions, key, milliseconds).unwrap();
-            // The comments it liked, kept as a set: a map of flags by the comment's id.
-            let likes = automerge::transaction::Transactable::put_object(
-                doc,
-                automerge::ROOT,
-                "comment_likes",
-                automerge::ObjType::Map,
-            )
-            .unwrap();
-            automerge::transaction::Transactable::put(doc, &likes, "v1#c1", true).unwrap();
-        }
-    }
-    documents
 }
 
 /// Ada's workspace with the tilolang Tube, the native app's `documents` beside it, migrated as
@@ -244,7 +209,7 @@ fn the_native_tubes_subscriptions_likes_queue_and_history_are_carried_over_once(
 
 #[test]
 fn the_comments_a_person_liked_are_carried() {
-    let host = opened(&native_documents_with_a_position("jfKfPfyJRdk", 92_000));
+    let host = opened(&native_documents());
     let root = host.root_of(TUBE).expect("the root");
     let Ok(Value::List(liked)) = host
         .runtime()
@@ -257,7 +222,7 @@ fn the_comments_a_person_liked_are_carried() {
 
 #[test]
 fn the_place_a_native_video_was_left_at_is_carried() {
-    let host = opened(&native_documents_with_a_position("jfKfPfyJRdk", 92_000));
+    let host = opened(&native_documents());
     let history = items(&host, "history", "WatchEntry", &["key", "left_ms"]);
     let entry = history
         .iter()

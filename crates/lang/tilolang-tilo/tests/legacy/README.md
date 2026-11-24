@@ -172,6 +172,11 @@ fn native_skills_fixture() {
 
 ### `apps/tube-model/tests/native_tube_fixture.rs`
 
+It holds a library with two channels still subscribed to and one taken back, two videos liked,
+two kept on the watch queue, a liked comment and two replies; and a watch history of four videos
+watched, one of them left partway through and one watched to the end, with the one forgotten gone
+again.
+
 ```rust
 //! The library and watch history this model writes, saved for the tilolang YouTube to carry over.
 
