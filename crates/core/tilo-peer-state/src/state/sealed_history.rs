@@ -2,11 +2,52 @@
 use super::backend::PeerCore;
 use super::{DocumentAdmission, err, sealed_compaction, sealed_within_bounds};
 
+/// A record's stored sealed history that its checks refuse, handed back whole with why: the
+/// restore sets it aside instead of reading it ([`super::quarantine`]).
+pub(super) struct Refused {
+    pub(super) reason: String,
+    pub(super) history: Vec<collab_types::SignedOp>,
+}
+
+/// Check `ops`, `route`'s entry of the durable sealed histories, and install it as the record's
+/// sealed history; refused, the entry comes back as it was, with why.
 pub(super) fn restore(
     core: &mut PeerCore,
     route: &super::Route,
     mut ops: Vec<collab_types::SignedOp>,
-) -> Result<(), String> {
+) -> Result<(), Refused> {
+    let (leading, originals, at) = match check(core, route, &ops) {
+        Ok(split) => split,
+        Err(reason) => {
+            return Err(Refused {
+                reason,
+                history: ops,
+            });
+        }
+    };
+    let history = ops.split_off(leading);
+    let checkpoint_writes = ops.get(at..).unwrap_or_default().to_vec();
+    ops.truncate(originals);
+    let mut seen = std::collections::HashSet::new();
+    ops.retain(|op| seen.insert(op.signature.0));
+    if let Some(document) = core.documents.get_mut(route) {
+        document
+            .restore_sealed(history.into(), ops.into(), checkpoint_writes.into())
+            .map_err(|reason| Refused {
+                reason,
+                history: Vec::new(),
+            })?;
+    }
+    Ok(())
+}
+
+/// Every check [`restore`] makes of `ops`, which it reads as they are: where the history starts
+/// after what the entry keeps beside it, and how what is beside it parts ([`split_beside`]).
+fn check(
+    core: &PeerCore,
+    route: &super::Route,
+    ops: &[collab_types::SignedOp],
+) -> Result<(usize, usize, usize), String> {
     let before_reader_sets =
         |op: &collab_types::SignedOp| route.sealed_before_reader_sets(&core.workspace, op);
     // What the entry keeps beside the history leads it, ahead of the checkpoint leading the
@@ -15,15 +56,29 @@ pub(super) fn restore(
     // ([`super::backend::PeerDocument::fold_sealed`]), then the writes that checkpoint stands in
     // for ([`super::backend::PeerDocument::checkpoint_writes`]). Writes sealed before reader sets
     // that no checkpoint follows are history still to be sealed again, and stay in it.
-    let (resealed, checkpoint_writes) =
-        match ops.iter().rposition(super::checkpoints::is_checkpoint) {
-            Some(leading) if leading > 0 => {
-                let beside: Vec<collab_types::SignedOp> = ops.drain(..leading).collect();
-                split_beside(beside, ops.first(), &before_reader_sets)?
-            }
-            _ => (Vec::new(), Vec::new()),
-        };
-    for original in resealed.iter().chain(&checkpoint_writes) {
+    let (leading, originals, at) = match ops.iter().rposition(super::checkpoints::is_checkpoint) {
+        Some(leading) if leading > 0 => {
+            let (beside, history) = ops.split_at(leading);
+            let (originals, at) = split_beside(beside, history.first(), &before_reader_sets)?;
+            (leading, originals, at)
+        }
+        _ => (0, 0, 0),
+    };
+    let (beside, ops) = ops.split_at(leading);
+    let resealed = beside.get(..originals).unwrap_or_default();
+    let checkpoint_writes = beside.get(at..).unwrap_or_default();
+    // Each write the checkpoint stands in for is kept once: a fold moves a write out of the
+    // history beside it, never a second copy.
+    let mut kept = std::collections::HashSet::new();
+    if !beside
+        .get(at.max(originals)..)
+        .unwrap_or_default()
+        .iter()
+        .all(|op| kept.insert(op.signature.0))
+    {
+        return Err("sealed history keeps a write beside its checkpoint twice".into());
+    }
+    for original in resealed.iter().chain(checkpoint_writes) {
         collab_types::verify_op(original).map_err(err)?;
         collab_types::validate_whole_document_payload_route(
             &route.app,
@@ -38,7 +93,7 @@ pub(super) fn restore(
         .iter()
         .take_while(|op| op.kind == collab_types::OpKind::Compaction)
         .count();
-    let (leading, writes) = ops.split_at(set);
+    let (leading_set, writes) = ops.split_at(set);
     let held = |ops: &[collab_types::SignedOp]| {
         (
             ops.len(),
@@ -46,17 +101,17 @@ pub(super) fn restore(
                 .fold(0usize, |held, op| held.saturating_add(op.payload.len())),
         )
     };
-    if ops.is_empty() || !sealed_within_bounds(held(leading), held(writes)) {
+    if ops.is_empty() || !sealed_within_bounds(held(leading_set), held(writes)) {
         return Err("sealed record history outside its bounds".into());
     }
     let document = core
         .documents
         .get(route)
         .ok_or("sealed history for a record this state does not hold")?;
-    if !document.encryption_required || document.keeps_sealed() {
+    if !document.encryption_required || document.stores_sealed() {
         return Err("sealed history for a record that is not encrypted".into());
     }
-    for op in &ops {
+    for op in ops {
         collab_types::verify_op(op).map_err(err)?;
         // A write sealed before reader sets is history as its author signed it, under the
         // artifact its document had then: a key holder opens it as it is, and seals its content
@@ -95,23 +150,22 @@ pub(super) fn restore(
             return Err("sealed history is ahead of the record's watermark".into());
         }
     }
-    sealed_compaction::check_stored(&ops, &document.channel.last_seq_per_author)?;
-    if let Some(document) = core.documents.get_mut(route) {
-        document.restore_sealed(ops.into(), resealed.into(), checkpoint_writes.into())?;
-    }
-    Ok(())
+    sealed_compaction::check_stored(ops, &document.channel.last_seq_per_author)?;
+    Ok((leading, originals, at))
 }
 
 /// `beside`, what an entry keeps ahead of its history, parted into the originals of writes sealed
-/// before reader sets and the writes `checkpoint`, which leads the history, stands in for. The
-/// originals come first, each sealed before reader sets; where the writes a checkpoint stands in
-/// for start with such writes too, the tail that holds exactly what the checkpoint names is
-/// them.
+/// before reader sets and the writes `checkpoint`, which leads the history, stands in for: how
+/// many originals lead it, and where those writes start. The originals come first, each sealed
+/// before reader sets; where the writes a checkpoint stands in for start with such writes too, the
+/// tail that holds exactly what the checkpoint names is them. An original the checkpoint stands in
+/// for is kept both ways: as the original it is, and beside the checkpoint until every device
+/// with the record's keys checked it.
 fn split_beside(
-    mut beside: Vec<collab_types::SignedOp>,
+    beside: &[collab_types::SignedOp],
     checkpoint: Option<&collab_types::SignedOp>,
     before_reader_sets: &dyn Fn(&collab_types::SignedOp) -> bool,
-) -> Result<(Vec<collab_types::SignedOp>, Vec<collab_types::SignedOp>), String> {
+) -> Result<(usize, usize), String> {
     let originals = beside
         .iter()
         .take_while(|op| before_reader_sets(op))
@@ -132,11 +186,5 @@ fn split_beside(
         .chain((0..originals).rev())
         .find(|at| beside.get(*at..).is_some_and(&names_exactly))
         .unwrap_or(originals);
-    // An original the checkpoint stands in for is kept both ways: as the original it is, and
-    // beside the checkpoint until every device with the record's keys checked it.
-    let writes = beside.get(at..).unwrap_or_default().to_vec();
-    beside.truncate(originals);
-    let mut seen = std::collections::HashSet::new();
-    beside.retain(|op| seen.insert(op.signature.0));
-    Ok((beside, writes))
+    Ok((originals, at))
 }

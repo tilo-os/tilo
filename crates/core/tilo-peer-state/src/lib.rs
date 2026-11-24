@@ -87,6 +87,7 @@ pub use state::ChangeRefused;
 pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
+pub use state::Quarantined;
 pub use state::mail_send_lease;
 pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher, TrustAttestor};
 pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};

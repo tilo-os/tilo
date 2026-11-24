@@ -114,6 +114,7 @@ pub fn reading(
         holder,
         device_labels: labels,
         write_refusals: peer.workspace().write_refusals(),
+        quarantined: peer.quarantined(),
         open_links,
         document: peer.workspace().document(),
         shortcuts: peer.workspace().workspace_shortcuts(),

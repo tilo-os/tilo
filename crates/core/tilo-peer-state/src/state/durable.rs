@@ -534,11 +534,7 @@ impl StatePeer {
     /// its part of the durable encoding and of its sealed history, made once per state of it.
     fn leaf(route: &Route, entry: &backend::StoredDocument) -> Result<[u8; 32], String> {
         let document = entry.digests(|| digest_document(route, entry))?;
-        let sealed = if entry.keeps_sealed() {
-            entry.sealed.digested_parts(route, &entry.kept_beside())?
-        } else {
-            Vec::new()
-        };
+        let sealed = entry.sealed_entry_digests(route)?;
         Ok(leaf_of(document, &sealed))
     }
 
@@ -798,12 +794,8 @@ impl StatePeer {
             .core
             .documents
             .iter()
-            .filter(|(_, entry)| entry.keeps_sealed())
-            .map(|(route, entry)| {
-                let mut ops = entry.kept_beside();
-                ops.extend(entry.sealed.iter().cloned());
-                (route.clone(), ops)
-            })
+            .filter(|(_, entry)| entry.stores_sealed())
+            .map(|(route, entry)| (route.clone(), entry.sealed_entry_writes()))
             .collect();
         if !sealed.is_empty() && !self.core.exact_selected {
             return Err("sealed record history requires exact admissions".into());
@@ -937,13 +929,19 @@ impl StatePeer {
                     sealed: backend::SealedLog::default(),
                     resealed: std::sync::Arc::default(),
                     checkpoint_writes: std::sync::Arc::default(),
+                    quarantine: None,
                 }
                 .into(),
             );
         }
         peer.raise_floors_to_marks();
+        // A record whose stored history its checks refuse is set aside, never read: the rest of
+        // the workspace opens, and the record asks the workspace's devices for its history again
+        // ([`super::quarantine`]).
         for (route, ops) in durable.sealed {
-            peer.restore_sealed(&route, ops)?;
+            if let Err(refused) = super::sealed_history::restore(&mut peer.core, &route, ops) {
+                peer.quarantine(&route, refused)?;
+            }
         }
         peer.check_exact_within_floors()?;
         Ok(peer)
@@ -983,22 +981,28 @@ impl StatePeer {
     }
 
     /// Every exact entry and every compaction mark lies within its route's
-    /// watermark.
-    fn check_exact_within_floors(&self) -> Result<(), String> {
+    /// watermark. A sealed record whose evidence does not is set aside as one
+    /// whose stored history is refused ([`super::quarantine`]); evidence
+    /// beyond any other record, or naming no record held, refuses the state.
+    fn check_exact_within_floors(&mut self) -> Result<(), String> {
+        const BEYOND: &str = "exact admission evidence exceeds restored route/floor";
         let index = &self.core.exact_admissions;
         let keys: Vec<_> = index
             .iter()
             .map(|(key, _)| key.clone())
             .chain(index.marks().map(|(writer, mark)| writer.at(mark)))
             .collect();
+        let mut beyond = std::collections::BTreeSet::new();
         for key in &keys {
-            let floor = self
-                .core
-                .documents
-                .get(&Route {
-                    app: key.app.clone(),
-                    record: key.record.clone(),
-                })
+            let route = Route {
+                app: key.app.clone(),
+                record: key.record.clone(),
+            };
+            let document = self.core.documents.get(&route);
+            if key.workspace != self.core.workspace || document.is_none() {
+                return Err(BEYOND.into());
+            }
+            let floor = document
                 .and_then(|document| {
                     document
                         .channel
@@ -1006,11 +1010,15 @@ impl StatePeer {
                         .get(&Ed25519PublicKey::from_bytes(key.author))
                 })
                 .copied();
-            if key.workspace != self.core.workspace
-                || floor.is_none_or(|floor| key.sequence > floor)
-            {
-                return Err("exact admission evidence exceeds restored route/floor".into());
+            if floor.is_none_or(|floor| key.sequence > floor) {
+                if !document.is_some_and(|document| document.encryption_required) {
+                    return Err(BEYOND.into());
+                }
+                beyond.insert(route);
             }
+        }
+        for route in beyond {
+            self.set_aside(&route, BEYOND);
         }
         Ok(())
     }
@@ -1045,11 +1053,7 @@ fn encode_document(route: &Route, entry: &Document) -> Result<backend::EncodedDo
         ),
         Vec::new(),
     )?;
-    let sealed = if entry.keeps_sealed() {
-        Some(entry.sealed.encode_parts(route, &entry.kept_beside())?)
-    } else {
-        None
-    };
+    let sealed = entry.sealed_entry(route)?;
     Ok(backend::EncodedDocument {
         route: route.clone(),
         document: vec![

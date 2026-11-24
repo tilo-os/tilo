@@ -5,7 +5,7 @@ use super::{
     BTreeMap, Document, DocumentAdmission, DocumentMutation, DroppedInput, Duration,
     Ed25519PublicKey, Held, InboundState, InputDisposition, MemberAccess, MissingPrerequisite,
     NeighbourMsg, OpKind, ReceiveOutcome, Route, SignedOp, StatePeer, SystemTime, backend,
-    empty_genesis, empty_genesis_op, peer_handle, person_of, sealed_compaction, sealed_history,
+    empty_genesis, empty_genesis_op, peer_handle, person_of, sealed_compaction,
 };
 use crate::document;
 
@@ -289,6 +289,7 @@ impl StatePeer {
                 sealed: backend::SealedLog::default(),
                 resealed: std::sync::Arc::default(),
                 checkpoint_writes: std::sync::Arc::default(),
+                quarantine: None,
             }
             .into()
         });
@@ -855,6 +856,7 @@ impl StatePeer {
         };
         candidate.channel = validated;
         candidate.encryption_required = true;
+        super::quarantine::leave_once_whole(&mut candidate);
         if gathered {
             self.forget_gathered(&route);
         }
@@ -990,11 +992,12 @@ impl StatePeer {
     /// was admitted: sealed for this exact route, signed by its author, with
     /// exact admission evidence and within the record's watermark and bounds.
     /// A compaction is only ever first and covers none of the later writes.
+    #[cfg(test)]
     pub(super) fn restore_sealed(
         &mut self,
         route: &Route,
         ops: Vec<SignedOp>,
     ) -> Result<(), String> {
-        sealed_history::restore(&mut self.core, route, ops)
+        super::sealed_history::restore(&mut self.core, route, ops).map_err(|refused| refused.reason)
     }
 }

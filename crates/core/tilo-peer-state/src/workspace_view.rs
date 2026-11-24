@@ -147,6 +147,11 @@ pub struct WorkspaceReading {
     pub device_labels: BTreeMap<[u8; 32], String>,
     /// What its record refuses to take of this device, kept until the person sees why.
     pub write_refusals: Vec<neighbour_wire::WriteRefusal>,
+    /// The records whose stored history the device refused when it opened the workspace, with
+    /// why: not read until a device of the workspace sends their history again
+    /// ([`crate::StatePeer::quarantined`]).
+    #[serde(default)]
+    pub quarantined: Vec<crate::Quarantined>,
     /// When the links out of it lapse, in nanoseconds since the Unix epoch: whoever redeems one
     /// dials this device while one is open.
     pub open_links: Vec<u64>,

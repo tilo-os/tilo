@@ -56,6 +56,11 @@ pub(super) fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
 }
 
 pub(super) fn fixture() -> Fixture {
+    fixture_holding(&[RECORD])
+}
+
+/// [`fixture`] with each of `records` of [`APP`] seeded alike.
+pub(super) fn fixture_holding(records: &[&str]) -> Fixture {
     let (owner, authority) = device(1, 2);
     let (other, other_cert) = device(1, 3);
     let (editor, editor_cert) = device(110, 111);
@@ -94,12 +99,15 @@ pub(super) fn fixture() -> Fixture {
         .install_seed(
             SeedState {
                 workspace_changes,
-                documents: vec![SeedDocument {
-                    app_id: APP.into(),
-                    document_id: RECORD.into(),
-                    kind: "test".into(),
-                    bytes: document.save(),
-                }],
+                documents: records
+                    .iter()
+                    .map(|record| SeedDocument {
+                        app_id: APP.into(),
+                        document_id: (*record).into(),
+                        kind: "test".into(),
+                        bytes: document.save(),
+                    })
+                    .collect(),
             },
             &owner,
             now,
@@ -1076,6 +1084,7 @@ tilo_test_env::scenario! {
                 .into(),
             resealed: std::sync::Arc::default(),
             checkpoint_writes: std::sync::Arc::default(),
+            quarantine: None,
         };
         let missing = "32cc8086d6eb9538799a44d9b6e5229f22d7626ef79e2d3ec867898a01224cf1";
 
@@ -1519,31 +1528,45 @@ tilo_test_env::scenario! {
         };
         let covered = envelope_of(&first);
         let owner = f.owner.clone();
-        for (tampered, why) in [
+        // The writes a compaction stands in for are kept ahead of it until every device with the
+        // record's keys checked it: the compaction is wherever it stands in the stored entry.
+        let compaction_in = |history: &[SignedOp]| {
+            history
+                .iter()
+                .position(|op| op.kind == OpKind::Compaction)
+                .unwrap()
+        };
+        for (tampered, why, reason) in [
             (
                 rewrite(&|history| history.swap(0, 1)),
                 "a compaction after a write",
+                "sealed",
             ),
             (
                 rewrite(&|history| history.insert(1, covered.clone())),
                 "a later write the compaction covers",
+                "sealed history keeps a write beside its checkpoint twice",
             ),
             (
                 rewrite(&|history| {
-                    history[0].seq += 1;
-                    collab_types::sign_op(&mut history[0], &owner).unwrap();
+                    let compaction = compaction_in(history);
+                    history[compaction].seq += 1;
+                    collab_types::sign_op(&mut history[compaction], &owner).unwrap();
                 }),
                 "a compaction numbered past the writes it folds",
+                "sealed",
             ),
             (
                 rewrite(&|history| {
-                    let last = history[0].payload.len() - 1;
-                    history[0].payload[last] ^= 1;
+                    let compaction = compaction_in(history);
+                    let last = history[compaction].payload.len() - 1;
+                    history[compaction].payload[last] ^= 1;
                 }),
                 "an altered compaction",
+                "signature did not verify",
             ),
         ] {
-            assert!(f.restore(&tampered).is_err(), "{why} restores");
+            assert_set_aside(&tampered, f.restore(&tampered), why, reason);
         }
     }
 }
@@ -1830,10 +1853,20 @@ tilo_test_env::scenario! {
                 }
             }
             let corrupted = postcard::to_allocvec(&wire).unwrap();
-            assert!(
-                f.restore(&corrupted).is_err(),
-                "full restore corruption {corruption}"
-            );
+            let why = format!("full restore corruption {corruption}");
+            let restored = f.restore(&corrupted);
+            let reason = match corruption {
+                0 => "signature did not verify",
+                1 => {
+                    // History naming a record the state does not hold is no record's to set
+                    // aside.
+                    assert!(restored.is_err(), "{why}");
+                    continue;
+                }
+                2 => "sealed history lacks exact admission evidence",
+                _ => "sealed history is ahead of the record's watermark",
+            };
+            assert_set_aside(&corrupted, restored, &why, reason);
         }
         assert_eq!(f.replica.durable().unwrap(), before);
     }
@@ -1992,9 +2025,11 @@ tilo_test_env::scenario! {
         let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
         wire.sealed[0].1.swap(0, 1);
         let misplaced = postcard::to_allocvec(&wire).unwrap();
-        assert!(
-            f.restore(&misplaced).is_err(),
-            "a compaction is first, never a later write"
+        assert_set_aside(
+            &misplaced,
+            f.restore(&misplaced),
+            "a compaction is first, never a later write",
+            "sealed",
         );
         assert_eq!(f.replica.durable().unwrap(), before);
     }
@@ -2435,6 +2470,10 @@ mod kept_open;
 #[path = "sealed_compaction_tests/segments.rs"]
 mod segments;
 use segments::compact_set;
+
+#[path = "sealed_compaction_tests/quarantine.rs"]
+mod quarantine;
+use quarantine::assert_set_aside;
 
 #[path = "sealed_compaction_budget_tests.rs"]
 mod budget;
@@ -2994,33 +3033,42 @@ tilo_test_env::scenario! {
             change(&mut value.sealed);
             postcard::to_allocvec(&value).unwrap()
         };
-        for (tampered, why) in [
+        for (tampered, why, reason) in [
             (
                 rewrite(&|sealed| sealed[0].1[0].payload[0] ^= 1),
                 "a changed ciphertext",
+                "signature did not verify",
             ),
             (
                 rewrite(&|sealed| sealed[0].1[0].seq = 9),
                 "a write that was never admitted",
-            ),
-            (
-                rewrite(&|sealed| sealed[0].0.record = "tab:2".into()),
-                "history for another record",
+                "signature did not verify",
             ),
         ] {
-            assert!(
-                sealed_restore_bytes(&host, &tampered, now).is_err(),
-                "{why} restores"
+            assert_set_aside(
+                &tampered,
+                sealed_restore_bytes(&host, &tampered, now),
+                why,
+                reason,
             );
         }
+        // History naming a record the state does not hold is no record's to set aside.
+        let elsewhere = rewrite(&|sealed| sealed[0].0.record = "tab:2".into());
+        assert!(
+            sealed_restore_bytes(&host, &elsewhere, now).is_err(),
+            "history for another record restores"
+        );
         let mut cleartext = host.clone();
         let mut op = held(&host)[0].clone();
         op.encryption = None;
         collab_types::sign_op(&mut op, &b).unwrap();
         cleartext.core.documents.get_mut(&route()).unwrap().sealed = vec![op].into();
-        assert!(
-            sealed_restore(&cleartext, now).is_err(),
-            "sealed history cannot carry plaintext"
+        let stored = cleartext.durable().unwrap();
+        assert_set_aside(
+            &stored,
+            sealed_restore_bytes(&cleartext, &stored, now),
+            "sealed history cannot carry plaintext",
+            "signed payload is not a typed document mutation",
         );
     }
 

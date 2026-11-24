@@ -419,11 +419,15 @@ impl StatePeer {
         entries.sort_by_key(|entry| entry.revoked_device_public_key);
         entries
     }
+    /// Where this replica stands on each writer's line of each record: what a device replaying
+    /// its history sends after. A record whose stored history was set aside stands nowhere, as one
+    /// this replica lacks does, so its whole history is sent again ([`Self::quarantined`]).
     pub fn replay_floors(&self) -> Vec<(String, String, [u8; 32], u64)> {
         let mut rows = self
             .core
             .documents
             .iter()
+            .filter(|(_, document)| document.quarantine.is_none())
             .flat_map(|(route, document)| {
                 document
                     .channel

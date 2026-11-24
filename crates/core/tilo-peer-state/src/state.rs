@@ -113,7 +113,9 @@ mod checkpoints;
 pub(crate) use checkpoints::kept_by as checkpoint_check_kept_by;
 pub use checkpoints::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
 mod compaction_set;
+mod quarantine;
 mod sealed_compaction;
+pub use quarantine::Quarantined;
 mod sealed_history;
 mod unsent_bases;
 pub use sealed_compaction::{

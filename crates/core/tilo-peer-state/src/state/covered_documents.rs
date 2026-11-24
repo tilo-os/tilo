@@ -68,6 +68,7 @@ pub(super) fn hold_covered_empty_documents(peer: &mut StatePeer) -> Result<usize
                 sealed: backend::SealedLog::default(),
                 resealed: std::sync::Arc::default(),
                 checkpoint_writes: std::sync::Arc::default(),
+                quarantine: None,
             }
             .into(),
         );

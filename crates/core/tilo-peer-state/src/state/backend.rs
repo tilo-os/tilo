@@ -42,6 +42,10 @@ pub(super) struct PeerDocument {
     /// checked the checkpoint before them, which then leads them; until then a checkpoint that
     /// folds this one keeps them too. Never history to replay or merge as writes of their own.
     pub(super) checkpoint_writes: Arc<[collab_types::SignedOp]>,
+    /// The record's stored sealed history that its checks refused at restore, kept as it was
+    /// stored and never read ([`super::quarantine`]); `None` for every record whose history
+    /// restored.
+    pub(super) quarantine: Option<Arc<super::quarantine::Quarantine>>,
 }
 
 impl PeerDocument {
@@ -106,6 +110,53 @@ impl PeerDocument {
     /// writes sealed again, or the writes its checkpoint stands in for.
     pub(super) fn keeps_sealed(&self) -> bool {
         !self.sealed.is_empty() || !self.resealed.is_empty() || !self.checkpoint_writes.is_empty()
+    }
+
+    /// Whether the record has an entry in the durable sealed histories: a sealed history it keeps,
+    /// or one set aside at restore, which is stored again as it was until the record's history
+    /// comes back whole.
+    pub(super) fn stores_sealed(&self) -> bool {
+        self.keeps_sealed() || self.quarantine.is_some()
+    }
+
+    /// The record's entry of the durable sealed histories as `(route, writes)`, in parts
+    /// ([`SealedLog::encode_parts`]), when it has one: the history set aside, while there is one.
+    pub(super) fn sealed_entry(&self, route: &Route) -> Result<Option<Vec<Arc<[u8]>>>, String> {
+        if let Some(quarantine) = &self.quarantine {
+            return quarantine.history.encode_parts(route, &[]).map(Some);
+        }
+        if self.keeps_sealed() {
+            return self
+                .sealed
+                .encode_parts(route, &self.kept_beside())
+                .map(Some);
+        }
+        Ok(None)
+    }
+
+    /// The lengths and digests of [`Self::sealed_entry`].
+    pub(super) fn sealed_entry_digests(
+        &self,
+        route: &Route,
+    ) -> Result<Vec<super::StretchDigest>, String> {
+        if let Some(quarantine) = &self.quarantine {
+            return quarantine.history.digested_parts(route, &[]);
+        }
+        if self.keeps_sealed() {
+            return self.sealed.digested_parts(route, &self.kept_beside());
+        }
+        Ok(Vec::new())
+    }
+
+    /// The writes of [`Self::sealed_entry`].
+    #[cfg(test)]
+    pub(super) fn sealed_entry_writes(&self) -> Vec<collab_types::SignedOp> {
+        if let Some(quarantine) = &self.quarantine {
+            return quarantine.history.to_vec();
+        }
+        let mut ops = self.kept_beside();
+        ops.extend(self.sealed.iter().cloned());
+        ops
     }
 
     /// What leads the record's entry of the durable sealed histories, before the history itself:
@@ -480,6 +531,7 @@ impl Clone for PeerDocument {
             sealed: self.sealed.clone(),
             resealed: std::sync::Arc::clone(&self.resealed),
             checkpoint_writes: std::sync::Arc::clone(&self.checkpoint_writes),
+            quarantine: self.quarantine.clone(),
         }
     }
 }

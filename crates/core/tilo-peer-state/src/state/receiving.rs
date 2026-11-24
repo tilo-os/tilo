@@ -175,6 +175,11 @@ impl StatePeer {
                 "transport author or document workspace mismatch",
             ));
         }
+        // A record whose stored history was set aside holds none of what its evidence names: what
+        // a device sends of it again is decided by the real admission, never taken as recorded.
+        if self.quarantined_route(app, document) {
+            return Ok(None);
+        }
         if matches!(
             self.authorize_document(&source, app, document, op, now, false)
                 .map_err(|refusal| match refusal {
