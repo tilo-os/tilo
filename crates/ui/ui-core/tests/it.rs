@@ -143,3 +143,6 @@ mod package_primary;
 
 #[path = "resource_reservation.rs"]
 mod resource_reservation;
+
+#[path = "slide_box.rs"]
+mod slide_box;

@@ -3,11 +3,12 @@
 //! drive it. The app adds only the box's place and its look; every key, drag and composition
 //! here is the shared editor's, so these tests say what a slide box does and not what it might.
 
-use super::*;
-use crate::component::{Event, Intent};
-use crate::headless::FrameHarness;
-use crate::synthetic_input;
 use tilo_rich_edit::BlockEditor;
+use tilo_ui::component::{Described, Event, Fired, Intent, Value};
+use tilo_ui::widget::{Stage, StagePinProps, StageProps};
+use tilo_ui::headless::FrameHarness;
+use tilo_ui::{Intents, State, Theme, accesskit, collaboration, font_catalog, synthetic_input,
+    text_selection, time, winit};
 
 const DEVICE: (u32, u32) = (800, 600);
 /// The page's own size, as a slide's is.
@@ -28,8 +29,8 @@ fn fitted() -> (f64, f64, f64) {
 
 /// A stage holding one text box of `markdown`, as a slide holds one, with the queue its parts
 /// report to.
-fn slide_box(markdown: &str) -> (FrameHarness, crate::Intents<crate::component::Fired>) {
-    let queue = crate::Intents::default();
+fn slide_box(markdown: &str) -> (FrameHarness, Intents<Fired>) {
+    let queue = Intents::default();
     let stage = Stage::from_props(
         "stage",
         StageProps {
@@ -54,19 +55,19 @@ fn slide_box(markdown: &str) -> (FrameHarness, crate::Intents<crate::component::
         },
     );
     let host = FrameHarness::new_with_controlled_inputs(
-        crate::State::new(),
+        State::new(),
         Box::new(stage),
         DEVICE,
         Theme::dark(),
-        crate::font_catalog::fixture_renderer(),
-        crate::collaboration::local_user_id(),
+        font_catalog::fixture_renderer(),
+        collaboration::local_user_id(),
     );
     (host, queue)
 }
 
 /// The box's editor, the widget the stage places on its page.
 fn editor(host: &mut FrameHarness) -> &mut BlockEditor {
-    use crate::component::PartViews;
+    use tilo_ui::component::PartViews;
     host.root_widget_mut()
         .as_any_mut()
         .and_then(|any| any.downcast_mut::<Stage>())
@@ -164,7 +165,7 @@ fn a_slide_box_selects_by_dragging_and_takes_and_gives_words_through_the_clipboa
     );
 
     // Cut takes them off, and paste puts them back at the caret.
-    crate::text_selection::clipboard_copy("word");
+    text_selection::clipboard_copy("word");
     host.key("End");
     host.key("Ctrl+V");
     assert_eq!(
@@ -176,17 +177,17 @@ fn a_slide_box_selects_by_dragging_and_takes_and_gives_words_through_the_clipboa
 
 #[test]
 fn a_slide_box_takes_composed_letters_and_reads_to_a_reader() {
-    use crate::winit::event::Ime;
+    use winit::event::Ime;
 
     let (mut host, _queue) = slide_box("");
     click_in(&mut host);
     // An input method composes a letter under the caret and then commits it: "u" typed for the
     // umlaut it becomes.
-    host.dispatch_to_root(&crate::winit::event::WindowEvent::Ime(Ime::Preedit(
+    host.dispatch_to_root(&winit::event::WindowEvent::Ime(Ime::Preedit(
         "u".into(),
         None,
     )));
-    host.dispatch_to_root(&crate::winit::event::WindowEvent::Ime(Ime::Commit(
+    host.dispatch_to_root(&winit::event::WindowEvent::Ime(Ime::Commit(
         "ü".into(),
     )));
     assert_eq!(
@@ -199,7 +200,7 @@ fn a_slide_box_takes_composed_letters_and_reads_to_a_reader() {
     let values: Vec<String> = host
         .a11y_nodes()
         .into_iter()
-        .filter(|(_, node)| node.role() == crate::accesskit::Role::TextInput)
+        .filter(|(_, node)| node.role() == accesskit::Role::TextInput)
         .filter_map(|(_, node)| node.value().map(str::to_owned))
         .collect();
     assert!(
@@ -225,8 +226,8 @@ fn a_slide_box_formats_the_words_a_person_selected_with_the_chord() {
 }
 
 /// A slide stage holding `count` text boxes on the page, each a line of its own.
-fn deck(count: i64) -> (FrameHarness, crate::Intents<crate::component::Fired>) {
-    let queue = crate::Intents::default();
+fn deck(count: i64) -> (FrameHarness, Intents<Fired>) {
+    let queue = Intents::default();
     let pins = (0..count)
         .map(|index| StagePinProps {
             key: format!("box-{index}"),
@@ -255,7 +256,7 @@ fn deck(count: i64) -> (FrameHarness, crate::Intents<crate::component::Fired>) {
         },
     );
     let host = FrameHarness::new(
-        crate::State::new(),
+        State::new(),
         Box::new(stage),
         DEVICE,
     );
@@ -263,14 +264,14 @@ fn deck(count: i64) -> (FrameHarness, crate::Intents<crate::component::Fired>) {
 }
 
 /// What a stage's queue fired for `event`, as its places were named.
-fn fired(queue: &crate::Intents<crate::component::Fired>, event: &str) -> Vec<String> {
+fn fired(queue: &Intents<Fired>, event: &str) -> Vec<String> {
     queue
         .take()
         .into_iter()
         .filter(|fired| fired.event == event)
         .map(|fired| match fired.value {
-            Some(crate::component::Value::List(mut parts)) => match parts.remove(0) {
-                crate::component::Value::Text(item) => item,
+            Some(Value::List(mut parts)) => match parts.remove(0) {
+                Value::Text(item) => item,
                 other => panic!("a place is named: {other:?}"),
             },
             other => panic!("a place was {event}: {other:?}"),
@@ -289,13 +290,13 @@ fn a_deck_takes_tab_and_the_arrows_on_its_boxes() {
 
     // Tab walks the boxes, wrapping past the last.
     host.dispatch_to_root(&synthetic_input::named_key(
-        crate::winit::keyboard::NamedKey::Tab,
+        winit::keyboard::NamedKey::Tab,
     ));
     host.dispatch_to_root(&synthetic_input::named_key(
-        crate::winit::keyboard::NamedKey::Tab,
+        winit::keyboard::NamedKey::Tab,
     ));
     host.dispatch_to_root(&synthetic_input::named_key(
-        crate::winit::keyboard::NamedKey::Tab,
+        winit::keyboard::NamedKey::Tab,
     ));
     assert_eq!(
         fired(&queue, "select"),
@@ -305,7 +306,7 @@ fn a_deck_takes_tab_and_the_arrows_on_its_boxes() {
 
     // An arrow nudges the chosen box by ten slide units, and Shift by one.
     host.dispatch_to_root(&synthetic_input::named_key(
-        crate::winit::keyboard::NamedKey::ArrowRight,
+        winit::keyboard::NamedKey::ArrowRight,
     ));
     assert_eq!(fired(&queue, "moved"), ["box-0"], "an arrow moves the chosen box");
 }
@@ -338,15 +339,13 @@ fn a_slide_box_keeps_its_words_while_it_moves_and_idles_after_the_drop() {
         "a move leaves the words as they were"
     );
     assert!(
-        host.settle_for_capture(crate::time::Duration::from_millis(200)),
+        host.settle_for_capture(time::Duration::from_millis(200)),
         "nothing is left to draw once the hand lets go"
     );
 }
 
 #[test]
 fn a_change_that_arrives_mid_drag_shows_when_the_hand_lets_go() {
-    use crate::component::Described;
-
     let (mut host, queue) = slide_box(WORDS);
     let (scale, left, top) = fitted();
     let on_page = |page_x: f64, page_y: f64| {
