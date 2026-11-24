@@ -533,13 +533,7 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
     Some(match command {
         Command::Get { kind, id } => Reply::Resource(store.get(kind, id, may_read).cloned()),
         Command::Query(query) => Reply::Page(store.query(query, may_read)),
-        Command::Fields { query, fields } => {
-            let mut page = store.query(query, may_read);
-            for (_, resource) in &mut page.resources {
-                resource.fields.retain(|name, _| fields.contains(name));
-            }
-            Reply::Page(page)
-        }
+        Command::Fields { query, fields } => fields_reply(store, query, fields, may_read),
         Command::Count { kind, filters } => Reply::Count(store.count(kind, filters, may_read)),
         Command::Values {
             kind,
@@ -587,17 +581,7 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
                 .filter(|readers| may_read(readers))
                 .and_then(|_| store.at_change(kind, id, change, *after)),
         ),
-        Command::Grouped { group } => Reply::Grouped(
-            store
-                .grouped(group)
-                .into_iter()
-                .filter(|(kind, id, _)| {
-                    store
-                        .readers_of(kind, id)
-                        .is_some_and(|readers| may_read(&readers))
-                })
-                .collect(),
-        ),
+        Command::Grouped { group } => grouped_reply(store, group, may_read),
         Command::Removed { kind, parent } => {
             Reply::Ids(store.removed(kind, parent.as_deref(), may_read))
         }
@@ -634,6 +618,35 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         | Command::RecordChange { .. }
         | Command::Records => return None,
     })
+}
+
+/// The page `query` finds, each resource cut down to `fields`.
+fn fields_reply(
+    store: &Store,
+    query: &Query,
+    fields: &[String],
+    may_read: &dyn Fn(&str) -> bool,
+) -> Reply {
+    let mut page = store.query(query, may_read);
+    for (_, resource) in &mut page.resources {
+        resource.fields.retain(|name, _| fields.contains(name));
+    }
+    Reply::Page(page)
+}
+
+/// The versions in `group`, of only the resources `may_read` admits.
+fn grouped_reply(store: &Store, group: &str, may_read: &dyn Fn(&str) -> bool) -> Reply {
+    Reply::Grouped(
+        store
+            .grouped(group)
+            .into_iter()
+            .filter(|(kind, id, _)| {
+                store
+                    .readers_of(kind, id)
+                    .is_some_and(|readers| may_read(&readers))
+            })
+            .collect(),
+    )
 }
 
 /// Makes `edit` in the content whose root is `root`.
