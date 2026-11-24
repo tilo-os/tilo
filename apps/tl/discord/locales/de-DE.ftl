@@ -1012,6 +1012,7 @@ d-k27e5op2 = Verknüpfungsfoto setzen
     .doc = Behält den Avatar eines verknüpften Kontos als Bild der Person, bis sie ein eigenes hochlädt.
     .w-only-the-bridge-keeps-a-link = Nur die Bridge behält das Bild einer Verknüpfung
     .w-a-picture-is-a-base64-data = Ein Bild ist eine base64-data:-URL eines PNG, JPEG oder WebP
+    .w-only-the-bridge-or-the-person = Nur die Bridge oder die Person, mit der das Konto verknüpft ist, behält das Bild einer Verknüpfung
 
 d-k27e5op2-discord_user = Discord-Benutzer
 
@@ -1066,6 +1067,8 @@ d-zry53cq3 = Dorthin senden
     .w-that-is-not-one-of-the = Das ist keiner der Webhooks der Bridge
     .w-a-discord-message-is-1-to = Eine Discord-Nachricht fasst 1 bis 2000 Zeichen
     .w-discord-takes-at-most-ten-files = Discord nimmt über einen Webhook höchstens zehn Dateien von 10 MiB an
+    .w-a-discord-message-does-not-read = Eine Discord-Nachricht ist nicht lesbar
+    .w-this-bridge-reaches-only-its-one = Diese Bridge erreicht nur ihren einen Discord-Kanal
 
 d-zry53cq3-op = Op
 
@@ -1075,6 +1078,8 @@ d-j7j3sioa = Dort bearbeiten
     .w-there-is-no-such-channel-in = Im Server gibt es keinen solchen Kanal
     .w-that-is-not-one-of-the = Das ist keiner der Webhooks der Bridge
     .w-a-discord-message-is-1-to = Eine Discord-Nachricht fasst 1 bis 2000 Zeichen
+    .w-a-discord-edit-does-not-read = Eine Discord-Bearbeitung ist nicht lesbar
+    .w-this-bridge-reaches-only-its-one = Diese Bridge erreicht nur ihren einen Discord-Kanal
 
 d-j7j3sioa-op = Op
 
@@ -1083,6 +1088,8 @@ d-7dzstxbt = Dort löschen
     .w-the-bridge-carries-messages-to-discord = Die Bridge trägt Nachrichten zu Discord
     .w-there-is-no-such-channel-in = Im Server gibt es keinen solchen Kanal
     .w-that-is-not-one-of-the = Das ist keiner der Webhooks der Bridge
+    .w-a-discord-deletion-does-not-read = Eine Discord-Löschung ist nicht lesbar
+    .w-this-bridge-reaches-only-its-one = Diese Bridge erreicht nur ihren einen Discord-Kanal
 
 d-7dzstxbt-op = Op
 
@@ -1090,6 +1097,8 @@ d-2yapf5ci = Dort reagieren
     .doc = Fügt die Reaktion des Bots hinzu.
     .w-the-bridge-carries-reactions-to-discord = Die Bridge trägt Reaktionen zu Discord
     .w-there-is-no-such-channel-in = Im Server gibt es keinen solchen Kanal
+    .w-a-discord-reaction-does-not-read = Eine Discord-Reaktion ist nicht lesbar
+    .w-this-bridge-reaches-only-its-one = Diese Bridge erreicht nur ihren einen Discord-Kanal
 
 d-2yapf5ci-op = Op
 
@@ -1097,6 +1106,8 @@ d-ckxzivok = Dort nicht mehr reagieren
     .doc = Nimmt die Reaktion des Bots zurück.
     .w-the-bridge-carries-reactions-to-discord = Die Bridge trägt Reaktionen zu Discord
     .w-there-is-no-such-channel-in = Im Server gibt es keinen solchen Kanal
+    .w-a-discord-reaction-does-not-read = Eine Discord-Reaktion ist nicht lesbar
+    .w-this-bridge-reaches-only-its-one = Diese Bridge erreicht nur ihren einen Discord-Kanal
 
 d-ckxzivok-op = Op
 
@@ -1104,6 +1115,8 @@ d-7m3iknds = Thread dort starten
     .doc = Startet einen Thread auf einer Nachricht.
     .w-the-bridge-starts-threads-on-discord = Die Bridge startet Threads auf Discord
     .w-there-is-no-such-channel-in = Im Server gibt es keinen solchen Kanal
+    .w-a-discord-thread-does-not-read = Ein Discord-Thread ist nicht lesbar
+    .w-this-bridge-reaches-only-its-one = Diese Bridge erreicht nur ihren einen Discord-Kanal
 
 d-7m3iknds-op = Op
 
@@ -1111,6 +1124,8 @@ d-higzpy27 = Webhook erstellen
     .doc = Erstellt den Webhook eines Kanals.
     .w-the-bridge-makes-the-server-s = Die Bridge erstellt die Webhooks des Servers
     .w-there-is-no-such-channel-in = Im Server gibt es keinen solchen Kanal
+    .w-a-discord-webhook-does-not-read = Ein Discord-Webhook ist nicht lesbar
+    .w-this-bridge-reaches-only-its-one = Diese Bridge erreicht nur ihren einen Discord-Kanal
 
 d-higzpy27-op = Op
 
@@ -1122,6 +1137,7 @@ d-wihi5xtl = Kanal anwenden
     .w-the-bridge-changes-only-channels-it = Die Bridge ändert nur Kanäle, die sie erstellt hat, nie die des Servers selbst
     .w-there-is-no-such-channel-in = Im Server gibt es keinen solchen Kanal
     .w-a-discord-channel-name-is-1 = Ein Discord-Kanalname fasst 1 bis 100 Zeichen
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
 
 d-wihi5xtl-op = Op
 
@@ -1131,6 +1147,7 @@ d-eginj4va = Kanal dort löschen
     .w-this-bridge-does-not-make-channels = Diese Bridge erstellt keine Kanäle in Discord
     .w-the-server-is-adopted-first = Der Server wird zuerst übernommen
     .w-the-bridge-changes-only-channels-it = Die Bridge ändert nur Kanäle, die sie erstellt hat, nie die des Servers selbst
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
 
 d-eginj4va-op = Op
 
@@ -1141,6 +1158,7 @@ d-2xvzq6ke = Kanäle anordnen
     .w-the-server-is-adopted-first = Der Server wird zuerst übernommen
     .w-there-is-no-such-channel-in = Im Server gibt es keinen solchen Kanal
     .w-the-bridge-moves-only-the-channels = Die Bridge verschiebt nur die Kanäle, die sie in eine andere Kategorie überbrückt
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
 
 d-2xvzq6ke-op = Op
 
@@ -1160,6 +1178,8 @@ d-hfrhxk34 = Rolle anwenden
     .w-only-the-workspace-s-moderators-change = Nur die Moderierenden des Arbeitsbereichs ändern die Rollen des Servers
     .w-this-bridge-leaves-the-server-s = Diese Bridge lässt die Rollen des Servers in Ruhe
     .w-the-bridge-changes-only-the-roles = Die Bridge ändert nur Rollen, die sie erstellt hat
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
+    .w-a-discord-role-does-not-read = Eine Discord-Rolle ist nicht lesbar
 
 d-hfrhxk34-op = Op
 
@@ -1167,6 +1187,7 @@ d-o6etfdzd = Rolle löschen
     .doc = Löscht eine Rolle dort.
     .w-only-the-workspace-s-moderators-change = Nur die Moderierenden des Arbeitsbereichs ändern die Rollen des Servers
     .w-the-bridge-deletes-only-roles-it = Die Bridge löscht nur Rollen, die sie verwaltet
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
 
 d-o6etfdzd-op = Op
 
@@ -1176,6 +1197,7 @@ d-ouxno4io = Mitgliedsrollen setzen
     .w-this-bridge-leaves-the-server-s = Diese Bridge lässt die Rollen des Servers in Ruhe
     .w-that-discord-account-is-not-linked = Dieses Discord-Konto ist mit niemandem hier verknüpft
     .w-the-bridge-assigns-only-roles-it = Die Bridge vergibt nur Rollen, die sie verwaltet
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
 
 d-ouxno4io-op = Op
 
@@ -1183,6 +1205,8 @@ d-gvqt3lkz = Kicken
     .doc = Kickt ein verknüpftes Mitglied dort.
     .w-only-the-workspace-s-moderators-manage = Nur die Moderierenden des Arbeitsbereichs verwalten Discord-Mitglieder
     .w-that-discord-account-is-not-linked = Dieses Discord-Konto ist mit niemandem hier verknüpft
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
+    .w-a-discord-member-does-not-read = Ein Discord-Mitglied ist nicht lesbar
 
 d-gvqt3lkz-op = Op
 
@@ -1190,6 +1214,8 @@ d-mygpdagq = Bannen
     .doc = Bannt ein verknüpftes Mitglied dort.
     .w-only-the-workspace-s-moderators-manage = Nur die Moderierenden des Arbeitsbereichs verwalten Discord-Mitglieder
     .w-that-discord-account-is-not-linked = Dieses Discord-Konto ist mit niemandem hier verknüpft
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
+    .w-a-discord-member-does-not-read = Ein Discord-Mitglied ist nicht lesbar
 
 d-mygpdagq-op = Op
 
@@ -1197,6 +1223,8 @@ d-xf3g66fn = Entbannen
     .doc = Entbannt ein verknüpftes Mitglied dort.
     .w-only-the-workspace-s-moderators-manage = Nur die Moderierenden des Arbeitsbereichs verwalten Discord-Mitglieder
     .w-that-discord-account-is-not-linked = Dieses Discord-Konto ist mit niemandem hier verknüpft
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
+    .w-a-discord-member-does-not-read = Ein Discord-Mitglied ist nicht lesbar
 
 d-xf3g66fn-op = Op
 
@@ -1206,6 +1234,8 @@ d-a66erer2 = Überschreibung setzen
     .w-this-bridge-leaves-the-server-s = Diese Bridge lässt die Rollen des Servers in Ruhe
     .w-there-is-no-such-channel-in = Im Server gibt es keinen solchen Kanal
     .w-the-bridge-sets-overwrites-only-for = Die Bridge setzt Überschreibungen nur für Rollen, die sie erstellt hat
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
+    .w-a-discord-permission-does-not-read = Eine Discord-Berechtigung ist nicht lesbar
 
 d-a66erer2-op = Op
 
@@ -1213,6 +1243,7 @@ d-yxtsvom4 = Asset holen
     .doc = Kopiert eine Datei von Discords CDN in den Inhaltsspeicher des Arbeitsbereichs.
     .w-the-bridge-copies-discord-s-files = Die Bridge kopiert Discords Dateien
     .w-chat-holds-files-of-at-most = Chat hält Dateien von höchstens 32 MiB
+    .w-a-discord-file-does-not-read = Eine Discord-Datei ist nicht lesbar
 
 d-yxtsvom4-op = Op
 
@@ -1221,12 +1252,16 @@ d-2a3sj64d = Emoji anwenden
     .w-a-discord-emoji-s-name-is = Der Name eines Discord-Emojis besteht aus 2 bis 32 Buchstaben, Ziffern und Unterstrichen
     .w-the-bridge-changes-only-emoji-it = Die Bridge ändert nur Emojis, die sie hochgeladen hat
     .w-an-emoji-op-names-its-picture = Eine Emoji-Op nennt die Inhaltsadresse ihres Bildes
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
+    .w-a-discord-emoji-does-not-read = Ein Discord-Emoji ist nicht lesbar
 
 d-2a3sj64d-op = Op
 
 d-e5746r6f = Emoji löschen
     .doc = Löscht ein Emoji, das die Bridge hochgeladen hat.
     .w-the-bridge-changes-only-emoji-it = Die Bridge ändert nur Emojis, die sie hochgeladen hat
+    .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
+    .w-a-discord-emoji-does-not-read = Ein Discord-Emoji ist nicht lesbar
 
 d-e5746r6f-op = Op
 
@@ -1411,3 +1446,22 @@ d-xnzu556b = Emoji löschen~present
 d-gh6ivpqd = Emoji abschließen~present
 
 d-q52y6pdf = Sprache melden~present
+
+d-lp5din5r = API-Ursprung
+    .doc = Wo Discords REST-API liegt, für einen Testserver: leer für Discord selbst. Die Bridge liest es; eine Person sieht es nie.
+
+d-ylfbjmz6 = Gateway-Adresse
+    .doc = Wo Discords Gateway liegt, für einen Testserver: leer für Discord selbst.
+
+d-p4bd2vj2 = Kanal-Löschung
+    .doc = Ein dort gelöschter Kanal.
+    .noun = { $count ->
+        [one] Kanal-Löschung
+       *[other] Kanal-Löschungen
+    }
+
+d-fvyrqodk = Op
+
+d-rhmxfpcn = Kanal
+
+d-eginj4va-channel = Kanal
