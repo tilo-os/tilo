@@ -196,7 +196,7 @@ services = [
 ]
 
 ui = [
-    "emoji -> tilo-search",
+    "tilo-emoji -> tilo-search",
     "tilo-formats -> tilo-resource",
     "tilo-render-protocol -> tilo-actions",
     "tilo-rich-edit -> collab-types",

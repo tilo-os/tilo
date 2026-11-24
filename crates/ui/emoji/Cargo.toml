@@ -1,5 +1,6 @@
 [package]
-name = "emoji"
+# Published as tilo-emoji (crates.io's `emoji` is another project); the library keeps its name.
+name = "tilo-emoji"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -10,6 +11,9 @@ description = "Tilo's emoji catalogue: Unicode groups, localised search, skin to
 # embedded at compile time: English as plain text, every translation deflated
 # by build.rs and inflated the first time its locale is used. serde is only
 # for the recents model.
+[lib]
+name = "emoji"
+
 [dependencies]
 miniz_oxide.workspace = true
 serde.workspace = true

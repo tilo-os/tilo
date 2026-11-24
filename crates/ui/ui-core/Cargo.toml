@@ -150,7 +150,7 @@ tilo-theme-painter-wasm = { version = "0.1.0", path = "../theme-painter-wasm" }
 # read: a text field resolves `:name:` without the app naming a catalogue
 # crate, and every app's field offers emoji by default. A workspace's own
 # emoji are added to it (`workspace_emoji`), never a replacement for it.
-emoji = { version = "0.1.0", path = "../emoji" }
+emoji = { package = "tilo-emoji", version = "0.1.0", path = "../emoji" }
 # The paint stream: a page as a layered display list the WebView can draw
 # instead of the engine's pixels, natively and in the WASM client alike. Its
 # SVG parser (`svg`, usvg) is native only, below: the browser toolkit core

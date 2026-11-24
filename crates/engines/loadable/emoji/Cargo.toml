@@ -38,7 +38,7 @@ thin = [
 
 [dependencies]
 runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
-emoji = { path = "../../../ui/emoji", optional = true }
+emoji = { package = "tilo-emoji", path = "../../../ui/emoji", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole
 # dependency set into a shared object.
 workspace-hack = { version = "0.1", optional = true }

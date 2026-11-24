@@ -4333,18 +4333,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
-name = "emoji"
-version = "0.1.0"
-dependencies = [
- "miniz_oxide",
- "serde",
- "serde_json",
- "tilo-search",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "encode_unicode"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11241,7 +11229,6 @@ dependencies = [
 name = "osk"
 version = "0.1.0"
 dependencies = [
- "emoji",
  "libc",
  "runtime-dylib",
  "serde",
@@ -11253,6 +11240,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-emoji",
  "tilo-emoji-engine",
  "tilo-history",
  "tilo-input-context",
@@ -18416,11 +18404,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-emoji"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "serde",
+ "serde_json",
+ "tilo-search",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-emoji-engine"
 version = "0.1.0"
 dependencies = [
- "emoji",
  "runtime-dylib",
+ "tilo-emoji",
  "workspace-hack",
 ]
 
@@ -21879,7 +21879,6 @@ dependencies = [
  "collaboration",
  "durable-store",
  "ed25519-dalek 3.0.0",
- "emoji",
  "fluent",
  "fnv",
  "form_urlencoded",
@@ -21937,6 +21936,7 @@ dependencies = [
  "tilo-cpu-raster",
  "tilo-desktop-model",
  "tilo-doc",
+ "tilo-emoji",
  "tilo-engine-loader",
  "tilo-face",
  "tilo-failure",
@@ -27311,7 +27311,6 @@ dependencies = [
  "elliptic-curve 0.13.8",
  "elliptic-curve 0.14.1",
  "email_address",
- "emoji",
  "encoding_rs",
  "endi",
  "enum-assoc",
@@ -28283,6 +28282,7 @@ dependencies = [
  "tilo-document",
  "tilo-documents",
  "tilo-egress",
+ "tilo-emoji",
  "tilo-endpoint-reachability",
  "tilo-engine-loader",
  "tilo-environment",

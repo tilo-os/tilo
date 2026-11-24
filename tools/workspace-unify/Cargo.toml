@@ -218,7 +218,6 @@ doc = false
 "cookie-factory-0_3_3" = { package = "cookie-factory", version = "^0.3.3", default-features = false, features = ["std"] }
 "cordyceps-0_3_4" = { package = "cordyceps", version = "^0.3.4", default-features = false, features = ["default"] }
 "core_maths-0_1_1" = { package = "core_maths", version = "^0.1.1", default-features = false, features = [] }
-"cosmic-text-0_19_0" = { package = "tilo-cosmic-text", path = "../../vendor/cosmic-text", default-features = false, features = ["fontconfig", "peniko", "std", "swash", "sys-locale"] }
 "cpubits-0_1_1" = { package = "cpubits", version = "^0.1.1", default-features = false, features = [] }
 "cpufeatures-0_2_17" = { package = "cpufeatures", version = "^0.2.17", default-features = false, features = [] }
 "cpufeatures-0_3_0" = { package = "cpufeatures", version = "^0.3.0", default-features = false, features = [] }
@@ -307,7 +306,6 @@ doc = false
 "elliptic-curve-0_13_8" = { package = "elliptic-curve", version = "^0.13.8", default-features = false, features = ["alloc", "arithmetic", "digest", "ecdh", "ff", "group", "hazmat", "pem", "pkcs8", "sec1", "std"] }
 "elliptic-curve-0_14_1" = { package = "elliptic-curve", version = "^0.14.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ff", "getrandom", "group", "pem", "pkcs8", "sec1", "std"] }
 "email_address-0_2_9" = { package = "email_address", version = "^0.2.9", default-features = false, features = [] }
-"emoji" = { path = "../../crates/ui/emoji", default-features = false, features = [] }
 "encoding_rs-0_8_35" = { package = "encoding_rs", version = "^0.8.35", default-features = false, features = ["alloc", "default"] }
 "endi-1_1_1" = { package = "endi", version = "^1.1.1", default-features = false, features = ["default", "std"] }
 "enum-ordinalize-4_4_1" = { package = "enum-ordinalize", version = "^4.4.1", default-features = false, features = ["default", "derive", "traits"] }
@@ -1087,7 +1085,6 @@ doc = false
 "syntect-5_3_0" = { package = "syntect", version = "^5.3.0", default-features = false, features = ["bincode", "dump-create", "dump-load", "fancy-regex", "flate2", "fnv", "parsing", "plist", "plist-load", "regex-fancy", "regex-syntax", "yaml-load", "yaml-rust"] }
 "sys-locale-0_3_2" = { package = "sys-locale", version = "^0.3.2", default-features = false, features = [] }
 "sysinfo-0_36_1" = { package = "sysinfo", version = "^0.36.1", default-features = false, features = ["component", "default", "disk", "network", "objc2-io-kit", "system", "user"] }
-"taffy-0_10_1" = { package = "tilo-taffy", path = "../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
 "tagptr-0_2_0" = { package = "tagptr", version = "^0.2.0", default-features = false, features = [] }
 "tantivy-0_27_0" = { package = "tantivy", version = "^0.27.0", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
 "tantivy-bitpacker-0_27_0" = { package = "tantivy-bitpacker", version = "^0.27.0", default-features = false, features = [] }
@@ -1174,6 +1171,7 @@ doc = false
 "tilo-content-types" = { path = "../../crates/core/content-types", default-features = false, features = [] }
 "tilo-control" = { path = "../../crates/desktop/control-cli", default-features = false, features = [] }
 "tilo-copy-lint" = { path = "../../tools/copy-lint", default-features = false, features = [] }
+"tilo-cosmic-text-0_19_0" = { package = "tilo-cosmic-text", path = "../../vendor/cosmic-text", default-features = false, features = ["fontconfig", "peniko", "std", "swash", "sys-locale"] }
 "tilo-cpu-raster" = { path = "../../crates/ui/tilo-cpu-raster", default-features = false, features = [] }
 "tilo-crash-reports" = { path = "../../crates/services/crash-reports", default-features = false, features = [] }
 "tilo-crypto" = { path = "../../crates/core/tilo-crypto", default-features = false, features = ["default", "pcr-prediction", "release-bundle", "srp", "srp-test-server", "tls-fixture"] }
@@ -1197,6 +1195,7 @@ doc = false
 "tilo-document" = { path = "../../crates/sdk/tilo-document", default-features = false, features = [] }
 "tilo-documents" = { path = "../../crates/core/documents", default-features = false, features = ["mount"] }
 "tilo-egress" = { path = "../../crates/core/egress", default-features = false, features = [] }
+"tilo-emoji" = { path = "../../crates/ui/emoji", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../crates/core/endpoint-reachability", default-features = false, features = ["test-support"] }
 "tilo-engine-loader" = { path = "../../crates/core/engine-loader", default-features = false, features = [] }
 "tilo-environment" = { path = "../../crates/vm/environment", default-features = false, features = [] }
@@ -1335,6 +1334,7 @@ doc = false
 "tilo-system-resources" = { path = "../../crates/desktop/tilo-system-resources", default-features = false, features = [] }
 "tilo-system-service" = { path = "../../crates/os/system-service", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../crates/os/system-stats", default-features = false, features = [] }
+"tilo-taffy-0_10_1" = { package = "tilo-taffy", path = "../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
 "tilo-test-env" = { path = "../../tools/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
 "tilo-theme-bauhaus" = { path = "../../crates/ui/themes/bauhaus", default-features = false, features = [] }
 "tilo-theme-painter-wasm" = { path = "../../crates/ui/theme-painter-wasm", default-features = false, features = [] }
@@ -2841,7 +2841,7 @@ doc = false
 "cookie-factory-0_3_3" = { package = "cookie-factory", version = "^0.3.3", default-features = false, features = ["std"] }
 "cordyceps-0_3_4" = { package = "cordyceps", version = "^0.3.4", default-features = false, features = ["default"] }
 "core_maths-0_1_1" = { package = "core_maths", version = "^0.1.1", default-features = false, features = [] }
-"cosmic-text-0_19_0" = { package = "tilo-cosmic-text", path = "../../vendor/cosmic-text", default-features = false, features = ["fontconfig", "peniko", "std", "swash", "sys-locale"] }
+"tilo-cosmic-text-0_19_0" = { package = "tilo-cosmic-text", path = "../../vendor/cosmic-text", default-features = false, features = ["fontconfig", "peniko", "std", "swash", "sys-locale"] }
 "cpubits-0_1_1" = { package = "cpubits", version = "^0.1.1", default-features = false, features = [] }
 "cpufeatures-0_2_17" = { package = "cpufeatures", version = "^0.2.17", default-features = false, features = [] }
 "cpufeatures-0_3_0" = { package = "cpufeatures", version = "^0.3.0", default-features = false, features = [] }
@@ -2930,7 +2930,7 @@ doc = false
 "elliptic-curve-0_13_8" = { package = "elliptic-curve", version = "^0.13.8", default-features = false, features = ["alloc", "arithmetic", "digest", "ecdh", "ff", "group", "hazmat", "pem", "pkcs8", "sec1", "std"] }
 "elliptic-curve-0_14_1" = { package = "elliptic-curve", version = "^0.14.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ff", "getrandom", "group", "pem", "pkcs8", "sec1", "std"] }
 "email_address-0_2_9" = { package = "email_address", version = "^0.2.9", default-features = false, features = [] }
-"emoji" = { path = "../../crates/ui/emoji", default-features = false, features = [] }
+"tilo-emoji" = { path = "../../crates/ui/emoji", default-features = false, features = [] }
 "encoding_rs-0_8_35" = { package = "encoding_rs", version = "^0.8.35", default-features = false, features = ["alloc", "default"] }
 "endi-1_1_1" = { package = "endi", version = "^1.1.1", default-features = false, features = ["default", "std"] }
 "enum-ordinalize-4_4_1" = { package = "enum-ordinalize", version = "^4.4.1", default-features = false, features = ["default", "derive", "traits"] }
@@ -3707,7 +3707,7 @@ doc = false
 "syntect-5_3_0" = { package = "syntect", version = "^5.3.0", default-features = false, features = ["bincode", "dump-create", "dump-load", "fancy-regex", "flate2", "fnv", "parsing", "plist", "plist-load", "regex-fancy", "regex-syntax", "yaml-load", "yaml-rust"] }
 "sys-locale-0_3_2" = { package = "sys-locale", version = "^0.3.2", default-features = false, features = [] }
 "sysinfo-0_36_1" = { package = "sysinfo", version = "^0.36.1", default-features = false, features = ["component", "default", "disk", "network", "objc2-io-kit", "system", "user"] }
-"taffy-0_10_1" = { package = "tilo-taffy", path = "../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
+"tilo-taffy-0_10_1" = { package = "tilo-taffy", path = "../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
 "tagptr-0_2_0" = { package = "tagptr", version = "^0.2.0", default-features = false, features = [] }
 "tantivy-0_27_0" = { package = "tantivy", version = "^0.27.0", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
 "tantivy-bitpacker-0_27_0" = { package = "tantivy-bitpacker", version = "^0.27.0", default-features = false, features = [] }
