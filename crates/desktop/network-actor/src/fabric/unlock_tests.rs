@@ -140,10 +140,15 @@ impl World {
                 .values()
                 .find(|enrolment| enrolment.cert == boot.hello.boot_cert)
                 .expect("the boot is enrolled");
-            let half = open_sibling_half(&self.secret_sync, &enrolment.cert, &enrolment.sealed_half)
-                .expect("the person's devices hold the half");
-            let release = seal_release(&boot.ephemeral.public_key().unwrap(), digest, &half)
-                .expect("the half seals to the boot");
+            let half =
+                open_sibling_half(&self.secret_sync, &enrolment.cert, &enrolment.sealed_half)
+                    .expect("the person's devices hold the half");
+            let release = seal_release(
+                boot.ephemeral.public_key().unwrap().as_bytes(),
+                digest,
+                &half,
+            )
+            .expect("the half seals to the boot");
             self.releases.insert(*digest, release);
         }
         let release = self.releases.get(digest);
@@ -352,7 +357,7 @@ fn a_denied_or_unanswered_request_releases_nothing() {
 #[test]
 fn replayed_exchanges_are_refused() {
     let cert = boot_cert();
-    let world = World::new(&cert, None);
+    let mut world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert, 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
