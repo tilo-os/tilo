@@ -198,7 +198,9 @@ devices, like everything else (see where work runs).
 An agent is started by triggers, the same triggers a shortcut or any other
 automation uses: anything that can be watched, such as a mention anywhere, a
 direct message, a task assigned to it, a change to some resource, a time, or
-the weather in Bangalore. A new agent comes with the triggers a member would
+the weather in Bangalore. A watched event says what happened to the resource,
+created, edited or removed, read by the store from the recorded change beside
+its id; no app works it out for itself. A new agent comes with the triggers a member would
 expect (mentions, direct messages, assigned tasks), and its person changes them
 like any automation's. A trigger starts a turn, and the agent answers where it
 was triggered: in the chat, on the task, in the note. There is no separate
@@ -1125,7 +1127,10 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   and is read only by admission and recovery. A call from another device
   carries its signed call; a call on the same device is admitted by the
   daemon from who is on the other end of its socket, with no signing step
-  added. A caller whose connection ends cancels its call: that is the
+  added. A plain peer there (the CLI, an SDK script the person runs) is that
+  person; an agent is admitted as itself only with its own certificate or a
+  session a device handed it, and an installed SDK program is an app on its
+  held connection, under the app's grants. A caller whose connection ends cancels its call: that is the
   record's status, not a lease beside it. The one exception is held work. A call
   that starts a device job (a recording, a render) stays running until the job
   ends, held by the job's device, which keeps the job at `devices/<id>/jobs/<job>`:
