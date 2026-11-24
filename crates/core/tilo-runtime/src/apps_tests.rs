@@ -567,6 +567,51 @@ tilo_test_env::scenario! {
         );
     }
 
+    // A process serves the one record its launch named: a call on another record is not answered
+    // by it, and starts a process of its own.
+    phase a_call_on_another_record_starts_a_second_process;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
+        let display = root.join("wayland-0");
+        std::fs::write(&display, b"").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("WAYLAND_DISPLAY", &display);
+        let launcher = tilo_test_env::stand_in(root.join("tilo-launcher"), "hold\n").unwrap();
+        let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+
+        let first = "uuid:00000000-0000-0000-0000-000000000001";
+        let second = "uuid:00000000-0000-0000-0000-000000000002";
+        let mut start = apps
+            .windowless(VIEWER, WORKSPACE, Some(first))
+            .unwrap()
+            .expect("a call on a record starts the app's process with no window");
+        start
+            .try_recv()
+            .expect("the start is answered once the process runs")
+            .expect("the process started");
+        assert_eq!(
+            apps.no_window_processes(VIEWER, WORKSPACE, Some(first)),
+            1,
+            "one process serves the record the call named"
+        );
+
+        let mut other = apps
+            .windowless(VIEWER, WORKSPACE, Some(second))
+            .unwrap()
+            .expect("a call on another record starts a process of its own");
+        other
+            .try_recv()
+            .expect("the second start is answered once its process runs")
+            .expect("the process started");
+        assert_eq!(
+            apps.launched.0.lock().unwrap().len(),
+            2,
+            "a process serves one record, so a call on another starts a second"
+        );
+    }
+
     phase an_app_that_is_not_installed_starts_nothing_without_a_window;
     {
         let (_temp, root) = canonical_temp();
