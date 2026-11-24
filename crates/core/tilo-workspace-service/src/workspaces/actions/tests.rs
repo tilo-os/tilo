@@ -88,12 +88,13 @@ impl Answering {
 
 /// `first`, the answer to `request` by `caller` on the connection `certificate` certified (to
 /// the workspace `workspace_id`, or to the host), as the person it waits for answers it, where
-/// it waits for one and a person answers ([`Answering`]): approved, what the call answers once
-/// their approve carried it out; declined, it is admitted no more.
+/// it waits for one ([`Answering`]): approved, what the call answers once the person's approve
+/// of its asked record carried it out; declined, or answered by nobody ([``None`]), it is
+/// admitted no more and the caller hears what they were shown.
 ///
 /// A call this host governs runs as its job: `Accepted` while it runs, and `Completed` once it
 /// ends without asking. One that waits is kept as its asked record, which the person answers
-/// there, and ends after their approve.
+/// there through `tilo.invocations#resolve`, and the call is followed to its end.
 pub(crate) async fn answered(
     workspaces: &Workspaces,
     (workspace_id, certificate): (Option<WorkspaceId>, Option<&DeviceCert>),
@@ -101,10 +102,11 @@ pub(crate) async fn answered(
     request: &InvokeRequest,
     first: Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
-    let Some(answering) = ANSWERING.with_borrow(Clone::clone) else {
-        return first;
-    };
+    let answering = ANSWERING.with_borrow(Clone::clone);
     if let Err(ActionCallError::ConfirmationRequired(facts)) = &first {
+        let Some(answering) = &answering else {
+            return first;
+        };
         answering.asked.lock().unwrap().push((**facts).clone());
         if !answering.approves {
             return first;
@@ -165,6 +167,13 @@ pub(crate) async fn answered(
     .await;
     let Some(waiting) = kept else {
         return ended_as(&here, caller, request.invocation).await;
+    };
+    // It waits in its asked record: nobody answering here leaves it there, and the caller hears
+    // what its person is shown.
+    let Some(answering) = &answering else {
+        return Err(ActionCallError::ConfirmationRequired(Box::new(
+            waiting.asked.facts.clone(),
+        )));
     };
     answering
         .asked

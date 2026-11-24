@@ -288,7 +288,7 @@ async fn her_agent_asks_her_first(
     let unasked = provider.ask_as(ada, &agent, teaching.clone()).await;
     assert!(
         matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
-        "a change with nobody to ask through: {unasked:?}"
+        "a change that waits for her answer: {unasked:?}"
     );
     let refusing = Answering::declining();
     let refused = provider.ask_as(ada, &agent, teaching.clone()).await;

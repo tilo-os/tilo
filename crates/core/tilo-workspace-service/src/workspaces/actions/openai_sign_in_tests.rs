@@ -160,7 +160,7 @@ async fn no_agent_signs_in_on_its_own(
         let unasked = a_sign_in_asked_by(actions, workspace_id, ada, &assistant, verb).await;
         assert!(
             matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
-            "{verb} with nobody to ask through: {unasked:?}"
+            "{verb} waits for its member's answer: {unasked:?}"
         );
     }
     let refusing = Answering::declining();
