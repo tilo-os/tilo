@@ -182,6 +182,27 @@ impl Push for LiveFrames {
     }
 }
 
+/// Hold the caller between asks of a job it waits on. A device with no thread to wait on — a page
+/// in a browser — refuses instead of spinning, so the work is asked for with `engine.start` and
+/// answered by the job's `done:` there.
+#[cfg(not(target_arch = "wasm32"))]
+fn wait_for_job() -> Result<(), String> {
+    /// How long a wait sleeps between asks of the job, so a quick job is not held back.
+    const POLL: std::time::Duration = std::time::Duration::from_millis(5);
+    std::thread::sleep(POLL);
+    Ok(())
+}
+
+/// A page has no thread to wait on: it asks for the work with `engine.start` and its `done:`.
+#[cfg(target_arch = "wasm32")]
+fn wait_for_job() -> Result<(), String> {
+    Err(
+        "this page has no thread to wait on the device's work: start it with `engine.start` and \
+         its `done:`"
+            .to_owned(),
+    )
+}
+
 /// Whether the job state `state` says the job ended, as JSON `{"state": "done", ...}`: `Some(true)`
 /// once it did, `Some(false)` while it still runs, `None` when it names no state this contract
 /// knows.
@@ -504,8 +525,6 @@ impl Core {
     /// or `cancelled`. The whole wait is one ask of the device, so a run replayed answers from its
     /// journal instead of starting the work a second time.
     fn engine_run(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        /// How long a wait sleeps between asks of the job, so a quick job is not held back.
-        const POLL: std::time::Duration = std::time::Duration::from_millis(5);
         let answer = self.device_work("run", op, input, || {
             let borrowing = self.engine_work.borrow();
             let Some(host) = borrowing.as_ref() else {
@@ -522,7 +541,11 @@ impl Core {
                 };
                 match ended(&state) {
                     Some(true) => return Value::text(state),
-                    Some(false) => std::thread::sleep(POLL),
+                    Some(false) => {
+                        if let Err(why) = wait_for_job() {
+                            return Value::Error(why);
+                        }
+                    }
                     None => {
                         return Value::Error(format!(
                             "the device answered how job `{job}` is doing without saying: {state}"
