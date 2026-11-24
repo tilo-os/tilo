@@ -91,7 +91,7 @@ impl Wake {
 }
 
 /// What the person calls the device `record` keeps under `key`.
-fn label(record: &Devices, key: &tilo_resource::Id) -> String {
+pub(crate) fn label(record: &Devices, key: &tilo_resource::Id) -> String {
     record
         .devices
         .get(key)

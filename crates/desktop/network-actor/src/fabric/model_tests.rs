@@ -491,21 +491,23 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
             event: FabricInputEvent::PointerMotion { x: 0, y: 0 },
         })
         .unwrap();
-        let bluetooth = postcard::to_allocvec(&PersonalFabricAction::BluetoothHandoffPrepare {
-            address: "AA:BB:CC:DD:EE:FF".into(),
-            name: "Headphones".into(),
-        })
-        .unwrap();
         assert_eq!(input.first(), Some(&4));
-        assert_eq!(bluetooth.first(), Some(&5));
-        let pairing =
-            postcard::to_allocvec(&PersonalFabricAction::BluetoothHandoffPairingOffered {
-                request_id: [2; 16],
-                address: "AA:BB:CC:DD:EE:FF".into(),
-                authorization: [4; 16],
-            })
-            .unwrap();
-        assert_eq!(pairing.first(), Some(&10));
+        // The retired actions hold their tags, so those after them keep theirs.
+        for (retired, index) in [
+            (PersonalFabricAction::RetiredBluetoothPrepare, 5),
+            (PersonalFabricAction::RetiredBluetoothBondOffered, 10),
+            (PersonalFabricAction::RetiredBluetoothCancel, 34),
+            (PersonalFabricAction::RetiredWakeDevice, 51),
+            (PersonalFabricAction::RetiredWakeProbeReply, 54),
+        ] {
+            assert_eq!(
+                postcard::to_allocvec(&retired).unwrap().first(),
+                Some(&index)
+            );
+        }
+        let certify =
+            postcard::to_allocvec(&PersonalFabricAction::CertifyAsk { ask: vec![1] }).unwrap();
+        assert_eq!(certify.first(), Some(&55));
         let nearby = postcard::to_allocvec(&PersonalFabricAction::NearbyDrop {
             file_name: "note.txt".into(),
             content_hash: *blake3::hash(b"hello").as_bytes(),
@@ -521,19 +523,6 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
         })
         .unwrap();
         assert_eq!(notification.first(), Some(&20));
-        // The retired actions hold their tags, so those after them keep theirs.
-        for (retired, index) in [
-            (PersonalFabricAction::RetiredWakeDevice, 51),
-            (PersonalFabricAction::RetiredWakeProbeReply, 54),
-        ] {
-            assert_eq!(
-                postcard::to_allocvec(&retired).unwrap().first(),
-                Some(&index)
-            );
-        }
-        let certify =
-            postcard::to_allocvec(&PersonalFabricAction::CertifyAsk { ask: vec![1] }).unwrap();
-        assert_eq!(certify.first(), Some(&55));
         for (action, index) in [
             (
                 PersonalFabricAction::GamepadForwardRequest {
@@ -734,76 +723,30 @@ fn audio_and_bluetooth_wire_is_versioned_bounded_and_canonical() {
         );
     }
 
-    fn retired_wakes_from_an_older_device_are_refused() {
-        let (source, target) = (id("source"), id("target"));
-        let envelope = PersonalFabricActionEnvelope {
-            request_id: [3; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action: PersonalFabricAction::RetiredWakeDevice,
-        };
-        assert_eq!(
-            envelope.validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-    }
-
-    fn bluetooth_handoff_actions_accept_only_canonical_bounded_ephemeral_identity() {
+    fn retired_actions_from_an_older_device_are_refused() {
         let source = id("source");
         let target = id("target");
-        let envelope = |action| PersonalFabricActionEnvelope {
-            request_id: [3; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action,
-        };
-        assert_eq!(
-            envelope(PersonalFabricAction::BluetoothHandoffPrepare {
-                address: "AA:BB:CC:DD:EE:FF".into(),
-                name: "Headphones".into(),
-            })
-            .validate_at(&source, &target, 10_100),
-            Ok(())
-        );
-        for address in [
-            "AA:BB:CC:DD:EE",
-            "AA-BB-CC-DD-EE-FF",
-            "../../org/bluez/hci0",
-            "GG:BB:CC:DD:EE:FF",
+        for action in [
+            PersonalFabricAction::RetiredBluetoothPrepare,
+            PersonalFabricAction::RetiredBluetoothCancel,
+            PersonalFabricAction::RetiredWakeDevice,
         ] {
+            let envelope = PersonalFabricActionEnvelope {
+                request_id: [3; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action,
+            };
             assert_eq!(
-                envelope(PersonalFabricAction::BluetoothHandoffPrepare {
-                    address: address.into(),
-                    name: "Headphones".into(),
-                })
-                .validate_at(&source, &target, 10_100),
+                envelope.validate_at(&source, &target, 10_100),
                 Err(FabricError::InvalidAction)
             );
         }
-        assert_eq!(
-            envelope(PersonalFabricAction::BluetoothHandoffCommit {
-                request_id: [0; 16],
-                address: "AA:BB:CC:DD:EE:FF".into(),
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::BluetoothHandoffPairingOffered {
-                request_id: [5; 16],
-                address: "AA:BB:CC:DD:EE:FF".into(),
-                authorization: [0; 16],
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
     }
 
     remote_audio_wire_is_versioned_bounded_and_capability_bearing();
-    retired_wakes_from_an_older_device_are_refused();
-    bluetooth_handoff_actions_accept_only_canonical_bounded_ephemeral_identity();
+    retired_actions_from_an_older_device_are_refused();
 }
 
 #[test]

@@ -23,6 +23,7 @@ use tilo_server_protocol::servers::person_workspace_id;
 
 use super::Workspaces;
 
+pub mod accessory;
 pub mod devices;
 pub mod wake;
 pub mod wifi;

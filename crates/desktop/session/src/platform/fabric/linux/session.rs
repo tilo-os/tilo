@@ -543,18 +543,15 @@ impl crate::Session {
             | PersonalFabricAction::NearbyTransferCancel { .. }
             | PersonalFabricAction::NearbyTransferRestart { .. }
             | PersonalFabricAction::NearbyTransferResult { .. }
-            // A move of a Bluetooth accessory between devices that was not addressed to this
-            // session's person ([`Shared::bluetooth`] answers for those) is somebody else's to
-            // carry.
-            | PersonalFabricAction::BluetoothHandoffPrepare { .. }
-            | PersonalFabricAction::BluetoothHandoffPrepared { .. }
-            | PersonalFabricAction::BluetoothHandoffCommit { .. }
-            | PersonalFabricAction::BluetoothHandoffFinished { .. }
-            | PersonalFabricAction::BluetoothHandoffAccepted { .. }
-            | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
-            | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
-            | PersonalFabricAction::BluetoothHandoffCancel { .. }
             // What validation refuses never reaches here.
+            | PersonalFabricAction::RetiredBluetoothPrepare
+            | PersonalFabricAction::RetiredBluetoothPrepared
+            | PersonalFabricAction::RetiredBluetoothCommit
+            | PersonalFabricAction::RetiredBluetoothFinished
+            | PersonalFabricAction::RetiredBluetoothAccepted
+            | PersonalFabricAction::RetiredBluetoothBondOffered
+            | PersonalFabricAction::RetiredBluetoothBondCommit
+            | PersonalFabricAction::RetiredBluetoothCancel
             | PersonalFabricAction::RetiredWakeDevice
             | PersonalFabricAction::RetiredWakeReport
             | PersonalFabricAction::RetiredWakeProbe
@@ -593,15 +590,10 @@ impl crate::Session {
         }
     }
 
-    /// Whether one of this session's services took `envelope` 's action: a Bluetooth accessory's
-    /// move, a speaker service's, the person's keyboard and
-    /// pointer. What they did not take is the
-    /// session's own.
+    /// Whether one of this session's services took `envelope` 's action: a speaker service's, the
+    /// person's keyboard and pointer. What they did not take is the session's own.
     fn service_took(&self, fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
-        self.shared
-            .bluetooth
-            .arrived(&self.shared, fabric, envelope)
-            || tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
+        tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
             || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
             || self
                 .shared

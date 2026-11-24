@@ -344,3 +344,119 @@ async fn a_device_woken_from_another_says_it_is_back_in_the_record() {
     assert_eq!(ask.state(i64::MAX), WakeState::Awake);
     drop(desk);
 }
+
+/// A speaker moves from the person's desktop to their laptop through the record of their devices:
+/// the desktop asks, the laptop says it holds the speaker's bond, the desktop says it let go, and
+/// the laptop says it connected it, each reading the other's step in its own copy.
+#[tokio::test]
+async fn an_accessory_moves_to_another_device_through_the_record() {
+    use super::super::person_workspace::accessory::{self, Part, Radio};
+    use super::super::person_workspace::devices::MoveStage;
+
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (desk, desk_cert, laptop, own) = desk_and_laptop(one.path(), two.path()).await;
+    let laptop_cert = laptop.workspaces().device_cert().clone();
+    let (desk_key, laptop_key) = (
+        hex::encode(desk_cert.device_public_key),
+        hex::encode(laptop_cert.device_public_key),
+    );
+    apply_on(
+        laptop.workspaces(),
+        &own,
+        DEVICES,
+        Devices::keeping(&laptop_cert).unwrap(),
+    )
+    .await
+    .expect("the laptop is among the person's devices");
+    reads(
+        desk.workspaces(),
+        &own,
+        "the laptop reaches the desktop's record",
+        |devices| devices.devices.iter().count() == 2,
+    )
+    .await;
+
+    let asked_ns = 1_700_000_000_000_000_000;
+    let speaker = "AA:BB:CC:DD:EE:01";
+    let here = |_: &str| true;
+    let (mut on_desk, mut on_laptop) = (Part::default(), Part::default());
+    let record = read_on::<Devices>(desk.workspaces(), &own, DEVICES)
+        .await
+        .unwrap();
+    let ask = accessory::asking(
+        &record,
+        &desk_key,
+        speaker,
+        "Speaker",
+        &laptop_key,
+        asked_ns,
+    )
+    .expect("the speaker can move to the laptop");
+    apply_on(desk.workspaces(), &own, DEVICES, ask)
+        .await
+        .expect("the desktop asks the move");
+
+    // Each device takes its part as its copy of the record reaches the step before it.
+    let steps = [
+        (true, MoveStage::Asked, Radio::Inspect),
+        (false, MoveStage::Ready, Radio::Release),
+        (true, MoveStage::Released, Radio::Take),
+    ];
+    for (offset, (on_the_laptop, stage, radio)) in (1..).zip(steps) {
+        let (host, key, part) = if on_the_laptop {
+            (&laptop, laptop_key.as_str(), &mut on_laptop)
+        } else {
+            (&desk, desk_key.as_str(), &mut on_desk)
+        };
+        let (workspaces, workspace) = (host.workspaces().clone(), own.clone());
+        let record = tilo_test_env::within("the step before reaches the device", async move {
+            loop {
+                if let Ok(record) = read_on::<Devices>(&workspaces, &workspace, DEVICES).await
+                    && record.moves.values().any(|kept| kept.stage == stage)
+                {
+                    return record;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        let (writes, work) = accessory::turns(&record, key, here, asked_ns + offset, part);
+        assert!(writes.is_empty(), "nothing is given up");
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].radio, radio);
+        let write = accessory::finished(&work[0], true, part, asked_ns + offset).unwrap();
+        apply_on(host.workspaces(), &own, DEVICES, write)
+            .await
+            .expect("the device says how its step went");
+    }
+
+    reads(
+        desk.workspaces(),
+        &own,
+        "the laptop's word that it connected the speaker reaches the desktop",
+        |devices| {
+            devices
+                .moves
+                .values()
+                .any(|kept| kept.stage == MoveStage::Moved)
+        },
+    )
+    .await;
+    let record = read_on::<Devices>(desk.workspaces(), &own, DEVICES)
+        .await
+        .unwrap();
+    let kept = record.moves.get(&Id::from_raw(speaker.to_owned())).unwrap();
+    assert_eq!(
+        (kept.from.as_str(), kept.to.as_str()),
+        (desk_key.as_str(), laptop_key.as_str())
+    );
+    assert_eq!(kept.name, "Speaker");
+    assert_eq!(kept.released_ns, asked_ns + 2);
+    // A move that ended asks nothing more of either device.
+    assert!(
+        accessory::turns(&record, &desk_key, here, asked_ns + 4, &mut on_desk)
+            .1
+            .is_empty()
+    );
+    drop(desk);
+}

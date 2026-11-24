@@ -26,6 +26,11 @@
 //! they sent the packets, and the woken device says it is back, so any device of theirs reads how
 //! it went.
 //!
+//! Moving one of their Bluetooth accessories from one device of theirs to another is asked there
+//! as well ([`AccessoryMove`], [`super::accessory`]): the device that has it asks, the other says
+//! whether it holds the accessory's bond, the first says it let go, and the other says it
+//! connected it, each step a write the two sessions read from the record.
+//!
 //! What the person's root signs lives in their record: the mark of the device
 //! that keeps it ([`Devices::mark_root_holder`]) and the revocation of one it
 //! takes back ([`Devices::revoke_device`]), each a signature a reader checks
@@ -73,6 +78,48 @@ pub struct Devices {
     pub unlocks: Collection<UnlockAnswer>,
     /// The latest wake of each device asked, by the key of the device to wake.
     pub wakes: Collection<WakeAsk>,
+    /// The latest move of each Bluetooth accessory asked, by its address (uppercase).
+    pub moves: Collection<AccessoryMove>,
+}
+
+/// One move of a Bluetooth accessory from one of the person's devices to another, and how far it
+/// got ([`super::accessory`]). Times are ns since the epoch, `0` while it did not happen.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
+pub struct AccessoryMove {
+    /// The device that has the accessory, by key (lowercase hex).
+    pub from: String,
+    /// The device it moves to, by key.
+    pub to: String,
+    /// What the accessory is called, as the device that has it read.
+    pub name: String,
+    pub asked_ns: i64,
+    pub stage: MoveStage,
+    /// When the device that had it let go of it.
+    pub released_ns: i64,
+    /// When the move reached its stage.
+    pub at_ns: i64,
+}
+
+/// How far one move of an accessory got.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MoveStage {
+    /// Asked: the device it moves to checks that it holds the accessory's bond.
+    #[default]
+    Asked,
+    /// The device it moves to holds the bond: the one that has it lets go.
+    Ready,
+    /// The device that had it let go: the other connects it.
+    Released,
+    /// The device it moved to connected it.
+    Moved,
+    /// The device it was to move to holds no bond of it, so it stayed.
+    NotPaired,
+    /// The device that has it could not let go of it, so it stayed.
+    NotReleased,
+    /// The device it was to move to could not connect it, so it went back.
+    NotConnected,
+    /// One of the two gave the move up, because the other left or it took too long.
+    GivenUp,
 }
 
 /// One wake of a device of the person's that sleeps: who asked it and when, which device of theirs
@@ -709,6 +756,174 @@ impl Devices {
             && kept.awake_ns == 0
         {
             kept.awake_ns = at_ns;
+        }
+        Ok(())
+    }
+
+    /// Move the Bluetooth accessory at `address`, called `name`, from the device `from` to the
+    /// device `to`, as asked at `asked_ns`. Replaces an earlier move of it that ended or ran out
+    /// of time; one still under way stays.
+    #[action]
+    pub fn move_accessory(
+        &mut self,
+        address: String,
+        name: String,
+        from: String,
+        to: String,
+        asked_ns: i64,
+    ) -> Result<(), Refusal> {
+        if !super::accessory::valid_address(&address) {
+            return Err(Refusal::new(
+                "a Bluetooth address is six hex pairs, AA:BB:CC:DD:EE:FF",
+            ));
+        }
+        if name.is_empty()
+            || name.len() > super::accessory::MAX_NAME
+            || name.chars().any(char::is_control)
+        {
+            return Err(Refusal::new("an accessory is called in 1 to 128 bytes"));
+        }
+        if from == to
+            || !self.devices.contains(&Id::from_raw(from.clone()))
+            || !self.devices.contains(&Id::from_raw(to.clone()))
+        {
+            return Err(Refusal::new(
+                "an accessory moves between two of your devices",
+            ));
+        }
+        if asked_ns <= 0 {
+            return Err(Refusal::new("a move is asked at a time since the epoch"));
+        }
+        let key = Id::from_raw(address.to_ascii_uppercase());
+        let asked = AccessoryMove {
+            from,
+            to,
+            name,
+            asked_ns,
+            at_ns: asked_ns,
+            ..AccessoryMove::default()
+        };
+        match self.moves.get_mut(&key) {
+            Some(kept) if kept.under_way(asked_ns) => {
+                return Err(Refusal::new("that accessory is moving already"));
+            }
+            Some(kept) => *kept = asked,
+            None => {
+                self.moves.push(key, asked);
+            }
+        }
+        Ok(())
+    }
+
+    /// Say whether the device the accessory at `address` moves to holds its bond, for the move
+    /// asked at `asked_ns`, at `at_ns`.
+    #[action(housekeeping)]
+    pub fn accessory_ready(
+        &mut self,
+        address: String,
+        asked_ns: i64,
+        ready: bool,
+        at_ns: i64,
+    ) -> Result<(), Refusal> {
+        let next = if ready {
+            MoveStage::Ready
+        } else {
+            MoveStage::NotPaired
+        };
+        self.step_move(&address, asked_ns, MoveStage::Asked, next, at_ns)
+    }
+
+    /// Say whether the device that had the accessory at `address` let go of it, for the move asked
+    /// at `asked_ns`, at `at_ns`.
+    #[action(housekeeping)]
+    pub fn accessory_released(
+        &mut self,
+        address: String,
+        asked_ns: i64,
+        released: bool,
+        at_ns: i64,
+    ) -> Result<(), Refusal> {
+        let next = if released {
+            MoveStage::Released
+        } else {
+            MoveStage::NotReleased
+        };
+        self.step_move(&address, asked_ns, MoveStage::Ready, next, at_ns)?;
+        if released
+            && let Some(kept) = self
+                .moves
+                .get_mut(&Id::from_raw(address.to_ascii_uppercase()))
+            && kept.asked_ns == asked_ns
+            && kept.stage == MoveStage::Released
+        {
+            kept.released_ns = at_ns;
+        }
+        Ok(())
+    }
+
+    /// Say whether the device the accessory at `address` moves to connected it, for the move asked
+    /// at `asked_ns`, at `at_ns`.
+    #[action(housekeeping)]
+    pub fn accessory_taken(
+        &mut self,
+        address: String,
+        asked_ns: i64,
+        connected: bool,
+        at_ns: i64,
+    ) -> Result<(), Refusal> {
+        let next = if connected {
+            MoveStage::Moved
+        } else {
+            MoveStage::NotConnected
+        };
+        self.step_move(&address, asked_ns, MoveStage::Released, next, at_ns)
+    }
+
+    /// Give up the move of the accessory at `address` asked at `asked_ns`, at `at_ns`, where it
+    /// had not ended.
+    #[action(housekeeping)]
+    pub fn give_up_move(
+        &mut self,
+        address: String,
+        asked_ns: i64,
+        at_ns: i64,
+    ) -> Result<(), Refusal> {
+        if at_ns <= 0 {
+            return Err(Refusal::new("a move is given up at a time since the epoch"));
+        }
+        if let Some(kept) = self
+            .moves
+            .get_mut(&Id::from_raw(address.to_ascii_uppercase()))
+            && kept.asked_ns == asked_ns
+            && !kept.stage.ended()
+        {
+            kept.stage = MoveStage::GivenUp;
+            kept.at_ns = at_ns;
+        }
+        Ok(())
+    }
+
+    /// Take the move of `address` asked at `asked_ns` from `from` to `to`, where it stands at
+    /// `from`: a move that went on or was asked again meanwhile is left as it is.
+    fn step_move(
+        &mut self,
+        address: &str,
+        asked_ns: i64,
+        from: MoveStage,
+        to: MoveStage,
+        at_ns: i64,
+    ) -> Result<(), Refusal> {
+        if at_ns <= 0 {
+            return Err(Refusal::new("a move goes on at a time since the epoch"));
+        }
+        if let Some(kept) = self
+            .moves
+            .get_mut(&Id::from_raw(address.to_ascii_uppercase()))
+            && kept.asked_ns == asked_ns
+            && kept.stage == from
+        {
+            kept.stage = to;
+            kept.at_ns = at_ns;
         }
         Ok(())
     }

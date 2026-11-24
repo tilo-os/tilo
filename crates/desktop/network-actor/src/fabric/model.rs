@@ -156,49 +156,17 @@ pub enum PersonalFabricAction {
         lease_nonce: [u8; 16],
         event: FabricInputEvent,
     },
-    /// Phase one of accessory handoff. The address is ephemeral routing
-    /// metadata; bond keys and the device inventory never enter a snapshot.
-    BluetoothHandoffPrepare {
-        address: String,
-        name: String,
-    },
-    /// The target confirms whether this same address is already paired there.
-    BluetoothHandoffPrepared {
-        request_id: [u8; 16],
-        address: String,
-        ready: bool,
-    },
-    /// Sent only after the source has disconnected without forgetting its bond.
-    BluetoothHandoffCommit {
-        request_id: [u8; 16],
-        address: String,
-    },
-    /// Final target outcome. A failure tells the source to reconnect locally.
-    BluetoothHandoffFinished {
-        request_id: [u8; 16],
-        address: String,
-        connected: bool,
-    },
-    /// Source confirms it received a successful finish. Until this arrives,
-    /// the target retains rollback state and disconnects on timeout.
-    BluetoothHandoffAccepted {
-        request_id: [u8; 16],
-        address: String,
-    },
-    /// The target discovered the exact address locally and its compositor
-    /// issued this one-shot grant after an explicit local approval.
-    BluetoothHandoffPairingOffered {
-        request_id: [u8; 16],
-        address: String,
-        authorization: [u8; 16],
-    },
-    /// Echo the target-issued grant only after the source released the
-    /// accessory. The target consumes it before asking `BlueZ` to pair.
-    BluetoothHandoffPairingCommit {
-        request_id: [u8; 16],
-        address: String,
-        authorization: [u8; 16],
-    },
+    // The tags below, to `RetiredBluetoothBondCommit`, are a Bluetooth accessory's move between
+    // the person's devices, carried in the record of their devices now: no device sends one, and
+    // validation refuses one from an older device. Each holds its tag so the actions after it keep
+    // theirs.
+    RetiredBluetoothPrepare,
+    RetiredBluetoothPrepared,
+    RetiredBluetoothCommit,
+    RetiredBluetoothFinished,
+    RetiredBluetoothAccepted,
+    RetiredBluetoothBondOffered,
+    RetiredBluetoothBondCommit,
     /// Inline fast path of the one Nearby transfer protocol: a file up to
     /// [`MAX_NEARBY_DROP_BYTES`] rides in this action instead of an offer and
     /// a byte stream, saving a round trip. It shares the transfer's consent
@@ -342,13 +310,8 @@ pub enum PersonalFabricAction {
     FabricClockReport {
         report: crate::fabric::clock::ClockReport,
     },
-    /// Abort one exact authenticated Bluetooth transaction. Both peers roll
-    /// back only the accessory bound to this request; no inventory or bond
-    /// material is disclosed.
-    BluetoothHandoffCancel {
-        request_id: [u8; 16],
-        address: String,
-    },
+    /// A Bluetooth accessory's move given up, retired as the ones above are.
+    RetiredBluetoothCancel,
     // Keep additions at the end: postcard uses declaration-order tags, and
     // inserting media outcomes beside MediaAccepted renumbers older actions.
     /// The exact destination could not open the requested session. Reasons
@@ -464,9 +427,8 @@ pub enum PersonalFabricAction {
         views: Vec<WindowView>,
         decode: Vec<HardwareDecode>,
     },
-    // A wake of one of the person's devices, its outcome and the probes of who could send it are
-    // carried in the record of their devices now: no device sends one, and validation refuses one
-    // from an older device. Each holds its tag so the actions after it keep theirs.
+    // A wake of one of the person's devices, its outcome and the probes of who could send it:
+    // carried in the record of their devices now, and retired as the Bluetooth moves are.
     RetiredWakeDevice,
     RetiredWakeReport,
     RetiredWakeProbe,
@@ -780,7 +742,15 @@ impl PersonalFabricActionEnvelope {
                 }
             }
             PersonalFabricAction::InputLeaseAsk => {}
-            PersonalFabricAction::RetiredWakeDevice
+            PersonalFabricAction::RetiredBluetoothPrepare
+            | PersonalFabricAction::RetiredBluetoothPrepared
+            | PersonalFabricAction::RetiredBluetoothCommit
+            | PersonalFabricAction::RetiredBluetoothFinished
+            | PersonalFabricAction::RetiredBluetoothAccepted
+            | PersonalFabricAction::RetiredBluetoothBondOffered
+            | PersonalFabricAction::RetiredBluetoothBondCommit
+            | PersonalFabricAction::RetiredBluetoothCancel
+            | PersonalFabricAction::RetiredWakeDevice
             | PersonalFabricAction::RetiredWakeReport
             | PersonalFabricAction::RetiredWakeProbe
             | PersonalFabricAction::RetiredWakeProbeReply => {
@@ -805,55 +775,6 @@ impl PersonalFabricActionEnvelope {
             }
             PersonalFabricAction::FabricClockReport { report } => {
                 if !report.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::BluetoothHandoffPrepare { address, name } => {
-                if !os_actions::bluez::valid_address(address)
-                    || name.is_empty()
-                    || name.len() > 128
-                    || name.chars().any(char::is_control)
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::BluetoothHandoffPrepared {
-                request_id,
-                address,
-                ..
-            }
-            | PersonalFabricAction::BluetoothHandoffCommit {
-                request_id,
-                address,
-            }
-            | PersonalFabricAction::BluetoothHandoffFinished {
-                request_id,
-                address,
-                ..
-            }
-            | PersonalFabricAction::BluetoothHandoffAccepted {
-                request_id,
-                address,
-            }
-            | PersonalFabricAction::BluetoothHandoffCancel {
-                request_id,
-                address,
-            } => {
-                if request_id == &[0; 16] || !os_actions::bluez::valid_address(address) {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::BluetoothHandoffPairingOffered {
-                request_id,
-                address,
-                authorization,
-            }
-            | PersonalFabricAction::BluetoothHandoffPairingCommit {
-                request_id,
-                address,
-                authorization,
-            } => {
-                if !valid_bluetooth_pairing_action(request_id, address, authorization) {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1337,14 +1258,6 @@ fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
                     .any(|character| character.is_control() || matches!(character, '/' | '\\'))
         }
     }
-}
-
-fn valid_bluetooth_pairing_action(
-    request_id: &[u8; 16],
-    address: &str,
-    authorization: &[u8; 16],
-) -> bool {
-    request_id != &[0; 16] && authorization != &[0; 16] && os_actions::bluez::valid_address(address)
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
