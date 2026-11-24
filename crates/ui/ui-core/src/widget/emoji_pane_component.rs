@@ -123,6 +123,12 @@ impl Widget for EmojiPane {
         taffy.widget_leaf(style, node_map, self)
     }
 
+    /// Its slot's size is its style's alone, and the card is placed inside it as it draws: it
+    /// asks for a layout only until it has one.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
     }

@@ -1129,6 +1129,12 @@ impl Widget for Sheet {
         taffy.widget_leaf(style, node_map, self)
     }
 
+    /// Its size is its slot's, from its style alone: it asks for a layout only until it has
+    /// one, and what it shows inside that slot is placed as it draws.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {

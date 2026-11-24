@@ -37,11 +37,13 @@ impl VirtualRows {
         }
     }
 
+    /// Whether the rows mounted hold every row `near` asks for. A list out of view (a list as tall
+    /// as its rows below the fold) asks for none, and the rows it holds stay until a scroll brings
+    /// it near: unmounting them would lay the window out again for nothing it shows. A model that
+    /// shrank lets its gone rows go all the same ([`Self::mount_window`] clamps to its length).
     pub(super) fn mounted_covers(&self, near: &Range<usize>) -> bool {
-        if near.is_empty() {
-            return self.mounted_range.is_empty();
-        }
-        self.mounted_range.start <= near.start && near.end <= self.mounted_range.end
+        near.is_empty()
+            || (self.mounted_range.start <= near.start && near.end <= self.mounted_range.end)
     }
 
     pub(super) fn mounted_near(&self) -> Range<usize> {
