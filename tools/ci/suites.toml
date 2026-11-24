@@ -697,6 +697,8 @@ inputs = [
   # The catalogue test reads the gallery app's sources: every component the
   # toolkit describes is shown there, or says at its declaration why it cannot.
   "apps/tl/gallery/",
+  "crates/ui/themes/liquid-glass/theme.json",
+  "crates/ui/themes/liquid-glass-light/theme.json",
 ]
 readers = [
   "crates/ui/ui-core/build.rs",
@@ -705,13 +707,21 @@ readers = [
   "crates/ui/ui-core/src/widget/webview.rs",
   "crates/ui/ui-core/src/theme_bundle/tests.rs",
   "crates/ui/ui-core/src/component/coverage_tests.rs",
+  "crates/ui/ui-core/src/part_paint/shader/tests.rs",
+  "crates/ui/ui-core/src/tokens/shader.rs",
 ]
 
 
 [[cargo]]
 package = "tilo-app-package"
 # Every app's search taglines are checked in each shipped language.
-inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "crates/lang/*/tilo-runtime.toml", "apps/*/search/*.ftl"]
+inputs = [
+  "apps/*/Cargo.toml",
+  "apps/*/tilo-app.toml",
+  "crates/lang/*/tilo-runtime.toml",
+  "apps/*/search/*.ftl",
+  "crates/engines/chromium-host/browser.tilo-app.toml",
+]
 readers = [
   "crates/core/tilo-app-package/tests/app_manifests.rs",
   "crates/core/tilo-app-package/src/validate.rs",
@@ -759,6 +769,35 @@ readers = [
   "crates/lang/tilolang-cli/tests/build.rs",
 ]
 
+
+[[cargo]]
+package = "tilo-app-id"
+# Chat's app id is read from the ids the tilolang package commits.
+inputs = ["apps/tl/chat/app.ids"]
+readers = ["crates/core/tilo-app-id/src/chat.rs"]
+
+[[cargo]]
+package = "tilo-runtime"
+# The host tests install the tilolang apps from their sources, and the customer
+# workspace test holds the tilo.sh book to the pages it lists.
+inputs = ["apps/tl/", "docs/tilo-sh/pages.toml"]
+readers = [
+  "crates/core/tilo-runtime/tests/customer_workspaces.rs",
+  "crates/core/tilo-runtime/tests/host/apps.rs",
+]
+
+[[cargo]]
+package = "tilo-migrate"
+# The provider's test holds the engine to the package's manifest and committed surface.
+inputs = ["apps/tl/migrate-engine/tilo-app.toml", "apps/tl/migrate-engine/surface.toml"]
+readers = ["crates/import/migrate/src/provider/tests.rs"]
+
+[[cargo]]
+package = "tilolang-music"
+# The native music test compiles Playback and Music from their sources.
+inputs = ["apps/tl/playback/", "apps/tl/music/"]
+readers = ["crates/integrations/tilolang-music/tests/native_music.rs"]
+
 [[cargo]]
 package = "tilolang-runtime"
 # The end-to-end tests compile the built-in packages from their sources, and read the
@@ -786,6 +825,9 @@ readers = [
   "crates/lang/tilolang-runtime/tests/window_bar.rs",
   "crates/lang/tilolang-runtime/tests/view_state_seed.rs",
   "crates/lang/tilolang-runtime/tests/common/mod.rs",
+  "crates/lang/tilolang-runtime/tests/calendar.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_canvas.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_video_editor.rs",
 ]
 
 [[cargo]]
@@ -800,25 +842,24 @@ inputs = [
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/desktop/session/device-surface.json",
-  "apps/contacts/surface.toml",
   "apps/settings/surface.toml",
   "crates/session/settings-service/agent-models-surface.json",
   "crates/session/settings-service/agent-providers-surface.json",
   "crates/services/vision/surface.json",
+  "crates/session/settings-service/shortcuts-surface.json",
+  "crates/integrations/tilo-contact-directory/surface.json",
+  "crates/core/tilo-workspace-service/workspace-surface.toml",
 ]
 readers = [
   "crates/lang/tilolang-tilo/examples/write_rate.rs",
-  "crates/lang/tilolang-tilo/src/native.rs",
   "crates/lang/tilolang-tilo/src/platform_apps.rs",
   "crates/lang/tilolang-tilo/src/shell.rs",
-  "crates/lang/tilolang-tilo/src/task.rs",
   "crates/lang/tilolang-tilo/tests/agent_queries.rs",
   "crates/lang/tilolang-tilo/tests/block_search.rs",
   "crates/lang/tilolang-tilo/tests/bundle.rs",
   "crates/lang/tilolang-tilo/tests/capture.rs",
   "crates/lang/tilolang-tilo/tests/chat.rs",
   "crates/lang/tilolang-tilo/tests/discussion.rs",
-  "crates/lang/tilolang-tilo/tests/done_days.rs",
   "crates/lang/tilolang-tilo/tests/fixtures.rs",
   "crates/lang/tilolang-tilo/tests/gallery.rs",
   "crates/lang/tilolang-tilo/tests/headings.rs",
@@ -851,6 +892,10 @@ readers = [
   "crates/lang/tilolang-tilo/tests/tube.rs",
   "crates/lang/tilolang-tilo/tests/words.rs",
   "crates/lang/tilolang-tilo/tests/written_views.rs",
+  "crates/lang/tilolang-tilo/tests/block_edit.rs",
+  "crates/lang/tilolang-tilo/tests/contacts.rs",
+  "crates/lang/tilolang-tilo/tests/direct_readers.rs",
+  "crates/lang/tilolang-tilo/tests/native_chat_skills.rs",
 ]
 
 [[cargo]]
@@ -920,16 +965,6 @@ package = "provider-settings-ui"
 # The provider screenshots list the models of the provider config's recorded OpenRouter answer.
 inputs = ["crates/integrations/provider-config/tests/fixtures/openrouter-models.json"]
 readers = ["crates/integrations/provider-settings-ui/src/app_tests.rs"]
-
-[[cargo]]
-package = "discord-worker"
-# The bridge test and the live example install the bridge bot from its
-# program file, beside the worker in the connector app.
-inputs = ["apps/discord/bridge/program.json"]
-readers = [
-  "apps/discord/worker/tests/bridge.rs",
-  "apps/discord/worker/examples/live_bridge.rs",
-]
 
 [[cargo]]
 package = "tilo-esp-write"
@@ -1113,6 +1148,7 @@ inputs = [
   # The units that rebuild the sandbox system view when what it reads changes.
   "os/usr/lib/systemd/system/tilo-sandbox-view.path",
   "os/usr/lib/systemd/system/tilo-extension-activate.service",
+  "crates/engines/chromium-host/browser.tilo-app.toml",
 ]
 readers = [
   "crates/core/launcher/src/hardening.rs",
@@ -1360,7 +1396,7 @@ inputs = [
   "os/usr/libexec/", "os/scripts/",
 ]
 readers = [
-  "apps/imager/build.rs", "apps/imager/src/setup/desktop_install.rs",
+  "apps/imager/src/setup/desktop_install.rs",
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
 ]
 
@@ -1444,15 +1480,7 @@ inputs = [
 # reuse the workspace-actions one, and the surface tests read the app's. The
 # update test carries the Notes and Tasks surfaces an earlier build wrote.
 readers = [
-  "crates/core/agent-session/src/workspace_actions/tests.rs",
   "crates/core/agent-session/tests/it.rs",
-  "crates/core/agent-session/tests/workspace_actions/api.rs",
-  "crates/core/agent-session/tests/workspace_actions/flow_customer_workspaces.rs",
-  "crates/core/agent-session/tests/workspace_actions/hosted_agent_turns.rs",
-  "crates/core/agent-session/tests/workspace_actions/meeting_rundown.rs",
-  "crates/core/agent-session/tests/workspace_actions/packaged_model.rs",
-  "crates/core/agent-session/tests/workspace_actions/update_reads_older_writes.rs",
-  "crates/core/agent-session/examples/api-on-server.rs",
 ]
 
 [[cargo]]
@@ -1471,10 +1499,18 @@ inputs = [
   "apps/clocks/surface.toml",
   "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
   "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
+  "tools/protocols/airdrop_sender.py",
+  "apps/tl/chat/",
+  "apps/tl/discussion/",
+  "apps/tl/notes/",
+  "apps/tl/contacts/",
+  "apps/tl/tasks/",
 ]
 readers = [
   "crates/core/tilo-workspace-service/src/apps/collab_app_broker/web_search_tests.rs",
   "crates/core/tilo-workspace-service/src/workspaces/packaged_model_tests.rs",
+  "crates/core/tilo-workspace-service/src/apps/nearby_send/airdrop.rs",
+  "crates/core/tilo-workspace-service/src/tl_records.rs",
 ]
 
 [[cargo]]
@@ -1540,7 +1576,6 @@ readers = [
   "crates/desktop/session/src/window_share/tests/page.rs",
   "crates/desktop/session/src/window_share/tests/watching.rs",
   "crates/desktop/session/src/services/mod.rs",
-  "crates/desktop/session/src/nearby_transfer.rs",
   "crates/desktop/session/src/app_wire.rs",
   "crates/desktop/session/src/shell/mod.rs",
   "crates/desktop/session/src/shell/part/places_tests.rs",
