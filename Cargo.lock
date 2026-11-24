@@ -3098,7 +3098,6 @@ dependencies = [
  "similar",
  "tilo-resource",
  "tilo-test-env",
- "tilolang-tilo",
  "workspace-hack",
 ]
 
@@ -15843,6 +15842,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-camera-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-capture",
+ "tilo-doc-pdf",
+ "tilo-engine-loader",
+ "tilo-image-codec",
+ "tilo-media",
+ "tilo-ocr",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-canonical-json"
 version = "0.1.0"
 dependencies = [
@@ -15942,6 +15957,16 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-chip-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-chip-design-engine",
+ "tilo-engine-loader",
  "workspace-hack",
 ]
 
@@ -16947,6 +16972,16 @@ dependencies = [
  "tilo-test-env",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-diffmerge-engine"
+version = "0.1.0"
+dependencies = [
+ "diffmerge-engine",
+ "runtime-dylib",
+ "tilo-engine-loader",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -20062,7 +20097,6 @@ dependencies = [
  "code-engine",
  "compat-catalogue",
  "compat-service",
- "diffmerge-engine",
  "ed25519-dalek 3.0.0",
  "futures-util",
  "gbm",
@@ -20922,6 +20956,18 @@ dependencies = [
  "typst-pdf",
  "typst-render",
  "wat",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-typst-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-engine-loader",
+ "tilo-typst",
  "workspace-hack",
 ]
 
@@ -22051,7 +22097,6 @@ name = "tilolang-process"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "diffmerge-engine",
  "image",
  "jiff",
  "libc",
@@ -22077,7 +22122,6 @@ dependencies = [
  "tilo-backups-engine",
  "tilo-canvas-engine",
  "tilo-capture",
- "tilo-chip-design-engine",
  "tilo-clipboard",
  "tilo-clock",
  "tilo-collab-types",
@@ -22089,6 +22133,7 @@ dependencies = [
  "tilo-dialogs",
  "tilo-disk-usage",
  "tilo-doc-pdf",
+ "tilo-engine-loader",
  "tilo-failure",
  "tilo-feeds",
  "tilo-files",
@@ -22115,7 +22160,6 @@ dependencies = [
  "tilo-test-http",
  "tilo-thumbnail",
  "tilo-tiles",
- "tilo-typst",
  "tilo-ui",
  "tilo-video-edit",
  "tilo-video-picture",

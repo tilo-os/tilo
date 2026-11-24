@@ -36,8 +36,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Deserialize;
 use tilo_image_codec::{DecodedImage, Encoding};
 
-use tilolang_tilo::instance::Platform;
-use tilolang_tilo::runtime::host_work::{Frame as LiveFrame, Push};
+use tilo_engine_loader::{Device, EngineApi, Frames, JobOp, JobSink, Needs};
 
 /// The one app this device answers camera work for.
 pub const APP: &str = "so.tilo.camera";
@@ -59,36 +58,36 @@ const MAX_CODES: usize = 16;
 /// # Errors
 ///
 /// The op is unknown, an input does not read, or the work cannot be done.
-pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
-    if app != APP {
-        return Err(format!("`{op}` is no op this device runs for {app}"));
-    }
+fn call(device: &Device, op: &str, input: &str) -> Result<String, String> {
     match op {
         "cameras" => Ok(cameras()),
-        "frame" => frame(platform, input),
-        "still" => still(platform, input),
-        "codes" => codes(platform, input),
+        "frame" => frame(device, input),
+        "still" => still(device, input),
+        "codes" => codes(device, input),
         "codes-live" => codes_live(input),
-        "ocr" => ocr(platform, input),
-        "pages_pdf" => pages_pdf(platform, input),
+        "ocr" => ocr(device, input),
+        "pages_pdf" => pages_pdf(device, input),
         "stop-record" => stop_record(input),
-        other => Err(format!("`{other}` is no op this device runs for {app}")),
+        other => Err(format!("`{other}` is no op this device runs for {APP}")),
     }
 }
 
-/// One `engine.start`: a document page or a recording, answered with the job's id.
+/// One `engine.start`: a document page or a recording, run as the job the host names.
 ///
 /// # Errors
 ///
-/// Not this device's app, or the input does not read.
-pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
-    if app != APP {
-        return Err(format!("`{op}` is no op this device runs for {app}"));
-    }
+/// An op this engine does not start, or the input does not read.
+fn start(
+    device: &Device,
+    job: &str,
+    op: &str,
+    input: &str,
+    _moved: &JobSink,
+) -> Result<(), String> {
     match op {
-        "scan" => scan(platform, input),
-        "record" => record(input),
-        other => Err(format!("`{other}` is no op this device runs for {app}")),
+        "scan" => scan(device, job, input),
+        "record" => record(job, input),
+        other => Err(format!("`{other}` is no op this device runs for {APP}")),
     }
 }
 
@@ -96,19 +95,17 @@ pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Resul
 ///
 /// # Errors
 ///
-/// Not this device's app, an op that is no stream, or a camera that cannot be opened.
-pub fn stream(app: &str, op: &str, input: &str, push: Arc<dyn Push>) -> Result<String, String> {
-    if app != APP {
-        return Err(format!("`{op}` is no stream this device runs for {app}"));
-    }
+/// An op that is no stream, or a camera that cannot be opened.
+fn stream(device: &Device, op: &str, input: &str, frames: &Frames) -> Result<String, String> {
+    let _ = device;
     match op {
-        "preview" => preview(input, push),
-        other => Err(format!("`{other}` is no stream this device runs for {app}")),
+        "preview" => preview(input, frames),
+        other => Err(format!("`{other}` is no stream this device runs for {APP}")),
     }
 }
 
 /// The camera's picture, frame after frame, handed to the window that shows it.
-fn preview(input: &str, push: Arc<dyn Push>) -> Result<String, String> {
+fn preview(input: &str, frames: &Frames) -> Result<String, String> {
     let ask: PictureAsk = reads(input)?;
     let id = next_job_id();
     let state = Arc::new(Job::new(false));
@@ -118,6 +115,7 @@ fn preview(input: &str, push: Arc<dyn Push>) -> Result<String, String> {
         .insert(id.clone(), Arc::clone(&state));
     let slot = id.clone();
     let worker = Arc::clone(&state);
+    let frames = *frames;
     std::thread::Builder::new()
         .name("camera-preview".to_owned())
         .spawn(move || {
@@ -132,13 +130,7 @@ fn preview(input: &str, push: Arc<dyn Push>) -> Result<String, String> {
                 }
                 if let Some(frame) = capture.take_latest() {
                     generation = generation.wrapping_add(1);
-                    push.frame(LiveFrame {
-                        slot: slot.clone(),
-                        generation,
-                        width: frame.width,
-                        height: frame.height,
-                        pixels: Arc::new(frame.rgba),
-                    });
+                    frames.frame(&slot, generation, frame.width, frame.height, &frame.rgba);
                 }
                 std::thread::sleep(POLL);
             }
@@ -153,7 +145,7 @@ fn preview(input: &str, push: Arc<dyn Push>) -> Result<String, String> {
 /// # Errors
 ///
 /// No such job on this device.
-pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
+fn status(device: &Device, job: &str) -> Result<String, String> {
     let state = jobs()
         .lock()
         .map_err(|_| "the job table is unreadable".to_owned())?
@@ -162,7 +154,7 @@ pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
     let Some(state) = state else {
         return Err(format!("no job `{job}` runs on this device"));
     };
-    state.settle(platform);
+    state.settle(device);
     if state.stopped.load(Ordering::Relaxed) {
         return Ok(serde_json::json!({ "state": "cancelled", "url": "", "error": "" }).to_string());
     }
@@ -178,7 +170,7 @@ pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
 }
 
 /// Stop a job: false when it is not this device's or it had finished.
-pub fn cancel(job: &str) -> bool {
+fn cancel(_device: &Device, job: &str) -> bool {
     let Ok(known) = jobs().lock() else {
         return false;
     };
@@ -223,12 +215,12 @@ struct Clip {
 
 impl Job {
     /// Keep what a scanner or a recording answered, once: the file the app shows.
-    fn settle(&self, platform: &dyn Platform) {
-        self.take_scan(platform);
-        self.take_clip(platform);
+    fn settle(&self, device: &Device) {
+        self.take_scan(device);
+        self.take_clip(device);
     }
 
-    fn take_scan(&self, platform: &dyn Platform) {
+    fn take_scan(&self, device: &Device) {
         let Ok(mut slot) = self.scan.lock() else {
             return;
         };
@@ -237,7 +229,7 @@ impl Job {
         };
         match rx.try_recv() {
             Ok(Ok(png)) => {
-                match platform.keep_content(name, "image/png", &png) {
+                match device.keep_content(name, "image/png", &png) {
                     Ok(kept) => {
                         if let Ok(mut url) = self.url.lock() {
                             *url = Some(format!("tilo-blob://{}", kept.hash));
@@ -267,14 +259,14 @@ impl Job {
         }
     }
 
-    fn take_clip(&self, platform: &dyn Platform) {
+    fn take_clip(&self, device: &Device) {
         let Ok(mut slot) = self.clip.lock() else {
             return;
         };
         let Some(clip) = slot.as_ref() else {
             return;
         };
-        match platform.keep_content(&clip.name, "video/x-msvideo", &clip.bytes) {
+        match device.keep_content(&clip.name, "video/x-msvideo", &clip.bytes) {
             Ok(kept) => {
                 if let Ok(mut url) = self.url.lock() {
                     *url = Some(format!("tilo-blob://{}", kept.hash));
@@ -306,13 +298,8 @@ fn reads<T: for<'de> Deserialize<'de>>(input: &str) -> Result<T, String> {
 }
 
 /// The bytes a `tilo-blob://` address holds, read from the device's content store.
-fn bytes_of(platform: &dyn Platform, url: &str) -> Result<Vec<u8>, String> {
-    let hash = url
-        .strip_prefix("tilo-blob://")
-        .ok_or_else(|| format!("`{url}` is no content address"))?;
-    platform
-        .read_content(hash)
-        .ok_or_else(|| format!("the content store does not hold `{hash}`"))
+fn bytes_of(device: &Device, url: &str) -> Result<Vec<u8>, String> {
+    device.read(url)
 }
 
 /// The file a kept picture or clip is, as the runtime reads a picture's answer.
@@ -358,7 +345,7 @@ impl PictureAsk {
     }
 }
 
-fn still(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn still(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         #[serde(flatten)]
@@ -374,14 +361,14 @@ fn still(platform: &dyn Platform, input: &str) -> Result<String, String> {
     } else {
         Encoding::Jpeg { quality: 90 }
     };
-    picture_with(platform, &ask.picture, None, encoding, ask.name)
+    picture_with(device, &ask.picture, None, encoding, ask.name)
 }
 
 /// The newest frame the camera shows, kept small: what a viewfinder shows while it asks again.
-fn frame(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn frame(device: &Device, input: &str) -> Result<String, String> {
     let ask: PictureAsk = reads(input)?;
     picture_with(
-        platform,
+        device,
         &ask,
         Some(PREVIEW_WIDTH),
         Encoding::Jpeg { quality: 80 },
@@ -392,7 +379,7 @@ fn frame(platform: &dyn Platform, input: &str) -> Result<String, String> {
 /// The newest frame the camera shows, kept as the picture `encoding` writes and named `name`
 /// (or by the clock when that is empty), scaled to `max_width` at most when the caller caps it.
 fn picture_with(
-    platform: &dyn Platform,
+    device: &Device,
     ask: &PictureAsk,
     max_width: Option<u32>,
     encoding: Encoding,
@@ -419,7 +406,7 @@ fn picture_with(
     } else {
         name
     };
-    let kept = platform.keep_content(&name, encoding.mime(), &bytes)?;
+    let kept = device.keep_content(&name, encoding.mime(), &bytes)?;
     Ok(file_json(&name, encoding.mime(), bytes.len(), &kept.hash))
 }
 
@@ -479,7 +466,7 @@ fn now_name() -> String {
     format!("{millis}")
 }
 
-fn codes(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn codes(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         url: String,
@@ -487,7 +474,7 @@ fn codes(platform: &dyn Platform, input: &str) -> Result<String, String> {
         width: u32,
     }
     let ask: Ask = reads(input)?;
-    let bytes = bytes_of(platform, &ask.url)?;
+    let bytes = bytes_of(device, &ask.url)?;
     let decoded = tilo_image_codec::DecodeImage {
         encoded: &bytes,
         max_dimension: ask.width.clamp(64, 2048),
@@ -551,7 +538,7 @@ fn default_code_width() -> u32 {
     1024
 }
 
-fn ocr(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn ocr(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         url: String,
@@ -559,7 +546,7 @@ fn ocr(platform: &dyn Platform, input: &str) -> Result<String, String> {
         language: String,
     }
     let ask: Ask = reads(input)?;
-    let bytes = bytes_of(platform, &ask.url)?;
+    let bytes = bytes_of(device, &ask.url)?;
     let decoded = tilo_image_codec::DecodeImage {
         encoded: &bytes,
         max_dimension: MAX_STILL_EDGE,
@@ -580,7 +567,7 @@ fn default_language() -> String {
     "eng".to_owned()
 }
 
-fn pages_pdf(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn pages_pdf(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Page {
         url: String,
@@ -596,7 +583,7 @@ fn pages_pdf(platform: &dyn Platform, input: &str) -> Result<String, String> {
     let ask: Ask = reads(input)?;
     let mut pages = Vec::with_capacity(ask.pages.len());
     for page in &ask.pages {
-        let bytes = bytes_of(platform, &page.url)?;
+        let bytes = bytes_of(device, &page.url)?;
         let decoded = tilo_image_codec::DecodeImage {
             encoded: &bytes,
             max_dimension: MAX_STILL_EDGE,
@@ -616,7 +603,7 @@ fn pages_pdf(platform: &dyn Platform, input: &str) -> Result<String, String> {
         });
     }
     let pdf = tilo_doc_pdf::render_scanned_pdf(&pages);
-    let kept = platform.keep_content(&ask.name, "application/pdf", &pdf)?;
+    let kept = device.keep_content(&ask.name, "application/pdf", &pdf)?;
     Ok(serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string())
 }
 
@@ -624,7 +611,7 @@ fn default_pdf_name() -> String {
     "scanned document.pdf".to_owned()
 }
 
-fn scan(_platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn scan(_device: &Device, job: &str, input: &str) -> Result<(), String> {
     #[derive(Deserialize)]
     struct Ask {
         scanner: String,
@@ -654,7 +641,7 @@ fn scan(_platform: &dyn Platform, input: &str) -> Result<String, String> {
     if ask.scanner.is_empty() {
         return Err("no document scanner is chosen".to_owned());
     }
-    let id = next_job_id();
+    let id = job.to_owned();
     let state = Arc::new(Job::new(false));
     jobs()
         .lock()
@@ -679,7 +666,7 @@ fn scan(_platform: &dyn Platform, input: &str) -> Result<String, String> {
     if let Ok(mut slot) = state.scan.lock() {
         *slot = Some((name, rx));
     }
-    Ok(serde_json::json!({ "job": id }).to_string())
+    Ok(())
 }
 
 fn default_dpi() -> u16 {
@@ -855,7 +842,7 @@ fn ask_frame(ask: &PictureAsk) -> Result<tilo_capture::Frame, String> {
         .map_err(|_| "the camera did not answer".to_owned())?
 }
 
-fn record(input: &str) -> Result<String, String> {
+fn record(job: &str, input: &str) -> Result<(), String> {
     let ask: PictureAsk = reads(input)?;
     let handle = keeper().ok_or_else(|| "the camera thread could not start".to_owned())?;
     let (reply, answered) = std::sync::mpsc::channel();
@@ -870,12 +857,11 @@ fn record(input: &str) -> Result<String, String> {
     answered
         .recv_timeout(FIRST_FRAME.saturating_add(POLL))
         .map_err(|_| "the camera did not answer".to_owned())??;
-    let id = next_job_id();
     jobs()
         .lock()
         .map_err(|_| "the job table is unreadable".to_owned())?
-        .insert(id.clone(), Arc::new(Job::new(true)));
-    Ok(serde_json::json!({ "job": id }).to_string())
+        .insert(job.to_owned(), Arc::new(Job::new(true)));
+    Ok(())
 }
 
 fn stop_record(input: &str) -> Result<String, String> {
@@ -935,4 +921,41 @@ fn encode_jpeg_rgb(rgb: &[u8], width: u32, height: u32, quality: u8) -> Option<V
         Encoding::Jpeg { quality },
     )
     .ok()
+}
+
+/// The jobs this engine runs: a page scanned, and a clip recorded. Both keep what they make in
+/// the app's own content store, so both run in the app's process.
+fn job_ops() -> &'static [JobOp] {
+    const JOBS: &[JobOp] = &[
+        JobOp::new("scan", Needs::APP_STATE),
+        JobOp::new("record", Needs::APP_STATE),
+    ];
+    JOBS
+}
+
+/// The one engine this library answers with.
+static API: EngineApi = EngineApi {
+    app: APP,
+    jobs: job_ops,
+    call,
+    start,
+    status,
+    stream,
+    cancel,
+};
+
+/// The entry the process opens this library for.
+#[unsafe(no_mangle)]
+pub fn tilo_engine_entry() -> &'static EngineApi {
+    &API
+}
+
+/// Proves this engine loads and runs against the runtime it is built with: the cameras this
+/// device has, as the app asks for them.
+pub fn self_check() -> Result<String, String> {
+    let answer = cameras();
+    if !answer.starts_with('{') {
+        return Err(format!("the check's answer is no object: {answer}"));
+    }
+    Ok(format!("listed the device's cameras: {answer}"))
 }

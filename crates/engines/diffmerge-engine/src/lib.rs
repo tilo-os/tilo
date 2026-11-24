@@ -3,8 +3,9 @@
 //! and written.
 //!
 //! An app runs sandboxed and can reach no disk of its own, so this crate is what it reaches
-//! through `engine.call`. It registers as the engine of `so.tilo.diffmerge` and answers that app
-//! alone; every answer is JSON the package reads into its own records.
+//! through `engine.call`, loaded as the engine library of `so.tilo.diffmerge`
+//! (crates/engines/loadable/diffmerge). It answers that app alone; every answer is JSON the
+//! package reads into its own records.
 //!
 //! Answers (`engine.call`):
 //!
@@ -193,8 +194,13 @@ impl DiffmergeEngine {
     }
 }
 
-impl tilolang_tilo::engine::Provider for DiffmergeEngine {
-    fn call(&self, op: &str, input: &str) -> Result<String, String> {
+impl DiffmergeEngine {
+    /// One request answered now, as the app asks it.
+    ///
+    /// # Errors
+    ///
+    /// The ask is not one this engine reads, or the work it names cannot be done.
+    pub fn call(&self, op: &str, input: &str) -> Result<String, String> {
         match op {
             "open" => Self::op_open(input),
             "diff" => Self::op_diff(input),
@@ -207,22 +213,29 @@ impl tilolang_tilo::engine::Provider for DiffmergeEngine {
         }
     }
 
-    fn start(&self, _op: &str, _input: &str) -> Result<String, String> {
+    /// No ask of this engine runs as a job.
+    ///
+    /// # Errors
+    ///
+    /// Every op, since none runs as work a person waits for or stops.
+    pub fn start(&self, _op: &str, _input: &str) -> Result<String, String> {
         Err("Diff & Merge asks no job of its device".to_owned())
     }
 
-    fn status(&self, job: &str) -> Result<String, String> {
+    /// No ask of this engine runs as a job.
+    ///
+    /// # Errors
+    ///
+    /// Every job, since this engine starts none.
+    pub fn status(&self, job: &str) -> Result<String, String> {
         Err(format!("no job `{job}` runs on this device"))
     }
 
-    fn cancel(&self, _job: &str) -> bool {
+    /// No ask of this engine runs as a job, so there is none to stop.
+    #[must_use]
+    pub fn cancel(&self, _job: &str) -> bool {
         false
     }
-}
-
-/// Register Diff & Merge's engine for the session's lifetime.
-pub fn register() {
-    tilolang_tilo::engine::register(APP, std::sync::Arc::new(DiffmergeEngine::new()));
 }
 
 /// The changes of a merge as the app reads them: one list per fact of a change, so a change is a

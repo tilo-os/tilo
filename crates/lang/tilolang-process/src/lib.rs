@@ -34,11 +34,7 @@ pub mod approved_checks;
 ))]
 pub mod backups_engine;
 pub mod call;
-#[cfg(feature = "app-launch")]
-pub mod camera_engine;
 pub mod canvas;
-#[cfg(feature = "app-launch")]
-pub mod chip_design_engine;
 pub mod connection;
 #[cfg(feature = "app-launch")]
 pub mod containers_engine;
@@ -56,6 +52,9 @@ pub mod git_engine;
 pub mod grayjay_engine;
 pub mod hosted;
 pub mod invocations;
+/// The engines this process opens from its runtime bundle the first time an app asks one.
+#[cfg(feature = "app-launch")]
+pub mod loaded_engines;
 pub mod page_prompts;
 /// Passwords' secrets, carried between the system's card, chosen files and the workspace's vault.
 #[cfg(all(
@@ -79,8 +78,6 @@ pub mod stop;
 pub mod task;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-#[cfg(feature = "app-launch")]
-pub mod typst_engine;
 #[cfg(all(
     feature = "app-launch",
     any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))

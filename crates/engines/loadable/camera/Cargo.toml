@@ -1,0 +1,66 @@
+[package]
+name = "tilo-camera-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The camera's, scanner's and document page's device work as a loadable engine library beside the shared runtime: libtilo_camera_engine.so, shipped in the runtime bundle and opened the first time the app asks for a picture, a code, a page or a clip."
+
+# A runtime engine: code one app needs that no other app should map. It is a
+# Rust dylib chained on libruntime_dylib.so, built in the same Cargo graph as
+# the runtime and the apps (os/scripts/build-thin-apps.sh), shipped under the
+# runtime bundle's lib/, and opened through tilo-engine-loader the first time
+# the app calls it.
+#
+# Everything sits behind `thin`, which only that build enables: a Rust dylib
+# that links another Rust dylib needs `-C prefer-dynamic`, which only
+# tools/ci/rustc-thin-app-wrapper.sh gives it. Any other build of this crate is
+# an empty library.
+[lib]
+name = "tilo_camera_engine"
+path = "src/lib.rs"
+crate-type = ["dylib"]
+
+# Built with every runtime, whichever apps a release selects: Cargo cannot
+# build this library without either a binary that needs it or `--lib` for
+# every app. build-thin-apps.sh runs it to prove the engine loads and runs
+# against the runtime it ships with.
+[[bin]]
+name = "tilo-camera-engine-check"
+path = "src/check.rs"
+required-features = ["thin"]
+
+[features]
+thin = [
+    "dep:runtime-dylib",
+    "dep:tilo-capture",
+    "dep:tilo-image-codec",
+    "dep:tilo-ocr",
+    "dep:tilo-doc-pdf",
+    "dep:media",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:workspace-hack",
+]
+
+[dependencies]
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
+# The cameras, the scanner and the codes a picture holds on this device.
+tilo-capture = { path = "../../tilo-capture", features = ["scanner", "camera", "codes"], optional = true }
+# A picture and a clip encoded and decoded through the one image codec.
+tilo-image-codec = { version = "0.1.0", path = "../../tilo-image-codec", optional = true }
+# The text a page shows, and the PDF a scanned document is written as.
+tilo-ocr = { path = "../../ocr", optional = true }
+tilo-doc-pdf = { path = "../../tilo-doc-pdf", optional = true }
+# The clip recorder the camera's frames feed.
+media = { package = "tilo-media", path = "../../tilo-media", optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+# The one way an engine library is declared and opened.
+tilo-engine-loader = { version = "0.1.0", path = "../../../core/engine-loader" }
+# Optional like everything else: an empty build must not link the hack's whole
+# dependency set into a shared object.
+workspace-hack = { version = "0.1", optional = true }
+
+[lints]
+workspace = true

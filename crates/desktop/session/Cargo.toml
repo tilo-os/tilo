@@ -201,7 +201,6 @@ code-engine = { path = "../../engines/code-engine" }
 tilo-disk-usage = { path = "../../engines/disk-usage" }
 # The hex editor's device work: a file's bytes and the edits typed into them.
 hex-engine = { path = "../../engines/hex-engine" }
-diffmerge-engine = { path = "../../engines/diffmerge-engine" }
 # The apps the session runs itself keep their resources in the workspace's store, whose
 # commands are answered by this device's own workspace service.
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }

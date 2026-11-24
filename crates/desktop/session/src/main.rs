@@ -77,9 +77,6 @@ fn main() -> std::process::ExitCode {
     // The hex editor's device work: the bytes of a file, the edits typed into them and the
     // numbers they read as.
     hex_engine::register();
-    // Diff & Merge's device work: two texts aligned, three merged and composed, two folders
-    // compared, and the files it opens and writes.
-    diffmerge_engine::register();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it opens no display and
