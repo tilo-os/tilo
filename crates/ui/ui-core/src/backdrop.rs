@@ -807,6 +807,16 @@ pub struct RecordedBackdrop {
 }
 
 impl RecordedBackdrop {
+    /// The size in texels of the image this surface is drawn with: what a host that blurs outside
+    /// the renderer is asked for and has to hand back ([`provide_backdrops`]), or the surface draws
+    /// its opaque placeholder and its look never shows. It is the placeholder's own size, so it
+    /// follows whatever the recording took: one texel per cell for a surface shown as pixels, one
+    /// per pixel for a material stage or a blur too small to halve, coarser texels otherwise.
+    #[must_use]
+    pub fn texels(&self) -> (u32, u32) {
+        (self.image.width, self.image.height)
+    }
+
     /// This surface's backdrop as a region of a target that draws it at
     /// `rect`, `scale` target pixels per recording pixel, over `below`
     /// (handed what the recording saw below the surface). The one mapping
@@ -876,29 +886,9 @@ thread_local! {
 /// what lies below) has them made where that is known and drawn in place of
 /// the placeholders, so the material's band and tint apply to them as to a
 /// substituted blur. An image is used only while its size is the slot's
-/// placeholder size ([`backdrop_texels`]); the rest stay opaque.
+/// placeholder size ([`RecordedBackdrop::texels`]); the rest stay opaque.
 pub fn provide_backdrops(images: Vec<(usize, ImageData)>) {
     PROVIDED.with(|provided| *provided.borrow_mut() = images);
-}
-
-/// The size in texels of the image a surface with `bounds` (recording
-/// pixels) is drawn with: what a provided backdrop must measure. `cell_px`
-/// is the cell the surface shows as pixels ([`Sampling::Blocky`]), in the
-/// same recording pixels, or `0` for a smoothly sampled surface.
-///
-/// One texel per cell, as [`Self::record`] takes for a blocky sample: a
-/// host that blurs outside the renderer has to hand back an image the size
-/// the placeholder takes, or the surface draws the opaque placeholder and
-/// its look never shows.
-#[must_use]
-pub fn backdrop_texels(bounds: Rect, sampling: Sampling, cell_px: f64) -> (u32, u32) {
-    match sampling {
-        Sampling::Blocky => (
-            cells(bounds.width(), cell_px.max(1.0)),
-            cells(bounds.height(), cell_px.max(1.0)),
-        ),
-        Sampling::Smooth => (texels(bounds.width()), texels(bounds.height())),
-    }
 }
 
 fn provided(slot: PlaceholderKey, width: u32, height: u32) -> Option<ImageData> {
@@ -1259,6 +1249,14 @@ pub struct BackdropRegion {
 #[derive(Clone, Default)]
 pub struct BackdropFrame {
     pub regions: Vec<BackdropRegion>,
+}
+
+impl BackdropRegion {
+    /// The size in texels of the image the region is drawn with ([`RecordedBackdrop::texels`]).
+    #[must_use]
+    pub fn texels(&self) -> (u32, u32) {
+        (self.image.width, self.image.height)
+    }
 }
 
 impl BackdropFrame {

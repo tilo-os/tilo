@@ -308,9 +308,13 @@ where
     )
 }
 
-/// What lies below surface `index` , front first: the surfaces beneath it and the windows, drawn
-/// at `scale` with `origin` (logical) at the top left of the area `bounds` (physical), as its
-/// backdrop sees them — the windows where their effects draw them, framed as they are drawn.
+/// What lies below surface `index` , front first, stacked as the output draws it: the surfaces
+/// over the windows that come before it, the windows, and the surfaces under the windows. A
+/// surface under the windows (the shell's screen, whose window frames and bars bend what is
+/// behind them) has only the surfaces under the windows before it beneath it, never the windows
+/// standing over it. Drawn at `scale` with `origin` (logical) at the top left of the area `bounds`
+/// (physical), as its backdrop sees them — the windows where their effects draw them, framed as
+/// they are drawn.
 pub(crate) fn below_surface<R>(
     renderer: &mut R,
     state: &State,
@@ -327,17 +331,40 @@ where
     if state.locked() {
         return elements;
     }
-    for below in state.surfaces.iter().take(surface).rev() {
-        for layer in below.layers().into_iter().rev() {
-            let location =
-                (Point::<i32, Logical>::from(layer.location).to_f64() - origin).to_physical(scale);
-            match surface_layer(renderer, &state.uploads, &layer, location, scale) {
-                Ok(Some(element)) => elements.push(element),
-                Ok(None) => {}
-                Err(error) => tracing::warn!(?error, "surface layer: buffer not imported"),
+    let Some(under_windows) = state
+        .surfaces
+        .get(surface)
+        .map(|requesting| requesting.below_windows())
+    else {
+        return elements;
+    };
+    let layers_of = |renderer: &mut R,
+                     elements: &mut Vec<OutputRenderElement<R>>,
+                     under: bool,
+                     before: usize| {
+        for below in state
+            .surfaces
+            .iter()
+            .take(before)
+            .rev()
+            .filter(|below| below.below_windows() == under)
+        {
+            for layer in below.layers().into_iter().rev() {
+                let location = (Point::<i32, Logical>::from(layer.location).to_f64() - origin)
+                    .to_physical(scale);
+                match surface_layer(renderer, &state.uploads, &layer, location, scale) {
+                    Ok(Some(element)) => elements.push(element),
+                    Ok(None) => {}
+                    Err(error) => tracing::warn!(?error, "surface layer: buffer not imported"),
+                }
             }
         }
+    };
+    if under_windows {
+        layers_of(renderer, &mut elements, true, surface);
+        return elements;
     }
+    layers_of(renderer, &mut elements, false, surface);
     elements.extend(window_elements(
         renderer,
         state,
@@ -346,6 +373,7 @@ where
         bounds,
         state.space.elements().rev().cloned().collect(),
     ));
+    layers_of(renderer, &mut elements, true, state.surfaces.len());
     elements
 }
 

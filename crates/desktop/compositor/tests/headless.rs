@@ -1566,7 +1566,7 @@ tilo_test_env::scenario! {
         // The window covers 220..420 x 190..290: the region's right and lower part is red, the rest
         // background.
         let handed = Rc::new(RefCell::new(Vec::new()));
-        compositor.add_surface(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
+        compositor.add_surface(Rc::new(RefCell::new(Frosted(Rc::clone(&handed), false))));
         compositor.draw_frame().expect("a frame");
         let first = handed.borrow_mut().pop().flatten().expect("a backdrop");
         assert_eq!(first.texels, (40, 20));
@@ -1711,12 +1711,16 @@ fn a_closed_window_is_drawn_where_and_as_big_as_it_stood() {
 }
 
 /// A surface of translucent material over (200, 180, 80, 40),
-/// keeping the backdrops it is handed.
-struct Frosted(Rc<RefCell<Vec<Option<BackdropImage>>>>);
+/// keeping the backdrops it is handed; under the windows when its flag says so.
+struct Frosted(Rc<RefCell<Vec<Option<BackdropImage>>>>, bool);
 
 impl ShellSurface for Frosted {
     fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
+    }
+
+    fn below_windows(&self) -> bool {
+        self.1
     }
 
     fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
@@ -1745,7 +1749,7 @@ fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
     let mut compositor = headless(Box::new(StackPolicy));
     let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
     let handed = Rc::new(RefCell::new(Vec::new()));
-    compositor.add_surface(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
+    compositor.add_surface(Rc::new(RefCell::new(Frosted(Rc::clone(&handed), false))));
     compositor.draw_frame().expect("a frame");
     handed.borrow_mut().clear();
 
@@ -1776,6 +1780,34 @@ fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
         "the moved window lies below the left of it: {inside:?}"
     );
     assert!(outside[0] < 60, "and it left the right of it: {outside:?}");
+}
+
+/// A surface under the windows (the shell's screen, whose window frames and bars bend what lies
+/// behind them) takes a backdrop of what is under it: the window standing over its region is not
+/// in it, as it is in the backdrop of a surface over the windows.
+#[test]
+fn a_surface_under_the_windows_takes_no_window_into_its_backdrop() {
+    for (under, shows_the_window) in [(true, false), (false, true)] {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+        let handed = Rc::new(RefCell::new(Vec::new()));
+        compositor.add_surface(Rc::new(RefCell::new(Frosted(Rc::clone(&handed), under))));
+        compositor.draw_frame().expect("a frame");
+        let image = handed
+            .borrow_mut()
+            .pop()
+            .flatten()
+            .expect("a backdrop drawn");
+        // Texel (30, 10) is (260, 200) of the layout, inside the window at (220, 190).
+        let i = (10 * 40 + 30) * 4;
+        let red = image.rgba[i] > 200 && image.rgba[i + 1] < 60;
+        assert_eq!(
+            red,
+            shows_the_window,
+            "under the windows: {under}, texel {:?}",
+            &image.rgba[i..i + 4]
+        );
+    }
 }
 
 #[test]

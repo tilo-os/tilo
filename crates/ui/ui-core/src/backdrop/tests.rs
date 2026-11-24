@@ -456,7 +456,11 @@ tilo_test_env::scenario! {
     phase a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder;
     {
         let theme = Theme::dark();
-        let (width, height) = backdrop_texels(PANEL, Sampling::Smooth, 0.0);
+        let mut scene = Scene::new();
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 0);
+        floating(&mut scene, Affine::IDENTITY, &theme);
+        let (width, height) = recording.finish()[0].texels();
         assert_eq!((width, height), (64, 48));
         let blurred = crate::raster::rgba8_premultiplied(
             [200_u8, 10, 10, 255].repeat((width * height) as usize),
@@ -515,13 +519,16 @@ tilo_test_env::scenario! {
         );
         let cell = surface.cell_px;
         assert!(cell >= 2.0, "a cell of {cell} px shows no pixels");
-        let requested = backdrop_texels(surface.bounds, surface.sampling, cell);
+        let requested = surface.texels();
         assert_eq!(
-            (surface.image.width, surface.image.height),
             requested,
-            "the texels the host is asked for are the placeholder's own"
+            (
+                cells(surface.bounds.width(), cell),
+                cells(surface.bounds.height(), cell)
+            ),
+            "the texels the host is asked for are one per cell"
         );
-        let smooth = backdrop_texels(surface.bounds, Sampling::Smooth, 0.0);
+        let smooth = (texels(surface.bounds.width()), texels(surface.bounds.height()));
         assert!(
             requested.0 * 2 <= smooth.0,
             "one texel per {cell} px cell ({requested:?}) is coarser than a smooth \

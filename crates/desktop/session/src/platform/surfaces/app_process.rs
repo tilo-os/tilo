@@ -598,17 +598,7 @@ impl ShellSurface for AppProcess {
         self.backdrops = recording
             .finish()
             .iter()
-            .map(|surface| {
-                (
-                    surface.bounds,
-                    surface.blur_px,
-                    ui::backdrop::backdrop_texels(
-                        surface.bounds,
-                        surface.sampling,
-                        surface.cell_px,
-                    ),
-                )
-            })
+            .map(|surface| (surface.bounds, surface.blur_px, surface.texels()))
             .collect();
         let changed = self.damage.take();
         let changed = if std::mem::take(&mut self.full) {

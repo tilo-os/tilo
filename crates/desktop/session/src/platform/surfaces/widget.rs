@@ -1112,13 +1112,7 @@ impl ShellSurface for WidgetSurface {
             .backdrops()
             .regions
             .iter()
-            .map(|region| {
-                (
-                    region.rect,
-                    region.blur_px,
-                    ui::backdrop::backdrop_texels(region.rect, region.sampling, region.cell_px),
-                )
-            })
+            .map(|region| (region.rect, region.blur_px, region.texels()))
             .collect();
         let size = self.frames.size();
         let key = TargetKey {

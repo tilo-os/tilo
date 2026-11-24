@@ -79,7 +79,7 @@ highlight where the pointer is.
 | `settings/appearance` `custom_themes` (JSON copies of theme documents) | Goes: replaced by the typed `themes` collection. |
 | `apps/themes` (Theme Studio, its `themes.studio` resource) | Goes. A second resource holding the same themes, copied into the appearance record on apply. Its editor becomes Settings' Themes page, a tilolang view over `settings/appearance`. |
 | The shell's style settings | Read and write the theme the shell shows through the same fields. Layout choices (dock edge, which material a bar takes) stay in the layout's own document: they choose among the theme's materials and define none. |
-| The compositor's frames and window effects | Stay in the compositor; they take the window radius and depth from the theme the session sends. Moving the compositor's composition onto wgpu is not part of this. |
+| The compositor's frames and window effects | A window's frame is the shell's window card, drawn in the theme's window material under the window, and the bars are the theme's bar material: both run the material stage like any other surface. The compositor hands each surface what lies below it as the output stacks it (a surface under the windows gets the wallpaper and the surfaces under it, never the windows over it), and the stage runs over that on the CPU; it only cuts a window's corners to the card. Moving the compositor's composition onto wgpu is not part of this. |
 
 ## Order
 
