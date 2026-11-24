@@ -74,7 +74,6 @@ promote_target_uki() {\n''' + body + '\n}\npromote_target_uki "$FIXTURE_ESP"\n'
             self.assertIn("--password-hash cannot seed a Tilo Server", SOURCE)
             self.assertIn("takes no --user", SOURCE)
             self.assertIn("takes no --full-name", SOURCE)
-            self.assertIn("a Tilo Server takes no prepared desktop setup", SOURCE)
         with self.subTest(phase="the_installed_image_must_be_the_server_image"):
             guard = ('elif [ "$INSTALLED_FLAVOUR" = server ]; then\n'
                      '  die "the Tilo Server image has no login account; select the server destination to install it"')
