@@ -6,6 +6,7 @@
 
 use std::rc::Rc;
 
+use tilo_canvas_engine as canvas_engine;
 use tilolang_tilo::runtime::canvas::CanvasHost;
 
 /// The device's drawing engine: one per instance, sharing the process's engine.
