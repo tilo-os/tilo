@@ -348,6 +348,24 @@ pub(super) fn admit(
     );
 }
 
+/// `message` waits for the writes before it, which its sender is asked for.
+pub(super) fn held_for_history(
+    peer: &mut StatePeer,
+    key: &SigningKey,
+    message: NeighbourMsg,
+    now: SystemTime,
+) {
+    let report = peer.receive_from_report(origin(key), message, now).unwrap();
+    assert!(
+        matches!(
+            report.primary(),
+            InputDisposition::RetryLater(MissingPrerequisite::CausalDependencies)
+        ),
+        "held for the writes before it: {:?}",
+        report.primary()
+    );
+}
+
 /// A key holder's opener: any epoch it holds, compactions included.
 pub(super) fn open(keys: &ContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
     let metadata = op.encryption.ok_or("not sealed")?;
@@ -1324,7 +1342,7 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
         let first = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.replica, &f.other, first, now);
+        admit(&mut f.replica, &f.other, first.clone(), now);
         let later = write(&f.replica, &f.other, &keys, &author.edit("value", "2"), now);
         admit(&mut f.replica, &f.other, later.clone(), now);
         let saved = checkpoint(&f.replica, &keys, &f.owner, now);
@@ -1359,9 +1377,16 @@ tilo_test_env::scenario! {
         );
         // The checkpoint is the whole record as its writer saved it, so it founds
         // the route for a replica holding none of it, and the change that waited
-        // is decided again behind it.
+        // is decided again behind it: it is its writer's second, and waits for
+        // the first, which its sender is asked for.
         admit(&mut fresh, &f.owner, saved.clone(), now);
-        assert_eq!(held(&fresh), vec![envelope_of(&saved), envelope_of(&later)]);
+        assert_eq!(held(&fresh), vec![envelope_of(&saved)]);
+        // The answer admits the first, and the change that waited behind it.
+        admit(&mut fresh, &f.other, first.clone(), now);
+        assert_eq!(
+            held(&fresh),
+            vec![envelope_of(&saved), envelope_of(&first), envelope_of(&later)]
+        );
     }
 
     phase a_replayed_or_superseded_compaction_is_refused;
@@ -1437,10 +1462,14 @@ tilo_test_env::scenario! {
         let forgery = forged(&f.replica, &owner, &wrapper(&f.replica, &keys, &all), now);
         refused_with(&mut f.replica, &owner, forgery, now, "has not admitted");
 
+        // A write past the next one of its writer waits for those between,
+        // which its sender is asked for: a replica never holds a gap a
+        // compaction could cover partially. The answer admits both.
         let mut gap = f.replica.clone();
-        admit(&mut gap, &f.other, writes[2].clone(), now);
-        let forgery = forged(&gap, &owner, &wrapper(&gap, &keys, &all), now);
-        refused_with(&mut gap, &owner, forgery, now, "partial");
+        held_for_history(&mut gap, &f.other, writes[2].clone(), now);
+        assert_eq!(held(&gap), all[..1]);
+        admit(&mut gap, &f.other, writes[1].clone(), now);
+        assert_eq!(held(&gap), all);
 
         admit(&mut f.replica, &f.other, writes[1].clone(), now);
         let (mut other_set, metadata) = wrapper(&f.replica, &keys, &all[..2]);
@@ -2586,33 +2615,23 @@ tilo_test_env::scenario! {
             Some(metadata),
             now,
         ));
-        admit(&mut f.replica, &f.other, after, now);
+        held_for_history(&mut f.replica, &f.other, after, now);
+        let waiting = captured(&f, &f.replica, &keys).unwrap();
+        assert_eq!(text(&waiting, "early-2"), None, "the change waits for its base");
 
-        assert!(matches!(
-            captured(&f, &f.replica, &keys),
-            Err(crate::PeerDocumentReadError::Incomplete)
-        ));
+        // Signed and on its way: its sender answers the ask with it, and the change that waited
+        // goes in behind it; the record reads whole.
+        admit(&mut f.replica, &f.other, on_its_way, now);
+        let read = captured(&f, &f.replica, &keys).unwrap();
+        assert_eq!(text(&read, "early-1").as_deref(), Some("first"));
+        assert_eq!(text(&read, "early-2").as_deref(), Some("second"));
         let opened = f
             .replica
             .publication()
             .opened_document(APP, RECORD, &mut |op| open(&keys, op))
             .unwrap()
             .unwrap();
-        assert!(
-            matches!(
-                opened.unmerged.as_slice(),
-                [UnmergedWrite {
-                    seq: 2,
-                    reason: UnmergedReason::MissingDependencies { .. },
-                    ..
-                }]
-            ),
-            "{:?}",
-            opened.unmerged
-        );
-        // Signed and on its way: the host replays it in its writer's order, and the record reads
-        // whole then (as it did before any of this).
-        drop(on_its_way);
+        assert!(opened.unmerged.is_empty(), "{:?}", opened.unmerged);
     }
 
     phase a_kept_reader_takes_a_write_it_read_without_in_once_its_base_arrives;

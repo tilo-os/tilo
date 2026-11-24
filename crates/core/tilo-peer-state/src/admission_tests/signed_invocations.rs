@@ -1152,6 +1152,8 @@ fn upkeep(
 fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
     let (mut receiver, a, _ac, _b, _bc, now) = seeded_with(RevocationList::new());
     let (server_key, server_cert, person) = add_member_with(&mut receiver, &a, now, 51, 52);
+    // A device that keeps a record's sealed writes keeps the exact evidence it took them on.
+    receiver.select_exact_admissions().unwrap();
 
     let refused = upkeep(
         &receiver,

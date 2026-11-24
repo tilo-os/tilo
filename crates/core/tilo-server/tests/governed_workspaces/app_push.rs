@@ -51,6 +51,12 @@ async fn hosted_topic(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_in() {
     use std::sync::atomic::Ordering;
+    // The surfaces it installs are the process's: no other test runs here.
+    if !crate::common::in_own_process(
+        "governed_workspaces::app_push::a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_in",
+    ) {
+        return;
+    }
     crate::common::install_process_surfaces(
         collab_types::Surfaces::from_source(std::sync::Arc::new(
             collab_types::surface::ContentSurfaces::new(|_, wanted| {

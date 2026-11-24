@@ -737,9 +737,10 @@ params = []
     doc.put(ROOT, "topic", "from Bob").unwrap();
     doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
     bob_link
-        .send(sign(&mut doc, 1_000))
+        .send(sign(&mut doc, 1))
         .expect("Bob's edit goes out on his link");
-    // A comment: theirs to make.
+    // A comment: theirs to make. The refused edit took no number, so the
+    // comment is Bob's first write too.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "comment", "looks good").unwrap();
     let context = tilo_actions::ActionContext {
@@ -754,7 +755,7 @@ params = []
             .with_message(context.change_message().unwrap()),
     );
     bob_link
-        .send(sign(&mut doc, 1_001))
+        .send(sign(&mut doc, 1))
         .expect("Bob's comment goes out on his link");
     crate::common::receives(&alice_link, |peer| text(peer, "comment").is_some()).await;
     assert_eq!(
