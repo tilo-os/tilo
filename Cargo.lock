@@ -3849,40 +3849,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "disks"
-version = "0.1.0"
-dependencies = [
- "block-devices",
- "disks-model",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-app",
- "tilo-history",
- "tilo-system-info",
- "workspace-hack",
-]
-
-[[package]]
-name = "disks-model"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "disks-model-wasm"
-version = "0.1.0"
-dependencies = [
- "disks-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "dispatch"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19116,7 +19082,6 @@ dependencies = [
  "db-client-model-wasm",
  "diffmerge-model-wasm",
  "disk-usage-model-wasm",
- "disks-model-wasm",
  "firewall-model-wasm",
  "git-client-model-wasm",
  "hex-editor-model-wasm",
@@ -21356,6 +21321,7 @@ dependencies = [
 name = "tilo-system-service"
 version = "0.1.0"
 dependencies = [
+ "block-devices",
  "bounded-command",
  "desktop-policy",
  "os-actions",
@@ -26965,9 +26931,6 @@ dependencies = [
  "disk-usage",
  "disk-usage-model",
  "disk-usage-model-wasm",
- "disks",
- "disks-model",
- "disks-model-wasm",
  "displaydoc",
  "dlib",
  "document-features",

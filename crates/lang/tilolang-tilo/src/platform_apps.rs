@@ -120,6 +120,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("firmware", "Firmware", "firmware"),
     ("containers", "Containers", "containers"),
     ("processes", "Processes", "processes"),
+    ("disks", "Drives", "disks"),
     ("modem", "Modem", "modem"),
     ("tethering", "Tethering", "tethering"),
     // What the machine booted, what update waits, and the zone its clock keeps.

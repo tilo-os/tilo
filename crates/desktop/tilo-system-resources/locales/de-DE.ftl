@@ -75,3 +75,11 @@ so-tilo-system-processes-end = Einen Prozess beenden
 so-tilo-system-processes-kill = Einen Prozess abbrechen
 so-tilo-system-processes-end-app = Eine App beenden
 so-tilo-system-processes-set-interval = Wie oft die Maschine gelesen wird
+
+# Drives
+so-tilo-system-disks-refresh = Die Laufwerke neu lesen
+so-tilo-system-disks-mount = Das Laufwerk öffnen
+so-tilo-system-disks-unmount = Das Laufwerk schließen
+so-tilo-system-disks-format = Das Laufwerk löschen und ein neues Dateisystem schreiben
+so-tilo-system-disks-benchmark = Das Laufwerk messen
+so-tilo-system-disks-eject = Das Laufwerk auswerfen

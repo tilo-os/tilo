@@ -28,6 +28,7 @@ pub mod codec_pack;
 pub mod containers;
 pub mod device;
 pub mod disk_unlock;
+pub mod disks;
 pub mod firmware;
 pub mod drives;
 pub mod host_info;
@@ -55,7 +56,7 @@ use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading,
 
 use device::{
     Change, CodecChange, ContainerChange, DiskUnlockChange, DriveChange, FirmwareChange,
-    PowerProfiles, PrintChange, ProcessChange, StorageChange, System, UserChange,
+    DiskChange, PowerProfiles, PrintChange, ProcessChange, StorageChange, System, UserChange,
     WindowsChange, follow_once,
 };
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
@@ -64,8 +65,9 @@ use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    CODEC_PACK, CONTAINERS, DISK_UNLOCK, DRIVES, FIRMWARE, HOST_INFO, KEYBOARD_BACKLIGHT, POWER,
-    PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS, WINDOWS_COMPAT,
+    CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIRMWARE, HOST_INFO, KEYBOARD_BACKLIGHT,
+    POWER, PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS,
+    WINDOWS_COMPAT,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -91,6 +93,7 @@ enum Part {
     Firmware,
     Containers,
     Processes,
+    Disks,
 }
 
 /// A change to one of the resources a privileged helper answers for an extension.
@@ -119,6 +122,7 @@ pub struct Readings {
     pub firmware: tilo_system_resources::firmware::Firmware,
     pub containers: tilo_system_resources::containers::Containers,
     pub processes: tilo_system_resources::processes::Processes,
+    pub disks: tilo_system_resources::disks::Disks,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -147,6 +151,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         firmware: system.firmware(),
         containers: system.containers(),
         processes: system.processes(),
+        disks: system.disks(),
     }
 }
 
@@ -470,6 +475,7 @@ impl SystemService {
                 &mut readings.processes.pending,
                 &mut readings.processes.problem,
             ),
+            Part::Disks => (&mut readings.disks.pending, &mut readings.disks.problem),
         }
     }
 
@@ -517,6 +523,12 @@ impl SystemService {
         readings.containers.problem = old.containers.problem.take();
         readings.processes.pending = std::mem::take(&mut old.processes.pending);
         readings.processes.problem = old.processes.problem.take();
+        readings.disks.pending = std::mem::take(&mut old.disks.pending);
+        readings.disks.problem = old.disks.problem.take();
+        // A benchmark stays until the next one: a plain read does not clear it.
+        if readings.disks.benchmark.is_none() {
+            readings.disks.benchmark = old.disks.benchmark.take();
+        }
         readings.firmware.installing = readings
             .firmware
             .pending
@@ -742,6 +754,51 @@ impl SystemService {
                 action,
                 result,
                 readings: Box::new(read(system, is_live(live_active.as_ref()))),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Make `change` on the drives, landing the machine's answer and a fresh reading.
+    fn start_disk(&mut self, action: &str, change: DiskChange) -> Started {
+        self.readings.disks.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let result = system.change_disk(&change);
+            Landed::Changed {
+                part: Part::Disks,
+                action,
+                result,
+                readings: Box::new(read(system, is_live(live_active.as_ref()))),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Measure the device, landing the answer as the reading's benchmark.
+    fn start_benchmark(&mut self, action: &str, device: &str) -> Started {
+        self.readings.disks.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let device = device.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let measured = system.benchmark_device(&device);
+            let mut readings = read(system, is_live(live_active.as_ref()));
+            let result = match measured {
+                Ok(benchmark) => {
+                    readings.disks.benchmark = Some(benchmark);
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            };
+            Landed::Changed {
+                part: Part::Disks,
+                action,
+                result,
+                readings: Box::new(readings),
                 live_power_mode: None,
             }
         });
@@ -1022,6 +1079,15 @@ pub fn firmware_surface() -> tilo_resource::surface::Surface {
     >(FIRMWARE, "Firmware")
 }
 
+/// The `disks` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn disks_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::disks::Disks,
+        tilo_system_resources::disks::DiskAction,
+    >(DISKS, "Drives")
+}
+
 /// The `processes` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
 pub fn processes_surface() -> tilo_resource::surface::Surface {
@@ -1255,6 +1321,7 @@ impl Service for SystemService {
             firmware::resource(&self.readings.firmware),
             containers::resource(&self.readings.containers),
             processes::resource(&self.readings.processes),
+            disks::resource(&self.readings.disks),
         ]
     }
 
@@ -1276,6 +1343,7 @@ impl Service for SystemService {
             FIRMWARE => Some(reading(&self.readings.firmware)),
             CONTAINERS => Some(reading(&self.readings.containers)),
             PROCESSES => Some(reading(&self.readings.processes)),
+            DISKS => Some(reading(&self.readings.disks)),
             _ => None,
         }
     }
@@ -1689,6 +1757,32 @@ impl Service for SystemService {
                     }
                 };
                 Ok(self.start_process(id, change))
+            }
+            DISKS => {
+                let action = decode::<tilo_system_resources::disks::DiskAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                match action {
+                    tilo_system_resources::disks::DiskAction::Refresh => {
+                        Ok(self.start_reread(Part::Disks, id))
+                    }
+                    tilo_system_resources::disks::DiskAction::Mount { device } => {
+                        Ok(self.start_disk(id, DiskChange::Mount(device)))
+                    }
+                    tilo_system_resources::disks::DiskAction::Unmount { device } => {
+                        Ok(self.start_disk(id, DiskChange::Unmount(device)))
+                    }
+                    tilo_system_resources::disks::DiskAction::Format { device, filesystem } => {
+                        Ok(self.start_disk(id, DiskChange::Format { device, filesystem }))
+                    }
+                    tilo_system_resources::disks::DiskAction::Eject { device } => {
+                        Ok(self.start_disk(id, DiskChange::Eject(device)))
+                    }
+                    tilo_system_resources::disks::DiskAction::Benchmark { device } => {
+                        Ok(self.start_benchmark(id, &device))
+                    }
+                }
             }
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,

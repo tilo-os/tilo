@@ -23,6 +23,7 @@ tilo-deployment-status = { path = "../deployment-status" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-paths = { path = "../../platform/tilo-paths" }
 tilo-system-stats = { path = "../system-stats" }
+block-devices = { path = "../block-devices", features = ["udisks"] }
 tilo-location = { path = "../../platform/tilo-location" }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-service = { path = "../../desktop/service" }

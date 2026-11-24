@@ -12,6 +12,7 @@
 
 pub mod containers;
 pub mod device_settings;
+pub mod disks;
 pub mod effects;
 pub mod model;
 pub mod codec_pack;
@@ -29,6 +30,7 @@ pub mod windows_compat;
 
 pub use codec_pack::CODEC_PACK;
 pub use containers::CONTAINERS;
+pub use disks::DISKS;
 pub use disk_unlock::DISK_UNLOCK;
 pub use firmware::FIRMWARE;
 pub use drives::DRIVES;

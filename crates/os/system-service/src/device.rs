@@ -35,6 +35,16 @@ pub enum PrintChange {
     RetryJob(String),
 }
 
+/// A change to make on the drives: what a person, an agent or a script asked of the `disks`
+/// resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiskChange {
+    Mount(String),
+    Unmount(String),
+    Format { device: String, filesystem: String },
+    Eject(String),
+}
+
 /// A change to make on the containers: what a person, an agent or a script asked of the
 /// `containers` resource.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -285,6 +295,28 @@ pub trait System: Send + Sync {
     /// alive while it is held.
     fn follow_containers(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
         None
+    }
+
+    /// The drives and partitions this computer sees. A machine that cannot read them answers
+    /// with `serving: false`.
+    fn disks(&self) -> tilo_system_resources::disks::Disks {
+        tilo_system_resources::disks::Disks::default()
+    }
+
+    /// Make `change` on the drives.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_disk(&self, _change: &DiskChange) -> Result<(), String> {
+        Err("this machine has no drives to change".to_owned())
+    }
+
+    /// Measure the device's read speed: `device` is its name in `/dev`.
+    ///
+    /// # Errors
+    /// Why it could not be measured.
+    fn benchmark_device(&self, _device: &str) -> Result<tilo_system_resources::disks::Benchmark, String> {
+        Err("this machine cannot measure its drives".to_owned())
     }
 
     /// What this computer's process table and machine read as now. A machine with no system
@@ -632,6 +664,21 @@ impl System for OsSystem {
 
     fn follow_containers(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
         crate::containers::follow(changed)
+    }
+
+    fn disks(&self) -> tilo_system_resources::disks::Disks {
+        crate::disks::reading()
+    }
+
+    fn change_disk(&self, change: &DiskChange) -> Result<(), String> {
+        crate::disks::change(change)
+    }
+
+    fn benchmark_device(
+        &self,
+        device: &str,
+    ) -> Result<tilo_system_resources::disks::Benchmark, String> {
+        crate::disks::benchmark(device)
     }
 
     fn processes(&self) -> tilo_system_resources::processes::Processes {

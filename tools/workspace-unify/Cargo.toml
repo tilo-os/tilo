@@ -272,9 +272,6 @@ doc = false
 "disk-usage" = { path = "../../apps/disk-usage", default-features = false, features = [] }
 "disk-usage-model" = { path = "../../apps/disk-usage-model", default-features = false, features = [] }
 "disk-usage-model-wasm" = { path = "../../apps/disk-usage-model-wasm", default-features = false, features = [] }
-"disks" = { path = "../../apps/disks", default-features = false, features = ["default", "live"] }
-"disks-model" = { path = "../../apps/disks-model", default-features = false, features = [] }
-"disks-model-wasm" = { path = "../../apps/disks-model-wasm", default-features = false, features = [] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
 "downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }
@@ -1196,7 +1193,7 @@ doc = false
 "tilo-highlight-grammars" = { path = "../../crates/ui/highlight-grammars", default-features = false, features = ["syntax-definitions"] }
 "tilo-history" = { path = "../../crates/sdk/tilo-history", default-features = false, features = [] }
 "tilo-host-search" = { path = "../../crates/integrations/tilo-host-search", default-features = false, features = [] }
-"tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = [] }
+"tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = ["test-support"] }
 "tilo-identity-authority" = { path = "../../crates/core/identity-authority", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../crates/core/tilo-identity-client", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
@@ -2543,7 +2540,7 @@ doc = false
 "tilo-highlight-grammars" = { path = "../../crates/ui/highlight-grammars", default-features = false, features = ["syntax-definitions"] }
 "tilo-history" = { path = "../../crates/sdk/tilo-history", default-features = false, features = [] }
 "tilo-host-search" = { path = "../../crates/integrations/tilo-host-search", default-features = false, features = [] }
-"tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = [] }
+"tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = ["test-support"] }
 "tilo-identity-client" = { path = "../../crates/core/tilo-identity-client", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
 "tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
@@ -3077,9 +3074,6 @@ doc = false
 "disk-usage" = { path = "../../apps/disk-usage", default-features = false, features = [] }
 "disk-usage-model" = { path = "../../apps/disk-usage-model", default-features = false, features = [] }
 "disk-usage-model-wasm" = { path = "../../apps/disk-usage-model-wasm", default-features = false, features = [] }
-"disks" = { path = "../../apps/disks", default-features = false, features = ["default", "live"] }
-"disks-model" = { path = "../../apps/disks-model", default-features = false, features = [] }
-"disks-model-wasm" = { path = "../../apps/disks-model-wasm", default-features = false, features = [] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
 "downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }

@@ -1,0 +1,37 @@
+{
+  "app": "disks",
+  "said": "Disks",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.disks",
+    "package": "disks"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Disks on a fresh desktop",
+      "ops": [
+        {"theme": false},
+        {"launch": true},
+        {"wait_for": "actions"},
+        {"targets": true}
+      ]
+    },
+    {
+      "id": "drive",
+      "said": "A drive shows its map, its health and its partitions",
+      "ops": {"tl": [
+        {"press_any": ["Overview", "Choose a drive"]},
+        {"press_any": ["Health"]},
+        {"press_any": ["Partitions"]}
+      ]}
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [{"theme": true}],
+      "dark": true
+    }
+  ]
+}
