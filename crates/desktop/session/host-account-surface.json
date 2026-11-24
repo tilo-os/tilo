@@ -1,0 +1,196 @@
+{
+  "resources": [
+    {
+      "kind": "host-account",
+      "label": "Hosting account",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "state",
+          "title": "Where the account stands: reading, available, signed-out, no-account or unreachable.",
+          "stored": "value",
+          "type": {
+            "named": "HostAccountState"
+          },
+          "readonly": true
+        },
+        {
+          "path": "server",
+          "title": "The host's name, as the person knows it.",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "words",
+          "title": "What to say when the account is not available, in the host's or this device's words.",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "plan_name",
+          "title": "The plan the account is on, in the provider's words; empty before it chose one.",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "plan_price",
+          "title": "What the plan costs, in the provider's words; empty for a plan without a price.",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "has_card",
+          "title": "Whether a payment method is on file.",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "card_brand",
+          "title": "The payment method's brand, in the provider's words; empty when it does not say.",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "card_last4",
+          "title": "The last four digits of the payment method; empty when the provider does not say.",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "usage_seconds",
+          "title": "Seconds the account's Linux machines ran in the billing period.",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "included_seconds",
+          "title": "Seconds the plan includes in the period; none when it bills every second.",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
+        },
+        {
+          "path": "credit",
+          "title": "The credit the account has left, as the provider writes the amount; empty when none.",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "manage",
+          "title": "The provider's page where the person manages billing: payment, plan and invoices.",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "invoices",
+          "title": "The account's invoices, newest first.",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "HostInvoice"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "HostAccountState",
+          "doc": "Where the account stands.",
+          "cases": [
+            {
+              "name": "reading",
+              "label": "Reading the account"
+            },
+            {
+              "name": "available",
+              "label": "Available"
+            },
+            {
+              "name": "signed-out",
+              "label": "Not signed in"
+            },
+            {
+              "name": "no-account",
+              "label": "No hosting account"
+            },
+            {
+              "name": "unreachable",
+              "label": "Could not reach the host"
+            }
+          ]
+        },
+        {
+          "name": "HostInvoice",
+          "doc": "One invoice, as the provider issued it.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text",
+              "title": "The invoice's id, as the provider names it."
+            },
+            {
+              "name": "amount",
+              "type": "text",
+              "title": "Its total, in the provider's words."
+            },
+            {
+              "name": "status",
+              "type": {
+                "named": "HostInvoiceStatus"
+              },
+              "title": "Where it stands."
+            },
+            {
+              "name": "issued",
+              "type": {
+                "option": "time"
+              },
+              "title": "When it was issued; none when the provider gave no time."
+            },
+            {
+              "name": "page",
+              "type": "text",
+              "title": "The provider's page for it."
+            }
+          ]
+        },
+        {
+          "name": "HostInvoiceStatus",
+          "doc": "Where an invoice stands.",
+          "cases": [
+            {
+              "name": "paid",
+              "label": "Paid"
+            },
+            {
+              "name": "open",
+              "label": "Due"
+            },
+            {
+              "name": "past-due",
+              "label": "Past due"
+            },
+            {
+              "name": "void",
+              "label": "Void"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

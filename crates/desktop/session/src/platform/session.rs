@@ -1900,6 +1900,14 @@ impl Session {
                 shared.surfaces.clone(),
                 shared.person.clone(),
             )));
+        // The person's account with the host this session runs on, as Settings' billing
+        // page reads it (`host-account`): the plan, the card on file, what the account's
+        // Linux machines used and the invoices the provider issued. The host is asked off
+        // the loop, and only Settings reads it.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(crate::host_account::Served::new()));
         // What the person copied is personal: the clipboard publishes the
         // copies itself, as a reading only a caller the workspace grants reads.
         shared

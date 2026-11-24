@@ -252,6 +252,24 @@
       "budget_ms": 20000
     },
     {
+      "id": "billing",
+      "said": "Open Billing and see that this computer pays no host for it",
+      "ops": [
+        {
+          "press": "Billing"
+        },
+        {
+          "wait_for": "nothing to pay for"
+        },
+        {
+          "must": [
+            "nothing to pay for"
+          ]
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
       "id": "accounts",
       "said": "Open Accounts and see the workspace's connected accounts, and how to connect one",
       "ops": [

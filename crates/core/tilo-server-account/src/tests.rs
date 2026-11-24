@@ -292,3 +292,69 @@ fn the_subscription_shows_the_free_page_actions_and_the_count_of_the_period() {
         assert_eq!(subscription.usage.browser_actions, 3);
     }
 }
+
+/// A host that does not answer is told from one that answers nothing: a plans file
+/// that does not read, or a hosted-VM socket named but not answering, is the host
+/// being out of reach, not an account without usage.
+#[test]
+fn a_host_out_of_reach_is_told_from_one_that_answers_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let plans = dir.path().join("plans.json");
+    let now = 1_794_139_200_000;
+    // A host that sells and answers.
+    {
+        std::fs::write(&plans, serde_json::to_vec(&selling()).unwrap()).unwrap();
+        let hosted = ServerAccountSource {
+            account: "acct-1".into(),
+            plans: plans.clone(),
+            log: None,
+            socket: None,
+            name: "unused".into(),
+        };
+        let account = hosted.try_read(now).expect("the host answers");
+        assert!(account.sells());
+        // No card and no plan: the host sells, this account signed up for none.
+        assert!(
+            account
+                .subscription
+                .as_ref()
+                .is_some_and(|subscription| subscription.plan.is_none())
+        );
+    }
+    // A plans file that does not read is the host out of reach.
+    {
+        std::fs::write(&plans, "{ not json").unwrap();
+        let hosted = ServerAccountSource {
+            account: "acct-1".into(),
+            plans: plans.clone(),
+            log: None,
+            socket: None,
+            name: "unused".into(),
+        };
+        let why = hosted
+            .try_read(now)
+            .err()
+            .expect("the host is out of reach");
+        assert!(why.contains("plans.json"), "{why}");
+        // The tolerant read still answers what it can, for the callers that want that.
+        assert!(hosted.read(now).plans.is_empty());
+    }
+    // A hosted-VM socket that does not answer is the host out of reach.
+    {
+        std::fs::write(&plans, serde_json::to_vec(&selling()).unwrap()).unwrap();
+        // A socket under a path that is no directory: the host cannot be reached there.
+        let socket = plans.clone().join("hosted-vm.sock");
+        let hosted = ServerAccountSource {
+            account: "acct-1".into(),
+            plans: plans.clone(),
+            log: None,
+            socket: Some(socket),
+            name: "unused".into(),
+        };
+        let why = hosted
+            .try_read(now)
+            .err()
+            .expect("the host's service is out of reach");
+        assert!(why.contains("hosted-vm.sock"), "{why}");
+    }
+}

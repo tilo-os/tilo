@@ -28,10 +28,41 @@ use tilo_server_account::ServerAccountSource;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// Where the account is read from.
-enum Source {
+#[derive(Clone)]
+pub(crate) enum Source {
     Hosted(ServerAccountSource),
     /// One of the person's devices, by its name.
     Device(String),
+}
+
+impl Source {
+    /// The host this session runs on, as its environment names it: a server that
+    /// serves workspaces, or one of the person's own devices.
+    pub(crate) fn session() -> Self {
+        match ServerAccountSource::from_env() {
+            Some(hosted) => Self::Hosted(hosted),
+            None => Self::Device(device_name()),
+        }
+    }
+
+    /// The account as this host answers it now.
+    pub(crate) fn read(&self, now_ms: u64) -> ServerAccount {
+        match self {
+            Self::Hosted(hosted) => hosted.read(now_ms),
+            Self::Device(name) => ServerAccount::sells_nothing(name.clone(), ServerKind::Device),
+        }
+    }
+
+    /// [`Self::read`], or why the host could not be asked.
+    pub(crate) fn try_read(&self, now_ms: u64) -> Result<ServerAccount, String> {
+        match self {
+            Self::Hosted(hosted) => hosted.try_read(now_ms),
+            Self::Device(name) => Ok(ServerAccount::sells_nothing(
+                name.clone(),
+                ServerKind::Device,
+            )),
+        }
+    }
 }
 
 /// The broker's API to the person's account with this host.
@@ -45,11 +76,7 @@ pub(crate) struct ServerAccountApi {
 impl ServerAccountApi {
     /// The API of this session's host, as its environment names it.
     pub(crate) fn session() -> Arc<Self> {
-        let source = match ServerAccountSource::from_env() {
-            Some(hosted) => Source::Hosted(hosted),
-            None => Source::Device(device_name()),
-        };
-        Self::of(source)
+        Self::of(Source::session())
     }
 
     fn of(source: Source) -> Arc<Self> {
@@ -74,10 +101,7 @@ impl ServerAccountApi {
 
     /// The account as the host knows it now.
     fn read(&self) -> ServerAccount {
-        match &self.source {
-            Source::Hosted(hosted) => hosted.read(tilo_clock::unix_now_ms()),
-            Source::Device(name) => ServerAccount::sells_nothing(name.clone(), ServerKind::Device),
-        }
+        self.source.read(tilo_clock::unix_now_ms())
     }
 
     /// Answer the account's read from now on, admitted by the grants of the app that shows it,

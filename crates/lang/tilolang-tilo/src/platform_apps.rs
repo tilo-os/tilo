@@ -3,8 +3,8 @@
 //! (every section of the person's settings and the device's, each set field by field through
 //! its setters), Contacts (the workspace's contact directory), the image model
 //! (the device's vision actions and the library analysis run), Files, a workspace's connected
-//! accounts, its model providers, and its own actions (its members, roles, invitations and
-//! permissions).
+//! accounts, its model providers, the person's account with their host, and its own actions (its
+//! members, roles, invitations and permissions).
 //!
 //! Each is a package read from the surface it publishes ([`crate::catalogue::package_of`]):
 //! its types are what its resources read as and its actions are their published verbs. Its
@@ -44,6 +44,13 @@ pub const MODELS_APP: &str = "tilo.models";
 /// them as `accounts.accounts`, each with the address it signs in at and how its last sync went,
 /// and connects, signs in again and removes them through the resource's verbs.
 pub const ACCOUNTS_APP: &str = "tilo.accounts";
+/// The app the host account is published as: `use tilo.host-account as billing`. The
+/// desktop session on the host this person's workspaces run on publishes it as
+/// `billing.account`: the plan their account is on, the payment method on file, what its
+/// Linux machines used, the invoices the provider issued and the page where they
+/// manage all of it. Only Settings reads it.
+pub const HOST_ACCOUNT_APP: &str = "tilo.host-account";
+
 /// The app the workspace's vault is published as to Passwords' own window: `use tilo.vault`. The
 /// device's daemon answers it for Passwords alone, and every other app is refused.
 pub const VAULT_APP: &str = "tilo.vault";
@@ -237,6 +244,9 @@ const MCP_SERVER_ROOTS: &[(&str, &str, &str)] = &[("server", "Server", "mcp.serv
 const MODELS_ROOTS: &[(&str, &str, &str)] = &[("models", "Models", "models")];
 /// The accounts' root, the one resource every account and every verb of them is on.
 const ACCOUNTS_ROOTS: &[(&str, &str, &str)] = &[("accounts", "Accounts", "accounts")];
+/// The host account's root, the one resource its plan, card, usage and invoices are
+/// read from.
+const HOST_ACCOUNT_ROOTS: &[(&str, &str, &str)] = &[("account", "HostAccount", "host-account")];
 /// The vault's root, the one resource its entries are read from and its verbs are asked of.
 const VAULT_ROOTS: &[(&str, &str, &str)] = &[("vault", "Vault", "vault")];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
@@ -411,6 +421,19 @@ const PUBLISHED: &[Published] = &[
         // What a workspace's accounts read as, written beside the service that keeps them.
         files: &[include_str!(
             "../../../core/tilo-workspace-service/accounts-surface.json"
+        )],
+        described: false,
+        listed: &[],
+    },
+    Published {
+        app: HOST_ACCOUNT_APP,
+        title: "Hosting account",
+        kinds: &[],
+        roots: HOST_ACCOUNT_ROOTS,
+        // What the person's account with their host reads as, written beside the session
+        // that answers it.
+        files: &[include_str!(
+            "../../../desktop/session/host-account-surface.json"
         )],
         described: false,
         listed: &[],

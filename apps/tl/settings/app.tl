@@ -11,6 +11,7 @@ use so.tilo.device as device
 use tilo.models as models
 use tilo.workspace as workspace
 use tilo.accounts as accounts
+use tilo.host-account as billing
 
 /// The window's root. Settings keeps nothing of its own here: every row below changes a
 /// resource the session publishes — the person's appearance, notification, accessibility and
@@ -106,6 +107,9 @@ view settings_window(s: Settings) {
                     ui.NavItem("accounts", "Accounts", icon: .mail) {
                         on select: open_pane("accounts")
                     }
+                    ui.NavItem("billing", "Billing", icon: .landmark) {
+                        on select: open_pane("billing")
+                    }
                     ui.NavItem("users", "Users", icon: .user) {
                         on select: open_pane("users")
                     }
@@ -187,6 +191,8 @@ view settings_window(s: Settings) {
                         content_pane()
                     } else if s.pane == "accounts" {
                         accounts_pane()
+                    } else if s.pane == "billing" {
+                        billing_pane()
                     } else if s.pane == "agent_models" {
                         agent_models_pane()
                     } else if s.pane == "devices" {
@@ -263,6 +269,8 @@ fn pane_title(pane: Text) -> Text {
         "Content limits"
     } else if pane == "accounts" {
         "Accounts"
+    } else if pane == "billing" {
+        "Billing"
     } else if pane == "agent_models" {
         "Agent models"
     } else if pane == "devices" {
@@ -1706,7 +1714,7 @@ fn pane_of_page(page: Text) -> Text {
         "time"
     } else if page == "default-apps" {
         "default_apps"
-    } else if page == "external_accounts" or page == "billing" { "accounts" } else { page }
+    } else if page == "external_accounts" { "accounts" } else { page }
 }
 
 /// The window's pane a setting is on: the section its id begins with (`keyboard.layout` is on

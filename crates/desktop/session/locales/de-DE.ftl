@@ -706,3 +706,5 @@ so-tilo-activity-open-change = Öffnen, was eine Änderung berührt hat, in sein
 so-tilo-activity-choose-source = Die Ressource, die ein Bereich geändert hat, als Morgenquelle wählen oder abwählen
 so-tilo-activity-source = Einen Befehl auf einer gewählten Morgenquelle ausführen
 session-this-computer = Dieser Computer
+
+session-host-account = Hosting-Konto

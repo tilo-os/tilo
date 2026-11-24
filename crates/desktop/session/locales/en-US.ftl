@@ -701,3 +701,5 @@ so-tilo-activity-open-change = Open what a change touched in its app
 so-tilo-activity-choose-source = Choose, or stop choosing, the resource a range changed as a morning source
 so-tilo-activity-source = Run a command on a chosen morning source
 session-this-computer = This computer
+
+session-host-account = Hosting account

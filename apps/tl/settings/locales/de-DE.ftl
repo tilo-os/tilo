@@ -229,6 +229,7 @@ d-i67tvpqg = Settings window
     .w-date-and-time = Datum und Uhrzeit
     .w-accounts-and-access = Konten und Zugriff
     .w-accounts = Konten
+    .w-billing = Abrechnung
     .w-users = Benutzer
     .w-permissions = Berechtigungen
     .w-agent-models = Agentenmodelle
@@ -243,6 +244,60 @@ d-i67tvpqg = Settings window
     .w-about = Über
     .w-workspace = Arbeitsbereich
     .w-content-limits = Inhaltsgrenzen
+
+d-xl4iwqcj = Billing pane
+    .w-billing = Abrechnung
+    .w-reading-your-account = Dein Konto wird gelesen…
+    .w-your-host-could-not-be-reached = Dein Host war nicht erreichbar.
+    .w-your-plan-and-invoices-are-still = Dein Tarif und deine Rechnungen stehen weiterhin auf der Seite deines Hosts; dieses Gerät fragt von selbst erneut.
+    .w-your-workspaces-run-here-itself-so = Deine Arbeitsbereiche laufen hier selbst, es ist also nichts zu bezahlen.
+    .w-you-are-not-signed-in-to = Du bist bei diesem Host noch nicht angemeldet.
+
+d-kadmahz3 = Account section
+    .w-plan = Tarif
+    .w-no-plan-yet = Noch kein Tarif
+    .w-card = Karte
+    .w-none-yet = Noch keine
+    .w-card-2 = Karte ·· { $card_last4 }
+    .w-on-file = Hinterlegt
+    .w-linux-machines-this-month = Linux-Rechner diesen Monat
+    .w-of = { $machine_time } von { $machine_time2 }
+    .w-credit = Guthaben
+    .w-you-are-asked-for-a-card = Du wirst erst nach einer Karte gefragt, wenn etwas einen Linux-Rechner braucht.
+
+d-7fnspoti = Invoices section
+    .w-invoices = Rechnungen
+    .w-no-invoices-yet = Noch keine Rechnungen.
+    .w-issued = { $invoice_status }, ausgestellt am { $at }
+    .w-open = Öffnen
+
+d-ayjjjula = Manage button
+    .w-manage-billing = Abrechnung verwalten
+    .w-add-a-card = Karte hinterlegen
+
+d-it7ghy7h = Open an invoice
+    .doc = Öffnet eine der Rechnungen des Kontos auf der Seite des Anbieters.
+
+d-it7ghy7h-account = Konto
+
+d-it7ghy7h-invoice = Rechnung
+
+d-rcoi5ao3 = Open the billing page
+    .doc = Öffnet die Seite des Anbieters, auf der sich Karte, Tarif und Rechnungen ändern, in der App, die Webadressen öffnet: die eigene Seite des Anbieters, nie ein Formular von Tilo.
+
+d-rcoi5ao3-account = Konto
+
+d-3kdmehdt = Machine time
+    .w-hr-min = { $hours } Std. { $minutes } Min.
+    .w-hr = { $hours } Std.
+    .w-min = { $minutes } Min.
+    .w-s = { $seconds } Sek.
+
+d-j6hm37ag = Invoice status
+    .w-paid = Bezahlt
+    .w-past-due = Überfällig
+    .w-void = Storniert
+    .w-due = Fällig
 
 d-azovfqdu = Appearance pane
     .w-look = Erscheinungsbild
