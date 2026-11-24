@@ -241,7 +241,9 @@ impl Installed {
             .map(|action| (action.name.clone(), action.id.clone()))
             .collect();
         let sent = Sent::default();
-        host.runtime().set_invoker(sent.clone());
+        // The app's own actions run here, as its window's do; what it asks of the device's
+        // engine is sent, since the device is a package this host only reads.
+        host.runtime().set_foreign_invoker(sent.clone());
         host.runtime().set_reading(&reading(), reading_json).expect("the reading is set");
         let root = host.root_of(APP).expect("the app's root");
         Self {
