@@ -876,6 +876,7 @@ fn set_directory(host: &Host, label: &str) {
                     "phones": ["+12025550123"],
                     "emails": ["ada@example.test"],
                     "photo": "",
+                    "photo_size": 0,
                     "endpoints": [{
                         "service": "signal",
                         "recipient": "+12025550123",

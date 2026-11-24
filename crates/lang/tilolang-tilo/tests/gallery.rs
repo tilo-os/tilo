@@ -133,10 +133,11 @@ fn a_store_with_nothing_in_it_shows_every_group_filled() {
             .package(APP)
             .and_then(|package| package.view_id(view))
             .unwrap_or_else(|| panic!("the package names `{view}`"));
-        let page = replica
+        let mut page = replica
             .host
             .open_resource(&root, Some(&id))
             .unwrap_or_else(|error| panic!("`{view}` opens: {error}"));
+        page.set_lazy_rows(false).expect("the page's rows stand");
         let shown = page.tree().of_kind(kind).len();
         assert!(
             shown >= count,
@@ -155,10 +156,11 @@ fn a_store_with_nothing_in_it_shows_every_group_filled() {
             .package(APP)
             .and_then(|package| package.view_id(view))
             .unwrap_or_else(|| panic!("the package names `{view}`"));
-        let page = replica
+        let mut page = replica
             .host
             .open_resource(&root, Some(&id))
             .unwrap_or_else(|error| panic!("`{view}` opens: {error}"));
+        page.set_lazy_rows(false).expect("the page's rows stand");
         let words_on_the_page = words(page.tree());
         assert!(
             shows(&words_on_the_page, word),
