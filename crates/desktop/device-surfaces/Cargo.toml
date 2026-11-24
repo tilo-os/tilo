@@ -18,6 +18,8 @@ tilo-runtime = { path = "../../core/tilo-runtime" }
 tilo-session-power = { path = "../../os/power-service" }
 tilo-speaker-service = { path = "../../session/speaker-service" }
 tilo-system-service = { path = "../../os/system-service" }
+# What a device says it holds of its workspaces, which the storage resource publishes.
+tilo-system-resources = { path = "../tilo-system-resources" }
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "files"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

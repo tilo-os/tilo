@@ -796,7 +796,7 @@ impl Answers {
 
 /// What decides whether a caller may read a resource (app, kind, resource): the device's app
 /// broker, as [`crate::apps::collab_app_broker::AppBrokerState::may_read_resource`] does.
-pub(crate) trait MayRead: Send + Sync {
+pub trait MayRead: Send + Sync {
     /// Whether `caller` may read `target` in `workspace`.
     ///
     /// # Errors
@@ -825,7 +825,7 @@ impl MayRead for crate::apps::collab_app_broker::AppBrokerState {
 /// Why `agent`, acting for the person who asked, may not start a turn on `place` in
 /// `workspace`: what triggered it is gone, or the agent may not read it. `None` when the agent
 /// may read it.
-pub(crate) async fn unreadable(
+pub async fn unreadable(
     workspaces: &crate::workspaces::Workspaces,
     broker: Option<&dyn MayRead>,
     agent: &str,

@@ -30,19 +30,25 @@ use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
 use tilo_workspace_agent::{Agent, OWNER, WorkspaceAgents};
 
-use super::super::fixtures::{TestGroupKeys, TestHost, device_cert, governor, test_host_holding};
-use super::super::servers::{self, Servers};
-use super::super::{MemberDevice, Workspaces};
 use super::own_agent_tests::{
     Answers, PLAN_READY, SCOUT, Started, argument, ask_agents, chat_writes, mentioning, settled,
 };
-use super::tests::invited;
-use crate::agents::agent_keys::AgentKeys;
-use crate::agents::ticketed_keys::{AgentKeyAsk, AgentKeyTicket, AgentKeyTickets, DeviceAgentKeys};
-use crate::agents::triggered::{CHAT, MESSAGE};
-use crate::agents::{Model, ServerAgents};
-use crate::apps::triggers::{Runner, StartRun};
-use crate::work::{Actor, Ineligible, NotTaken, Order, Turn};
+use tilo_workspace_service::agents::agent_keys::AgentKeys;
+use tilo_workspace_service::agents::ticketed_keys::{
+    AgentKeyAsk, AgentKeyTicket, AgentKeyTickets, DeviceAgentKeys,
+};
+use tilo_workspace_service::agents::triggered::{CHAT, MESSAGE};
+use tilo_workspace_service::agents::{Model, ServerAgents};
+use tilo_workspace_service::apps::triggers::{Runner, StartRun};
+use tilo_workspace_service::work::{Actor, Ineligible, NotTaken, Order, Turn};
+use tilo_workspace_service::workspaces::fixtures::invited;
+use tilo_workspace_service::workspaces::fixtures::{
+    TestGroupKeys, TestHost, device_cert, governor, test_host_holding,
+};
+use tilo_workspace_service::workspaces::servers::{self, Servers};
+use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
+
+use super::mount;
 
 /// The keys on Bea's device, which takes none of her agent's turns itself.
 struct BeasDevice;
@@ -176,7 +182,7 @@ async fn takes_agents_turn(
         json!({ "probe": uuid::Uuid::new_v4().to_string() }),
     )
     .acting_as(Actor::Agent(agent.to_owned()));
-    crate::work::takes_turn(workspaces, workspace, &turn)
+    tilo_workspace_service::work::takes_turn(workspaces, workspace, &turn)
         .await
         .map(drop)
 }
@@ -355,18 +361,26 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
     // Chat answers for its record on both devices, each opening it as its own person. Bea makes
     // a channel and mentions Scout there; her own device starts nothing.
     let ada_person = hex::encode(hosted.ada_cert.user_public_key);
-    for (workspaces, person) in [(beas, bea_person.clone()), (adas, ada_person)] {
-        crate::tl_records::provided::register(workspaces);
-        let chat = crate::tl_records::built_in(CHAT)
+    for (host, person) in [(&hosted.ada, ada_person), (&hosted.bea, bea_person.clone())] {
+        let workspaces = host.workspaces();
+        mount(workspaces);
+        // Chat's types are declared so a write to its record is judged by them.
+        tilo_workspace_service::workspaces::fixtures::declare_built_in_app(host, CHAT);
+        let chat = tilolang_workspace::records::built_in(CHAT)
             .unwrap()
             .expect("Chat is built in");
-        let as_person = crate::tl_records::member(tilo_actions::MemberId::person(person.clone()));
-        workspaces
-            .with_tl_record(&workspace, &chat, (as_person, &person), |opened| {
-                opened.open_root().map(drop)
-            })
-            .await
-            .expect("Chat opens");
+        let as_person = tilo_workspace_service::tl_records::member(tilo_actions::MemberId::person(
+            person.clone(),
+        ));
+        tilolang_workspace::records::with_tl_record(
+            workspaces,
+            &workspace,
+            &chat,
+            (as_person, &person),
+            |opened| opened.open_root().map(drop),
+        )
+        .await
+        .expect("Chat opens");
     }
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: CHAT.into(),
@@ -473,7 +487,8 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
     let event = serde_json::from_value(firing.inputs[tilo_automation::EVENT_INPUT].clone())
         .expect("the firing carries the change");
     let engine = adas.agent_keys().expect("the server runs its engine");
-    let place = crate::agents::triggered::Where::of(&event).expect("the change is a message");
+    let place = tilo_workspace_service::agents::triggered::Where::of(&event)
+        .expect("the change is a message");
     let taken = settled(engine.answer(
         workspace.clone(),
         SCOUT.to_owned(),
@@ -485,7 +500,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
     .await
     .expect("the turn starts");
     assert!(
-        matches!(taken, crate::work::Started::Taken(_)),
+        matches!(taken, tilo_workspace_service::work::Started::Taken(_)),
         "the server takes Scout's turn: {taken:?}"
     );
 
@@ -540,8 +555,9 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
     assert_eq!(scope.workspace(), Some(*workspace_id.as_uuid().as_bytes()));
 
     // Its reply is Chat's own write on the server, stamped as Scout's `send` for Bea.
-    let context =
-        crate::apps::services::ResourceRequestContext::authenticated(CHAT, &workspace, caller_bea);
+    let context = tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
+        CHAT, &workspace, caller_bea,
+    );
     let deadline = tilo_test_env::hang_deadline();
     let (reply_id, reply) = loop {
         let page = adas

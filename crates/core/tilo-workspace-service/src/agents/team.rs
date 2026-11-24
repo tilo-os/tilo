@@ -407,7 +407,20 @@ impl TurnTeam {
         let Some((provider, caller, place)) = &self.telling else {
             return Err("only a turn asked in a conversation tells a sub-agent".to_owned());
         };
-        super::sub_agents::tell((provider, caller), &self.workspace, place, (id, name), text).await
+        let rich_text = self
+            .workspaces
+            .tilolang()
+            .map(|tilolang| tilolang.rich_text)
+            .ok_or("this daemon runs no tilolang runtime: it writes no rich text")?;
+        super::sub_agents::tell(
+            (provider, caller),
+            &*rich_text,
+            &self.workspace,
+            place,
+            (id, name),
+            text,
+        )
+        .await
     }
 
     /// Take the call `request` asks for as `caller`: how it ended, or why this server did

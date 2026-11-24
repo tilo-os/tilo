@@ -19,6 +19,22 @@ use wire_frame::Framing;
 pub const STORAGE_DIR: &str = "/run/tilo/fs-storage";
 pub const DEFAULT_STORAGE_SOCKET: &str = "/run/tilo/fs-storage/storage.sock";
 
+/// Names the storage directory of a session whose daemon runs elsewhere: a host session's daemon
+/// serves it from the person's runtime directory (`tilo desktop` on a machine that is not Tilo).
+pub const STORAGE_DIR_ENV: &str = "TILO_FS_STORAGE_DIR";
+
+/// The storage socket this session's daemon serves: the one [`STORAGE_DIR_ENV`] names, else the
+/// image's.
+#[must_use]
+pub fn storage_socket() -> std::path::PathBuf {
+    std::env::var_os(STORAGE_DIR_ENV)
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from(DEFAULT_STORAGE_SOCKET),
+            |dir| std::path::PathBuf::from(dir).join("storage.sock"),
+        )
+}
+
 /// Every storage-socket message, in both directions, is one frame: a
 /// little-endian `u32` length, then the postcard-encoded request or response.
 pub const STORAGE_FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024);

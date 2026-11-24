@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 pub const STORAGE: &str = "storage";
 
 /// How full the disk the person's files live on is.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct DiskUsage {
     pub total_bytes: u64,
     pub free_bytes: u64,
@@ -48,12 +50,56 @@ pub struct StoredItem {
     pub reclaimable: bool,
 }
 
+/// Where one workspace's bytes on this device stand, by what losing this device would cost. The
+/// parts are disjoint and add up to the bytes the workspace holds here. Counts only: nothing here
+/// names a file.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct WorkspaceHold {
+    /// The workspace, as its mount names it.
+    pub workspace: String,
+    /// Whether the person keeps the whole workspace on this device.
+    pub kept_here: bool,
+    /// Kept here because the person asked for it ("Keep offline"), and held by another device too.
+    pub pinned_bytes: u64,
+    /// Kept here, and another device acknowledged holding the same version.
+    pub replicated_bytes: u64,
+    /// Held by no other device this one knows of: authored here and not yet acknowledged
+    /// elsewhere, or changed and not yet saved. Wiping this device loses it.
+    pub only_here_bytes: u64,
+    /// Files with bytes only here.
+    pub only_here_files: u64,
+    /// Fetched from another device and dropped again when space is short: safe to free, it
+    /// downloads again when opened.
+    pub cache_bytes: u64,
+}
+
+impl WorkspaceHold {
+    /// Every byte the workspace holds here.
+    #[must_use]
+    pub const fn total_bytes(&self) -> u64 {
+        self.pinned_bytes
+            .saturating_add(self.replicated_bytes)
+            .saturating_add(self.only_here_bytes)
+            .saturating_add(self.cache_bytes)
+    }
+}
+
 /// What this computer's storage reads as now.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct Storage {
     /// The disk the person's home lives on, where it could be measured.
     #[serde(default)]
     pub disk: Option<DiskUsage>,
+    /// What this device holds of each workspace it mounts, by what losing this device would cost.
+    #[serde(default)]
+    pub residency: Vec<WorkspaceHold>,
+    /// Why what this device holds of its workspaces could not be read, when it could not.
+    #[serde(default)]
+    pub residency_error: Option<String>,
     /// The kinds found, largest first.
     pub categories: Vec<CategoryUsage>,
     /// The largest items found, largest first.
@@ -96,4 +142,34 @@ pub enum StorageAction {
         keywords = "clear cache, free space, cache leeren"
     )]
     ClearCache,
+    /// Keep a whole workspace on this device, or stop keeping it. Keeping it fetches every file
+    /// and holds it, so the workspace opens with no network.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        icon = "download",
+        keywords = "keep offline, keep on this device, offline behalten, auf diesem gerät behalten"
+    )]
+    KeepHere {
+        /// The workspace, as the reading lists it.
+        #[param("The workspace to keep, as the reading lists it")]
+        workspace: String,
+        /// Whether to keep it here.
+        #[param("Whether to keep it on this device")]
+        keep: bool,
+    },
+    /// Free a workspace's fetched cache: the files this device downloaded from another one, which
+    /// download again when they are opened. Nothing only this device holds is removed.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash",
+        keywords = "free up, free cache, speicher freigeben"
+    )]
+    FreeWorkspaceCache {
+        /// The workspace, as the reading lists it.
+        #[param("The workspace whose fetched files to free, as the reading lists it")]
+        workspace: String,
+    },
 }

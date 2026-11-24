@@ -1539,19 +1539,12 @@ readers = [
 [[cargo]]
 package = "tilo-workspace-service"
 # The web-search tests answer from the pages a real answer was saved as, the
-# nearby-send test runs the sender script the image ships, and the record and
-# task tests compile the built-in packages from their sources.
+# nearby-send test runs the sender script the image ships, and the vault tests
+# read the app's own manifest and surface.
 inputs = [
   "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
   "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
   "tools/protocols/airdrop_sender.py",
-  "apps/tl/chat/",
-  "apps/tl/discord/",
-  "apps/tl/discussion/",
-  "apps/tl/mail/",
-  "apps/tl/notes/",
-  "apps/tl/contacts/",
-  "apps/tl/tasks/",
   "apps/tl/vault/tilo-app.toml",
   "apps/tl/vault/surface.toml",
 ]
@@ -1559,9 +1552,6 @@ readers = [
   "crates/core/tilo-workspace-service/src/vault_actions.rs",
   "crates/core/tilo-workspace-service/src/apps/collab_app_broker/web_search_tests.rs",
   "crates/core/tilo-workspace-service/src/apps/nearby_send/airdrop.rs",
-  "crates/core/tilo-workspace-service/src/apps/triggers_tests.rs",
-  "crates/core/tilo-workspace-service/src/agents/task_work.rs",
-  "crates/core/tilo-workspace-service/src/tl_records.rs",
 ]
 
 [[cargo]]
@@ -1569,6 +1559,37 @@ package = "discord"
 # The fixture writes the legacy record the migration test reads back.
 inputs = ["crates/lang/tilolang-tilo/tests/legacy/rust_discord.hex"]
 readers = ["apps/discord/tests/native_discord_fixture.rs"]
+
+[[cargo]]
+package = "tilolang-workspace"
+# The records of the apps built into the build compile from their sources here, as the daemon
+# that serves workspaces reads them.
+inputs = [
+  "apps/tl/chat/",
+  "apps/tl/discord/",
+  "apps/tl/discussion/",
+  "apps/tl/notes/",
+  "apps/tl/contacts/",
+  "apps/tl/tasks/",
+]
+readers = ["crates/lang/tilolang-workspace/src/records.rs"]
+
+[[cargo]]
+package = "tilo-daemon"
+# The agents' and triggers' tests run Chat, Tasks and Mail from their sources, through the
+# language runtime the daemon links and mounts.
+inputs = [
+  "apps/tl/chat/",
+  "apps/tl/contacts/",
+  "apps/tl/discussion/",
+  "apps/tl/mail/",
+  "apps/tl/notes/",
+  "apps/tl/tasks/",
+]
+readers = [
+  "crates/os/daemon/tests/language/task_work_tests.rs",
+  "crates/os/daemon/tests/language/triggers_tests.rs",
+]
 
 [[cargo]]
 package = "tilo-collab-types"
@@ -1667,7 +1688,7 @@ package = "tilo-session-client"
 # script the CI setup uses, so that script and the build it runs are read too.
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
-inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh", "apps/phone/tests/support/"]
+inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh", "crates/desktop/phone/tests/support/"]
 readers = ["crates/core/session-client/tests/voice_browsers.rs", "crates/core/session-client/tests/headless_audio_lifetime.rs", "crates/core/session-client/src/device.rs", "crates/core/session-client/tests/support/mod.rs", "crates/core/session-client/tests/flow_laptop_phone_server.rs"]
 scope = { inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
@@ -1682,7 +1703,7 @@ readers = ["tools/test-env/tests/run_environment.rs"]
 package = "tilo-phone"
 # The phone's server tests build Notes from its tilolang package, from the tree.
 inputs = ["apps/tl/"]
-readers = ["apps/phone/tests/server/mod.rs"]
+readers = ["crates/desktop/phone/tests/server/mod.rs"]
 
 [[cargo]]
 package = "terminal"

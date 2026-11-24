@@ -1,0 +1,50 @@
+[package]
+name = "tilolang-workspace"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "A tilolang app's record of a workspace, as the workspace service reaches it: the records of the apps built into the build, the styles a device's packages offer, and the rich text an app's actions take."
+
+[lib]
+name = "tilolang_workspace"
+path = "src/lib.rs"
+
+[dependencies]
+tilolang-tilo = { version = "0.1.0", path = "../tilolang-tilo" }
+# The service whose records these are: its store, its policy and its lifecycle.
+tilo-workspace-service = { path = "../../core/tilo-workspace-service" }
+# The route a workspace's record is addressed at, which a record read named in an action takes.
+tilo-peer-state = { path = "../../core/tilo-peer-state" }
+# The module a device installed, which search reads an app's record through.
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+# The member, resource or message a record's rich text names.
+tilo-reference = { path = "../../core/reference" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+serde_json.workspace = true
+tracing.workspace = true
+# The reactor a record's write waits on, the blocking thread a host opens on, and the test
+# runtime the record's port is exercised under.
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[dev-dependencies]
+# The worker process a test's automerge documents are decoded in.
+tilo-automerge-isolate.workspace = true
+tempfile.workspace = true
+# A member's root key and the hex its ids are written in, for the tests of a record's port.
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+hex.workspace = true
+# The certificate a fixture's governor signed, which a test's owner carries.
+tilo-user-identity = { path = "../../core/tilo-user-identity" }
+# The service its own fixtures stand, with the search index and app store the tests read.
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "content", "test-support"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

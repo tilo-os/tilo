@@ -251,6 +251,9 @@ tilo-test-env = { path = "../../../tools/test-env" }
 tilo-migrate = { path = "../../import/migrate", features = ["fixture"] }
 # Builds the tilolang apps a test's device has installed, and the runtime bundles they run on.
 tilolang-cli = { path = "../../lang/tilolang-cli" }
+# The language runtime a test's in-process daemon mounts, as the `tilo-runtime` program mounts
+# the one it links: the built-in apps' records and the styles the store's packages declare.
+tilolang-records = { path = "../../../tools/tilolang-records" }
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 # A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../../tools/test-server" }

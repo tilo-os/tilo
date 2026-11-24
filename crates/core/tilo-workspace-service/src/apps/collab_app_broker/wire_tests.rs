@@ -410,12 +410,15 @@ impl crate::apps::services::ResourceServices for KeptRecord {
 struct Decides(AtomicBool);
 
 impl Decides {
-    fn decided(&self) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+    fn decided(
+        &self,
+        refusal: &str,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
         tilo_actions::remote::Pending::ready(if self.0.load(Ordering::Relaxed) {
             Ok(())
         } else {
             Err(tilo_actions::remote::ActionCallError::Refused {
-                reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
+                reason: refusal.into(),
             })
         })
     }
@@ -427,7 +430,7 @@ impl tilo_actions::remote::ResourceReads for Decides {
         _: &tilo_actions::remote::Caller,
         _: &tilo_actions::remote::ResourceAddress,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
-        self.decided()
+        self.decided(tilo_actions::remote::RESOURCE_READ_REFUSED)
     }
 
     fn may_write(
@@ -435,7 +438,7 @@ impl tilo_actions::remote::ResourceReads for Decides {
         _: &tilo_actions::remote::Caller,
         _: &tilo_actions::remote::ResourceAddress,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
-        self.decided()
+        self.decided(tilo_actions::remote::RESOURCE_WRITE_REFUSED)
     }
 
     fn answer_read(

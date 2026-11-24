@@ -145,7 +145,14 @@ impl ServiceWorkspaces {
             endpoint.clone(),
             seal_checks,
             |config| {
-                let config = ServiceConfig { apps, ..config };
+                let config = ServiceConfig {
+                    apps,
+                    // The language runtime the program mounted: the service's own roles read and
+                    // change the built-in apps' records through it, and offer the styles the
+                    // device's installed packages declare.
+                    tilolang: super::capabilities::tilolang(),
+                    ..config
+                };
                 match configure {
                     Some(configure) => configure(config),
                     // A person's computer serves its workspaces at once, on the network or off
@@ -1091,6 +1098,7 @@ impl ServiceWorkspaces {
             // so opening does not wait for one.
             |config| tilo_workspace_service::service::ServiceConfig {
                 reaching: tilo_workspace_service::Reaching::OnItsOwn,
+                tilolang: super::capabilities::tilolang(),
                 ..config
             },
         )

@@ -575,6 +575,20 @@ impl Hydrator {
     /// hydration belongs on the runtime: history restores and conflict resolutions hydrate through a
     /// history job.
     pub fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
+        // Waiting here blocks the thread: only a synchronous caller may. A task of a
+        // current-thread runtime, or a thread that entered one, would stop every task that
+        // runtime drives, and tokio's own refusal names no caller. Refuse first, in words that
+        // name the mistake.
+        let in_current_thread_runtime = tokio::runtime::Handle::try_current().is_ok_and(|current| {
+            current.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread
+        });
+        assert!(
+            !in_current_thread_runtime && !tilo_rt::in_async_context(),
+            "Hydrator::block_on was called from a task of a current-thread runtime, or a thread \
+             that entered one. It is the bridge from a synchronous caller only (a FUSE worker, \
+             the native backend, a test): await the async Hydrator API there, or run the work \
+             that waits on a thread of its own that enters no runtime."
+        );
         tokio::task::block_in_place(|| self.runtime_handle.block_on(fut))
     }
 
@@ -1084,5 +1098,47 @@ mod tests {
                 "a file over the policy's limit is not prefetched"
             );
         }
+    }
+
+    /// The synchronous bridge waits on the calling thread. A task of the process's
+    /// current-thread runtime drives every task on that one thread, so waiting there is a
+    /// mistake, and the refusal says so rather than tokio's own message naming no caller.
+    #[test]
+    fn the_bridge_refuses_to_wait_on_a_task_of_the_processes_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            tilo_rt::app()
+                .block_on(ContentStore::open(dir.path().join("content")))
+                .unwrap()
+                .unwrap(),
+        );
+        let (told, heard) = std::sync::mpsc::channel();
+        tilo_rt::app().spawn(async move {
+            let hydrator = Hydrator::new(store);
+            let mistake =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hydrator.block_on(async {})))
+                    .expect_err("waiting on a task of the runtime is refused");
+            let said = mistake
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    mistake
+                        .downcast_ref::<&str>()
+                        .map(|said| (*said).to_owned())
+                })
+                .unwrap_or_default();
+            let _ = told.send(said);
+        });
+        let said = heard
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the task was answered");
+        assert!(
+            said.contains("Hydrator::block_on was called"),
+            "the refusal names the bridge: {said}"
+        );
+        assert!(
+            said.contains("thread of its own"),
+            "the refusal says where the work belongs: {said}"
+        );
     }
 }

@@ -56,6 +56,10 @@ pub type ServeSignIns = Box<dyn Fn(&Workspaces, Caller) -> Option<SignInsServed>
 /// What the daemon's program mounts.
 #[derive(Default)]
 pub struct Capabilities {
+    /// The language runtime the program links, which its workspace service reads and changes
+    /// tilolang apps' records through ([`tilolang`]): the daemon's program mounts it.
+    pub tilolang:
+        Option<Box<dyn Fn() -> tilo_workspace_service::tl_records::Tilolang + Send + Sync>>,
     /// The services registered on the daemon's providers once its search is served.
     pub providers: Vec<Register>,
     /// Holds suspend off while another of the person's devices uses this machine.
@@ -90,6 +94,12 @@ pub(crate) fn register(at: &Mounting<'_>) {
     for register in mounted().map_or(&[][..], |mounted| &mounted.providers[..]) {
         register(at);
     }
+}
+
+/// The language runtime mounted here, where the program mounted one: what the workspace service
+/// reads and changes tilolang apps' records through.
+pub(crate) fn tilolang() -> Option<tilo_workspace_service::tl_records::Tilolang> {
+    mounted()?.tilolang.as_ref().map(|host| host())
 }
 
 /// Take a hold on suspend, where something mounted can.

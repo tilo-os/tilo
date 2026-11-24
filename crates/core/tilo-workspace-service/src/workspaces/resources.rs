@@ -31,7 +31,6 @@ use super::{GovernedWorkspace, Workspaces};
 
 /// Why a command of this device's own roles on an app's record did not carry out
 /// ([`Workspaces::record_command`]).
-#[cfg(feature = "agents")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordFailure {
     /// The store or the workspace refused a write, saying why: what was written before it
@@ -980,8 +979,8 @@ impl Workspaces {
     ///
     /// # Errors
     /// The workspace is not held here, or `command` writes.
-    #[cfg(all(test, feature = "apps"))]
-    pub(crate) async fn read_store_as(
+    #[cfg(all(any(test, feature = "test-support"), feature = "apps"))]
+    pub async fn read_store_as(
         &self,
         workspace: &str,
         person: &str,
@@ -1006,8 +1005,8 @@ impl Workspaces {
     /// Take `documents` (each whole, by its id) into the store of `workspace`, as a member's
     /// device's writes reach it by sync: what the tests of the agents' work on an app's
     /// resources stand on, the app running where it runs, on a device.
-    #[cfg(all(test, feature = "apps"))]
-    pub(crate) async fn take_documents(&self, workspace: &str, documents: Vec<(String, Vec<u8>)>) {
+    #[cfg(all(any(test, feature = "test-support"), feature = "apps"))]
+    pub async fn take_documents(&self, workspace: &str, documents: Vec<(String, Vec<u8>)>) {
         let state = self.workspace(workspace).await.unwrap();
         let mut governed = state.lock().await;
         let mut store = governed.store_with_surfaces(&self.inner.host.surfaces);
@@ -1402,7 +1401,6 @@ fn read_from(
 impl Workspaces {
     /// Commit `command` as an update of the fields of a resource every member reads that stays
     /// where it is, when it is one: `false` for any other command, which is drafted whole.
-    #[cfg(feature = "apps")]
     async fn put_in_place(
         &self,
         governed: &mut GovernedWorkspace,
@@ -1578,7 +1576,6 @@ impl Workspaces {
     /// # Errors
     /// [`RecordFailure::Refused`] when the store or the workspace refused a write, with why;
     /// [`RecordFailure::Failed`] when the workspace is not held here.
-    #[cfg(feature = "agents")]
     pub async fn record_command(
         &self,
         workspace: &str,
@@ -1684,7 +1681,6 @@ impl Workspaces {
 
     /// Carry out the write `command` of `app` on the workspace `governed` holds, as `device`,
     /// holding the workspace until the last of its frames is kept.
-    #[cfg(feature = "apps")]
     async fn write_resources(
         &self,
         mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
@@ -1891,7 +1887,6 @@ impl Workspaces {
 /// other write, whose resource type and verb are added to `unserved`; and the device it was
 /// written on, `device` (its key in hex and what it calls itself), which is where a resource the
 /// write makes live is live.
-#[cfg(feature = "apps")]
 fn stamp_resource_invoker(
     command: &mut tilo_resource_store::wire::Command,
     device: &(String, String),
@@ -1945,8 +1940,7 @@ fn stamp_resource_invoker(
 
 /// Who a caller reads records as: a member as the person they are or act for, and a visitor, who
 /// is in no resource's reader set, as nobody ([`may_read`]).
-#[cfg(feature = "apps")]
-pub(crate) fn person_reading(caller: &tilo_actions::remote::Caller) -> String {
+pub fn person_reading(caller: &tilo_actions::remote::Caller) -> String {
     let acting = caller.acting();
     acting
         .by
@@ -1960,7 +1954,6 @@ pub(crate) fn person_reading(caller: &tilo_actions::remote::Caller) -> String {
 /// Refuse the writes `unserved` (each a resource type and the verb the app named it by) that the
 /// caller `viewer`, whom the device opened this view of `app` for, may not make: a view runs
 /// with its viewer's permissions, never the device's.
-#[cfg(feature = "apps")]
 fn may_write_as_viewer(
     governed: &GovernedWorkspace,
     viewer: &tilo_actions::remote::Caller,
@@ -1994,7 +1987,6 @@ fn may_write_as_viewer(
 }
 
 /// Whether the reader set `readers` names `reader` ([`tilo_resource_store::wire::reads_as`]).
-#[cfg(feature = "apps")]
 fn may_read(reader: String) -> impl Fn(&str) -> bool {
     move |readers| tilo_resource_store::wire::reads_as(&reader)(readers)
 }

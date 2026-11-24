@@ -1430,6 +1430,17 @@ d-v6duuqqr = Storage pane
     .w-largest-items = Größte Einträge
     .w-nothing-large-was-found = Es wurde nichts Großes gefunden.
     .w-of-used = { $size_words } von { $size_words2 } belegt
+    .w-where-workspace-files-are-kept = Wo die Dateien der Arbeitsbereiche liegen
+    .w-what-this-device-holds-of-each = Was dieses Gerät von jedem Arbeitsbereich hält, den es einbindet: Dateien, die nur hier liegen, sind beim Löschen dieses Geräts verloren; die anderen liegen auf einem anderen Gerät oder werden erneut geladen.
+    .w-this-device-holds-no-workspace-s = Dieses Gerät hält keine Dateien eines Arbeitsbereichs.
+    .w-only-here = { $size_words } nur hier
+    .w-kept-here = Hier behalten
+    .w-more-for = Mehr für { $workspace }
+    .w-free-2 = { $size_words } freigeben
+    .w-stop-keeping-here = Nicht mehr hier behalten
+    .w-keep-here = Hier behalten
+    .w-your-other-devices = Deine anderen Geräte
+    .w-none-of-your-other-devices-is = Noch ist keines deiner anderen Geräte hier.
 
 d-jgu2wdwn = Updates pane
     .w-this-machine = Dieses Gerät
@@ -1910,3 +1921,25 @@ d-l6xrxon7 = Worte zu gespeicherten Geheimnissen
 d-oebqu32z = Tastenkürzel
     .w-no-keys = Keine Tasten
     .w-usually = { $now } (sonst { $usual })
+
+
+d-hmc6d5uw = Was ein Gerät hält
+    .w-kept-here-also-on-another-device = Hier behalten, auch auf einem anderen Gerät: { $size_words }
+    .w-also-on-another-device = Auch auf einem anderen Gerät: { $size_words }
+    .w-on-no-other-device-in-files = Auf keinem anderen Gerät: { $size_words } in { $only_here_files } Dateien
+    .w-fetched-files-safe-to-free = Geladene Dateien, unbedenklich freizugeben: { $size_words }
+    .w-kept-on-nothing-of-it-is = Liegt auf { $keepers } - nichts davon liegt hier.
+    .w-kept-on = Liegt auf { $keepers } - { $join }
+
+d-g0olzdfg = Wer es hält
+    .w-this-device = diesem Gerät
+    .w-no-device-this-one-knows-of = keinem Gerät, das dieses kennt
+
+d-ybsxvql4 = Was andere Geräte halten
+    .w-it-says-it-holds-nothing-of = Es sagt, es hält nichts von deinen Arbeitsbereichen
+    .w-it-holds = Es hält { $join }
+
+
+d-kap65mlg = Wann ein Gerät zuletzt da war
+    .w-never-heard-from = noch nie gehört
+    .w-last-seen = zuletzt gesehen { $day }, { $clock }

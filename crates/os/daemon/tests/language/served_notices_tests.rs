@@ -10,18 +10,24 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilolang_tilo::runtime::Value;
+use std::sync::Arc;
 
-use super::super::Workspaces;
-use super::super::fixtures::{declare_app, governor, test_host_holding};
-use super::super::person_workspace::{
+use super::mount;
+
+use tilolang_workspace::records::{Packages, member, with_tl_record};
+use tilolang_workspace::runtime::Value;
+
+use tilo_workspace_service::apps::served_notices::ServedNotices;
+use tilo_workspace_service::tl_records::{Compiled, Package};
+use tilo_workspace_service::workspaces::Workspaces;
+use tilo_workspace_service::workspaces::fixtures::{
+    TestGroupKeys, declare_app, governor, test_host_holding,
+};
+use tilo_workspace_service::workspaces::person_workspace::{
     self,
     devices::{DEVICES, Devices},
     read_on,
 };
-use super::tests::group_keys;
-use crate::apps::served_notices::{Package, ServedNotices};
-use crate::tl_records::{Packages, member};
 
 /// The app that tells its person something: a notice with one action they may choose.
 const APP: &str = "test.notice";
@@ -51,30 +57,40 @@ action tell(m: Memo) uses notify {
 /// Run `tell` on the app's record of `workspace`, as the person: the notice the app raises there.
 async fn raise(workspaces: &Workspaces, workspace: &str, packages: &Packages, person: &str) {
     let who = member(tilo_actions::MemberId::person(person.to_owned()));
-    workspaces
-        .with_tl_record(workspace, packages, (who.clone(), person), move |opened| {
+    with_tl_record(
+        workspaces,
+        workspace,
+        packages,
+        (who.clone(), person),
+        move |opened| {
             let root = opened.open_root()?;
             opened
                 .invoke(&who, (APP, "tell"), vec![Value::resource(&root)], None)
                 .map(drop)
-        })
-        .await
-        .expect("the app tells its person");
+        },
+    )
+    .await
+    .expect("the app tells its person");
 }
 
 /// Whether the memo the app's record holds is done, read through the app's own package.
 async fn done(workspaces: &Workspaces, workspace: &str, packages: &Packages, person: &str) -> bool {
     let who = member(tilo_actions::MemberId::person(person.to_owned()));
-    workspaces
-        .with_tl_record(workspace, packages, (who.clone(), person), move |opened| {
+    with_tl_record(
+        workspaces,
+        workspace,
+        packages,
+        (who.clone(), person),
+        move |opened| {
             let root = opened.open_root()?;
             match opened.host().runtime().read(&root, "done") {
                 Ok(Value::Bool(done)) => Ok(done),
                 other => Err(format!("the memo's done does not read: {other:?}")),
             }
-        })
-        .await
-        .expect("the memo reads")
+        },
+    )
+    .await
+    .expect("the memo reads")
 }
 
 /// The one notice the record of the person's devices holds, by its id there.
@@ -101,8 +117,9 @@ async fn shown(
 async fn a_notice_raised_in_the_daemon_follows_the_person_and_their_answers_reach_the_app() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let desk = test_host_holding(dir.path(), &key, &cert, group_keys()).await;
+    let desk = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
     let workspaces = desk.workspaces().clone();
+    mount(&workspaces);
     let own = person_workspace::found(&workspaces)
         .await
         .expect("the person's own workspace is founded");
@@ -124,7 +141,7 @@ async fn a_notice_raised_in_the_daemon_follows_the_person_and_their_answers_reac
     );
     raise(&workspaces, &workspace, &packages, &person).await;
 
-    let package = Package::Compiled(packages.clone());
+    let package = Package::Compiled(Compiled::new(packages.clone()));
     let mut served = ServedNotices::new(
         workspaces.clone(),
         cert.device_public_key,

@@ -36,6 +36,8 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Directory names under apps/. The session installs these or a subset.
 # TILO_NESTED_APPS builds fewer (a list of the same names, possibly empty):
 # `tilolang run` needs none of them, only the runtime and the tilolang binary.
+# A tilolang package (`apps/tl/<name>`) may be named too: it builds no thin
+# app, and the session builds its package from the runtime this build bakes.
 apps=${TILO_NESTED_APPS-"terminal"}
 if [[ ${1:-} == --apps ]]; then
     printf '%s\n' "$apps"
@@ -212,8 +214,13 @@ build_tilolang_cli() {
 # tilolang-runtime-build.sh builds in the same profile, so its tilolang runtime
 # links the library this session runs.
 thin_profile=thin-dev
+# A tilolang app (`apps/tl/<name>`) builds no thin app: it is interpreted, and
+# nested-session.sh builds its signed package from the runtime it bakes here.
+# Only the apps with a thin build name the catalogue.
 selected=()
-for app in $apps; do selected+=("$app"); done
+for app in $apps; do
+    if [[ -f apps/$app/tilo-app.toml ]]; then selected+=("$app"); fi
+done
 packages=tilolang-process
 if ((${#selected[@]})); then
     packages="$packages $(python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.packages | join(" ")')"

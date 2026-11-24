@@ -18,7 +18,8 @@
 #
 # Options:
 #   --apps "NAME ..."  apps to install (directory names under apps/; "files"
-#                      means file-explorer): the set nested-session-build.sh
+#                      means file-explorer, and a tilolang package is a
+#                      directory under apps/tl): the set nested-session-build.sh
 #                      builds (the default) or a subset of it, possibly none.
 #   --install-tapp FILE  also install this signed package (repeatable): a
 #                      tilolang app `tilolang run` built for this session.
@@ -215,14 +216,21 @@ for tool in jq bwrap readelf python3 sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on PATH"
 done
 
+# An app name is a directory under apps/ (a thin app this build carries) or
+# under apps/tl (a tilolang package, built into its signed package below from
+# the runtime the session bakes, as `--install-tapp` installs one).
 selected=()
+tl_apps=()
 for app in $apps; do
-    if [[ ! -f $repo_root/apps/$app/tilo-app.toml ]]; then
-        die "no app named $app under apps/"
+    if [[ -f $repo_root/apps/$app/tilo-app.toml ]]; then
+        [[ " $built_apps " == *" $app "* ]] \
+            || die "$app is not built for the nested session; add it to dist/dev/nested-session-build.sh"
+        selected+=("$app")
+    elif [[ -f $repo_root/apps/tl/$app/app.tl ]]; then
+        tl_apps+=("$app")
+    else
+        die "no app named $app under apps/ or apps/tl/"
     fi
-    [[ " $built_apps " == *" $app "* ]] \
-        || die "$app is not built for the nested session; add it to dist/dev/nested-session-build.sh"
-    selected+=("$app")
 done
 
 mkdir -p "$state"
@@ -312,9 +320,12 @@ ln -sfn "$fonts" "$bin/fonts"
 
 # --- 2. Plans -------------------------------------------------------------------
 # The plan of every built app names the runtime they link, whichever of them
-# (possibly none) this session installs.
+# (possibly none) this session installs. The catalogue knows a tilolang app by
+# `tl-<directory>`, and its entry names the runtime the app runs on.
+plan_apps=("${selected[@]}")
+for name in "${tl_apps[@]}"; do plan_apps+=("tl-$name"); done
 plan=$state/plan.json
-python3 "$repo_root/tools/apps/app_release.py" --apps "$built_apps" > "$plan"
+python3 "$repo_root/tools/apps/app_release.py" --apps "${plan_apps[*]-}" > "$plan"
 
 # --- 3. Keys -----------------------------------------------------------------
 keys=$state/keys
@@ -362,6 +373,23 @@ if [[ -z $runtime_version ]]; then
     printf '%s\n' "$runtime_key" > "$runtimes/.key"
 fi
 runtime_id=tilo-runtime/$runtime_version
+
+# The tilolang apps among `--apps`: each is built into its signed package against the runtime
+# above, as an app walk builds `apps/tl/<name>` (`tilolang build --locked`), and installed with
+# the packages handed in with `--install-tapp` below.
+for name in "${tl_apps[@]}"; do
+    [[ -x $bin/tilolang ]] || die "no $bin/tilolang to build apps/tl/$name with (run without --no-build)"
+    say "building the tilolang app $name"
+    out=$state/work/tl-apps/$name
+    rm -rf "$out"
+    mkdir -p "$out"
+    "$bin/tilolang" build --locked "$repo_root/apps/tl/$name" --search "$repo_root/apps/tl" \
+        --out "$out" --tilo-runtime "$runtime_id" \
+        || die "could not build apps/tl/$name"
+    tapp=$(find "$out" -maxdepth 1 -name '*.tapp' -print -quit)
+    [[ -n $tapp ]] || die "apps/tl/$name built no package"
+    install_tapps+=("$tapp")
+done
 
 # The tilolang runtime bundle: the binary every tilolang app's entrypoint
 # executes (crates/lang/tilolang-process/tilo-runtime.toml), built against the runtime above

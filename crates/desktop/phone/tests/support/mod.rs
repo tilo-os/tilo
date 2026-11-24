@@ -71,6 +71,12 @@ impl Home {
         }
         Self { dir, env }
     }
+
+    /// Point the phone's daemon at `url`, the relay its server answers through: its endpoint
+    /// picks that relay at once instead of looking for a public one nothing here serves.
+    pub fn relay(&mut self, url: &str) {
+        self.env.set("TILO_RELAY", url);
+    }
 }
 
 /// The daemon's profile, where the phone keeps it.

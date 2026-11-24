@@ -3821,6 +3821,22 @@ impl tilo_connectivity_service::device::Device for Radios {
         }
         Ok(())
     }
+
+    fn scan_operators(&self, _modem: &str) -> Result<Vec<os_actions::Operator>, String> {
+        Err("this laptop has no modem".into())
+    }
+
+    fn send_code(&self, _modem: &str, _command: &str) -> Result<os_actions::CodeAnswer, String> {
+        Err("this laptop has no modem".into())
+    }
+
+    fn answer_code(&self, _modem: &str, _response: &str) -> Result<os_actions::CodeAnswer, String> {
+        Err("this laptop has no modem".into())
+    }
+
+    fn cancel_code(&self, _modem: &str) -> Result<(), String> {
+        Err("this laptop has no modem".into())
+    }
 }
 
 /// A session whose laptop has Wi-Fi with one open network in reach and one it keeps, Bluetooth,

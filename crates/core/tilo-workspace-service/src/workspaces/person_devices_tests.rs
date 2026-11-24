@@ -13,13 +13,13 @@ use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 use super::super::Workspaces;
-use super::super::fixtures::{TestHost, device_cert, governor, test_host_holding};
+use super::super::fixtures::{TestHost, device_cert, governor, invitation, test_host_holding};
 use super::super::person_workspace::{
     self, apply_on,
     devices::{DEVICES, Devices, OwnerSession, UnlockAnswer},
     read_on,
 };
-use super::tests::{catching_up, group_keys, invitation, member_service};
+use super::tests::{catching_up, group_keys, member_service};
 
 /// The person's desktop, which founded their own workspace and keeps itself in the record of
 /// their devices, its certificate, their laptop, which took the workspace in, and the workspace.

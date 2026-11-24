@@ -16,7 +16,9 @@ use tilo_system_resources::host_info::HostInfo;
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
 };
-use tilo_system_resources::storage::{CategoryUsage, DiskUsage, Storage, StoredItem};
+use tilo_system_resources::storage::{
+    CategoryUsage, DiskUsage, Storage, StoredItem, WorkspaceHold,
+};
 use tilo_system_resources::update::Deployment;
 use tilo_system_resources::users::{LocalAccount, Users};
 use tilo_system_resources::windows_compat::{WindowsPrograms, WindowsState};
@@ -434,13 +436,33 @@ impl System for Fake {
     }
 
     fn change_storage(&self, change: &StorageChange) -> Result<(), String> {
-        self.storage_changes.lock().unwrap().push(*change);
+        self.storage_changes.lock().unwrap().push(change.clone());
         let refusal = self.storage_refusal.lock().unwrap().clone();
         if let Some(reason) = refusal {
             return Err(reason);
         }
         match change {
             StorageChange::ClearCache => self.storage.lock().unwrap().cache_bytes = 0,
+            StorageChange::KeepHere { workspace, keep } => {
+                let mut storage = self.storage.lock().unwrap();
+                if let Some(held) = storage
+                    .residency
+                    .iter_mut()
+                    .find(|held| &held.workspace == workspace)
+                {
+                    held.kept_here = *keep;
+                }
+            }
+            StorageChange::FreeCache { workspace } => {
+                let mut storage = self.storage.lock().unwrap();
+                if let Some(held) = storage
+                    .residency
+                    .iter_mut()
+                    .find(|held| &held.workspace == workspace)
+                {
+                    held.cache_bytes = 0;
+                }
+            }
         }
         Ok(())
     }
@@ -1808,6 +1830,15 @@ fn a_storage_scan() -> Storage {
             reclaimable: false,
         }],
         cache_bytes: 7_300_000,
+        residency: vec![WorkspaceHold {
+            workspace: "studio".into(),
+            kept_here: false,
+            pinned_bytes: 0,
+            replicated_bytes: 4_000,
+            only_here_bytes: 900,
+            only_here_files: 2,
+            cache_bytes: 3_000,
+        }],
         scanned: true,
         ..Storage::default()
     }
@@ -1827,6 +1858,19 @@ fn the_storage_resource_reads_the_disk_and_clears_the_cache() {
     assert_eq!(storage["categories"][0]["category"], json!("Cache"));
     assert_eq!(storage["largest"][0]["owner"], json!("notes"));
     assert_eq!(storage["cache_bytes"], json!(7_300_000));
+    assert_eq!(
+        storage["residency"][0],
+        json!({
+            "workspace": "studio",
+            "kept_here": false,
+            "pinned_bytes": 0,
+            "replicated_bytes": 4_000,
+            "only_here_bytes": 900,
+            "only_here_files": 2,
+            "cache_bytes": 3_000,
+        }),
+        "what the device holds of a workspace is published as the daemon splits it"
+    );
 
     let published = service
         .resources()
@@ -1840,6 +1884,8 @@ fn the_storage_resource_reads_the_disk_and_clears_the_cache() {
         .collect();
     assert!(actions.contains(&"scan"), "{actions:?}");
     assert!(actions.contains(&"clear-cache"), "{actions:?}");
+    assert!(actions.contains(&"keep-here"), "{actions:?}");
+    assert!(actions.contains(&"free-workspace-cache"), "{actions:?}");
 
     assert_eq!(
         service.invoke(STORAGE, "clear-cache", &Map::new()),
@@ -1865,6 +1911,62 @@ fn the_storage_resource_reads_the_disk_and_clears_the_cache() {
         json!("cleanup target changed after preview")
     );
     assert_eq!(storage["pending"], json!([]));
+}
+
+#[test]
+fn a_workspace_is_kept_here_or_its_fetched_files_freed() {
+    let fake = Fake::new();
+    *fake.storage.lock().unwrap() = a_storage_scan();
+    let mut service = service(&fake);
+
+    let keep = Map::from_iter([
+        ("workspace".to_owned(), json!("studio")),
+        ("keep".to_owned(), json!(true)),
+    ]);
+    assert_eq!(
+        service.invoke(STORAGE, "keep-here", &keep),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(
+        fake.storage_changes(),
+        [StorageChange::KeepHere {
+            workspace: "studio".into(),
+            keep: true,
+        }]
+    );
+    // The reading the change landed carries the new answer: the workspace is kept here now.
+    let storage = service.read(STORAGE).unwrap();
+    assert_eq!(storage["residency"][0]["kept_here"], json!(true));
+    assert_eq!(storage["pending"], json!([]));
+
+    let free = Map::from_iter([("workspace".to_owned(), json!("studio"))]);
+    service
+        .invoke(STORAGE, "free-workspace-cache", &free)
+        .unwrap();
+    service.settle();
+    assert_eq!(
+        fake.storage_changes().last(),
+        Some(&StorageChange::FreeCache {
+            workspace: "studio".into(),
+        })
+    );
+    assert_eq!(
+        service.read(STORAGE).unwrap()["residency"][0]["cache_bytes"],
+        json!(0),
+        "the workspace's fetched files are gone and its other bytes stay"
+    );
+
+    // A change the daemon refuses says why, in its own words, until the next action.
+    *fake.storage_refusal.lock().unwrap() = Some("that workspace is not mounted".into());
+    service
+        .invoke(STORAGE, "free-workspace-cache", &free)
+        .unwrap();
+    service.settle();
+    assert_eq!(
+        service.read(STORAGE).unwrap()["problem"],
+        json!("that workspace is not mounted")
+    );
 }
 
 #[test]

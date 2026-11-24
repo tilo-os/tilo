@@ -18,7 +18,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 use super::{
     DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeysChangedFuture, PreAdmitRequest,
-    Workspaces,
+    WorkspaceSummary, Workspaces,
 };
 use crate::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 
@@ -508,7 +508,10 @@ pub fn declare_app(host: &TestHost, app: &str, surface: &[u8]) {
 /// This build carries no package `app`.
 #[cfg(feature = "agents")]
 pub fn declare_built_in_app(host: &TestHost, app: &str) {
-    let surface = crate::tl_records::built_in_surface(app)
+    let surface = host
+        .workspaces()
+        .tilolang()
+        .and_then(|tilolang| tilolang.records.surface(app))
         .unwrap_or_else(|| panic!("this build carries no package {app}"));
     declare_app(host, app, &surface);
 }
@@ -1024,4 +1027,131 @@ pub async fn revoke_grants(
             .expect("the host takes its workspace's grants back");
     }
     project_access(workspaces, workspace).await;
+}
+
+/// `serving` creates the workspace `name` and invites `device` into it: the serving device, the
+/// device it invites, the workspace and the invitation's text.
+pub async fn invited(
+    serving: TestHost,
+    serving_cert: &DeviceCert,
+    name: &str,
+    seed: u8,
+    device: (SigningKey, DeviceCert),
+) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
+    let created = serving
+        .workspaces()
+        .create(name)
+        .await
+        .expect("a workspace is created");
+    let invitation = invitation(&serving, serving_cert, &created.workspace, seed, &device.1).await;
+    (serving, device, created, invitation)
+}
+
+/// The text of the invitation `serving` issues for `recipient`'s person into `workspace`.
+pub async fn invitation(
+    serving: &TestHost,
+    serving_cert: &DeviceCert,
+    workspace: &str,
+    seed: u8,
+    recipient: &DeviceCert,
+) -> String {
+    let issued = serving
+        .workspaces()
+        .pre_admit(
+            serving_cert,
+            PreAdmitRequest {
+                request_id: [seed; 32],
+                grant: signed_pre_admission(workspace, &[seed; 8]),
+                recipient_user_public_key: Some(recipient.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .expect("the serving device issues an invitation");
+    tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation)
+}
+
+/// The runs a test's broker was asked to start, each of which ran to its end at once.
+#[derive(Default)]
+pub struct Started(pub Mutex<Vec<crate::apps::triggers::Firing>>);
+
+impl crate::apps::triggers::StartRun for Started {
+    fn start(
+        &self,
+        firing: &crate::apps::triggers::Firing,
+        _: tilo_automation::AutomationInvocationId,
+    ) -> Result<u64, tilo_actions::remote::ActionCallError> {
+        let mut started = self.0.lock().unwrap();
+        started.push(firing.clone());
+        Ok(u64::try_from(started.len()).unwrap())
+    }
+
+    fn ended(
+        &self,
+        firing: &crate::apps::triggers::Firing,
+        run: tilo_automation::AutomationInvocationId,
+    ) -> Option<tilo_automation::InvocationReport> {
+        Some(tilo_automation::InvocationReport {
+            invocation: run,
+            shortcut: firing.shortcut.clone(),
+            version: None,
+            trigger: firing.trigger.kind().into(),
+            mode: tilo_automation::InvocationMode::Unattended,
+            steps: Vec::new(),
+            output: None,
+            degraded: Vec::new(),
+            outcome: tilo_automation::InvocationOutcome::Completed,
+        })
+    }
+}
+
+/// Save `shortcut` in `workspace`, signed by the device `cert` names.
+pub async fn save_signed(
+    workspaces: &Workspaces,
+    workspace: &str,
+    mut shortcut: tilo_automation::Shortcut,
+    (key, cert): (&SigningKey, &DeviceCert),
+) {
+    tilo_peer_state::workspace::sign_saved_shortcut(workspace, &mut shortcut, cert, key).unwrap();
+    workspaces
+        .commit_own_membership(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
+                tilo_peer_state::workspace_membership::SettingsChange::Shortcuts(
+                    tilo_automation::ShortcutChange::Save(Box::new(shortcut)),
+                ),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+/// A shortcut whose trigger is a change of an issue in the tasks app.
+pub fn on_issue_change() -> tilo_automation::Shortcut {
+    serde_json::from_value(serde_json::json!({
+        "id": "tidy",
+        "name": "Tidy",
+        "steps": [],
+        "triggers": [{
+            "trigger": "resource_changed",
+            "kind": "tl.so.tilo.tasks.Task",
+            "actions": [],
+            "fields": [],
+        }],
+    }))
+    .unwrap()
+}
+
+/// Whoever's turns an agent takes here: the agent `scout`, as a device that holds its key.
+pub struct ActsAsScout;
+
+impl crate::work::AgentEngine for ActsAsScout {
+    fn acts_as<'a>(
+        &'a self,
+        _workspace: &'a str,
+        agent: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move { agent == "scout" })
+    }
 }

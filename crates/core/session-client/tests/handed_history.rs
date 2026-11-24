@@ -12,7 +12,7 @@ use tilo_session_client::{Cmd, Outbox as _};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    WORKSPACE, commit_native, enrol, enter, entry_grant, route, start_host_plain, workspace,
+    WORKSPACE, commit_change, enrol, enter, entry_grant, route, start_host_plain, workspace,
 };
 
 /// More writes than a record's sealed history holds (4096) before it is compacted.
@@ -103,12 +103,12 @@ async fn handed_keys_then_writes(keys: Keys) {
     // One record takes more than its sealed history holds, then another record is written.
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, "founded", true).unwrap();
-    commit_native(&mut doc);
+    commit_change(&mut doc);
     peer.write(tree.clone(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
     for change in 0..CHANGES {
         doc.put(automerge::ROOT, "count", change as u64).unwrap();
-        commit_native(&mut doc);
+        commit_change(&mut doc);
         peer.write(
             tree.clone(),
             &DocumentMutation::Incremental(doc.save_incremental()),
@@ -117,7 +117,7 @@ async fn handed_keys_then_writes(keys: Keys) {
     }
     let mut other = automerge::AutoCommit::new();
     other.put(automerge::ROOT, "task", "write it down").unwrap();
-    commit_native(&mut other);
+    commit_change(&mut other);
     peer.write(tasks.clone(), &DocumentMutation::Snapshot(other.save()))
         .unwrap();
 

@@ -365,7 +365,7 @@ impl SoundService {
         };
         sound.pending = std::mem::take(&mut self.sound.pending);
         sound.problem = self.sound.problem.take();
-        sound.themes = self.themes.clone();
+        sound.themes.clone_from(&self.themes);
         if let Some((action, result)) = done {
             if let Some(at) = sound.pending.iter().position(|id| *id == action) {
                 sound.pending.remove(at);

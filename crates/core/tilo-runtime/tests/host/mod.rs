@@ -160,6 +160,12 @@ where
     }
     say_what_went_wrong();
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
+    // The language runtime this in-process daemon mounts, as the program mounts it: the built-in
+    // apps' records are read and changed here as they are on a computer running the program.
+    tilo_runtime::device::capabilities::mount(tilo_runtime::device::capabilities::Capabilities {
+        tilolang: Some(Box::new(tilolang_records::host)),
+        ..Default::default()
+    });
     let host = Arc::new(Host::start(&profile));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)

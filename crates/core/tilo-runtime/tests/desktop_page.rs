@@ -59,7 +59,7 @@ fn own_workspace(host: &host::Host) -> String {
 /// The words a menu names the shell's own style `style` by: its doc line, as the one rule that
 /// finds a package's styles reads it.
 fn style_line(style: &str) -> String {
-    tilo_workspace_service::styles::installed(&[])
+    tilolang_records::styles::installed(&[])
         .into_iter()
         .find(|offered| offered.style == style)
         .map(|offered| offered.line)

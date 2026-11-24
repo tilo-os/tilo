@@ -396,6 +396,24 @@ mod tests {
             assert_eq!(node.name.as_deref(), Some("Email address"));
         }
 
+        /// A label names a waiting block, which says "Loading" only as a fallback of its own:
+        /// the shell holds an app-drawn card's place by the words that name the block, not by
+        /// the skeleton's placeholder.
+        fn a_label_names_a_waiting_block() {
+            let block = Labelled::new(
+                "Turn left onto Main Street in Tasks",
+                Box::new(crate::widget::Skeleton::new(
+                    crate::widget::SkeletonShape::Block { height: 160.0 },
+                )),
+            );
+            let node = block.accessibility().expect("the block's semantics");
+            assert_eq!(
+                node.name.as_deref(),
+                Some("Turn left onto Main Street in Tasks")
+            );
+            assert!(node.state.busy, "it still says the block waits");
+        }
+
         one_key_names_the_visible_label_and_text_input();
         labeled_field_hugs_its_content_inside_a_tall_form();
         standard_boolean_and_range_controls_share_the_contract();
@@ -403,5 +421,6 @@ mod tests {
         inline_check_uses_one_key_for_visible_and_spoken_labels();
         a_label_over_a_boxed_control_is_the_controls_name();
         a_named_control_keeps_its_name_under_a_label();
+        a_label_names_a_waiting_block();
     }
 }

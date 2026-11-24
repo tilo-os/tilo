@@ -1,8 +1,9 @@
-//! A fresh phone that joins a workspace runs the workspace's apps: the apps a workspace installs
+//! A fresh phone that joins a workspace lists the workspace's apps: the apps a workspace installs
 //! are in its tree (`workspace/apps#install`, its package kept by the workspace's host), and every
-//! device of a member fetches each package into its own cache and lists it, a phone as much as a
-//! laptop. Here a phone nobody signed in to before joins a workspace that runs tilolang Notes,
-//! lists the workspace's apps through the call its view reads them with, and opens Notes.
+//! device of a member reads that record, a phone as much as a laptop. Here a phone nobody signed
+//! in to before joins a workspace that runs tilolang Notes and lists it, by name, through the call
+//! its view reads apps with. A phone opens an app from the bundle its APK carries, never by
+//! asking its daemon to launch one.
 //!
 //! The daemon reads its places from the process's environment, so this binary is one test, as
 //! `ticket.rs` is.
@@ -25,12 +26,18 @@ use server::Server;
 
 #[test]
 fn a_fresh_phone_lists_its_workspaces_apps() {
-    let _home = support::Home::new();
+    let mut home = support::Home::new();
     let server = Server::start();
+    home.relay(&server.relay_url());
     let scratch = tempfile::tempdir().unwrap();
     // The workspace runs Notes before the phone ever joins it; nothing is installed on the phone.
     server.install(&server::notes_tapp(scratch.path()));
-    let laptop = support::Issuing::start(server.runtime.handle(), &server.person, server.entry());
+    let laptop = support::Issuing::start(
+        server.runtime.handle(),
+        &server.person,
+        server.entry(),
+        server.workspaces(),
+    );
     let mut phone =
         tilo_runtime::in_process::Device::start(&support::profile()).expect("the phone's daemon");
     phone
@@ -49,12 +56,9 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
         }
     });
 
-    // What the phone's view lists under the workspace (`device.apps`): the workspace's apps, which
-    // its device fetched from the workspace's tree into its own package cache.
-    let apps = support::until(
-        "the phone lists Notes, which the workspace runs: its device fetches and installs the \
-         packages the workspace installs",
-        || {
+    // What the phone's view lists under the workspace (`device.apps`): the apps the workspace's
+    // host installed into it, which its device reads from the record its follower reads too.
+    let apps = support::until("the phone lists Notes, which the workspace runs", || {
             let apps = phone
                 .apps(&server.workspace)
                 .map_err(|error| format!("{error:#}"))?;
@@ -68,21 +72,6 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     assert!(
         apps.iter().any(|app| app.name == "Notes"),
         "Notes is listed by its name: {apps:?}"
-    );
-
-    // And it opens: the device runs the app it installed and answers what its window shows.
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let shown = runtime
-        .block_on(async {
-            tilo_api::calls::Calls::open(tilo_api::calls::Reach::default())
-                .await?
-                .view(&server.workspace, "notes", false)
-                .await
-        })
-        .unwrap_or_else(|error| panic!("Notes opens on the phone: {error:#}"));
-    assert!(
-        shown.to_string().contains("Notes"),
-        "Notes' window shows Notes: {shown}"
     );
 
     phone.stop().expect("the phone's daemon stops");

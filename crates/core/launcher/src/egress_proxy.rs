@@ -378,7 +378,7 @@ impl EgressProxy {
                 tokio::net::UnixDatagram::from_std(proxy_end).map_err(ProxyError::Runtime)?
             };
             let (cut, _) = tokio::sync::broadcast::channel(1);
-            let state = Arc::new(CallsState {
+            let calling = Arc::new(CallsState {
                 app: app.to_owned(),
                 granted: true,
                 live: AtomicBool::new(false),
@@ -390,21 +390,21 @@ impl EgressProxy {
                 test_loopback,
                 ingress: Arc::new(ingress),
             });
-            stops.push(serve_udp(Arc::clone(&state))?);
+            stops.push(serve_udp(Arc::clone(&calling))?);
             let control_path = control_socket_path(socket_path);
-            let control = serve_control(&control_path, Arc::clone(&state))?;
+            let control = serve_control(&control_path, Arc::clone(&calling))?;
             stops.push(control);
             // The daemon writes the lane before it tells the proxies, and this socket is bound, so
-            // a launch that starts during a live call reads it here, and one that starts after
+            // a launch that starts during a live calling reads it here, and one that starts after
             // gets its line on the socket.
             if socket_path
                 .parent()
                 .and_then(|directory| std::fs::read_to_string(lane_path(directory)).ok())
                 .is_some_and(|lane| lane.trim() == app)
             {
-                state.live.store(true, Ordering::Relaxed);
+                calling.live.store(true, Ordering::Relaxed);
             }
-            (Some(state), Some(std::sync::Arc::new(sandbox_end)))
+            (Some(calling), Some(std::sync::Arc::new(sandbox_end)))
         } else {
             (None, None)
         };
@@ -427,7 +427,7 @@ impl EgressProxy {
             Arc::clone(&policy),
             max_connections,
             Arc::clone(&stats),
-            calls_state.clone(),
+            calls_state,
             udp_bound,
         );
         stops.push(stop);
@@ -677,8 +677,7 @@ fn serve_control(path: &Path, state: Arc<CallsState>) -> Result<oneshot::Sender<
 async fn control_connection(mut stream: tokio::net::UnixStream, state: &CallsState) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let Ok(cred) = stream.peer_cred() else { return };
-    // SAFETY: geteuid takes no pointers.
-    if cred.uid() != unsafe { libc::geteuid() } {
+    if cred.uid() != rustix::process::geteuid().as_raw() {
         tracing::warn!("refused a calls control connection of another user");
         return;
     }
@@ -686,17 +685,17 @@ async fn control_connection(mut stream: tokio::net::UnixStream, state: &CallsSta
     let Ok(n) = stream.read(&mut buf).await else {
         return;
     };
-    let line = String::from_utf8_lossy(&buf[..n]);
+    let line = String::from_utf8_lossy(buf.get(..n).unwrap_or_default());
     let words: Vec<&str> = line.split_whitespace().collect();
-    if words.len() != 3 || words[0] != "calls" {
+    let ["calls", app, switch] = words.as_slice() else {
         let _ = stream.write_all(b"unknown\n").await;
         return;
-    }
-    if words[1] != state.app {
+    };
+    if *app != state.app {
         let _ = stream.write_all(b"another app\n").await;
         return;
     }
-    match words[2] {
+    match *switch {
         "on" => {
             state.live.store(true, Ordering::Relaxed);
             tracing::info!(app = %state.app, "udp lane open while a call is live");
@@ -738,7 +737,7 @@ pub fn announce_calls(directory: &Path, app: &str, live: bool) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
-    let line = format!("calls {app} {}\n", if live { "on" } else { "off" });
+    let notice = format!("calls {app} {}\n", if live { "on" } else { "off" });
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
@@ -749,7 +748,7 @@ pub fn announce_calls(directory: &Path, app: &str, live: bool) {
             continue;
         };
         let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
-        let _ = stream.write_all(line.as_bytes());
+        let _ = stream.write_all(notice.as_bytes());
     }
 }
 

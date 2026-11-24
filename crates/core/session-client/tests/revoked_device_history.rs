@@ -31,7 +31,7 @@ use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::{DeviceCapabilities, RevocationEntry, RevocationReason, UserIdentity};
 
 use crate::support::{
-    Device, TestHost as Server, WORKSPACE, commit_native, durable, enrol, entry_grant, in_workspace,
+    Device, TestHost as Server, WORKSPACE, commit_change, durable, enrol, entry_grant, in_workspace,
     ready, redeem, refused, resource_of, said, start_host_admitting as start_server,
     start_peer_with_store, wait_for, wait_keyed, workspace,
 };
@@ -141,7 +141,7 @@ impl World {
         let mut copy = resource_of(peer, route).unwrap_or_default();
         let before = copy.get_heads();
         copy.put(ROOT, text, true).unwrap();
-        commit_native(&mut copy);
+        commit_change(&mut copy);
         let mutation = if before.is_empty() {
             DocumentMutation::Snapshot(copy.save())
         } else {
@@ -327,7 +327,7 @@ fn attempt(peer: &Link, route: &DocumentRoute, text: &str) {
     let mut copy = resource_of(peer, route).unwrap_or_default();
     let before = copy.get_heads();
     copy.put(ROOT, text, true).unwrap();
-    commit_native(&mut copy);
+    commit_change(&mut copy);
     let _ = peer.write(
         route.clone(),
         &DocumentMutation::Incremental(copy.save_after(&before)),

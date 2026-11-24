@@ -8,9 +8,9 @@
 //! names the certify action; its input is a [`CertifyInput`] whose key is the key the connection
 //! came from; it spends the ticket's secret, once, while the ticket is live. The computer is then
 //! told its call was accepted and follows it, while the [`Approver`] is asked. Its answer is
-//! checked against the approver's own certificate ([`check_approval`]), and only then does the
-//! invocation succeed with the [`CertifyAnswer`]. A decline, or an answer that does not check,
-//! fails it with that sentence.
+//! checked against the approver's own certificate ([`check_approval`]), the computer is listed
+//! among the person's devices ([`Keeping`]), and only then does the invocation succeed with the
+//! [`CertifyAnswer`]. A decline, or an answer that does not check, fails it with that sentence.
 //!
 //! A device serves every ticket through its one [`Tickets`], whoever issued the ticket there.
 
@@ -38,6 +38,16 @@ pub use tickets::{LookAgain, PageHost, Refusal, Tickets};
 /// How long a follower waiting for the approval is held before it looks again.
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
 
+/// Where a computer is listed once a ticket certified it: the record of the person's devices in
+/// their own workspace, which the device that issued the ticket writes. A computer the person's
+/// server does not know as one of theirs is refused by it, so this is written before the computer
+/// is answered its certificate and makes its first call.
+pub trait Keeping: Send + Sync {
+    /// Keep `cert`, which the person's root signed for the computer the ticket added, in the
+    /// person's own workspace's record of their devices.
+    fn keep(&self, cert: DeviceCert);
+}
+
 /// The ticket a device issued, served on its action service until a computer is certified with
 /// it.
 #[derive(Clone)]
@@ -61,6 +71,8 @@ struct Inner {
     calls: Mutex<HashMap<InvocationId, ([u8; 32], InvocationState)>>,
     /// The certificate given, once one is: what the device that issued the ticket waits on.
     certified: watch::Sender<Option<DeviceCert>>,
+    /// Where the computer is listed among the person's devices, once it is certified.
+    keep: std::sync::OnceLock<Arc<dyn Keeping>>,
     /// Whether the computer read how its call ended: until then the issuer keeps serving.
     told: watch::Sender<bool>,
     runtime: tokio::runtime::Handle,
@@ -131,6 +143,15 @@ impl ServedTicket {
         )
     }
 
+    /// List the computer this ticket certifies among the person's devices through `keep`, as the
+    /// redemption completes and before the computer is answered its certificate. A ticket served
+    /// without one answers the computer and lists it nowhere.
+    #[must_use]
+    pub fn kept_by(self, keep: Arc<dyn Keeping>) -> Self {
+        let _ = self.0.keep.set(keep);
+        self
+    }
+
     fn serving(
         ticket: Ticket,
         user_public_key: [u8; 32],
@@ -152,6 +173,7 @@ impl ServedTicket {
             revocations,
             calls: Mutex::default(),
             certified: watch::Sender::new(None),
+            keep: std::sync::OnceLock::new(),
             told: watch::Sender::new(false),
             runtime: tokio::runtime::Handle::current(),
         }))
@@ -277,6 +299,11 @@ impl ServedTicket {
                     tilo_clock::unix_now_ns(),
                 ) {
                     Ok(cert) => {
+                        // The computer is one of the person's devices before it is answered its
+                        // certificate: its first calls are decided against their record.
+                        if let Some(keep) = served.0.keep.get() {
+                            keep.keep(cert.clone());
+                        }
                         let answer = CertifyAnswer {
                             cert: cert.clone(),
                             enter: served.0.enter.clone(),

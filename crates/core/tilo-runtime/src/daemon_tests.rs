@@ -31,7 +31,10 @@ tilo_test_env::scenario! {
             }
         }
         let directory = tempfile::tempdir().unwrap();
-        let listener = UnixListener::bind(directory.path().join("native.sock")).unwrap();
+        // The endpoint the daemon serving this profile asks: a named profile's sockets are the
+        // account's own, never inside the profile.
+        let socket = super::native_socket(directory.path()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let active = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
@@ -987,6 +990,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
         agents: None,
         frames,
         to_agents: None,
+        launch: None,
     });
     let who = ask(OWN, json!({"native": "account#who"}));
     let person = who["person"].as_str().expect("a person now").to_owned();
@@ -1151,6 +1155,7 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
         agents: None,
         frames,
         to_agents: None,
+        launch: None,
     });
     let socket = dir.path().join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
@@ -1393,6 +1398,7 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
         agents: None,
         frames,
         to_agents: None,
+        launch: None,
     });
     // Another person's connection is served by an endpoint of the key it acts as, which says
     // that key and its person as the workspace it serves.
@@ -1432,6 +1438,7 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
                 agents: None,
                 frames: crate::device::local::Frames::of_the_device(answers),
                 to_agents: None,
+                launch: None,
             }
             .take(stream, slot, Some(seated))
         },
@@ -1760,6 +1767,7 @@ fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
         agents: None,
         frames,
         to_agents: None,
+        launch: None,
     });
     let socket = dir.path().join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
@@ -2287,6 +2295,7 @@ fn root_reaches_the_person_in_their_own_daemon_and_the_device_under_the_system_u
             agents: None,
             frames,
             to_agents: None,
+            launch: None,
         });
         let socket = dir.path().join("native.sock");
         let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
@@ -2379,6 +2388,7 @@ fn a_plain_socket_peer_is_the_person_only_from_the_persons_own_account() {
         agents: None,
         frames,
         to_agents: None,
+        launch: None,
     });
     // A process the daemon started is the app it runs.
     let launched = 424_242;
@@ -2528,4 +2538,32 @@ fn a_client_in_the_persons_own_daemons_process_is_answered_at_once() {
     );
 
     running.stop().unwrap();
+}
+
+/// A profile's path is the person's state, which can be longer than a socket's address holds. A
+/// named profile's daemon keeps its sockets in a short directory of its own, and the client
+/// helper names that same directory, so finding a daemon and binding one agree.
+#[test]
+fn a_long_profile_path_keeps_its_sockets_where_every_client_finds_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let profile = dir
+        .path()
+        .join("people")
+        .join("a".repeat(90))
+        .join("state")
+        .join("server");
+    std::fs::create_dir_all(&profile).unwrap();
+    assert!(
+        tilo_api::daemon::socket_fits(&profile.join(tilo_paths::machine::DAEMON_NATIVE)).is_err(),
+        "the test's profile is long enough that a socket cannot live in it"
+    );
+    let sockets = super::sockets(&profile).unwrap();
+    assert_ne!(sockets, profile, "{}", sockets.display());
+    assert!(!sockets.starts_with(&profile), "{}", sockets.display());
+    tilo_api::daemon::socket_fits(&sockets.join(tilo_paths::machine::DAEMON_NATIVE)).unwrap();
+    assert_eq!(
+        tilo_api::daemon::profile_sockets(&profile).unwrap(),
+        sockets,
+        "the daemon and every client name one directory"
+    );
 }

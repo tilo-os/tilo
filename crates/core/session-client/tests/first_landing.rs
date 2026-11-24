@@ -36,7 +36,7 @@ use tilo_session_client::{Cmd, Event, Events, Link, MemoryPeerStore, Outbox as _
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{
-    commit_native, enrol, enter_page, start_workspace_host_relaying, wait_keyed, written,
+    commit_change, enrol, enter_page, start_workspace_host_relaying, wait_keyed, written,
 };
 
 fn new_key() -> SigningKey {
@@ -89,7 +89,7 @@ fn notes(lounge: &str, record: &str) -> DocumentRoute {
 fn say(doc: &mut automerge::AutoCommit, key: &str, text: &str) -> DocumentMutation {
     let before = doc.get_heads();
     doc.put(automerge::ROOT, key, text).unwrap();
-    commit_native(doc);
+    commit_change(doc);
     if before.is_empty() {
         DocumentMutation::Snapshot(doc.save())
     } else {

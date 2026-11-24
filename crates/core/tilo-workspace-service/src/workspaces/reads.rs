@@ -104,13 +104,9 @@ impl Workspaces {
         .await
     }
 
-    #[cfg(feature = "agents")]
     /// `workspace`'s policy as this device reads it, off the replica its own reads answer from:
     /// what a record opened for a person is read by ([`Self::own_read`]).
-    pub(crate) fn policy_now(
-        &self,
-        workspace: &str,
-    ) -> Option<tilo_action_policy::WorkspacePolicy> {
+    pub fn policy_now(&self, workspace: &str) -> Option<tilo_action_policy::WorkspacePolicy> {
         let held = self.inner.readings.held(workspace)?;
         let reader = self.own_reader();
         let peer = held.replica.lock();

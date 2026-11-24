@@ -571,7 +571,7 @@ pub fn canvas_shown(session: &Session) -> bool {
 fn style_label(session: &Session, style: &str) -> Option<String> {
     let listed = styles(session);
     let found = if listed.is_empty() {
-        tilo_workspace_service::styles::installed(&[])
+        tilolang_workspace::styles::installed(&[])
     } else {
         listed
     }
@@ -751,7 +751,7 @@ pub fn device_daemon(home: tilo_test_env::TestHome, name: Option<&str>) -> Devic
     // them: their root stays with this account, their certificate names this device, and their
     // services start once it does.
     tilo_api::daemon::DaemonPlace::at(profile.path(), profile.path())
-        .found(tilo_api::daemon::Founding {
+        .found(&tilo_api::daemon::Founding {
             name: name.map(str::to_owned),
             ..tilo_api::daemon::Founding::default()
         })

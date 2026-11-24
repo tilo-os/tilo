@@ -64,8 +64,6 @@ pub mod environment;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod fetch_grants;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod live;
 /// A workspace's file tree, held in the device's own service.
 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
 pub mod files;
@@ -77,16 +75,18 @@ pub mod history_move;
 #[cfg(not(target_arch = "wasm32"))]
 mod i18n;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod live;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]
 mod own_workspaces;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod registry;
 /// The typed actions of the workspace resources the person's shell changes.
 #[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
 pub mod resource_actions;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod registry;
 #[cfg(all(feature = "content", not(target_arch = "wasm32")))]
 pub mod search;
 #[cfg(not(target_arch = "wasm32"))]
@@ -102,7 +102,7 @@ pub mod surfaces;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod timing;
-#[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod tl_records;
 
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]

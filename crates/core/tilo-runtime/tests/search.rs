@@ -173,7 +173,8 @@ async fn palette_finds(
 /// the same code a window publishes with. Once the task is deleted, search loses it.
 #[test]
 fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
-    use tilo_workspace_service::tl_records::{self, runtime::ResourceRef, runtime::Value};
+    use tilolang_records as tl;
+    use tl::runtime::{ResourceRef, Value};
 
     const TASKS: &str = "so.tilo.tasks";
     const WRITTEN: &str = "Quokka census";
@@ -181,16 +182,20 @@ fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
     host::run(|host| async move {
         let (caller, workspace) = (host.caller(), host.workspace().to_owned());
         let workspaces = host.daemon().workspaces().clone();
-        let tasks = tl_records::built_in(TASKS)
+        let tasks = tl::records::built_in(TASKS)
             .unwrap()
             .expect("Tasks is built in");
-        let person = tl_records::member(tilo_actions::MemberId::person(host.person()));
+        let person = tl::records::member(tilo_actions::MemberId::person(host.person()));
 
         // The task is written through Tasks' own action over the workspace's store: no window of
         // Tasks runs, so nothing publishes it to search but the daemon reading the store.
         let who = person.clone();
-        let (id, ty) = workspaces
-            .with_tl_record(&workspace, &tasks, (person.clone(), &host.person()), move |opened| {
+        let (id, ty) = tl::records::with_tl_record(
+            &workspaces,
+            &workspace,
+            &tasks,
+            (person.clone(), &host.person()),
+            move |opened| {
                 opened.open_root()?;
                 let made = opened.invoke(
                     &who,
@@ -210,9 +215,10 @@ fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
                     },
                     other => Err(format!("new_tasks made {other:?}")),
                 }
-            })
-            .await
-            .expect("the task is written");
+            },
+        )
+        .await
+        .expect("the task is written");
 
         let palette = palette(&host);
         tilo_test_env::within("the task is found", async {
@@ -227,15 +233,20 @@ fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
         .await;
 
         let who = person.clone();
-        workspaces
-            .with_tl_record(&workspace, &tasks, (person, &host.person()), move |opened| {
+        tl::records::with_tl_record(
+            &workspaces,
+            &workspace,
+            &tasks,
+            (person, &host.person()),
+            move |opened| {
                 let task = ResourceRef::parse_id(&id, ty).ok_or("the task's id parses")?;
                 opened
                     .invoke(&who, (TASKS, "remove"), vec![Value::resource(&task)], None)
                     .map(drop)
-            })
-            .await
-            .expect("the task is deleted");
+            },
+        )
+        .await
+        .expect("the task is deleted");
         tilo_test_env::within("the deleted task is gone from search", async {
             while palette_finds(&palette, &caller, "quokka")
                 .await
@@ -325,10 +336,8 @@ fn a_stranger_and_a_removed_member_search_nothing_through_the_owners_computer() 
 /// member, asking over the device link, finds what was said in a channel and nothing of it.
 #[test]
 fn a_conversation_sealed_to_its_people_is_found_by_them_alone() {
-    use tilo_workspace_service::tl_records::{
-        self,
-        runtime::{Value, rich::RichValue},
-    };
+    use tilolang_records as tl;
+    use tl::runtime::{Value, rich::RichValue};
 
     const CHAT: &str = "so.tilo.chat";
     const SEALED: &str = "Wombat salaries are due";
@@ -343,16 +352,20 @@ fn a_conversation_sealed_to_its_people_is_found_by_them_alone() {
         // Someone else is a member of the workspace.
         let (grace, _) = host.other_person("Grace", &workspace).await;
         let workspaces = host.daemon().workspaces().clone();
-        let chat = tl_records::built_in(CHAT)
+        let chat = tl::records::built_in(CHAT)
             .unwrap()
             .expect("Chat is built in");
-        let person = tl_records::member(tilo_actions::MemberId::person(host.person()));
+        let person = tl::records::member(tilo_actions::MemberId::person(host.person()));
 
         // Written through Chat's own actions over the workspace's store, no window of Chat open:
         // a channel's message, and a message the person writes to themselves.
         let who = person.clone();
-        workspaces
-            .with_tl_record(&workspace, &chat, (person, &host.person()), move |opened| {
+        tl::records::with_tl_record(
+            &workspaces,
+            &workspace,
+            &chat,
+            (person, &host.person()),
+            move |opened| {
                 let all = Value::resource(&opened.open_root()?);
                 let rich = |text: &str| Value::Rich(RichValue::from_text(text));
                 let general = opened.invoke(
@@ -370,9 +383,10 @@ fn a_conversation_sealed_to_its_people_is_found_by_them_alone() {
                         None,
                     )
                     .map(drop)
-            })
-            .await
-            .expect("Chat is written");
+            },
+        )
+        .await
+        .expect("Chat is written");
 
         let palette = palette(&host);
         tilo_test_env::within("the person finds both messages", async {

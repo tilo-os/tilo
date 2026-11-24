@@ -5,7 +5,7 @@
 //! made it, which action, in which run and, since a run's changes are one action of the
 //! workspace, the invocation it belongs to. Reading a person's versions is
 //! [`Workspaces::record_changes`]; taking one back is the store's own undo of its invocation
-//! ([`ResourceStore::undo`]), run within one run so it stands in history as one step.
+//! (the store's own undo), run within one run so it stands in history as one step.
 //!
 //! A turn's tools act on the workspace's action service, which knows the workspace's resources
 //! and nothing of a person's history. This is the entry that answers them for the turn: it
@@ -28,10 +28,6 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::turn_provider::{Ending, Rows};
 use super::{Ask, Turn, TurnProvider, WorkspaceId};
-use crate::tl_records;
-use crate::tl_records::runtime::Actor;
-use crate::tl_records::runtime::ids::MemberId;
-use crate::tl_records::runtime::store::Run;
 use crate::workspaces::Workspaces;
 
 /// The provider a moderation turn reaches a person's recorded changes under.
@@ -184,7 +180,7 @@ impl TurnHistory {
             .versions(caller, &app)
             .await?
             .into_iter()
-            .filter(|version| writes(version, &person))
+            .filter(|version| self.writes(version, &person))
             .collect();
         let skip = mine.len().saturating_sub(last);
         mine.drain(..skip);
@@ -230,7 +226,7 @@ impl TurnHistory {
                 .get("change")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if !changes.contains(change) || !writes(&version, &person) {
+            if !changes.contains(change) || !self.writes(&version, &person) {
                 continue;
             }
             let Some(invocation) = version.get("invocation").and_then(Value::as_str) else {
@@ -264,55 +260,39 @@ impl TurnHistory {
         if invocations.is_empty() {
             return Ok(json!({"undone": 0}));
         }
-        let packages = tl_records::built_in(&app)
-            .map_err(unavailable)?
-            .ok_or_else(|| unavailable("this build runs no package of the app"))?;
-        let run = Run {
-            id: format!(
-                "moderation:{}:{}",
-                person.id(),
-                tilo_clock::unix_now_ms_i64()
-            ),
-            title: String::new(),
-        };
-        let actor = Actor::Member(MemberId::agent(agent));
+        let records = self
+            .workspaces
+            .tilolang()
+            .ok_or_else(|| unavailable("this device runs no tilolang runtime"))?
+            .records;
+        let run = format!(
+            "moderation:{}:{}",
+            person.id(),
+            tilo_clock::unix_now_ms_i64()
+        );
+        let viewer = tilo_actions::Actor::Member(tilo_actions::MemberId::agent(agent));
         // The agent reads what the person it works for may read, never the moderated person.
         let reader = crate::workspaces::person_reading(caller);
-        let acted_for = reader.clone();
-        let undone = self
+        // The undo writes: the record is carried on this reactor, never read-only.
+        let record = self
             .workspaces
-            .with_tl_record(
-                &self.workspace,
-                &packages,
-                (actor.clone(), &reader),
-                move |opened| {
-                    let store = opened.host().store();
-                    // The agent takes the changes back for the person it works for, as every
-                    // write an agent makes is made for them.
-                    let _for = store.acting_for(Some(acted_for));
-                    store.set_run(Some(run.clone()));
-                    let mut undone = 0_u32;
-                    let mut failure = None;
-                    for invocation in &invocations {
-                        match store.undo(invocation, Some(&actor)) {
-                            Ok(_) => undone = undone.saturating_add(1),
-                            Err(error) => {
-                                failure = Some(error.to_string());
-                                break;
-                            }
-                        }
-                    }
-                    store.set_run(None);
-                    // What the workspace refused of the undo is the undo's answer, never a count.
-                    if let Some(refused) = store.take_refusal() {
-                        return Err(refused);
-                    }
-                    failure.map_or(Ok(undone), Err)
-                },
-            )
-            .await
+            .tl_record(&self.workspace, &app, &reader)
             .map_err(unavailable)?;
+        let policy = self.workspaces.policy_now(&self.workspace).map(Arc::new);
+        let undone = tokio::task::spawn_blocking(move || {
+            records.undo(record, policy, &viewer, &app, (&run, ""), &invocations)
+        })
+        .await
+        .map_err(unavailable)?
+        .map_err(unavailable)?;
         Ok(json!({"undone": undone}))
+    }
+
+    /// Whether `version` is a change `person` made.
+    fn writes(&self, version: &Value, person: &tilo_actions::MemberId) -> bool {
+        self.workspaces
+            .tilolang()
+            .is_some_and(|tilolang| tilolang.records.wrote(version, person))
     }
 }
 
@@ -366,25 +346,10 @@ impl TurnProvider for TurnHistory {
     }
 }
 
-/// Whether `version` is a change `person` made.
-fn writes(version: &Value, person: &MemberId) -> bool {
-    version
-        .get("who")
-        .and_then(|who| {
-            tilo_failure::ignored!(
-                "a version whose who names nobody is no person's change",
-                serde_json::from_value::<Option<Actor>>(who.clone()).ok()
-            )
-        })
-        .flatten()
-        .and_then(|who| who.member_id().cloned())
-        .is_some_and(|who| &who == person)
-}
-
 /// The person a read or an undo names.
-fn person_of(arguments: &Map<String, Value>) -> Result<MemberId, ActionCallError> {
+fn person_of(arguments: &Map<String, Value>) -> Result<tilo_actions::MemberId, ActionCallError> {
     text(arguments, "person")
-        .and_then(|person| MemberId::parsed_person(&person))
+        .and_then(|person| tilo_actions::MemberId::parsed_person(&person))
         .ok_or_else(|| ActionCallError::InvalidRequest {
             reason: "a read names the person whose changes it wants".to_owned(),
         })

@@ -1,5 +1,6 @@
-//! The person's server and the apps it is given, as the phone's tests stand them up: a
-//! workspace host on this machine's loopback keeping the person's workspace, and Notes built
+//! The person's server and the apps it is given, as the phone's tests stand them up: a host on
+//! this machine's loopback keeping the person's workspace — the server a phone's daemon lists the
+//! person's workspaces from, and enters each where that list says it is kept — and Notes built
 //! from the tree into a signed `.tapp`.
 
 #![allow(
@@ -11,32 +12,24 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use iroh::Endpoint;
-use iroh::protocol::Router;
 use tilo_device_identity::login::Entry;
 use tilo_peer_state::workspace_membership::{AppPayload, AppRelease, WorkspaceMembershipCommand};
-use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 
 use crate::support;
 
 /// What the person calls the workspace the phone signs in to.
 pub const WORKSPACE_NAME: &str = "Studio";
 
-/// The person's server: a workspace host on this machine's loopback keeping the person's
-/// workspace, which they own.
+/// The person's server: a host on this machine's loopback keeping the person's workspace, which
+/// they own, and the runtime the laptop that prints the phone's ticket runs on.
 pub struct Server {
     pub runtime: tokio::runtime::Runtime,
-    host: Arc<WorkspaceService>,
-    cert: DeviceCert,
-    endpoint: Endpoint,
+    host: test_server::Host,
     /// The person's root key.
     pub person: ed25519_dalek::SigningKey,
     /// The person's workspace, by id.
     pub workspace: String,
-    _serving: (Router, tempfile::TempDir),
 }
 
 impl Server {
@@ -48,73 +41,58 @@ impl Server {
             .build()
             .unwrap();
         let person = support::key(7);
-        let (host, cert, endpoint, serving, workspace) = runtime.block_on(async {
-            let server_key = support::key(42);
-            let cert = support::certified(&person, &server_key, "the server", false);
-            let endpoint = support::endpoint(&server_key).await;
-            let state = tempfile::tempdir().unwrap();
-            let host = Arc::new(
-                WorkspaceService::open(
-                    ServiceConfig {
-                        reaching: tilo_workspace_service::Reaching::OnItsOwn,
-                        ..ServiceConfig::new(
-                            state.path().join("server"),
-                            tilo_server_protocol::WorkSetting::own_person(),
-                        )
-                    },
-                    ServiceIdentity {
-                        user_public_key: person.verifying_key().to_bytes(),
-                        device_signing_key: server_key,
-                        device_cert: cert.clone(),
-                        revocations: tilo_user_identity::RevocationList::new(),
-                    },
-                    endpoint.clone(),
-                    None,
-                )
+        let host = test_server::Host::of(&person, WORKSPACE_NAME);
+        let workspace = host.workspace().to_owned();
+        // The person's own workspace, where their list of workspaces and the record of their
+        // devices are kept, as a server keeps it for them; the workspace they signed the phone in
+        // to is named there, as it reaches every device of theirs.
+        runtime.block_on(async {
+            tilo_workspace_service::workspaces::person_workspace::found(host.workspaces())
                 .await
-                .unwrap(),
-            );
-            let router = host
-                .protocols()
-                .into_iter()
-                .fold(
-                    Router::builder(endpoint.clone()),
-                    |router, (alpn, handler)| router.accept(alpn, handler),
-                )
-                .spawn();
-            let workspaces = host.workspaces();
-            let made = workspaces.create(WORKSPACE_NAME).await.unwrap();
-            workspaces
-                .declare_owner(&made.workspace, person.verifying_key().to_bytes(), None)
-                .await
-                .unwrap();
-            (host, cert, endpoint, (router, state), made.workspace)
+                .expect("the person's own workspace is founded on their server");
+            host.workspaces()
+                .list_known_for(&person.verifying_key().to_bytes())
+                .await;
         });
         Self {
             runtime,
             host,
-            cert,
-            endpoint,
             person,
             workspace,
-            _serving: serving,
         }
     }
 
-    /// Where a device the person's laptop lets in enters: this server's workspace.
+    /// Where this server keeps the person's workspaces: the person's own, where their devices are
+    /// listed, among them.
+    pub fn workspaces(&self) -> tilo_workspace_service::workspaces::Workspaces {
+        self.host.workspaces().clone()
+    }
+
+    /// Where a device the person's laptop lets in enters: this host's workspace, at this host.
     pub fn entry(&self) -> Entry {
         Entry {
             workspace: self.workspace.clone(),
             workspace_name: Some(WORKSPACE_NAME.into()),
-            server_cert: self.cert.clone(),
-            server: tilo_api::daemon::enter::reached_of(&self.endpoint.addr()),
+            server_cert: self.host.host_hint().host,
+            server: tilo_api::daemon::enter::reached_of(&self.host.addr()),
             site: "https://tilo.test/".into(),
             host_origin: "https://server.tilo.test".into(),
         }
     }
 
-    /// Install the app `tapp` holds in the person's workspace, as `tilo-app push` does: its
-    /// file kept by the workspace's host, and the workspace's governance naming it as the version
+    /// The relay this host answers through, which the phone's daemon is told to answer through
+    /// too: every device of the flow is found there, on this machine's loopback.
+    pub fn relay_url(&self) -> String {
+        self.host
+            .addr()
+            .relay_urls()
+            .next()
+            .expect("the host names its packet relay")
+            .to_string()
+    }
+
+    /// Install the app `tapp` holds in the person's workspace, as `tilo-app push` does: its file
+    /// kept by the workspace's host, and the workspace's governance naming it as the version
     /// every member runs (`workspace/apps#install`). A tilolang app publishes no surface.
     pub fn install(&self, tapp: &Path) {
         let bytes = std::fs::read(tapp).unwrap();
@@ -123,7 +101,7 @@ impl Server {
             &mut tilo_app_package::blobs::DiscardBlobs,
         )
         .unwrap();
-        let manifest = &read.meta.manifest.package;
+        let manifest = read.meta.manifest.package.clone();
         let workspaces = self.host.workspaces();
         let file = workspaces.keep_app_file(&self.workspace, &bytes).unwrap();
         let release = AppRelease {
@@ -140,7 +118,7 @@ impl Server {
         self.runtime
             .block_on(workspaces.govern_app(
                 &self.workspace,
-                &self.cert,
+                &self.host.host_hint().host,
                 [3; 32],
                 WorkspaceMembershipCommand::InstallApp(release),
             ))
@@ -150,7 +128,7 @@ impl Server {
 
 /// The tree's tilolang apps.
 pub fn tl_apps() -> PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tl")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
 }
 
 /// Notes, `apps/tl/notes`, built into a signed `.tapp` under `scratch`: the file a person installs.

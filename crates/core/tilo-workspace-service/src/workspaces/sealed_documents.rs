@@ -711,7 +711,7 @@ impl Workspaces {
             reason = "sealed histories are followed only where they are read"
         )
     )]
-    pub(crate) async fn join_keys(&self, workspace: &str) -> bool {
+    pub async fn join_keys(&self, workspace: &str) -> bool {
         let Some(device) = self.device_keys() else {
             return false;
         };

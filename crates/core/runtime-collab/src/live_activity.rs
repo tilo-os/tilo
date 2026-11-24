@@ -10,7 +10,7 @@
 //! [`LiveActivityServer`] over its [`LiveActivities`], the board it presents
 //! every app's activity from and presses controls on.
 
-use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -241,7 +241,7 @@ pub struct LiveActivityServer {
     app_id: String,
     board: Arc<LiveActivities>,
     revalidate: Revalidate,
-    shown: Cell<bool>,
+    shown: AtomicBool,
 }
 
 impl LiveActivityServer {
@@ -255,14 +255,14 @@ impl LiveActivityServer {
             app_id: app_id.into(),
             board,
             revalidate,
-            shown: Cell::new(false),
+            shown: AtomicBool::new(false),
         }
     }
 }
 
 impl Drop for LiveActivityServer {
     fn drop(&mut self) {
-        if self.shown.get() {
+        if self.shown.load(Ordering::Acquire) {
             self.board.show(&self.app_id, None);
         }
     }
@@ -273,17 +273,13 @@ impl LiveActivityServer {
     pub fn show(&self, activity: &[u8]) -> Result<(), String> {
         (self.revalidate)()?;
         let activity = read_activity(activity)?;
-        self.shown.set(activity.is_some());
+        self.shown.store(activity.is_some(), Ordering::Release);
         self.board.show(&self.app_id, activity);
         Ok(())
     }
 
     /// The controls pressed after `after`, once there is one, as a JSON
     /// array, and the serial of the last.
-    #[expect(
-        clippy::future_not_send,
-        reason = "the host answers each app on its single-threaded broker task"
-    )]
     pub async fn controls(&self, after: u64) -> Result<(u64, Vec<u8>), String> {
         (self.revalidate)()?;
         let (serial, controls) = self.board.controls(&self.app_id, after).await;

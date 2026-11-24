@@ -205,3 +205,47 @@ fn mounted(fs: QuickFS, at: &Path) -> std::io::Result<fuser::BackgroundSession> 
     config.acl = fuser::SessionACL::Owner;
     fuser::spawn_mount(fs, at, &config)
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test fixture failing is its test failing"
+)]
+mod tests {
+    use super::*;
+
+    /// A founding call starts the person's workspace, and mounts its files, from a task of the
+    /// process's current-thread runtime. The mount's recovery waits on the device's store, which
+    /// that runtime cannot lend its one thread to: it runs on a thread of its own and the task is
+    /// answered.
+    #[test]
+    fn a_mounts_recovery_waits_off_the_runtime_that_cannot() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            tilo_rt::app()
+                .block_on(tilo_fs::ContentStore::open(dir.path().join("content")))
+                .unwrap()
+                .unwrap(),
+        );
+        let state = dir.path().join("evictions.json");
+        let (told, heard) = std::sync::mpsc::channel();
+        tilo_rt::app().spawn(async move {
+            // The filesystem is made on the task, as `filesystem` makes it, and only the
+            // recovery that waits is moved off.
+            let hydrator = Arc::new(Hydrator::new(store));
+            let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+            let namespace = Arc::new(std::sync::Mutex::new(
+                tilo_fs::namespace::Namespace::new("test").unwrap(),
+            ));
+            let queue = tilo_fs::eviction::EvictionQueue::open(state).unwrap();
+            let fs = QuickFS::new(namespace, hydrator, heuristics)
+                .with_eviction_queue(Arc::new(tokio::sync::Mutex::new(queue)));
+            off_the_worker(move || fs.resume_pending_evictions());
+            let _ = told.send(());
+        });
+        heard
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the task that mounted the files was answered");
+    }
+}

@@ -68,15 +68,17 @@ pub(super) fn line_of(
 
 /// A sub-agent's words with the mention that reaches it: `@name`, then `text`, as rich text
 /// a published action takes.
-fn mentioning(agent: &str, name: &str, text: &str) -> Result<serde_json::Value, String> {
-    use tilolang_tilo::runtime::rich::RichValue;
-    let mut body = RichValue::default();
-    body.push_reference(
+fn mentioning(
+    rich_text: &dyn crate::tl_records::RichText,
+    agent: &str,
+    name: &str,
+    text: &str,
+) -> Result<serde_json::Value, String> {
+    rich_text.mention(
         &format!("@{name}"),
         &tilo_reference::Embed::Member(tilo_actions::MemberId::agent(agent)),
-    );
-    body.push_text(&format!(" {text}"));
-    tilolang_tilo::runtime::value::to_json(&tilolang_tilo::runtime::Value::Rich(body))
+        text,
+    )
 }
 
 /// Tell the agent `agent` (called `name`) `text` as `caller`, in the conversation `place` holds,
@@ -87,6 +89,7 @@ fn mentioning(agent: &str, name: &str, text: &str) -> Result<serde_json::Value, 
 /// Chat refused the message.
 pub(super) async fn tell(
     (provider, caller): (&WorkspaceActionProvider, &Caller),
+    rich_text: &dyn crate::tl_records::RichText,
     workspace: &str,
     place: &triggered::Where,
     (agent, name): (&str, &str),
@@ -98,7 +101,7 @@ pub(super) async fn tell(
         document: String::new(),
     };
     let mut arguments = Map::new();
-    arguments.insert("body".into(), mentioning(agent, name, text)?);
+    arguments.insert("body".into(), mentioning(rich_text, agent, name, text)?);
     arguments.insert(
         "reply_to".into(),
         json!(triggered::published(CHAT, &place.item)),
@@ -296,9 +299,14 @@ impl ServerAgents {
             id = turn.agent.id.0,
             job = sub.job.lines().next().unwrap_or_default(),
         );
+        let rich_text = acting
+            .rich_text
+            .as_deref()
+            .ok_or("this daemon runs no tilolang runtime: it writes no rich text")?;
         let reply = acting.reply(turn);
         tell(
             (&reply.provider, &reply.caller),
+            rich_text,
             &acting.workspace,
             place,
             (&starter.id.0, &starter.name),

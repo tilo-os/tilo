@@ -403,6 +403,8 @@ mod shared_displays;
 #[cfg(target_os = "linux")]
 mod shared_input;
 #[cfg(target_os = "linux")]
+mod shared_storage;
+#[cfg(target_os = "linux")]
 mod sheets;
 #[cfg(target_os = "linux")]
 pub mod shell;

@@ -60,10 +60,6 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/crates/lang/*/tilo-runtime.
     binary="$(sed -n 's/^bin  *= *"bin\/\([^"]*\)".*/\1/p' "$manifest" | head -1)"
     [ -n "$package" ] && [ -n "$binary" ] \
         || { echo "could not read package/binary from $dir" >&2; exit 1; }
-    # An app whose crate builds no executable is not a desktop package: Tilo on a
-    # phone (apps/phone) is a library `tilo-app build --platform android` packs
-    # into an APK.
-    [ -f "$dir/src/main.rs" ] || grep -q '^\[\[bin\]\]' "$dir/Cargo.toml" || continue
     case "$EXCLUDE_PACKAGES" in
         *" $package "*) continue ;;
     esac

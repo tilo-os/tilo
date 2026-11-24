@@ -78,7 +78,10 @@ pub fn routes(
             }
         }
     }
-    routes.sort_by(|a, b| {
+    // No two routes share a sender and an association (an endpoint's key is unique, and a
+    // route already present is not pushed again), so the unstable sort's order is the
+    // stable one's, in half the engine code.
+    routes.sort_unstable_by(|a, b| {
         (a.sender.as_str(), a.association.as_str())
             .cmp(&(b.sender.as_str(), b.association.as_str()))
     });

@@ -158,6 +158,12 @@ pub struct PersonalDeviceView {
     pub wakeable: bool,
     /// It plays the sound this device sends it.
     pub audio_output: bool,
+    /// When a session of it was last with a host, in milliseconds since the Unix epoch; `0` when
+    /// it never said.
+    pub seen_ms: u64,
+    /// What it last said it holds of each workspace it mounts, by what losing that device would
+    /// cost: empty until it said.
+    pub storage: Vec<tilo_system_resources::storage::WorkspaceHold>,
 }
 
 /// One key that may act as the person, as the record of their own workspace keeps it: one of

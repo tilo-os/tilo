@@ -29,8 +29,10 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// The directory the daemon serving `profile` keeps its sockets in: this computer's own listens
 /// where every client finds it ([`tilo_api::daemon::this_computer`]), never inside a profile whose
-/// path the home folder lengthens; a profile named apart (a test's, a VM host's) keeps its sockets
-/// inside it. Either way a socket whose path its address cannot hold is refused, by name.
+/// path the home folder lengthens; a profile named apart (a test's, a VM host's, a stack's) keeps
+/// its own directory beside that one ([`tilo_api::daemon::profile_sockets`]), named by its path,
+/// so no profile's path ever becomes a socket's path. Either way a socket whose path its address
+/// cannot hold is refused, by name.
 pub(crate) fn sockets(profile: &Path) -> io::Result<PathBuf> {
     let dir = if crate::daemon_args::own_profile().is_ok_and(|own| own == profile) {
         tilo_api::daemon::this_computer()
@@ -38,7 +40,7 @@ pub(crate) fn sockets(profile: &Path) -> io::Result<PathBuf> {
             .sockets()
             .to_owned()
     } else {
-        profile.to_owned()
+        tilo_api::daemon::profile_sockets(profile).map_err(io::Error::other)?
     };
     for name in [
         tilo_paths::machine::DAEMON_NATIVE,
@@ -1088,8 +1090,7 @@ pub(crate) struct Endpoint<H> {
 }
 
 /// A launcher's request to start an app on this computer, with what the connection sent with it.
-type LaunchTake =
-    Arc<dyn Fn(Stream, &[u8], Vec<runtime_portal::process_link::Descriptor>) + Send + Sync>;
+type LaunchTake = dyn Fn(Stream, &[u8], Vec<runtime_portal::process_link::Descriptor>) + Send + Sync;
 
 /// The endpoint every agent of this computer's login reaches at its device socket: the
 /// daemon's own workspace, as the native endpoint serves the person's apps, each connection a
@@ -1680,7 +1681,7 @@ fn is_launch_request(request: &[u8]) -> bool {
 /// launch path a window takes, so the launch record exists before the app's connection does, and
 /// tells the caller it started.
 #[cfg(unix)]
-fn launch_take(session: &Arc<Daemon>) -> LaunchTake {
+fn launch_take(session: &Arc<Daemon>) -> Arc<LaunchTake> {
     let session = Arc::downgrade(session);
     Arc::new(move |mut stream, request, descriptors| {
         let reply = match start_requested(&session, request, descriptors) {

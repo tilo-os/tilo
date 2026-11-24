@@ -886,10 +886,6 @@ fn canonical_seed(text: &str) -> Option<String> {
 /// the entry kept, the entry forgotten, or the uses of an entry. A use changes only an entry's
 /// uses, never the entry, so a use written while a member edits the entry loses neither.
 #[derive(Clone, PartialEq, Eq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "changes are written as they are made, a handful at a time; most are a kept entry"
-)]
 pub enum VaultChange {
     Keep(SecretItem),
     Forget(crate::SecretId),

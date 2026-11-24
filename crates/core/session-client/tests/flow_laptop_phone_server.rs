@@ -37,10 +37,10 @@ use tokio::task::block_in_place;
 
 /// The phone's own part, as the phone's tests drive it: its home and the laptop that prints its
 /// ticket.
-#[path = "../../../../apps/phone/tests/support/mod.rs"]
+#[path = "../../../../crates/desktop/phone/tests/support/mod.rs"]
 mod phone;
 use crate::support::{
-    Device, HostSettings, TestHost, commit_native, enrol, entry_grant, record_of, redeem,
+    Device, HostSettings, TestHost, commit_change, enrol, entry_grant, record_of, redeem,
     start_host_serving, start_peer, start_workspace_host_relaying,
 };
 
@@ -605,7 +605,7 @@ async fn flow_newcomer_joins_on_the_web_and_opens_an_app_as_a_page() {
     tilo_desktop_model::person_view::PersonView::default()
         .write(&mut doc)
         .unwrap();
-    commit_native(&mut doc);
+    commit_change(&mut doc);
     let opened =
         flow::try_written_entered(&page, &view, &DocumentMutation::Snapshot(doc.save())).await;
     assert!(

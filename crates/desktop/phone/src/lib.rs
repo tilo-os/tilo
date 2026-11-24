@@ -2,7 +2,8 @@
 //! own threads, since a phone runs no daemon process of its own; and the shell's `phone` view,
 //! drawn natively over what that daemon reads. A person signs in with a ticket another of their
 //! devices printed, picks one of their workspaces, and opens its apps, each the tilolang app
-//! the APK carries, run in tilolang-process's in-process window.
+//! the APK carries, run in tilolang-process's in-process window. Every view here is the shell's
+//! tl package's; this crate hosts it and draws nothing of its own.
 //!
 //! The daemon keeps its profile and the device's identity under the app's private files, where
 //! the Android launch environment points `HOME` and the XDG directories.

@@ -371,7 +371,9 @@ impl Widget for Skeleton {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::Generic)
-                .with_name(crate::i18n::widget_format("widget-loading", &[]))
+                // "Loading" is a fallback the skeleton found for itself: a parent that names the
+                // block (an app's own card, drawn over it) says its own words instead.
+                .with_found_name(crate::i18n::widget_format("widget-loading", &[]))
                 .with_state(AccessState::new().busy(true)),
         )
     }
