@@ -356,6 +356,55 @@ fn removing_a_key_asks_the_devices_resource_with_its_reason() {
     );
 }
 
+/// The person's card opens Settings at `settings://devices_access`, which search runs as the
+/// app's `open_pane`: the window shows Devices and access, where the key is taken back.
+#[test]
+fn the_persons_card_opens_the_pane_that_takes_a_key_back() {
+    let pane = pane();
+    let open_pane = pane
+        .host
+        .package(APP)
+        .expect("the app is loaded")
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "open_pane")
+        .expect("the app publishes open_pane")
+        .id
+        .clone();
+    for page in ["devices_access", "devices_sync"] {
+        pane.host
+            .runtime()
+            .invoke_action(
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                (open_pane.as_str(), vec![Value::text(page)]),
+            )
+            .expect("the page opens");
+        let root = pane.host.root_of(APP).expect("the app's root");
+        assert_eq!(
+            pane.host.runtime().read(&root, "pane").expect("a pane"),
+            Value::text("devices"),
+            "{page} is Devices and access"
+        );
+    }
+    let seen = watching(&pane);
+    let stolen = labelled(
+        pane.view.tree(),
+        "ui.MenuItem",
+        "Remove Ada's desktop — it was stolen",
+    );
+    pane.view
+        .fire(&stolen, "choose")
+        .expect("the reason is chosen");
+    let args = asked(&seen, "so.tilo.device", "revoke");
+    assert!(
+        args.iter()
+            .any(|(named, value)| named == "device"
+                && *value == Value::text("02".repeat(32).as_str())),
+        "the key is taken back: {args:?}"
+    );
+}
+
 /// Naming a key types the new name and Save hands it to the devices resource.
 #[test]
 fn naming_a_key_hands_its_name_to_the_devices_resource() {

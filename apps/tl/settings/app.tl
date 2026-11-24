@@ -2311,9 +2311,13 @@ fn rule_words(rule: settings.AppNotificationRule) -> Text {
 }
 
 /// The window's pane a search page names: the settings index's own slugs, which are not all the
-/// window's names ("external_accounts" is Accounts, "keyboard" is Keyboard and pointing).
+/// window's names ("external_accounts" is Accounts, "keyboard" is Keyboard and pointing,
+/// and the person's card, a device's own page and adding a device all open Devices and access
+/// as "devices_access" or "devices_sync").
 fn pane_of_page(page: Text) -> Text {
-    if page == "keyboard" or page == "pointing" {
+    if page == "devices_access" or page == "devices_sync" {
+        "devices"
+    } else if page == "keyboard" or page == "pointing" {
         "input"
     } else if page == "keyboard_shortcuts" {
         "shortcuts"
