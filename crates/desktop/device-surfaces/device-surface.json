@@ -4661,6 +4661,47 @@
           "kind": "outside",
           "destructive": true,
           "params": []
+        },
+        {
+          "id": "keep-here",
+          "label": "Keep a workspace on this device",
+          "description": "Keep a whole workspace on this device, or stop keeping it. Keeping it fetches every file and holds it, so the workspace opens with no network.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "workspace",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "keep",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "free-workspace-cache",
+          "label": "Free a workspace's fetched files",
+          "description": "Free a workspace's fetched cache: the files this device downloaded from another one, which download again when they are opened. Nothing only this device holds is removed.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "workspace",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
         }
       ],
       "fields": [
@@ -4671,6 +4712,24 @@
             "option": {
               "named": "DiskUsage"
             }
+          },
+          "readonly": true
+        },
+        {
+          "path": "residency",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "WorkspaceHold"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "residency_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
           },
           "readonly": true
         },
@@ -4791,6 +4850,40 @@
             {
               "name": "reclaimable",
               "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "WorkspaceHold",
+          "doc": "Where one workspace's bytes on this device stand, by what losing this device would cost.",
+          "fields": [
+            {
+              "name": "workspace",
+              "type": "text"
+            },
+            {
+              "name": "kept_here",
+              "type": "bool"
+            },
+            {
+              "name": "pinned_bytes",
+              "type": "int"
+            },
+            {
+              "name": "replicated_bytes",
+              "type": "int"
+            },
+            {
+              "name": "only_here_bytes",
+              "type": "int"
+            },
+            {
+              "name": "only_here_files",
+              "type": "int"
+            },
+            {
+              "name": "cache_bytes",
+              "type": "int"
             }
           ]
         }
@@ -13842,6 +13935,18 @@
             {
               "name": "audio_output",
               "type": "bool"
+            },
+            {
+              "name": "seen_ms",
+              "type": "int"
+            },
+            {
+              "name": "storage",
+              "type": {
+                "list": {
+                  "named": "WorkspaceHold"
+                }
+              }
             }
           ]
         },
@@ -13926,6 +14031,40 @@
             {
               "name": "stopped",
               "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "WorkspaceHold",
+          "doc": "Where one workspace's bytes on this device stand, by what losing this device would cost.",
+          "fields": [
+            {
+              "name": "workspace",
+              "type": "text"
+            },
+            {
+              "name": "kept_here",
+              "type": "bool"
+            },
+            {
+              "name": "pinned_bytes",
+              "type": "int"
+            },
+            {
+              "name": "replicated_bytes",
+              "type": "int"
+            },
+            {
+              "name": "only_here_bytes",
+              "type": "int"
+            },
+            {
+              "name": "only_here_files",
+              "type": "int"
+            },
+            {
+              "name": "cache_bytes",
+              "type": "int"
             }
           ]
         }

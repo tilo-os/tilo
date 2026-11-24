@@ -2069,6 +2069,12 @@ impl SystemService {
             tilo_system_resources::storage::StorageAction::ClearCache => {
                 Ok(self.start_storage(id, Some(StorageChange::ClearCache)))
             }
+            tilo_system_resources::storage::StorageAction::KeepHere { workspace, keep } => {
+                Ok(self.start_storage(id, Some(StorageChange::KeepHere { workspace, keep })))
+            }
+            tilo_system_resources::storage::StorageAction::FreeWorkspaceCache { workspace } => {
+                Ok(self.start_storage(id, Some(StorageChange::FreeCache { workspace })))
+            }
         }
     }
 

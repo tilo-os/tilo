@@ -142,10 +142,14 @@ pub enum DiskUnlockChange {
 
 /// A change to make on the storage: what a person, an agent or a script asked of the `storage`
 /// resource.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StorageChange {
     /// Remove the apps' caches.
     ClearCache,
+    /// Keep a workspace on this device, or stop keeping it.
+    KeepHere { workspace: String, keep: bool },
+    /// Free a workspace's fetched cache.
+    FreeCache { workspace: String },
 }
 
 /// A change to make on the accounts: what a person, an agent or a script asked of the `users`
@@ -817,6 +821,10 @@ impl System for OsSystem {
     fn change_storage(&self, change: &StorageChange) -> Result<(), String> {
         match change {
             StorageChange::ClearCache => crate::storage::clear_cache(),
+            StorageChange::KeepHere { workspace, keep } => {
+                crate::storage::keep_here(workspace, *keep)
+            }
+            StorageChange::FreeCache { workspace } => crate::storage::free_cache(workspace),
         }
     }
 

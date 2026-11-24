@@ -697,6 +697,10 @@ pub struct Session {
     /// own and publishes what every device shows.
     #[cfg(target_os = "linux")]
     pub(crate) published_displays: crate::shared_displays::Publisher,
+    /// What this device holds of its workspaces, kept in the record of the
+    /// person's devices so their other devices read it.
+    #[cfg(target_os = "linux")]
+    pub(crate) published_storage: crate::shared_storage::Publisher,
     /// The question about a display change, and the answers it takes.
     #[cfg(target_os = "linux")]
     pub(crate) confirmation: crate::display_confirm::Confirmation,

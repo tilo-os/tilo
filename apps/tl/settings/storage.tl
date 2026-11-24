@@ -28,6 +28,73 @@ view storage_pane() {
             on press: device.scan(device.storage)
         }
     }
+    ui.Section("Where workspace files are kept") {
+        ui.Text(
+            "What this device holds of each workspace it mounts: the files only here are lost if this device is wiped, the others are on another device or download again.",
+            role: .caption,
+            secondary: true,
+        )
+        if let error = storage.residency_error {
+            ui.StatusLine(error, status: .warning)
+        }
+        if storage.residency.is_empty() {
+            ui.Text("This device holds no workspace's files.", role: .caption, secondary: true)
+        }
+        for held in storage.residency {
+            ui.ListRow(held.workspace, secondary: held_words(held), icon: .layers) {
+                trailing: {
+                    row(gap: .tight, align: .center, wrap: true) {
+                        if held.only_here_bytes > 0 {
+                            ui.Badge("{size_words(held.only_here_bytes)} only here", tone: .warning)
+                        }
+                        if held.kept_here {
+                            ui.Badge("Kept here")
+                        }
+                        ui.MenuButton(
+                            "More for {held.workspace}",
+                            icon: .more_horizontal,
+                            icon_only: true,
+                        ) {
+                            if held.cache_bytes > 0 {
+                                ui.MenuItem(
+                                    "Free {size_words(held.cache_bytes)}",
+                                    icon: .trash,
+                                    destructive: true,
+                                ) {
+                                    on choose: device.free_workspace_cache(
+                                        device.storage,
+                                        held.workspace,
+                                    )
+                                }
+                            }
+                            ui.MenuItem(
+                                if held.kept_here { "Stop keeping here" } else { "Keep here" },
+                            ) {
+                                on choose: device.keep_here(
+                                    device.storage,
+                                    held.workspace,
+                                    not held.kept_here,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ui.Section("Your other devices") {
+        let others = device.devices.devices.filter(d -> not d.local)
+        if others.is_empty() {
+            ui.Text("None of your other devices is here yet.", role: .caption, secondary: true)
+        }
+        for other in others {
+            ui.ListRow(
+                other.label,
+                secondary: "{other_holds(other)} - {seen_words(other.seen_ms)}",
+                icon: .monitor,
+            )
+        }
+    }
     ui.Section("Kinds") {
         if storage.categories.is_empty() {
             ui.Text("No scan has answered yet.", role: .caption, secondary: true)
@@ -79,6 +146,83 @@ view storage_pane() {
     }
     if let problem = storage.problem {
         ui.StatusLine(problem, status: .error)
+    }
+}
+
+/// What this device holds of a workspace, in words: which devices hold it, then each part of it
+/// that is here, by what losing this device would cost.
+fn held_words(held: device.WorkspaceHold) -> Text {
+    let parts: List<Text> = []
+    if held.pinned_bytes > 0 {
+        parts = parts
+            + [std.say("Kept here, also on another device: {size_words(held.pinned_bytes)}")]
+    }
+    if held.replicated_bytes > 0 {
+        parts = parts + [std.say("Also on another device: {size_words(held.replicated_bytes)}")]
+    }
+    if held.only_here_bytes > 0 {
+        parts = parts
+            + [
+                std.say(
+                    "On no other device: {size_words(held.only_here_bytes)} in {held.only_here_files} files",
+                ),
+            ]
+    }
+    if held.cache_bytes > 0 {
+        parts = parts + [std.say("Fetched files, safe to free: {size_words(held.cache_bytes)}")]
+    }
+    if parts.is_empty() {
+        std.say("Kept on {keepers(held)} - nothing of it is stored here.")
+    } else {
+        std.say("Kept on {keepers(held)} - {parts.join(" - ")}")
+    }
+}
+
+/// Which of the person's devices hold a workspace: this one when it holds any of it, and every
+/// other device that last said it does.
+fn keepers(held: device.WorkspaceHold) -> Text {
+    let out: List<Text> = []
+    if holds_any(held) {
+        out = out + [std.say("this device")]
+    }
+    for other in device.devices.devices {
+        if not other.local
+            and other.storage.any(h -> h.workspace == held.workspace and holds_any(h)) {
+            out = out + [other.label]
+        }
+    }
+    if out.is_empty() { std.say("no device this one knows of") } else { out.join(", ") }
+}
+
+/// Whether any byte of a workspace is on the device that said so.
+fn holds_any(held: device.WorkspaceHold) -> Bool {
+    held.pinned_bytes + held.replicated_bytes + held.only_here_bytes + held.cache_bytes > 0
+}
+
+/// What one of the person's other devices last said it holds, workspace by workspace.
+fn other_holds(other: device.PersonalDeviceView) -> Text {
+    let parts: List<Text> = []
+    for held in other.storage {
+        let bytes = held.pinned_bytes
+            + held.replicated_bytes
+            + held.only_here_bytes
+            + held.cache_bytes
+        if bytes > 0 {
+            parts = parts + [std.say("{held.workspace}: {size_words(bytes)}")]
+        }
+    }
+    if parts.is_empty() {
+        std.say("It says it holds nothing of your workspaces")
+    } else { std.say("It holds {parts.join(", ")}") }
+}
+
+/// When a device was last with a host, as a person reads it.
+fn seen_words(seen_ms: Int) -> Text {
+    if seen_ms <= 0 {
+        std.say("never heard from")
+    } else {
+        let at = Time("1970-01-01T00:00:00Z") + Duration(seen_ms / 1000)
+        std.say("last seen {at.day()}, {at.clock()}")
     }
 }
 

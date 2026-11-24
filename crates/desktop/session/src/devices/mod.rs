@@ -147,7 +147,9 @@ pub(crate) fn current(
 }
 
 /// Read the person's devices off `fabric` , with whether each wakes as `record` keeps it: this
-/// machine first, then those here, then by name.
+/// machine first, then those here, then by name. What each said it holds of its workspaces, and
+/// when it was last with a host, are read from the record too: this device's live split is its
+/// storage reading's, and this is what the others last said.
 fn read(
     fabric: &SharedLink,
     record: Option<&FollowedResource<DevicesRecord>>,
@@ -161,21 +163,30 @@ fn read(
     let mut devices: Vec<PersonalDevice> = converged
         .devices()
         .values()
-        .map(|device| PersonalDevice {
-            id: device.device.as_str().to_owned(),
-            label: device.about.label.clone(),
-            online: device.online,
-            nearby: nearby.contains(&device.device),
-            local: local.as_ref() == Some(&device.device),
-            display: device.about.capabilities.display,
-            wakeable: kept.as_ref().is_some_and(|kept| {
-                kept.devices
-                    .get(&tilo_resource::Id::from_raw(
-                        device.device.as_str().to_owned(),
-                    ))
-                    .is_some_and(wake::wakeable)
-            }),
-            audio_output: device.about.capabilities.audio_output,
+        .map(|device| {
+            let entry = kept.as_ref().and_then(|kept| {
+                kept.devices.get(&tilo_resource::Id::from_raw(
+                    device.device.as_str().to_owned(),
+                ))
+            });
+            PersonalDevice {
+                id: device.device.as_str().to_owned(),
+                label: device.about.label.clone(),
+                online: device.online,
+                nearby: nearby.contains(&device.device),
+                local: local.as_ref() == Some(&device.device),
+                display: device.about.capabilities.display,
+                wakeable: entry.is_some_and(wake::wakeable),
+                audio_output: device.about.capabilities.audio_output,
+                seen_ms: entry
+                    .and_then(|kept| kept.seen_ms())
+                    .and_then(|ms| u64::try_from(ms).ok())
+                    .unwrap_or(0),
+                storage: entry
+                    .and_then(|kept| kept.facts.get(crate::shared_storage::STORAGE))
+                    .and_then(|value| crate::shared_storage::decoded(value))
+                    .unwrap_or_default(),
+            }
         })
         .collect();
     devices.sort_by(|left, right| {
@@ -613,6 +624,8 @@ impl From<&DevicesReading> for DevicesView {
                     display: device.display,
                     wakeable: device.wakeable,
                     audio_output: device.audio_output,
+                    seen_ms: device.seen_ms,
+                    storage: device.storage.clone(),
                 })
                 .collect(),
             access: reading.access.clone(),
@@ -646,6 +659,12 @@ mod surface_tests {
                 display: true,
                 wakeable: false,
                 audio_output: true,
+                seen_ms: 1_700_000_000_000,
+                storage: vec![tilo_system_resources::storage::WorkspaceHold {
+                    workspace: "studio".to_owned(),
+                    replicated_bytes: 4_000,
+                    ..tilo_system_resources::storage::WorkspaceHold::default()
+                }],
             }],
             playing: Some("A song".to_owned()),
             chosen: Some(7),
@@ -707,6 +726,14 @@ mod surface_tests {
                 "{key} is not a field of the device the fabric reads"
             );
         }
+        assert_eq!(
+            device["seen_ms"], 1_700_000_000_000_u64,
+            "a device says when it was last with a host"
+        );
+        assert_eq!(
+            device["storage"][0]["workspace"], "studio",
+            "and what it says it holds of its workspaces"
+        );
     }
 
     /// What the `devices` surface declares: the fields a view reads and the verbs that make this

@@ -10,6 +10,9 @@ license.workspace = true
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 # What the disk holds, by category and owner, and the cache cleaner.
 tilo-storage-scan = { path = "../storage-scan" }
+# The filesystem daemon's storage socket: what this device keeps of each workspace, and the
+# changes a person makes to it.
+tilo-fs-client = { path = "../../core/tilo-fs-client" }
 os-actions = { path = "../os-actions" }
 # The protocol the drive service speaks; the service itself is not the session's.
 tilo-ntfs-mount = { path = "../ntfs-mount", default-features = false }

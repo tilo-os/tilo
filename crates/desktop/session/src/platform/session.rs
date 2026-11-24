@@ -945,6 +945,10 @@ impl Session {
         // and the bar says each display's number and name on it.
         let numbers = crate::display_identify::Numbers::default();
         let published_displays = crate::shared_displays::Publisher::default();
+        // What this device holds of its workspaces, kept where the person's other devices read
+        // it: their Settings' Storage pane says which device holds what, and how long ago it said
+        // so.
+        let published_storage = crate::shared_storage::Publisher::default();
         // One table for the keys the session answers and the guide that
         // explains them: a chord that works is a chord the guide and the
         // menus show, and a person's rebinding reaches every one of them.
@@ -2146,6 +2150,7 @@ impl Session {
             caret: Cell::new(None),
             numbers,
             published_displays,
+            published_storage,
             confirmation: crate::display_confirm::Confirmation::default(),
             display_sheet: crate::display_sheet::DisplaySheet::new(
                 displays_sheet,
@@ -2329,6 +2334,10 @@ impl Session {
                 .unwrap_or_default();
             self.published_displays
                 .follow(devices, &online, self.compositor.display_snapshot());
+            // What this device holds of its workspaces, in the same record: the person's other
+            // devices read it to see which of their devices holds what.
+            self.published_storage
+                .follow(devices, &self.shared.services.borrow());
         }
         self.displays
             .follow(&mut self.compositor, night_light, turned)
