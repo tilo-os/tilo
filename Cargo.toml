@@ -291,6 +291,7 @@ members = [
     "crates/core/install",
     "crates/core/launcher",
     "crates/core/launcher-macos",
+    "crates/core/launcher-windows",
     "crates/core/package-store",
     "crates/core/tilo-app-package",
     "tools/tilo-app-package-cli",

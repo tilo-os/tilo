@@ -8059,6 +8059,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "launcher-windows"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "runtime-portal",
+ "tempfile",
+ "tilo-socket",
+ "windows-sys 0.61.2",
+ "workspace-hack",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

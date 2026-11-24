@@ -6,11 +6,15 @@
 //! reaches it. It is created suspended; this process holds it and checks it is the one it
 //! created before the link names it and it runs. Every handle the link carries afterwards is
 //! duplicated into that process alone (`crate::packet`).
+//!
+//! A confined start ([`Confinement`]) also runs the process in an `AppContainer`, whose token
+//! reaches only what was granted to the container's SID, and puts it in a job before it runs, so
+//! the job's holder ends its whole tree.
 
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::windows::ffi::OsStrExt as _;
-use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle};
 use std::os::windows::process::ExitStatusExt as _;
 use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex};
@@ -19,16 +23,19 @@ use windows_sys::Win32::Foundation::{
     GENERIC_READ, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
     SetHandleInformation, WAIT_OBJECT_0,
 };
+use windows_sys::Win32::Security::{PSID, SECURITY_CAPABILITIES};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
+use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, GetProcessId,
     INFINITE, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
-    STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+    PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use super::FD_ENV;
@@ -199,26 +206,51 @@ fn null_device() -> io::Result<OwnedHandle> {
     })
 }
 
-/// Start-up attributes naming the only handles the process inherits.
+/// Where a started process is confined: the `AppContainer` its token is made for, and the job
+/// it is put in before it runs.
+pub struct Confinement<'a> {
+    /// The container's SID, as the system wrote it: the only identity the process's token
+    /// carries beyond its user's, and the one every grant to it names.
+    pub container: &'a [u8],
+    /// The job the process and every process it starts run in.
+    pub job: BorrowedHandle<'a>,
+}
+
+/// Start-up attributes naming the only handles the process inherits, and the container it runs
+/// in when it is confined.
 struct Attributes {
     list: Vec<usize>,
     handles: Vec<HANDLE>,
+    /// What the container attribute points at, which lives as long as the list.
+    capabilities: Option<Box<SECURITY_CAPABILITIES>>,
 }
 
 impl Attributes {
-    fn new(handles: Vec<HANDLE>) -> io::Result<Self> {
+    fn new(handles: Vec<HANDLE>, container: Option<&[u8]>) -> io::Result<Self> {
+        let count = if container.is_some() { 2 } else { 1 };
         let mut size = 0;
-        // SAFETY: asks only for the size of a list of one attribute.
-        unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &raw mut size) };
+        // SAFETY: asks only for the size of a list of `count` attributes.
+        unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), count, 0, &raw mut size) };
         let mut list = vec![0_usize; size.div_ceil(size_of::<usize>())];
         // SAFETY: a buffer of the size asked for, aligned for the list.
         if unsafe {
-            InitializeProcThreadAttributeList(list.as_mut_ptr().cast(), 1, 0, &raw mut size)
+            InitializeProcThreadAttributeList(list.as_mut_ptr().cast(), count, 0, &raw mut size)
         } == 0
         {
             return Err(io::Error::last_os_error());
         }
-        let attributes = Self { list, handles };
+        let mut attributes = Self {
+            list,
+            handles,
+            capabilities: container.map(|sid| {
+                Box::new(SECURITY_CAPABILITIES {
+                    AppContainerSid: sid.as_ptr().cast_mut().cast::<std::ffi::c_void>() as PSID,
+                    Capabilities: std::ptr::null_mut(),
+                    CapabilityCount: 0,
+                    Reserved: 0,
+                })
+            }),
+        };
         // SAFETY: an initialized list, and the handles it names, which live as long as it does.
         if unsafe {
             UpdateProcThreadAttribute(
@@ -233,6 +265,31 @@ impl Attributes {
         } == 0
         {
             return Err(io::Error::last_os_error());
+        }
+        if let Some(capabilities) = attributes.capabilities.as_mut() {
+            // SAFETY: the list has room for a second attribute; the capabilities it points at
+            // (and the SID they name, which the caller holds through the start) outlive it. No
+            // capability is granted: the container reaches no network and no library folder.
+            if unsafe {
+                UpdateProcThreadAttribute(
+                    attributes.list.as_ptr().cast_mut().cast(),
+                    0,
+                    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+                    std::ptr::from_mut::<SECURITY_CAPABILITIES>(capabilities).cast(),
+                    size_of::<SECURITY_CAPABILITIES>(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                )
+            } == 0
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "this Windows cannot confine an app in an AppContainer: {}",
+                        io::Error::last_os_error()
+                    ),
+                ));
+            }
         }
         Ok(attributes)
     }
@@ -249,8 +306,12 @@ impl Drop for Attributes {
     }
 }
 
-/// Start `command` with the other end of a new link, named by [`FD_ENV`].
-pub(super) fn spawn(command: &Command) -> io::Result<(Descriptor, Child)> {
+/// Start `command` with the other end of a new link, named by [`FD_ENV`], confined as
+/// `confinement` says when it says.
+pub(super) fn spawn(
+    command: &Command,
+    confinement: Option<&Confinement<'_>>,
+) -> io::Result<(Descriptor, Child)> {
     let (ours, theirs) = tilo_socket::link::pair()?;
     let theirs = theirs.into_handle();
     let mut read: HANDLE = std::ptr::null_mut();
@@ -273,6 +334,7 @@ pub(super) fn spawn(command: &Command) -> io::Result<(Descriptor, Child)> {
             .iter()
             .map(|handle| handle.as_raw_handle())
             .collect(),
+        confinement.map(|confinement| confinement.container),
     )?;
     // SAFETY: STARTUPINFOEXW and PROCESS_INFORMATION are plain data, valid zeroed.
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
@@ -329,6 +391,18 @@ pub(super) fn spawn(command: &Command) -> io::Result<(Descriptor, Child)> {
         // SAFETY: as above; it never ran.
         unsafe { TerminateProcess(process.as_raw_handle(), 1) };
         return Err(io::Error::other("a started process is not the one created"));
+    }
+    if let Some(confinement) = confinement {
+        // SAFETY: the job and the suspended process's handles, both live.
+        if unsafe {
+            AssignProcessToJobObject(confinement.job.as_raw_handle(), process.as_raw_handle())
+        } == 0
+        {
+            let error = io::Error::last_os_error();
+            // SAFETY: as above; it never ran.
+            unsafe { TerminateProcess(process.as_raw_handle(), 1) };
+            return Err(error);
+        }
     }
     let link = Descriptor::to_started(ours, Arc::clone(&process));
     let child = Child {
@@ -416,7 +490,7 @@ mod tests {
                 "--test-threads=1",
             ])
             .env(STARTED, "1");
-        let (link, mut child) = super::spawn(&command).unwrap();
+        let (link, mut child) = super::spawn(&command, None).unwrap();
         let (ours, theirs) = crate::packet::pair().unwrap();
         ToProcess::Patch {
             instance: 7,

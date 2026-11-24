@@ -36,7 +36,7 @@ mod windows;
 #[cfg(unix)]
 pub type Child = std::process::Child;
 #[cfg(windows)]
-pub use windows::Child;
+pub use windows::{Child, Confinement};
 
 /// The service name the launcher hands the link under: `TILO_SVC_PROCESS_FD`.
 pub const SERVICE: &str = "process";
@@ -731,7 +731,20 @@ fn off_stdin(link: Descriptor) -> io::Result<Descriptor> {
 /// No link could be made, or the program did not start.
 #[cfg(windows)]
 pub fn spawn(command: std::process::Command) -> io::Result<(Descriptor, Child)> {
-    windows::spawn(&command)
+    windows::spawn(&command, None)
+}
+
+/// [`spawn`], with the process run in the `AppContainer` and the job `confinement` names. The
+/// container's grants are its maker's (the Windows launcher); this only starts the process in it.
+///
+/// # Errors
+/// As [`spawn`], and when this Windows cannot run an `AppContainer` (Wine cannot).
+#[cfg(windows)]
+pub fn spawn_confined(
+    command: std::process::Command,
+    confinement: &Confinement<'_>,
+) -> io::Result<(Descriptor, Child)> {
+    windows::spawn(&command, Some(confinement))
 }
 
 /// As above, on Unix.

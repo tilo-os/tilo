@@ -82,3 +82,5 @@ store::registry::store::tests::a_changed_identity_directory_is_reconciled_off_th
 store::registry::store::tests::reading_the_registry_for_a_launch	Wine reports an Everyone ACE on a directory whose protected DACL grants this account alone, so identity storage refuses it as not private; a Windows worker runs it
 store::registry::store::tests::what_the_registry_reconciles	Wine reports an Everyone ACE on a directory whose protected DACL grants this account alone, so identity storage refuses it as not private; a Windows worker runs it
 trusted_device::tests::the_key_answers_only_while_the_identity_trusts_this_device	Wine's random source fails uuid's generator ("unexpected situation"), and its identity storage meets the same Everyone ACE; a Windows worker runs it
+tests::an_app_keeps_its_own_storage_and_reaches_no_other_apps_or_the_daemons_pipe	Wine has no AppContainer (CreateAppContainerProfile is a stub and the security-capabilities attribute is refused); a Windows worker runs it
+tests::the_job_ends_the_app_with_its_holder	Wine has no AppContainer to start the app in; a Windows worker runs it
