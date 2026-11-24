@@ -335,6 +335,17 @@ mod tests {
     const TABLE: &str = "| Name | Age |\n| --- | --- |\n| Ada | 36 |";
 
     #[test]
+    fn a_cell_keeps_readable_internal_spaces_and_exact_edge_spaces() {
+        assert_eq!(encode_cell("Mina Chen"), "Mina Chen");
+        assert_eq!(decode_cell(&encode_cell(" Mina Chen ")), " Mina Chen ");
+        assert_eq!(
+            encode_cell("A | B & C"),
+            "A \\| B &amp; C",
+            "Markdown syntax is escaped without obscuring ordinary spaces"
+        );
+    }
+
+    #[test]
     fn a_cell_written_rewrites_only_its_own_words() {
         let out = with_cell(TABLE, 1, 1, "37 | almost").unwrap();
         assert_eq!(

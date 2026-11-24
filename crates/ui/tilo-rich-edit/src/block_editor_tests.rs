@@ -2030,24 +2030,11 @@ tilo_test_env::scenario! {
             assert_eq!(image.description.as_deref(), Some("diagram.png"));
         }
 
-        fn table_cell_source_keeps_readable_internal_spaces_and_exact_edge_spaces() {
-            assert_eq!(encode_table_cell("Mina Chen"), "Mina Chen");
-            assert_eq!(
-                decode_table_cell(&encode_table_cell(" Mina Chen ")),
-                " Mina Chen "
-            );
-            assert_eq!(
-                encode_table_cell("A | B & C"),
-                "A \\| B &amp; C",
-                "Markdown syntax is escaped without obscuring ordinary spaces"
-            );
-        }
 
         accessibility_reports_multiline_document_role();
         accessibility_focus_tracks_editor_focus();
         markdown_table_exposes_rows_and_cells_to_accessibility();
         standalone_markdown_image_exposes_alt_text();
-        table_cell_source_keeps_readable_internal_spaces_and_exact_edge_spaces();
     }
 
     phase block_typography_scales_and_bands_each_kind;
@@ -2881,7 +2868,11 @@ fn a_picture_is_flipped_cropped_and_placed_from_the_inspector() {
     assert!(editor.format_asked(Some("picture:flip:h:1".into())));
     assert_eq!(editor.blocks[0].text(), "![Scan|320|flip:h](scan.png)");
     assert!(editor.format_asked(Some("picture:flip:v:2".into())));
-    assert!(editor.blocks[0].text().contains("flip:hv"), "{}", editor.blocks[0].text());
+    assert!(
+        editor.blocks[0].text().contains("flip:hv"),
+        "{}",
+        editor.blocks[0].text()
+    );
     assert!(editor.format_asked(Some("picture:size:up:3".into())));
     assert!(
         editor.blocks[0].text().contains("|352|"),
@@ -2889,13 +2880,29 @@ fn a_picture_is_flipped_cropped_and_placed_from_the_inspector() {
         editor.blocks[0].text()
     );
     assert!(editor.format_asked(Some("picture:crop:in:4".into())));
-    assert!(editor.blocks[0].text().contains("crop:5,5,5,5"), "{}", editor.blocks[0].text());
+    assert!(
+        editor.blocks[0].text().contains("crop:5,5,5,5"),
+        "{}",
+        editor.blocks[0].text()
+    );
     assert!(editor.format_asked(Some("picture:place:free:5".into())));
-    assert!(editor.blocks[0].text().contains("place:free"), "{}", editor.blocks[0].text());
+    assert!(
+        editor.blocks[0].text().contains("place:free"),
+        "{}",
+        editor.blocks[0].text()
+    );
     assert!(editor.format_asked(Some("picture:wrap:right:6".into())));
-    assert!(editor.blocks[0].text().contains("wrap:right"), "{}", editor.blocks[0].text());
+    assert!(
+        editor.blocks[0].text().contains("wrap:right"),
+        "{}",
+        editor.blocks[0].text()
+    );
     assert!(editor.format_asked(Some("picture:crop:reset:7".into())));
-    assert!(!editor.blocks[0].text().contains("crop:"), "{}", editor.blocks[0].text());
+    assert!(
+        !editor.blocks[0].text().contains("crop:"),
+        "{}",
+        editor.blocks[0].text()
+    );
 
     // A block that is not a picture refuses the ask, changing nothing.
     editor.set_blocks(vec![Block::paragraph("words")]);
