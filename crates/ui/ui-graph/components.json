@@ -9080,6 +9080,18 @@
           "data": true
         },
         {
+          "name": "leaving",
+          "doc": "Whether the window has just closed: its frame is drawn where it stood and goes back into the control it was asked for from, taking nothing meanwhile. The shell keeps a closed window in its layout reading for its departure and draws it here.",
+          "type": "bool"
+        },
+        {
+          "name": "control",
+          "doc": "The control the person pressed for it, in the shell's pixels as `x, y`: the dock icon or the search row a window comes out of and goes back into. Empty for a window a shortcut or an agent asked for, which lands and grows where it stands.",
+          "type": {
+            "list": "int"
+          }
+        },
+        {
           "name": "enabled",
           "doc": "Whether the window's bar takes a press now.",
           "type": "bool"

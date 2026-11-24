@@ -80,6 +80,14 @@ pub struct WindowFrameProps {
     /// window asks for nothing.
     #[component(data)]
     pub keep: Option<String>,
+    /// Whether the window has just closed: its frame is drawn where it stood and goes back into the
+    /// control it was asked for from, taking nothing meanwhile. The shell keeps a closed window in
+    /// its layout reading for its departure and draws it here.
+    pub leaving: bool,
+    /// The control the person pressed for it, in the shell's pixels as `x, y`: the dock icon or the
+    /// search row a window comes out of and goes back into. Empty for a window a shortcut or an
+    /// agent asked for, which lands and grows where it stands.
+    pub control: Vec<i64>,
     /// Whether the window's bar takes a press now.
     pub enabled: bool,
     /// Why it cannot be pressed now, where the name does not say (an action whose requirement
@@ -107,6 +115,8 @@ impl Default for WindowFrameProps {
             tabs: None,
             carries: None,
             keep: None,
+            leaving: false,
+            control: Vec::new(),
             enabled: true,
             description: None,
             press: Event::None,
@@ -183,6 +193,8 @@ pub struct WindowFrame {
     lift: Option<Lift>,
     /// The name the scroll view around it keeps in view, as the view set it.
     keep: Option<String>,
+    /// Whether the window has just closed: its frame goes back into its control and takes nothing.
+    leaving: bool,
     /// What a press on the bar does.
     press: crate::widget::Press,
     /// Whether the bar takes a press now, and why it cannot when it does not.
@@ -225,6 +237,22 @@ const AFTER: usize = 2;
 
 fn empty() -> Element {
     Box::new(Spacer::token(SpacingStep::S0))
+}
+
+/// The control a shell's reading gives a window, as `x, y` in its pixels: the dock icon or the
+/// search row it was asked for from, or nothing when the reading names none.
+fn control_of(control: &[i64]) -> Option<Point> {
+    match control {
+        [x, y] => {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "a point on a screen, far inside the integers f64 holds exactly"
+            )]
+            let (x, y) = (*x as f64, *y as f64);
+            Some(Point::new(x, y))
+        }
+        _ => None,
+    }
 }
 
 /// How the tabs stand in the frame's own bar: the bar of a window of several places is
@@ -284,6 +312,8 @@ impl Described for WindowFrame {
             tabs,
             carries,
             keep,
+            leaving,
+            control,
             enabled,
             description,
             press,
@@ -334,18 +364,24 @@ impl Described for WindowFrame {
             rect: Rect::ZERO,
             bar: Rect::ZERO,
             pill: Rect::ZERO,
-            placed: if crate::motion::window_has_shown() {
+            placed: if leaving {
+                // A window the shell keeps only as it leaves: it starts whole where it stood and
+                // goes from there, back into the control it was asked for from.
+                crate::motion::Placed::leaving().from_control(control_of(&control))
+            } else if crate::motion::window_has_shown() {
                 crate::motion::Placed::closed()
+                    .from_control(control_of(&control))
+                    // A window the person pressed for comes out of the control they pressed — the
+                    // dock icon or the search row. A window a shortcut or an agent asked for lands
+                    // where it stands, and one in the session's first frame rests.
+                    .arriving_out_of_pointer()
             } else {
                 crate::motion::Placed::opened()
-            }
-            // A window the person pressed for comes out of the control they pressed — the dock icon
-            // or the search row — and goes back into it when it leaves. A window a shortcut or an
-            // agent asked for lands where it stands, and one in the session's first frame rests.
-            .arriving_out_of_pointer(),
+            },
             carries,
             lift: None,
             keep,
+            leaving,
             press: crate::widget::Press::of(press),
             enabled,
             description,
@@ -370,6 +406,8 @@ impl Described for WindowFrame {
         self.lists_actions = props.lists_actions;
         self.carries = props.carries;
         self.keep = props.keep;
+        self.leaving = props.leaving;
+        self.placed.set_control(control_of(&props.control));
         self.enabled = props.enabled;
         self.description = props.description;
         self.press = crate::widget::Press::of(props.press);
@@ -706,6 +744,11 @@ impl Decorator for WindowFrame {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // A window on its way out takes nothing: its place is gone from the layout, so a press on
+        // its bar or in its content would reach an action that cannot run.
+        if self.leaving {
+            return;
+        }
         if self.carries.is_none() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.cursor = ctx.logical(position);
@@ -911,7 +954,7 @@ impl Decorator for WindowFrame {
         let now = crate::motion::frame_now();
         self.placed.follow(
             rect,
-            true,
+            !self.leaving,
             theme.motion(),
             crate::motion::input_source(),
             now,
@@ -1464,6 +1507,89 @@ mod tests {
             "a shortcut's window shows in its frame at once"
         );
         crate::motion::note_source(crate::tokens::MotionSource::Action);
+    }
+
+    /// A window a shell keeps only as it leaves is drawn whole where it stood and goes back into
+    /// the control it was opened from — and it takes nothing on the way, so a press on its bar
+    /// reaches no action of a place that has left the layout.
+    #[test]
+    fn a_window_that_closes_goes_back_into_the_control_it_came_out_of() {
+        use taffy::TaffyTree;
+        let _frame = crate::motion::pin_frame();
+        let _shown = crate::motion::laying_out_window(true);
+        // The person closed it with a press: a pointer's departure plays; a shortcut's lands.
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        let queue = crate::Intents::default();
+        let mut frame = Box::new(WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                key: "w".to_owned(),
+                name: Some("A note".to_owned()),
+                leaving: true,
+                control: vec![30, 700],
+                press: Event::View(crate::component::Intent::new(&queue, "w", "press")),
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        ));
+        let theme = Theme::dark();
+        let rect = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = Widget::build_layout(frame.as_mut(), &mut taffy, &theme, &mut nodes);
+        if let Ok(mut style) = taffy.style(node).cloned() {
+            style.size = taffy::Size::from_lengths(480.0_f32, 360.0_f32);
+            let _ = taffy.set_style(node, style);
+        }
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(480.0),
+                    height: taffy::AvailableSpace::Definite(360.0),
+                },
+            )
+            .expect("the window solves its layout");
+        Widget::apply_layout(frame.as_mut(), &taffy, node, rect.origin());
+        let bar = frame.bar;
+        assert!(bar.height() > 0.0, "the frame draws a bar: {bar:?}");
+
+        // The frame's first draw starts its departure: whole where it stood, on its way.
+        let _ = drawn(&theme, &mut frame);
+        let now = crate::motion::frame_now();
+        let start = frame.placed.pose(rect, now).drawn_rect(rect);
+        assert!(
+            (start.center() - rect.center()).hypot() < 1.0,
+            "it starts whole where it stood: {start:?}"
+        );
+        assert!(frame.placed.is_moving(now), "and it goes from there");
+
+        let mut doc = automerge::AutoCommit::new();
+        let mut send = |frame: &mut WindowFrame, event: &WindowEvent| {
+            crate::testing::Dispatch::new()
+                .doc(&mut doc)
+                .layout(&taffy, node)
+                .send(frame, event);
+        };
+        send(
+            frame.as_mut(),
+            &crate::synthetic_input::cursor_moved(bar.center().x, bar.center().y),
+        );
+        send(frame.as_mut(), &crate::synthetic_input::mouse_press());
+        assert!(
+            queue.take().is_empty(),
+            "a window on its way out takes no press"
+        );
+
+        let mid = now + crate::time::Duration::from_millis(80);
+        let _later = crate::motion::pin_frame_at(mid);
+        let going = frame.placed.pose(rect, mid).drawn_rect(rect);
+        let control = Point::new(30.0, 700.0);
+        assert!(
+            going.width() < rect.width()
+                && (going.center() - control).hypot() < (rect.center() - control).hypot(),
+            "it travels back toward the control it came out of: {going:?}"
+        );
     }
 
     /// A still theme, and reduced motion, land the window where it is laid out on the frame it

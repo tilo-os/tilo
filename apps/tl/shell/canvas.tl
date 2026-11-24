@@ -67,7 +67,7 @@ view canvas(a: Layout, name: Text, framed: Bool, lists: Bool) {
         // it (canvas.md §1, §7). The session keeps it as view state, never a step of arranging.
         on drawn(target: Text, at: List<Int>): drew_place(target, at)
         for s in a.strips {
-            if s.placed {
+            if s.placed and not s.leaving {
                 for p in places_of(a, s.key) {
                     ui.MapPin(
                         name: p.key,

@@ -30,7 +30,7 @@ view traditional_desktop(a: Layout, lists: Bool) {
     let front = front_place(a)
     ui.Map(name: "Desktop", ground: true, fill) {
         for s in a.strips {
-            if s.placed {
+            if s.placed and not s.leaving {
                 for p in places_of(a, s.key) {
                     if p.key != front {
                         desktop_frame(a, s, p, false, lists)
@@ -39,7 +39,7 @@ view traditional_desktop(a: Layout, lists: Bool) {
             }
         }
         for s in a.strips {
-            if s.placed {
+            if s.placed and not s.leaving {
                 for p in places_of(a, s.key) {
                     if p.key == front {
                         desktop_frame(a, s, p, true, lists)
@@ -182,9 +182,11 @@ enum BarRoom {
 /// The strip in front: the one whose window has the keyboard on this device, else the first
 /// that has a place on the desktop.
 fn focused_strip(a: Layout) -> Option<LayoutStrip> {
-    if let named = a.strips.find(s -> s.key == a.front) {
+    if let named = a.strips.find(s -> s.key == a.front and not s.leaving) {
         named
-    } else { a.strips.find(s -> s.placed) }
+    } else {
+        a.strips.find(s -> s.placed and not s.leaving)
+    }
 }
 
 /// The place in front of `s`: its active place, else the first one it holds.

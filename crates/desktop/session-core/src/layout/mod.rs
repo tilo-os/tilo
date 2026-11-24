@@ -872,6 +872,9 @@ pub struct Layout {
     /// The person's recents as last read, with the revisions of the opens and the catalogue they
     /// were read at: a reading made again with neither moved reads none of the history again.
     recents: RefCell<Option<(u64, u64, Vec<LayoutRecentReading>)>>,
+    /// The windows that just closed, and what the last reading held of every window: what keeps a
+    /// closed window in the reading while its frame flies back into the control it came from.
+    departures: RefCell<Departures>,
 }
 
 impl Layout {
@@ -901,6 +904,7 @@ impl Layout {
             queries: RefCell::new(BTreeMap::new()),
             query_held: RefCell::new(BTreeMap::new()),
             recents: RefCell::new(None),
+            departures: RefCell::new(Departures::default()),
         }
     }
 
@@ -1490,6 +1494,16 @@ impl Layout {
         reading
             .queries
             .extend(self.queries.borrow().values().cloned());
+        // A window that just closed keeps its frame, where it stood, while the shell draws it back
+        // into the control the person opened it from; a window opening now comes out of the
+        // control they pressed.
+        let now = ui::time::now();
+        let control = ui::motion::recent_input(now)
+            .filter(|source| !source.lands_at_once())
+            .and_then(|_| ui::motion::last_pointer());
+        self.departures
+            .borrow_mut()
+            .keep(&mut reading, now, control);
         reading.recents = self.recents();
         reading
     }

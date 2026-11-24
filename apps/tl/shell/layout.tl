@@ -140,6 +140,13 @@ type LayoutStrip (origin: session.layout_strip) {
     /// Whether `canvas_height` is the most it takes: what it shows is as tall as what it holds
     /// up to it (a thing found where the person clicked).
     canvas_hugs: Bool
+    /// Whether the window has just closed: the session keeps it in the reading while the shell
+    /// draws its frame's departure, back into the control the person opened it from.
+    leaving: Bool
+    /// The control the person pressed for it, in the shell's pixels as `x, y`: the dock icon or
+    /// the search row the window comes out of and goes back into. Empty when a shortcut or an
+    /// agent asked for it, which lands and grows where it stands.
+    control: List<Int>
     shell: Text merge register
 }
 
@@ -164,6 +171,8 @@ type LayoutPlace (origin: session.layout_place) {
     name: Text merge register
     /// Whether the person pinned it: an agent's layout leaves it alone.
     pinned: Bool
+    /// Whether its window just closed: the place stands only while its frame's departure plays.
+    leaving: Bool
     /// The shell that made it; empty reads as this shell's.
     shell: Text merge register
 }
