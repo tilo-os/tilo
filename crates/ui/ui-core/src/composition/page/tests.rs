@@ -443,6 +443,62 @@ fn a_dark_theme_is_a_dark_page() {
     assert!(html.contains(&dark), "the page carries its theme");
 }
 
+/// The page moves as the theme does. A control's tint fades and a switch's knob travels over the
+/// theme's `fast`, easing out the way the native controls settle. Reduced motion keeps the fade and
+/// lands the travel, and a theme that holds still lands both.
+#[test]
+fn the_page_moves_by_the_themes_motion() {
+    let prop = |css: &str, name: &str| {
+        css.split(&format!("--tilo-{name}:"))
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .unwrap_or_else(|| panic!("--tilo-{name} in {css}"))
+            .to_owned()
+    };
+    let theme = crate::Theme::light();
+    let fast = format!("{}ms", theme.tokens.motion.durations.fast_ms);
+    let css = theme_css(&theme);
+    assert_eq!(prop(&css, "fade"), fast);
+    assert_eq!(prop(&css, "move"), fast);
+    let settle = prop(&css, "settle");
+    let points: Vec<f64> = settle
+        .strip_prefix("linear(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("a linear() curve: {settle}"))
+        .split(',')
+        .map(|point| point.parse().expect("a number"))
+        .collect();
+    assert_eq!(points.first(), Some(&0.0), "{settle}");
+    assert_eq!(points.last(), Some(&1.0), "{settle}");
+    assert!(
+        points.windows(2).all(|pair| pair[0] <= pair[1]),
+        "it never turns back: {settle}"
+    );
+    assert!(
+        points[points.len() / 2] > 0.9,
+        "it eases out, most of the way there by half its time: {settle}"
+    );
+
+    let mut reduced = crate::Theme::light();
+    reduced.reduce_motion = true;
+    let css = theme_css(&reduced);
+    assert_eq!(prop(&css, "fade"), fast, "reduced motion still fades");
+    assert_eq!(prop(&css, "move"), "0ms", "reduced motion lands the travel");
+
+    let mut still = crate::Theme::light();
+    still.tokens.motion.still = true;
+    let css = theme_css(&still);
+    assert_eq!(prop(&css, "fade"), "0ms");
+    assert_eq!(prop(&css, "move"), "0ms");
+
+    for name in ["fade", "move", "settle"] {
+        assert!(
+            PAGE_CSS.contains(&format!("var(--tilo-{name})")),
+            "the stylesheet moves by --tilo-{name}"
+        );
+    }
+}
+
 /// A window well in a real frame is where the page's host shows that place's window.
 #[test]
 fn a_window_well_holds_what_its_host_shows_for_the_window() {

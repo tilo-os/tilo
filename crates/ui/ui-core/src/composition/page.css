@@ -58,7 +58,7 @@ textarea.tilo-field{padding:6px 10px;scrollbar-width:none;field-sizing:content;o
 .tilo-view input[type=checkbox]:checked::after{content:"";width:9px;height:5px;border:2px solid var(--tilo-on-accent);border-top:0;border-right:0;transform:translateY(-1px) rotate(-45deg);}
 .tilo-view input[role=switch]{width:36px;height:22px;border-radius:11px;place-content:center start;padding:0 3px;}
 .tilo-view input[role=switch]::after{content:"";width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);}
-.tilo-view input[role=switch]:checked::after{border:0;transform:translateX(14px);}
+.tilo-view input[role=switch]:checked::after{width:16px;height:16px;border:0;transform:translateX(14px);}
 .tilo-view article{display:flex;flex-direction:column;gap:2px;min-width:0;outline:none;}
 .tilo-view article [role=listitem]{position:relative;padding:0;border-radius:0;background:none;}
 .tilo-view article [role=listitem]>button,.tilo-view article [role=listitem]>a{position:absolute;opacity:0;pointer-events:none;}
@@ -66,5 +66,8 @@ textarea.tilo-field{padding:6px 10px;scrollbar-width:none;field-sizing:content;o
 .tilo-view .tilo-block{margin:0;padding:0;white-space:pre-wrap;overflow-wrap:anywhere;outline:none;min-height:1lh;font-size:var(--tilo-body-size);letter-spacing:var(--tilo-body-tracking,0);line-height:1.6;}
 .tilo-view [aria-roledescription^=Heading]>.tilo-block,.tilo-view [aria-roledescription^=heading]>.tilo-block{font-size:var(--tilo-heading-size);letter-spacing:var(--tilo-heading-tracking,0);font-weight:var(--tilo-heading-weight);}
 @keyframes tilo-spin{to{transform:rotate(1turn);}}
-@media (prefers-reduced-motion:reduce){.tilo-view *{animation:none!important;transition:none!important;}}
+.tilo-view button,.tilo-view input[type=checkbox],.tilo-view input[type=radio]{transition:background-color var(--tilo-fade) var(--tilo-settle),box-shadow var(--tilo-fade) var(--tilo-settle);}
+.tilo-view button:hover,.tilo-view button:active{transition-duration:0s;}
+.tilo-view input[role=switch]::after{transition:transform var(--tilo-move) var(--tilo-settle);}
+@media (prefers-reduced-motion:reduce){.tilo-view{--tilo-move:0ms;}.tilo-view *{animation:none!important;}}
 .tilo-view time,.tilo-view [role=table],.tilo-view .tilo-detail,.tilo-view [role=progressbar],.tilo-view [role=meter],.tilo-view [role=slider],.tilo-view [role=spinbutton]{font-variant-numeric:tabular-nums;}

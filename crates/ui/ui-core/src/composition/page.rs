@@ -1239,8 +1239,12 @@ pub fn escape(text: &str) -> String {
     out
 }
 
+/// How many steps the page's `--tilo-settle` curve samples the spring at: enough that the
+/// straight lines between them read as the curve over a `fast` change.
+const SETTLE_SAMPLES: u16 = 16;
+
 /// The theme as the page's custom properties (`--tilo-*`): its colours, its type roles, its
-/// corners, and the `color-scheme` the browser draws its own parts in.
+/// corners, its motion, and the `color-scheme` the browser draws its own parts in.
 #[must_use]
 pub fn theme_css(theme: &crate::Theme) -> String {
     use crate::tokens::typography::TextRole;
@@ -1291,8 +1295,31 @@ pub fn theme_css(theme: &crate::Theme) -> String {
             style.letter_spacing / style.size.max(1.0)
         );
     }
+    // The page moves by the motion tokens the native controls move by. A control's tint and a
+    // checkbox's fill fade over `fast` (`--tilo-fade`), a switch's knob travels over it
+    // (`--tilo-move`), and both follow the critically damped spring `fast` means natively
+    // (`--tilo-settle`, sampled as a CSS `linear()` curve). Reduced motion keeps the fade and lands
+    // the travel; a theme that holds still does neither.
+    let motion = theme.motion();
+    let fast = motion.tokens().durations.fast();
+    let spring = crate::motion::SpringSpec::settling_within(fast);
+    let settle = (0..=SETTLE_SAMPLES)
+        .map(|i| {
+            if i == SETTLE_SAMPLES {
+                return "1".to_owned();
+            }
+            let t = fast.as_secs_f64() * f64::from(i) / f64::from(SETTLE_SAMPLES);
+            format!("{:.3}", 1.0 - spring.state(1.0, 0.0, t).0)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let motion_props = format!(
+        "--tilo-fade:{}ms;--tilo-move:{}ms;--tilo-settle:linear({settle});",
+        motion.fade(fast).as_millis(),
+        motion.fast().as_millis(),
+    );
     format!(
-        ":root{{color-scheme:{look};--tilo-hover:{};--tilo-press:{};--tilo-selected:{};--tilo-ground:{};--tilo-sidebar:{};--tilo-raised:{};--tilo-overlay:{};--tilo-text:{};--tilo-text-dim:{};--tilo-text-tertiary:{};--tilo-border:{};--tilo-focus:{};--tilo-accent:{};--tilo-on-accent:{};--tilo-radius:{:.1}px;--tilo-control-radius:{}px;{type_roles}}}",
+        ":root{{color-scheme:{look};{motion_props}--tilo-hover:{};--tilo-press:{};--tilo-selected:{};--tilo-ground:{};--tilo-sidebar:{};--tilo-raised:{};--tilo-overlay:{};--tilo-text:{};--tilo-text-dim:{};--tilo-text-tertiary:{};--tilo-border:{};--tilo-focus:{};--tilo-accent:{};--tilo-on-accent:{};--tilo-radius:{:.1}px;--tilo-control-radius:{}px;{type_roles}}}",
         tint(content, true, false),
         tint(content, false, true),
         rgba(colors.surfaces.raised),
