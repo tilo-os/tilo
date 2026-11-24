@@ -435,7 +435,7 @@ impl TerminalWidget {
             self.attach_backend(backend);
             self.resize_pty_to_grid();
         } else if let Some(target) = self.sessions.target.clone() {
-            self.open_session(&target, Requester::current());
+            self.open_session(&target, crate::inner::current_requester());
         }
         request_terminal_wake(&self.waker);
         Ok(())

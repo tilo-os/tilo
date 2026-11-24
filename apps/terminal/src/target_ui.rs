@@ -293,7 +293,7 @@ impl TerminalWidget {
                 self.sessions.state = OpenState::Failed(t("terminal-no-runtime"));
             }
             Err(error) => {
-                let reason = error.to_string();
+                let reason = crate::inner::open_error_text(&error);
                 self.show_status(&reason);
                 self.sessions.state = OpenState::Failed(reason);
             }
@@ -798,7 +798,11 @@ impl TerminalWidget {
         reason = "one panel: header, a row per environment, and the name field"
     )]
     fn draw_environments_panel(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         if !self.environments_panel.open {
             return;
@@ -1061,7 +1065,7 @@ impl TerminalWidget {
                 submit.x0 - gap,
                 field_y + button_h,
             ));
-            input.draw_child(scene, transform, tr, theme,&env);
+            input.draw_child(scene, transform, tr, theme, &env);
         }
     }
 
@@ -1069,6 +1073,6 @@ impl TerminalWidget {
         let target = parse_target_argument(raw).ok_or_else(|| {
             format!("`{raw}` is not a target: use environment, environment:<record>, linux-vm:<vm> or host")
         })?;
-        self.switch_target(&target, Requester::current())
+        self.switch_target(&target, crate::inner::current_requester())
     }
 }

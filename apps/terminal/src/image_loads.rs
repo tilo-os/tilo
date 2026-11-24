@@ -8,7 +8,8 @@ use tilo_content::ContentStore;
 use ui::lock::MutexRecover as _;
 use ui::widget::Image;
 
-use crate::graphics::{TerminalImagePlacement, decode_for_rendering};
+use crate::graphics::TerminalImagePlacement;
+use tilo_terminal::placement_is_sound;
 
 const MAX_ENTRIES: usize = 128;
 
@@ -147,9 +148,50 @@ impl ImageLoads {
 
 fn load(content: &ContentStore, placement: &TerminalImagePlacement) -> Option<Image> {
     let bytes = content.read(&placement.hash)?;
-    (placement.byte_len == u64::try_from(bytes.len()).unwrap_or(u64::MAX))
-        .then(|| decode_for_rendering(placement, &bytes))
-        .flatten()
+    if placement.byte_len != u64::try_from(bytes.len()).ok()?
+        || !placement_is_sound(placement, &bytes)
+    {
+        return None;
+    }
+    decode(placement, &bytes)
+}
+
+/// Decode a placement the engine validated: a PNG, or the raw pixels a Kitty transmission carried,
+/// widened to RGBA because the picture type draws one.
+fn decode(placement: &TerminalImagePlacement, bytes: &[u8]) -> Option<Image> {
+    match placement.mime.as_str() {
+        "image/png" => Image::from_encoded(bytes).ok(),
+        "application/x-kitty-rgb" | "application/x-kitty-rgba" => {
+            let channels = if placement.mime.ends_with("rgba") {
+                4
+            } else {
+                3
+            };
+            let pixels = usize::try_from(
+                u64::from(placement.pixel_width) * u64::from(placement.pixel_height),
+            )
+            .ok()?;
+            if bytes.len() != pixels.checked_mul(channels)? {
+                return None;
+            }
+            let rgba = if channels == 4 {
+                bytes.to_vec()
+            } else {
+                let mut rgba = Vec::with_capacity(pixels.checked_mul(4)?);
+                for rgb in bytes.chunks_exact(3) {
+                    let [red, green, blue] = <&[u8; 3]>::try_from(rgb).ok()?;
+                    rgba.extend_from_slice(&[*red, *green, *blue, 255]);
+                }
+                rgba
+            };
+            Some(Image::from_rgba(
+                Arc::from(rgba),
+                placement.pixel_width,
+                placement.pixel_height,
+            ))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

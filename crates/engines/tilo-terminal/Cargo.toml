@@ -1,0 +1,40 @@
+[package]
+name = "tilo-terminal"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A terminal session's engine: the VT emulator, its grid and scrollback, the pty a session runs on, and the parsers that read what a command printed."
+
+[dependencies]
+# Kitty graphics transmissions carry base64-encoded payloads.
+base64.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+# A session's shell marks its runs with a key this process makes up.
+uuid.workspace = true
+# Where a session can run, and the environment records it can run in.
+tilo-environment = { path = "../../vm/environment" }
+
+# A session's process only exists where one can run: a page has no shell of its own.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The VT emulator: parser, grid with scrollback and reflow, modes and replies.
+alacritty_terminal = { version = "0.26.0" }
+# What a command printed, which its record names by content.
+tilo-content = { path = "../../core/content", default-features = false }
+# The pty a session's process is on, and the device's own login shell.
+portable-pty = { version = "0.9.0" }
+# The supervisor a session runs under: its service protocol and descriptor passing.
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native-editor"] }
+anyhow.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# A test reads what a session prints from a real pty.
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

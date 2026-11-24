@@ -15085,7 +15085,6 @@ dependencies = [
 name = "terminal"
 version = "0.2.1"
 dependencies = [
- "alacritty_terminal",
  "anyhow",
  "base64 0.22.1",
  "libc",
@@ -15107,6 +15106,7 @@ dependencies = [
  "tilo-runtime-portal",
  "tilo-settings-model",
  "tilo-taffy",
+ "tilo-terminal",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
@@ -21133,6 +21133,27 @@ dependencies = [
  "grid",
  "serde",
  "slotmap",
+]
+
+[[package]]
+name = "tilo-terminal"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "base64 0.22.1",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-content",
+ "tilo-environment",
+ "tilo-process",
+ "tilo-runtime-portal",
+ "tilo-test-env",
+ "tracing",
+ "uuid",
+ "workspace-hack",
 ]
 
 [[package]]

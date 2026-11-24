@@ -515,7 +515,7 @@ tilo_test_env::scenario! {
         );
         #[cfg(unix)]
         {
-            let request = crate::inner::ush_request(
+            let request = crate::inner::ush_request_in(
                 &[],
                 &SessionTarget::Host,
                 Requester::Person,
@@ -530,7 +530,7 @@ tilo_test_env::scenario! {
             assert_eq!(request["requested_by"], "person");
             assert_eq!(request["commands"], "0123456789abcdef");
             assert!(
-                crate::inner::ush_request(
+                crate::inner::ush_request_in(
                     &[],
                     &SessionTarget::LinuxVm { vm: "linux".into() },
                     Requester::Person,

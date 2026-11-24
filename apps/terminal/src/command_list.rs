@@ -370,53 +370,10 @@ fn well(text: &str, truncated: bool) -> Element {
     Box::new(Surface::new(SurfaceLevel::Raised, Box::new(column)).padded(Rhythm::Tight))
 }
 
-/// `bytes` as the text a terminal leaves on screen, without its escape
-/// sequences: colours and cursor moves dropped, a carriage return starting
-/// its line over, as a progress bar draws itself again.
+/// `bytes` as the text a terminal leaves on screen, without its escape sequences: the engine's
+/// reading, with tab stops widened so the page's text lays out as the grid did.
 pub(crate) fn plain(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let mut out = String::with_capacity(text.len());
-    let mut line = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\u{1b}' => match chars.next() {
-                // A control sequence ends at its final byte.
-                Some('[') => {
-                    for c in chars.by_ref() {
-                        if ('\u{40}'..='\u{7e}').contains(&c) {
-                            break;
-                        }
-                    }
-                }
-                // A string sequence (a title, a link) ends at BEL or ST.
-                Some(']' | 'P' | '_' | '^') => {
-                    while let Some(c) = chars.next() {
-                        if c == '\u{7}' {
-                            break;
-                        }
-                        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            },
-            '\n' => {
-                out.push_str(&line);
-                out.push('\n');
-                line.clear();
-            }
-            '\r' if chars.peek() == Some(&'\n') => {}
-            '\r' => line.clear(),
-            '\t' => line.push_str("    "),
-            c if c.is_control() => {}
-            c => line.push(c),
-        }
-    }
-    out.push_str(&line);
-    out
+    tilo_terminal::parse::plain(&String::from_utf8_lossy(bytes)).replace('\t', "    ")
 }
 
 #[cfg(test)]

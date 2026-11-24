@@ -159,7 +159,8 @@ fn typed_line(app: &mut App, lines: &Receiver<String>) -> String {
 
 #[test]
 fn an_agent_reruns_the_failing_test_of_a_run() {
-    let fixture = include_str!("parse/fixtures/nextest.txt");
+    let fixture =
+        include_str!("../../../crates/engines/tilo-terminal/src/parse/fixtures/nextest.txt");
     let (mut app, print, lines) = marked_session("test result: ok. 1 passed\r\n");
     print
         .send(ran("cargo test -p terminal --lib fixture_", fixture, 101))
@@ -983,7 +984,7 @@ fn held_marks_carry_the_hosts_typed_refusal() {
         [
             Piece::Mark(Mark::Held {
                 agent: true,
-                refusal: Box::new(no_card())
+                refusal: Box::new(serde_json::to_value(no_card()).expect("a refusal is JSON"))
             }),
             Piece::Output(b"building".to_vec()),
             Piece::Mark(Mark::Released),

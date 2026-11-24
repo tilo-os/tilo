@@ -42,8 +42,9 @@ pub use graphics::TerminalImagePlacement;
 #[cfg(feature = "desktop")]
 pub use crate::inner::{
     Attr, CellColor, GridPos, OpenError, Requester, Selection, TermModes, TerminalBackend,
-    TerminalWidget, parse_target_argument,
+    TerminalWidget,
 };
+pub use crate::target::parse_target_argument;
 
 #[cfg(feature = "desktop")]
 pub use portable_pty::CommandBuilder;

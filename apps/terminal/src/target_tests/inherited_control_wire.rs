@@ -167,8 +167,10 @@ fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connec
             ui::tilo_actions::ActionInvoker::agent("fixture"),
         );
         assert!(
-            on_tab(&mut app, |terminal| terminal
-                .switch_target(&SessionTarget::Host, Requester::current()))
+            on_tab(&mut app, |terminal| terminal.switch_target(
+                &SessionTarget::Host,
+                crate::inner::current_requester()
+            ))
             .is_err()
         );
     }

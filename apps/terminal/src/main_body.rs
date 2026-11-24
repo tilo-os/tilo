@@ -1,4 +1,4 @@
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,31 +40,90 @@ use crate::graphics::TerminalImagePlacement;
 
 /// Chunks the PTY reader may queue before it stops reading: output is never dropped, memory is bounded.
 const PTY_QUEUE_CHUNKS: usize = 64;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PtyReadDisposition {
-    Data(usize),
-    Retry,
-    Closed,
+pub use tilo_terminal::{
+    Attr, CellColor, GridPos, OpenError, OpenOptions, PtyReadDisposition, Requester, Selection,
+    TermModes, classify_pty_read, launch_command_from_env, safe_osc_text,
+};
+// The engine's wire forms and routes the app's tests pin; no production path reaches them.
+#[cfg(test)]
+pub(crate) use tilo_terminal::{
+    ConfineRoute, decide_route, exec_script, launch_command_from_context, refusal, ush_request,
+};
+
+/// The `open-session` line for the supervisor, with the window's workspace filled in.
+#[cfg(test)]
+pub(crate) fn ush_request_in(
+    program: &[String],
+    target: &crate::target::SessionTarget,
+    requested_by: Requester,
+    relay_session: Option<&str>,
+    opening: &crate::sessions::Opening,
+    commands: Option<&str>,
+    size: (u16, u16),
+) -> Result<Vec<u8>, OpenError> {
+    let options = OpenOptions {
+        program: Some(program),
+        relay_session,
+        workspace: opening.workspace(),
+        record: opening.record.as_deref(),
+        ..OpenOptions::default()
+    };
+    ush_request(target, requested_by, &options, commands, size)
 }
 
-/// A PTY master with no slave open: `EIO` on Linux, end of file on macOS. A hosted session sees it in
-/// its hand-off window, so only a closed `session_open` makes it final. `EINTR` is never closure.
-pub(crate) fn classify_pty_read(
-    result: &std::io::Result<usize>,
-    session_open: impl FnOnce() -> bool,
-) -> PtyReadDisposition {
-    match result {
-        Ok(n) if *n > 0 => return PtyReadDisposition::Data(*n),
-        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-            return PtyReadDisposition::Retry;
-        }
-        _ => {}
+/// The engine's own service failures as the app's API states them: a service failure says this
+/// device cannot reach a shell, and the person reads it in the app's words.
+fn app_open_error(error: OpenError) -> OpenError {
+    match error {
+        OpenError::ServiceBusy => OpenError::Unavailable(crate::i18n::t(
+            "terminal-service-control-unavailable",
+        )),
+        OpenError::ServiceProtocol => OpenError::Unavailable(crate::i18n::t(
+            "terminal-service-protocol-unavailable",
+        )),
+        other => other,
     }
-    if tilo_process::editor::read_finds_no_slave(result) && session_open() {
-        PtyReadDisposition::Retry
+}
+
+/// How a session-open failure reads to a person: the engine's own messages are English, its
+/// service failures are named here so the app's translations cover them.
+pub(crate) fn open_error_text(error: &OpenError) -> String {
+    match error {
+        OpenError::ServiceBusy => crate::i18n::t("terminal-service-control-unavailable"),
+        OpenError::ServiceProtocol => crate::i18n::t("terminal-service-protocol-unavailable"),
+        OpenError::InvalidSession => crate::i18n::t("terminal-service-invalid-session"),
+        OpenError::MissingLease => crate::i18n::t("terminal-service-missing-lease"),
+        OpenError::MissingTerminal => crate::i18n::t("terminal-service-missing-terminal"),
+        OpenError::InvalidLease => crate::i18n::t("terminal-service-invalid-lease"),
+        other => other.text().to_owned(),
+    }
+}
+
+/// Who is behind the current invocation: only the person at this screen acts without one.
+pub(crate) fn current_requester() -> Requester {
+    if ui::invocation_scope::current_invoker().is_some() {
+        Requester::Agent
     } else {
-        PtyReadDisposition::Closed
+        Requester::Person
     }
+}
+
+/// Whether the launcher handed this app the supervisor's control connection.
+pub(crate) fn ush_service_available() -> bool {
+    USH_SERVICE.was_taken() || ush_service_fd().is_some()
+}
+
+/// Whether any environment can run on this device.
+pub fn environments_available() -> bool {
+    tilo_terminal::environments_available(ush_service_available())
+}
+
+/// The supervisor's descriptor, if the launcher opened one and it is still live: a spoofed number
+/// pointing at nothing does not select the service path.
+#[cfg(feature = "desktop")]
+pub(crate) fn ush_service_fd() -> Option<i32> {
+    let raw: i32 = std::env::var(USH_SERVICE_FD_ENV).ok()?.parse().ok()?;
+    tilo_process::descriptor::open(raw)
 }
 
 fn session_ended_message() -> String {
@@ -108,35 +167,6 @@ fn link_row(pane: &TerminalWidget, link_id: u16, url: &str) -> ui::framework::Li
     )
 }
 
-/// A cell in the buffer: `row` absolute, scrollback included, `col` a grid column. `Ord` is row then
-/// column, the reading order the span walker steps in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct GridPos {
-    pub row: usize,
-    pub col: usize,
-}
-
-/// A flow selection: the buffer from `anchor` to `cursor` in reading order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Selection {
-    pub anchor: GridPos,
-    pub cursor: GridPos,
-}
-
-impl Selection {
-    pub fn ordered(&self) -> (GridPos, GridPos) {
-        if self.anchor <= self.cursor {
-            (self.anchor, self.cursor)
-        } else {
-            (self.cursor, self.anchor)
-        }
-    }
-
-    pub fn is_collapsed(&self) -> bool {
-        self.anchor == self.cursor
-    }
-}
-
 /// Open an OSC 8 link through the toolkit's opener. Only plain public `http(s)` targets open: never
 /// `file:`, credentials, or a query that may carry a token.
 pub(crate) fn open_url(url: &str) {
@@ -176,19 +206,6 @@ fn is_reviewable_terminal_text(value: &str) -> bool {
     !value.chars().any(|ch| ch.is_control() && ch != '\t')
 }
 
-/// One OSC metadata field as a single-line label: control characters and over-limit values are
-/// ignored, never decoded lossily.
-pub(crate) fn safe_osc_text(bytes: &[u8], max_bytes: usize) -> Option<String> {
-    if bytes.is_empty() || bytes.len() > max_bytes {
-        return None;
-    }
-    let text = std::str::from_utf8(bytes).ok()?;
-    if text.chars().any(char::is_control) {
-        return None;
-    }
-    Some(text.to_string())
-}
-
 /// Keep the first transport failure: a dead session cannot revive, and the status stops flapping.
 fn set_terminal_disconnected(disconnected: &AtomicBool, message: &Mutex<String>, status: &str) {
     if !disconnected.swap(true, Ordering::AcqRel)
@@ -198,94 +215,20 @@ fn set_terminal_disconnected(disconnected: &AtomicBool, message: &Mutex<String>,
     }
 }
 
+/// Scrollback rows this terminal keeps: fewer in a test, so its checks stay fast.
+fn history_bound() -> usize {
+    if cfg!(test) {
+        tilo_terminal::TEST_HISTORY
+    } else {
+        tilo_terminal::DEFAULT_HISTORY
+    }
+}
+
 /// Wake the host after fresh bytes or a lifecycle change: EOF has no bytes but still changes what
 /// shows.
 pub(crate) fn request_terminal_wake(waker: &Mutex<ui::WakeHandle>) {
     if let Ok(waker) = waker.lock() {
         waker.wake();
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CellColor {
-    Default,
-    Indexed(u8),
-    Rgb(u8, u8, u8),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each is an independent SGR style bit; grouping them would not change what \
-              they mean"
-)]
-pub struct Attr {
-    pub fg: CellColor,
-    pub bg: CellColor,
-    pub bold: bool,
-    pub italic: bool,
-    pub underline: bool,
-    pub reverse: bool,
-    pub dim: bool,
-    /// SGR 9 — crossed-out (strikethrough).
-    pub strike: bool,
-    pub is_wide_cont: bool,
-    /// OSC 8 hyperlink id; `0` is no link, other values index the widget's link registry.
-    pub link_id: u16,
-}
-
-impl Default for Attr {
-    fn default() -> Self {
-        Self {
-            fg: CellColor::Default,
-            bg: CellColor::Default,
-            bold: false,
-            italic: false,
-            underline: false,
-            reverse: false,
-            dim: false,
-            strike: false,
-            is_wide_cont: false,
-            link_id: 0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each is an independent DEC private mode (CSI ? Ps h/l), read separately; \
-              grouping them would not change what they mean"
-)]
-pub struct TermModes {
-    /// `?25` — block cursor drawn when true (DECTCEM).
-    pub cursor_visible: bool,
-    /// `?2004` — wrap pasted text in `ESC[200~`…`ESC[201~`.
-    pub bracketed_paste: bool,
-    /// `?1` — arrow keys send `ESC O A` instead of `ESC [ A` (DECCKM).
-    pub app_cursor_keys: bool,
-    /// `?1000`/`?1002`/`?1003` — some form of mouse reporting requested.
-    pub mouse_report: bool,
-    /// The active xterm mouse tracking mode: 0, 1000 (buttons), 1002 (button-motion) or 1003 (all
-    /// motion).
-    pub mouse_tracking: u16,
-    /// `?1006` — SGR-encoded mouse coordinates requested.
-    pub mouse_sgr: bool,
-    /// `?1004` — report window focus in/out to the foreground application.
-    pub focus_report: bool,
-}
-
-impl Default for TermModes {
-    fn default() -> Self {
-        Self {
-            cursor_visible: true,
-            bracketed_paste: false,
-            app_cursor_keys: false,
-            mouse_report: false,
-            mouse_tracking: 0,
-            mouse_sgr: false,
-            focus_report: false,
-        }
     }
 }
 
@@ -560,7 +503,7 @@ impl TerminalWidget {
             forced_cell: false,
             cell_style: None,
             palette: ui::tokens::TerminalPalette::dark(),
-            emulator: crate::emulator::Emulator::new(width, height),
+            emulator: crate::emulator::Emulator::with_history(width, height, history_bound()),
             mirrored: Vec::new(),
             emulating: false,
             pending_actions: Vec::new(),
@@ -634,7 +577,7 @@ impl TerminalWidget {
         self.submit(crate::resource::Terminal::CLAIM_PANE.with((self.pane_id.clone(), device)));
         self.begin_commands();
         self.emulating = true;
-        self.emulator = crate::emulator::Emulator::new(self.width, self.height);
+        self.emulator = crate::emulator::Emulator::with_history(self.width, self.height, history_bound());
         self.ever_nonblank = false;
         self.title = "Terminal".to_string();
         self.show_screen();
@@ -1805,7 +1748,7 @@ impl TerminalWidget {
             .target
             .as_ref()
             .is_some_and(crate::target::SessionTarget::is_host)
-            && Requester::current() == Requester::Agent
+            && current_requester() == Requester::Agent
             && matches!(
                 effect,
                 E::Send { .. }
@@ -1848,7 +1791,7 @@ impl TerminalWidget {
                     .target
                     .as_ref()
                     .is_some_and(crate::target::SessionTarget::is_host)
-                    && Requester::current() == Requester::Agent)
+                    && current_requester() == Requester::Agent)
                 || !self.focused
                 || self.context_menu.is_open()
                 || self.alt_active
@@ -2134,11 +2077,16 @@ impl TerminalWidget {
                 return;
             }
             Piece::Mark(Mark::Held { agent, refusal }) => {
-                commands.held = Some(Held {
-                    refusal: (**refusal).clone(),
-                    agent: *agent,
-                });
-                self.dirty = true;
+                if let Ok(refusal) = serde_json::from_value::<
+                    ui::tilo_actions::remote::server_account::Refusal,
+                >((**refusal).clone())
+                {
+                    commands.held = Some(Held {
+                        refusal,
+                        agent: *agent,
+                    });
+                    self.dirty = true;
+                }
             }
             Piece::Mark(Mark::Released) => {
                 // An agent's prompt stays for the person to act on.
@@ -2343,7 +2291,10 @@ impl TerminalWidget {
             let finished = crate::resource::FinishedCommand {
                 tool: crate::parse::tool_of(&run.command).to_owned(),
                 undoable: crate::undoability::of(&run.command) == Some(true),
-                items: crate::parse::items(&run.command, &run.output),
+                items: crate::parse::items(&run.command, &run.output)
+                    .into_iter()
+                    .map(crate::resource::CommandItem::from)
+                    .collect(),
                 output,
                 command: run.command,
                 cwd: run.cwd,
@@ -2382,7 +2333,12 @@ impl TerminalWidget {
                 let answer = crate::resource::CommandAnswer {
                     id: recorded.is_ok().then_some(asked.request.clone()),
                     exit: Some(run.exit),
-                    refusal: run.refusal.as_deref().cloned(),
+                    refusal: run.refusal.as_deref().and_then(|refusal| {
+                        serde_json::from_value::<ui::tilo_actions::remote::server_account::Refusal>(
+                            refusal.clone(),
+                        )
+                        .ok()
+                    }),
                 };
                 asked.reply.finish(Ok(ui::tilo_actions::ActionOutput {
                     value: serde_json::to_value(answer).ok(),
@@ -2403,7 +2359,12 @@ impl TerminalWidget {
             .get(&ui::tilo_resource::Id::from_raw(run))
             .ok_or("no such command")?;
         let position = usize::try_from(position).unwrap_or(usize::MAX);
-        match crate::parse::shown(&run.cwd.0, &run.items, position)? {
+        let items: Vec<tilo_terminal::Item> = run
+            .items
+            .iter()
+            .map(|item| tilo_terminal::Item::from(item.clone()))
+            .collect();
+        match crate::parse::shown(&run.cwd.0, &items, position)? {
             crate::parse::Shown::Page(url) => {
                 if !is_public_web_link(&url) {
                     return Err("the link is not a public web page".into());
@@ -2723,7 +2684,11 @@ impl Widget for TerminalWidget {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // Every visual parameter comes from the theme. The grid is document
         // content in the `Code` role; the window ground under it is the
@@ -2796,18 +2761,34 @@ impl Widget for TerminalWidget {
             return;
         }
         self.draw_top_bands(&mut outside, transform, text_renderer, theme);
-        self.draw_grid(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()), outside);
+        self.draw_grid(
+            &mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            outside,
+        );
         self.draw_bell_flash(scene, transform, theme);
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let before = scene.encoding().draw_tags.len();
         if self.context_menu.is_open() {
-            Widget::draw_overlay(&mut self.context_menu, &mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            Widget::draw_overlay(
+                &mut self.context_menu,
+                &mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            );
         }
-        self.draw_environments_panel(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.draw_environments_panel(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         self.view.overlay_drawn = scene.encoding().draw_tags.len() != before;
     }
 
@@ -4873,33 +4854,7 @@ pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
     )
 }
 
-struct NullMaster;
-impl MasterPty for NullMaster {
-    fn get_size(&self) -> Result<PtySize, anyhow::Error> {
-        Ok(PtySize::default())
-    }
-    fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
-        Ok(())
-    }
-    fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
-        Ok(Box::new(std::io::sink()))
-    }
-    fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
-        Ok(Box::new(std::io::empty()))
-    }
-    #[cfg(feature = "desktop")]
-    fn process_group_leader(&self) -> Option<i32> {
-        None
-    }
-    #[cfg(feature = "desktop")]
-    fn as_raw_fd(&self) -> Option<i32> {
-        None
-    }
-    #[cfg(feature = "desktop")]
-    fn tty_name(&self) -> Option<std::path::PathBuf> {
-        None
-    }
-}
+pub(crate) use tilo_terminal::{NullMaster, Session};
 
 pub struct TerminalBackend {
     pub writer: Box<dyn Write + Send>,
@@ -4912,7 +4867,29 @@ pub struct TerminalBackend {
     native_editor: Option<crate::native_editor::Socket>,
     service_lifetime: Option<runtime_portal::pending_connection::SessionLifetime>,
 }
+
 impl TerminalBackend {
+    /// Take a session the engine opened: this view owns what the session handed over.
+    fn from_session(session: Session) -> Self {
+        Self {
+            writer: session
+                .take_writer()
+                .unwrap_or_else(|| Box::new(std::io::sink())),
+            reader: session
+                .take_reader()
+                .unwrap_or_else(|| Box::new(std::io::empty())),
+            master: session
+                .take_master()
+                .unwrap_or_else(|| Box::new(NullMaster)),
+            shell_name: session.shell_name().to_owned(),
+            relay_session: session.relay_session().map(str::to_owned),
+            supervisor_session: session.supervisor_session().map(str::to_owned),
+            commands: session.commands_key().map(str::to_owned),
+            native_editor: session.take_editor(),
+            service_lifetime: session.take_lifetime(),
+        }
+    }
+
     #[cfg(test)]
     #[cfg(feature = "desktop")]
     pub(crate) fn for_test() -> Self {
@@ -4980,118 +4957,25 @@ impl TerminalBackend {
         opening: &crate::sessions::Opening,
     ) -> Result<Self, OpenError> {
         let program = launch_command_from_env();
-        match confinement_route(target) {
-            ConfineRoute::Service => {
-                ush_service_backend(&program, target, requested_by, relay_session, opening)
-            }
-            ConfineRoute::SelfHosted(bin) => {
-                let mut cmd = CommandBuilder::new(&bin);
-                cmd.arg("run");
-                // The runtime's interactive bash marks its runs with this
-                // session's key, as it does for the supervisor's sessions.
-                let key = program.is_empty().then(crate::commands::new_key);
-                if let Some(key) = &key {
-                    cmd.env("TILO_USH_MARKS", key);
-                } else {
-                    cmd.arg("-c");
-                    cmd.arg(exec_script(&program));
-                }
-                let mut backend = Self::with_command(cmd)
-                    .map_err(|error| OpenError::Failed(error.to_string()))?;
-                backend.commands = key;
-                Ok(backend)
-            }
-            ConfineRoute::Host => {
-                if requested_by == Requester::Agent {
-                    return Err(OpenError::Refused(
-                        "agents may not open the device's own shell".into(),
-                    ));
-                }
-                let cmd = if let Some((first, rest)) = program.split_first() {
-                    let mut cmd = CommandBuilder::new(first);
-                    cmd.args(rest);
-                    cmd
-                } else {
-                    // The login shell this account starts, with the process
-                    // environment inherited.
-                    CommandBuilder::new(tilo_process::login_shell::login_shell())
-                };
-                Self::with_command(cmd).map_err(|error| OpenError::Failed(error.to_string()))
-            }
-            ConfineRoute::Unavailable(reason) => Err(OpenError::Unavailable(reason)),
-        }
+        let service = ush_service_socket()?;
+        let options = OpenOptions {
+            program: Some(&program),
+            relay_session,
+            workspace: opening.workspace(),
+            record: opening.record.as_deref(),
+            service: service.as_ref(),
+            waiting: Some(&opening.waiting),
+        };
+        let session =
+            Session::with_options(target, requested_by, &options).map_err(app_open_error)?;
+        Ok(Self::from_session(session))
     }
 
     /// Open a PTY running `command`, with `TERM` forced to `xterm-256color` so programs emit the SGR and
     /// DEC sequences the emulator reads.
-    pub fn with_command(mut cmd: CommandBuilder) -> Result<Self, Box<dyn std::error::Error>> {
-        cmd.env("TERM", "xterm-256color");
-        let shell_name = cmd
-            .get_argv()
-            .first()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let pty_system = native_pty_system();
-        let pair = pty_system.openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
-        let reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
-        let child = pair.slave.spawn_command(cmd)?;
-        drop(pair.slave);
-        drop(child);
-        Ok(Self {
-            writer,
-            reader,
-            master: pair.master,
-            shell_name,
-            relay_session: None,
-            supervisor_session: None,
-            commands: None,
-            native_editor: None,
-            service_lifetime: None,
-        })
+    pub fn with_command(cmd: CommandBuilder) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self::from_session(Session::with_command(cmd)?))
     }
-}
-
-/// The program the desktop asked this terminal to run instead of a login shell, as
-/// `{"terminal_command": [argv]}` in the launcher's context channel.
-pub fn launch_command_from_env() -> Vec<String> {
-    std::env::var("TILO_TOOL_CONTEXT")
-        .ok()
-        .map(|context| launch_command_from_context(&context))
-        .unwrap_or_default()
-}
-
-pub fn launch_command_from_context(context: &str) -> Vec<String> {
-    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(context)
-    else {
-        return Vec::new();
-    };
-    let Some(serde_json::Value::Array(argv)) = map.get("terminal_command") else {
-        return Vec::new();
-    };
-    let argv: Option<Vec<String>> = argv
-        .iter()
-        .map(|arg| {
-            arg.as_str()
-                .filter(|arg| !arg.contains('\0'))
-                .map(str::to_string)
-        })
-        .collect();
-    argv.filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
-        .unwrap_or_default()
-}
-
-pub fn exec_script(argv: &[String]) -> String {
-    let words: Vec<String> = argv
-        .iter()
-        .map(|word| format!("'{}'", word.replace('\'', "'\\''")))
-        .collect();
-    format!("exec {}", words.join(" "))
 }
 
 /// The environment variable the launcher sets when it opened the `ush` service socket for this app.
@@ -5100,200 +4984,54 @@ pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 static USH_SERVICE: runtime_portal::service_socket::InheritedControlSocket =
     runtime_portal::service_socket::InheritedControlSocket::new("ush");
 
-/// Who caused a session to open. The device's own shell is never opened for an agent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Requester {
-    #[default]
-    Person,
-    Agent,
-}
-
-impl Requester {
-    /// Who is behind the current invocation: only the person at this screen acts without one.
-    pub fn current() -> Self {
-        if ui::invocation_scope::current_invoker().is_some() {
-            Self::Agent
-        } else {
-            Self::Person
-        }
-    }
-
-    fn wire(self) -> &'static str {
-        match self {
-            Self::Person => "person",
-            Self::Agent => "agent",
-        }
-    }
-}
-
-/// Why a session did not open.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OpenError {
-    NeedsAllow(String),
-    Refused(String),
-    Unavailable(String),
-    /// No environment can be built on this device: no `env-runtime` image is
-    /// installed. The device's own shell may still be opened instead.
-    NoRuntime(String),
-    Failed(String),
-}
-
-impl OpenError {
-    /// Whether the supervisor answered and refused, leaving the connection usable.
-    pub fn is_refusal(&self) -> bool {
-        matches!(
-            self,
-            Self::NeedsAllow(_) | Self::Refused(_) | Self::NoRuntime(_)
-        )
-    }
-}
-
-impl std::fmt::Display for OpenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NeedsAllow(reason)
-            | Self::Refused(reason)
-            | Self::Unavailable(reason)
-            | Self::NoRuntime(reason)
-            | Self::Failed(reason) => f.write_str(reason),
-        }
-    }
-}
-
-impl std::error::Error for OpenError {}
-
-/// Which way the terminal reaches a target, decided by a capability probe.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ConfineRoute {
-    /// The supervisor is reachable: the production path for every target, and a refusal is final.
-    Service,
-    /// This unconfined host can build a guest itself and has the runtime at the given path.
-    SelfHosted(std::path::PathBuf),
-    Host,
-    Unavailable(String),
-}
-
-/// Choose how to reach `target` from a capability probe, security first.
-pub fn confinement_route(target: &crate::target::SessionTarget) -> ConfineRoute {
-    decide_route(
-        target,
-        USH_SERVICE.was_taken() || ush_service_fd().is_some(),
-        can_build_namespace(),
-        ush_binary(),
-    )
-}
-
-pub fn environments_available() -> bool {
-    !matches!(
-        confinement_route(&crate::target::SessionTarget::default_environment()),
-        ConfineRoute::Unavailable(_)
-    )
-}
-
-/// [`confinement_route`] with its probes injected, so the trust boundary is testable: the supervisor
-/// wins unconditionally, the device's own shell is reached only by naming it, and an environment that
-/// cannot run is unavailable rather than the host shell.
-pub fn decide_route(
-    target: &crate::target::SessionTarget,
-    service_available: bool,
-    can_self_host: bool,
-    runtime: Option<std::path::PathBuf>,
-) -> ConfineRoute {
-    if let SessionTarget::LinuxVm { .. } = target {
-        return ConfineRoute::Unavailable("The Linux VM service is not running".into());
-    }
-    if service_available {
-        return ConfineRoute::Service;
-    }
-    if target.is_host() {
-        return ConfineRoute::Host;
-    }
-    if can_self_host && let Some(bin) = runtime {
-        return ConfineRoute::SelfHosted(bin);
-    }
-    ConfineRoute::Unavailable(
-        "Environments need Tilo's shell runtime, which is not available here".into(),
-    )
-}
-
-/// The supervisor's descriptor, if the launcher opened one and it is still live: a spoofed number
-/// pointing at nothing does not select the service path.
-#[cfg(feature = "desktop")]
-pub(crate) fn ush_service_fd() -> Option<i32> {
-    let raw: i32 = std::env::var(USH_SERVICE_FD_ENV).ok()?.parse().ok()?;
-    tilo_process::descriptor::open(raw)
-}
-
-/// Whether this process could build the user and mount namespace a self-hosted guest needs: false
-/// under a seccomp filter, without unprivileged user namespaces, or without `bwrap`.
-#[cfg(feature = "desktop")]
-fn can_build_namespace() -> bool {
-    !tilo_process::confinement::seccomp_filtered()
-        && tilo_process::confinement::unprivileged_userns_enabled()
-        && bwrap_present()
-}
-
-#[cfg(feature = "desktop")]
-fn bwrap_present() -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("bwrap").exists()))
-}
-
-/// Where the runtime binary is: `$TILO_USH_BIN`, then the installed location, then `PATH`.
-#[cfg(feature = "desktop")]
-pub fn ush_binary() -> Option<std::path::PathBuf> {
-    if let Some(explicit) = std::env::var_os("TILO_USH_BIN") {
-        let path = std::path::PathBuf::from(explicit);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    let installed = std::path::PathBuf::from("/usr/libexec/tilo-ush");
-    if installed.exists() {
-        return Some(installed);
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("tilo-ush"))
-        .find(|candidate| candidate.exists())
-}
-
-/// Ask the supervisor for a session on `target` and wrap the pty it hands back: a terminal crosses
+/// Ask the supervisor for a session on `target` and take the pty it hands back: a terminal crosses
 /// the sandbox boundary, not a namespace.
 #[cfg(feature = "desktop")]
-fn ush_service_backend(
+pub(crate) fn ush_backend_on(
+    stream: &tilo_process::local_socket::ServiceSocket,
     program: &[String],
     target: &crate::target::SessionTarget,
     requested_by: Requester,
     relay_session: Option<&str>,
     opening: &crate::sessions::Opening,
 ) -> Result<TerminalBackend, OpenError> {
+    let options = OpenOptions {
+        program: Some(program),
+        relay_session,
+        workspace: opening.workspace(),
+        record: opening.record.as_deref(),
+        service: Some(stream),
+        waiting: Some(&opening.waiting),
+    };
+    tilo_terminal::open_on_socket(stream, target, requested_by, &options)
+        .map_err(app_open_error)
+        .map(TerminalBackend::from_session)
+}
+
+/// The launcher's control connection, cloned for the session this process opens. A refusal here
+/// is final: a service that cannot hand over a connection is not silently replaced by a shell.
+#[cfg(feature = "desktop")]
+fn ush_service_socket() -> Result<Option<tilo_process::local_socket::ServiceSocket>, OpenError> {
     use runtime_portal::service_socket::ServiceSocketError;
 
-    // SAFETY: this instance alone owns the inherited fd. ush_backend_on
-    // negotiates protocol two and returns only its independent session lease.
-    unsafe {
+    // SAFETY: this instance alone owns the inherited fd; the clone is an independent connection.
+    let cloned = unsafe {
         USH_SERVICE.with_control(|stream| {
-            let socket = stream
+            stream
                 .try_clone()
                 .map(tilo_process::local_socket::ServiceSocket::from)
-                .map_err(|error| OpenError::Failed(error.to_string()))?;
-            ush_backend_on(
-                &socket,
-                program,
-                target,
-                requested_by,
-                relay_session,
-                opening,
-            )
         })
-    }
-    .map_err(|error| match error {
-        ServiceSocketError::InUse => {
-            OpenError::Unavailable(t("terminal-service-control-unavailable"))
+    };
+    match cloned {
+        Ok(Ok(socket)) => Ok(Some(socket)),
+        Ok(Err(error)) => Err(OpenError::Failed(error.to_string())),
+        // The launcher opened no control connection: this session takes another route.
+        Err(ServiceSocketError::Missing) => Ok(None),
+        Err(ServiceSocketError::InUse) => Err(OpenError::ServiceBusy),
+        Err(ServiceSocketError::Poisoned) => {
+            Err(OpenError::Failed("the terminal service connection is poisoned".into()))
         }
-        other => OpenError::Failed(other.to_string()),
-    })?
+    }
 }
 
 /// One request about the environments themselves to the supervisor, over the launcher's control
@@ -5337,230 +5075,6 @@ pub(crate) fn ush_service_ask(
         ) => "environments are managed through Tilo's shell runtime".to_owned(),
         other => other.to_string(),
     })?
-}
-
-/// The `open-session` line for the supervisor; `workspace` is left out when the terminal does not
-/// know it.
-pub(crate) fn ush_request(
-    program: &[String],
-    target: &crate::target::SessionTarget,
-    requested_by: Requester,
-    relay_session: Option<&str>,
-    opening: &crate::sessions::Opening,
-    commands: Option<&str>,
-    (cols, rows): (u16, u16),
-) -> Result<Vec<u8>, OpenError> {
-    let wire_target = target.to_supervisor().ok_or_else(|| {
-        OpenError::Unavailable("This device's shell service does not serve that target".into())
-    })?;
-    let mut request = serde_json::json!({
-        "op": "open-session",
-        "cols": cols,
-        "rows": rows,
-        "term": "xterm-256color",
-        "target": wire_target,
-        "requested_by": requested_by.wire(),
-    });
-    if let Some(fields) = request.as_object_mut() {
-        if tilo_process::editor::supported() && program.is_empty() && !target.is_host() {
-            fields.insert(
-                "editor_protocol".into(),
-                serde_json::json!(runtime_portal::editor::VERSION),
-            );
-        }
-        if !program.is_empty() {
-            fields.insert("command".to_string(), serde_json::json!(program));
-        }
-        if let Some(session) = relay_session {
-            fields.insert("host_session".to_string(), serde_json::json!(session));
-        }
-        // The lease says how the session ended: only a shell that exited
-        // closes the window; a lost connection to a remote shell reconnects,
-        // and an environment that could not be set up says so on the tab.
-        fields.insert("end_report".to_string(), serde_json::json!(true));
-        if let Some(key) = commands {
-            fields.insert("commands".to_string(), serde_json::json!(key));
-        }
-        // In a workspace a server hosts, the session whose shell runs there.
-        if let Some(record) = &opening.record {
-            fields.insert("record".to_string(), serde_json::json!(record));
-        }
-    }
-    crate::sessions::with_workspace(&mut request, opening.workspace());
-    let mut request =
-        serde_json::to_vec(&request).map_err(|error| OpenError::Failed(error.to_string()))?;
-    request.push(b'\n');
-    Ok(request)
-}
-
-/// The supervisor's answer to `open-session`, field for field (`ServeResponse::Session` in
-/// `crates/vm/ush/src/supervisor.rs`). Unknown fields are refused, so every field the supervisor
-/// sends is named here; `a_session_reply_keeps_its_wire_form` pins the form.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UshSessionReply {
-    result: String,
-    session: String,
-    environment: String,
-    /// The host's session, when the shell runs where a server hosts the workspace.
-    #[serde(default)]
-    host_session: Option<String>,
-    /// The session's shell marks its runs with the key the request named.
-    #[serde(default)]
-    commands: bool,
-    #[serde(default)]
-    editor_protocol: Option<u8>,
-    /// The control protocol that granted this session's private lease.
-    #[serde(default)]
-    protocol: u16,
-}
-
-impl UshSessionReply {
-    /// Whether the session declaration is well formed and matches what was asked.
-    fn is_valid(
-        &self,
-        descriptor_count: usize,
-        program: &[String],
-        target: &crate::target::SessionTarget,
-    ) -> bool {
-        let hex_key = |key: &str| key.len() == 32 && key.bytes().all(|b| b.is_ascii_hexdigit());
-        let descriptors = if self.editor_protocol.is_some() { 3 } else { 2 };
-        self.result == "session"
-            && hex_key(&self.session)
-            && !self.environment.is_empty()
-            && self.environment.len() <= 1024
-            && self.host_session.as_deref().is_none_or(hex_key)
-            && self
-                .editor_protocol
-                .is_none_or(|version| version == runtime_portal::editor::VERSION)
-            && (self.editor_protocol.is_none() || (program.is_empty() && !target.is_host()))
-            && self.protocol == 2
-            && descriptor_count == descriptors
-    }
-}
-
-#[cfg(feature = "desktop")]
-pub(crate) fn ush_backend_on(
-    stream: &tilo_process::local_socket::ServiceSocket,
-    program: &[String],
-    target: &crate::target::SessionTarget,
-    requested_by: Requester,
-    relay_session: Option<&str>,
-    opening: &crate::sessions::Opening,
-) -> Result<TerminalBackend, OpenError> {
-    // How long the answer may take. Before it answers, the supervisor checks
-    // that the environment can be built, which on a device's first open reads
-    // the system store's images: ~400 ms on the CI VM, past the 250 ms a
-    // hosted connection is given to connect. Never shorten a longer
-    // bound, nor add one where the connection has none.
-    const USH_OPEN_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-    let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
-    {
-        let mut writer = stream;
-        writer
-            .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
-            .map_err(|e| failed(&e))?;
-        writer.flush().map_err(|e| failed(&e))?;
-    }
-    let (hello, rights) =
-        runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| failed(&e))?;
-    let ready = serde_json::from_slice::<serde_json::Value>(&hello).ok();
-    if !rights.is_empty()
-        || ready
-            .as_ref()
-            .is_none_or(|value| value["result"] != "ready" || value["protocol"] != 2)
-    {
-        return Err(OpenError::Unavailable(t(
-            "terminal-service-protocol-unavailable",
-        )));
-    }
-    let key = crate::commands::new_key();
-    let request = ush_request(
-        program,
-        target,
-        requested_by,
-        relay_session,
-        opening,
-        Some(&key),
-        (80, 24),
-    )?;
-    {
-        let mut w = stream;
-        w.write_all(&request).map_err(|e| failed(&e))?;
-        w.flush().map_err(|e| failed(&e))?;
-    }
-    if stream
-        .read_timeout()
-        .map_err(|e| failed(&e))?
-        .is_some_and(|bound| bound < USH_OPEN_REPLY_TIMEOUT)
-    {
-        stream
-            .set_read_timeout(Some(USH_OPEN_REPLY_TIMEOUT))
-            .map_err(|e| failed(&e))?;
-    }
-
-    let (mut payload, mut descriptors) =
-        runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| failed(&e))?;
-    // A workspace a server hosts: its host is asked for the session's shell, which waits as
-    // long as the person takes to allow it on another device. The answer follows.
-    if let Some(rest) = after_waiting(&payload) {
-        opening
-            .waiting
-            .store(true, std::sync::atomic::Ordering::Release);
-        stream.set_read_timeout(None).map_err(|e| failed(&e))?;
-        if rest.is_empty() {
-            (payload, descriptors) =
-                runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| failed(&e))?;
-        } else {
-            // The answer arrived with it, in the same read.
-            payload = rest.to_vec();
-        }
-    }
-    if descriptors.is_empty() {
-        return Err(refusal(&payload));
-    }
-    let response: UshSessionReply = serde_json::from_slice(&payload)
-        .map_err(|_| OpenError::Failed("Malformed ush session descriptor declaration".into()))?;
-    if !response.is_valid(descriptors.len(), program, target) {
-        return Err(OpenError::Failed(t("terminal-service-invalid-session")));
-    }
-    let native_editor = if response.editor_protocol.is_some() {
-        let fd = descriptors
-            .pop()
-            .ok_or_else(|| OpenError::Failed("Missing editor descriptor".into()))?;
-        Some(crate::native_editor::Socket::adopt(fd).map_err(|e| failed(&e))?)
-    } else {
-        None
-    };
-    let lifetime = descriptors
-        .pop()
-        .ok_or_else(|| OpenError::Failed(t("terminal-service-missing-lease")))?;
-    let fd = descriptors
-        .pop()
-        .ok_or_else(|| OpenError::Failed(t("terminal-service-missing-terminal")))?;
-
-    // Every descriptor arrived over `SCM_RIGHTS` and this process now owns it.
-    // The supervisor declares PTY first, then the private session lease, and
-    // only after negotiation the editor capability last.
-    let master = std::fs::File::from(fd);
-    let lifetime = runtime_portal::pending_connection::SessionLifetime::adopt(lifetime)
-        .map_err(|_| OpenError::Failed(t("terminal-service-invalid-lease")))?;
-    tilo_process::editor::validate_master(&master).map_err(|e| failed(&e))?;
-    let reader = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Read + Send>;
-    let writer = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Write + Send>;
-    Ok(TerminalBackend {
-        writer,
-        reader,
-        master: Box::new(FdMaster {
-            master: tilo_process::pty::Master::new(master),
-        }),
-        shell_name: if target.is_host() { "host" } else { "ush" }.into(),
-        relay_session: response.host_session,
-        supervisor_session: Some(response.session),
-        commands: response.commands.then_some(key),
-        native_editor,
-        service_lifetime: Some(lifetime),
-    })
 }
 
 struct TopBanner {
@@ -5633,88 +5147,6 @@ fn fail_run(asked: crate::commands::Asked, reason: &str) {
         value: serde_json::to_value(settled).ok(),
         resources: Vec::new(),
     }));
-}
-
-/// What follows the supervisor's line saying the workspace's host is asked for the session, when
-/// `payload` starts with it: empty when nothing arrived after it yet.
-pub(crate) fn after_waiting(payload: &[u8]) -> Option<&[u8]> {
-    let (line, rest) = match payload.iter().position(|byte| *byte == b'\n') {
-        Some(end) => (payload.get(..end)?, payload.get(end.saturating_add(1)..)?),
-        None => (payload, &[][..]),
-    };
-    serde_json::from_slice::<serde_json::Value>(line)
-        .is_ok_and(|reply| {
-            reply.get("result").and_then(serde_json::Value::as_str) == Some("waiting")
-        })
-        .then_some(rest)
-}
-
-pub(crate) fn refusal(payload: &[u8]) -> OpenError {
-    #[derive(serde::Deserialize)]
-    struct Reply {
-        result: String,
-        #[serde(default)]
-        reason: String,
-    }
-    match serde_json::from_slice::<Reply>(payload) {
-        Ok(reply) if reply.result == "host-not-allowed" => OpenError::NeedsAllow(reply.reason),
-        Ok(reply) if reply.result == "no-runtime" => OpenError::NoRuntime(reply.reason),
-        Ok(reply) if !reply.reason.is_empty() => OpenError::Refused(reply.reason),
-        _ => OpenError::Refused(format!(
-            "the ush service refused this session: {}",
-            String::from_utf8_lossy(payload).trim()
-        )),
-    }
-}
-
-/// A [`MasterPty`] over a descriptor someone else opened. Resizing is a real `TIOCSWINSZ`: the grid
-/// reflows on every window change.
-#[cfg(feature = "desktop")]
-struct FdMaster {
-    master: tilo_process::pty::Master,
-}
-
-#[cfg(feature = "desktop")]
-impl MasterPty for FdMaster {
-    fn get_size(&self) -> Result<PtySize, anyhow::Error> {
-        let size = self.master.get_size()?;
-        Ok(PtySize {
-            rows: size.rows,
-            cols: size.cols,
-            pixel_width: size.pixel_width,
-            pixel_height: size.pixel_height,
-        })
-    }
-
-    fn resize(&self, size: PtySize) -> Result<(), anyhow::Error> {
-        self.master.resize(tilo_process::pty::WinSize {
-            rows: size.rows,
-            cols: size.cols,
-            pixel_width: size.pixel_width,
-            pixel_height: size.pixel_height,
-        })?;
-        Ok(())
-    }
-
-    fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
-        Ok(Box::new(self.master.try_clone()?))
-    }
-
-    fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
-        Ok(Box::new(self.master.try_clone()?))
-    }
-
-    fn process_group_leader(&self) -> Option<i32> {
-        self.master.process_group_leader()
-    }
-
-    fn as_raw_fd(&self) -> Option<i32> {
-        Some(self.master.raw_fd())
-    }
-
-    fn tty_name(&self) -> Option<std::path::PathBuf> {
-        None
-    }
 }
 
 impl TerminalWidget {

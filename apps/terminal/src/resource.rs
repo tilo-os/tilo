@@ -124,6 +124,62 @@ pub struct CommandItem {
     pub code: Option<String>,
 }
 
+impl From<tilo_terminal::ItemKind> for ItemKind {
+    fn from(kind: tilo_terminal::ItemKind) -> Self {
+        match kind {
+            tilo_terminal::ItemKind::Error => Self::Error,
+            tilo_terminal::ItemKind::Warning => Self::Warning,
+            tilo_terminal::ItemKind::Location => Self::Location,
+            tilo_terminal::ItemKind::Url => Self::Url,
+            tilo_terminal::ItemKind::TestPassed => Self::TestPassed,
+            tilo_terminal::ItemKind::TestFailed => Self::TestFailed,
+            tilo_terminal::ItemKind::TestIgnored => Self::TestIgnored,
+            tilo_terminal::ItemKind::Change => Self::Change,
+        }
+    }
+}
+
+impl From<ItemKind> for tilo_terminal::ItemKind {
+    fn from(kind: ItemKind) -> Self {
+        match kind {
+            ItemKind::Error => Self::Error,
+            ItemKind::Warning => Self::Warning,
+            ItemKind::Location => Self::Location,
+            ItemKind::Url => Self::Url,
+            ItemKind::TestPassed => Self::TestPassed,
+            ItemKind::TestFailed => Self::TestFailed,
+            ItemKind::TestIgnored => Self::TestIgnored,
+            ItemKind::Change => Self::Change,
+        }
+    }
+}
+
+impl From<tilo_terminal::Item> for CommandItem {
+    fn from(item: tilo_terminal::Item) -> Self {
+        Self {
+            kind: ItemKind::from(item.kind),
+            text: item.text,
+            path: item.path,
+            line: item.line,
+            column: item.column,
+            code: item.code,
+        }
+    }
+}
+
+impl From<CommandItem> for tilo_terminal::Item {
+    fn from(item: CommandItem) -> Self {
+        Self {
+            kind: tilo_terminal::ItemKind::from(item.kind),
+            text: item.text,
+            path: item.path,
+            line: item.line,
+            column: item.column,
+            code: item.code,
+        }
+    }
+}
+
 /// One command the session ran (docs/app-model/ush.md, "Commands").
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Command {

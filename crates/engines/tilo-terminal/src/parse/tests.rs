@@ -10,7 +10,7 @@ const NEXTEST: &str = include_str!("fixtures/nextest.txt");
 const GIT_STATUS: &str = include_str!("fixtures/git-status.txt");
 const GIT_STATUS_SHORT: &str = include_str!("fixtures/git-status-short.txt");
 
-fn kinds(items: &[CommandItem], kind: ItemKind) -> Vec<&CommandItem> {
+fn kinds(items: &[Item], kind: ItemKind) -> Vec<&Item> {
     items.iter().filter(|item| item.kind == kind).collect()
 }
 

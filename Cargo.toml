@@ -263,6 +263,9 @@ members = [
     # Device services
     "crates/services/vision",
 
+    # Terminal
+    "crates/engines/tilo-terminal",
+
     # Media
     "crates/engines/keyboard",
     "crates/engines/canvas-engine",
