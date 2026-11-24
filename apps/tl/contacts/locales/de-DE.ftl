@@ -72,6 +72,9 @@ d-ur3qshor = Favorit
 d-kvhikhu4 = Foto
     .doc = Ihr Bild, nach dem Ort seiner Bytes: eine `data:`-Adresse, die eine vCard im PHOTO trug, oder eine Inhaltsadresse, die jemand hier hinterlegt hat.
 
+d-szrijd7k = Person
+    .doc = Die id der Person, die das Verzeichnis des Arbeitsbereichs für diese Karte hält, sobald sie mit den Apps geteilt ist; leer bis dahin und nachdem sie nicht mehr geteilt wird.
+
 d-w5adcbsy-filter-favorites = Favoriten
 
 d-w5adcbsy-filter-groups = Gruppen
@@ -185,10 +188,14 @@ d-vi6ajqma = Neue Gruppe
 d-vi6ajqma-name = Name
 
 d-ivtvy7sy = Löschen
-    .doc = Löscht einen Kontakt aus dem Buch.
+    .doc = Löscht einen Kontakt aus dem Buch und mit ihm die Person, die die Apps des Arbeitsbereichs von ihm kennen, wo das Fenster das Verzeichnis übergibt: womit Mail, Kalender und Nachrichten ihn erreichen, geht mit.
     .did = hat einen Kontakt gelöscht
 
 d-ivtvy7sy-c = C
+
+d-ivtvy7sy-directory = Verzeichnis
+
+d-76ulubho-directory = Verzeichnis
 
 d-76ulubho = Kontakte zusammenführen
     .doc = Führt die Karte, die geht, in die, die bleibt: jede Nummer, jedes Postfach, jede Adresse und jede Gruppe beider sind die Karte, die bleibt, die Felder aus `take` kommen von der Karte, die geht, und die Karte, die geht, wird gelöscht.
@@ -284,11 +291,21 @@ d-nhasu5my-person = Person
 
 d-nhasu5my-c = C
 
+d-4oatdkw2 = Diese Karte teilen
+    .doc = Teilt eine Karte, die die Apps des Arbeitsbereichs noch nicht kennen: eine eigene Person wird für sie angelegt, damit Mail, Kalender und Nachrichten sie nennen und über ihre Nummern und Postfächer finden können.
+    .did = hat eine Karte geteilt
+
+d-4oatdkw2-d = T
+
+d-4oatdkw2-c = C
+
 d-kqf6yzpo = Diese Karte nicht mehr teilen
-    .doc = Nimmt den Kontakt aus dem Verzeichnis und lässt seine Karte im Buch: was die Apps von ihm lesen, nennt ihn nicht mehr.
+    .doc = Nimmt den Kontakt aus dem Verzeichnis und lässt seine Karte im Buch: was die Apps von ihm lesen, nennt ihn nicht mehr, und die Karte ist keine Person des Verzeichnisses mehr, bis sie erneut geteilt wird.
     .did = hat eine Karte nicht mehr geteilt
 
 d-kqf6yzpo-d = V
+
+d-kqf6yzpo-c = C
 
 d-kqf6yzpo-person = Person
 
@@ -333,6 +350,8 @@ d-nhhj3wnt = Kontaktseite
     .w-possibly-the-same-person = Möglicherweise dieselbe Person
     .w-notes = Notizen
     .w-anything-worth-remembering-about-them = Alles, was über sie festzuhalten lohnt
+    .w-export-this-contact = Diesen Kontakt exportieren
+    .w-delete-this-contact = Diesen Kontakt löschen
 
 d-6ltzv265 = Telefonnummern
     .w-no-numbers-yet = Noch keine Nummern.

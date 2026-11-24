@@ -75,6 +75,9 @@ d-ur3qshor = Favorite
 d-kvhikhu4 = Photo
     .doc = Their picture, by where its bytes are: a `data:` address a vCard's PHOTO carried, or a content address someone put here.
 
+d-szrijd7k = Person
+    .doc = The id of the person the workspace's directory holds for this card, once it is shared with the apps; empty until then, or after it stops being shared.
+
 d-w5adcbsy-filter-favorites = Favorites
 
 d-w5adcbsy-filter-groups = Groups
@@ -195,10 +198,12 @@ d-vi6ajqma = New group
 d-vi6ajqma-name = Name
 
 d-ivtvy7sy = Delete
-    .doc = Deletes a contact from the book.
+    .doc = Deletes a contact from the book, and with it the person the workspace's apps know of it where the window hands the directory: what Mail, Calendar and Messages reach it by goes too.
     .did = deleted a contact
 
 d-ivtvy7sy-c = C
+
+d-ivtvy7sy-directory = Directory
 
 d-76ulubho = Merge contacts
     .doc = Merges the card that goes into the one that stays: every number, mailbox, address and group of both is the card that stays, the fields `take` names come from the card that goes, and the card that goes is deleted.
@@ -210,6 +215,8 @@ d-76ulubho-keep = Keep
 d-76ulubho-goes = Goes
 
 d-76ulubho-take = Take
+
+d-76ulubho-directory = Directory
 
 d-4jncxnhw = Export as vCard
     .doc = A contact as a file: their card, named for them.
@@ -294,13 +301,23 @@ d-nhasu5my-person = Person
 
 d-nhasu5my-c = C
 
+d-4oatdkw2 = Share this card
+    .doc = Shares a card the workspace's apps do not know yet: a person of its own is made for it, so Mail, Calendar and Messages can name it and find it by its numbers and mailboxes.
+    .did = shared a card
+
+d-4oatdkw2-d = D
+
+d-4oatdkw2-c = C
+
 d-kqf6yzpo = Stop sharing this card
-    .doc = Takes the contact out of the directory, leaving its card in the book: what the apps read of it stops naming it.
+    .doc = Takes the contact out of the directory, leaving its card in the book: what the apps read of it stops naming it, and the card is no person of the directory's until it is shared again.
     .did = stopped sharing a card
 
 d-kqf6yzpo-d = D
 
 d-kqf6yzpo-person = Person
+
+d-kqf6yzpo-c = C
 
 d-zfqz2htt = Named or new~present
 
@@ -345,6 +362,8 @@ d-nhhj3wnt = Contact page
     .w-possibly-the-same-person = Possibly the same person
     .w-notes = Notes
     .w-anything-worth-remembering-about-them = Anything worth remembering about them
+    .w-export-this-contact = Export this contact
+    .w-delete-this-contact = Delete this contact
 
 d-6ltzv265 = Phones
     .w-no-numbers-yet = No numbers yet.

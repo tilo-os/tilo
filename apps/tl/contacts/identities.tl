@@ -46,7 +46,7 @@ view associations(c: Contact) {
                     on press: share(d, person, c)
                 }
                 ui.Button("Stop sharing this card", icon: .trash, role: .plain) {
-                    on press: unshare(d, person)
+                    on press: unshare(d, person, c)
                 }
             }
         } else {
@@ -55,6 +55,9 @@ view associations(c: Contact) {
                 role: .caption,
                 secondary: true,
             )
+            ui.Button("Share this card with the apps", icon: .refresh) {
+                on press: share_card(d, c)
+            }
         }
     }
 }
@@ -163,9 +166,15 @@ view consent() {
     )
 }
 
-/// The directory's entry for the person this card is, by the numbers and mailboxes the card
-/// holds: the person the workspace's apps already know, or none until this card is shared.
+/// The directory's entry for the person this card is: the person the card was shared as, by the id
+/// it keeps, or the person the workspace's apps already know by the numbers and mailboxes the card
+/// holds. A card shared as none is none until it is shared.
 fn for_card(d: contacts.Identities, c: Contact) -> Option<contacts.Person> {
+    if c.person != "" {
+        if let held = d.people.find(p -> p.id() == c.person and not p.removed) {
+            return .some(held)
+        }
+    }
     d.people.find(
         p -> not p.removed
             and (p.phones.any(phone -> c.phones.any(mine -> same_number(mine.value, phone)))
@@ -239,7 +248,8 @@ destructive action forget(
 }
 
 /// Shares this card with the workspace's apps, under the person it is: the name, the numbers and
-/// the mailboxes another app reads of a contact before it writes to them.
+/// the mailboxes another app reads of a contact before it writes to them. The card keeps that
+/// person's id, so it stops being shared, or is shared again, as the same person.
 action share(d: contacts.Identities, person: contacts.Person, c: Contact) (
     icon: .refresh,
     label: "Share this card",
@@ -248,16 +258,35 @@ action share(d: contacts.Identities, person: contacts.Person, c: Contact) (
     contacts.project_contact(d, person.id, c.name)
     contacts.project_phones(d, person.id, c.phones.map(p -> p.value))
     contacts.project_emails(d, person.id, c.emails.map(e -> e.value))
+    c.person = person.id
+}
+
+/// Shares a card the workspace's apps do not know yet: a person of its own is made for it, so Mail,
+/// Calendar and Messages can name it and find it by its numbers and mailboxes.
+action share_card(d: contacts.Identities, c: Contact) uses random (
+    icon: .refresh,
+    label: "Share this card",
+    did: "shared a card",
+) {
+    if c.person == "" {
+        c.person = random.id()
+    }
+    contacts.project_contact(d, c.person, c.name)
+    contacts.project_phones(d, c.person, c.phones.map(p -> p.value))
+    contacts.project_emails(d, c.person, c.emails.map(e -> e.value))
 }
 
 /// Takes the contact out of the directory, leaving its card in the book: what the apps read of it
-/// stops naming it.
-destructive action unshare(d: contacts.Identities, person: contacts.Person) (
+/// stops naming it, and the card is no person of the directory's until it is shared again.
+destructive action unshare(d: contacts.Identities, person: contacts.Person, c: Contact) (
     icon: .trash,
     label: "Stop sharing this card",
     did: "stopped sharing a card",
 ) {
     contacts.remove_contact(d, person.id)
+    if c.person == person.id {
+        c.person = ""
+    }
 }
 
 /// The account a review names: the person, the service and the account together, so reviewing the

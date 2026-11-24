@@ -48,6 +48,9 @@ type Contact (untitled: "No name yet") {
     /// Their picture, by where its bytes are: a `data:` address a vCard's PHOTO carried, or a
     /// content address someone put here. Empty for none; the initials show instead.
     photo: Text = ""
+    /// The id of the person the workspace's directory holds for this card, once it is shared
+    /// with the apps; empty until then, or after it stops being shared.
+    person: Text = ""
 
     search {
         filter "Favorites" = favorite (icon: .star)
@@ -211,12 +214,16 @@ action new_group(book: Book, name: Text) -> Group (icon: .plus, label: "New grou
     book.groups.insert(Group(name: trimmed))
 }
 
-/// Deletes a contact from the book.
-destructive action delete(book: Book, c: Contact) (
+/// Deletes a contact from the book, and with it the person the workspace's apps know of it where
+/// the window hands the directory: what Mail, Calendar and Messages reach it by goes too.
+destructive action delete(book: Book, c: Contact, directory: Option<contacts.Identities> = .none) (
     icon: .trash,
     key: "Delete",
     did: "deleted a contact",
 ) {
+    if let d = directory {
+        if c.person != "" { contacts.remove_contact(d, c.person) }
+    }
     book.contacts.remove(c)
 }
 
@@ -228,6 +235,7 @@ destructive action merge_into(
     keep: Contact,
     goes: Contact,
     take: List<MergeField> = [],
+    directory: Option<contacts.Identities> = .none,
 ) (icon: .layers, label: "Merge contacts", did: "merged a duplicate") {
     require keep != goes "A contact cannot be merged into itself"
     if take.any(f -> f == .name) and not goes.name.trim().is_empty() {
@@ -273,6 +281,16 @@ destructive action merge_into(
     }
     for g in goes.groups {
         group(book, keep, g)
+    }
+    // One person stands in the directory where the cards shared one: the person of the card that
+    // goes is tombstoned, and a kept card the apps know is projected again with what it now holds.
+    if let d = directory {
+        if goes.person != "" { contacts.remove_contact(d, goes.person) }
+        if keep.person != "" {
+            contacts.project_contact(d, keep.person, keep.name)
+            contacts.project_phones(d, keep.person, keep.phones.map(p -> p.value))
+            contacts.project_emails(d, keep.person, keep.emails.map(e -> e.value))
+        }
     }
     book.contacts.remove(goes)
 }
@@ -858,6 +876,14 @@ view contact_page(c: Contact) {
                     )
                 }
                 std.after_body {
+                    row(gap: .related, align: .center, wrap: true) {
+                        ui.Button("Export this contact", icon: .download) {
+                            on press: export_contact(c)
+                        }
+                        ui.Button("Delete this contact", icon: .trash, role: .destructive) {
+                            on press: delete(book, c, contacts.directory)
+                        }
+                    }
                     std.linked(c, compact: true)
                     std.history(c)
                 }
@@ -967,6 +993,7 @@ view duplicates(book: Book, c: Contact) {
                                 take_birthday,
                                 take_notes,
                             ),
+                            contacts.directory,
                         )
                     }
                 }

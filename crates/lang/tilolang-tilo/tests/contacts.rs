@@ -642,3 +642,83 @@ fn an_empty_book_says_so_and_the_entry_makes_the_first_card() {
         other => panic!("a card's notes: {other:?}"),
     };
 }
+
+/// A card the workspace's apps do not know yet is shared as a person of its own: the card keeps
+/// that person's id, and the directory is told the card's name, numbers and mailboxes, so Mail,
+/// Calendar and Messages can reach it.
+#[test]
+fn a_card_the_apps_do_not_know_is_shared_as_a_person_of_its_own() {
+    use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+
+    struct Sent(Rc<RefCell<Vec<Invocation>>>);
+    impl Invoker for Sent {
+        fn invoke(&self, invocation: &Invocation) -> Invoked {
+            self.0.borrow_mut().push(invocation.clone());
+            Invoked::Done(Value::Unit)
+        }
+    }
+
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let made = contact(&ada, &root, "Ada Lovelace");
+    with_mail(&ada, &made, "ada@example.org");
+    // A directory that names nobody: this card is no one the apps know.
+    let directory = ResourceRef::parse_id(
+        "contacts:tilo.contacts.identities",
+        "so.tilo.contacts.directory#Identities",
+    )
+    .expect("the directory's published id");
+    ada.host
+        .runtime()
+        .set_reading(&directory, r#"{"people": []}"#)
+        .expect("the directory reads as empty");
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    ada.host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+
+    call(
+        &ada,
+        "share_card",
+        vec![Value::resource(&directory), Value::resource(&made)],
+    );
+    ada.commit();
+
+    let person = text(&ada, &made, "person");
+    assert!(
+        !person.is_empty(),
+        "the card keeps the person it was shared as"
+    );
+    let sent = sent.borrow();
+    let project = sent
+        .iter()
+        .find_map(|invocation| match invocation {
+            Invocation::Action { name, args, .. } if name == "project-contact" => {
+                Some(args.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the card is projected into the directory: {sent:?}"));
+    assert!(
+        project
+            .iter()
+            .any(|(name, value)| name == "person" && *value == Value::Text(person.clone())),
+        "the person the card keeps is the one the directory is told: {project:?}"
+    );
+    assert!(
+        project.iter().any(
+            |(name, value)| name == "label" && *value == Value::Text("Ada Lovelace".to_owned())
+        ),
+        "the directory is told the card's name: {project:?}"
+    );
+    let mails = sent
+        .iter()
+        .find_map(|invocation| match invocation {
+            Invocation::Action { name, args, .. } if name == "project-emails" => Some(args.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the card's mailboxes go with it: {sent:?}"));
+    assert!(
+        mails.iter().any(|(name, value)| name == "emails"
+            && *value == Value::List(vec![Value::Text("ada@example.org".to_owned())])),
+        "{mails:?}"
+    );
+}
