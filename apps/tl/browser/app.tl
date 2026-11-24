@@ -3243,7 +3243,9 @@ view page_view(p: Page) {
                                             secondary: s.secondary,
                                             icon: if s.kind == .bookmark {
                                                 .star
-                                            } else if s.kind == .search { .search } else { .clock },
+                                            } else if s.kind == .search {
+                                                .search
+                                            } else { .clock },
                                         ) {
                                             on activate: navigate(p, s.url).then(set(address, ""))
                                         }
