@@ -857,12 +857,12 @@ view follow_chip(folded: Bool) {
         // and the moment passes. Someone who left takes the following with them, and says nothing.
         if let who = board.rows.find(p -> p.key == board.stopped) {
             if let face = face_of(who) {
-                ui.Chip(std.say("Stopped following"), faces: [face])
+                ui.Chip(std.say("Stopped following"), faces: [face], live: .polite)
             } else {
-                ui.Chip(std.say("Stopped following"), icon: .eye_off)
+                ui.Chip(std.say("Stopped following"), icon: .eye_off, live: .polite)
             }
         } else {
-            ui.Chip(std.say("Stopped following"), icon: .eye_off)
+            ui.Chip(std.say("Stopped following"), icon: .eye_off, live: .polite)
         }
     }
 }
@@ -871,11 +871,11 @@ view follow_chip(folded: Bool) {
 /// this is, beside it where the bar has room, and alone where it has none.
 view following_face(who: device.Person, label: Text, words: Bool) {
     if let face = face_of(who) {
-        ui.Button(label, faces: [face], icon_only: not words, role: .bar) {
+        ui.Button(label, faces: [face], icon_only: not words, role: .bar, live: .polite) {
             on press: device.show_person(device.people, person: who.key)
         }
     } else {
-        ui.Button(label, icon: .eye, icon_only: not words, role: .bar) {
+        ui.Button(label, icon: .eye, icon_only: not words, role: .bar, live: .polite) {
             on press: device.show_person(device.people, person: who.key)
         }
     }
