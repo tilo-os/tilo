@@ -1,11 +1,13 @@
 //! A session started on a computer whose Tilo service runs as the person's own account never runs
 //! as the person's shell itself: one a display manager starts (a distribution Tilo was added to),
-//! and one a development script starts beside the service it started first. It asks that service
-//! to start the shell (`shells#start`), which hands the shell the link it is admitted by, and
-//! stands in for it until it ends: the signals sent to it go to the shell, and it exits as the
-//! shell did.
+//! one a development script starts beside the service it started first, and one started in a
+//! window of another Tilo desktop. It asks that service to start the shell (`shells#start`), which
+//! hands the shell the link it is admitted by and, for a session in a window, the connection it
+//! draws on, and stands in for it until it ends: the signals sent to it go to the shell, and it
+//! exits as the shell did.
 
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufRead, BufReader, Write as _};
+use std::os::fd::RawFd;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -19,19 +21,68 @@ const SERVICE_START: Duration = Duration::from_secs(30);
 static SHELL: AtomicI32 = AtomicI32::new(0);
 /// The signals that ask a session to stop or restart.
 const FORWARDED: [libc::c_int; 4] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGUSR1];
+/// The connection a Wayland client draws its window on: what a session in a window of another
+/// desktop is handed, and hands on when the service starts it.
+const WAYLAND_SOCKET: &str = "WAYLAND_SOCKET";
 
-/// Whether this session is to ask the service for its shell: it was started with no link to it
-/// (`runtime_collab::wire::shell::SHELL_FD_ENV`), on a computer whose service is the person's own,
-/// and either a display manager started it (`host_desktop`, which starts the service when none
-/// runs) or the service runs already. A session handed its window's connection to another desktop
-/// (`WAYLAND_SOCKET`) holds a descriptor the service cannot pass on, and runs as it was started.
+/// The link this computer's service handed this session when it started it
+/// (`runtime_collab::wire::shell::SHELL_FD_ENV`), taken before anything else of the session runs.
+/// The variable goes with it: it named the descriptor for this process's own exec alone, so no
+/// program the session starts takes it for a link of its own — a session started beside this one
+/// asks the service for a link of its own instead.
+///
+/// `None` in a process the service did not start as the shell, which is every other one. A
+/// session whose environment names one descriptor as both its link and the window it draws on was
+/// started in a window of a desktop that had not taken its own link: that descriptor is the
+/// window's and no link, so the session asks the service for one.
 #[must_use]
-pub fn asks_the_service(host_desktop: bool) -> bool {
-    std::env::var_os(runtime_collab::wire::shell::SHELL_FD_ENV).is_none()
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the variable names this process's own descriptor for its own exec; no other thread reads it yet and nothing else in the process uses it again"
+)]
+pub fn take_launch_link() -> Option<std::os::fd::OwnedFd> {
+    let named = named_descriptor(runtime_collab::wire::shell::SHELL_FD_ENV)?;
+    if named_descriptor(WAYLAND_SOCKET) == Some(named) {
+        // SAFETY: the session takes its link before it starts any thread of its own; the
+        // variable named a descriptor for this process's own exec, and nothing reads the name
+        // again.
+        unsafe { std::env::remove_var(runtime_collab::wire::shell::SHELL_FD_ENV) };
+        return None;
+    }
+    let link = runtime_collab::ShellClient::inherited()?;
+    // SAFETY: as above; `ShellClient::inherited` took the descriptor once.
+    unsafe { std::env::remove_var(runtime_collab::wire::shell::SHELL_FD_ENV) };
+    match link {
+        Ok(link) => Some(link.into()),
+        Err(error) => {
+            eprintln!(
+                "tilo-session: the link this computer's service handed this session: {error}"
+            );
+            None
+        }
+    }
+}
+
+/// The descriptor `name` names in this process's environment, when it names one: a descriptor
+/// another program handed this process for its own use, never a number this one invented.
+fn named_descriptor(name: &str) -> Option<RawFd> {
+    let value = std::env::var(name).ok()?;
+    tilo_failure::ignored!(
+        "a variable that names no descriptor names neither a link nor a window this session holds",
+        value.parse().ok()
+    )
+}
+
+/// Whether this session is to ask the service for its shell: it holds no link of its own
+/// (`handed`, from [`take_launch_link`]), on a computer whose service is the person's own, and
+/// either a display manager started it (`host_desktop`, which starts the service when none runs)
+/// or the service runs already. A session in a window of another desktop asks too: it sends the
+/// connection it draws on with its start, and the service starts it with a link of its own.
+#[must_use]
+pub fn asks_the_service(host_desktop: bool, handed: bool) -> bool {
+    !handed
         && !tilo_api::daemon::system_daemon()
-        && (host_desktop
-            || (std::env::var_os("WAYLAND_SOCKET").is_none()
-                && tilo_api::daemon::this_computer().is_ok_and(|place| place.alive())))
+        && (host_desktop || tilo_api::daemon::this_computer().is_ok_and(|place| place.alive()))
 }
 
 /// Have this computer's Tilo service start the person's shell with `args` (this session's own
@@ -65,22 +116,6 @@ fn start_and_wait(args: &[String]) -> Result<ExitCode, String> {
             .try_clone()
             .map_err(|error| format!("a connection to Tilo's service: {error}"))?,
     );
-    let mut ask = |request: Value| -> Result<Value, String> {
-        writeln!(&stream, "{request}")
-            .and_then(|()| {
-                let mut line = String::new();
-                reader.read_line(&mut line).map(|_| line)
-            })
-            .map_err(|error| format!("Tilo's service stopped answering: {error}"))
-            .and_then(|line| {
-                serde_json::from_str::<Value>(&line)
-                    .map_err(|error| format!("Tilo's service answered {line:?}: {error}"))
-            })
-            .and_then(|answer| match answer.get("error").and_then(Value::as_str) {
-                Some(why) => Err(format!("Tilo's service refused: {why}")),
-                None => Ok(answer),
-            })
-    };
     let env: Map<String, Value> = std::env::vars_os()
         .filter_map(|(name, value)| {
             Some((name.into_string().ok()?, value.into_string().ok()?.into()))
@@ -88,7 +123,26 @@ fn start_and_wait(args: &[String]) -> Result<ExitCode, String> {
         .collect();
     // The preparation `--firstboot` asks for is done here, once.
     let args: Vec<&String> = args.iter().filter(|arg| *arg != "--firstboot").collect();
-    let started = ask(json!({"native": "shells#start", "args": args, "env": env}))?;
+    let start = json!({"native": "shells#start", "args": args, "env": env});
+    // A session in a window of another desktop sends that window's connection with its start,
+    // as a descriptor on this connection: the service starts the shell with it and with a link
+    // of the shell's own.
+    let started = match named_descriptor(WAYLAND_SOCKET) {
+        Some(fd) => {
+            let line = format!("{start}\n");
+            // SAFETY: the descriptor is this process's window connection; sending a copy of it
+            // leaves it this process's.
+            let connection = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+            runtime_portal::fd_transport::send_with_fd(&stream, line.as_bytes(), connection)
+                .map_err(|error| format!("Tilo's service did not take the start: {error}"))?;
+            answer(&mut reader)?
+        }
+        None => {
+            writeln!(&stream, "{start}")
+                .map_err(|error| format!("Tilo's service stopped answering: {error}"))?;
+            answer(&mut reader)?
+        }
+    };
     let pid = started
         .get("pid")
         .and_then(Value::as_i64)
@@ -96,7 +150,10 @@ fn start_and_wait(args: &[String]) -> Result<ExitCode, String> {
         .ok_or_else(|| format!("Tilo's service started no shell: {started}"))?;
     SHELL.store(pid, Ordering::SeqCst);
     forward_signals()?;
-    let ended = ask(json!({"native": "shells#wait", "pid": pid}))?;
+    let wait = json!({"native": "shells#wait", "pid": pid});
+    writeln!(&stream, "{wait}")
+        .map_err(|error| format!("Tilo's service stopped answering: {error}"))?;
+    let ended = answer(&mut reader)?;
     let code = match (
         ended.get("code").and_then(Value::as_i64),
         ended.get("signal").and_then(Value::as_i64),
@@ -106,6 +163,20 @@ fn start_and_wait(args: &[String]) -> Result<ExitCode, String> {
         (None, None) => 1,
     };
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
+}
+
+/// The one-line answer Tilo's service wrote, refused when it says why.
+fn answer(reader: &mut impl BufRead) -> Result<Value, String> {
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|error| format!("Tilo's service stopped answering: {error}"))?;
+    let answer = serde_json::from_str::<Value>(&line)
+        .map_err(|error| format!("Tilo's service answered {line:?}: {error}"))?;
+    match answer.get("error").and_then(Value::as_str) {
+        Some(why) => Err(format!("Tilo's service refused: {why}")),
+        None => Ok(answer),
+    }
 }
 
 /// Send each signal that asks a session to stop or restart on to the shell.

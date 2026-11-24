@@ -25,6 +25,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Map, Value, json};
 use std::{
     io,
+    os::fd::OwnedFd,
     path::{Path, PathBuf},
     process::{Child, Command},
     sync::{Arc, Mutex},
@@ -77,6 +78,10 @@ pub(super) const INVOCATION_JOURNAL: &str = "invocations";
 /// Where the device's workspace service and key service keep their state, in the device's
 /// directory.
 const OWN: &str = "own";
+/// The variable a Wayland client takes its connection from: the window a session started from a
+/// session in a window is handed ([`Daemon::start_shell`]).
+const WAYLAND_SOCKET_ENV: &str = "WAYLAND_SOCKET";
+
 /// What a daemon says on a computer that holds no Tilo identity and has no login.
 pub const SET_UP_FIRST: &str = "This computer has no Tilo identity yet: set up Tilo first, with \
      `tilo login` and the code from your Tilo tab (Set up with your agent).";
@@ -403,25 +408,47 @@ impl Daemon {
         Ok(link)
     }
 
+    /// The links this daemon made, for a test that shows a secret admits one connection and no
+    /// second: [`Self::shell_link`] takes its own secret as it connects.
+    #[cfg(test)]
+    pub(crate) fn shell_links(&self) -> &Arc<tilo_workspace_service::apps::shell::ShellLinks> {
+        &self.shell_links
+    }
+
     /// Start `command` as the person's shell, handed the link this daemon made for it
     /// ([`runtime_collab::wire::shell::SHELL_FD_ENV`]): the daemon starts the shell itself, so the
-    /// link passes from it to that one process and to no other of the account.
+    /// link passes from it to that one process and to no other of the account. A session in a
+    /// window sends the connection it draws on with its start (`window`, which the native endpoint
+    /// received); the shell is handed it at [`WINDOW_FD`] as `WAYLAND_SOCKET`, the variable a
+    /// Wayland client takes its connection from.
     ///
     /// # Errors
     /// No link could be made, or the shell did not start.
     #[cfg(target_os = "linux")]
-    pub fn start_shell(&self, mut command: Command) -> io::Result<Child> {
+    pub fn start_shell(&self, mut command: Command, window: Option<OwnedFd>) -> io::Result<Child> {
         use std::os::fd::AsRawFd as _;
         /// Where the shell finds its link.
         const SHELL_FD: i32 = 3;
+        /// Where a session's window connection is handed to the shell it starts: above the
+        /// link, so the two never share a descriptor.
+        const WINDOW_FD: i32 = 4;
         let link = self.shell_link()?;
-        launcher::inherit::hand_down(&mut command, vec![(link.as_raw_fd(), SHELL_FD)], false);
+        let mut handed = vec![(link.as_raw_fd(), SHELL_FD)];
+        if let Some(window) = &window {
+            handed.push((window.as_raw_fd(), WINDOW_FD));
+        }
+        launcher::inherit::hand_down(&mut command, handed, false);
         command.env(
             runtime_collab::wire::shell::SHELL_FD_ENV,
             SHELL_FD.to_string(),
         );
+        match &window {
+            Some(_) => command.env(WAYLAND_SOCKET_ENV, WINDOW_FD.to_string()),
+            // The request's own environment named nothing this shell holds.
+            None => command.env_remove(WAYLAND_SOCKET_ENV),
+        };
         let child = command.spawn()?;
-        drop(link);
+        drop((link, window));
         Ok(child)
     }
 

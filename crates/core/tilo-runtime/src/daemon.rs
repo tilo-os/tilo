@@ -286,7 +286,7 @@ impl Running {
         command: Command,
         within: Duration,
     ) -> io::Result<std::process::Child> {
-        self.person.within(within)?.start_shell(command)
+        self.person.within(within)?.start_shell(command, None)
     }
 
     /// The shell's end of a link the daemon made, once the person's services run (within
@@ -526,6 +526,7 @@ impl crate::seats::Shells for PersonShells {
         &self,
         args: Vec<std::ffi::OsString>,
         env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+        window: Option<std::os::fd::OwnedFd>,
     ) -> io::Result<std::process::Child> {
         /// The shell, installed beside this daemon.
         const SHELL: &str = "tilo-session";
@@ -538,13 +539,9 @@ impl crate::seats::Shells for PersonShells {
                 io::Error::other(format!("{SHELL} is not installed beside tilo-runtime"))
             })?;
         let mut command = std::process::Command::new(program);
-        command
-            .args(args)
-            .env_clear()
-            .envs(std::env::vars_os().filter(|(name, _)| shell_keeps_from_the_daemon(name)))
-            .envs(env.into_iter().filter(|(name, _)| shell_reads(name)))
-            .stdin(std::process::Stdio::null());
-        daemon.start_shell(command)
+        command.args(args).stdin(std::process::Stdio::null());
+        the_shells_environment(&mut command, env);
+        daemon.start_shell(command, window)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -552,12 +549,27 @@ impl crate::seats::Shells for PersonShells {
         &self,
         _: Vec<std::ffi::OsString>,
         _: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+        _: Option<std::os::fd::OwnedFd>,
     ) -> io::Result<std::process::Child> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "the shell starts on its own on this computer",
         ))
     }
+}
+
+/// The environment a shell the daemon starts runs with: the account's, but for what would load
+/// code into it ([`shell_reads`]), and what the daemon's own sets for the display it draws with
+/// ([`shell_keeps_from_the_daemon`]).
+#[cfg(target_os = "linux")]
+fn the_shells_environment(
+    command: &mut Command,
+    env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) {
+    command
+        .env_clear()
+        .envs(std::env::vars_os().filter(|(name, _)| shell_keeps_from_the_daemon(name)))
+        .envs(env.into_iter().filter(|(name, _)| shell_reads(name)));
 }
 
 /// Whether the shell the daemon starts is handed the variable `name` the account asked it with:
@@ -1046,28 +1058,32 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
     /// Serve `stream` on this thread until it ends, `read` being what was read of it already.
     pub(crate) fn serve(&self, stream: UnixStream, read: Vec<u8>, seated: Option<&Seated>) {
         // The first line says whether the client asks to be carried to another device's MCP
-        // server; anything else is served here, that line first.
-        let mut reader = match stream.try_clone() {
-            Ok(clone) => BufReader::new(io::Cursor::new(read).chain(clone)),
+        // server, or to have a shell started; anything else is served here, that line first. A
+        // descriptor sent with it (a session's window connection, on its start) comes along.
+        let (mut first, rest, descriptors) = match first_line(&stream, read) {
+            Ok(read) => read,
             Err(error) => {
                 tracing::debug!(%error, "native runtime client socket");
                 return;
             }
         };
-        let mut first = Vec::new();
-        if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first) {
-            tracing::debug!(%error, "native runtime client disconnected");
-            return;
-        }
+        let follow = match stream.try_clone() {
+            Ok(clone) => clone,
+            Err(error) => {
+                tracing::debug!(%error, "native runtime client socket");
+                return;
+            }
+        };
         // A first line that is an action frame says the connection speaks the action wire,
         // answered as whoever its account is admitted as.
         let line = first.strip_suffix(b"\n").unwrap_or(&first);
         if crate::device::local::is_frame(line) {
-            return self.frames.serve(stream, line, reader);
+            let input = BufReader::new(io::Cursor::new(rest).chain(follow));
+            return self.frames.serve(stream, line, input);
         }
         if line == tilo_api::daemon::AGENT_LINE.as_bytes() {
             if let Some(agents) = &self.to_agents {
-                return agents.take(stream, reader.buffer().to_vec());
+                return agents.take(stream, rest);
             }
             first.clear();
         }
@@ -1078,7 +1094,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             match &self.other_devices {
                 // A client asks for nothing more before it is told whether the connection
                 // opened.
-                Some(other_devices) if reader.buffer().is_empty() => {
+                Some(other_devices) if rest.is_empty() => {
                     other_devices.serve_forward(stream, &forward);
                 }
                 Some(_) => tilo_mcp::devices::refuse_forward(
@@ -1097,13 +1113,15 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         // a desktop about to hand its own over finds that one.
         let asks_the_seats =
             serde_json::from_slice::<Value>(&first).is_ok_and(|request| Seats::asks(&request));
-        let input = io::Cursor::new(first).chain(reader);
         if let Some(seated) = seated.filter(|_| asks_the_seats) {
+            seated.receives(descriptors);
+            let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
             if let Err(error) = serve_seat(&stream, input, seated) {
                 tracing::debug!(%error, "native seat client disconnected");
             }
             return;
         }
+        let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
         let server = match (self.session_factory)() {
             Ok(server) => Arc::new(server.with_media(self.media.clone()).with_devices(
                 self.other_devices.clone().map(|other_devices| {
@@ -1138,6 +1156,39 @@ impl Drop for ConnectionSlot {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }
+}
+
+/// The first line of a native connection, what followed it in the same message, and the
+/// descriptors the client sent with it. The first message is received rather than read, so a
+/// descriptor that rides it (the window connection a session in a window sends with its
+/// `shells#start`) is owned here rather than dropped by the reader.
+fn first_line(
+    stream: &UnixStream,
+    read: Vec<u8>,
+) -> io::Result<(Vec<u8>, Vec<u8>, Vec<std::os::fd::OwnedFd>)> {
+    let mut line = read;
+    let mut descriptors = Vec::new();
+    let mut received = false;
+    while !line.contains(&b'\n') && line.len() < FIRST_LINE as usize {
+        let (chunk, fds) = if received {
+            let mut chunk = [0_u8; 16 * 1024];
+            let taken = Read::read(&mut &*stream, &mut chunk)?;
+            (chunk.get(..taken).unwrap_or_default().to_vec(), Vec::new())
+        } else {
+            received = true;
+            runtime_portal::fd_transport::recv_with_fds(stream)?
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        line.extend_from_slice(&chunk);
+        descriptors.extend(fds);
+    }
+    let rest = match line.iter().position(|byte| *byte == b'\n') {
+        Some(at) => line.split_off(at.saturating_add(1)),
+        None => Vec::new(),
+    };
+    Ok((line, rest, descriptors))
 }
 
 /// Answer one native connection that asks the seats alone ([`Seats::asks`]).

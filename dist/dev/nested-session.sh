@@ -877,9 +877,10 @@ else
     display_env=(-u DISPLAY -u WAYLAND_DISPLAY)
     host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
     say "starting the nested session at ${TILO_WINIT_SIZE} logical pixels, at the desktop's scale (log: $logs/session.log)"
-    # The helper's connection is a descriptor of this process tree, which the daemon cannot hand
-    # the shell it starts: a nested session runs here, with no link to the daemon's workspaces.
-    say "a nested session is not started by the device daemon: it reaches no workspace"
+    # The helper's connection is a descriptor of this process tree: the session sends it to the
+    # device daemon with its start (`shells#start`), and the daemon starts the shell with it and
+    # with the link the shell reaches its workspaces on.
+    say "the session asks the device daemon to start it: it gets a link to the daemon's workspaces"
 fi
 # The person's own workspace, served as a Tilo device serves it (`fs.service` at
 # /var/workspace): the Files app's windowless endpoint on the record route, and the mounted

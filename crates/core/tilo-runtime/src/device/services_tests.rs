@@ -1217,13 +1217,59 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
     {
         let shell = std::process::Command::new(std::env::current_exe().unwrap());
         let (command, log) = shell_child(&root, shell, "shell");
-        let status = session.start_shell(command).unwrap().wait().unwrap();
+        let status = session.start_shell(command, None).unwrap().wait().unwrap();
         let logs = std::fs::read_to_string(&log).unwrap_or_default();
         assert!(
             status.success() && logs.contains("test result: ok. 1 passed"),
             "the shell the daemon starts reaches its workspaces: {logs}"
         );
     }
+}
+
+/// The secret that admits a shell's link is used once: the connection that names it is answered
+/// as the person's shell, and a second connection naming the same secret is refused.
+#[cfg(unix)]
+#[test]
+fn a_shell_links_secret_admits_one_connection() {
+    use runtime_collab::wire::shell::{SHELL_MAGIC, ShellCall, ShellReply};
+    use tokio::io::AsyncWriteExt as _;
+    const TEST: &str = "device::services::tests::a_shell_links_secret_admits_one_connection";
+    let Some(root) = isolated_root(TEST) else {
+        return;
+    };
+    let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    let socket = session.broker.app_socket().to_path_buf();
+    let secret = session
+        .shell_links()
+        .make(tilo_workspace_service::apps::shell::ShellCaller {
+            person: session.workspaces.device_cert().user_public_key,
+        });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for used in 1_u8..=2 {
+            let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            stream.write_all(SHELL_MAGIC).await.unwrap();
+            stream.write_all(&secret).await.unwrap();
+            let (shell, _) = runtime_collab::ShellClient::open(stream);
+            let answer = shell.call(ShellCall::Workspaces).await;
+            match used {
+                1 => assert!(
+                    matches!(
+                        &answer,
+                        Ok(ShellReply::Workspaces(held)) if !held.is_empty()
+                    ),
+                    "the link's first connection is its shell: {answer:?}"
+                ),
+                _ => assert!(
+                    answer.is_err(),
+                    "a second connection naming the same secret is refused: {answer:?}"
+                ),
+            }
+        }
+    });
 }
 
 /// `command` running [`SHELL_TEST`] as the child `role`, and the file its output goes to.

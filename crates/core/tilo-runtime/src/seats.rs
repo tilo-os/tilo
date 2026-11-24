@@ -191,11 +191,17 @@ pub(crate) trait Shells: Send + Sync {
     /// No link could be made.
     fn arrived(&self, importing: bool) -> io::Result<UnixStream>;
 
-    /// Start the person's shell with `args` and `env`, handed its link.
+    /// Start the person's shell with `args` and `env`, handed its link and, when the session that
+    /// asked sent one (`window`), the connection it draws its window on.
     ///
     /// # Errors
     /// The shell did not start.
-    fn start(&self, args: Vec<OsString>, env: Vec<(OsString, OsString)>) -> io::Result<Child>;
+    fn start(
+        &self,
+        args: Vec<OsString>,
+        env: Vec<(OsString, OsString)>,
+        window: Option<OwnedFd>,
+    ) -> io::Result<Child>;
 }
 
 /// The daemon's seats: its admission, and the device it answers for.
@@ -275,14 +281,20 @@ impl Seats {
 
     /// What the seats answer `request` with, when it is theirs: who the connection is
     /// (`account#who`), or a shell started or waited for (`shells#start`, `shells#wait`); `None`
-    /// for any other request.
-    pub(crate) fn answer(&self, seat: Seat, request: &Value) -> Option<Answer<'static>> {
+    /// for any other request. `received` holds the descriptors the connection's client sent with
+    /// its first line, which a shell's start hands the shell it starts.
+    pub(crate) fn answer(
+        &self,
+        seat: Seat,
+        request: &Value,
+        received: &Mutex<Vec<OwnedFd>>,
+    ) -> Option<Answer<'static>> {
         let ready = |answer: Value| Answer::InOrder(Box::pin(async move { Ok(Some(answer)) }));
         let refused = |why: String| ready(json!({"error": why}));
         match request.get("native").and_then(Value::as_str)? {
             WHO => Some(ready(self.who(seat))),
             START => Some(
-                self.start(seat, request)
+                self.start(seat, request, received)
                     .map_or_else(refused, |pid| ready(json!({"pid": pid}))),
             ),
             WAIT => Some(self.wait(seat, request).unwrap_or_else(refused)),
@@ -313,8 +325,15 @@ impl Seats {
             .ok_or_else(|| "this daemon's person's services are still starting".to_owned())
     }
 
-    /// Start the person's shell as `request` says (`{args, env}`): its pid.
-    fn start(&self, seat: Seat, request: &Value) -> Result<u32, String> {
+    /// Start the person's shell as `request` says (`{args, env}`): its pid. The shell is handed
+    /// its link and, when the client sent one with the request, the connection the asking
+    /// session draws its window on (`WAYLAND_SOCKET`).
+    fn start(
+        &self,
+        seat: Seat,
+        request: &Value,
+        received: &Mutex<Vec<OwnedFd>>,
+    ) -> Result<u32, String> {
         let shells = self.starts_shells(seat)?;
         let args = request
             .get("args")
@@ -331,8 +350,9 @@ impl Seats {
             .flatten()
             .filter_map(|(name, value)| Some((name.into(), value.as_str()?.into())))
             .collect();
+        let window = received.lock_recover().pop();
         let child = shells
-            .start(args, env)
+            .start(args, env, window)
             .map_err(|error| format!("the shell did not start: {error}"))?;
         let pid = child.id();
         self.started.lock_recover().insert(pid, child);
@@ -549,6 +569,10 @@ pub(crate) struct Seated {
     pub(crate) seats: Arc<Seats>,
     /// A descriptor an answer on this connection carries, until it is written with it.
     pub(crate) handed: Arc<Mutex<Option<OwnedFd>>>,
+    /// The descriptors the client sent with its first line: a nested session's window
+    /// connection, which a shell started on this connection is handed
+    /// ([`Shells::start`]).
+    pub(crate) received: Arc<Mutex<Vec<OwnedFd>>>,
 }
 
 impl Seated {
@@ -558,7 +582,14 @@ impl Seated {
             seat,
             seats,
             handed: Arc::default(),
+            received: Arc::default(),
         }
+    }
+
+    /// Keep `descriptors`, which the client sent with its first line, for the call that hands
+    /// them on.
+    pub(crate) fn receives(&self, descriptors: Vec<OwnedFd>) {
+        *self.received.lock_recover() = descriptors;
     }
 
     /// The seat action `action` with `args`, as this connection asks it.
@@ -568,7 +599,7 @@ impl Seated {
 
     /// What the seats answer `request` with on this connection, when it is theirs.
     pub(crate) fn answer(&self, request: &Value) -> Option<Answer<'static>> {
-        self.seats.answer(self.seat, request)
+        self.seats.answer(self.seat, request, &self.received)
     }
 }
 

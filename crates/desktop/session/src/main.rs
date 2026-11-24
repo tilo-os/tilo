@@ -47,6 +47,11 @@ fn main() -> std::process::ExitCode {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return ExitCode::from(code);
     }
+    // The link this computer's service handed this session when it started it, taken before
+    // anything else here runs: the session reads and writes its person's workspaces over it, and
+    // the variable naming it goes with it, so no program the session starts takes the descriptor
+    // for a link of its own.
+    let launch_link = tilo_session::shell_start::take_launch_link();
     // The earliest point the process can measure itself from: what the session's own startup marks
     // are read against.
     tilo_startup_metrics::init();
@@ -119,7 +124,7 @@ fn main() -> std::process::ExitCode {
     // distribution Tilo was added to, a development session beside the service it started) is
     // started as the person's shell by that service, which hands it the link it is admitted by;
     // this process only stands in for it.
-    if tilo_session::shell_start::asks_the_service(host_desktop) {
+    if tilo_session::shell_start::asks_the_service(host_desktop, launch_link.is_some()) {
         return tilo_session::shell_start::through_the_service(&args);
     }
     // The shell placing, drawing and answering a window is what a person waits
@@ -155,7 +160,7 @@ fn main() -> std::process::ExitCode {
     let Some(line) = command_line(ours) else {
         return ExitCode::FAILURE;
     };
-    start(ours, command, line, host_desktop, &identity)
+    start(ours, command, line, host_desktop, &identity, launch_link)
 }
 
 /// The session's own arguments and the command it starts, split at `--` .
@@ -584,6 +589,7 @@ fn start(
     line: CommandLine,
     host_desktop: bool,
     identity: &tilo_session::startup::Identity,
+    launch_link: Option<std::os::fd::OwnedFd>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     use std::sync::Arc;
@@ -706,6 +712,8 @@ fn start(
         hosted_browser,
         ..device_options(machine, config)
     };
+    // The link this computer's service handed this session, which its reads and writes go over.
+    options.shell_link = launch_link;
     // The person's files: the files daemon mounts them as the Files app's endpoint, so the
     // session records its process before the daemon's connections arrive.
     // The login runs the daemon on a machine this session owns; a session anywhere else serves

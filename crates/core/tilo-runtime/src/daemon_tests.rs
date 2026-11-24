@@ -1,4 +1,5 @@
 use super::{Mode, parse_args};
+use crate::device::services::Daemon;
 use std::{ffi::OsString, io, time::Duration};
 use tilo_mcp::lines::{
     Frame, MAX_REQUEST_BYTES, mcp_answer, read_frame, serve_lines, spawn_reader, write_reply,
@@ -1637,6 +1638,7 @@ impl crate::seats::Shells for Linked {
         &self,
         args: Vec<std::ffi::OsString>,
         env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+        _: Option<std::os::fd::OwnedFd>,
     ) -> io::Result<std::process::Child> {
         std::process::Command::new("/bin/sh")
             .args(args)
@@ -1743,4 +1745,216 @@ fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
     // Another account starts no shell of this person's.
     let refused = ask(&mut connect(OTHER), &start);
     assert!(refused["error"].is_string(), "{refused}");
+}
+
+/// Names the test below when this executable runs as the shell a session asked the daemon to
+/// start with it.
+const NESTED_SHELL: &str = "TILO_NESTED_SHELL_HELPER";
+/// Where that shell says its link reached the daemon, once it has: the session that started it
+/// reads it, so a test that selected nothing cannot pass as one.
+const NESTED_SHELL_REACHED: &str = "TILO_NESTED_SHELL_REACHED";
+/// The test the started shell runs: this one.
+const NESTED_SHELL_TEST: &str = "daemon::tests::a_session_started_with_a_link_starts_a_nested_shell_with_its_own_link_and_window";
+
+/// A session that holds a link of its own asks this computer's daemon to start another shell
+/// (`shells#start`), handing it the connection the new shell draws its window on as a descriptor
+/// of the call. The daemon starts that shell with the connection and a link of its own, which
+/// reaches the daemon's workspaces: the link passes from the daemon to the shell it started.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_session_started_with_a_link_starts_a_nested_shell_with_its_own_link_and_window() {
+    use crate::RuntimeServices as _;
+    use std::io::{BufRead as _, Write as _};
+    use tilo_api::daemon::admission::Admission;
+
+    if std::env::var_os(NESTED_SHELL).is_some() {
+        // The shell the daemon started: its own link reaches the daemon, and the window
+        // connection the asking session sent came with it.
+        let link = runtime_collab::ShellClient::inherited()
+            .expect("the daemon hands its shell a link")
+            .unwrap();
+        assert_eq!(
+            std::env::var(runtime_collab::wire::shell::SHELL_FD_ENV).as_deref(),
+            Ok("3"),
+            "the link is handed where the daemon says it is"
+        );
+        assert_eq!(
+            std::env::var("WAYLAND_SOCKET").as_deref(),
+            Ok("4"),
+            "the window the asking session sent is handed above the link"
+        );
+        let mut window = [0_u8; 6];
+        // SAFETY: fd 4 is this process's window connection, handed to it as `WAYLAND_SOCKET`.
+        let read = unsafe { libc::read(4, window.as_mut_ptr().cast(), window.len()) };
+        assert_eq!(read, 6, "the window connection reaches the shell");
+        assert_eq!(
+            &window, b"window",
+            "and it is the connection the session sent"
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let link = tokio::net::UnixStream::from_std(link).unwrap();
+            let (shell, _) = runtime_collab::ShellClient::open(link);
+            let answer = shell
+                .call(runtime_collab::wire::shell::ShellCall::Workspaces)
+                .await;
+            assert!(
+                matches!(
+                    &answer,
+                    Ok(runtime_collab::wire::shell::ShellReply::Workspaces(held)) if !held.is_empty()
+                ),
+                "the nested shell reaches the daemon's workspaces over its own link: {answer:?}"
+            );
+        });
+        std::fs::write(
+            std::env::var_os(NESTED_SHELL_REACHED).expect("the session names where to say so"),
+            b"reached",
+        )
+        .unwrap();
+        return;
+    }
+    let Some(root) = crate::device::services::tests::isolated_root(NESTED_SHELL_TEST) else {
+        return;
+    };
+    let session = std::sync::Arc::new(Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap());
+    // The session that asks was started with a link of its own.
+    let parent = session.shell_link().unwrap();
+    // This computer's daemon as a person's own service: its seats answer the account that runs
+    // it, and start the person's shell when that account asks.
+    let keys = tilo_device_identity::IdentityPaths::under(root.join("identity"));
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let answers = crate::device::unclaimed::DeviceOnly::new(
+        key,
+        tilo_device_identity::login::Place::at(root.join("login"), keys),
+    );
+    let own = rustix::process::geteuid().as_raw();
+    let admission: &'static Admission = Box::leak(Box::new(Admission::new(own, false)));
+    let native = std::sync::Arc::new(super::Native::new(answers, test_peer, admission));
+    native.seats.serve(std::sync::Arc::new(NestedShells(
+        std::sync::Arc::downgrade(&session),
+    )));
+    let socket = root.join("native.sock");
+    let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
+    {
+        let native = std::sync::Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
+    // The window connection the asking session keeps: the shell it starts is handed the other
+    // end.
+    let (mut window_ours, window_theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    let reached = root.join("nested-shell.reached");
+    let mut env: serde_json::Map<String, serde_json::Value> = std::env::vars_os()
+        .filter_map(|(name, value)| {
+            Some((name.into_string().ok()?, value.into_string().ok()?.into()))
+        })
+        .collect();
+    env.insert(NESTED_SHELL.to_owned(), "1".into());
+    env.insert(
+        NESTED_SHELL_REACHED.to_owned(),
+        reached.display().to_string().into(),
+    );
+    let start = serde_json::json!({
+        "native": "shells#start",
+        "args": [
+            std::env::current_exe().unwrap().display().to_string(),
+            "--exact",
+            NESTED_SHELL_TEST,
+            "--nocapture",
+        ],
+        "env": env,
+    });
+    // The start goes as a session in a window sends it: the request line and the window
+    // connection in one message, over the connection the session already has.
+    PEER.store(own, std::sync::atomic::Ordering::SeqCst);
+    let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
+    runtime_portal::fd_transport::send_with_fd(
+        &stream,
+        format!("{start}\n").as_bytes(),
+        &window_theirs,
+    )
+    .unwrap();
+    drop(window_theirs);
+    window_ours.write_all(b"window").unwrap();
+    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let started: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let pid = started["pid"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the daemon starts the shell: {started}"));
+    writeln!(
+        &stream,
+        "{}",
+        serde_json::json!({"native": "shells#wait", "pid": pid})
+    )
+    .unwrap();
+    let mut ended = String::new();
+    reader.read_line(&mut ended).unwrap();
+    let ended: serde_json::Value = serde_json::from_str(&ended).unwrap();
+    assert_eq!(ended["code"], 0, "the nested shell passed: {ended}");
+    assert_eq!(
+        std::fs::read_to_string(&reached).unwrap_or_default(),
+        "reached",
+        "the nested shell reached the daemon's workspaces over its own link"
+    );
+    // The link the asking session holds answers too: the nested shell has a link of its own.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        parent.set_nonblocking(true).unwrap();
+        let (shell, _) =
+            runtime_collab::ShellClient::open(tokio::net::UnixStream::from_std(parent).unwrap());
+        let answer = shell
+            .call(runtime_collab::wire::shell::ShellCall::Workspaces)
+            .await;
+        assert!(
+            matches!(
+                &answer,
+                Ok(runtime_collab::wire::shell::ShellReply::Workspaces(held)) if !held.is_empty()
+            ),
+            "the session's own link still answers: {answer:?}"
+        );
+    });
+}
+
+/// The person's shells as a test runs them: [`super::PersonShells`] but for the shell being the
+/// program the asking session names first in its start, where a computer starts the installed
+/// `tilo-session` beside its daemon.
+#[cfg(target_os = "linux")]
+struct NestedShells(std::sync::Weak<Daemon>);
+
+#[cfg(target_os = "linux")]
+impl crate::seats::Shells for NestedShells {
+    fn arrived(&self, _: bool) -> io::Result<std::os::unix::net::UnixStream> {
+        Err(io::Error::other("a test starts no shell at a sign-in"))
+    }
+
+    fn start(
+        &self,
+        args: Vec<std::ffi::OsString>,
+        env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+        window: Option<std::os::fd::OwnedFd>,
+    ) -> io::Result<std::process::Child> {
+        let daemon = self
+            .0
+            .upgrade()
+            .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+        let program = args
+            .first()
+            .ok_or_else(|| io::Error::other("a start names the program to run"))?;
+        let mut command = std::process::Command::new(program);
+        command
+            .args(args.get(1..).unwrap_or_default())
+            .stdin(std::process::Stdio::null());
+        super::the_shells_environment(&mut command, env);
+        daemon.start_shell(command, window)
+    }
 }
