@@ -372,18 +372,17 @@ fn an_app_with_a_window_shows_its_content_on_the_page() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// An app whose views a host draws itself (a player's card in the shell) declares no window: a
-/// page says so rather than opening an empty one.
+/// An app whose views a host draws itself (a player's card in the shell) has no window of its
+/// own: the page is the host, and draws its first view over a new resource, as the shell would.
 #[test]
-fn an_app_with_no_window_is_refused_in_its_own_words() {
+fn an_app_with_no_window_is_drawn_as_a_host_draws_it() {
     let files = files_json(&app_files());
     let answer = open(&files, "apps/tl/playback", "");
-    assert_eq!(answer["ok"], false, "{answer}");
-    assert!(
-        answer["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("so.tilo.playback declares no root")),
-        "{}",
-        answer["message"]
-    );
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["hosted"], "so.tilo.playback", "{answer}");
+    let text = page_text(answer["body"].as_str().expect("a body"));
+    for control in ["Play", "Next", "Stop"] {
+        assert!(text.contains(control), "{control}: {text:?}");
+    }
+    assert!(tilolang_web::app_close(handle(&answer)));
 }

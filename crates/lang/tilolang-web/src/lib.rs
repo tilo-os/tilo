@@ -53,13 +53,51 @@ fn start() {
 pub use fonts::{add_font, fonts_ready, startup_fonts};
 
 /// The files a page hands over: `{ "apps/tl/tasks/app.tl": "…", … }`.
+fn parse_files(files_json: &str) -> Result<BTreeMap<String, String>, Failure> {
+    serde_json::from_str(files_json).map_err(|error| Failure {
+        message: format!("the files are not a JSON object of path to text: {error}"),
+        diagnostics: Vec::new(),
+    })
+}
+
 fn read_files(files_json: &str) -> Result<Tree, Failure> {
-    let files: BTreeMap<String, String> =
-        serde_json::from_str(files_json).map_err(|error| Failure {
-            message: format!("the files are not a JSON object of path to text: {error}"),
-            diagnostics: Vec::new(),
+    Tree::read(parse_files(files_json)?)
+}
+
+/// A package with no root opens no window of its own: its views are drawn where a host shows them
+/// (a player's card in the shell). The page is such a host: a package beside it, in the directory
+/// this answers, holds one new resource of the type the package's first view draws and shows it
+/// through that view, as the shell would. `None` when the package declares no view that draws
+/// one of its own types.
+fn host_of(app: &tilolang::meta::PackageMeta, root: &str) -> Option<(String, String)> {
+    let (view, ty) = app
+        .views
+        .iter()
+        .filter(|v| v.presents.is_none() && v.row_of.is_none())
+        .find_map(|view| {
+            let [param] = view.params.as_slice() else {
+                return None;
+            };
+            let ty = app
+                .types
+                .iter()
+                .find(|t| t.id == param.ty || t.name == param.ty)?;
+            Some((view.name.clone(), ty.name.clone()))
         })?;
-    Tree::read(files)
+    let dir = format!("{}.host", root.trim_end_matches('/'));
+    let source = format!(
+        "app {id}.host \"{title}\"\n\n\
+         use {id} as hosted\n\n\
+         /// Where the page draws the package's `{view}` view, as a host does: one {ty}, made new.\n\
+         type Host {{\n    held: Collection<hosted.{ty}>\n}}\n\n\
+         root Host\n\n\
+         initial action start(h: Host) {{\n    h.held.insert(hosted.{ty}())\n}}\n\n\
+         default view host for Host\n\n\
+         view host(h: Host) {{\n    for x in h.held {{\n        hosted.{view}(x)\n    }}\n}}\n",
+        id = app.app,
+        title = app.title,
+    );
+    Some((dir, source))
 }
 
 fn failed(failure: &Failure) -> String {
@@ -128,8 +166,10 @@ struct Options {
 /// Compile the package in `root` of `files_json` and what it uses, run its app over a scenario
 /// and lay its window out as a page.
 ///
-/// Answers `{ok: true, handle, app, packages, scenario, css, body}`, where `body` is the page's
-/// HTML and `css` its stylesheet, or `{ok: false, message, diagnostics}`.
+/// Answers `{ok: true, handle, app, packages, scenario, css, body, gaps, hosted}`, where `body` is
+/// the page's HTML and `css` its stylesheet, or `{ok: false, message, diagnostics}`. `hosted`
+/// names the app when it has no window of its own and the page draws its first view as a host
+/// does ([`host_of`]); `app` is then that host.
 #[wasm_bindgen]
 pub fn open_app(files_json: &str, root: &str, options_json: &str) -> String {
     let options: Options = if options_json.trim().is_empty() {
@@ -143,13 +183,36 @@ pub fn open_app(files_json: &str, root: &str, options_json: &str) -> String {
     if let Err(why) = fonts::ready() {
         return refused(why);
     }
-    let (built, published) = match read_files(files_json).and_then(|tree| tree.compile(root)) {
+    let files = match parse_files(files_json) {
+        Ok(files) => files,
+        Err(failure) => return failed(&failure),
+    };
+    let compile = |files: BTreeMap<String, String>, root: &str| {
+        Tree::read(files).and_then(|tree| tree.compile(root))
+    };
+    let (mut built, mut published) = match compile(files.clone(), root) {
         Ok(compiled) => compiled,
         Err(failure) => return failed(&failure),
     };
-    let Some(app) = built.last().map(|package| package.compiled.meta.clone()) else {
+    let Some(mut app) = built.last().map(|package| package.compiled.meta.clone()) else {
         return refused(format!("{root}: no package"));
     };
+    let mut hosted = None;
+    if app.roots.is_empty()
+        && let Some((dir, source)) = host_of(&app, root)
+    {
+        let mut with_host = files;
+        with_host.insert(format!("{dir}/app.tl"), source);
+        (built, published) = match compile(with_host, &dir) {
+            Ok(compiled) => compiled,
+            Err(failure) => return failed(&failure),
+        };
+        hosted = Some(app.app.clone());
+        let Some(host) = built.last().map(|package| package.compiled.meta.clone()) else {
+            return refused(format!("{dir}: no package"));
+        };
+        app = host;
+    }
     let scenario = match options.scenario {
         None => app.scenarios.first().map(|s| s.name.clone()),
         Some(named) => Some(named).filter(|name| !name.is_empty()),
@@ -183,6 +246,7 @@ pub fn open_app(files_json: &str, root: &str, options_json: &str) -> String {
         object.insert("css".into(), css.into());
         object.insert("body".into(), body.into());
         object.insert("gaps".into(), gaps);
+        object.insert("hosted".into(), hosted.into());
     }
     out.to_string()
 }
