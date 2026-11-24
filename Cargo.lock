@@ -18452,6 +18452,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-layout-check"
+version = "0.1.0"
+dependencies = [
+ "tilolang-cli",
+ "tilolang-mail",
+ "tilolang-youtube",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-libvirt-domain"
 version = "0.1.0"
 dependencies = [
@@ -22356,10 +22366,8 @@ dependencies = [
  "tilo-ui",
  "tilo-ui-graph",
  "tilolang",
- "tilolang-mail",
  "tilolang-tilo",
  "tilolang-window",
- "tilolang-youtube",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",

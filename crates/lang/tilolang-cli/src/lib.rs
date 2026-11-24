@@ -16,6 +16,22 @@ use tilo_app_package::pack::SigningIdentity;
 
 pub use tilolang_tilo::catalogue::compile;
 
+/// Run in a checkout, the tool compiles against the checkout's standard library, as it does
+/// against the packages beside the one it builds: an edit of it takes effect without rebuilding
+/// the tool. Elsewhere it compiles against the one it was built with.
+///
+/// # Errors
+/// The checkout's standard library does not load.
+pub fn load_checkout_stdlib() -> Result<(), String> {
+    let tree = std::env::current_dir()
+        .ok()
+        .and_then(|dir| tilolang::stdlib::in_tree(&dir));
+    match tree.map(|dir| tilolang::stdlib::load_from(&dir)) {
+        Some(Err(error)) => Err(error),
+        _ => Ok(()),
+    }
+}
+
 /// The package directories [`compile`] reads for `dir`: the ones to watch.
 pub fn package_dirs(dir: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     let published =

@@ -138,10 +138,10 @@ impl Staged {
             costs,
             states,
         } = staging;
-        // A package's first scenario stands on what its outside services hold, which the
-        // instance takes in from these samples through the services' origins before it runs.
-        tilolang_mail::sample::register();
-        tilolang_youtube::sample::register();
+        // A package's first scenario stands on what its outside services hold: the samples a
+        // program linking those services registered (`tools/layout-check` registers the Mail and
+        // Tube apps'), taken in through the services' origins before it runs. With none, it
+        // opens on what its scenario writes alone.
         let mut opening = Opening::new(viewport, theme);
         opening.root.root = root;
         opening.scenario = scenario.as_deref();

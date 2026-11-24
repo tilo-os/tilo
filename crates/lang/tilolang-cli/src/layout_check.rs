@@ -8,6 +8,7 @@
 //! the windows are checked at the same time, one per core.
 
 mod audit;
+pub mod command;
 mod layouts;
 mod reach;
 mod source;

@@ -226,6 +226,7 @@ members = [
     "tools/test-document-app",
     "tools/test-http",
     "tools/test-server",
+    "tools/layout-check",
     "crates/lang/tilo-app-builder",
     "tools/tilo-app-template-smoke",
     "tools/tilo-local",

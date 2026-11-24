@@ -53,10 +53,6 @@ tilo-app-package = { path = "../../core/tilo-app-package" }
 registry-types = { path = "../../core/registry-types" }
 tilolang = { path = "../tilolang" }
 tilolang-tilo = { path = "../tilolang-tilo" }
-# The sample answers of the outside services a staged scenario stands on, taken in through the
-# services' origins as a seeded workspace takes them in.
-tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
-tilolang-youtube = { path = "../../integrations/tilolang-youtube", default-features = false }
 # The window with nothing on screen `layout-check` lays out, and the platform it stands on.
 tilolang-window = { path = "../tilolang-window" }
 # The person the layout is checked for: their language, staged over the machine's.

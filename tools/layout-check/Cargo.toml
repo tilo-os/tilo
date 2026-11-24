@@ -1,0 +1,24 @@
+[package]
+name = "tilo-layout-check"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "`tilolang layout-check` as Tilo's own checks run it over the apps in apps/tl: with the sample data the Mail and Tube apps' outside services hold."
+
+[[bin]]
+name = "tilo-layout-check"
+path = "src/main.rs"
+
+[dependencies]
+tilolang-cli = { path = "../../crates/lang/tilolang-cli" }
+# The sample answers of the outside services a staged scenario stands on, taken in through the
+# services' origins as a seeded workspace takes them in.
+tilolang-mail = { path = "../../crates/integrations/tilolang-mail", default-features = false }
+tilolang-youtube = { path = "../../crates/integrations/tilolang-youtube", default-features = false }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

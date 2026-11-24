@@ -2,7 +2,9 @@
 # Lay every view of the tilolang apps out headlessly at one standard window size, on the build
 # server: what `tilolang layout-check` finds is the check's verdict, and the size's report, the
 # layout of each frame a finding came from (dump.txt) and PNG captures (one per window, in its
-# light and dark theme) are its outputs.
+# light and dark theme) are its outputs. It runs the command as `tilo-layout-check`
+# (tools/layout-check), which stages the Mail and Tube apps over the sample data their outside
+# services hold, as the published `tilolang` cannot.
 #
 #   tools/ci/layout-check.sh 390x844
 #
@@ -38,7 +40,7 @@ size=${1:?usage: $0 WIDTHxHEIGHT, such as 390x844}
 # carried one would share no cache with any other job's. TILO_BUILT_FOR_TEST_ENV marks the pass
 # the build made.
 if [[ -z ${TILO_BUILT_FOR_TEST_ENV:-} ]]; then
-    bash "$repo/tools/test-env.sh" --build cargo build --locked -p tilolang-cli --bin tilolang
+    bash "$repo/tools/test-env.sh" --build cargo build --locked -p tilo-layout-check --bin tilo-layout-check
     TILO_BUILT_FOR_TEST_ENV=1 \
         exec bash "$repo/tools/test-env.sh" bash "$repo/tools/ci/layout-check.sh" "$@"
 fi
@@ -92,7 +94,7 @@ verdict=(--strict)
 [[ -z $app && -z $press && -z $hover ]] || verdict=()
 
 status=0
-"$target/debug/tilolang" layout-check "${apps[@]}" \
+"$target/debug/tilo-layout-check" "${apps[@]}" \
     --allow crates/lang/tilolang-cli/tests/layout_check/allowed \
     "${verdict[@]}" "${read_frames[@]}" "${presses[@]}" "${pointing[@]}" "${tall[@]}" --shots "$out" >"$out/report.txt" 2>"$out/dump.txt" || status=$?
 cat -- "$out/report.txt"
