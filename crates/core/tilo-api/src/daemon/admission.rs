@@ -67,7 +67,7 @@ enum Seat {
     Key {
         person: [u8; 32],
         key: [u8; 32],
-        cert: Option<DeviceCert>,
+        cert: Option<Box<DeviceCert>>,
     },
     /// An account root signed in that has no person yet, whose key on this device `key` is: it
     /// may make its person, and then acts as that key.
@@ -223,6 +223,10 @@ impl Admission {
 
     /// The account signed in as `person`, when one is: whose root this computer keeps for them.
     #[must_use]
+    #[expect(
+        clippy::needless_collect,
+        reason = "the accounts' lock is let go before the seats' is taken, so the two never wait on each other"
+    )]
     pub fn signed_in_account_for(&self, person: [u8; 32]) -> Option<u32> {
         // The accounts are read out before the seats, as every other path takes them in that
         // order, so the two never wait on each other.
@@ -284,6 +288,7 @@ impl Admission {
             return Err("this account made another person on this computer already".to_owned());
         }
         accounts.insert(uid, AccountPerson { person, device });
+        drop(accounts);
         if let Some(profile) = &self.kept {
             let path = person_record(profile, uid);
             if let Some(dir) = path.parent() {
@@ -321,21 +326,22 @@ impl Admission {
     /// `uid` signed in with no key of its own here.
     pub fn founded(&self, uid: u32, person: [u8; 32]) -> Result<(), String> {
         let mut seats = self.seats.lock().unwrap_or_else(PoisonError::into_inner);
-        match seats.get(&uid) {
-            Some(Seat::Founding { key }) => {
-                let key = *key;
-                seats.insert(
-                    uid,
-                    Seat::Key {
-                        person,
-                        key,
-                        cert: None,
-                    },
-                );
-                Ok(())
-            }
-            _ => Ok(()),
+        let founding = match seats.get(&uid) {
+            Some(Seat::Founding { key }) => Some(*key),
+            _ => None,
+        };
+        if let Some(key) = founding {
+            seats.insert(
+                uid,
+                Seat::Key {
+                    person,
+                    key,
+                    cert: None,
+                },
+            );
         }
+        drop(seats);
+        Ok(())
     }
 
     /// Whether it is the system unit's daemon, serving every account of the computer.
@@ -381,7 +387,7 @@ impl Admission {
     #[must_use]
     pub fn key_of(&self, uid: u32) -> Option<DeviceCert> {
         match self.seat(uid) {
-            Some(Seat::Key { cert, .. }) => cert,
+            Some(Seat::Key { cert, .. }) => cert.map(|cert| *cert),
             _ => None,
         }
     }
@@ -490,7 +496,8 @@ impl Admission {
         }
         tilo_user_identity::verify_device_cert(&cert)
             .map_err(|error| format!("the certificate does not hold: {error}"))?;
-        *held = Some(cert);
+        *held = Some(Box::new(cert));
+        drop(seats);
         Ok(())
     }
 
