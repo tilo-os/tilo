@@ -1074,6 +1074,8 @@ d-ibtlwzis = Betrachter
     .w-page-of-2 = Seite { $value } von { $len }
 
 d-lfkj2ymr = Feldzeile
+    .w-the-document-locks-this-field = Das Dokument sperrt dieses Feld.
+    .w-the-document-needs-this-field-filled = Das Dokument braucht dieses Feld ausgefüllt.
     .w-choose = Wählen
 
 d-zcxne7qg = Kommentarbereich

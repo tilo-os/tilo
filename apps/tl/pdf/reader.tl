@@ -803,7 +803,8 @@ fn selection_shape(p: Page, start: List<Float>, end: List<Float>) -> ui.Shape {
     ui.Shape.area(x: x, y: y, w: w, h: h, round: 0.0, colour: "#60a5fa55")
 }
 
-/// One form field over its page: its words as a field, its box as a switch, its choice as a menu.
+/// One form field of its page: its words as a field, its box as a switch, its choice as a
+/// menu, and what the file says of it — the one it locks, and the one it needs before it goes.
 view field_row(d: Document, f: Field) {
     if f.kind == "checkbox" or f.kind == "radio" {
         ui.Button(
@@ -833,6 +834,22 @@ view field_row(d: Document, f: Field) {
         ) {
             on submit(word: Text): fill_field(d, f.name, word)
         }
+    }
+    if f.read_only {
+        text("The document locks this field.", role: .caption, secondary: true)
+    } else if f.required and field_empty(d, f) {
+        text("The document needs this field filled.", role: .caption, secondary: true)
+    }
+}
+
+/// Whether a person has filled `f`: its word, its box, or its choice.
+fn field_empty(d: Document, f: Field) -> Bool {
+    if f.kind == "checkbox" or f.kind == "radio" {
+        not (d.form_checked.get(f.name) ?? false)
+    } else if f.kind == "choice" {
+        (d.form_choice.get(f.name) ?? "") == ""
+    } else {
+        (d.form_text.get(f.name) ?? "").trim() == ""
     }
 }
 

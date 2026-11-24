@@ -80,7 +80,12 @@ mod cases {
         }
 
         fn fields(&self, _bytes: &[u8]) -> Result<String, String> {
-            Ok("[]".to_owned())
+            // One field the document locks and one it needs, so a reader is told of both.
+            Ok(concat!(
+                r#"[{"name":"Signed by","kind":"text","value":"A. Ferrer","checked":false,"export":"","options":[],"page":1,"rect":[72.0,700.0,180.0,14.0],"read_only":true,"required":false},"#,
+                r#"{"name":"Date","kind":"text","value":"","checked":false,"export":"","options":[],"page":1,"rect":[72.0,680.0,120.0,14.0],"read_only":false,"required":true}]"#,
+            )
+            .to_owned())
         }
 
         fn markup(&self, bytes: &[u8]) -> Result<String, String> {
@@ -456,6 +461,25 @@ mod cases {
                 .ends_with(&digest_of(b"").clone())
         );
         assert_eq!(reader.count(&doc, "marks"), 0);
+    }
+
+    #[test]
+    fn a_locked_or_required_field_says_so() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        reader.call("read_fields", vec![Value::resource(&doc)]);
+        // The pages are rows built as they scroll into view: a test reads them all.
+        let mut window = reader.window("reader", vec![Value::resource(&doc)]);
+        window.set_lazy_rows(false).unwrap();
+        let said = crate::common::dump(window.tree());
+        assert!(
+            said.contains("The document locks this field."),
+            "the locked field says so:\n{said}"
+        );
+        assert!(
+            said.contains("The document needs this field filled."),
+            "the field the document needs says so:\n{said}"
+        );
     }
 
     #[test]
