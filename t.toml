@@ -350,7 +350,7 @@ packages = [
     "tilo-clipboard", "tilo-clock", "tilo-dialogs", "tilo-files", "tilo-image-codec",
     "tilo-location", "tilo-media", "tilo-net", "tilo-notify", "tilo-peer-state", "tilo-rt",
     "tilo-secrets", "tilo-session-client", "tilo-workspace-service",
-    "tilolang-web", "workspace-unify",
+    "tilolang-web", "tilolang-window", "workspace-unify",
 ]
 
 # The packages CI also checks as they ship (tools/ci/package_features.py): their default build,

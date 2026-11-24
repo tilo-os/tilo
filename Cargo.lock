@@ -16143,8 +16143,6 @@ dependencies = [
  "tilo-server-protocol",
  "tilo-session-client",
  "tilo-test-env",
- "tilolang-tilo",
- "tilolang-web",
  "tokio",
  "tracing",
  "workspace-hack",
@@ -18229,6 +18227,7 @@ dependencies = [
 name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "workspace-hack",
 ]
@@ -20554,6 +20553,7 @@ dependencies = [
  "tilo-actions",
  "tilo-device-identity",
  "tilo-files",
+ "tilo-headless-schema",
  "tilo-paths",
  "tilo-test-env",
  "tilo-unlock-protocol",
@@ -22424,7 +22424,7 @@ dependencies = [
  "tilolang",
  "tilolang-mail",
  "tilolang-tilo",
- "tilolang-web",
+ "tilolang-window",
  "tilolang-youtube",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
@@ -22691,18 +22691,28 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tilo-font-catalog",
+ "tilo-ui",
+ "tilolang",
+ "tilolang-runtime",
+ "tilolang-tilo",
+ "tilolang-window",
+ "wasm-bindgen",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-window"
+version = "0.1.0"
+dependencies = [
  "tilo-app-window",
  "tilo-clipboard",
  "tilo-content",
  "tilo-dialogs",
- "tilo-font-catalog",
  "tilo-render-protocol",
  "tilo-ui",
- "tilolang",
- "tilolang-lex",
  "tilolang-runtime",
  "tilolang-tilo",
- "wasm-bindgen",
  "workspace-hack",
 ]
 

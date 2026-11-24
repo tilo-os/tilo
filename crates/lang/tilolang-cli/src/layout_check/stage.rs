@@ -1,14 +1,12 @@
-//! An app's window as the app window shows it, with nothing on screen: its instance over a workspace of
-//! its own, staged with a scenario, sending its views over the patch protocol to the app window's
-//! half of the window (`tilo_app_window::AppWindow`), which the toolkit's frame pipeline lays out
-//! (`ui::headless::FrameHarness`). Nothing is rasterised and no GPU is opened.
+//! An app's window as the app window shows it, with nothing on screen ([`tilolang_window::Window`]):
+//! its instance over a workspace of its own, staged with a scenario, its views laid out by the
+//! toolkit's frame pipeline, in the desktop's window bar, and read as a person reads it. Nothing is
+//! rasterised and no GPU is opened.
 
 use std::rc::Rc;
 
 use tilo_app_window::AppWindow;
-use tilo_render_protocol::patch::local::pair;
 use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
-use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::runtime::value::{ResourceRef as RuntimeRef, Value as RuntimeValue};
 use ui::headless::FrameHarness;
 use ui::interaction::InteractionEnvironment;
@@ -18,14 +16,14 @@ use ui::interaction::InteractionEnvironment;
 /// one does ([`ui::headless::capture_frames`]).
 const SETTLE_BOUND: ui::time::Duration = ui::time::Duration::from_secs(2);
 
-pub use tilolang_web::Packages;
+pub use tilolang_window::Packages;
+use tilolang_window::{EXCHANGES, Opening, Window};
 
 /// One window of the app, laid out by one frame pipeline that every configuration reuses.
 pub struct Staged {
     #[cfg(test)]
     app: String,
-    instance: Instance,
-    harness: FrameHarness,
+    window: Window,
     /// What the window has cost so far, as [`Self::take_work`] reports it since the last call.
     work: Work,
 }
@@ -77,32 +75,6 @@ impl Staged {
         harness.set_window_app(ui::widget::AppKind::App(icon), title);
     }
 }
-
-/// The package's own root resources — every layer it has (the shell's `Shell` beside its layout)
-/// and a person's record kept beside them (`root shell: Shell`) — made with what each starts
-/// with, as the live session does when it loads the package: a scenario that seeds another layer
-/// than the one laid out shows them.
-fn make_roots(instance: &Instance, app: &str) -> Result<(), String> {
-    let Some(host) = instance.host() else {
-        return Ok(());
-    };
-    let meta = host.package(app).map(|package| package.meta);
-    let roots = meta.iter().flat_map(|meta| {
-        meta.roots
-            .iter()
-            .cloned()
-            .chain(meta.named_roots.iter().map(|root| root.ty.clone()))
-    });
-    for ty in roots {
-        host.root_resource(app, &ty)
-            .map_err(|error| format!("a root could not be made: {error}"))?;
-    }
-    Ok(())
-}
-
-/// How often the window and its instance may answer each other before a frame is taken as it is:
-/// the rows a list shows, then the rows those rows show.
-const EXCHANGES: usize = 8;
 
 /// What a window is staged over and for, beyond its app, its packages
 /// and its size: the workspace it opens over, the layer it shows, the
@@ -156,7 +128,7 @@ impl Staged {
         app: &str,
         packages: &Rc<Packages>,
         viewport: (u32, u32),
-        mut theme: ui::Theme,
+        theme: ui::Theme,
         staging: Staging,
     ) -> Result<Self, String> {
         let Staging {
@@ -166,121 +138,39 @@ impl Staged {
             costs,
             states,
         } = staging;
-        theme.reduce_motion = true;
-        let (app_end, window_end) = pair();
-        let names = Rc::new(tilolang_tilo::names::Told::new(
-            ME.into(),
-            Rc::new(tilolang_tilo::names::Installed),
-        ));
-        names.tell("Ada".to_owned(), Vec::new(), Vec::new(), Vec::new());
-        let mut instance = Instance::new(
-            Config {
-                app: app.to_owned(),
-                me: ME.into(),
-                mode: Mode::Live,
-                device: None,
-                store: tilolang_tilo::resources::ResourceStore::in_memory(),
-                root: tilolang_tilo::host::RootView { root, view: None },
-                sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
-                link_home: None,
-            },
-            Rc::clone(packages) as Rc<dyn Platform>,
-            // The person the layout opens as is called as a person is, `Ada`, and everyone else as
-            // a window calls them when nobody told it their names: a scenario's sample person
-            // (`person("Leo")`) by that name, never by their id.
-            names,
-            Box::new(app_end),
-        );
-        instance.sync();
-        // The window is laid out for a still picture: no frame comes to take in the indexes its
-        // load builds off the frame, so they are waited for, as a host without frames waits for
-        // them.
-        instance.settle_pending();
-        // Counted from the first frame: a workspace's opening is what it costs to open.
-        if costs && let Some(host) = instance.host() {
-            host.runtime().record_costs(true);
-        }
-        make_roots(&instance, app)?;
-        if seed > 0
-            && let Some(host) = instance.host()
-        {
-            tilolang_tilo::seed::seed(&host, app, seed, &packages.now())?;
-        }
-        instance.commit_planned();
-        if let Some(host) = instance.host() {
-            for state in &states {
-                let (name, text) = state.split_once('=').ok_or_else(|| {
-                    format!("--state {state} names no value: write `--state place=Task.today`")
-                })?;
-                host.runtime()
-                    .stage_view_state(app, name.trim(), text.trim())
-                    .map_err(|error| format!("--state {state}: {error}"))?;
-            }
-        }
         // A package's first scenario stands on what its outside services hold, which the
         // instance takes in from these samples through the services' origins before it runs.
         tilolang_mail::sample::register();
         tilolang_youtube::sample::register();
-        instance.stage_story(scenario.as_deref());
-        // The scenario runs on the frame that takes it: its sample data is what it writes
-        // without a time of its own, and what it dates is the story it tells.
-        if scenario.is_some() {
-            instance.sync();
-            instance.commit_planned();
-        }
-        if let Some(why) = instance.take_stage_failure() {
-            return Err(format!(
-                "the scenario \"{}\" failed: {why}",
-                scenario.as_deref().unwrap_or_default()
-            ));
-        }
-        instance.update();
-        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
-        window.receive();
-        if let Some(why) = window.failed() {
-            return Err(format!("the window refused what the app sent: {why}"));
-        }
-        let harness =
-            FrameHarness::new_with_theme(ui::State::new(), Box::new(window), viewport, theme);
+        let mut opening = Opening::new(viewport, theme);
+        opening.root.root = root;
+        opening.scenario = scenario.as_deref();
+        opening.me = (ME, "Ada");
+        opening.seed = seed;
+        opening.costs = costs;
+        opening.states = &states;
         let mut staged = Self {
             #[cfg(test)]
             app: app.to_owned(),
-            instance,
-            harness,
+            window: Window::open(app, packages, opening)?,
             work: Work::default(),
         };
         // The window a person sees: the desktop's bar over the app's frame, the app's parts in it,
         // and the app told that the bar hosts them, as the desktop tells it.
-        Self::name_window(&mut staged.harness, app, packages);
-        staged.harness.present_in_window_bar();
+        Self::name_window(&mut staged.window.harness, app, packages);
+        staged.window.harness.present_in_window_bar();
         staged.exchange();
         Ok(staged)
     }
 
     fn window(&mut self) -> Option<&mut AppWindow> {
-        self.harness
-            .root_widget_mut()
-            .as_any_mut()?
-            .downcast_mut::<AppWindow>()
+        self.window.app_window()
     }
 
-    /// Let the window and its instance answer each other until neither has more to say, laying the
-    /// window out after each answer.
+    /// Let the window and its instance answer each other until neither has more to say
+    /// ([`Window::exchange`]).
     fn exchange(&mut self) {
-        for _ in 0..EXCHANGES {
-            self.instance.settle_pending();
-            if let Some(window) = self.window() {
-                window.flush();
-            }
-            let moved = self.instance.update();
-            let received = self.window().is_some_and(AppWindow::receive);
-            let owing =
-                self.window().is_some_and(|window| window.owes()) || self.instance.pending();
-            if !moved && !received && !owing {
-                break;
-            }
-            self.harness.relayout();
-        }
+        self.window.exchange();
     }
 
     /// Lay the window out at `viewport` under `theme`, for a person using `input`.
@@ -292,8 +182,9 @@ impl Staged {
         display_scale: f64,
     ) -> Result<(), String> {
         theme.reduce_motion = true;
-        self.harness.set_input_scale(display_scale)?;
-        self.harness
+        self.window.harness.set_input_scale(display_scale)?;
+        self.window
+            .harness
             .relayout_window_themed_for(viewport, theme, input)
             .map_err(|error| format!("layout failed: {error:?}"))?;
         self.exchange();
@@ -315,35 +206,35 @@ impl Staged {
     /// Press `key` (`Tab`, `Down`, `Space`: a key as [`FrameHarness::key`] names it) on the window,
     /// as a person at the keyboard does.
     pub fn key(&mut self, key: &str) {
-        self.harness.key(key);
+        self.window.harness.key(key);
     }
 
     /// Rest the pointer at `x`, `y`, as a person pointing at what stands there does.
     pub fn hover(&mut self, x: f64, y: f64) {
-        self.harness.hover_at(x, y);
+        self.window.harness.hover_at(x, y);
     }
 
     /// What the app's units ran since the last [`Self::reset_costs`], by unit
     /// ([`tilolang_tilo::runtime::cost`]), when the costs are being counted.
     pub fn costs(&self) -> Option<tilolang_tilo::runtime::Costs> {
-        self.instance.host()?.runtime().costs()
+        self.window.instance.host()?.runtime().costs()
     }
 
     pub fn reset_costs(&self) {
-        if let Some(host) = self.instance.host() {
+        if let Some(host) = self.window.instance.host() {
             host.runtime().reset_costs();
         }
     }
 
     pub fn harness(&self) -> &FrameHarness {
-        &self.harness
+        &self.window.harness
     }
 
     /// The places the staged shell holds, as the shell's own layout has them: each the app it
     /// shows and the record it shows.
     #[cfg(test)]
     pub fn places(&self) -> Vec<PlaceShown> {
-        let Some(host) = self.instance.host() else {
+        let Some(host) = self.window.instance.host() else {
             return Vec::new();
         };
         let Some(meta) = host.package(&self.app).map(|package| package.meta) else {
@@ -398,9 +289,9 @@ impl Staged {
     /// What laying the window out has cost since the last call: frames laid out, layout nodes built,
     /// text shaped that the renderer's cache did not hold, and what the layout solver did for them.
     pub fn take_work(&mut self) -> Work {
-        let frames = self.harness.relayout_frames();
-        let nodes = self.harness.layout_nodes_built();
-        let (_, misses, _) = self.harness.take_text_shape_stats();
+        let frames = self.window.harness.relayout_frames();
+        let nodes = self.window.harness.layout_nodes_built();
+        let (_, misses, _) = self.window.harness.take_text_shape_stats();
         let delta = Work {
             frames: frames.saturating_sub(self.work.frames),
             nodes: nodes.saturating_sub(self.work.nodes),
@@ -414,12 +305,12 @@ impl Staged {
     }
 
     pub fn harness_mut(&mut self) -> &mut FrameHarness {
-        &mut self.harness
+        &mut self.window.harness
     }
 
     fn records(&self) -> Vec<ResourceRef> {
         let mut out = Vec::new();
-        let Some(host) = self.instance.host() else {
+        let Some(host) = self.window.instance.host() else {
             return out;
         };
         let runtime = host.runtime();
@@ -496,7 +387,7 @@ impl Staged {
     /// own to tap by name, so a person's hand lands on where the row is
     /// drawn.
     pub fn tap_at(&mut self, at: (f64, f64)) -> Result<(), String> {
-        self.harness.tap_at(at.0, at.1);
+        self.window.harness.tap_at(at.0, at.1);
         self.exchange();
         self.settle()
     }
@@ -579,7 +470,7 @@ impl Staged {
             window.tell(ToApp::Open { resource });
         }
         self.exchange();
-        self.harness.relayout();
+        self.window.harness.relayout();
     }
 
     /// Lay the window out at `viewport` under `theme` for a person using `input`, with motion as it
@@ -591,7 +482,8 @@ impl Staged {
         input: InteractionEnvironment,
     ) -> Result<(), String> {
         theme.reduce_motion = false;
-        self.harness
+        self.window
+            .harness
             .relayout_window_themed_for(viewport, theme, input)
             .map_err(|error| format!("layout failed: {error:?}"))?;
         self.exchange();
@@ -604,9 +496,9 @@ impl Staged {
     /// frames a live window draws, and no layout afresh after them.
     pub fn press(&mut self, id: &str, touch: bool) -> Result<(), String> {
         let pressed = if touch {
-            self.harness.tap_named(id)
+            self.window.harness.tap_named(id)
         } else {
-            self.harness.click_named(id)
+            self.window.harness.click_named(id)
         };
         pressed.map_err(|error| format!("pressing {id:?}: {error}"))?;
         self.exchange();
@@ -618,7 +510,7 @@ impl Staged {
     /// it: a finger's tap where the window is held in the hand, a click
     /// otherwise.
     pub fn press_shell(&mut self, id: &str) -> Result<(), String> {
-        let touch = self.harness.interaction_environment().modality
+        let touch = self.window.harness.interaction_environment().modality
             == ui::interaction::InputModality::Touch;
         self.press(id, touch)
     }
@@ -628,11 +520,12 @@ impl Staged {
     pub fn press_at(&mut self, x: f64, y: f64) -> Result<(), String> {
         // A row is pressed the way the window expects its person to: a finger taps it, where a
         // mouse press on a menu a finger opened only dismisses the menu.
-        if self.harness.interaction_environment().modality == ui::interaction::InputModality::Touch
+        if self.window.harness.interaction_environment().modality
+            == ui::interaction::InputModality::Touch
         {
-            self.harness.tap_at(x, y);
+            self.window.harness.tap_at(x, y);
         } else {
-            self.harness.click_at(x, y);
+            self.window.harness.click_at(x, y);
         }
         self.exchange();
         self.settle()
@@ -642,7 +535,7 @@ impl Staged {
     /// popover, a sheet — is there to be read and pressed in turn.
     pub fn freshen(&mut self) -> Result<(), String> {
         self.exchange();
-        self.harness.relayout();
+        self.window.harness.relayout();
         self.settle()
     }
 
@@ -650,7 +543,8 @@ impl Staged {
     /// activates it: a control a widget paints itself (an empty state's action) has no node of its
     /// own to tap, and the widget's own node is not where the action is.
     pub fn press_action(&mut self, id: &str) -> Result<(), String> {
-        self.harness
+        self.window
+            .harness
             .perform_named(id, &ui::a11y::Action::Activate)
             .map_err(|error| format!("pressing {id:?}: {error}"))?;
         self.exchange();
@@ -661,7 +555,8 @@ impl Staged {
     /// technology activates it: the box beside a row's title, which a person presses by its own
     /// words rather than by the row's.
     pub fn press_child(&mut self, id: &str, target: &str) -> Result<(), String> {
-        self.harness
+        self.window
+            .harness
             .perform_semantic_named(id, Some(target), &ui::a11y::Action::Activate)
             .map_err(|error| format!("pressing {target:?}: {error}"))?;
         self.exchange();
@@ -672,18 +567,18 @@ impl Staged {
         for _ in 0..EXCHANGES {
             // A widget that took a layout switch after its parts were placed asks for the frame
             // that lays them out again, as a live window draws it.
-            if self.harness.root_widget_mut().is_layout_dirty() {
-                self.harness.relayout();
+            if self.window.harness.root_widget_mut().is_layout_dirty() {
+                self.window.harness.relayout();
             }
-            if !self.harness.frame_schedule().needs_animation_frame
-                || self.harness.settle_for_capture(SETTLE_BOUND)
+            if !self.window.harness.frame_schedule().needs_animation_frame
+                || self.window.harness.settle_for_capture(SETTLE_BOUND)
             {
                 return Ok(());
             }
             // A live window sends the app what its frames asked for on every frame: a list laid
             // out where it stands asks for the rows it shows there. Answer it, then settle again.
             let owing =
-                self.window().is_some_and(|window| window.owes()) || self.instance.pending();
+                self.window().is_some_and(|window| window.owes()) || self.window.instance.pending();
             if !owing {
                 break;
             }
@@ -699,11 +594,11 @@ impl Staged {
              {:?} waiting on an answer, the frame held until {:?}, \
              the schedule {:?} with {} images on their way",
             ui::headless::capture_frames(SETTLE_BOUND),
-            self.harness.frame_requesters(),
+            self.window.harness.frame_requesters(),
             ui::motion::frames_wanted_by(now),
-            self.harness.pending_visual_work(),
-            self.harness.root_widget().holds_frame_until(now),
-            self.harness.frame_schedule(),
+            self.window.harness.pending_visual_work(),
+            self.window.harness.root_widget().holds_frame_until(now),
+            self.window.harness.frame_schedule(),
             ui::image_store::loads_in_flight(),
         ))
     }
@@ -713,17 +608,17 @@ impl Staged {
     /// a search result, a proposal view in its card), laid out as a window
     /// is.
     pub fn open_with(&mut self, resource: &ResourceRef, view: &str) {
-        self.instance.open_with(resource, view);
+        self.window.instance.open_with(resource, view);
         self.exchange();
-        self.harness.relayout();
+        self.window.harness.relayout();
     }
 
     /// Show the view `view` (a name) as the window's own, over no resource: a screen a host shows
     /// by name (a phone's shell), which takes no arguments.
     pub fn open_screen(&mut self, view: &str) {
-        self.instance.open_screen(view);
+        self.window.instance.open_screen(view);
         self.exchange();
-        self.harness.relayout();
+        self.window.harness.relayout();
     }
 
     pub fn failed(&mut self) -> Option<String> {
@@ -773,7 +668,7 @@ mod tests {
     /// The actions the app publishes at its window, offered the way its host offers them: the
     /// window's palette, action directory and agents read them off it from then on.
     fn publish_actions(staged: &mut Staged) -> Vec<tilo_actions::ActionDescriptor> {
-        let host = staged.instance.host().expect("a host");
+        let host = staged.window.instance.host().expect("a host");
         let planner: std::sync::Arc<dyn tilolang_tilo::publish::Planner> =
             std::sync::Arc::new(host.handle());
         let mut publications = tilolang_tilo::publish::Publications::new(&host);
@@ -785,13 +680,14 @@ mod tests {
             .collect();
         let descriptors = tilo_actions::api::survey(&resources);
         staged
+            .window
             .instance
             .say(ToUi::Actions(tilo_app_window::catalogue::whole(
                 &descriptors,
             )));
-        staged.instance.flush();
+        staged.window.instance.flush();
         staged.exchange();
-        staged.harness.relayout();
+        staged.window.harness.relayout();
         descriptors
     }
 
@@ -1182,7 +1078,7 @@ mod tests {
             &[],
         )
         .expect("the scenario stages");
-        staged.harness.relayout();
+        staged.window.harness.relayout();
         let descriptors = publish_actions(&mut staged);
         let increment = descriptors
             .iter()
@@ -1214,14 +1110,14 @@ mod tests {
         staged
             .press(&route.control_id, false)
             .expect("the button presses");
-        let chosen = staged.instance.take_chosen();
+        let chosen = staged.window.instance.take_chosen();
         assert_eq!(
             chosen.as_ref().map(|(_press, address, _argument)| address),
             Some(&increment.address),
             "one press runs the action once"
         );
         assert!(
-            staged.instance.take_chosen().is_none(),
+            staged.window.instance.take_chosen().is_none(),
             "the press runs one action, not two"
         );
     }
@@ -1253,7 +1149,7 @@ mod tests {
 
     /// How many of the tasks of `app` the window's workspace reminds anyone of.
     fn reminded(staged: &Staged, app: &str) -> usize {
-        let host = staged.instance.host().expect("a host");
+        let host = staged.window.instance.host().expect("a host");
         let root = host.root_of(app).expect("the tasks root");
         let tilolang_tilo::runtime::Value::List(items) =
             host.runtime().read(&root, "items").expect("the items")
@@ -1537,7 +1433,7 @@ mod tests {
             &[],
         )
         .expect("the scenario stages");
-        staged.harness.relayout();
+        staged.window.harness.relayout();
         // A task outside the inbox: its page offers the menu that files it back into it.
         let task = staged
             .resources()
@@ -1558,7 +1454,7 @@ mod tests {
             "filing the task is one of its menu's rows: {rows:?}"
         );
         staged.press(&menu.key, false).expect("the menu opens");
-        staged.harness.relayout();
+        staged.window.harness.relayout();
         // The row a press reaches is the one the action is bound to: the open menu's Inbox.
         let (unfile, _control_id, control) = descriptors
             .iter()
@@ -1595,14 +1491,14 @@ mod tests {
         );
 
         press_at(&mut staged, control);
-        let chosen = staged.instance.take_chosen();
+        let chosen = staged.window.instance.take_chosen();
         assert_eq!(
             chosen.as_ref().map(|(_press, address, _argument)| address),
             Some(&unfile.address),
             "one press runs the row's action once"
         );
         assert!(
-            staged.instance.take_chosen().is_none(),
+            staged.window.instance.take_chosen().is_none(),
             "the press runs one action, not two"
         );
     }
@@ -1625,7 +1521,7 @@ mod tests {
             &[],
         )
         .expect("the scenario stages");
-        staged.harness.relayout();
+        staged.window.harness.relayout();
         let descriptors = publish_actions(&mut staged);
         let (add, control) = descriptors
             .iter()
@@ -1655,14 +1551,14 @@ mod tests {
         assert!(marked.is_some(), "the agent's marker rests on the add");
 
         press_at(&mut staged, control);
-        let chosen = staged.instance.take_chosen();
+        let chosen = staged.window.instance.take_chosen();
         assert_eq!(
             chosen.as_ref().map(|(_press, address, _argument)| address),
             Some(&add.address),
             "one press runs the add once"
         );
         assert!(
-            staged.instance.take_chosen().is_none(),
+            staged.window.instance.take_chosen().is_none(),
             "the press runs one action, not two"
         );
     }
@@ -1686,7 +1582,7 @@ mod tests {
             &[],
         )
         .expect("the scenario stages");
-        staged.harness.relayout();
+        staged.window.harness.relayout();
         let descriptors = publish_actions(&mut staged);
         let (row, check) = descriptors
             .iter()
@@ -1698,14 +1594,14 @@ mod tests {
 
         // The box itself, where a person clicks it: the rest of the row is the row's own press.
         press_at(&mut staged, check);
-        let chosen = staged.instance.take_chosen();
+        let chosen = staged.window.instance.take_chosen();
         assert_eq!(
             chosen.as_ref().map(|(_press, address, _argument)| address),
             Some(&row.address),
             "one press runs the check's action once"
         );
         assert!(
-            staged.instance.take_chosen().is_none(),
+            staged.window.instance.take_chosen().is_none(),
             "the press runs one action, not two"
         );
     }
@@ -1734,7 +1630,7 @@ mod tests {
                 &[],
             )
             .expect("the scenario stages");
-            staged.harness.relayout();
+            staged.window.harness.relayout();
             let id = super::super::button_named(&staged.harness().inspection().root, label)
                 .expect("the task's row is a row of the list");
             {
@@ -1837,7 +1733,7 @@ mod tests {
             .expect("the scenario stages");
             // The window is laid out before the person reads it: a list
             // too narrow for an item beside its row settles as it draws.
-            staged.harness.relayout();
+            staged.window.harness.relayout();
 
             let root = &staged.harness().inspection().root;
             if width <= 390 {
@@ -1947,7 +1843,7 @@ mod tests {
                 &[],
             )
             .expect("the scenario stages");
-            staged.harness.relayout();
+            staged.window.harness.relayout();
             if width <= 390 {
                 a_step_due_another_day_stands_at_its_lists_first_level(&staged);
                 // A window too narrow for the list and the item at once: the task's row opens its
@@ -2285,7 +2181,7 @@ mod tests {
             )
             .expect("the scenario stages");
             assert!(
-                !staged.instance.pending(),
+                !staged.window.instance.pending(),
                 "the staged \"{scenario}\" window still reads the workspace off the frame"
             );
             staged
@@ -2300,7 +2196,7 @@ mod tests {
             // publishes is being read, and the window owes the app no message that would change what it
             // shows.
             assert!(
-                !staged.instance.pending(),
+                !staged.window.instance.pending(),
                 "the \"{scenario}\" window is laid out before the store read it whole"
             );
             assert!(
@@ -2525,6 +2421,7 @@ mod tests {
             .expect("the gallery lays out");
         // It opens on a page with content: the first group, Basics, rather than an empty one.
         let tree = staged
+            .window
             .instance
             .view(Level::Root)
             .expect("the gallery's root view");
@@ -2547,6 +2444,7 @@ mod tests {
         ] {
             let key = {
                 let tree = staged
+                    .window
                     .instance
                     .view(Level::Root)
                     .expect("the gallery's root view");
@@ -2555,6 +2453,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("the sidebar names {place}: {:#?}", tree.tree()))
             };
             let view = staged
+                .window
                 .instance
                 .view(Level::Root)
                 .expect("the gallery's root view");
@@ -2575,6 +2474,7 @@ mod tests {
                 )
                 .expect("the chosen page lays out");
             let tree = staged
+                .window
                 .instance
                 .view(Level::Root)
                 .expect("the gallery's root view");

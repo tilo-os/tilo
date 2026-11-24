@@ -5,8 +5,8 @@
 
 use base64::Engine as _;
 use tilolang_process::window::app::TlApp;
-use ui::a11y::{Action, Role};
-use ui::composition::page::{Page, Patch};
+use ui::a11y::Role;
+use ui::composition::page::{Page, PageAction, Patch};
 use ui::composition::{Composed, Composition};
 use ui::framework::testing::TestApp;
 use ui::headless::FrameHarness;
@@ -57,12 +57,7 @@ fn every_place_is_picked_and_patched_on_the_page() {
         // What the page sends back for a press on it: its action, on the widget its element
         // stands for, at the target it carries.
         let target = attribute(tag, "data-t");
-        let widget = picked
-            .path
-            .split_once('#')
-            .map_or(picked.path.as_str(), |(widget, _)| widget);
-        harness
-            .perform_semantic_named(widget, target.as_deref(), &Action::Activate)
+        page.act(harness, id, target.as_deref(), PageAction::Activate)
             .unwrap_or_else(|refused| panic!("a press on {place}'s row is taken: {refused}"));
         composition = until(
             harness,

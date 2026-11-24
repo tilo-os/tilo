@@ -8,34 +8,12 @@ use std::cell::RefCell;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 use tilolang::{Compiled, IdsLock, SeededEntropy, compile_package_with};
-use tilolang_lex::lexer::{Tok, lex, plain_comments};
 use tilolang_runtime::ids::MemberId;
 use tilolang_runtime::{
     Actor, AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance,
 };
+use ui::widget::code_editor::{Highlighter as _, TilolangHighlighter, TokenKind};
 use wasm_bindgen::prelude::*;
-
-const EXTRA_KEYWORDS: &[&str] = &[
-    "root",
-    "default",
-    "row",
-    "place",
-    "primary",
-    "destructive",
-    "initial",
-    "opened",
-    "migration",
-    "scenario",
-    "trigger",
-    "every",
-    "at",
-    "state",
-    "uses",
-    "search",
-    "filter",
-    "require",
-    "applies",
-];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PeerId {
@@ -110,18 +88,6 @@ thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
 }
 
-/// Build a lookup table mapping UTF-8 byte offset -> UTF-16 code unit offset.
-fn utf16_table(src: &str) -> Vec<usize> {
-    let mut table = Vec::with_capacity(src.len().saturating_add(1));
-    let mut at = 0usize;
-    for ch in src.chars() {
-        table.extend(std::iter::repeat_n(at, ch.len_utf8()));
-        at = at.saturating_add(ch.len_utf16());
-    }
-    table.push(at);
-    table
-}
-
 #[derive(Serialize)]
 struct HighlightSpan {
     start: usize,
@@ -129,108 +95,48 @@ struct HighlightSpan {
     kind: &'static str,
 }
 
-/// Tokenize tilolang source using `tilolang-lex`, returning JSON spans with UTF-16 offsets.
+/// A run's kind as a page's stylesheet names it.
+fn kind_name(kind: TokenKind) -> &'static str {
+    match kind {
+        TokenKind::Keyword => "keyword",
+        TokenKind::Type => "type",
+        TokenKind::Function => "function",
+        TokenKind::Number => "number",
+        TokenKind::StringLit | TokenKind::CharLit => "string",
+        TokenKind::Comment => "comment",
+        TokenKind::Operator | TokenKind::Punctuation => "punct",
+        TokenKind::Attribute => "ref",
+        TokenKind::Constant => "constant",
+        _ => "text",
+    }
+}
+
+/// `source`'s coloured runs as the toolkit's code editor colours tilolang
+/// ([`TilolangHighlighter`]), as JSON spans with UTF-16 offsets, as a page's editor counts.
 #[wasm_bindgen]
 pub fn tokenize(source: &str) -> String {
-    let (tokens, _diags) = lex(source);
-    let comments = plain_comments(source);
-    let table = utf16_table(source);
-    let to_u16 = |b: usize| table.get(b.min(source.len())).copied().unwrap_or_default();
-
-    let mut spans: Vec<HighlightSpan> =
-        Vec::with_capacity(tokens.len().saturating_add(comments.len()));
-
-    for c in comments {
-        spans.push(HighlightSpan {
-            start: to_u16(c.span.start),
-            end: to_u16(c.span.end),
-            kind: "comment",
-        });
-    }
-
-    let mut prev_was_dot = false;
-    let mut prev_was_value = false;
-
-    for tok in &tokens {
-        let start = to_u16(tok.span.start);
-        let end = to_u16(tok.span.end);
-        let kind: Option<&'static str> = match &tok.tok {
-            Tok::Newline | Tok::Eof => None,
-            Tok::Doc(_) => Some("doc"),
-            Tok::Kw(_) => Some("keyword"),
-            Tok::Ident(name) => {
-                if prev_was_dot && !prev_was_value {
-                    Some("enum")
-                } else if EXTRA_KEYWORDS.contains(&name.as_str()) {
-                    Some("keyword")
-                } else if name.as_bytes().first().is_some_and(u8::is_ascii_uppercase) {
-                    Some("type")
-                } else {
-                    Some("ident")
-                }
-            }
-            Tok::Str(_) => Some("string"),
-            Tok::Int(_)
-            | Tok::Float(_)
-            | Tok::Length(..)
-            | Tok::Duration(..)
-            | Tok::Calendar(_) => Some("number"),
-            Tok::Ref(_) => Some("ref"),
-            Tok::LParen
-            | Tok::RParen
-            | Tok::LBrace
-            | Tok::RBrace
-            | Tok::LBracket
-            | Tok::RBracket
-            | Tok::Comma
-            | Tok::Colon
-            | Tok::Dot
-            | Tok::DotDot
-            | Tok::Arrow
-            | Tok::FatArrow
-            | Tok::Assign
-            | Tok::PlusAssign
-            | Tok::MinusAssign
-            | Tok::EqEq
-            | Tok::NotEq
-            | Tok::Lt
-            | Tok::Le
-            | Tok::Gt
-            | Tok::Ge
-            | Tok::Plus
-            | Tok::Minus
-            | Tok::Star
-            | Tok::Slash
-            | Tok::Percent
-            | Tok::Hash
-            | Tok::QDot
-            | Tok::QQ
-            | Tok::Pipe => Some("punct"),
-        };
-
-        if let Some(k) = kind
-            && start < end
-        {
+    let mut spans = Vec::new();
+    // UTF-16 units before the line, and the line's byte offsets in UTF-16 units.
+    let mut before = 0usize;
+    for line in source.split('\n') {
+        let mut units = Vec::with_capacity(line.len().saturating_add(1));
+        let mut at = 0usize;
+        for ch in line.chars() {
+            units.extend(std::iter::repeat_n(at, ch.len_utf8()));
+            at = at.saturating_add(ch.len_utf16());
+        }
+        units.push(at);
+        let unit = |byte: usize| before.saturating_add(units.get(byte).copied().unwrap_or(at));
+        for span in TilolangHighlighter.spans(line, 0).spans {
             spans.push(HighlightSpan {
-                start,
-                end,
-                kind: k,
+                start: unit(span.range.start),
+                end: unit(span.range.end),
+                kind: kind_name(span.kind),
             });
         }
-
-        let is_dot = matches!(tok.tok, Tok::Dot);
-        prev_was_value = if is_dot {
-            prev_was_value
-        } else {
-            matches!(
-                tok.tok,
-                Tok::Ident(_) | Tok::RParen | Tok::RBracket | Tok::Str(_) | Tok::Int(_)
-            )
-        };
-        prev_was_dot = is_dot;
+        // The line and its `\n`.
+        before = before.saturating_add(at).saturating_add(1);
     }
-
-    spans.sort_by_key(|s| (s.start, s.end));
     serde_json::to_string(&spans).unwrap_or_else(|_| "[]".to_owned())
 }
 

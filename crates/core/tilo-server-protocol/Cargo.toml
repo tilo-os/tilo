@@ -24,6 +24,8 @@ tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
 # `EndpointAddr` in mesh profiles and home-peer registrations.
 iroh-base = { workspace = true, features = ["key"] }
 serde.workspace = true
+# What a person does on a page's element, in the page's one vocabulary.
+tilo-headless-schema = { version = "0.1.0", path = "../../ui/headless-schema" }
 # Signatures in handshake and delta messages travel as one byte string.
 serde_bytes.workspace = true
 serde_json.workspace = true

@@ -115,13 +115,9 @@ impl Tree {
     /// No package stands in `root`, an import no package declares, or a package with errors.
     pub fn compile(&self, root: &str) -> Result<(Vec<BuiltPackage>, Vec<PackageMeta>), Failure> {
         let root = Path::new(root.trim_start_matches("./").trim_end_matches('/'));
-        let mut published =
-            tilolang_tilo::platform_apps::platform_packages().map_err(Failure::read)?;
-        for native in &self.natives {
-            if !published.iter().any(|meta| meta.app == native.app) {
-                published.push(native.clone());
-            }
-        }
+        let published =
+            tilolang_tilo::catalogue::published_packages_with(self.natives.iter().cloned())
+                .map_err(Failure::read)?;
         let Some(first) = self.packages.iter().find(|(dir, ..)| dir == root) else {
             return Err(Failure::read(format!(
                 "{}: no .tl files; a package is a directory of .tl files",

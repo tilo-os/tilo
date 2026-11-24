@@ -35,6 +35,34 @@ impl SemanticAction {
     }
 }
 
+/// What a person does on an element of a web page (its `data-a`), as the page sends it: the
+/// semantic action of the node the element stands for (`ui::composition::page::semantic`), or the
+/// page's own size.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageAction {
+    Activate,
+    Toggle,
+    Focus,
+    /// A field's or a document block's whole text.
+    Value(String),
+    /// A selection in a field's text, in grapheme indices.
+    Select {
+        anchor: u32,
+        focus: u32,
+    },
+    /// One step up of a slider or a stepper, as its arrow key takes it.
+    Increment,
+    /// One step down.
+    Decrement,
+    /// The page's window is `width` by `height` CSS pixels: the view lays itself out at that
+    /// size, as a window does at the size it is given, and the page shows it there.
+    Resize {
+        width: u32,
+        height: u32,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     /// Click the centre of the widget addressed by `name`: its test id or the `Parent/Child[index]`

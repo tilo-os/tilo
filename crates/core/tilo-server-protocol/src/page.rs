@@ -183,32 +183,9 @@ pub enum PageAsk {
     },
 }
 
-/// What a person does on an element of a page (`data-a`), as the semantic
-/// action of the view it stands for.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PageAction {
-    Activate,
-    Toggle,
-    Focus,
-    /// A field's or a document block's whole text.
-    Value(String),
-    /// A selection in a field's text, in grapheme indices.
-    Select {
-        anchor: u32,
-        focus: u32,
-    },
-    /// One step up of a slider or a stepper, as its arrow key takes it.
-    Increment,
-    /// One step down.
-    Decrement,
-    /// The page's window is `width` by `height` CSS pixels: the view lays itself out at that
-    /// size, as a window does at the size it is given, and the page shows it there.
-    Resize {
-        width: u32,
-        height: u32,
-    },
-}
+/// What a person does on an element of a page (`data-a`): one vocabulary with the page's
+/// writer and every window that answers it.
+pub use tilo_headless_schema::PageAction;
 
 /// One element of a page replaced: the one numbered `id` takes `html`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

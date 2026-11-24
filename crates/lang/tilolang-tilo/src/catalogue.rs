@@ -428,8 +428,16 @@ fn part_roots(
 /// native apps among `search` ([`native_apps`]). What `tilolang check`, `build`, `describe` and
 /// `layout-check` compile against; a native app the platform already provides is the platform's.
 pub fn published_packages(search: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {
+    published_packages_with(native_apps(search)?)
+}
+
+/// As [`published_packages`], with native apps already read (a page holds their surfaces as
+/// text, not in directories).
+pub fn published_packages_with(
+    natives: impl IntoIterator<Item = PackageMeta>,
+) -> Result<Vec<PackageMeta>, String> {
     let mut out = crate::platform_apps::platform_packages()?;
-    for native in native_apps(search)? {
+    for native in natives {
         if !out.iter().any(|meta| meta.app == native.app) {
             out.push(native);
         }

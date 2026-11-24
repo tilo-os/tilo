@@ -7,7 +7,8 @@
 //!   ([`window::AppPage`]), and what the person does on that page acted on the window.
 //! - **The playground** ([`playground`]): one source text, run by two people whose workspaces sync,
 //!   and its view trees as JSON.
-//! - **Highlighting** ([`playground::tokenize`]): the lexer's tokens as editor spans.
+//! - **Highlighting** ([`playground::tokenize`]): a source's spans as the toolkit's code editor
+//!   colours them.
 //!
 //! Every export takes and answers JSON text, so a page needs no bindings of its own.
 
@@ -17,17 +18,16 @@ use std::rc::Rc;
 
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+use ui::composition::page::PageAction;
 use wasm_bindgen::prelude::*;
 
 pub mod files;
 mod fonts;
-mod platform;
 pub mod playground;
 pub mod window;
 
-pub use platform::Packages;
-
 use files::{Failure, Tree};
+use tilolang_window::Packages;
 use window::{AppPage, Staging};
 
 thread_local! {
@@ -163,11 +163,12 @@ pub fn open_app(files_json: &str, root: &str, options_json: &str) -> String {
         dark: options.dark,
         link_home: options.link_home,
     };
-    let mut page = match AppPage::open(&app.app, &packages, &staging) {
+    let mut page = match AppPage::open(&app.app, &packages, staging) {
         Ok(page) => page,
         Err(error) => return refused(error),
     };
-    let (css, body, gaps) = (page.css(), page.render(), page.gaps());
+    let (css, body) = (page.css(), page.render());
+    let gaps = json!(page.gaps());
     let handle = NEXT.with(|next| {
         let mut next = next.borrow_mut();
         let handle = *next;
@@ -181,7 +182,7 @@ pub fn open_app(files_json: &str, root: &str, options_json: &str) -> String {
         object.insert("scenario".into(), scenario.into());
         object.insert("css".into(), css.into());
         object.insert("body".into(), body.into());
-        object.insert("gaps".into(), json!(gaps));
+        object.insert("gaps".into(), gaps);
     }
     out.to_string()
 }
@@ -217,17 +218,18 @@ pub fn app_render(handle: u32) -> String {
 }
 
 /// What the person did on the element numbered `id` (its `data-p`) at `target` (its `data-t`):
-/// `"activate"`, `"toggle"`, `"focus"`, `{"value": text}` or `{"select": {anchor, focus}}`, as
-/// the element's `data-a` asks. Answers `{ok, patches: [{id, html}]}`: each element to replace,
+/// `"activate"`, `"toggle"`, `"focus"`, `"increment"`, `"decrement"`, `{"value": text}` or
+/// `{"select": {anchor, focus}}`, as the element's `data-a` asks, or `{"resize": {width,
+/// height}}`. Answers `{ok, patches: [{id, html}]}`: each element to replace,
 /// by its `data-p`.
 #[wasm_bindgen]
 pub fn app_act(handle: u32, id: u32, target: Option<String>, action_json: &str) -> String {
-    let action = match semantic(action_json) {
+    let action = match page_action(action_json) {
         Ok(action) => action,
         Err(error) => return refused(error),
     };
     with_page(handle, move |page| {
-        page.act(id, target.as_deref(), &action)
+        page.act(id, target.as_deref(), action)
             .map(|patches| patches_json(&patches))
     })
 }
@@ -256,34 +258,15 @@ pub fn app_close(handle: u32) -> bool {
     PAGES.with(|pages| pages.borrow_mut().remove(&handle).is_some())
 }
 
-/// What a page sends for an element's `data-a`, as the toolkit's semantic action.
-fn semantic(action_json: &str) -> Result<ui::a11y::Action, String> {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    enum Said {
-        Value(String),
-        Select { anchor: usize, focus: usize },
-    }
-    let json: Json = serde_json::from_str(action_json)
-        .or_else(|_| Ok::<_, String>(Json::String(action_json.to_owned())))?;
-    match json {
-        Json::String(word) => match word.as_str() {
-            "activate" => Ok(ui::a11y::Action::Activate),
-            "toggle" => Ok(ui::a11y::Action::ToggleCheck),
-            "focus" => Ok(ui::a11y::Action::Focus),
-            "increment" => Ok(ui::a11y::Action::Increment),
-            "decrement" => Ok(ui::a11y::Action::Decrement),
-            other => Err(format!(
-                "`{other}` is no page action: activate, toggle, focus, increment, decrement, \
-                 {{value}} or {{select}}"
-            )),
-        },
-        other => match serde_json::from_value::<Said>(other) {
-            Ok(Said::Value(value)) => Ok(ui::a11y::Action::SetValue(value)),
-            Ok(Said::Select { anchor, focus }) => {
-                Ok(ui::a11y::Action::SetSelection { anchor, focus })
-            }
-            Err(error) => Err(format!("the action does not read: {error}")),
-        },
-    }
+/// What a page sends for an element's `data-a` ([`PageAction`]): its JSON, or the bare word of
+/// an action that carries nothing (`activate`).
+fn page_action(action_json: &str) -> Result<PageAction, String> {
+    serde_json::from_str(action_json)
+        .or_else(|_| serde_json::from_value(Json::String(action_json.to_owned())))
+        .map_err(|error| {
+            format!(
+                "`{action_json}` is no page action: activate, toggle, focus, increment, \
+                 decrement, {{value}}, {{select}} or {{resize}} ({error})"
+            )
+        })
 }

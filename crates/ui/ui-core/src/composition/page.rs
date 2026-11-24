@@ -19,11 +19,13 @@
 //! [`Page::render`] answers the whole document body. [`Page::patch`] answers only the elements
 //! that changed since the last render, each replacing the element with its `data-p`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
+pub use tilo_headless_schema::PageAction;
+
 use super::{Composed, Composition};
-use crate::a11y::{AccessNode, Autofill, Role};
+use crate::a11y::{AccessNode, Action, Autofill, Role};
 
 /// One page's render of a window: the numbers its elements carry, kept by
 /// path, and the elements it last sent, so the next render answers only what
@@ -38,6 +40,37 @@ pub struct Page {
     /// place's window natively (a link to the app's own page). A well the host fills with
     /// nothing stays empty.
     pub wells: HashMap<String, String>,
+    /// What the last render showed other than as the browser's own elements.
+    shown: Shown,
+}
+
+/// What a page shows other than as the browser's own elements, by widget, with how many of each
+/// it holds: `painted`, widgets shown as a picture of their paint, which stays empty where no
+/// host draws it; `placed`, containers that place their children at rectangles of their own,
+/// which the page places at those rectangles rather than flowing them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Shown {
+    pub painted: BTreeMap<String, usize>,
+    pub placed: BTreeMap<String, usize>,
+}
+
+/// The accessibility action `action` is on the node its element stands for; `None` for the
+/// page's own size, which the window is laid out at rather than acted on.
+#[must_use]
+pub fn semantic(action: PageAction) -> Option<Action> {
+    Some(match action {
+        PageAction::Activate => Action::Activate,
+        PageAction::Toggle => Action::ToggleCheck,
+        PageAction::Focus => Action::Focus,
+        PageAction::Value(value) => Action::SetValue(value),
+        PageAction::Select { anchor, focus } => Action::SetSelection {
+            anchor: usize::try_from(anchor).unwrap_or(usize::MAX),
+            focus: usize::try_from(focus).unwrap_or(usize::MAX),
+        },
+        PageAction::Increment => Action::Increment,
+        PageAction::Decrement => Action::Decrement,
+        PageAction::Resize { .. } => return None,
+    })
 }
 
 /// One element replaced by its new HTML: what [`Page::patch`] answers.
@@ -369,6 +402,36 @@ impl Page {
         self.paths.get(id as usize).map(String::as_str)
     }
 
+    /// What the person did on the element numbered `id` (the semantic `target` it carries),
+    /// performed on `frame` as that node's accessibility action. An element the page numbers
+    /// for a part of a widget (a document's block, a control) is acted on through the widget it
+    /// is a part of.
+    ///
+    /// # Errors
+    /// The page numbers no such element, `action` is the page's size rather than an action on
+    /// an element, or the view refuses it.
+    pub fn act(
+        &self,
+        frame: &mut crate::headless::FrameHarness,
+        id: u32,
+        target: Option<&str>,
+        action: PageAction,
+    ) -> Result<(), String> {
+        let path = self
+            .path(id)
+            .ok_or_else(|| format!("the page numbers no element {id}"))?;
+        let widget = path.split_once('#').map_or(path, |(widget, _)| widget);
+        let action = semantic(action)
+            .ok_or_else(|| "a page's size is laid out, not acted on an element".to_owned())?;
+        frame.perform_semantic_named(widget, target, &action)
+    }
+
+    /// What the last render or patch showed other than as the browser's own elements.
+    #[must_use]
+    pub fn shown(&self) -> &Shown {
+        &self.shown
+    }
+
     /// The whole page body for `composition`, which [`Self::patch`] later
     /// answers changes to.
     pub fn render(&mut self, composition: &Composition) -> String {
@@ -398,6 +461,7 @@ impl Page {
     }
 
     fn build(&mut self, composition: &Composition) -> Element {
+        self.shown = Shown::default();
         let mut body = Element::new("div");
         body.id = Some(self.id(""));
         body.attr("class", "tilo-view");
@@ -473,6 +537,15 @@ impl Page {
             );
         }
         let places = !leaf && !node.flows;
+        for (counts, held) in [
+            (&mut self.shown.painted, shows == Shows::Paint),
+            (&mut self.shown.placed, places),
+        ] {
+            if held {
+                let count = counts.entry(node.widget.clone()).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
         let overlaid = shows == Shows::Paint && semantics.is_some_and(acts_within);
         if (places || overlaid) && matches!(place, Place::Flow) {
             css.push_str("position:relative;");

@@ -46,8 +46,8 @@ tilolang-tilo = { path = "../tilolang-tilo" }
 # services' origins as a seeded workspace takes them in.
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
 tilolang-youtube = { path = "../../integrations/tilolang-youtube", default-features = false }
-# The platform a window with nothing on screen stands on, which `layout-check` lays out over.
-tilolang-web = { path = "../tilolang-web" }
+# The window with nothing on screen `layout-check` lays out, and the platform it stands on.
+tilolang-window = { path = "../tilolang-window" }
 # The person the layout is checked for: their language, staged over the machine's.
 tilo-process = { path = "../../platform/tilo-process", features = ["native"] }
 # Rebuilding on every saved source.

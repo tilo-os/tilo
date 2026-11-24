@@ -95,25 +95,25 @@ impl ShownOnPage {
     }
 
     /// What the person did on the element numbered `id` (the semantic `target` it carries),
-    /// acted on the view, and what it changed on the page. An element the page numbers for a
-    /// part of a widget (a document's block, a control) is acted on through the widget it is a
-    /// part of. A press the view refuses changes nothing, and the page is answered what changed
-    /// all the same.
+    /// acted on the view ([`Page::act`]), or the size the page's window now is, and what it
+    /// changed on the page. A press the view refuses changes nothing, and the page is answered
+    /// what changed all the same.
     pub fn act(
         &mut self,
         frame: &mut FrameHarness,
         id: u32,
         target: Option<&str>,
-        action: &Action,
+        action: PageAction,
     ) -> Vec<Patch> {
-        if let Some(path) = self.page.path(id) {
-            let widget = path
-                .split_once('#')
-                .map_or(path, |(widget, _)| widget)
-                .to_owned();
-            if let Err(reason) = frame.perform_semantic_named(&widget, target, action) {
-                tracing::debug!(%reason, widget, "a page's press was refused");
+        let acted = match action {
+            PageAction::Resize { width, height } => {
+                resize(frame, width, height);
+                Ok(())
             }
+            action => self.page.act(frame, id, target, action),
+        };
+        if let Err(reason) = acted {
+            tracing::debug!(%reason, id, "a page's press was refused");
         }
         self.changed(frame)
     }
@@ -176,24 +176,6 @@ fn widget_of_target(composition: &Composition, target: &str) -> Option<String> {
         .find_map(|node| find(node, target))
 }
 
-/// The semantic action `act` is on the view; `None` for what is no node's action (the page's
-/// window resized, [`resize`]).
-fn semantic(act: PageAction) -> Option<Action> {
-    Some(match act {
-        PageAction::Activate => Action::Activate,
-        PageAction::Toggle => Action::ToggleCheck,
-        PageAction::Focus => Action::Focus,
-        PageAction::Increment => Action::Increment,
-        PageAction::Decrement => Action::Decrement,
-        PageAction::Value(value) => Action::SetValue(value),
-        PageAction::Select { anchor, focus } => Action::SetSelection {
-            anchor: usize::try_from(anchor).unwrap_or(usize::MAX),
-            focus: usize::try_from(focus).unwrap_or(usize::MAX),
-        },
-        PageAction::Resize { .. } => return None,
-    })
-}
-
 /// Lay `frame` out at its page's size, `width` by `height` CSS pixels (kept between 240 and 8192
 /// on a side), as a window lays out at the size it is given: a narrow page shows the view as a
 /// narrow window does, and what a node's bounds say is where the page shows it.
@@ -239,20 +221,7 @@ pub fn serve(
                 if let Some(call) = call {
                     serving_call(frame, call, invoker);
                 }
-                let size = match action {
-                    PageAction::Resize { width, height } => Some((width, height)),
-                    _ => None,
-                };
-                let changed = match semantic(action) {
-                    Some(action) => page.act(frame, id, target.as_deref(), &action),
-                    None => {
-                        // The page's window took a size: the view lays itself out at it.
-                        if let Some((width, height)) = size {
-                            resize(frame, width, height);
-                        }
-                        page.changed(frame)
-                    }
-                };
+                let changed = page.act(frame, id, target.as_deref(), action);
                 if serving {
                     serving_call(frame, Vec::new(), None);
                 }

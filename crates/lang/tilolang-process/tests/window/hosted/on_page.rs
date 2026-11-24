@@ -126,7 +126,7 @@ fn a_task_checked_off_on_the_page_is_done_in_the_workspace() {
         session.window.harness(),
         id,
         target.as_deref(),
-        &ui::a11y::Action::ToggleCheck,
+        ui::composition::page::PageAction::Toggle,
     );
     session.settle();
     patches.extend(page.changed(session.window.harness()));
