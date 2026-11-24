@@ -597,10 +597,16 @@ impl Table {
                 .key(&order.by)
                 .is_some_and(|(held, at)| held == *key && at == *place)
         };
-        let by_value = query.filters.iter().find_map(|filter| match filter {
-            Filter::Is(field, value) | Filter::Has(field, value) => Some((field, value)),
-            _ => None,
-        });
+        // Of the values asked for, the one fewest resources hold: the open marks of an artwork
+        // are found among the open ones, not by walking every mark the artwork holds.
+        let by_value = query
+            .filters
+            .iter()
+            .filter_map(|filter| match filter {
+                Filter::Is(field, value) | Filter::Has(field, value) => Some((field, value)),
+                _ => None,
+            })
+            .min_by_key(|(field, value)| self.holding_len(field, value));
         // One value's resources in the kind's order: a range of that field's entries.
         let mut keys: Vec<Entry> =
             if let (Sort::Position, Some((field, value))) = (&order.by, by_value) {
