@@ -2420,7 +2420,8 @@ fn menu_command(node: &UiNode) -> Command {
         label: text_of(node, "label").unwrap_or_default(),
         key: text_of(node, "key"),
         group: text_of(node, "group"),
-        reason: text_of(node, "reason"),
+        // The reason a dimmed control cannot run is the `description` every control gives it.
+        reason: text_of(node, "description"),
         enabled: !flag(node, "disabled"),
         destructive: flag(node, "destructive"),
     }
