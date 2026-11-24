@@ -51,6 +51,27 @@ tilo_test_env::scenario! {
         assert_eq!(with_items(unmade), ["E020", "E020"]);
     }
 
+    phase a_record_value_may_hold_records_at_any_depth;
+    {
+        // A record a decode answers is a value, and so are the records its fields hold: a
+        // record, an option of one, a list and a map of them, at any depth.
+        let types = "type Inner {\n    title: Text\n}\n\n\
+type Outer {\n    inner: Inner\n    maybe: Option<Inner>\n    found: List<Inner>\n    by_key: Map<Inner>\n}\n\n";
+        let read = "action read(t: Text, c: Counter) {\n\
+    match json.decode<Outer>(t) {\n\
+        .ok(o) => { c.n = o.inner.title.len() + o.found.len() }\n\
+        .err(why) => { c.n = why.len() }\n\
+    }\n\
+}\n";
+        assert_eq!(with_items(&format!("{types}{read}")), Vec::<String>::new());
+
+        // A collection holds resources, and JSON text makes none of them, at whatever depth
+        // the field stands.
+        let resourceful = "type Resourceful {\n    inner: Inner\n    items: Collection<Inner>\n}\n\n\
+action read(t: Text, c: Counter) {\n    json.decode<Resourceful>(t)\n    c.n = 0\n}\n";
+        assert_eq!(with_items(&format!("{types}{resourceful}")), ["E023"]);
+    }
+
     phase a_call_between_angle_brackets_says_what_it_takes;
     {
         let no_type = "action read(t: Text, c: Counter) {\n    json.decode(t)\n    c.n = 0\n}\n";

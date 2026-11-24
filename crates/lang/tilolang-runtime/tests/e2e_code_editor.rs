@@ -24,6 +24,8 @@ mod cases {
         asked: Rc<RefCell<Vec<(String, String)>>>,
         /// Whether the next save finds the file changed on disk.
         conflict: Rc<RefCell<bool>>,
+        /// The language server's answer, while a test sets one; `None` answers ready.
+        server: Rc<RefCell<Option<String>>>,
     }
 
     impl Engine {
@@ -46,6 +48,11 @@ mod cases {
                 .filter(|(asked, _)| asked == op)
                 .map(|(_, input)| input.clone())
                 .collect()
+        }
+
+        /// Makes the language server answer `answer` at its next status.
+        fn server_answers(&self, answer: &str) {
+            *self.server.borrow_mut() = Some(answer.to_owned());
         }
     }
 
@@ -109,7 +116,9 @@ mod cases {
                     r#"{"state":"done","hits":[{"path":"/p/src/main.rs","rel":"src/main.rs","line":0,"column":9,"len":4,"preview":"fn main() {}"}],"files":2,"truncated":false}"#
                         .to_owned(),
                 ),
-                "server-1" => Ok(r#"{"state":"ready","server":"rust-analyzer","failure":"","progress":[],"diagnostics":{"\/p\/src\/main.rs":[{"severity":"warning","line":0,"column":3,"message":"unused import"}]},"answer":""}"#.to_owned()),
+                "server-1" => Ok(self.server.borrow().clone().unwrap_or_else(|| {
+                    r#"{"state":"ready","server":"rust-analyzer","failure":"","progress":null,"diagnostics":{"\/p\/src\/main.rs":[{"severity":"warning","line":0,"column":3,"message":"unused import"}]},"answer":""}"#.to_owned()
+                })),
                 other => Err(format!("no job `{other}` runs on this device")),
             }
         }
@@ -861,6 +870,11 @@ mod cases {
             editor.text(&editor.root, "server_trouble"),
             editor.text(&editor.root, "server_job")
         );
+        assert_eq!(
+            editor.text(&editor.root, "server_progress"),
+            "",
+            "a server doing nothing has no progress to show"
+        );
         let _ = main;
 
         editor.call(
@@ -879,6 +893,42 @@ mod cases {
                 .iter()
                 .any(|ask| ask.contains("\"what\":\"complete\""))
         );
+    }
+
+    #[test]
+    fn a_language_servers_progress_reads_through() {
+        let editor = Editor::new();
+        editor.call(
+            "open_folder",
+            vec![Value::resource(&editor.root), Value::text("/p")],
+        );
+        let rust = editor
+            .records(&editor.root, "files")
+            .into_iter()
+            .find(|f| editor.text(f, "name") == "main.rs")
+            .expect("the file the device listed");
+        editor.call(
+            "check",
+            vec![Value::resource(&editor.root), Value::resource(&rust)],
+        );
+        editor.engine.server_answers(
+            r#"{"state":"busy","server":"rust-analyzer","failure":"","progress":{"title":"Indexing","detail":"crates","percent":42},"diagnostics":{},"answer":""}"#,
+        );
+        editor.call("poll", vec![Value::resource(&editor.root)]);
+        assert_eq!(editor.text(&editor.root, "server_state"), "busy");
+        assert_eq!(editor.text(&editor.root, "server_name"), "rust-analyzer");
+        assert_eq!(
+            editor.text(&editor.root, "server_progress"),
+            "Indexing 42%",
+            "the progress object the engine sends reads into its fields"
+        );
+
+        // Work the server reports without a percentage shows its title alone.
+        editor.engine.server_answers(
+            r#"{"state":"busy","server":"rust-analyzer","failure":"","progress":{"title":"Indexing","detail":"","percent":null},"diagnostics":{},"answer":""}"#,
+        );
+        editor.call("poll", vec![Value::resource(&editor.root)]);
+        assert_eq!(editor.text(&editor.root, "server_progress"), "Indexing");
     }
 
     #[test]

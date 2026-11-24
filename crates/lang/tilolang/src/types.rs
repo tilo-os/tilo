@@ -324,6 +324,17 @@ impl Ty {
         self.reads_json() || matches!(self, Self::Json)
     }
 
+    /// Whether every value of this type is a resource the store keeps, never a plain value: a
+    /// collection, a set, a filter or a union. JSON text makes values, so it makes none of these;
+    /// a record is a value where text makes it, even where its fields are resources.
+    #[must_use]
+    pub const fn always_a_resource(&self) -> bool {
+        matches!(
+            self,
+            Self::Collection(_) | Self::Set(_) | Self::Filter(_) | Self::Union(_)
+        )
+    }
+
     /// The type as source writes it: local records and enums by name, foreign ones qualified by
     /// their app id.
     pub fn display(&self, own_app: &str) -> String {

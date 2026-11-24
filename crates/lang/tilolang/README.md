@@ -563,8 +563,8 @@ action refresh(feed: Feed) uses web {
 ```
 
 `json.decode<T>(text)` reads `Int`, `Float`, `Bool`, `Text` (and what holds text: `Date`, `Time`,
-`std.Identifier`), a `List`, an `Option`, an enum and a record, matching a record's fields by
-name; a record's field may hold a `Map`, a short list of text keys to values. A field the text leaves out is none when it is an `Option`, or the value the type
+`std.Identifier`), a `List`, an `Option`, a `Map`, an enum and a record, matching a record's
+fields by name. A field the text leaves out is none when it is an `Option`, or the value the type
 declares for it; a required one it leaves out is an error at that field's path. Names the type
 has no field for are ignored, so a service that adds one breaks no reader.
 
@@ -578,9 +578,11 @@ not fit, so a message names one path, not each.
 
 A record a decode answers is a record value: it has no id, and no store holds it until it is put
 in a collection (`feed.entries.insert(entry)`), which is what a record value is for; its fields
-read as the text gave them. A record field that holds a resource (a record, a collection, a set)
-cannot be made from text, so text carrying one is an error naming that field's path: read the
-list and insert what it holds.
+read as the text gave them. The records its fields hold are values too, at any depth: a record,
+an `Option` of one, a `List` or a `Map` of them reads, its fields read, and an option is none
+where the text says `null` or leaves it out. A field that holds a resource the store keeps (a
+collection or a set) cannot be made from text: the checker refuses a decode type whose field is
+one (E023), and text that carries one to a running package is an error naming that field's path.
 
 A record value is an ordinary value, as one built with its fields (`Place(name: n, key: k)`) is.
 A local holding one has its fields set like a resource's, in a fn as in an action, and the

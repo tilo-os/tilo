@@ -560,9 +560,7 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
                     "state": state,
                     "server": session.server,
                     "failure": session.failure,
-                    // A list of the one piece of work under way, or none: a record the app
-                    // reads is a value it holds, never a reference an option would name.
-                    "progress": progress.into_iter().collect::<Vec<_>>(),
+                    "progress": progress,
                     "diagnostics": diagnostics,
                     "answer": answer,
                 })

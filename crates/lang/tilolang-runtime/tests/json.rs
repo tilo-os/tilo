@@ -34,6 +34,8 @@ type Item {
 
 type Wrapped {
     inner: Item
+    maybe: Option<Item>
+    found: List<Item>
     label: Text
 }
 
@@ -70,7 +72,11 @@ action decode_one(f: Feed) uses web {
 action wrap(f: Feed) uses web {
     let r = web.get("https://example.com/feed")
     match json.decode<Wrapped>(r.text()) {
-        .ok(w) => { f.status = "read {w.label}" }
+        .ok(w) => {
+            let maybe = if let m = w.maybe { m.title } else { "no maybe" }
+            let first = if let x = w.found.first() { x.title } else { "no found" }
+            f.status = "read {w.label} {w.inner.title} {w.inner.stars} {maybe} {first}"
+        }
         .err(why) => { f.status = why }
     }
 }
@@ -340,16 +346,62 @@ action explore(f: Feed) uses web {
             w.text("status")
         );
 
-        let mut w = world(r#"{"title": "a", "stars": 1, "score": 1, "state": "open"}"#);
+        let w = world(r#"{"title": "a", "stars": 1, "score": 1, "state": "open"}"#);
         w.call("decode_one");
         assert_eq!(w.text("status"), "read a");
+    }
 
-        // A record field holds a resource, which text cannot make: the error says where.
-        w = world(r#"{"inner": {"title": "a"}, "label": "x"}"#);
+    /// A record nested in a decoded record is a value too, at any depth: text makes it and its
+    /// fields read. An option of one is none when the text says `null` or leaves it out.
+    #[test]
+    fn a_record_field_reads_a_record_value_at_any_depth() {
+        const NESTED: &str = r#"{
+          "inner": {"title": "a", "stars": 4, "score": 1.0, "state": "open"},
+          "maybe": {"title": "b", "stars": 1, "score": 2.0, "state": "closed"},
+          "found": [{"title": "first", "stars": 2, "score": 3.0, "state": "tagged"}],
+          "label": "x"
+        }"#;
+        let w = world(NESTED);
+        w.call("wrap");
+        assert_eq!(
+            w.text("status"),
+            "read x a 4 b first",
+            "a record, an option of one and a list of them read as values, field by field"
+        );
+
+        let null = NESTED.replace(
+            r#""maybe": {"title": "b", "stars": 1, "score": 2.0, "state": "closed"}"#,
+            r#""maybe": null"#,
+        );
+        let w = world(&null);
+        w.call("wrap");
+        assert_eq!(
+            w.text("status"),
+            "read x a 4 no maybe first",
+            "null is none"
+        );
+
+        let missing = NESTED.replace(
+            r#""maybe": {"title": "b", "stars": 1, "score": 2.0, "state": "closed"},"#,
+            "",
+        );
+        let w = world(&missing);
+        w.call("wrap");
+        assert_eq!(
+            w.text("status"),
+            "read x a 4 no maybe first",
+            "a field the text leaves out is none"
+        );
+
+        let wrong = NESTED.replace(r#""stars": 4"#, r#""stars": "no""#);
+        let w = world(&wrong);
         w.call("wrap");
         let why = w.text("status");
-        assert!(why.contains("$.inner"), "names the path: {why}");
-        assert!(why.contains("holds resources"), "{why}");
+        assert!(
+            why.contains("$.inner.stars"),
+            "names the nested path: {why}"
+        );
+        assert!(why.contains("whole number"), "{why}");
     }
 
     #[test]

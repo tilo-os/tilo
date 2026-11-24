@@ -1007,6 +1007,38 @@ impl Checker<'_> {
         }
     }
 
+    /// Whether JSON text can make `ty`: what [`Ty::reads_json`] says, through a record's fields
+    /// too. A record is a value whose fields are read by name, so a resource a field reaches is
+    /// the one thing text cannot make. `None` when everything the type reaches is a value.
+    fn decode_reaches_a_resource(
+        &self,
+        ty: &Ty,
+        seen: &mut Vec<crate::types::TypeKey>,
+    ) -> Option<Ty> {
+        if ty.always_a_resource() {
+            return Some(ty.clone());
+        }
+        match ty {
+            Ty::Option(inner) | Ty::List(inner) | Ty::Map(inner) => {
+                self.decode_reaches_a_resource(inner, seen)
+            }
+            Ty::Record(key) if !crate::host::is_value(key) => {
+                if seen.contains(key) {
+                    return None;
+                }
+                seen.push(key.clone());
+                let found = self.env.type_info(key).and_then(|info| {
+                    info.fields
+                        .iter()
+                        .find_map(|field| self.decode_reaches_a_resource(&field.ty, seen))
+                });
+                seen.pop();
+                found
+            }
+            _ => None,
+        }
+    }
+
     /// Whether a field of type `ty` holds a resource: any resource (`host.Resource`), one
     /// resource type, or any of a union's.
     fn is_any_resource_field(ty: &Ty) -> bool {
@@ -2508,6 +2540,19 @@ impl Checker<'_> {
                         written.span,
                         format!(
                             "`json.decode` reads a value text can make: Int, Float, Bool, Text, Date, Time, a list, an option, an enum or a record; `{t}` is none of them"
+                        ),
+                    );
+                    return Ex::error();
+                }
+                if !held.is_error()
+                    && let Some(found) = self.decode_reaches_a_resource(&held, &mut Vec::new())
+                {
+                    let t = self.show(&found);
+                    self.err(
+                        "E023",
+                        written.span,
+                        format!(
+                            "`json.decode` reads values, and `{t}` is a resource the store keeps: JSON text makes none, so a field holding one cannot be read from it. Read a `List` and insert what it holds"
                         ),
                     );
                     return Ex::error();
