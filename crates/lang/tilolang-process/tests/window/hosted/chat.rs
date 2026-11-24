@@ -52,24 +52,40 @@ fn chat_with_an_agent() -> (Session, String) {
     (session, workspace)
 }
 
-/// The person opens the conversation with their agent from the sidebar: the agent stands under
-/// Direct messages as the member list names it, and choosing it opens the conversation.
+/// The person opens the conversation with their agent from the sidebar: Everyone lists who the
+/// workspace holds, the agent among them as the member list names it, and the way to the
+/// conversation with it opens that conversation.
 fn open_the_agents_conversation(session: &mut Session) {
-    let named = session
-        .controls()
-        .into_iter()
-        .map(|control| control.name)
-        .collect::<Vec<_>>();
-    let node = session
-        .window
-        .harness()
-        .a11y_node_named(AGENT_NAME)
-        .unwrap_or_else(|| panic!("the sidebar offers {AGENT_NAME:?}: {named:?}"));
-    session
-        .window
-        .harness()
-        .perform_a11y_action(node, &ui::a11y::Action::Activate)
-        .unwrap_or_else(|why| panic!("choosing {AGENT_NAME} opens the conversation: {why}"));
+    session.window.press_named("Everyone");
+    session.settle();
+    let nodes = session.window.harness().a11y_nodes();
+    let (_, row) = nodes
+        .iter()
+        .find_map(|(at, node)| (node.label().as_deref() == Some(AGENT_NAME)).then_some((*at, node)))
+        .unwrap_or_else(|| {
+            let named = session
+                .controls()
+                .into_iter()
+                .map(|control| control.name)
+                .collect::<Vec<_>>();
+            panic!("Everyone lists {AGENT_NAME:?}: {named:?}")
+        });
+    let row = row.bounds().expect("the agent's row is laid out");
+    // The Message control in that row, past the agent's name.
+    let message = nodes
+        .iter()
+        .filter_map(|(_, node)| {
+            (node.label().as_deref() == Some("Message"))
+                .then(|| node.bounds())
+                .flatten()
+                .filter(|rect| rect.y0 >= row.y0 - 1.0 && rect.y1 <= row.y1 + 1.0)
+        })
+        .min_by(|one, two| one.x0.total_cmp(&two.x0))
+        .expect("the agent's row offers Message");
+    session.window.click_at(
+        f64::midpoint(message.x0, message.x1),
+        f64::midpoint(message.y0, message.y1),
+    );
     session.settle();
 }
 
@@ -821,4 +837,279 @@ fn a_person_replies_to_a_message_and_the_window_quotes_what_it_answers() {
         "the reply quotes what it answers above its words: {}",
         answer.text
     );
+}
+
+/// The person's chooser at the window: it answers a contents pick with the files `files` names,
+/// as a person choosing them in the system's chooser does, and keeps what it was asked.
+struct Picks {
+    files: Vec<(&'static str, &'static [u8])>,
+    asked: std::sync::Mutex<Vec<tilo_dialogs::portal::PickRequest>>,
+}
+
+impl Picks {
+    /// A chooser the person answers with `files`, in that order.
+    fn several(files: Vec<(&'static str, &'static [u8])>) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            files,
+            asked: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    /// What it was asked, oldest first.
+    fn asked(&self) -> Vec<tilo_dialogs::portal::PickRequest> {
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// A channel no test reaches for: the picks a window never makes here.
+fn unanswered<T>() -> std::sync::mpsc::Receiver<T> {
+    std::sync::mpsc::channel().1
+}
+
+impl tilo_dialogs::FilePicker for Picks {
+    fn pick(&self, _: tilo_dialogs::portal::PickRequest) -> tilo_dialogs::portal::PortalChannel {
+        unanswered()
+    }
+
+    fn pick_multiple(
+        &self,
+        _: tilo_dialogs::portal::PickRequest,
+    ) -> tilo_dialogs::portal::MultiChannel {
+        unanswered()
+    }
+
+    fn open_file(
+        &self,
+        _: tilo_dialogs::portal::PickRequest,
+    ) -> tilo_dialogs::portal::OpenFileChannel {
+        unanswered()
+    }
+
+    fn launch(
+        &self,
+        _: tilo_dialogs::portal::LaunchRequest,
+    ) -> tilo_dialogs::portal::LaunchChannel {
+        unanswered()
+    }
+
+    fn pick_contents(
+        &self,
+        request: tilo_dialogs::portal::PickRequest,
+    ) -> tilo_dialogs::portal::ContentsChannel {
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(request);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let files = self
+            .files
+            .iter()
+            .map(|(name, bytes)| tilo_dialogs::portal::PickedContents {
+                name: (*name).to_owned(),
+                media_type: None,
+                bytes: bytes.to_vec(),
+                location: Some(std::path::PathBuf::from(name)),
+            })
+            .collect();
+        let _ = sender.send(tilo_dialogs::portal::ContentsOutcome::Picked(files));
+        receiver
+    }
+}
+
+/// The session's tools, as a test serves them: it answers each request with the next of
+/// `answers`, in the order given, and keeps what it was asked.
+struct Tools {
+    asked: std::sync::Arc<std::sync::Mutex<Vec<runtime_portal::tools::ToolIntent>>>,
+    answers: std::sync::Arc<std::sync::Mutex<Vec<runtime_portal::tools::ToolReply>>>,
+}
+
+impl Tools {
+    /// The session's end of a tools connection, and the stub answering the other end.
+    fn serving(
+        answers: Vec<runtime_portal::tools::ToolReply>,
+    ) -> (std::sync::Arc<runtime_portal::tools::Service>, Self) {
+        let stub = Self {
+            asked: std::sync::Arc::default(),
+            answers: std::sync::Arc::new(std::sync::Mutex::new(
+                answers.into_iter().rev().collect(),
+            )),
+        };
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("the tools connection");
+        stub.serve(ours);
+        let service =
+            runtime_portal::tools::Service::connect(theirs, "the window's workspace".to_owned());
+        (std::sync::Arc::new(service), stub)
+    }
+
+    /// Answer `stream`'s requests until it closes, on a thread of its own: what the session's end
+    /// of an app's connection does.
+    fn serve(&self, stream: std::os::unix::net::UnixStream) {
+        let asked = std::sync::Arc::clone(&self.asked);
+        let answers = std::sync::Arc::clone(&self.answers);
+        std::thread::spawn(move || {
+            use std::io::{BufRead as _, BufReader, Write as _};
+            let Ok(mut writing) = stream.try_clone() else {
+                return;
+            };
+            for line in BufReader::new(stream).lines() {
+                let Ok(line) = line else { return };
+                let Ok(request) = serde_json::from_str::<runtime_portal::tools::ToolRequest>(&line)
+                else {
+                    return;
+                };
+                asked
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(request.intent);
+                let reply = answers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pop()
+                    .unwrap_or_else(|| runtime_portal::tools::ToolReply {
+                        accepted: false,
+                        message: "the test service has no more answers".to_owned(),
+                        ..runtime_portal::tools::ToolReply::default()
+                    });
+                let Ok(mut encoded) = serde_json::to_vec(&reply) else {
+                    return;
+                };
+                encoded.push(b'\n');
+                if writing.write_all(&encoded).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// What it was asked, oldest first.
+    fn asked(&self) -> Vec<runtime_portal::tools::ToolIntent> {
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// A listing that offers the app `app` for a file of the kind asked.
+fn listing(app: &str) -> runtime_portal::tools::ToolReply {
+    runtime_portal::tools::ToolReply {
+        accepted: true,
+        message: "listed".to_owned(),
+        documents: vec![runtime_portal::tools::DocumentApp {
+            id: app.to_owned(),
+            name: app.to_owned(),
+            is_default: true,
+            icon: None,
+            source: Some(runtime_portal::tools::AppKind::Tilo),
+            artwork: None,
+        }],
+        ..runtime_portal::tools::ToolReply::default()
+    }
+}
+
+/// The session opening the file it was asked to.
+fn opened() -> runtime_portal::tools::ToolReply {
+    runtime_portal::tools::ToolReply {
+        accepted: true,
+        message: "opened".to_owned(),
+        ..runtime_portal::tools::ToolReply::default()
+    }
+}
+
+/// The person adds two files from the workspace to a message and sends it: the window asks the
+/// system's chooser for them, the message carries both and shows them, and pressing one opens it
+/// in the app that opens its kind, through the system's open action.
+#[test]
+fn a_person_adds_two_files_to_a_message_and_opens_one() {
+    let _settled = ui::motion::testing::settled();
+    let picks = Picks::several(vec![
+        ("Launch plan.pdf", b"%PDF-1.4 the launch plan"),
+        ("notes.md", b"# Notes\n"),
+    ]);
+    let chooser: std::sync::Arc<dyn tilo_dialogs::FilePicker> = picks.clone();
+    Session::choosing_files_with(&chooser);
+    let (tools, served) = Tools::serving(vec![listing("so.tilo.notes"), opened()]);
+    Session::opening_files_through(&tools);
+    let (mut session, _workspace) = chat_with_an_agent();
+    open_the_agents_conversation(&mut session);
+
+    // The person writes the message, adds the files with the composer's Attach, and sends it.
+    let (x, y) = crate::interaction::composer(session.window.harness());
+    session.window.click_at(x, y);
+    session.window.type_text("Here is the plan and the notes");
+    session.window.harness().relayout();
+    session.window.press_named("Attach");
+    session.settle();
+    let (x, y) = crate::interaction::send_button(session.window.harness());
+    session.window.click_at(x, y);
+    session.settle();
+
+    // The chooser was asked for several files at once, and the message carries both of them.
+    let asked = picks.asked();
+    assert_eq!(asked.len(), 1, "the chooser was asked once");
+    assert!(
+        asked[0].is_multiple(),
+        "the message takes more than one file: {:?}",
+        asked[0]
+    );
+    let direct = conversation(&session, AGENT_NAME);
+    let sent = messages(&session, &direct)
+        .into_iter()
+        .last()
+        .expect("the message the person sent");
+    let RtValue::List(files) = session
+        .instance_host()
+        .runtime()
+        .read(&sent, "attachments")
+        .expect("the message says what it carries")
+    else {
+        panic!("a message lists the files it carries");
+    };
+    let names = files
+        .iter()
+        .map(|file| match file {
+            RtValue::Ref(at) => session
+                .instance_host()
+                .runtime()
+                .read(&at.target, "name")
+                .expect("an attachment says its name"),
+            other => panic!("a message carries files, not {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            RtValue::Text("Launch plan.pdf".to_owned()),
+            RtValue::Text("notes.md".to_owned())
+        ],
+        "the message carries both files, in the order they were chosen"
+    );
+
+    // The window shows both with the message.
+    let shown = transcript(&mut session);
+    let message = shown.last().expect("the transcript draws the message");
+    for name in ["Launch plan.pdf", "notes.md"] {
+        assert!(
+            message.text.contains(name),
+            "the message shows {name:?}: {}",
+            message.text
+        );
+    }
+
+    // Pressing one opens it in the app that opens its kind, through the system's open action.
+    session.window.press_named("Launch plan.pdf");
+    session.settle();
+    let open = served
+        .asked()
+        .into_iter()
+        .find_map(|intent| match intent {
+            runtime_portal::tools::ToolIntent::OpenContent { name, app, .. } => Some((name, app)),
+            _ => None,
+        })
+        .expect("the file reaches the system's open action");
+    assert_eq!(open.0, "Launch plan.pdf", "the file the person pressed");
+    assert_eq!(open.1, "so.tilo.notes", "the app that opens its kind");
 }

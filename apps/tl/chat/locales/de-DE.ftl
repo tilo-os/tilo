@@ -222,13 +222,22 @@ d-5rkfnkg4 = Seitenleiste
     .w-channels-are-where-your-workspace-talks = Kanäle sind, wo dein Arbeitsbereich spricht, jeder ein Thema.
     .w-notes-to-self = Notizen an mich
     .w-direct-messages = Direktnachrichten
+    .w-everyone = Alle
     .w-workspace = Arbeitsbereich
     .w-workspace-skills = Fähigkeiten im Arbeitsbereich
     .w-no-channel-open = Kein Kanal offen
 
 d-ymtess4x = Kanal
+    .w-pinned-messages = Angeheftete Nachrichten
+    .w-channel = Kanal
+    .w-rename-channel = Kanal umbenennen
+    .w-set-the-topic = Thema setzen
+    .w-restore-channel = Kanal zurückholen
+    .w-archive-channel = Kanal archivieren
     .w-message = Nachricht an #{ $name }
+    .w-attach = Anhängen
     .w-send = Senden
+    .w-wrote-this-in = { $name } schrieb dies in { $service }
     .w-pinned = Angeheftet
     .w-edit-message = Nachricht bearbeiten
     .w-cancel = Abbrechen
@@ -238,7 +247,9 @@ d-ymtess4x = Kanal
 
 d-jbezqvlc = Direkt
     .w-message = Nachricht an { $name }
+    .w-attach = Anhängen
     .w-send = Senden
+    .w-wrote-this-in = { $name } schrieb dies in { $service }
     .w-pinned = Angeheftet
     .w-edit-message = Nachricht bearbeiten
     .w-cancel = Abbrechen
@@ -256,7 +267,9 @@ d-hrbsxhor = Fähigkeitszeile
 
 d-enkgjyn7 = Thread
     .w-message = Nachricht an { $name }
+    .w-attach = Anhängen
     .w-send = Senden
+    .w-wrote-this-in = { $name } schrieb dies in { $service }
     .w-pinned = Angeheftet
     .w-edit-message = Nachricht bearbeiten
     .w-cancel = Abbrechen
@@ -361,7 +374,8 @@ d-6372fg6z = Weiterleiten
     .w-say-who-wrote-the-message = Sag, wer die Nachricht geschrieben hat
 
 d-jozxp5qy = Kanal löschen
-    .doc = Löscht einen Kanal und was darin gesagt wurde.
+    .doc = Löscht einen Kanal und was darin gesagt wurde, aus der Seitenleiste oder der Kategorie, in der er ist.
+    .w-only-the-workspace-s-moderators-delete = Nur die Moderierenden des Arbeitsbereichs löschen einen Kanal
 
 d-7sjai347 = Melden
     .doc = Meldet eine Nachricht einer Unterhaltung an die Moderatoren des Arbeitsbereichs, mit Grund, wenn die meldende Person einen nennt.
@@ -430,3 +444,422 @@ d-hammizbi = Von
 d-6372fg6z-attachments = Anhänge
 
 d-peb7lz2j-attachments = Anhänge
+
+d-so-tilo-chat-keywords = Messenger, Sofortnachrichten, Unterhaltung
+
+d-64vv225r = Entwürfe
+    .doc = Was jede Person in einer Unterhaltung schreibt und nicht gesendet hat.
+
+d-5pfbdqqj = Dienst
+    .doc = Der fremde Dienst, zu dem diese Unterhaltung getragen wird, so wie seine Leute ihn lesen („Discord“); leer für eine, die hier bleibt.
+
+d-vvs4ecqz = Fremde Id
+    .doc = Ihre Id dort, wenn eine Brücke sie trägt: der Kanal, die Kategorie oder die Unterhaltung dort.
+
+d-enzjdbyp = Dienst
+    .doc = Wie der Ort heißt, von dem sie schrieben, so wie seine Leute ihn lesen („Discord“).
+
+d-fld77g72 = Zusammenfassung
+    .doc = Was hier bisher gesagt wurde, in ein paar Absätzen, so wie ein Agent es zuletzt aufgeschrieben hat: was ein Zug anstelle der Nachrichten liest, die es zusammenfasst.
+
+d-q7llygsa-filter-archived = Archiviert
+
+d-3ngvkwox = Fremder Autor
+    .doc = Wer eine Nachricht anderswo schrieb, so wie jener Ort die Person zeigt: der allgemeine fremde Autor einer Brücke, nie die Form eines einzelnen Dienstes.
+    .noun = { $count ->
+        [one] fremder Autor
+       *[other] fremde Autoren
+    }
+
+d-5fxndhc2 = Name
+    .doc = Wie sie heißt, in wenigen Worten: womit ein Agent sie benennt.
+
+d-zkszdahn = Avatar
+    .doc = Der Discord-Avatar-Hash des Kontos.
+
+d-p3wfphnr = Fremdes Emoji
+    .doc = Ein Bild, das eine Nachricht von außen in ihren Worten mitbringt: ein eigenes Emoji jenes Dienstes.
+    .noun = { $count ->
+        [one] fremdes Emoji
+       *[other] fremde Emojis
+    }
+
+d-ldtylgfu = Name
+
+d-jjutyqgx = Bild
+    .doc = Bei einem von der Brücke hochgeladenen Emoji: die Adresse seines Bildes.
+
+d-hj4axvbu = Zug
+    .doc = Der Zug des Agenten, der sie geschrieben hat: die Id des `#answer`-Aufrufs, in dem er antwortet, den Stop abbricht und dessen Schritte, Fragen und Kosten dem Zug gehören.
+
+d-wqxsenb3 = Fremd
+    .doc = Wer sie schrieb, wenn sie anderswo geschrieben wurde: so wie jener Ort die Person zeigt, mit dem Bild, das sie dort trägt, und dem Namen des Dienstes.
+
+d-bbu6225x = Fremdes Emoji
+    .doc = Die Bilder, die ihre Worte von dort mitbringen, wo sie geschrieben wurde: die eigenen Emojis jenes Dienstes, jedes über die Adresse gezeichnet, die er angibt.
+
+d-cv664irm = Zusammenfassung
+    .doc = Was hier bisher gesagt wurde, in ein paar Absätzen, so wie ein Agent es zuletzt aufgeschrieben hat: was ein Zug anstelle der Nachrichten liest, die es zusammenfasst.
+
+d-s7ol3kl4 = Zusammenfassung
+    .doc = Was hier bisher gesagt wurde, in ein paar Absätzen, so wie ein Agent es zuletzt aufgeschrieben hat: was ein Zug anstelle der Nachrichten liest, die es zusammenfasst.
+
+d-5nkbpj6q-filter-people = Personen
+
+d-lhl5rxcq = Entwurf
+    .doc = Was eine Person in einer Unterhaltung schreibt und nicht gesendet hat.
+    .noun = { $count ->
+        [one] Entwurf
+       *[other] Entwürfe
+    }
+
+d-5shwuvrs = Unterhaltung
+    .doc = Die Unterhaltung, in der er geschrieben wird: ein Kanal, ein Thread oder eine Direktunterhaltung.
+
+d-rxmavdj2 = Text
+
+d-fp7zx7jn = Fähigkeit
+    .noun = { $count ->
+        [one] Fähigkeit
+       *[other] Fähigkeiten
+    }
+    .untitled = Neue Fähigkeit
+
+d-ldhzcfxm = Überbrücken
+    .doc = Trägt eine Unterhaltung zu einem fremden Dienst und seine Nachrichten hierher, so wie der Dienst sie zeigt.
+    .w-say-which-service-carries-the-conversation = Sag, welcher Dienst die Unterhaltung trägt
+
+d-ldhzcfxm-c = Ka
+
+d-yczlubh7 = Überbrückung lösen
+    .doc = Behält eine Unterhaltung hier: kein Dienst trägt sie mehr.
+
+d-yczlubh7-c = Ka
+
+d-4scklxqs = Neuer Kanal
+    .doc = Fügt der Seitenleiste einen Textkanal hinzu, unter `category`, wenn angegeben, und zu `topic`, wenn das gesetzt ist.
+    .w-new-channel = neuer-kanal
+
+d-4scklxqs-name = Name
+
+d-4scklxqs-topic = Thema
+
+d-4scklxqs-category = Kategorie
+
+d-cq7rcfwg = Neue Kategorie
+    .doc = Fügt der Seitenleiste eine Kategorie hinzu.
+    .w-new-category = Neue Kategorie
+
+d-cq7rcfwg-name = Name
+
+d-f4qj2rwa = Neuer Sprachkanal
+    .doc = Fügt der Seitenleiste einen Sprachkanal hinzu, unter `category`, wenn angegeben.
+    .w-voice = Sprache
+
+d-f4qj2rwa-name = Name
+
+d-f4qj2rwa-category = Kategorie
+
+d-daluhfsk = Neue Fähigkeit
+    .doc = Beginnt eine Fähigkeit namens `name`.
+    .w-the-workspace-already-has-a-skill = Der Arbeitsbereich hat schon eine Fähigkeit namens { $name }
+
+d-daluhfsk-name = Name
+
+d-6jgrwebi = Fähigkeit korrigieren
+    .doc = Korrigiert eine Fähigkeit: nur was angegeben ist, ändert sich, und was fehlt, bleibt wie es ist.
+    .w-the-workspace-already-has-a-skill = Der Arbeitsbereich hat schon eine Fähigkeit namens { $name }
+
+d-6jgrwebi-name = Name
+
+d-6jgrwebi-work = Wofür sie gilt
+
+d-6jgrwebi-how = So wird sie getan
+
+d-6jgrwebi-form = Form des Ergebnisses
+
+d-6jgrwebi-model = Modell
+
+d-hfw4gkd3 = Fähigkeit vergessen
+    .doc = Vergisst eine Fähigkeit: kein späterer Zug liest sie.
+
+d-gmpqlube = Ein Beispiel behalten
+    .doc = Behält ein Beispiel einer Fähigkeit: ein Ergebnis, das die Person angenommen (eher so) oder abgelehnt (eher nicht so) hat, mit dem, was sie dazu sagte.
+    .w-an-example-says-what-the-result = Ein Beispiel sagt, was das Ergebnis war
+
+d-gmpqlube-text = Text
+
+d-gmpqlube-accepted = Angenommen
+
+d-gmpqlube-note = Notiz
+
+d-44nvfzzq = Beispiel entfernen
+    .doc = Nimmt ein Beispiel aus einer Fähigkeit.
+
+d-44nvfzzq-example = Beispiel
+
+d-fom6d6su = Direktpersonen übernehmen
+    .doc = Die Direktunterhaltungen, die eine frühere Version mit einer Person allein führte (`person`), die jedes Mitglied lesen konnte: in jeder sind jene Person und wer sie öffnete, wie ihr Verlauf sagt.
+
+d-bi2i7p2d = Nativen Chat übernehmen
+    .doc = Die Unterhaltungen, die der native Chat hielt, bevor diese App seine Id übernahm, einmal in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jede mit Name und Thema, und jede Nachricht eines Kanals mit dem, was sie sagte, ob sie angeheftet war und der Id, die sie dort hatte.
+
+d-iyehwolt = Native Fähigkeiten übernehmen
+    .doc = Die Fähigkeiten des Arbeitsbereichs, die der native Chat hielt, bevor diese App seine Id übernahm, einmal in diese übernommen: wie jede heißt, für welche Arbeit sie ist, wie die Arbeit hier getan wird, die Form ihres Ergebnisses und das Modell, unter der Id, die sie dort hatte, und in der Reihenfolge, in der sie stand, und die Beispiele, die sie hielt, älteste zuerst, jedes mit dem Ergebnis, ob die Person es annahm, was sie sagte und wann es behalten wurde.
+
+d-yqispavu = Problem melden
+    .doc = Legt einen Problembericht ab, was jemand bei der Nutzung von Tilo erlebt hat, im #feedback-Kanal des Arbeitsbereichs, den der erste Bericht öffnet.
+    .did = hat ein Problem gemeldet
+    .w-say-what-went-wrong-first = Sag zuerst, was schiefging
+
+d-yqispavu-body = Text
+
+d-4cfw6ty2 = Nachricht
+    .doc = Eine Nachricht.
+    .w-is-not-in-this-workspace = { $name } ist nicht in diesem Arbeitsbereich
+
+d-4cfw6ty2-who = Wer
+
+d-aaqqwyl3 = Unterhaltung mit
+    .doc = Die Direktunterhaltung zwischen dem Aufrufer und `who`, keine, solange die beiden keine haben: was ein Agent, ein Skript oder eine andere App liest, um sie zu finden, ohne etwas zu öffnen oder anzulegen.
+
+d-aaqqwyl3-who = Wer
+
+d-uxndjwde = Ungelesen
+    .doc = Wie viele Nachrichten einer Direktunterhaltung die fragende Person nicht gelesen hat: die Zahl, die ihre Zeile neben der anderen Person zeigt, und was ein Agent oder ein Skript davon liest.
+
+d-q5e45hla = Kanal öffnen
+    .doc = Einen Kanal zu öffnen macht den Entwurf, in dem seine Person schreibt, wenn sie keinen hat: ein Weg und zurück findet, was sie tippte, auf jedem ihrer Geräte, und niemand sonst liest es.
+
+d-yfjnxpbn = Direkt öffnen
+    .doc = {""}[`open_channel`] für eine Direktunterhaltung.
+
+d-hs67kfnp = Thread öffnen
+    .doc = {""}[`open_channel`] für einen Thread.
+
+d-peb7lz2j-turn = Zug
+
+d-peb7lz2j-draft = Entwurf
+
+d-obp6lcdr = Dateien anhängen
+    .doc = Fügt die Dateien, die eine Person gewählt hat, der Nachricht hinzu, die sie in `to` schreibt: die Dateiauswahl des Systems führt dies mit dem Gewählten aus, und die Dateien warten dort, wie `chosen_in` sie liest, bis die Nachricht gesendet wird.
+    .did = hat Dateien angehängt
+
+d-obp6lcdr-files = Dateien
+
+d-qkcjgxr6 = Datei entfernen
+    .doc = Nimmt eine Datei von der Nachricht, die eine Person in `to` schreibt, bevor sie gesendet wird.
+
+d-qkcjgxr6-file = Datei
+
+d-mfxqzosk = Anhang öffnen
+    .doc = Öffnet die Datei `f` in der App, die ihre Art öffnet: die Datei, die eine Nachricht mitbringt, erreicht jene App als derselbe Inhalt, den beide lesen, nie als Pfad, den keine hat.
+
+d-kn2iqm4w = Schreiben an
+    .doc = Schreibt `body` an `who`, eine Person oder einen Agenten, in der einen Direktunterhaltung mit ihr: der bereits offenen, sonst einer neuen in der Seitenleiste.
+
+d-kn2iqm4w-who = Wer
+
+d-kn2iqm4w-body = Text
+
+d-v3slhm65 = Zusammenfassen
+    .doc = Schreibt auf, was in einer Unterhaltung bisher gesagt wurde, und ersetzt das vorher Geschriebene: was der nächste Zug eines Agenten dort anstelle der Nachrichten liest, die es abdeckt.
+
+d-v3slhm65-to = An
+
+d-v3slhm65-summary = Zusammenfassung
+
+d-6372fg6z-avatar = Avatar
+
+d-shvpmvqy = Reaktion weiterleiten
+    .doc = Leitet eine Reaktion weiter, die jemand einer Nachricht dort gab, wo sie geschrieben wurde, so wie jener Ort die Person nennt: das Gegenstück zu `relay` für eine Reaktion.
+    .did = hat eine Reaktion weitergeleitet
+    .w-say-which-emoji = Sag, welches Emoji
+    .w-say-who-gave-the-reaction = Sag, wer die Reaktion gab
+    .w-say-what-they-are-called-there = Sag, wie sie dort heißen
+
+d-shvpmvqy-emoji = Emoji
+
+d-shvpmvqy-persona = Konto
+
+d-shvpmvqy-by = Von
+
+d-shvpmvqy-given = Gegeben
+
+d-e3rwn5pb = Kategorie löschen
+    .doc = Löscht eine Kategorie, die keinen Kanal hält.
+    .w-only-the-workspace-s-moderators-delete = Nur die Moderierenden des Arbeitsbereichs löschen eine Kategorie
+    .w-move-or-delete-its-channels-first = Verschiebe oder lösche zuerst ihre Kanäle
+
+d-e3rwn5pb-c = Ka
+
+d-4kkr24cm = Kanal verschieben
+    .doc = Verschiebt einen Kanal an einen Platz in der Seitenleiste: unter `category` oder außerhalb jeder, an `at` unter den dort gelisteten Kanälen (am Ende, wenn negativ).
+
+d-4kkr24cm-ch = Kanal
+
+d-4kkr24cm-category = Kategorie
+
+d-4kkr24cm-at = Wann
+
+d-6rigb6x4 = Kategorie verschieben
+    .doc = Verschiebt eine Kategorie an einen Platz in der Seitenleiste, an `at` unter den dort gelisteten Kategorien und Kanälen (am Ende, wenn negativ).
+
+d-6rigb6x4-c = Ka
+
+d-6rigb6x4-at = Wann
+
+d-k5m36ngd = Kanal umbenennen
+    .doc = Benennt einen Textkanal um.
+    .w-only-the-workspace-s-moderators-rename = Nur die Moderierenden des Arbeitsbereichs benennen einen Kanal um
+    .w-name-the-channel-first = Benenne zuerst den Kanal
+
+d-k5m36ngd-name = Name
+
+d-tekxv77d = Sprachkanal umbenennen
+    .doc = Benennt einen Sprachkanal um.
+    .w-only-the-workspace-s-moderators-rename = Nur die Moderierenden des Arbeitsbereichs benennen einen Kanal um
+    .w-name-the-channel-first = Benenne zuerst den Kanal
+
+d-tekxv77d-name = Name
+
+d-sgvix76a = Thema setzen
+    .doc = Sagt, wofür ein Kanal da ist, in seinem Thema.
+    .w-only-the-workspace-s-moderators-set = Nur die Moderierenden des Arbeitsbereichs setzen das Thema eines Kanals
+
+d-sgvix76a-topic = Thema
+
+d-ciefrn2e = Kategorie umbenennen
+    .doc = Benennt eine Kategorie um.
+    .w-only-the-workspace-s-moderators-rename = Nur die Moderierenden des Arbeitsbereichs benennen eine Kategorie um
+    .w-name-the-category-first = Benenne zuerst die Kategorie
+
+d-ciefrn2e-name = Name
+
+d-z7ux3t5k = Kanal archivieren
+    .doc = Legt einen Kanal beiseite, aus der Seitenleiste heraus, und behält alles, was darin gesagt wurde, oder holt ihn zurück.
+    .w-only-the-workspace-s-moderators-archive = Nur die Moderierenden des Arbeitsbereichs archivieren einen Kanal
+    .w-archive-channel = Kanal archivieren
+    .w-restore-channel = Kanal zurückholen
+
+d-z7ux3t5k-archived = Archiviert
+
+d-yjc4fmrk = Bearbeiten
+    .doc = Ändert, was eine Nachricht sagt.
+    .w-only-its-author-can-edit-a = Nur ihr Autor kann eine Nachricht bearbeiten
+    .w-type-a-message-first = Tippe zuerst eine Nachricht
+
+d-yjc4fmrk-body = Text
+
+d-yjc4fmrk-turn = Zug
+
+d-nzltze4g = Anheften
+    .doc = Heftet eine Nachricht an ihren Kanal an oder löst sie.
+    .w-pin = Anheften
+    .w-unpin = Lösen
+
+d-nzltze4g-pinned = Angeheftet
+
+d-ia5g3jsz = Reagieren
+    .doc = Fügt deine Reaktion mit einem Emoji zu einer Nachricht hinzu oder nimmt sie zurück, wenn du damit reagiert hattest.
+
+d-ia5g3jsz-emoji = Emoji
+
+d-honuhrmf = Entscheiden
+    .doc = Entscheidet einen Bericht: was eine moderierende Person darüber entschied.
+    .w-only-the-workspace-s-moderators-settle = Nur die Moderierenden des Arbeitsbereichs entscheiden einen Bericht
+    .w-say-what-was-decided = Sag, was entschieden wurde
+
+d-honuhrmf-decision = Entscheidung
+
+d-l6xtwtlq = Überbrücken
+
+d-2yeh74ot = Neue Fähigkeit
+
+d-ujq3oyls = Fähigkeit korrigieren
+
+d-hpamj3eq = Beispiel behalten
+
+d-amkgebye = Problem melden
+
+d-pszgxdax = Person anschreiben
+
+d-vib4vsqe = Senden
+
+d-zmf3ccig = Reaktion weiterleiten
+
+d-mdviqjz2 = Kanal löschen
+
+d-czomdsi6 = Kategorie löschen
+
+d-r47ecljq = Kanal umbenennen
+
+d-cqfpcwyx = Sprachkanal umbenennen
+
+d-maq2lipz = Thema setzen
+
+d-vrzrke7n = Kategorie umbenennen
+
+d-g5hhjpdz = Kanal archivieren
+
+d-7ioawutl = Bearbeiten
+
+d-p5ahaaux = Anheften
+
+d-rcr57dzk = Entscheiden
+
+d-i3f4daaw = Angeheftet
+    .w-nothing-pinned-yet = Noch nichts angeheftet
+    .w-pin-a-message-from-its-menu = Hefte eine Nachricht über ihr Menü an, um sie hier für alle zu behalten.
+
+d-pyomqal2 = Personen
+    .w-people = Personen
+    .w-agent = Agent
+    .w-message = Nachricht
+
+d-kd5tp6dr = Zeilenlauf
+    .w-running = Läuft…
+
+d-zprw5jt4 = Konto
+    .w-in = in { $written_in }
+
+d-lzqy37mf = Zugschritte
+
+d-wysicvmq = Zugschritt
+    .w-working = Arbeitet…
+    .w-failed = Fehlgeschlagen
+    .w-allow = Erlauben
+    .w-always = Immer
+    .w-deny = Verweigern
+
+d-nvzanb5n = Fremde Id
+    .doc = Ihre Id dort, wenn eine Brücke sie trägt: der Kanal, die Kategorie oder die Unterhaltung dort.
+
+d-byf6kyop = Archiviert
+    .doc = Ob der Kanal beiseitegelegt ist: er behält jede Nachricht, und sein Platz in der Seitenleiste ist fort, bis er zurückgeholt wird.
+
+d-eqr5qd3v = Dienst
+    .doc = Der fremde Dienst, zu dem diese Unterhaltung getragen wird, so wie seine Leute ihn lesen („Discord“); leer für eine, die hier bleibt.
+
+d-elvv3ebj = Fremde Id
+    .doc = Ihre Id dort, wenn eine Brücke sie trägt: der Kanal, die Kategorie oder die Unterhaltung dort.
+
+d-yycajap4 = Dienst
+    .doc = Wie der Ort heißt, von dem sie schrieben, so wie seine Leute ihn lesen („Discord“).
+
+d-a7u4jddr = Dienst
+    .doc = Der fremde Dienst, zu dem diese Unterhaltung getragen wird, so wie seine Leute ihn lesen („Discord“); leer für eine, die hier bleibt.
+
+d-f4cfgfpu = Fremde Id
+    .doc = Ihre Id dort, wenn eine Brücke sie trägt: der Kanal, die Kategorie oder die Unterhaltung dort.
+
+d-o5vmbr2v = Dateien
+    .doc = Die Dateien, die sie mitbringen wird, in der Reihenfolge, in der sie gewählt wurden: die Dateiauswahl des Systems fügt sie hinzu, der Schreibbereich zeigt sie, und das Senden nimmt sie mit der Nachricht an die Nachricht.
+
+d-ldhzcfxm-service = Dienst
+
+d-ldhzcfxm-outside_id = Fremde Id
+
+d-6372fg6z-service = Dienst
+
+d-6372fg6z-outside_emoji = Fremdes Emoji

@@ -144,6 +144,17 @@ thread_local! {
     /// ([`Session::keeping_files_in`]).
     static DEVICE_CONTENT: std::cell::RefCell<Option<tilo_content::ContentStore>> =
         const { std::cell::RefCell::new(None) };
+    /// The person's chooser the windows opened from here on are given, as the session opens one
+    /// for an app's instance: none unless a test stands one in
+    /// ([`Session::choosing_files_with`]).
+    static DEVICE_CHOOSER: std::cell::RefCell<Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>> =
+        const { std::cell::RefCell::new(None) };
+    /// The session's tools the windows opened from here on ask which app opens a file, as the
+    /// shell answers an app's `File.open`: none unless a test serves one
+    /// ([`Session::opening_files_through`]).
+    static DEVICE_TOOLS: std::cell::RefCell<
+        Option<std::sync::Arc<runtime_portal::tools::Service>>,
+    > = const { std::cell::RefCell::new(None) };
 }
 
 /// The window the person uses: the headless frame harness, or the live `App` a window process
@@ -535,6 +546,18 @@ impl Session {
         DEVICE_CONTENT.with(|kept| *kept.borrow_mut() = Some(content.clone()));
     }
 
+    /// The windows this thread opens from here on ask `chooser` for the files a person picks, as
+    /// the session answers an app's `file.choose` with the person's own chooser.
+    fn choosing_files_with(chooser: &Arc<dyn tilo_dialogs::FilePicker>) {
+        DEVICE_CHOOSER.with(|chosen| *chosen.borrow_mut() = Some(Arc::clone(chooser)));
+    }
+
+    /// The windows this thread opens from here on ask `tools` which app opens a file and open it
+    /// there, as the session answers an app's `File.open`.
+    fn opening_files_through(tools: &Arc<runtime_portal::tools::Service>) {
+        DEVICE_TOOLS.with(|served| *served.borrow_mut() = Some(Arc::clone(tools)));
+    }
+
     /// [`Self::open`], before the window had a frame.
     fn opened(app: &str, person: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
         Self::opened_in_language(app, person, "en-US", window)
@@ -714,6 +737,18 @@ impl Session {
         let app = spec.app.clone();
         let person = spec.person.clone();
         let bundle = package(package_of(&spec.app));
+        // The files a person chooses are kept in the device's content store and read back by the
+        // instance's own, as the session opens both on one store: a window whose test handed it
+        // none keeps its own, and reads it back from the same one.
+        let content = DEVICE_CONTENT
+            .with(|content| content.borrow().clone())
+            .unwrap_or_else(tilolang_process::hosted::memory_content);
+        let kept = tilolang_process::hosted::Kept {
+            content: Some(content.clone()),
+            chooser: DEVICE_CHOOSER.with(|chooser| chooser.borrow().clone()),
+            tools: DEVICE_TOOLS.with(|tools| tools.borrow().clone()),
+            ..tilolang_process::hosted::Kept::default()
+        };
         let mut host = TilolangProcess::new(woken.waker());
         // The window's instance takes over the later builds `tilolang dev` publishes, as the
         // app's own host does ([`tilolang_process::window::hosted::start`]).
@@ -724,12 +759,9 @@ impl Session {
         let mut hosted = Hosted::new(
             spec,
             connection,
-            (store, tilolang_process::hosted::memory_content()),
+            (store, content),
             bundle,
-            &tilolang_process::hosted::Kept {
-                content: DEVICE_CONTENT.with(|content| content.borrow().clone()),
-                ..tilolang_process::hosted::Kept::default()
-            },
+            &kept,
             Box::new(transport),
             (&Rc::new(Phrases::new("en-US")), host.formats()),
             woken.waker(),

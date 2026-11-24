@@ -163,13 +163,15 @@ pub(crate) fn composer(window: &ui::headless::FrameHarness) -> (f64, f64) {
     center(*inputs.last().expect("the transcript has its composer"))
 }
 
-/// The composer's send button: the button on the composer's line.
+/// The composer's send button: the last button on the composer's line, at its end past the field
+/// (a composer may stand one before the field too, such as the way to add files).
 pub(crate) fn send_button(window: &ui::headless::FrameHarness) -> (f64, f64) {
     let (_, y) = composer(window);
     let buttons = rects_of(window, "Button");
     let line = buttons
         .iter()
-        .find(|rect| (center(**rect).1 - y).abs() < rect[3])
+        .filter(|rect| (center(**rect).1 - y).abs() < rect[3])
+        .max_by(|one, two| center(**one).0.total_cmp(&center(**two).0))
         .copied()
         .expect("the composer has its send button");
     center(line)

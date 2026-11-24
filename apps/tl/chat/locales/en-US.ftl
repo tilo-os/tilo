@@ -263,6 +263,9 @@ d-5shwuvrs = Conversation
 
 d-rxmavdj2 = Body
 
+d-o5vmbr2v = Files
+    .doc = The files it will carry, in the order they were chosen: the system's chooser adds them, the composer draws them, and the send that makes the message takes them onto it.
+
 d-5rctnita = Attached
     .doc = A file a message carries, as the place it was copied from keeps it: its name, what it is, how many bytes, and the address of its content.
     .noun = { $count ->
@@ -491,6 +494,20 @@ d-peb7lz2j-attachments = Attachments
 d-peb7lz2j-turn = Turn
 
 d-peb7lz2j-draft = Draft
+
+d-obp6lcdr = Attach files
+    .doc = Adds the files a person chose to the message they are writing: the system's chooser runs this with what was chosen, and the draft holds them until it is sent.
+    .did = attached files
+
+d-obp6lcdr-files = Files
+
+d-qkcjgxr6 = Remove the file
+    .doc = Takes a file off the message a person is writing, before it is sent.
+
+d-qkcjgxr6-file = File
+
+d-mfxqzosk = Open attachment
+    .doc = Opens the file a message carries in the app that opens its kind: the file reaches that app as the same content both read, never as a path neither has.
 
 d-kn2iqm4w = Write to
     .doc = Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the one already open, else a new one in the sidebar.
@@ -761,6 +778,7 @@ d-ymtess4x = Channel
     .w-restore-channel = Restore channel
     .w-archive-channel = Archive channel
     .w-message = Message #{ $name }
+    .w-attach = Attach
     .w-send = Send
     .w-wrote-this-in = { $name } wrote this in { $service }
     .w-pinned = Pinned
@@ -772,6 +790,7 @@ d-ymtess4x = Channel
 
 d-jbezqvlc = Direct
     .w-message = Message { $name }
+    .w-attach = Attach
     .w-send = Send
     .w-wrote-this-in = { $name } wrote this in { $service }
     .w-pinned = Pinned
@@ -804,6 +823,7 @@ d-hrbsxhor = Skill row
 
 d-enkgjyn7 = Thread
     .w-message = Message { $name }
+    .w-attach = Attach
     .w-send = Send
     .w-wrote-this-in = { $name } wrote this in { $service }
     .w-pinned = Pinned

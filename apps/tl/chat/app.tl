@@ -217,6 +217,9 @@ type Draft (readers: author) {
     /// The conversation it is written in: a channel, a thread or a direct conversation.
     conversation: TextChannel | Thread | Direct
     body: RichText
+    /// The files it will carry, in the order they were chosen: the system's chooser adds them,
+    /// the composer draws them, and the send that makes the message takes them onto it.
+    files: List<File>
 }
 
 /// A file a message carries, as the place it was copied from keeps it: its name, what it is, how
@@ -907,6 +910,11 @@ action send(
 ) -> Message uses notify (icon: .send, label: "Send", did: "wrote a message") {
     require not empty_writing(draft, body) "Type a message first"
     let words = if let writing = draft { writing.body } else { body }
+    // What the person chose for the message waits on their draft; what a program sends with it
+    // comes as an argument.
+    let carried = if let writing = draft {
+        [attachments, writing.files].flat_map(x -> x)
+    } else { attachments }
     let m = Message(body: words, reply_to: reply_to, turn: turn)
     let sent = match to {
         c: TextChannel => c.messages.insert(m),
@@ -921,15 +929,41 @@ action send(
     }
     // The files go onto the message once it stands: a collection belongs to a resource, and a
     // message under construction is none yet.
-    for f in attachments {
+    for f in carried {
         sent.attachments.insert(
             Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()),
         )
     }
     if let d = draft {
         d.body = RichText("")
+        d.files = []
     }
     sent
+}
+
+/// Adds the files a person chose to the message they are writing: the system's chooser runs this
+/// with what was chosen, and the draft holds them until it is sent. The chooser offers every kind
+/// of file, since a message carries any.
+action attach(d: Draft, files: List<File>) (
+    icon: .paperclip,
+    label: "Attach files",
+    did: "attached files",
+) {
+    d.files = [d.files, files].flat_map(x -> x)
+}
+
+/// Takes a file off the message a person is writing, before it is sent.
+action detach(d: Draft, file: File) (icon: .x, label: "Remove the file") {
+    d.files = d.files.filter(f -> f.url() != file.url())
+}
+
+/// Opens the file a message carries in the app that opens its kind: the file reaches that app as
+/// the same content both read, never as a path neither has.
+action open_attachment(f: Attached) uses files (icon: .external_link, label: "Open attachment") {
+    match File.open(File.at(f.name, f.blob)) {
+        .ok => {}
+        .err(_) => {}
+    }
 }
 
 /// Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the
@@ -1860,6 +1894,16 @@ view composer(
     if let r = replying {
         std.reply_banner(r, cancel: set(replying, .none))
     }
+    // What the message will carry, each file with the way to leave it behind.
+    if not draft.files.is_empty() {
+        row(gap: .tight, wrap: true) {
+            for f in draft.files {
+                ui.Chip(f.name, icon: .paperclip) {
+                    on remove: detach(draft, f)
+                }
+            }
+        }
+    }
     std.composer_draft(
         draft,
         placeholder,
@@ -1869,6 +1913,7 @@ view composer(
             send(to, reply_to: replying, draft: .some(draft)).then(set(replying, .none))
         },
         speakers: speakers(said),
+        attach: .some(file.choose(attach(draft))),
     )
 }
 
@@ -2010,8 +2055,14 @@ view message(
     if m.turn != "" {
         turn_steps(m)
     }
-    for f in m.attachments {
-        ui.Link(f.blob, label: f.name)
+    if not m.attachments.is_empty() {
+        row(gap: .tight, wrap: true) {
+            for f in m.attachments {
+                ui.Chip(f.name, icon: .paperclip) {
+                    on press: open_attachment(f)
+                }
+            }
+        }
     }
     if not m.outside_emoji.is_empty() {
         row(gap: .tight, align: .center) {
