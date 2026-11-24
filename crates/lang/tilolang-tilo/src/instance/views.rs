@@ -510,17 +510,8 @@ impl Instance {
                 let _phase = tilo_resource::profiling::Phase::start("instance.views.evaluate");
                 view.view.borrow_mut().poll_patches()
             };
-            let patches = match polled {
-                Ok(patches) => patches,
-                Err(error) => {
-                    // The failing call draws a failed state where it stands (`shell.md` §6,
-                    // "Nothing can lock a person out"), and the window keeps the rest of the
-                    // frame it has and runs again on what comes next. A test sees the error
-                    // instead, so none passes over one.
-                    tracing::warn!(%error, "a view failed to run");
-                    debug_assert!(false, "a view failed to run: {error}");
-                    continue;
-                }
+            let Ok(patches) = polled.inspect_err(view_failed) else {
+                continue;
             };
             if patches.is_empty() {
                 changed |= stale;
@@ -569,14 +560,15 @@ impl Instance {
                 show_content_rows(&mut view.view.borrow_mut());
                 // Only what changed is converted, where it can be: a clock's minute converts
                 // the clock's text, not the window.
-                let in_place = match (&mut view.sent, &sorted.changed) {
-                    (Some(sent), Some(changed)) => {
-                        convert_with(&host, &*names, &view.view, |convert, instance| {
-                            patch_in_place(sent, instance.tree(), changed, convert)
-                        })
-                    }
-                    _ => None,
-                };
+                let in_place =
+                    view.sent
+                        .as_mut()
+                        .zip(sorted.changed.as_ref())
+                        .and_then(|(sent, changed)| {
+                            convert_with(&host, &*names, &view.view, |convert, instance| {
+                                patch_in_place(sent, instance.tree(), changed, convert)
+                            })
+                        });
                 let patches = in_place.unwrap_or_else(|| {
                     let tree = window_tree(&host, &*names, &view.view);
                     let mut patches = Vec::new();
@@ -753,6 +745,8 @@ impl Instance {
                 ViewEvent::RunLine { target, line } => self.line_runs.push((target, line)),
                 // Copy link is the system's: the link is minted here and copied to the person.
                 ViewEvent::CopyLink { target, app } => self.copy_link(&target, &app),
+                // Export is the system's too: the resource is written out here as a file.
+                ViewEvent::Export { target, .. } => self.export(&target),
                 ViewEvent::Seen { count } => {
                     self.seen_offer = true;
                     self.out.push(ToUi::Notice {
@@ -790,6 +784,43 @@ impl Instance {
                 ui::NoticeKind::Error,
             ),
             Err(why) => self.notice(Words::Plain(why), ui::NoticeKind::Error),
+        }
+    }
+
+    /// Save `target` as a file where the person says: the Markdown its app says it exports as,
+    /// or its document body ([`tilolang_runtime::Runtime::export_markdown`]), else everything it
+    /// holds that the person may read, as JSON ([`Host::export_reading`]). Named by its title.
+    fn export(&mut self, target: &ResourceRef) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let runtime = host.runtime();
+        let made = runtime
+            .export_markdown(target)
+            .map_err(|error| error.to_string())
+            .and_then(|markdown| {
+                if let Some(markdown) = markdown {
+                    return Ok(("md", "text/markdown", markdown));
+                }
+                let me = self.me_actor();
+                let reading = host.export_reading(target, &host.reads_for(&me))?;
+                let json =
+                    serde_json::to_string_pretty(&reading).map_err(|error| error.to_string())?;
+                Ok(("json", "application/json", json))
+            });
+        let title = runtime
+            .title(target)
+            .unwrap_or_default()
+            .replace(['/', '\\'], "-");
+        let saved = made.and_then(|(extension, media, content)| {
+            let request = tilolang_runtime::blob::SaveRequest {
+                name: format!("{}.{extension}", title.trim()),
+                media: media.to_owned(),
+            };
+            self.platform.save_file(&request, content.as_bytes())
+        });
+        if let Err(why) = saved {
+            self.notice(Words::Plain(why), ui::NoticeKind::Error);
         }
     }
 
@@ -1024,4 +1055,12 @@ fn editors_of(
         editors_of(child, resource, path, out);
         path.pop();
     }
+}
+
+/// A view's call failed: it draws a failed state where it stands (`shell.md` §6, "Nothing can
+/// lock a person out"), and the window keeps the rest of the frame it has and runs again on what
+/// comes next. A test sees the error instead, so none passes over one.
+fn view_failed(error: &tilolang_runtime::RuntimeError) {
+    tracing::warn!(%error, "a view failed to run");
+    debug_assert!(false, "a view failed to run: {error}");
 }

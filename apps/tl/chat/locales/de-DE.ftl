@@ -251,7 +251,6 @@ d-ymtess4x = Kanal
     .w-set-the-topic = Thema setzen
     .w-restore-channel = Kanal zurückholen
     .w-archive-channel = Kanal archivieren
-    .w-export-conversation = Unterhaltung exportieren…
     .w-move-up = Nach oben
     .w-move-down = Nach unten
     .w-delete-channel = Kanal löschen
@@ -1182,11 +1181,6 @@ d-we3jqglq = Festlegen, wie laut jemand klingt
 d-z5deq3xd = Jemanden für mich stummschalten
     .doc = Schaltet `who` in Anrufen auf diesem Gerät stumm, oder hört die Person wieder mit der Lautstärke, die sie hatte.
     .did = hat jemanden für sich stummgeschaltet
-
-d-ecxyvu6t = Unterhaltung exportieren
-    .doc = Eine Unterhaltung als Datei zum Aufbewahren oder Weitergeben: jede Nachricht der Reihe nach, als Markdown, jede unter dem Namen, mit dem sie erscheint, und der Zeit, zu der sie geschrieben wurde.
-
-d-ecxyvu6t-conversation = Unterhaltung
 
 d-v4cscgro = Über die Person
     .w-about = Über { $name }

@@ -126,6 +126,8 @@ tilolang-thread-replies = { $count ->
 }
 tilolang-thread-archived = Archived
 tilolang-make = Make
+# The system's command on every resource's menu that saves it as a file.
+tilolang-export = Export…
 # The system's command on every resource's menu, and what the window says once it ran.
 tilolang-copy-link = Copy link
 tilolang-link-copied = Link copied

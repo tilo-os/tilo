@@ -633,6 +633,93 @@ impl Host {
         Ok(read)
     }
 
+    /// `at` whole, as the system's Export saves a resource no app says how to export: what a
+    /// read shows of it ([`Self::read_resource`]), each text and list in full and each
+    /// collection holding its items, each read whole the same way, down to the last. What the
+    /// reader may not read is left out, as a read leaves it out.
+    ///
+    /// # Errors
+    /// `at` is no resource of a package this host runs, or the store failed to read it.
+    pub fn export_reading(
+        &self,
+        at: &ResourceRef,
+        reads: &dyn Fn(&ResourceRef) -> bool,
+    ) -> Result<Json, String> {
+        let item = at.id_string();
+        let app = self.app_of_type(&at.ty).ok_or_else(|| unknown(&item))?;
+        let mut read = self.whole(at, &app, reads)?;
+        published_ids(&mut read, &app);
+        Ok(read)
+    }
+
+    /// `at` and everything under it, as [`Self::export_reading`] saves it.
+    fn whole(
+        &self,
+        at: &ResourceRef,
+        app: &str,
+        reads: &dyn Fn(&ResourceRef) -> bool,
+    ) -> Result<Json, String> {
+        use crate::meta::MetaExt as _;
+        let item = at.id_string();
+        let package = self.package(app).ok_or_else(|| unknown(&item))?;
+        let declared = package
+            .meta
+            .type_named(&at.ty)
+            .ok_or_else(|| unknown(&item))?;
+        let specs = self
+            .runtime()
+            .field_specs(&at.ty)
+            .ok_or_else(|| unknown(&item))?;
+        let runtime = self.runtime();
+        let whole = tilolang_runtime::project::ProjectOptions {
+            max_items: usize::MAX,
+            max_text_chars: usize::MAX,
+            depth: 0,
+        };
+        let mut fields = serde_json::Map::new();
+        for field in &declared.fields {
+            let collection = specs.iter().any(|spec| {
+                spec.id == field.id && spec.kind == tilolang_runtime::meta::FieldKind::Collection
+            });
+            let shown = if collection {
+                let page = runtime
+                    .page(
+                        &tilolang_runtime::paging::PageAsk {
+                            at,
+                            field: &field.name,
+                            matching: &[],
+                            from: None,
+                            after: None,
+                            limit: usize::MAX,
+                        },
+                        reads,
+                    )
+                    .map_err(|error| error.to_string())?;
+                page.items
+                    .iter()
+                    .map(|under| self.whole(under, app, reads))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into()
+            } else {
+                let Ok(value) = runtime.read(at, &field.id) else {
+                    continue;
+                };
+                let mut shown = runtime.project_with(&value, whole);
+                withheld(&mut shown, self, reads);
+                shown
+            };
+            fields.insert(field.name.clone(), shown);
+        }
+        Ok(json!({
+            "type": at.ty,
+            "id": item,
+            "kind": package.meta.kind_of(&declared.name),
+            "label": self.label_at(at),
+            "created": self.created_json(at, reads),
+            "fields": fields,
+        }))
+    }
+
     /// Every document of the workspace the reader may read, with its id, kind and title.
     fn documents(&self, reads: &dyn Fn(&ResourceRef) -> bool) -> Json {
         use crate::meta::MetaExt as _;

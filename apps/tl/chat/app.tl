@@ -1547,12 +1547,9 @@ action copy_text(m: Message) uses clipboard (icon: .copy, label: "Copy text") {
     clipboard.copy(m.body.text)
 }
 
-/// A conversation as a file to keep or hand on: every message in order, as Markdown, each under
-/// the name it shows with and the time it was written.
-action export(conversation: TextChannel | Thread | Direct) -> Text (
-    icon: .download,
-    label: "Export conversation",
-) {
+/// How a conversation exports, which the system's Export on its menu saves: every message in
+/// order, as Markdown, each under the name it shows with and the time it was written.
+fn export(conversation: TextChannel | Thread | Direct) -> Text {
     match conversation {
         ch: TextChannel => std.transcript_markdown("#{ch.name}", ch.messages.map(m -> entry(m))),
         t: Thread => std.transcript_markdown(t.name, t.messages.map(m -> entry(m))),
@@ -2371,9 +2368,6 @@ view channel(c: TextChannel) {
                     }
                     ui.MenuItem("Members", icon: .users) {
                         on choose: open(c, view: channel_members)
-                    }
-                    ui.MenuItem("Export conversation…", icon: .download) {
-                        on choose: file.save(export(c), name: "{c.name}.md")
                     }
                     if moderates(invoker) {
                         ui.MenuSeparator

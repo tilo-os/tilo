@@ -99,9 +99,12 @@ a view puts them and give the view they stand in a menu, a toolbar shown on hove
 a swipe. A list item holds those of its row wherever the row's layout puts them — through its
 stacks, rows, grids and calls — while what a component of its own meaning holds (a card, a
 section) stays that component's. Its menu ends with each of the item's actions the row's menu
-did not place, so every action stays reachable, and then the system's Copy link: on every
-resource's row, menu and window bar, it puts the link other devices and people open the resource
-by on the clipboard, so no app writes its own. They all run in the app window.
+did not place, so every action stays reachable, and then the system's Export and Copy link, on
+every resource's row, menu and window bar, so no app writes its own. Export saves the resource
+as a file where the person says: the Markdown its app says it exports as (a `fn export(x: T) ->
+Text` of the type's package, as Chat's conversations say theirs), else its document body (its
+rich text) in Markdown under its title, else everything it holds as JSON. Copy link puts the link
+other devices and people open the resource by on the clipboard. They all run in the app window.
 
 ## 2. Views are components
 
