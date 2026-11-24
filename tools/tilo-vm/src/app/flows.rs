@@ -327,6 +327,10 @@ impl Fleet for VmFleet<'_> {
         self.output(&line).map(|_| ())
     }
 
+    fn pause(&mut self, seconds: u64) {
+        std::thread::sleep(Duration::from_secs(seconds));
+    }
+
     fn unavailable(&self, guest: Guest) -> Option<String> {
         self.plan.unavailable(guest)
     }
