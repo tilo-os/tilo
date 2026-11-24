@@ -48,6 +48,16 @@ pub struct DrawingProps {
     /// A drag ended at (x, y) in fractions of its box.
     #[component(event(value = f64, at = f64))]
     pub drag_end: Event,
+    /// A pointer went down over the drawing, at (x, y) in fractions of its box: the point a person
+    /// pressed, for a drawing they set things on.
+    #[component(event(value = Vec<f64>))]
+    pub press_at: Event,
+    /// The pointer moved over the drawing while pressed, to (x, y) in fractions of its box.
+    #[component(event(value = Vec<f64>))]
+    pub drag_at: Event,
+    /// The pointer came up over the drawing, at (x, y) in fractions of its box.
+    #[component(event(value = Vec<f64>))]
+    pub release_at: Event,
     /// The wheel turned over the drawing: across it and down it, in logical pixels, positive
     /// down and to the end.
     #[component(event(value = f64, at = f64))]
@@ -99,18 +109,24 @@ impl Described for Drawing {
             })
         };
         // Shadowing the props so the closure can take the event by value.
-        let (pointer, drag_start, drag, drag_end, wheel) = (
+        let (pointer, drag_start, drag, drag_end, wheel, press_at, drag_at, release_at) = (
             &props.pointer,
             &props.drag_start,
             &props.drag,
             &props.drag_end,
             &props.wheel,
+            &props.press_at,
+            &props.drag_at,
+            &props.release_at,
         );
         self.on_pointer = pair(pointer);
         self.on_drag_start = pair(drag_start);
         self.on_drag = pair(drag);
         self.on_drag_end = pair(drag_end);
         self.on_wheel = pair(wheel);
+        self.on_press_at = pair(press_at);
+        self.on_drag_at = pair(drag_at);
+        self.on_release_at = pair(release_at);
         self.on_pinch = (!props.pinch.is_none()).then(|| {
             let pinch = props.pinch.clone();
             Box::new(move |scale: f64| pinch.fire(Some(Value::Float(scale)))) as Box<dyn FnMut(f64)>
@@ -268,6 +284,75 @@ pub fn shape_description() -> EnumDescription {
                     flag("strong", "Set heavier than its role."),
                 ],
             ),
+            case(
+                "area",
+                "A box filled in a colour of its own (`#rrggbb` or `#rrggbbaa`), not the theme's.",
+                vec![
+                    float("x", ""),
+                    float("y", ""),
+                    float("w", ""),
+                    float("h", ""),
+                    FieldDescription {
+                        default: Some(Value::Float(0.0)),
+                        ..float("round", "")
+                    },
+                    FieldDescription {
+                        name: "colour".to_owned(),
+                        ty: Type::Text,
+                        default: None,
+                        doc: "Its fill, `#rrggbb` or `#rrggbbaa`.".to_owned(),
+                    },
+                ],
+            ),
+            case(
+                "stroke",
+                "A line through `points` in a colour of its own, not the theme's.",
+                vec![
+                    FieldDescription {
+                        name: "points".to_owned(),
+                        ty: Type::List(Box::new(Type::Float)),
+                        default: None,
+                        doc: String::new(),
+                    },
+                    FieldDescription {
+                        name: "colour".to_owned(),
+                        ty: Type::Text,
+                        default: None,
+                        doc: "Its line, `#rrggbb` or `#rrggbbaa`.".to_owned(),
+                    },
+                    float(
+                        "width",
+                        "The line's width, a fraction of the box's shorter side.",
+                    ),
+                ],
+            ),
+            case(
+                "label",
+                "A text at (x, y) in a colour and size of its own, not the theme's.",
+                vec![
+                    float("x", ""),
+                    float("y", ""),
+                    FieldDescription {
+                        name: "text".to_owned(),
+                        ty: Type::Text,
+                        default: None,
+                        doc: String::new(),
+                    },
+                    FieldDescription {
+                        name: "colour".to_owned(),
+                        ty: Type::Text,
+                        default: None,
+                        doc: "Its words, `#rrggbb` or `#rrggbbaa`.".to_owned(),
+                    },
+                    float("size", "Its height, a fraction of the box's height."),
+                    FieldDescription {
+                        name: "anchor".to_owned(),
+                        ty: Anchor::ty(),
+                        default: Some(Value::Choice("middle".to_owned())),
+                        doc: "Which side of it stands at (x, y).".to_owned(),
+                    },
+                ],
+            ),
         ],
     }
 }
@@ -303,6 +388,38 @@ impl PropType for Shape {
         };
         let must = |name: &str| -> Result<Ink, String> {
             ink(name)?.ok_or_else(|| format!("`{case}` needs `{name}`, an ink"))
+        };
+        let text = |name: &str| -> Result<String, String> {
+            match field(name) {
+                Some(Value::Text(value)) => Ok(value.clone()),
+                _ => Err(format!("`{case}` needs `{name}`, a text")),
+            }
+        };
+        let hex = |name: &str| -> Result<String, String> {
+            let value = text(name)?;
+            if crate::color::parse_hex(&value).is_none() {
+                return Err(format!(
+                    "`{case}`'s `{name}` is a colour as `#rrggbb` or `#rrggbbaa`, not `{value}`"
+                ));
+            }
+            Ok(value)
+        };
+        let points = |name: &str| -> Result<Vec<f64>, String> {
+            match field(name) {
+                Some(Value::List(items)) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Float(v) => Ok(*v),
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "a fraction written as a whole number"
+                        )]
+                        Value::Int(v) => Ok(*v as f64),
+                        _ => Err("a shape's points are numbers".to_owned()),
+                    })
+                    .collect(),
+                _ => Err(format!("`{case}` needs `{name}`, a list of numbers")),
+            }
         };
         let weight = match field("weight") {
             None | Some(Value::None) => Weight::Regular,
@@ -346,21 +463,7 @@ impl PropType for Shape {
                 weight,
             },
             "path" => Shape::Path {
-                points: match field("points") {
-                    Some(Value::List(items)) => items
-                        .iter()
-                        .map(|item| match item {
-                            Value::Float(v) => Ok(*v),
-                            #[expect(
-                                clippy::cast_precision_loss,
-                                reason = "a fraction written as a whole number"
-                            )]
-                            Value::Int(v) => Ok(*v as f64),
-                            _ => Err("a path's points are numbers".to_owned()),
-                        })
-                        .collect::<Result<_, _>>()?,
-                    _ => return Err("`path` needs `points`, a list of numbers".to_owned()),
-                },
+                points: points("points")?,
                 smooth: flag("smooth"),
                 closed: flag("closed"),
                 fill: ink("fill")?,
@@ -386,9 +489,33 @@ impl PropType for Shape {
                 },
                 strong: flag("strong"),
             },
+            "area" => Shape::Area {
+                x: float("x")?,
+                y: float("y")?,
+                w: float("w")?,
+                h: float("h")?,
+                round: float("round")?,
+                colour: hex("colour")?,
+            },
+            "stroke" => Shape::Stroke {
+                points: points("points")?,
+                colour: hex("colour")?,
+                width: float("width")?,
+            },
+            "label" => Shape::Label {
+                x: float("x")?,
+                y: float("y")?,
+                text: text("text")?,
+                colour: hex("colour")?,
+                size: float("size")?,
+                anchor: match field("anchor") {
+                    None | Some(Value::None) => Anchor::Middle,
+                    Some(v) => Anchor::from_value(v)?,
+                },
+            },
             other => {
                 return Err(format!(
-                    "a shape is rect, ellipse, arc, line, path or text, not `{other}`"
+                    "a shape is rect, ellipse, arc, line, path, text, area, stroke or label, not `{other}`"
                 ));
             }
         })

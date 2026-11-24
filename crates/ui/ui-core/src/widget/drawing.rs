@@ -173,6 +173,33 @@ pub enum Shape {
         anchor: Anchor,
         strong: bool,
     },
+    /// A box filled in a colour of its own rather than the theme's: `colour` is `#rrggbb` or
+    /// `#rrggbbaa`. What shows someone's own mark-up over a picture keeps the colour the file or
+    /// the person gave it.
+    Area {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        round: f64,
+        colour: String,
+    },
+    /// A line through `points`, x and y in turn, in a colour of its own. `width` is a fraction of
+    /// the box's shorter side.
+    Stroke {
+        points: Vec<f64>,
+        colour: String,
+        width: f64,
+    },
+    /// A text at (x, y) in a colour and size of its own: `size` is a fraction of the box's height.
+    Label {
+        x: f64,
+        y: f64,
+        text: String,
+        colour: String,
+        size: f64,
+        anchor: Anchor,
+    },
 }
 
 enum Lowered {
@@ -260,7 +287,27 @@ impl Shape {
                     Lowered::Outline(path)
                 })
             }
-            Self::Text { .. } => None,
+            Self::Area {
+                x, y, w, h, round, ..
+            } => {
+                let rect = Rect::from_points(at(*x, *y), at(x + w, y + h));
+                let radius = round.clamp(0.0, 0.5) * rect.width().min(rect.height());
+                Some(Lowered::Area(
+                    RoundedRect::from_rect(rect, radius).to_path(0.1),
+                ))
+            }
+            Self::Stroke { points, .. } => {
+                let mut path = BezPath::new();
+                let pts: Vec<Point> = points.chunks_exact(2).map(|p| at(p[0], p[1])).collect();
+                if let Some(first) = pts.first() {
+                    path.move_to(*first);
+                    for pair in pts.windows(2) {
+                        path.line_to(pair[1]);
+                    }
+                }
+                Some(Lowered::Outline(path))
+            }
+            Self::Text { .. } | Self::Label { .. } => None,
         }
     }
 
@@ -281,7 +328,11 @@ impl Shape {
             } => out.extend([*cx, *cy, *radius, *from, *to]),
             Self::Line { x1, y1, x2, y2, .. } => out.extend([*x1, *y1, *x2, *y2]),
             Self::Path { points, .. } => out.extend(points.iter().copied()),
-            Self::Text { x, y, .. } => out.extend([*x, *y]),
+            Self::Text { x, y, .. } | Self::Label { x, y, .. } => out.extend([*x, *y]),
+            Self::Area {
+                x, y, w, h, round, ..
+            } => out.extend([*x, *y, *w, *h, *round]),
+            Self::Stroke { points, .. } => out.extend(points.iter().copied()),
         }
     }
 
@@ -324,9 +375,18 @@ impl Shape {
                     next(slot);
                 }
             }
-            Self::Path { points, .. } => points.iter_mut().for_each(next),
-            Self::Text { x, y, .. } => {
+            Self::Path { points, .. } | Self::Stroke { points, .. } => {
+                points.iter_mut().for_each(next);
+            }
+            Self::Text { x, y, .. } | Self::Label { x, y, .. } => {
                 for slot in [x, y] {
+                    next(slot);
+                }
+            }
+            Self::Area {
+                x, y, w, h, round, ..
+            } => {
+                for slot in [x, y, w, h, round] {
                     next(slot);
                 }
             }
@@ -337,7 +397,10 @@ impl Shape {
     /// points. Only such a change moves; any other lands at once.
     fn same_form(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Path { points: a, .. }, Self::Path { points: b, .. }) => a.len() == b.len(),
+            (Self::Path { points: a, .. }, Self::Path { points: b, .. })
+            | (Self::Stroke { points: a, .. }, Self::Stroke { points: b, .. }) => {
+                a.len() == b.len()
+            }
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
     }
@@ -345,7 +408,12 @@ impl Shape {
     fn fill(&self) -> Option<Ink> {
         match self {
             Self::Rect { fill, .. } | Self::Ellipse { fill, .. } | Self::Path { fill, .. } => *fill,
-            Self::Arc { .. } | Self::Line { .. } | Self::Text { .. } => None,
+            Self::Arc { .. }
+            | Self::Line { .. }
+            | Self::Text { .. }
+            | Self::Area { .. }
+            | Self::Stroke { .. }
+            | Self::Label { .. } => None,
         }
     }
 
@@ -357,7 +425,10 @@ impl Shape {
             Self::Arc { stroke, weight, .. } | Self::Line { stroke, weight, .. } => {
                 Some((*stroke, *weight))
             }
-            Self::Text { .. } => None,
+            Self::Text { .. }
+            | Self::Area { .. }
+            | Self::Stroke { .. }
+            | Self::Label { .. } => None,
         }
     }
 
@@ -400,6 +471,12 @@ pub struct Drawing {
     pub(crate) on_drag_start: Option<Box<dyn FnMut(f64, f64)>>,
     pub(crate) on_drag: Option<Box<dyn FnMut(f64, f64)>>,
     pub(crate) on_drag_end: Option<Box<dyn FnMut(f64, f64)>>,
+    /// A pointer went down over the drawing, at fractions of its box: the point a person pressed.
+    pub(crate) on_press_at: Option<Box<dyn FnMut(f64, f64)>>,
+    /// The pointer moved while pressed, to fractions of the drawing's box.
+    pub(crate) on_drag_at: Option<Box<dyn FnMut(f64, f64)>>,
+    /// The pointer came up over the drawing, at fractions of its box.
+    pub(crate) on_release_at: Option<Box<dyn FnMut(f64, f64)>>,
     /// The wheel turned over the drawing: across and down, in logical pixels.
     pub(crate) on_wheel: Option<Box<dyn FnMut(f64, f64)>>,
     /// A pinch over the drawing: the scale factor it asks for (1 is none).
@@ -552,10 +629,68 @@ impl Drawing {
                     );
                     return Some(Rect::new(left, top, left + width, top + height));
                 }
+                if let Shape::Label {
+                    x,
+                    y,
+                    text,
+                    colour,
+                    size,
+                    anchor,
+                } = shape
+                {
+                    let Some(ink) = crate::color::parse_hex(colour) else {
+                        return None;
+                    };
+                    let mut style = theme.text(TextRole::Body);
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a text's size in a drawing, well inside f32"
+                    )]
+                    let size_px = (size * bounds.height()) as f32;
+                    style.size = size_px;
+                    style.line_height = size_px * 1.2;
+                    let (width, height) = text_renderer.measure_style(text, None, &style);
+                    let (width, height) = (f64::from(width), f64::from(height));
+                    let px = bounds.x0 + x * bounds.width();
+                    let left = match anchor {
+                        Anchor::Start => px,
+                        Anchor::Middle => px - width / 2.0,
+                        Anchor::End => px - width,
+                    };
+                    let top = bounds.y0 + y * bounds.height() - height / 2.0;
+                    text_renderer.draw_style(
+                        scene,
+                        text,
+                        ink,
+                        transform.pre_translate((left, top).into()),
+                        None,
+                        &style,
+                    );
+                    return Some(Rect::new(left, top, left + width, top + height));
+                }
                 let Some(Lowered::Area(path) | Lowered::Outline(path)) = shape.lowered(bounds)
                 else {
                     return None;
                 };
+                match shape {
+                    Shape::Area { colour, .. } => {
+                        if let Some(colour) = crate::color::parse_hex(colour) {
+                            scene.fill(Fill::NonZero, transform, colour, None, &path);
+                        }
+                        return None;
+                    }
+                    Shape::Stroke { colour, width, .. } => {
+                        if let Some(colour) = crate::color::parse_hex(colour) {
+                            let width = (width * bounds.width().min(bounds.height())).max(0.5);
+                            let stroke = Stroke::new(width)
+                                .with_caps(vello::kurbo::Cap::Round)
+                                .with_join(vello::kurbo::Join::Round);
+                            scene.stroke(&stroke, transform, colour, None, &path);
+                        }
+                        return None;
+                    }
+                    _ => {}
+                }
                 if let Some(ink) = shape.fill() {
                     let colour = ink.colour(theme);
                     if shape.washed() {
@@ -617,6 +752,9 @@ impl Drawing {
                     if let Some(drag) = self.on_drag.as_mut() {
                         drag(x, y);
                     }
+                    if let Some(drag_at) = self.on_drag_at.as_mut() {
+                        drag_at(x, y);
+                    }
                     return true;
                 }
                 false
@@ -630,6 +768,9 @@ impl Drawing {
                 let (x, y) = self.fraction(self.last_cursor);
                 if let Some(start) = self.on_drag_start.as_mut() {
                     start(x, y);
+                }
+                if let Some(press_at) = self.on_press_at.as_mut() {
+                    press_at(x, y);
                 }
                 // A press is also the shape under the pointer's: what `press` reports.
                 false
@@ -646,6 +787,9 @@ impl Drawing {
                 let (x, y) = self.fraction(self.last_cursor);
                 if let Some(end) = self.on_drag_end.as_mut() {
                     end(x, y);
+                }
+                if let Some(release_at) = self.on_release_at.as_mut() {
+                    release_at(x, y);
                 }
                 true
             }
