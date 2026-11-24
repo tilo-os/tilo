@@ -294,6 +294,10 @@ unset MAKEFLAGS
 # --- Stage ----------------------------------------------------------------------
 rm -rf "$out"
 mkdir -p "$out/bin" "$out/thin-app"
+# The product fonts, materialized here, where the build may reach the release store: a session
+# started from this build (an app walk's, in a VM that reaches nothing) sets its text in these
+# and never fetches a font of its own, whichever pinned version the tree names.
+python3 tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts "$out/fonts" --scope product
 for name in "${host_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
 # The session's surfaces, which it starts from beside its own executable under
 # the names the OS image installs them as (`osk` ships as `/usr/bin/tilo-osk`).

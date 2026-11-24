@@ -299,10 +299,14 @@ fi
 
 # The product fonts: the session sets text in them from a `fonts/` directory
 # beside its executable, and the runtime bundle carries the same catalog. They
-# are pinned artifacts the catalog tool materializes, not build outputs.
+# are pinned artifacts the catalog tool materializes; the build materialized them already
+# (dist/dev/nested-session-build.sh), so a session started where nothing is reachable reads
+# those and fetches nothing.
 fonts=$state/fonts
 rm -rf "$fonts"
-python3 "$repo_root/tools/font-catalog.py" prepare \
+font_root=()
+[[ ! -d $build_out/fonts ]] || font_root=(TILO_FONT_CATALOG_ROOT="$build_out/fonts")
+env "${font_root[@]}" python3 "$repo_root/tools/font-catalog.py" prepare \
     "$repo_root/crates/ui/ui-core/assets/fonts" "$fonts" --scope product
 ln -sfn "$fonts" "$bin/fonts"
 
