@@ -4777,13 +4777,27 @@ default = false
 name = "wine/windows-x86_64-runtime"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/windows/wine-test.sh runtime /target/windows/x86_64/runtime/tilo-runtime.exe"
-needs = ["build/windows-runtime-x86_64"]
+run = "bash tools/ci/windows/wine-test.sh runtime /target/windows/x86_64/runtime/tilo-runtime.exe && bash tools/ci/windows/walk.sh run /target/windows/x86_64/walk /target/windows/x86_64/walk-shots"
+needs = ["build/windows-runtime-x86_64", "build/windows-walk-x86_64"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 requires = ["arch=x86_64"]
-# The Windows daemon compiles before it runs: Wine drives its CLI, which must
-# answer the Windows refusal instead of crashing or starting half a daemon.
+# The Windows daemon serves under Wine, then a person's use of it is walked: Video installed,
+# opened, acted on, a clip played and its History read (tools/ci/windows/walk.py). The pictures
+# of its window are the outputs.
+outputs = ["/target/windows/x86_64/walk-shots/*"]
 on = ["idle"]
+
+[[check]]
+name = "build/windows-walk-x86_64"
+# Fetches from mirrors, registries and release hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/windows/walk.sh build /target/windows/sdk/sdk-x86_64.tar.zst /target/windows/x86_64/runtime /target/windows/x86_64/walk"
+needs = ["build/windows-sdk-x86_64", "build/windows-runtime-x86_64"]
+image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
+outputs = ["/target/windows/x86_64/walk/**"]
+# The daemon test build that may start a tilolang process unconfined, which nothing that ships
+# carries, tilo-install and Video's package, for the walk above.
+default = false
 
 [[check]]
 name = "windows/x86_64-platform"
