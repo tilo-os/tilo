@@ -100,6 +100,7 @@ const RECENT: usize = 50;
 impl Core {
     /// Take the workspace's members now, and how its grants decide who reads what (`None`:
     /// every member reads every resource of the workspace).
+    #[allow(clippy::expect_used, reason = "an actor always writes as JSON")]
     pub(crate) fn set_members(&self, list: Vec<Member>, reads: Option<Rc<Reads>>) {
         let value = Value::List(
             list.iter()
@@ -111,7 +112,7 @@ impl Core {
                 .iter()
                 .map(|member| {
                     crate::value::to_json(&Value::Actor(member.who()))
-                        .unwrap_or_else(|why| panic!("an actor writes as JSON: {why}"))
+                        .expect("an actor writes as JSON")
                 })
                 .collect();
             (root.clone(), serde_json::json!({ "people": people }))
