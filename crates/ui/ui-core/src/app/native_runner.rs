@@ -5092,6 +5092,12 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
+        // A process the daemon started with no window that nothing can ever ask for a window
+        // runs on a loop of its own, which needs no display at all: a server runs the app's
+        // code for the calls that reach it.
+        if crate::process::environment().no_window() {
+            return self.run_no_window();
+        }
         // Everything from here to the window's creation is marked: Notes spent
         // 259 ms between `app-construct-end` and `primary-window-created`
         // with nothing in the startup file to say where.
@@ -5185,6 +5191,105 @@ impl App {
         if !handing_over && let Some(reason) = take_abnormal_stop() {
             report_window_lost_and_exit(&reason);
         }
+    }
+
+    /// Run this application on a loop that never opens a display: the process was started with
+    /// no window and nothing can ask it for one, so what wakes it is the app's own wake scope
+    /// rather than a window system. Each wake runs the passes a frame runs before it paints (the
+    /// app takes its actions and publishes what it offers), and the loop ends once no call came
+    /// for the period the launch named ([`crate::process::NO_WINDOW_IDLE_ENV`]); the daemon
+    /// starts the process again on the next call.
+    #[allow(
+        clippy::expect_used,
+        reason = "a live App's wake scope is open and unbound at native startup; a scope that closed before it bound ends the process"
+    )]
+    fn run_no_window(mut self) {
+        tilo_startup_metrics::mark("run-no-window-start");
+        crate::process::native::install_default_if_unset(self.window.app_id.as_deref());
+        tilo_rt::mark_ui_thread();
+        tilo_host_search::forward_to_runtime();
+        // What the app's scope signals, this loop waits on: a document change, a call, a
+        // permission change or a scheduled wake. Nothing here asks a window system for anything.
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel::<crate::wake::WakeEvent>();
+        let bound = self
+            .wake_scope
+            .as_mut()
+            .map(|scope| scope.bind(move |event| {
+                let _ = wake_tx.send(event);
+            }));
+        if !matches!(bound, Some(Ok(()))) {
+            tracing::warn!("a process with no window could not bind its wake scope; it ends");
+            app_state::finish_writes();
+            crate::storage::flush_settings_writes();
+            return;
+        }
+        if let Some(scope) = self.wake_scope.as_ref() {
+            let wake = scope.handle();
+            self.collaboration
+                .manager
+                .set_transport_wake(Box::new(move || wake.wake()));
+        }
+        // A settings change the app follows wakes it too, as it does a window.
+        let settings_store_changed = Arc::new(AtomicBool::new(false));
+        let settings_watch = self
+            .watch_system_settings
+            .then(|| {
+                let pending = Arc::clone(&settings_store_changed);
+                let wake = crate::wake::WakeHandle::new();
+                settings_store::watch::watch_settings(move || {
+                    pending.store(true, Ordering::Release);
+                    wake.wake();
+                })
+                .ok()
+            })
+            .flatten();
+        {
+            let _entry = self.enter_wake_scope();
+            // A change of an outside authority the app's controls follow moves its permissions on
+            // and wakes the loop, exactly as it does for a window.
+            crate::permissions::wake_loop_on_outside_change(crate::wake::WakeHandle::new());
+            self.init_layout();
+        }
+        let idle = crate::process::environment().no_window_idle;
+        let mut last_call = crate::time::now();
+        loop {
+            let next = {
+                let _entry = self.enter_wake_scope();
+                self.wake_unshown()
+            };
+            let now = crate::time::now();
+            if let Some(idle) = idle
+                && now.saturating_duration_since(last_call) >= idle
+            {
+                break;
+            }
+            let until = match (next, idle) {
+                (Some(next), Some(idle)) => Some(next.min(last_call + idle)),
+                (Some(next), None) => Some(next),
+                (None, Some(idle)) => Some(last_call + idle),
+                (None, None) => None,
+            };
+            let wait = until.map_or(crate::time::Duration::from_secs(60), |until| {
+                until.saturating_duration_since(now)
+            });
+            match wake_rx.recv_timeout(wait) {
+                Ok(_) => {
+                    // Every wake is a call or a change: the app was not idle. More waiting ones
+                    // are taken by the pass at the top of the loop.
+                    last_call = crate::time::now();
+                    while wake_rx.try_recv().is_ok() {}
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // The scope closed: nothing runs the app any more.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        drop(settings_watch);
+        // The app and its state are dropped (and saved) before the process ends, and so are the
+        // settings it changed.
+        drop(self);
+        app_state::finish_writes();
+        crate::storage::flush_settings_writes();
     }
 
     /// The window this app is shown in, on the loop `proxy` wakes: its wake

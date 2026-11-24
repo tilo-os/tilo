@@ -179,6 +179,16 @@ pub struct ProcessEnvironment {
     pub no_window_idle: Option<std::time::Duration>,
 }
 
+impl ProcessEnvironment {
+    /// Whether this process runs on the loop that opens no display: the daemon started it with
+    /// no window, and named the period nothing calls it for. Nothing can ask such a process for
+    /// a window, so it needs no display at all.
+    #[must_use]
+    pub fn no_window(&self) -> bool {
+        self.windowless && self.no_window_idle.is_some()
+    }
+}
+
 static INSTALLED: RwLock<Option<Arc<ProcessEnvironment>>> = RwLock::new(None);
 
 /// A POSIX locale value (`de_DE.UTF-8`, or a `LANGUAGE` list such as
