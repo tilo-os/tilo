@@ -237,6 +237,18 @@ pub(super) fn device_in(args: &Value) -> Result<Option<[u8; 32]>> {
 pub(crate) struct OnThisDevice(pub(crate) Tickets);
 
 impl OnThisDevice {
+    /// Why `caller` is refused what this device is to its person: another member's device, which
+    /// a workspace this device holds admits by that workspace's grants, reaches neither the
+    /// device's own actions nor the tickets that let a device in.
+    fn refused(&self, caller: &Caller) -> Option<ActionCallError> {
+        caller
+            .user_public_key()
+            .is_some_and(|person| *person != self.0.0.cert.user_public_key)
+            .then(|| ActionCallError::Refused {
+                reason: crate::personal_devices::Refusal::OtherPerson.reason(),
+            })
+    }
+
     fn keep(&self, invocation: InvocationId, update: InvocationUpdate) -> InvocationReceipt {
         let state = InvocationState::new(invocation, update);
         let receipt = state.receipt();
@@ -266,6 +278,13 @@ impl ActionProvider for OnThisDevice {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // The machine's controls decide their own callers: its person and the administrators of
+        // the workspaces it serves alone.
+        if request.target.address.resource != super::SERVER
+            && let Some(refused) = self.refused(caller)
+        {
+            return Pending::ready(Err(refused));
+        }
         // A ticket this device serves, shown to, approved by or reported to a device of the
         // person's: the device's tickets answer it, as they do on a device without a daemon.
         if tilo_peer_state::new_device::Tickets::answers_certified(&request) {
