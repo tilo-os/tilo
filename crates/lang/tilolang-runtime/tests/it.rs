@@ -179,6 +179,8 @@ mod published_actions;
 mod queries;
 #[path = "random.rs"]
 mod random;
+#[path = "ranked.rs"]
+mod ranked;
 #[path = "reaches.rs"]
 mod reaches;
 #[path = "record_lists.rs"]

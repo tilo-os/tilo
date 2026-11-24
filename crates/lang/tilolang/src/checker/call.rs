@@ -297,6 +297,7 @@ impl Checker<'_> {
             "record_at" => return self.builtin_record_at(args, span),
             "change_of" => return self.builtin_change_of(args, span),
             "changed" => return self.builtin_changed(args, span),
+            "ranked" => return self.builtin_ranked(args, span),
             "unseen" => return self.builtin_unseen(args, span),
             "unreadable" => return self.builtin_unreadable(args, span),
             "linked" => return self.builtin_links(args, span),

@@ -307,6 +307,7 @@ imports! {
     (SeenBy, "seen_by", "ii", "i"),
     (Mentions, "mentions", "iii", "l"),
     (Steps, "steps", "i", "i"),
+    (Ranked, "ranked", "i", "i"),
     (CollOrdered, "coll_ordered", "ii", "i"),
     (CollWhereWith, "coll_where_with", "iii", "i"),
     (CollMoveTo, "coll_move_to", "iiil", ""),

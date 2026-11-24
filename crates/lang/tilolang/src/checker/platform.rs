@@ -120,6 +120,50 @@ impl Checker<'_> {
         }
     }
 
+    /// `ranked(items)`: the resources of `items`, the ones the person looking chose most often
+    /// and most lately first, read from each one's history: every change they made to it is a
+    /// choice of it, and older choices pull less. What was never chosen keeps its place behind
+    /// them, as do equals among themselves.
+    pub(super) fn builtin_ranked(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [a] = args else {
+            self.err(
+                "E022",
+                span,
+                "`ranked` takes one list of resources: `ranked(items)`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        if a.name.is_some() {
+            self.err(
+                "E022",
+                a.value.span,
+                "`ranked` takes the list by position: `ranked(items)`",
+            );
+        }
+        let items = self.expr(&a.value, None);
+        match &items.ty {
+            Ty::List(item) if matches!(**item, Ty::Record(_) | Ty::Union(_)) => {
+                let ty = items.ty.clone();
+                Ex::host(Imp::Ranked, vec![items], ty)
+            }
+            Ty::Error => Ex::error(),
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    a.value.span,
+                    format!(
+                        "`ranked` takes a list of resources, such as a filter answers; this is {t}"
+                    ),
+                );
+                Ex::error()
+            }
+        }
+    }
+
     /// `changed(r, .field)`: the version that last changed the field of `r`, or the one that made
     /// `r` when none after it did. A store with an index answers it without reading any history.
     pub(super) fn builtin_changed(&mut self, args: &[ast::Arg], span: Span) -> Ex {

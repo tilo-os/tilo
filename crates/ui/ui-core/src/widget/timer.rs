@@ -6,6 +6,9 @@
 //! this runs where the window is. It draws nothing and takes no room. A window nobody sees (hidden,
 //! minimised, covered) holds its timers: nothing fires until it is seen again, and then a tick
 //! that came due while it was away fires once.
+//!
+//! Given what it counts from (`restart`), it counts again whenever that changes: a timer `after`
+//! a short while from the text being typed ticks once the typing pauses, not at every key.
 
 use std::cell::Cell;
 
@@ -50,6 +53,9 @@ pub struct TimerProps {
     /// How many seconds until its one tick: it ticks once and then rests; 0 for one that ticks
     /// again and again.
     pub after: f64,
+    /// What it counts from: whenever this changes, it counts again from now. A field's text here
+    /// makes a timer `after` a short while tick once the person stops typing, not at every key.
+    pub restart: String,
     /// Its time came.
     #[component(event)]
     pub tick: Event,
@@ -59,6 +65,8 @@ pub struct TimerProps {
 pub struct Timer {
     every: Option<Duration>,
     after: Option<Duration>,
+    /// What it counts from ([`TimerProps::restart`]).
+    restart: String,
     tick: Event,
     /// When it ticks next; `None` once a one-off tick fired, or for a timer that has no length.
     due: Cell<Option<Instant>>,
@@ -78,6 +86,7 @@ impl Timer {
         let mut timer = Self {
             every: None,
             after: None,
+            restart: String::new(),
             tick: Event::None,
             due: Cell::new(None),
             rect: Rect::ZERO,
@@ -92,6 +101,7 @@ impl Timer {
     fn start(&mut self, props: TimerProps) {
         self.every = length(props.every);
         self.after = length(props.after);
+        self.restart = props.restart;
         self.tick = props.tick;
         let first = self.every.or(self.after);
         self.due
@@ -180,10 +190,13 @@ impl Described for Timer {
         Self::new(key, props)
     }
 
-    /// Another length counts again from now; the same length keeps its count, so a view drawn
-    /// again does not put its tick off.
+    /// Another length, or another thing it counts from, counts again from now; the same keep
+    /// their count, so a view drawn again does not put its tick off.
     fn set_props(&mut self, props: TimerProps) -> bool {
-        if length(props.every) != self.every || length(props.after) != self.after {
+        if length(props.every) != self.every
+            || length(props.after) != self.after
+            || props.restart != self.restart
+        {
             self.start(props);
         } else {
             self.tick = props.tick;
@@ -201,6 +214,7 @@ mod tests {
         let props = TimerProps {
             every: 1.0,
             after: 0.0,
+            restart: String::new(),
             tick: Event::View(crate::component::Intent::new(&queue, "clock", "tick")),
         };
         (queue, Timer::new("clock", props))
@@ -239,6 +253,7 @@ mod tests {
             TimerProps {
                 every: 0.0,
                 after: 3.0,
+                restart: String::new(),
                 tick: Event::View(crate::component::Intent::new(&queue, "once", "tick")),
             },
         );
@@ -249,5 +264,33 @@ mod tests {
         assert_eq!(timer.next_wake_deadline(), None, "it rests");
         assert!(!timer.serve(due + Duration::from_secs(10)));
         assert_eq!(queue.take().len(), 1);
+    }
+
+    /// A timer counting from what is typed waits for the typing to pause: each change counts
+    /// again, and drawing it again with the same text keeps where it stands.
+    #[test]
+    fn a_timer_counts_again_when_what_it_counts_from_changes() {
+        let queue = crate::Intents::default();
+        let props = |typed: &str| TimerProps {
+            every: 0.0,
+            after: 0.15,
+            restart: typed.to_owned(),
+            tick: Event::View(crate::component::Intent::new(&queue, "pause", "tick")),
+        };
+        let mut timer = Timer::new("pause", props("w"));
+        let due = timer.next_wake_deadline().expect("it waits");
+        assert!(timer.serve(due), "the pause came");
+        timer.set_props(props("w"));
+        assert_eq!(
+            timer.next_wake_deadline(),
+            None,
+            "the same text drawn again rests"
+        );
+        timer.set_props(props("wi"));
+        let again = timer
+            .next_wake_deadline()
+            .expect("a key typed counts again");
+        assert!(timer.serve(again));
+        assert_eq!(queue.take().len(), 2, "one tick for each pause");
     }
 }

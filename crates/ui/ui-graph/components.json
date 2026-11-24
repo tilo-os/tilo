@@ -7843,6 +7843,11 @@
           "name": "after",
           "doc": "How many seconds until its one tick: it ticks once and then rests; 0 for one that ticks again and again.",
           "type": "float"
+        },
+        {
+          "name": "restart",
+          "doc": "What it counts from: whenever this changes, it counts again from now. A field's text here makes a timer `after` a short while tick once the person stops typing, not at every key.",
+          "type": "text"
         }
       ],
       "events": [
