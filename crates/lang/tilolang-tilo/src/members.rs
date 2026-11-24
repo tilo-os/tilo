@@ -220,6 +220,16 @@ impl Host {
     /// a host the session keeps decides who reads what as a window's does. Whether it did.
     pub fn follow_members(&self) -> bool {
         let Some(access) = self.authority().access() else {
+            // A host with no workspace policy yet has no member to name: the members root is
+            // served empty, so an app reading it finds a list rather than waiting on a reading
+            // that never comes. The reading is served again once an access arrives.
+            let empty = serde_json::json!({ "people": [] });
+            if let Err(error) = self.runtime().serve_reading(
+                &crate::platform_apps::workspace_members(),
+                &empty.to_string(),
+            ) {
+                tracing::error!(%error, "the workspace's empty members were refused as a reading");
+            }
             return false;
         };
         let person = access.person_id().unwrap_or_default();
@@ -260,10 +270,7 @@ impl Host {
     /// of `use tilo.workspace as workspace`), which the host serves from the member list it
     /// decides by whatever the session publishes, and their roles and who of them reads what
     /// (`members(r)`, `std.may_read`).
-    #[allow(
-        clippy::expect_used,
-        reason = "an actor always writes as JSON"
-    )]
+    #[allow(clippy::expect_used, reason = "an actor always writes as JSON")]
     pub fn give_members(&self, access: &MemberAccess, me: &PersonId) {
         let members = members_of(access, me);
         let people: Vec<serde_json::Value> = members

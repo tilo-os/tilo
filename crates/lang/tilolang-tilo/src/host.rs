@@ -1028,8 +1028,7 @@ impl Host {
         store.set_writer(viewer.clone());
         // A reader field is placed by the workspace's one read decision, the same check the
         // runtime's members are given: the store keeps no policy of its own.
-        let record_reads =
-            std::sync::Arc::new(crate::members::MemberRecordReads::default());
+        let record_reads = std::sync::Arc::new(crate::members::MemberRecordReads::default());
         record_reads.follow(access(), &viewer);
         store.set_record_reader(record_reads.clone());
         // What the runtime invokes is decided by the workspace's one policy: the person's access,
@@ -1056,7 +1055,11 @@ impl Host {
             members_from: RefCell::new(None),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
-        Ok(Self { inner })
+        let host = Self { inner };
+        // What an app reads of the workspace's members stands from the first frame: the policy
+        // the host decides by (or the empty list of a host that has none yet).
+        host.follow_members();
+        Ok(host)
     }
 
     /// Replace what `now` reads (the system time until then): tests and captures fix it. The
@@ -1292,8 +1295,9 @@ impl Host {
     /// being loaded here, as it does when the workspace compiles a built-in one.
     pub fn load_builtin(&self, source: &str, ids: &str) -> Result<Package, HostError> {
         let lock = IdsLock::parse(ids).map_err(|error| HostError::Compile(error.to_string()))?;
-        let mut imports =
+        let named =
             crate::platform_apps::named_platform_packages(source).map_err(HostError::Compile)?;
+        let mut imports = named.clone();
         imports.extend(
             self.inner
                 .packages
@@ -1311,7 +1315,19 @@ impl Host {
                         .join("\n"),
                 )
             })?;
-        self.load_compiled(&compiled)
+        let package = self.load_compiled(&compiled)?;
+        // The platform apps the package names are described here too, without their code: their
+        // types make the references the package writes real (`workspace.members`), and what a
+        // view reads of them comes from the readings this host serves. An app this host runs
+        // already (the workspace's own service) keeps its package.
+        for meta in named {
+            if meta.app != package.meta.app && self.package(&meta.app).is_none() {
+                if let Err(error) = self.inner.runtime.load_foreign(meta) {
+                    tracing::warn!(%error, "a platform package the app names is not described here");
+                }
+            }
+        }
+        Ok(package)
     }
 
     /// Load a compiled package and trust it (a built-in package, or the package being developed).
