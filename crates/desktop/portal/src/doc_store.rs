@@ -55,14 +55,12 @@ impl Export {
 /// started it in and its package id, which is the key that launcher's view
 /// of the store is named by.
 ///
-/// `None` for a caller the session does not know runs in a launcher sandbox,
-/// and for one whose room it does not know: both run against the host's
-/// files, so both are answered with a path on it.
+/// `None` only for a caller whose room the session does not know: it has no
+/// view of the store to grant into, so it is answered with the path itself.
+/// Every caller whose workspace is known is answered a reference, sandboxed
+/// or not: one path per feature, never a host path some apps may use.
 #[must_use]
 pub fn key_of(caller: &PortalCaller) -> Option<AppKey> {
-    if !caller.sandboxed {
-        return None;
-    }
     AppKey::new(caller.workspace.as_deref()?, &caller.app_id)
 }
 
@@ -232,28 +230,38 @@ mod tests {
             );
         }
 
-        phase a_host_caller_is_answered_with_the_picked_path_itself;
+        phase every_caller_in_a_room_is_answered_a_reference;
         {
             let folder = tempfile::tempdir().unwrap();
             let chosen = folder.path().join("notes.txt");
             std::fs::write(&chosen, b"x").unwrap();
-            for caller in [
-                // A host app, whose only name is the one the frontend gave.
-                caller(Some("studio"), false),
-                // An app in no room this session knows.
-                caller(None, true),
-            ] {
-                let export = exports(
-                    &Documents::new(),
-                    &caller,
-                    std::slice::from_ref(&chosen),
-                    Kind::Read,
-                )
-                .pop()
-                .unwrap();
-                assert_eq!(export.app_path, chosen);
-                assert_eq!(export.host_path, chosen);
-            }
+            // A host app, whose only name is the one the frontend gave: it is in a room, so it
+            // is answered what a sandboxed app is — the store's path, never the host's.
+            let export = exports(
+                &Documents::new(),
+                &caller(Some("studio"), false),
+                std::slice::from_ref(&chosen),
+                Kind::Read,
+            )
+            .pop()
+            .unwrap();
+            assert_eq!(
+                export.app_path.parent().and_then(|token| token.parent()),
+                Some(std::path::Path::new(SANDBOX_DIR))
+            );
+            assert_eq!(export.host_path, chosen.canonicalize().unwrap());
+
+            // An app in no room this session knows has no view to grant into: the path itself.
+            let export = exports(
+                &Documents::new(),
+                &caller(None, true),
+                std::slice::from_ref(&chosen),
+                Kind::Read,
+            )
+            .pop()
+            .unwrap();
+            assert_eq!(export.app_path, chosen);
+            assert_eq!(export.host_path, chosen);
         }
 
         phase a_choice_the_store_does_not_take_is_still_answered;

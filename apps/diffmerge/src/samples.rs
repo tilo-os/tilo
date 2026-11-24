@@ -169,6 +169,10 @@ pub fn folder_comparison() -> crate::folder::FolderComparison {
         left_root: "/work/rate-limiter/release-1.4".into(),
         right_label: "main".into(),
         right_root: "/work/rate-limiter/main".into(),
+        #[cfg(unix)]
+        left_dir: None,
+        #[cfg(unix)]
+        right_dir: None,
         entries: vec![
             entry("Cargo.toml", FolderKind::Modified, 1_204, 1_261, true),
             entry("README.md", FolderKind::Modified, 8_120, 8_120, false),

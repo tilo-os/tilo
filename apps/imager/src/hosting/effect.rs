@@ -160,21 +160,39 @@ impl<'a, W: Window> EffectCx<'a, W> {
     }
 
     /// Ask the person for a file with the platform's chooser, then run `then` on the window with
-    /// what they chose: `None` when they cancelled.
-    pub(crate) fn choose_path(
+    /// it already open, or `None` when they cancelled: the handle reads a file whose path the
+    /// app's sandbox cannot resolve.
+    pub(crate) fn choose_handle(
         &mut self,
         request: ui::portal::PickRequest,
-        then: impl FnOnce(&mut W, Option<std::path::PathBuf>, &mut EffectCx<'_, W>) -> EffectAnswer
+        then: impl FnOnce(
+            &mut W,
+            Option<ui::portal::ChosenHandle>,
+            &mut EffectCx<'_, W>,
+        ) -> EffectAnswer
         + Send
         + 'static,
     ) -> Effected {
-        let chosen = request.send();
+        let chosen = request.send_open_handle();
         self.thread(
             move |_| chosen.recv().ok(),
             move |window, outcome, cx| match outcome {
-                Some(ui::portal::PortalOutcome::Opened(path)) => then(window, Some(path), cx),
-                Some(ui::portal::PortalOutcome::Cancelled) => then(window, None, cx),
-                Some(ui::portal::PortalOutcome::Failed(reason)) => Err(reason),
+                Some(ui::portal::OpenFileOutcome::Opened(opened)) => {
+                    let name = opened.display_name().to_owned();
+                    let (file, reference) = opened.into_parts();
+                    match reference {
+                        Some(reference) => then(
+                            window,
+                            Some(ui::portal::ChosenHandle::from_picked(file, reference, name)),
+                            cx,
+                        ),
+                        None => {
+                            Err("This host cannot open the file again once it is chosen.".into())
+                        }
+                    }
+                }
+                Some(ui::portal::OpenFileOutcome::Cancelled) => then(window, None, cx),
+                Some(ui::portal::OpenFileOutcome::Failed(reason)) => Err(reason),
                 None => Err("The file chooser closed without an answer.".into()),
             },
         )

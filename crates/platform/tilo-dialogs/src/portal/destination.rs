@@ -17,6 +17,8 @@ use super::{PortalChannel, PortalOutcome, SaveChannel, SaveOutcome};
 pub struct SaveDestination {
     name: String,
     target: Target,
+    /// What reopens the same file later (a documents-store reference), when the host names one.
+    reference: Option<PathBuf>,
 }
 
 type Writer = Arc<dyn Fn(Vec<u8>) -> SaveChannel + Send + Sync>;
@@ -36,6 +38,7 @@ impl std::fmt::Debug for SaveDestination {
         f.debug_struct("SaveDestination")
             .field("name", &self.name)
             .field("target", &target)
+            .field("reference", &self.reference)
             .finish()
     }
 }
@@ -46,6 +49,7 @@ impl SaveDestination {
         Self {
             name: super::file_name_of(&path),
             target: Target::Path(path),
+            reference: None,
         }
     }
 
@@ -59,6 +63,21 @@ impl SaveDestination {
         Self {
             name: name.into(),
             target: Target::Kept(Arc::new(write)),
+            reference: None,
+        }
+    }
+
+    /// A destination the host keeps and names by `reference`: the same place reopened for every
+    /// later Save, and what the window shows from then on.
+    pub fn kept_at(
+        name: impl Into<String>,
+        reference: PathBuf,
+        write: impl Fn(Vec<u8>) -> SaveChannel + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            target: Target::Kept(Arc::new(write)),
+            reference: Some(reference),
         }
     }
 
@@ -73,6 +92,12 @@ impl SaveDestination {
             Target::Path(path) => Some(path),
             Target::Kept(_) => None,
         }
+    }
+
+    /// What names the saved file on a host whose files have no path: the documents-store
+    /// reference the chooser answers to reopen it. `None` where [`Self::location`] has one.
+    pub fn reference(&self) -> Option<&Path> {
+        self.reference.as_deref()
     }
 
     /// The SDK's save path only: an app writes through `EffectCx::write_destination`,

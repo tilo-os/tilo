@@ -1038,6 +1038,14 @@ fn erase_and_write_presses_the_drives_name_confirmed_write() {
     assert!(app.job_control.is_none());
 }
 
+fn chosen_handle(path: &std::path::Path) -> ui::portal::ChosenHandle {
+    let file = std::fs::File::open(path).unwrap();
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    ui::portal::ChosenHandle::new(file, path.to_path_buf(), name)
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1048,7 +1056,8 @@ fn source_and_target_selection_accept_only_inspected_external_media() {
         let (mut app, _doc) = seeded_app();
         let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
         std::fs::write(f.path(), b"tilo payload for the imager test").unwrap();
-        app.take_chosen_image(Some(f.path().to_path_buf())).unwrap();
+        app.take_chosen_image(Some(chosen_handle(f.path())))
+            .unwrap();
         assert_eq!(app.source.as_ref().unwrap().kind, SourceKind::IsoFile);
         app.take_chosen_image(None).unwrap();
         assert!(app.status.contains("cancelled"));

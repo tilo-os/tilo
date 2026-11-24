@@ -259,8 +259,6 @@ pub(crate) struct Serving {
     pub windows: Option<crate::windows_compat::Serving>,
     /// The files people choose for apps, while the session serves them to its sandboxes.
     pub documents: Option<tilo_documents::Documents>,
-    /// The apps this session started, for a session that starts apps.
-    pub launches: Option<Arc<crate::Launches>>,
     /// The shell link the device's daemon handed this session: its identity service is the one
     /// the apps sign in through. `None` for a session the host placed in a workspace's VM, which
     /// runs no device daemon and serves its apps' identity itself.
@@ -270,7 +268,9 @@ pub(crate) struct Serving {
 /// The identity service apps sign in through, held for as long as the session serves it.
 enum Identity {
     /// The device daemon's, each connection handed to it.
-    Daemon { _socket: crate::app_socket::AppSocket },
+    Daemon {
+        _socket: crate::app_socket::AppSocket,
+    },
     /// This session's own, in a workspace's VM.
     Hosted { _broker: IdentityBrokerHandle },
 }
@@ -344,18 +344,13 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                     .ok();
             }
             Service::Chooser => {
-                served.chooser = serving.launches.take().and_then(|launches| {
-                    chooser::serve(chooser::Serving {
-                        questions: serving.questions.clone(),
-                        documents: serving.documents.take(),
-                        launches,
-                        wake: serving.wake.clone(),
-                    })
-                    .inspect_err(
-                        |error| tracing::warn!(%error, "the chooser service is unavailable"),
-                    )
-                    .ok()
-                });
+                served.chooser = chooser::serve(chooser::Serving {
+                    questions: serving.questions.clone(),
+                    documents: serving.documents.take().unwrap_or_default(),
+                    wake: serving.wake.clone(),
+                })
+                .inspect_err(|error| tracing::warn!(%error, "the chooser service is unavailable"))
+                .ok();
             }
             Service::Clipboard => {
                 served.clipboard = clipboard::serve(serving.wake.clone())

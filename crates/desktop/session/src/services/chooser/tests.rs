@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tilo_app_launch::Launch;
 use tilo_dialogs::portal::{
-    ContentsOutcome, LaunchOutcome, LaunchRequest, PickRequest, PortalOutcome,
+    ContentsOutcome, LaunchOutcome, LaunchRequest, PickRequest, PortalOutcome, SaveOutcome,
 };
 use tilo_dialogs::shell::ShellLink;
 
@@ -86,6 +86,24 @@ fn pending(questions: &tilo_service::AskReceiver) -> tilo_service::Question {
     }
 }
 
+/// Answer the question now up with `paths`.
+fn answer_with(questions: &tilo_service::AskReceiver, paths: &[&std::path::Path]) {
+    let question = pending(questions);
+    assert!(
+        questions.answer(
+            &question.handle,
+            tilo_service::Answer {
+                uris: paths
+                    .iter()
+                    .map(|path| url::Url::from_file_path(path).unwrap().to_string())
+                    .collect(),
+                ..tilo_service::Answer::default()
+            },
+        ),
+        "the question is up"
+    );
+}
+
 /// An app's connection as its launcher hands it over: connected, and named by the launcher.
 fn app_connection(socket: &std::path::Path, app: &str) -> ShellLink {
     use std::io::Write as _;
@@ -98,7 +116,7 @@ fn app_connection(socket: &std::path::Path, app: &str) -> ShellLink {
 }
 
 /// A session serving the chooser on a socket of its own, and an app connected to it as its
-/// launcher connects one: the app runs sandboxed, with the documents store bound in.
+/// launcher connects one, with the documents store the session serves its sandboxes.
 struct Rig {
     directory: tempfile::TempDir,
     socket: std::path::PathBuf,
@@ -114,15 +132,11 @@ fn rig() -> Rig {
     let socket = directory.path().join("chooser");
     let (asks, questions) = tilo_service::asks::channel();
     let documents = tilo_documents::Documents::new();
-    let launches = Arc::new(crate::Launches::default());
-    // This test's process is the app's launch, in a sandbox with the documents store bound in.
-    launches.started(std::process::id(), APP, WORKSPACE, true);
     let served = serve_at(
         &socket,
         Serving {
             questions: Some(asks),
-            documents: Some(documents.clone()),
-            launches,
+            documents: documents.clone(),
             wake: Arc::new(|| {}),
         },
     )
@@ -182,7 +196,7 @@ fn a_link_opens_in_the_app_that_claims_it_and_one_nothing_claims_goes_back() {
 }
 
 #[test]
-fn a_pick_is_the_sessions_question_and_answers_the_exported_path() {
+fn a_pick_is_the_sessions_question_and_answers_the_exported_reference() {
     let Rig {
         directory,
         questions,
@@ -208,17 +222,11 @@ fn a_pick_is_the_sessions_question_and_answers_the_exported_path() {
         "the launcher's name, not the app's"
     );
     assert_eq!(question.details["title"], "Import a plan");
-    assert!(questions.answer(
-        &question.handle,
-        tilo_service::Answer {
-            uris: vec![url::Url::from_file_path(&chosen).unwrap().to_string()],
-            ..tilo_service::Answer::default()
-        }
-    ));
-    let PortalOutcome::Opened(path) = picking.recv_timeout(answer()).unwrap() else {
+    answer_with(&questions, &[&chosen]);
+    let PortalOutcome::Opened(reference) = picking.recv_timeout(answer()).unwrap() else {
         panic!("the pick answered nothing");
     };
-    let (token, _) = tilo_documents::split_sandbox_path(&path)
+    let (token, _) = tilo_documents::split_sandbox_path(&reference)
         .expect("a sandboxed app is answered a path in its view of the documents store");
     let key = tilo_documents::AppKey::new(WORKSPACE, APP).unwrap();
     assert_eq!(
@@ -226,19 +234,42 @@ fn a_pick_is_the_sessions_question_and_answers_the_exported_path() {
         chosen.canonicalize().unwrap()
     );
 
+    // The descriptor the answer carried reads the file the person chose, and one the app was
+    // not given does not.
+    let (tx, rx) = std::sync::mpsc::channel();
+    link.reopen(&reference, false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    let (mut file, reopened, name) = rx.recv_timeout(answer()).unwrap().expect("a handle");
+    use std::io::Read as _;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    assert_eq!(contents, "Spring planting");
+    assert_eq!(reopened, reference);
+    assert_eq!(name, "plan.txt");
+    let (tx, rx) = std::sync::mpsc::channel();
+    link.reopen(std::path::Path::new("/etc/passwd"), false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    assert!(
+        rx.recv_timeout(answer()).unwrap().is_err(),
+        "a host path is not a document of this app"
+    );
+
     // The file it was given opens in the app that takes it; one it was not given does not.
     let opening = std::thread::spawn({
         let picker = Arc::clone(&picker);
+        let reference = reference.clone();
         move || {
             picker
-                .launch(LaunchRequest::open(path))
+                .launch(LaunchRequest::open(reference))
                 .recv_timeout(answer())
         }
     });
     loop_until(&served, &device, || opening.is_finished());
     assert_eq!(
         opening.join().unwrap().unwrap(),
-        LaunchOutcome::Failed(super::NOTHING_OPENS.into()),
+        LaunchOutcome::Failed(tilo_dialogs::chooser_service::NOTHING_OPENS.into(),),
         "the device here has no app for text files, so the open reached the routing"
     );
     assert_eq!(
@@ -246,7 +277,34 @@ fn a_pick_is_the_sessions_question_and_answers_the_exported_path() {
             .launch(LaunchRequest::open("/etc/passwd"))
             .recv_timeout(answer())
             .unwrap(),
-        LaunchOutcome::Failed(super::NOT_CHOSEN.into())
+        LaunchOutcome::Failed(tilo_dialogs::chooser_service::NOT_CHOSEN.into())
+    );
+}
+
+#[test]
+fn a_save_writes_beside_the_file_and_the_chooser_commits_it() {
+    let Rig {
+        directory,
+        questions,
+        link,
+        ..
+    } = rig();
+
+    let destination = directory.path().join("report.txt");
+    let picker = link.picker(tilo_dialogs::unavailable_picker());
+    let saving = picker.save_contents(
+        PickRequest::save("Save the report", "Save", "report.txt"),
+        b"the report".to_vec(),
+    );
+    let question = pending(&questions);
+    assert_eq!(question.details["title"], "Save the report");
+    answer_with(&questions, &[&destination]);
+    assert_eq!(saving.recv_timeout(answer()).unwrap(), SaveOutcome::Saved);
+    assert_eq!(std::fs::read(&destination).unwrap(), b"the report");
+    assert_eq!(
+        std::fs::read_dir(directory.path()).unwrap().count(),
+        2,
+        "only the chosen file, and the tempdir, are left"
     );
 }
 
@@ -265,15 +323,8 @@ fn a_choice_of_contents_is_only_the_bytes_the_person_chose() {
     std::fs::write(&chosen, &markdown).unwrap();
     let picker = link.picker(tilo_dialogs::unavailable_picker());
     let picking = picker.pick_contents(PickRequest::open("Import Markdown", "Import"));
-    let question = pending(&questions);
-    assert_eq!(question.app_id.as_deref(), Some(APP));
-    assert!(questions.answer(
-        &question.handle,
-        tilo_service::Answer {
-            uris: vec![url::Url::from_file_path(&chosen).unwrap().to_string()],
-            ..tilo_service::Answer::default()
-        }
-    ));
+    assert_eq!(pending(&questions).app_id.as_deref(), Some(APP));
+    answer_with(&questions, &[&chosen]);
     let ContentsOutcome::Picked(files) = picking.recv_timeout(answer()).unwrap() else {
         panic!("the app was not given the file");
     };
@@ -311,7 +362,7 @@ fn a_cancelled_pick_and_an_unserved_chooser_answer_the_app() {
     });
     assert_eq!(
         chosen.recv_timeout(answer()).unwrap(),
-        Err(super::NO_APP_CHOOSER.to_owned())
+        Err(tilo_dialogs::chooser_service::NO_APP_CHOOSER.to_owned())
     );
 }
 
@@ -369,13 +420,7 @@ fn a_folder_choice_hands_over_its_files_with_their_paths_inside_it() {
     let picking = picker.pick_contents(PickRequest::directory("Import a folder", "Import"));
     let question = pending(&questions);
     assert_eq!(question.details["title"], "Import a folder");
-    assert!(questions.answer(
-        &question.handle,
-        tilo_service::Answer {
-            uris: vec![url::Url::from_file_path(&library).unwrap().to_string()],
-            ..tilo_service::Answer::default()
-        }
-    ));
+    answer_with(&questions, &[&library]);
     let ContentsOutcome::Picked(files) = picking.recv_timeout(answer()).unwrap() else {
         panic!("the app was not given the folder's files");
     };
@@ -399,6 +444,57 @@ fn a_folder_choice_hands_over_its_files_with_their_paths_inside_it() {
 }
 
 #[test]
+fn a_folder_handle_reopens_a_file_inside_it_and_refuses_one_outside() {
+    let Rig {
+        directory,
+        questions,
+        link,
+        ..
+    } = rig();
+
+    let library = directory.path().join("library");
+    std::fs::create_dir_all(library.join("sub")).unwrap();
+    std::fs::write(library.join("sub/kept.txt"), "kept").unwrap();
+    let secret = directory.path().join("secret.txt");
+    std::fs::write(&secret, "secret").unwrap();
+
+    let picker = link.picker(tilo_dialogs::unavailable_picker());
+    let picking = picker.open_handle(PickRequest::directory("Choose a folder", "Choose"));
+    answer_with(&questions, &[&library]);
+    let tilo_dialogs::portal::OpenFileOutcome::Opened(folder) =
+        picking.recv_timeout(answer()).unwrap()
+    else {
+        panic!("the folder was not handed over");
+    };
+    let reference = folder.reference().unwrap().to_path_buf();
+    assert!(folder.file().metadata().unwrap().is_dir());
+
+    // A file inside the chosen folder reopens by its reference …
+    let inside = reference.join("sub/kept.txt");
+    let (tx, rx) = std::sync::mpsc::channel();
+    link.reopen(&inside, false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    let (mut file, _, name) = rx.recv_timeout(answer()).unwrap().expect("a handle");
+    use std::io::Read as _;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    assert_eq!(contents, "kept");
+    assert_eq!(name, "kept.txt");
+
+    // … and one that climbs out of it does not.
+    let outside = reference.join("../secret.txt");
+    let (tx, rx) = std::sync::mpsc::channel();
+    link.reopen(&outside, false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    assert!(
+        rx.recv_timeout(answer()).unwrap().is_err(),
+        "a chosen folder does not admit what climbs out of it"
+    );
+}
+
+#[test]
 fn several_files_chosen_at_once_are_all_handed_over() {
     let Rig {
         directory,
@@ -413,17 +509,7 @@ fn several_files_chosen_at_once_are_all_handed_over() {
     std::fs::write(&two, "two").unwrap();
     let picker = link.picker(tilo_dialogs::unavailable_picker());
     let picking = picker.pick_contents(PickRequest::open_multiple("Import notes", "Import"));
-    let question = pending(&questions);
-    assert!(questions.answer(
-        &question.handle,
-        tilo_service::Answer {
-            uris: vec![
-                url::Url::from_file_path(&one).unwrap().to_string(),
-                url::Url::from_file_path(&two).unwrap().to_string(),
-            ],
-            ..tilo_service::Answer::default()
-        }
-    ));
+    answer_with(&questions, &[&one, &two]);
     let ContentsOutcome::Picked(files) = picking.recv_timeout(answer()).unwrap() else {
         panic!("the app was not given the files");
     };

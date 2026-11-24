@@ -78,12 +78,111 @@ pub(crate) struct Instances {
     launched: Arc<super::Launched>,
     /// The tilolang processes, once one was asked for.
     processes: OnceLock<Arc<Processes>>,
+    /// The files people choose for hosted apps, kept on this device by reference.
+    #[cfg(target_os = "macos")]
+    documents: tilo_documents::Documents,
     /// The member the device acts as: the one an instance that shows nothing is run for.
     person: OnceLock<String>,
     /// The providers this device registered, whose packages every instance is handed.
     provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
     made: Mutex<Vec<Made>>,
     next: AtomicU64,
+}
+
+/// The file chooser a hosted instance of `app` in `workspace` reaches: a connection this daemon
+/// serves, where the person answers in the panel outside the app's sandbox and the app is handed
+/// exactly the chosen file. `None` on a platform where the desktop session serves it instead.
+#[cfg(target_os = "macos")]
+impl Instances {
+    fn chooser_for(&self, app: &str, workspace: &str) -> Option<OwnedFd> {
+        let serving = tilo_dialogs::chooser_service::Serving {
+            person: Some(Arc::new(MacPerson)),
+            documents: self.documents.clone(),
+            opens: Arc::new(NoOpen),
+        };
+        tilo_dialogs::chooser_service::pair(serving, app, workspace)
+            .inspect_err(|error| tracing::warn!(app, %error, "a hosted app gets no file chooser"))
+            .ok()
+            .map(OwnedFd::from)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl Instances {
+    fn chooser_for(&self, _app: &str, _workspace: &str) -> Option<OwnedFd> {
+        None
+    }
+}
+
+/// The person answers in this runtime's own file panel, shown outside the app's sandbox
+/// ([`tilo_dialogs::confined::show_in_helper`]).
+#[cfg(target_os = "macos")]
+struct MacPerson;
+
+#[cfg(target_os = "macos")]
+impl tilo_dialogs::chooser_service::Person for MacPerson {
+    fn choose(
+        &self,
+        _caller: &tilo_dialogs::chooser_service::Caller,
+        _handle: String,
+        question: &tilo_dialogs::chooser_service::Question,
+    ) -> Result<Vec<PathBuf>, tilo_dialogs::chooser_service::Asked> {
+        use tilo_dialogs::chooser_service::Asked;
+        let exe = std::env::current_exe().map_err(|_| Asked::Failed)?;
+        let mut helper = std::process::Command::new(exe);
+        helper.arg(crate::cli::CHOOSER_HELPER_ARG);
+        tilo_dialogs::confined::show_in_helper(helper, &pick_request(question))
+            .map_err(|_| Asked::Failed)
+    }
+}
+
+/// The question a chooser asks, as this runtime's panel asks it.
+#[cfg(target_os = "macos")]
+fn pick_request(
+    question: &tilo_dialogs::chooser_service::Question,
+) -> tilo_dialogs::portal::PickRequest {
+    use tilo_dialogs::portal::{FileFilter as PanelFilter, PickRequest};
+    let title = question.title.clone();
+    let accept = question.accept_label.clone().unwrap_or_default();
+    let mut request = if question.save {
+        PickRequest::save(
+            &title,
+            &accept,
+            question.current_name.as_deref().unwrap_or(""),
+        )
+    } else if question.directory {
+        if question.writable_directory {
+            PickRequest::writable_directory(&title, &accept)
+        } else {
+            PickRequest::directory(&title, &accept)
+        }
+    } else if question.multiple {
+        PickRequest::open_multiple(&title, &accept)
+    } else {
+        PickRequest::open(&title, &accept)
+    };
+    for filter in &question.filters {
+        let mut panel = PanelFilter::new(filter.name());
+        for glob in filter.globs() {
+            panel = panel.glob(glob);
+        }
+        for mimetype in filter.mimetypes() {
+            panel = panel.mimetype(mimetype);
+        }
+        request = request.filter(panel);
+    }
+    request
+}
+
+/// A daemon opens no links in an app.
+#[cfg(target_os = "macos")]
+struct NoOpen;
+
+#[cfg(target_os = "macos")]
+impl tilo_dialogs::chooser_service::Opens for NoOpen {
+    fn open(&self, _workspace: &str, _uri: &str) -> Result<Option<()>, String> {
+        Ok(None)
+    }
 }
 
 impl Instances {
@@ -98,6 +197,8 @@ impl Instances {
             launcher,
             launched,
             processes: OnceLock::new(),
+            #[cfg(target_os = "macos")]
+            documents: tilo_documents::Documents::kept_in(root.join("documents.json")),
             person: OnceLock::new(),
             provided: OnceLock::new(),
             made: Mutex::default(),
@@ -268,7 +369,7 @@ impl Instances {
                 identity,
                 origin,
                 content: None,
-                chooser: None,
+                chooser: self.chooser_for(app, workspace),
                 clipboard: None,
                 tools: None,
                 document,
@@ -347,5 +448,32 @@ impl Instances {
             windowless,
             opened_for,
         })
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    /// A hosted instance is handed a chooser that names it, served by this daemon: the app's
+    /// file chooses reach the person instead of nothing.
+    #[test]
+    fn a_hosted_instance_is_handed_a_chooser_named_for_it() {
+        let profile = tempfile::tempdir().unwrap();
+        let instances = Instances::new(profile.path(), Box::new(|| Err("no launcher".into())));
+        let fd = instances
+            .chooser_for("so.tilo.notes", "5ba25f73-87c5-447f-a5a6-880dc4249a81")
+            .expect("a hosted app gets a chooser");
+        let stream = std::os::unix::net::UnixStream::from(fd);
+        let link = tilo_dialogs::shell::ShellLink::connect(stream).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        link.choose_app("Paste in apps", move |outcome| {
+            let _ = tx.send(outcome);
+        });
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+            Err(tilo_dialogs::chooser_service::NO_APP_CHOOSER.to_owned()),
+            "the daemon's chooser answers the app it was named for"
+        );
     }
 }

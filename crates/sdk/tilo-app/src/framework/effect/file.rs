@@ -6,8 +6,8 @@ use std::sync::mpsc::TryRecvError;
 
 use tilo_resource::Resource;
 use ui_core::portal::{
-    ContentsOutcome, DestinationOutcome, PickRequest, PortalOutcome, SaveChannel, SaveDestination,
-    SaveOutcome,
+    ChosenHandle, ContentsOutcome, DestinationOutcome, OpenFileOutcome, PickRequest, SaveChannel,
+    SaveDestination, SaveOutcome,
 };
 
 use super::{CHOOSER_GONE, ChosenFile, EffectAnswer, EffectCx, Effected};
@@ -55,22 +55,34 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         })
     }
 
-    /// Ask the person to choose a file with the host's chooser and run
-    /// `then` on the UI thread with its path on this device, or `None` when
-    /// they cancelled: for a file the app reads in place rather than into
-    /// memory (a disk image, a video). Only a host whose files have paths
-    /// answers; elsewhere use [`Self::choose_file`]. The effect must be
-    /// declared `job`.
-    pub fn choose_path(
+    /// Ask the person to choose a file or folder with the host's chooser and run `then` on the
+    /// UI thread with it already open, or `None` when they cancelled: for a file the app reads
+    /// in place rather than into memory (a disk image, a video), or a folder it walks. The
+    /// handle says what names the same item again ([`ChosenHandle::reference`]), so a window
+    /// that showed it reopens it after a restart. The effect must be declared `job`.
+    pub fn choose_handle(
         &mut self,
         request: PickRequest,
-        then: impl FnOnce(&mut H, Option<std::path::PathBuf>, &mut Self) -> EffectAnswer + 'static,
+        then: impl FnOnce(&mut H, Option<ChosenHandle>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
-        let chosen = request.send();
+        let chosen = request.send_open_handle();
         self.wait_for(chosen, move |host, outcome, cx| match outcome {
-            Some(PortalOutcome::Opened(path)) => then(host, Some(path), cx),
-            Some(PortalOutcome::Cancelled) => then(host, None, cx),
-            Some(PortalOutcome::Failed(reason)) => Err(told(reason)),
+            Some(OpenFileOutcome::Opened(opened)) => {
+                let name = opened.display_name().to_owned();
+                let (file, reference) = opened.into_parts();
+                match reference {
+                    Some(reference) => then(
+                        host,
+                        Some(ChosenHandle::from_picked(file, reference, name)),
+                        cx,
+                    ),
+                    None => Err(told(
+                        "This host cannot open the file again once it is chosen.".into(),
+                    )),
+                }
+            }
+            Some(OpenFileOutcome::Cancelled) => then(host, None, cx),
+            Some(OpenFileOutcome::Failed(reason)) => Err(told(reason)),
             None => Err(CHOOSER_GONE.into()),
         })
     }
@@ -161,7 +173,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
                     Ok(
                         cx.wait_for(written, move |host, outcome, cx| match outcome {
                             Some(SaveOutcome::Saved) => {
-                                cx.saved_document_at(destination.location());
+                                cx.saved_document_at(
+                                    destination.reference().or_else(|| destination.location()),
+                                );
                                 then(host, Some(destination), cx)
                             }
                             Some(SaveOutcome::Cancelled) => Err("the save was cancelled".into()),
@@ -185,7 +199,10 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         bytes: Vec<u8>,
         then: impl FnOnce(&mut H, Result<(), String>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
-        let at = destination.location().map(std::path::Path::to_path_buf);
+        let at = destination
+            .reference()
+            .or_else(|| destination.location())
+            .map(std::path::Path::to_path_buf);
         let written = destination.write(bytes);
         self.wait_for(written, move |host, outcome, cx| match outcome {
             Some(SaveOutcome::Saved) => {

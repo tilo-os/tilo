@@ -148,7 +148,7 @@ impl SavedInstanceView {
         self.shows
             .as_deref()
             .map(Path::new)
-            .filter(|path| path.exists())
+            .filter(|path| path.exists() || crate::portal::is_document_reference(path))
     }
 
     pub(crate) fn validate(&self) -> Result<(), ThawError> {

@@ -1204,13 +1204,15 @@ impl ImagerApp {
                 .mimetype("application/x-iso9660-image"),
         )
     }
-    fn take_chosen_image(&mut self, path: Option<std::path::PathBuf>) -> EffectAnswer {
+    fn take_chosen_image(&mut self, chosen: Option<ui::portal::ChosenHandle>) -> EffectAnswer {
         self.dirty = true;
-        let Some(path) = path else {
+        let Some(chosen) = chosen else {
             self.set_status("File selection cancelled.");
             return Ok(Effected::done());
         };
-        if let Some(source) = imager_backend::probe::inspect_source(&path) {
+        let reference = chosen.reference().to_path_buf();
+        let mut file = chosen.into_file().into_std();
+        if let Some(source) = imager_backend::probe::inspect_source_file(&mut file, &reference) {
             self.select_source(&source);
             Ok(Effected::done())
         } else {
@@ -1906,8 +1908,8 @@ impl ImagerApp {
                 self.set_status("Opening the file picker…");
                 self.dirty = true;
                 Ok(
-                    cx.choose_path(Self::image_request(), |app: &mut Self, path, _| {
-                        app.take_chosen_image(path)
+                    cx.choose_handle(Self::image_request(), |app: &mut Self, chosen, _| {
+                        app.take_chosen_image(chosen)
                     }),
                 )
             }

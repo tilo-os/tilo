@@ -384,6 +384,13 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         options.custom_flags(libc::O_NONBLOCK);
     }
     let mut file = options.open(path).ok()?;
+    inspect_source_file(&mut file, path)
+}
+
+/// [`inspect_source`] for a file the host already opened for the app, named by `path`: the
+/// descriptor is what the host handed it, so a sandboxed app reads the chosen image without a
+/// path its own kernel could resolve.
+pub fn inspect_source_file(file: &mut std::fs::File, path: &Path) -> Option<Source> {
     let meta = file.metadata().ok()?;
     if !meta.is_file() {
         return None;
@@ -400,7 +407,7 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    let label = read_iso_label_file(&mut file)
+    let label = read_iso_label_file(file)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             path.file_stem()
@@ -422,7 +429,7 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         size,
         label,
         installable: false,
-        identity: SourceIdentity::from_file(&file).ok()?,
+        identity: SourceIdentity::from_file(file).ok()?,
         expected_sha256: None,
     })
 }

@@ -1,9 +1,11 @@
 //! Comparing two folders.
 
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use ui::framework::{EffectAnswer, EffectCx, Effected};
-use ui::portal::PickRequest;
+use ui::portal::{ChosenHandle, PickRequest};
 use ui::tilo_resource::AbsolutePath;
 
 use super::effects::{Asked, Shared};
@@ -25,11 +27,10 @@ pub(super) fn answer_compare_folders(
     }
 }
 
-fn choose_folder(
-    store: &Shared,
-    cx: &mut EffectCx<Session>,
-    left: Option<std::path::PathBuf>,
-) -> Effected {
+/// A folder the person chose: its descriptor and what names it again.
+type Chosen = (Arc<std::fs::File>, PathBuf);
+
+fn choose_folder(store: &Shared, cx: &mut EffectCx<Session>, left: Option<Chosen>) -> Effected {
     let title = t(if left.is_some() {
         "folder-choose-right"
     } else {
@@ -38,20 +39,47 @@ fn choose_folder(
     let request = PickRequest::directory(&title, &t("folder-choose-accept"))
         .thread_name("diffmerge-portal-folder");
     let store = Rc::clone(store);
-    cx.choose_path(request, move |(), path, cx| {
-        let Some(path) = path else {
+    cx.choose_handle(request, move |(), chosen, cx| {
+        let Some(chosen) = chosen else {
             store.borrow_mut().ask(Asked::Notice(t("folder-cancelled")));
             return Err("choosing a folder was cancelled".into());
         };
+        let chosen = opened(&chosen)?;
         match left {
-            None => Ok(choose_folder(&store, cx, Some(path))),
-            Some(left) => {
-                let left = AbsolutePath::new(left)?;
-                let right = AbsolutePath::new(path)?;
-                Ok(read_folders(&store, cx, left, right))
-            }
+            None => Ok(choose_folder(&store, cx, Some(chosen))),
+            Some(left) => Ok(read_folders_opened(&store, cx, left, chosen)),
         }
     })
+}
+
+/// The folder a handle names, kept open for the comparison.
+fn opened(handle: &ChosenHandle) -> Result<Chosen, String> {
+    Ok((
+        Arc::new(
+            handle
+                .file()
+                .try_clone()
+                .map_err(|error| error.to_string())?,
+        ),
+        handle.reference().to_path_buf(),
+    ))
+}
+
+fn read_folders_opened(
+    store: &Shared,
+    cx: &mut EffectCx<Session>,
+    left: Chosen,
+    right: Chosen,
+) -> Effected {
+    let store = Rc::clone(store);
+    cx.thread(
+        move |_progress| {
+            let (left_dir, left_reference) = left;
+            let (right_dir, right_reference) = right;
+            crate::folder::compare_handles(left_dir, &left_reference, right_dir, &right_reference)
+        },
+        move |(), result, _| finish_folders(&store, result),
+    )
 }
 
 fn read_folders(

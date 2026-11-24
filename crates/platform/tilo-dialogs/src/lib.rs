@@ -20,6 +20,8 @@
 use std::sync::{Arc, OnceLock};
 
 mod caps;
+#[cfg(unix)]
+pub mod chooser_service;
 #[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
 pub mod portal;
@@ -56,6 +58,41 @@ pub trait FilePicker: Send + Sync {
     fn pick(&self, request: PickRequest) -> PortalChannel;
     fn pick_multiple(&self, request: PickRequest) -> MultiChannel;
     fn open_file(&self, request: PickRequest) -> OpenFileChannel;
+
+    /// Ask the person for a file or folder and answer it already open, with what names it again
+    /// ([`portal::ChosenHandle`]): for a file an app reads in place, or a folder it walks.
+    /// A host whose chooser answers a path opens it here; a host that answers a descriptor (the
+    /// session's shell chooser) hands it over as it is.
+    fn open_handle(&self, request: PickRequest) -> OpenFileChannel {
+        if !request.is_directory() {
+            return self.open_file(request);
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let refused = tx.clone();
+        let paths = self.pick(request);
+        let spawned =
+            tilo_rt::background::Background::current().spawn("tilo-open-handle", move || {
+                let opened = match paths.recv() {
+                    Ok(PortalOutcome::Opened(path)) => match portal::open_directory_handle(&path) {
+                        Ok(file) => OpenFileOutcome::Opened(portal::OpenedFile::at(file, &path)),
+                        Err(error) => OpenFileOutcome::Failed(format!(
+                            "could not open selected folder: {error}"
+                        )),
+                    },
+                    Ok(PortalOutcome::Cancelled) => OpenFileOutcome::Cancelled,
+                    Ok(PortalOutcome::Failed(reason)) => OpenFileOutcome::Failed(reason),
+                    Err(_) => OpenFileOutcome::Failed(CHOOSER_GONE_FOR_HANDLE.to_owned()),
+                };
+                let _ = tx.send(opened);
+            });
+        if spawned.is_err() {
+            let _ = refused.send(OpenFileOutcome::Failed(
+                "this host runs no background work".to_owned(),
+            ));
+        }
+        rx
+    }
+
     fn save_file(&self, request: PickRequest) -> OpenFileChannel {
         let _ = request;
         let (tx, rx) = std::sync::mpsc::channel();
@@ -174,6 +211,7 @@ pub fn unavailable_opener() -> Arc<dyn UriOpener> {
 }
 
 const UNAVAILABLE: &str = "Choosing files isn't available here";
+const CHOOSER_GONE_FOR_HANDLE: &str = "The file chooser closed before you chose. Try again.";
 
 struct UnavailableFilePicker;
 

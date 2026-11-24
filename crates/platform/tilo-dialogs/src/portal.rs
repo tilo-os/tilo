@@ -162,10 +162,27 @@ pub fn open_uri_with(opener: &dyn crate::UriOpener, uri: &str) -> std::io::Resul
     opener.open(uri)
 }
 
-#[derive(Debug)]
 pub struct OpenedFile {
     file: File,
     display_name: String,
+    /// What the chooser answers that reopens the same file: the documents-store path of a file a
+    /// sandboxed app was given, or the path a host app was given. `None` only for a host that
+    /// answers a file it cannot name again.
+    reference: Option<PathBuf>,
+    /// What a save commits when its file is finished: renaming the chosen file over the one the
+    /// person sees, so a save replaces it whole or not at all.
+    commit: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl std::fmt::Debug for OpenedFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenedFile")
+            .field("file", &self.file)
+            .field("display_name", &self.display_name)
+            .field("reference", &self.reference)
+            .field("commit", &self.commit.is_some())
+            .finish()
+    }
 }
 
 impl OpenedFile {
@@ -174,9 +191,134 @@ impl OpenedFile {
         &self.display_name
     }
 
+    /// What the chooser answers to reopen the same file ([`crate::shell::ShellLink::reopen`]),
+    /// or the path the file is at on a host whose files have paths.
     #[must_use]
-    pub fn into_file(self) -> File {
-        self.file
+    pub fn reference(&self) -> Option<&Path> {
+        self.reference.as_deref()
+    }
+
+    /// The file, and the commit that finishes a save when it is dropped.
+    #[must_use]
+    pub fn into_file(self) -> PickedFile {
+        let Self {
+            file,
+            commit,
+            display_name: _,
+            reference: _,
+        } = self;
+        PickedFile { file, commit }
+    }
+
+    /// The opened file and what names it again.
+    #[must_use]
+    pub fn into_parts(self) -> (PickedFile, Option<PathBuf>) {
+        let Self {
+            file,
+            display_name: _,
+            reference,
+            commit,
+        } = self;
+        (PickedFile { file, commit }, reference)
+    }
+}
+
+/// A file a chooser opened, kept until what writes it is done: dropping it finishes a save.
+pub struct PickedFile {
+    file: File,
+    commit: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl PickedFile {
+    #[allow(
+        clippy::uninhabited_references,
+        reason = "a page holds no open file; the same type serves every host that opens one"
+    )]
+    fn file(&self) -> &File {
+        &self.file
+    }
+
+    #[allow(
+        clippy::uninhabited_references,
+        reason = "a page holds no open file; the same type serves every host that opens one"
+    )]
+    fn file_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+
+    /// The file itself, without finishing a save when it goes.
+    #[must_use]
+    pub fn into_std(mut self) -> File {
+        self.commit = None;
+        // SAFETY: `file` is moved out exactly once, and `self` is forgotten so its `Drop` runs
+        // neither this move's source nor a commit.
+        let file = unsafe { std::ptr::read(&raw const self.file) };
+        std::mem::forget(self);
+        file
+    }
+}
+
+impl std::fmt::Debug for PickedFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PickedFile")
+            .field("file", &self.file)
+            .field("commit", &self.commit.is_some())
+            .finish()
+    }
+}
+
+impl Drop for PickedFile {
+    fn drop(&mut self) {
+        if let Some(commit) = self.commit.take() {
+            commit();
+        }
+    }
+}
+
+impl std::io::Read for PickedFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(self.file_mut(), buf)
+    }
+}
+
+impl std::io::Write for PickedFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        std::io::Write::write(self.file_mut(), buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(self.file_mut())
+    }
+}
+
+impl std::io::Seek for PickedFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        std::io::Seek::seek(self.file_mut(), pos)
+    }
+}
+
+#[cfg(unix)]
+impl std::os::fd::AsRawFd for PickedFile {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(self.file())
+    }
+}
+
+impl PickedFile {
+    pub fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        self.file().metadata()
+    }
+
+    pub fn sync_all(&self) -> std::io::Result<()> {
+        self.file().sync_all()
+    }
+
+    pub fn sync_data(&self) -> std::io::Result<()> {
+        self.file().sync_data()
+    }
+
+    pub fn set_len(&self, size: u64) -> std::io::Result<()> {
+        self.file().set_len(size)
     }
 }
 
@@ -431,6 +573,13 @@ impl PickRequest {
 
     pub fn send_open_file(self) -> OpenFileChannel {
         crate::current_picker().open_file(self)
+    }
+
+    /// The SDK's handle path only: an app reads a chosen file or walks a chosen folder through
+    /// [`ChosenHandle`].
+    #[doc(hidden)]
+    pub fn send_open_handle(self) -> OpenFileChannel {
+        crate::current_picker().open_handle(self)
     }
 
     pub fn send_save_file(self) -> OpenFileChannel {
@@ -741,17 +890,9 @@ pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
         return OpenFileOutcome::Failed(format!("not a local file: {uri}"));
     };
     match open_regular_file(&path) {
-        Ok(file) => OpenFileOutcome::Opened(OpenedFile {
-            file,
-            display_name: display_name(&path),
-        }),
+        Ok(file) => OpenFileOutcome::Opened(OpenedFile::at(file, &path)),
         Err(error) => OpenFileOutcome::Failed(format!("could not open selected file: {error}")),
     }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-fn display_name(path: &Path) -> String {
-    file_name_of(path)
 }
 
 pub(crate) fn file_name_of(path: &Path) -> String {
@@ -759,6 +900,70 @@ pub(crate) fn file_name_of(path: &Path) -> String {
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "selected file".to_string())
+}
+
+/// The chosen folder `path`, kept open for reading: what a host hands an app that walks a folder
+/// it was given. Opening the folder itself, never a link to one.
+#[cfg(unix)]
+pub fn open_directory_handle(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    if !file.metadata()?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "selected path is not a folder",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+pub fn open_directory_handle(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    if !file.metadata()?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "selected path is not a folder",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a page opens no folder, and answers the same fallible call"
+)]
+pub fn open_directory_handle(_path: &Path) -> std::io::Result<File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this host opens no folders",
+    ))
+}
+
+/// Whether `path` names a chosen document rather than a file on the host: what a sandboxed app
+/// is handed, and what a session holding the documents store can reopen after a restart.
+#[must_use]
+pub fn is_document_reference(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        tilo_documents::split_sandbox_path(path).is_some()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 pub fn save_sibling(destination: &Path) -> Option<PathBuf> {
@@ -829,7 +1034,104 @@ impl OpenedFile {
         Self {
             file,
             display_name: display_name.into(),
+            reference: None,
+            commit: None,
         }
+    }
+
+    /// A file opened at `path` on a host whose files have paths: the path names it again.
+    #[must_use]
+    pub fn at(file: File, path: &Path) -> Self {
+        Self {
+            file,
+            display_name: file_name_of(path),
+            reference: Some(path.to_path_buf()),
+            commit: None,
+        }
+    }
+
+    /// What a save commits when its file is finished: renaming the file it writes over the one
+    /// the person chose, so it is replaced whole or not at all.
+    #[cfg(any(unix, windows))]
+    #[must_use]
+    pub(crate) fn keeping(
+        file: File,
+        display_name: impl Into<String>,
+        reference: PathBuf,
+        commit: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            file,
+            display_name: display_name.into(),
+            reference: Some(reference),
+            commit: Some(Box::new(commit)),
+        }
+    }
+}
+
+/// A chosen file or folder, kept open: what a host hands an app for a file it reads in place.
+#[derive(Debug)]
+pub struct ChosenHandle {
+    file: PickedFile,
+    reference: PathBuf,
+    name: String,
+}
+
+impl ChosenHandle {
+    /// A handle on a file the host keeps open, named by what reopens it.
+    #[must_use]
+    pub fn new(file: File, reference: PathBuf, name: impl Into<String>) -> Self {
+        Self {
+            file: PickedFile { file, commit: None },
+            reference,
+            name: name.into(),
+        }
+    }
+
+    /// [`Self::new`] for the file a chooser answered, with what finishes it when it goes.
+    #[must_use]
+    pub fn from_picked(file: PickedFile, reference: PathBuf, name: impl Into<String>) -> Self {
+        Self {
+            file,
+            reference,
+            name: name.into(),
+        }
+    }
+
+    /// The opened file, or the opened folder.
+    #[allow(
+        clippy::uninhabited_references,
+        reason = "a page hands out no open file; the same handle type serves every host"
+    )]
+    #[must_use]
+    pub fn file(&self) -> &File {
+        self.file.as_ref()
+    }
+
+    #[must_use]
+    pub fn into_file(self) -> PickedFile {
+        self.file
+    }
+
+    /// What the chooser answers to reopen the same file or folder.
+    #[must_use]
+    pub fn reference(&self) -> &Path {
+        &self.reference
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl PickedFile {
+    #[allow(
+        clippy::uninhabited_references,
+        reason = "a page holds no open file; the same type serves every host that opens one"
+    )]
+    fn as_ref(&self) -> &File {
+        self.file()
     }
 }
 
