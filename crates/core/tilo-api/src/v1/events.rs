@@ -1,9 +1,8 @@
 //! What happens in a workspace, as it happens: its changes, the key's runs
 //! starting and ending, and who is there. One watch ([`Watch`]) reads them,
-//! with the same `tilo_watch` an agent holds, and both the event stream
-//! (`…/events`, `…/invocations/{invocation}/output`) and webhooks
-//! ([`super::webhooks`])
-//! carry what it reads.
+//! with the same `tilo_watch` an agent holds, and the event stream
+//! (`…/events`, `…/invocations/{invocation}/output`) carries what it reads.
+//! A webhook posts the same events from the device that keeps its workspace.
 
 use super::answers::Event;
 use super::errors::ApiError;

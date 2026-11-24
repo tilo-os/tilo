@@ -112,6 +112,18 @@ pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
         },
         time @ TriggerSpec::ResourceTime { .. } => resource_time_text(time),
         changed @ TriggerSpec::SourceChanged { .. } => source_change_text(changed),
+        TriggerSpec::Webhook {
+            url, events, path, ..
+        } => {
+            let mut line = format!("when this workspace's events are posted to {}", quoted(url));
+            if !events.is_empty() {
+                let _ = write!(line, " as {}", quoted_list(events));
+            }
+            if let Some(path) = path {
+                let _ = write!(line, " of {}", quoted(path));
+            }
+            line
+        }
     }
 }
 

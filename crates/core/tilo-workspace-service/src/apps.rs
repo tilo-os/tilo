@@ -7,6 +7,7 @@ pub mod automation;
 mod broker_error;
 pub mod certificate_authority;
 pub mod triggers;
+pub mod webhooks;
 /// The channel engine every host runs: its groups, the governance that settles them, and the
 /// keys an endpoint reads a sealed record with.
 pub use tilo_workspace_keys as workspace_keys;

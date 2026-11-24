@@ -16,7 +16,8 @@
 //! - `account/usage#read`;
 //! - `account/models#ask {workspace, request}`;
 //! - `account/webhooks#list {workspace?}`, `#create {workspace, url, events?, path?}`,
-//!   `#delete {webhook}`: the key's webhooks ([`crate::v1::webhooks`]).
+//!   `#delete {webhook}`: the key's webhooks, records of the workspace that keeps them, posted
+//!   by the device that keeps it.
 //!
 //! Each invocation is admitted as every action is ([`tilo_actions::policy::admit`]): a key for
 //! one workspace reaches its own keys, its workspace's setting and its model, and nothing else of
@@ -59,9 +60,9 @@ use tilo_actions::{
     ParamType, ResultSpec, RiskLevel,
 };
 use tilo_server_protocol::workspaces::{
-    BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE,
-    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PersonalList, REVOKE_KEY,
-    RUN_UNATTENDED, WorkspaceLabels,
+    BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CREATE_WEBHOOK, CreatedWorkspace, DELETE_WEBHOOK,
+    DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL,
+    LIST_WEBHOOKS, PersonalList, REVOKE_KEY, RUN_UNATTENDED, WorkspaceLabels,
 };
 use tilo_session_actions::SessionActions;
 use tilo_user_identity::AgentScope;
@@ -372,7 +373,7 @@ const VERBS: [Verb; 17] = [
     verb(
         WEBHOOKS,
         "list",
-        "This key's webhooks, without their secrets; with workspace, that workspace's",
+        "This key's webhooks, with the key their deliveries are signed with; with workspace, that workspace's",
         ActionKind::Read,
         Op::ListWebhooks,
         || {
@@ -390,7 +391,7 @@ const VERBS: [Verb; 17] = [
         verb(
             WEBHOOKS,
             "create",
-            "Post a workspace's events to a URL, signed; answers the secret once",
+            "Post a workspace's events to a URL, signed by the device that keeps it; answers the key it signs with",
             ActionKind::Outside,
             Op::CreateWebhook,
             || {
@@ -410,7 +411,19 @@ const VERBS: [Verb; 17] = [
                 ]
             },
         ),
-        || secret_result("secret"),
+        || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "workspace": {"type": "string"},
+                    "url": {"type": "string"},
+                    "events": {"type": "array", "items": {"type": "string"}},
+                    "path": {"type": "string"},
+                    "key": {"type": "string"},
+                },
+            })
+        },
     ),
     verb(
         WEBHOOKS,
@@ -960,16 +973,6 @@ impl Account {
                 "to create or list workspaces, ask the person for a key for all their workspaces",
             );
         }
-        // A key's webhooks are this server's own: they need no connection of the key's.
-        let webhook = match op {
-            Op::ListWebhooks => Some(crate::v1::webhooks::list(&server, &grant, args)),
-            Op::CreateWebhook => Some(crate::v1::webhooks::create(&server, &grant, args)),
-            Op::DeleteWebhook => Some(crate::v1::webhooks::delete(&server, &grant, args)),
-            _ => None,
-        };
-        if let Some(outcome) = webhook {
-            return outcome;
-        }
         let key = match &self.0.reach {
             Reach::Forwarded(key) => Arc::clone(key),
             // What a desktop kept itself is taken in by the device it is on, never by a server.
@@ -1020,11 +1023,14 @@ impl Account {
                 Err(error) => refused(&error),
             },
             Op::AskModel => self.ask_model(&key, id, args).await,
-            Op::ListWebhooks | Op::CreateWebhook | Op::DeleteWebhook => failed(
-                "unavailable",
-                "a webhook is kept by the server itself",
-                "try again shortly",
-            ),
+            Op::ListWebhooks | Op::CreateWebhook | Op::DeleteWebhook => match &self.0.reach {
+                Reach::Forwarded(connection) => forwarded_webhooks(connection, op, args).await,
+                _ => failed(
+                    "unavailable",
+                    "a webhook is kept by the device that keeps its workspace",
+                    "ask it on the device that keeps the workspace",
+                ),
+            },
             Op::ImportWorkspaces => failed(
                 "unavailable",
                 "a server takes in no desktop's workspaces",
@@ -1184,11 +1190,59 @@ impl Account {
                 "a model is asked on the device that keeps it",
                 "open Tilo on a device that keeps the workspace's model, then try again",
             ),
-            Op::ListWebhooks | Op::CreateWebhook | Op::DeleteWebhook => failed(
-                "unavailable",
-                "a webhook is kept by the server itself",
-                "try again shortly",
-            ),
+            Op::ListWebhooks => {
+                let workspace = field(args, "workspace").map(str::to_owned);
+                match host.webhooks(key, workspace).await {
+                    Ok(listed) => Outcome::Ok(listed),
+                    Err(error) => refused(&error),
+                }
+            }
+            Op::CreateWebhook => {
+                let (Some(workspace), Some(url)) = (field(args, "workspace"), field(args, "url"))
+                else {
+                    return failed(
+                        "invalid_arguments",
+                        "`workspace` and `url` are required",
+                        "pass {workspace, url, events?, path?}; account/workspaces#list names \
+                         the workspaces",
+                    );
+                };
+                if let Some(why) = tilo_net::address::webhook_refusal(url) {
+                    return failed(
+                        "invalid_arguments",
+                        why,
+                        "name an https URL on the public internet, or an address of this computer",
+                    );
+                }
+                let events: Vec<String> = args
+                    .get("events")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+                let path = field(args, "path").map(str::to_owned);
+                let (workspace, url) = (workspace.to_owned(), url.to_owned());
+                match host.create_webhook(key, workspace, url, events, path).await {
+                    Ok(made) => Outcome::Ok(made),
+                    Err(error) => refused(&error),
+                }
+            }
+            Op::DeleteWebhook => {
+                let Some(webhook) = field(args, "webhook") else {
+                    return failed(
+                        "invalid_arguments",
+                        "`webhook` is required",
+                        "account/webhooks#list names them",
+                    );
+                };
+                let webhook = webhook.to_owned();
+                match host.delete_webhook(key, webhook).await {
+                    Ok(deleted) => Outcome::Ok(deleted),
+                    Err(error) => refused(&error),
+                }
+            }
         }
     }
 
@@ -2071,12 +2125,121 @@ async fn revoke_in(connection: &Connection, workspace: &str, grant: &str) -> Res
     }
 }
 
-/// Run the governance verb `action` in `workspace` as the key's session, and answer its output.
-async fn governance(
+/// The key's webhooks: a record of the workspace that keeps it, registered and removed through
+/// the workspace's own verbs, and posted by the device that keeps it.
+async fn forwarded_webhooks(connection: &Connection, op: Op, args: &Value) -> Outcome {
+    let cert = connection.key.cert();
+    let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    let named = field(args, "workspace").map(str::to_owned);
+    let workspaces = match named.clone() {
+        Some(workspace) => vec![workspace],
+        None => match connection
+            .server()
+            .labelled(connection, &WorkspaceLabels::new())
+            .await
+        {
+            Ok(listed) => listed.into_iter().map(|workspace| workspace.id).collect(),
+            Err(error) => return refused(&error),
+        },
+    };
+    match op {
+        Op::ListWebhooks => {
+            let mut rows = Vec::new();
+            for workspace in &workspaces {
+                let Ok(answer) =
+                    workspace_verb_as(connection, workspace, LIST_WEBHOOKS, Map::new(), &caller)
+                        .await
+                else {
+                    continue;
+                };
+                rows.extend(
+                    answer
+                        .get("webhooks")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+            }
+            Outcome::Ok(json!({"webhooks": rows}))
+        }
+        Op::CreateWebhook => {
+            let Some(workspace) = named else {
+                return failed(
+                    "invalid_arguments",
+                    "`workspace` is required",
+                    "pass {workspace, url, events?, path?}; account/workspaces#list names them",
+                );
+            };
+            let Some(url) = field(args, "url") else {
+                return failed(
+                    "invalid_arguments",
+                    "`url` is required",
+                    "pass {workspace, url, events?, path?}",
+                );
+            };
+            if let Some(why) = tilo_net::address::webhook_refusal(url) {
+                return failed(
+                    "invalid_arguments",
+                    why,
+                    "name an https URL on the public internet, or an address of this computer",
+                );
+            }
+            let mut arguments = Map::new();
+            arguments.insert("url".into(), json!(url));
+            if let Some(events) = args.get("events").filter(|events| events.is_array()) {
+                arguments.insert("events".into(), events.clone());
+            }
+            if let Some(path) = field(args, "path") {
+                arguments.insert("path".into(), json!(path));
+            }
+            match workspace_verb_as(connection, &workspace, CREATE_WEBHOOK, arguments, &caller)
+                .await
+            {
+                Ok(made) => Outcome::Ok(made),
+                Err(outcome) => outcome,
+            }
+        }
+        Op::DeleteWebhook => {
+            let Some(webhook) = field(args, "webhook") else {
+                return failed(
+                    "invalid_arguments",
+                    "`webhook` is required",
+                    "account/webhooks#list names them",
+                );
+            };
+            for workspace in &workspaces {
+                let mut arguments = Map::new();
+                arguments.insert("webhook".into(), json!(webhook));
+                match workspace_verb_as(connection, workspace, DELETE_WEBHOOK, arguments, &caller)
+                    .await
+                {
+                    Ok(deleted) => return Outcome::Ok(deleted),
+                    Err(Outcome::Failed { code, .. }) if code == "not_found" => continue,
+                    Err(Outcome::Failed { code, .. }) if code == "refused" => continue,
+                    Err(outcome) => return outcome,
+                }
+            }
+            failed(
+                "not_found",
+                "no such webhook of this key",
+                "account/webhooks#list names them",
+            )
+        }
+        _ => Outcome::Failed {
+            code: "unavailable".into(),
+            message: "that is no webhook action".into(),
+            next: String::new(),
+        },
+    }
+}
+
+/// Run the workspace's own verb `action` in `workspace` as `caller`, and answer its output.
+async fn workspace_verb_as(
     connection: &Connection,
     workspace: &str,
     action: &str,
     arguments: Map<String, Value>,
+    caller: &Caller,
 ) -> Result<Value, Outcome> {
     let id = connection
         .server()
@@ -2105,7 +2268,7 @@ async fn governance(
     let receipt = connection
         .device
         .actions(id)
-        .invoke(&Caller::local_person("tilo api"), request)
+        .invoke(caller, request)
         .await
         .ok_or_else(unanswered)?
         .map_err(|error| refused_key(&error))?;
@@ -2117,6 +2280,24 @@ async fn governance(
         }
         ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => Err(unanswered()),
     }
+}
+
+/// [`workspace_verb_as`] as the API server itself asks a workspace, for the calls it makes with no
+/// key behind them (a key's own record of its grants).
+async fn governance(
+    connection: &Connection,
+    workspace: &str,
+    action: &str,
+    arguments: Map<String, Value>,
+) -> Result<Value, Outcome> {
+    workspace_verb_as(
+        connection,
+        workspace,
+        action,
+        arguments,
+        &Caller::local_person("tilo api"),
+    )
+    .await
 }
 
 /// What a workspace's refusal of a key's listing or revocation, `error`, tells the caller.
@@ -2236,6 +2417,15 @@ async fn here_answers(
                     "ask whoever invited you for a new invitation",
                 ),
             };
+        }
+        // A webhook is a record of the workspace that keeps it: only the device keeping it
+        // registers one, and this device answers its person's account some other way.
+        Op::ListWebhooks | Op::CreateWebhook | Op::DeleteWebhook => {
+            return failed(
+                "unavailable",
+                "a webhook is kept by the device that keeps its workspace",
+                "ask it on the device that keeps the workspace",
+            );
         }
         _ => {}
     }

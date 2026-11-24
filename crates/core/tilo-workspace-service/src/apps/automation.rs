@@ -1361,7 +1361,8 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         | TriggerSpec::ResourceChanged { .. }
         | TriggerSpec::IncomingMessage { .. }
         | TriggerSpec::AppEvent { .. }
-        | TriggerSpec::Connector { .. } => Ok(()),
+        | TriggerSpec::Connector { .. }
+        | TriggerSpec::Webhook { .. } => Ok(()),
         other => Err(format!(
             "`{}` triggers cannot be saved yet; keyboard, schedule, moment, calendar-time, \
              app-opened, workspace-joined, file-changed, focus-mode, record-changed, \

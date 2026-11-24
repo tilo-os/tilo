@@ -343,6 +343,31 @@ impl Host {
         Key { direct }
     }
 
+    /// A key of the person's reaching `workspace` alone, named `label`: what a backend keyed for
+    /// one customer's workspace is.
+    ///
+    /// # Panics
+    ///
+    /// `workspace` is not a workspace id.
+    #[must_use]
+    pub fn key_reaching(&self, workspace: &str, label: &str) -> Key {
+        let id: [u8; 16] = uuid::Uuid::parse_str(workspace)
+            .expect("the workspace is named by its id")
+            .into_bytes();
+        let (key, cert) = self.certify(
+            label,
+            DeviceCapabilities::agent_grant(AgentScope::Workspace(id)),
+        );
+        let direct = tilo_api::direct::Direct::here(
+            self.daemon() as Arc<dyn tilo_api::session::Here>,
+            key,
+            cert,
+            label,
+        )
+        .unwrap();
+        Key { direct }
+    }
+
     /// One of the person's own devices, named `label`, as a key: what a page open on their
     /// workspace calls this daemon with, entered in the workspace as their device rather than
     /// as an agent of theirs.

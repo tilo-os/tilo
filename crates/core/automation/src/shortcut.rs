@@ -703,6 +703,24 @@ pub enum TriggerSpec {
         #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
         filter: serde_json::Map<String, serde_json::Value>,
     },
+    /// An account's webhook: its workspace's events posted to `url` from the device that keeps
+    /// the workspace, signed by that device's key. The shortcut is the webhook: saved as its own
+    /// record, armed here, and its run posts one event ([`WEBHOOK_POST`](crate::WEBHOOK_POST)).
+    /// `events` names the kinds posted ([`WEBHOOK_EVENTS`](crate::WEBHOOK_EVENTS)); empty posts
+    /// every one. `path` narrows a change to one record. `owner` is the key that registered it,
+    /// by its device key in hex: listing and deleting are that key's alone.
+    Webhook {
+        url: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        events: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        owner: String,
+        /// Events before this moment, ms since the epoch, are not posted: what was there when
+        /// the webhook was made is not news.
+        #[serde(default)]
+        since_ms: i64,
+    },
 }
 
 /// What a [`TriggerSpec::ResourceChanged`] asks of a change beyond its kind, its verbs and its
@@ -903,9 +921,16 @@ impl TriggerSpec {
             | Self::Schedule { .. }
             | Self::Once { .. }
             | Self::ResourceTime { .. }
-            | Self::SourceChanged { .. } => &EVENT_PAYLOAD,
+            | Self::SourceChanged { .. }
+            | Self::Webhook { .. } => &EVENT_PAYLOAD,
             _ => &[],
         }
+    }
+
+    /// Whether this trigger is an account's webhook ([`Self::Webhook`]).
+    #[must_use]
+    pub const fn is_webhook(&self) -> bool {
+        matches!(self, Self::Webhook { .. })
     }
 
     /// Stable name of the trigger's kind, recorded with every invocation it starts.
@@ -928,6 +953,7 @@ impl TriggerSpec {
             Self::NearbyDevice { .. } => "nearby_device",
             Self::ResourceTime { .. } => "resource_time",
             Self::SourceChanged { .. } => "source_changed",
+            Self::Webhook { .. } => "webhook",
         }
     }
 }

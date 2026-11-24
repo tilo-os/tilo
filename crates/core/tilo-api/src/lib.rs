@@ -188,12 +188,8 @@ pub struct Server {
     /// Reaches the site (to see that its sign-in page is served) and the
     /// servers that keep workspaces: addresses this server was started with.
     http: tilo_net::Client,
-    /// The clients webhooks are posted with, to URLs a key's holder names:
-    /// which it has follows from how this server was started
-    /// ([`v1::webhooks::Posting`]).
-    posting: v1::webhooks::Posting,
-    /// What the API keeps besides the store: remembered answers, webhook
-    /// deliveries, and the content puts a key has yet to finish.
+    /// What the API keeps besides the store: remembered answers and the content puts a key has
+    /// yet to finish.
     v1: v1::State,
     /// When the site was last seen serving the sign-in page every approval
     /// lands on ([`Self::sign_in_page`]).
@@ -243,14 +239,6 @@ impl Server {
         Self::serving(&config, Store::in_memory(), Some(here))
     }
 
-    /// Have the receiver at `at` on this machine stand in for one on the public internet
-    /// where this server posts a webhook ([`v1::webhooks::Posting::stand_in`]): for a test,
-    /// which starts its receiver itself.
-    #[cfg(feature = "test-support")]
-    pub fn webhooks_stand_in(&self, at: std::net::SocketAddr) {
-        self.posting.stand_in(at);
-    }
-
     fn serving(
         config: &Config,
         store: Store,
@@ -261,14 +249,12 @@ impl Server {
             .redirects(tilo_net::Redirects::None)
             .build()
             .map_err(io::Error::other)?;
-        let posting = v1::webhooks::Posting::new(here.is_some()).map_err(io::Error::other)?;
         let web_entry = config.web_entry.trim_end_matches('/').to_owned();
         let sign_in_entry = url::Url::parse(&format!("{web_entry}/sign-in"))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Arc::new(Self {
             hosts: Arc::new(Hosts::new(&config.hosts)),
             http,
-            posting,
             config: Config {
                 issuer: config.issuer.trim_end_matches('/').to_owned(),
                 hosts: config.hosts.clone(),
@@ -1793,7 +1779,6 @@ fn redirect(location: &str) -> Reply {
 
 /// Serve `server` on `listener` until the process ends.
 pub async fn serve(server: Arc<Server>, listener: tokio::net::TcpListener) {
-    v1::webhooks::Deliveries::start_all(&server);
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             continue;

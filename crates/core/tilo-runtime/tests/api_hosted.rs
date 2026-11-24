@@ -10,40 +10,311 @@
 //! typed refusal when nothing that can read the workspace is online; a computer's one
 //! session; its agent's grants; and what the workspace keeps for its members.
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use serde_json::{Value, json};
-use tilo_actions::remote::{person_models, person_vault};
+use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
+use tilo_actions::remote::{
+    ActionProvider, Caller, ResourceAddress, ResourceCopy, person_models, person_vault,
+};
 
 use crate::host;
 
-/// A hosted API posts a workspace's event to a webhook, signed with the secret its maker was
-/// answered once, and lists it as one that is delivered.
+/// One delivery a receiver was posted.
+#[derive(Clone, Debug)]
+struct Delivered {
+    method: String,
+    target: String,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+impl Delivered {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).map(String::as_str)
+    }
+}
+
+/// A webhook receiver on this machine: what each delivery carried, answered `status`.
+struct Receiver {
+    url: String,
+    got: Arc<Mutex<Vec<Delivered>>>,
+    woken: Arc<tokio::sync::Notify>,
+}
+
+impl Receiver {
+    /// A receiver answering every delivery `status`, on a port of this machine's own.
+    async fn start(status: u16) -> Self {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let got: Arc<Mutex<Vec<Delivered>>> = Arc::default();
+        let woken = Arc::new(tokio::sync::Notify::new());
+        let kept = Arc::clone(&got);
+        let wake = Arc::clone(&woken);
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let kept = Arc::clone(&kept);
+                let wake = Arc::clone(&wake);
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+                    let mut bytes = Vec::new();
+                    let mut chunk = [0_u8; 4096];
+                    let (head, body) = loop {
+                        if let Some(at) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&bytes[..at]).to_string();
+                            let length = head
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())?
+                                })
+                                .unwrap_or(0);
+                            while bytes.len() < at + 4 + length {
+                                let read = stream.read(&mut chunk).await.unwrap_or(0);
+                                if read == 0 {
+                                    break;
+                                }
+                                bytes.extend_from_slice(&chunk[..read]);
+                            }
+                            break (head, bytes[at + 4..].to_vec());
+                        }
+                        let read = stream.read(&mut chunk).await.unwrap_or(0);
+                        if read == 0 {
+                            return;
+                        }
+                        bytes.extend_from_slice(&chunk[..read]);
+                    };
+                    let mut lines = head.lines();
+                    let request = lines.next().unwrap_or_default();
+                    let mut parts = request.split_whitespace();
+                    let method = parts.next().unwrap_or_default().to_owned();
+                    let target = parts.next().unwrap_or_default().to_owned();
+                    let headers: BTreeMap<String, String> = lines
+                        .filter_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            Some((name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+                        })
+                        .collect();
+                    kept.lock().unwrap().push(Delivered {
+                        method,
+                        target,
+                        headers,
+                        body,
+                    });
+                    wake.notify_waiters();
+                    let answer = format!(
+                        "HTTP/1.1 {status} Webhook\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    let _ = stream.write_all(answer.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        Self {
+            url: format!("http://127.0.0.1:{port}/hook"),
+            got,
+            woken,
+        }
+    }
+
+    fn url(&self) -> &str {
+        &self.url
+    }
+
+    fn count(&self) -> usize {
+        self.got.lock().unwrap().len()
+    }
+
+    /// The next delivery posted to it.
+    async fn next(&self) -> Delivered {
+        let waiting = async {
+            loop {
+                if let Some(first) = self.got.lock().unwrap().first().cloned() {
+                    return first;
+                }
+                self.woken.notified().await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), waiting)
+            .await
+            .expect("the webhook's receiver is posted a delivery within 10 s")
+    }
+}
+
+/// What a key asks: make a workspace's event. An invitation is one invocation of the
+/// workspace's own invitation action, which a webhook on invocations posts.
+async fn cause_an_invocation(key: &host::Key, workspace: &str) {
+    let (status, invited) = key
+        .post(
+            &format!("/v1/workspaces/{workspace}/resources/workspace/invitations/actions/invite"),
+            &json!({"role": "editor"}),
+        )
+        .await;
+    assert_eq!(status, 200, "{invited}");
+}
+
+/// The webhook delivery invocations the workspace keeps, newest first.
+async fn deliveries(host: &host::Host, workspace: &str) -> Vec<Invocation> {
+    let provider: Arc<dyn ActionProvider + Send + Sync> = host.dispatch();
+    let reads = provider
+        .resource_reads()
+        .expect("the dispatch reads records");
+    let address = ResourceAddress {
+        workspace: workspace.to_owned(),
+        app: workspace_invocations::PROVIDER.to_owned(),
+        record: String::new(),
+    };
+    let caller = host.caller();
+    let read = tokio::task::spawn_blocking(move || reads.read(&caller, &address))
+        .await
+        .unwrap()
+        .expect("the person reads the workspace's invocations");
+    let value = match read {
+        ResourceCopy::Reading { value, .. } => value,
+        other => panic!("the invocations are a reading, not {other:?}"),
+    };
+    serde_json::from_value::<Vec<Invocation>>(value["items"].clone())
+        .expect("the items read as invocations")
+        .into_iter()
+        .filter(|invocation| invocation.action.as_deref() == Some("tilo.webhooks#post"))
+        .collect()
+}
+
+/// A hosted API posts a workspace's event to a webhook, signed with the key its maker was
+/// answered once; a URL that never answers is retried and leaves a failed invocation; and a key
+/// that does not reach the workspace is refused.
 #[test]
 fn a_hosted_apis_webhook_reaches_its_receiver_signed() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
         let key = host.key("Visa backend");
-        // The receiver is a server this test starts on this machine; the API is handed it to
-        // stand in for the public internet.
+        let create = "/v1/resources/account/webhooks/actions/create";
+        // The receiver is a server this test starts on this machine: a webhook may post to this
+        // computer's own loopback, and to nothing else of its network.
+        let receiver = Receiver::start(200).await;
+        let (status, refused) = key
+            .post(
+                create,
+                &json!({"workspace": workspace, "url": "https://10.0.0.7/hook"}),
+            )
+            .await;
+        assert_eq!(
+            status, 400,
+            "a webhook posts nothing to this network: {refused}"
+        );
         let (status, hook) = key
             .post(
-                "/v1/resources/account/webhooks/actions/create",
-                &json!({"workspace": workspace,
-                        "url": "http://127.0.0.1:9/hook",
-                        "events": ["invocation"]}),
+                create,
+                &json!({"workspace": workspace, "url": receiver.url(), "events": ["invocation"]}),
             )
             .await;
         assert_eq!(status, 200, "the webhook is kept: {hook}");
-        let (opened, body) = key
+        let hook = &hook["result"];
+        let signing = hook["key"]
+            .as_str()
+            .expect("the webhook says the key it signs with");
+
+        cause_an_invocation(&key, &workspace).await;
+        let delivery = receiver.next().await;
+        assert_eq!(
+            (delivery.method.as_str(), delivery.target.as_str()),
+            ("POST", "/hook")
+        );
+        assert_eq!(delivery.header("tilo-webhook-id"), hook["id"].as_str());
+        assert!(
+            delivery
+                .header("tilo-delivery")
+                .is_some_and(|delivery| !delivery.is_empty()),
+            "a delivery is named"
+        );
+        assert_eq!(delivery.header("tilo-key"), Some(signing));
+        let said = delivery
+            .header("tilo-signature")
+            .expect("a delivery is signed");
+        let time: u64 = said
+            .strip_prefix("t=")
+            .and_then(|rest| rest.split(',').next())
+            .and_then(|time| time.parse().ok())
+            .expect("a signature says its time");
+        let mut signed = format!("{time}.").into_bytes();
+        signed.extend_from_slice(&delivery.body);
+        let verifier = ed25519_dalek::VerifyingKey::from_bytes(
+            &<[u8; 32]>::try_from(hex::decode(signing).unwrap().as_slice()).unwrap(),
+        )
+        .unwrap();
+        use ed25519_dalek::Verifier as _;
+        verifier
+            .verify(
+                &signed,
+                &ed25519_dalek::Signature::from_slice(
+                    &hex::decode(
+                        said.split_once("v1=")
+                            .expect("a signature names its version")
+                            .1,
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+            )
+            .expect("a delivery is signed with its webhook's key");
+        let event: Value = serde_json::from_slice(&delivery.body).expect("a delivery's body");
+        assert_eq!(event["type"], "invocation", "{event}");
+        assert_eq!(event["workspace"], workspace.as_str(), "{event}");
+
+        // The one invocation was posted once.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(receiver.count(), 1, "one event, one delivery");
+
+        // A URL that never answers is tried again, then its invocation is failed.
+        let failing = Receiver::start(500).await;
+        let (status, dead) = key
             .post(
-                &format!("/v1/workspaces/{workspace}/resources/pdf-viewer/actions/open"),
-                &json!({}),
+                create,
+                &json!({"workspace": workspace, "url": failing.url(), "events": ["invocation"]}),
             )
             .await;
-        assert_eq!(opened, 200, "{body}");
-        panic!(
-            "the daemon keeps no account webhooks and posts no deliveries: its person's \
-             programs reach the workspace they keep, and there is no hosted API in front of it"
+        assert_eq!(status, 200, "{dead}");
+        cause_an_invocation(&key, &workspace).await;
+        let failed = loop {
+            let deliveries = deliveries(&host, &workspace).await;
+            if let Some(failed) = deliveries
+                .iter()
+                .find(|invocation| invocation.status == InvocationStatus::Failed)
+            {
+                break failed.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert!(
+            failing.count() >= 2,
+            "a URL that does not answer is retried: {} deliveries",
+            failing.count()
         );
+        assert_eq!(
+            failed.action.as_deref(),
+            Some("tilo.webhooks#post"),
+            "the failed delivery is an invocation of its own: {failed:?}"
+        );
+
+        // A key that reaches another workspace registers nothing here.
+        let elsewhere = uuid::Uuid::new_v4().to_string();
+        let narrow = host.key_reaching(&workspace, "Visa backend, one workspace");
+        let (status, refused) = narrow
+            .post(
+                create,
+                &json!({"workspace": elsewhere, "url": receiver.url()}),
+            )
+            .await;
+        assert_eq!(
+            status, 403,
+            "a key reaches only its own workspace: {refused}"
+        );
+        assert_eq!(refused["error"]["code"], "not_permitted", "{refused}");
     });
 }
 

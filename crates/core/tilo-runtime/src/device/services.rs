@@ -46,8 +46,8 @@ use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::workspaces::{
-    BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, REVOKE_KEY,
-    RUN_UNATTENDED, WorkspaceLabels, WorkspaceListing,
+    BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CREATE_WEBHOOK, CreatedWorkspace, DELETE_WEBHOOK,
+    DELETE_WORKSPACE, LIST_WEBHOOKS, REVOKE_KEY, RUN_UNATTENDED, WorkspaceLabels, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed, this_device};
@@ -793,6 +793,18 @@ impl Daemon {
             admits_again(&broker, &workspaces, &actor),
         );
         asked.withdraw_what_ended();
+        // What posts an account webhook's deliveries: a webhook is a shortcut of the workspace,
+        // and its run posts one event through this provider, from the device that keeps it.
+        match tilo_workspace_service::apps::webhooks::Poster::new(
+            workspaces.copies().clone(),
+            Arc::clone(&invocations),
+        ) {
+            Ok(poster) => workspaces.copies().provide(
+                tilo_workspace_service::apps::webhooks::PROVIDER,
+                Arc::new(poster),
+            ),
+            Err(error) => tracing::warn!(%error, "this device posts no webhook"),
+        }
         // An action an agent makes for the person, which asks for
         // confirmation, is put to them in the runtime's native prompt.
         // Elsewhere nobody here answers, and such an action is refused.
@@ -808,7 +820,7 @@ impl Daemon {
             )?;
         }
         start_agents(&broker, &workspaces);
-        start_triggers(&broker, &workspaces);
+        start_triggers(&broker, &workspaces, &invocations);
         let replicas = take_work_files(
             &TakenFiles {
                 root,
@@ -2008,6 +2020,95 @@ impl tilo_api::session::AccountHere for Daemon {
                 Err(ServerError::NotFound) => Ok(false),
                 Err(error) => Err(error),
             }
+        })
+    }
+
+    fn webhooks(
+        &self,
+        key: GrantKey,
+        workspace: Option<String>,
+    ) -> AccountAnswer<Result<Value, ServerError>> {
+        let targets = match workspace {
+            Some(workspace) => vec![workspace],
+            None => <Self as tilo_api::session::AccountHere>::workspaces(self, &key)
+                .into_iter()
+                .map(|workspace| workspace.id)
+                .collect(),
+        };
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key)?;
+            let mut rows = Vec::new();
+            for workspace in targets {
+                let answered =
+                    workspace_verb(&workspaces, &workspace, &key, LIST_WEBHOOKS, Map::new()).await;
+                match answered {
+                    Ok(answered) => rows.extend(
+                        answered
+                            .get("webhooks")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default(),
+                    ),
+                    // A workspace this device does not serve keeps no webhook it could list.
+                    Err(ServerError::NotFound | ServerError::Refused(_)) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(json!({"webhooks": rows}))
+        })
+    }
+
+    fn create_webhook(
+        &self,
+        key: GrantKey,
+        workspace: String,
+        url: String,
+        events: Vec<String>,
+        path: Option<String>,
+    ) -> AccountAnswer<Result<Value, ServerError>> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key)?;
+            let mut arguments = Map::new();
+            arguments.insert("url".into(), json!(url));
+            if !events.is_empty() {
+                arguments.insert("events".into(), json!(events));
+            }
+            if let Some(path) = path {
+                arguments.insert("path".into(), json!(path));
+            }
+            workspace_verb(&workspaces, &workspace, &key, CREATE_WEBHOOK, arguments).await
+        })
+    }
+
+    fn delete_webhook(
+        &self,
+        key: GrantKey,
+        webhook: String,
+    ) -> AccountAnswer<Result<Value, ServerError>> {
+        let targets: Vec<String> = <Self as tilo_api::session::AccountHere>::workspaces(self, &key)
+            .into_iter()
+            .map(|workspace| workspace.id)
+            .collect();
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key)?;
+            for workspace in targets {
+                let mut arguments = Map::new();
+                arguments.insert("webhook".into(), json!(webhook));
+                match workspace_verb(&workspaces, &workspace, &key, DELETE_WEBHOOK, arguments).await
+                {
+                    Ok(deleted) => return Ok(deleted),
+                    Err(ServerError::NotFound) => continue,
+                    Err(ServerError::Refused(_)) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(ServerError::NotFound)
         })
     }
 }
@@ -3533,17 +3634,22 @@ fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
 
 /// Run the triggers of the shortcuts the person saved in this device's workspaces: each firing
 /// that is this device's turn starts on `broker`.
-fn start_triggers(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
+fn start_triggers(
+    broker: &BrokerHandle,
+    workspaces: &ServiceWorkspaces,
+    invocations: &Arc<Invocations>,
+) {
     let Some(broker) = broker.app_action_broker() else {
         tracing::warn!("this device's broker is not up, so it starts no shortcut's trigger");
         return;
     };
-    tilo_rt::app()
-        .handle()
-        .spawn(tilo_workspace_service::apps::triggers::run_on_device(
+    tilo_rt::app().handle().spawn(
+        tilo_workspace_service::apps::triggers::run_on_device_watching_invocations(
             workspaces.copies().clone(),
             std::sync::Arc::new(broker),
-        ));
+            Arc::clone(invocations),
+        ),
+    );
 }
 
 /// Answer the person's keys from the broker from now on, and serve the workspaces' pages

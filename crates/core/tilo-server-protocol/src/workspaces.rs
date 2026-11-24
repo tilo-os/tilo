@@ -807,6 +807,17 @@ pub const DELETE_WORKSPACE: &str = "workspace.delete";
 pub const RUN_UNATTENDED: &str = "commands.unattended";
 /// The workspace's governance verb recording a key revoked: the caller's own or one it minted.
 pub const REVOKE_KEY: &str = "key.revoke";
+/// The workspace's own verb listing the webhooks the calling key registered: each as it
+/// was made, without the key that signs its deliveries. Answers `{"webhooks": [...]}`.
+pub const LIST_WEBHOOKS: &str = "webhook.list";
+/// The workspace's own verb registering a webhook of the calling key's:
+/// `{url, events?, path?}`. It is a record of the workspace, whose trigger posts the kinds
+/// named (`change`, `invocation`, `presence`) to `url`; the device that keeps the workspace
+/// posts and signs. Answers `{id, workspace, url, events, path?, key}`.
+pub const CREATE_WEBHOOK: &str = "webhook.create";
+/// The workspace's own verb removing a webhook the calling key registered:
+/// `{webhook}`. Answers `{"deleted": webhook}`.
+pub const DELETE_WEBHOOK: &str = "webhook.delete";
 /// Why the host refused one of its own workspace operations (asking for,
 /// branching or deleting a workspace, or turning a workspace's commands
 /// unattended on): what the refusal's words carry as JSON

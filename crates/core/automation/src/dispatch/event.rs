@@ -325,6 +325,37 @@ pub enum Event<'a> {
     Schedule(&'a ScheduleEvent),
     Time(&'a TimeEvent),
     Source(&'a SourceEvent),
+    Invocation(&'a InvocationEvent),
+    Presence(&'a PresenceEvent),
+}
+
+/// One invocation the device that keeps the workspace was asked for, as a webhook sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvocationEvent {
+    pub workspace: String,
+    /// The invocation's id.
+    pub id: String,
+    /// `running`, `succeeded`, `failed`, `cancelled` or `refused`.
+    pub phase: String,
+    /// The action the call named, as `app/resource#action`.
+    pub path: String,
+    /// Who asked.
+    pub by: String,
+    /// When it was asked for, ms since the epoch.
+    pub started_ms: u64,
+    /// When it ended, ms since the epoch, when it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_ms: Option<u64>,
+}
+
+/// Who is in the workspace, when that changed, as a webhook sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresenceEvent {
+    pub workspace: String,
+    /// What the roster held, as a fingerprint: the event's identity.
+    pub fingerprint: String,
+    /// The people, devices and agents here, as the host names them.
+    pub here: Vec<tilo_actions::remote::Here>,
 }
 
 impl Event<'_> {
@@ -355,6 +386,10 @@ impl Event<'_> {
                 "source\0{}\0{}\0{}",
                 event.workspace, event.trigger, event.key
             ),
+            Self::Invocation(event) => format!("invocation\0{}\0{}", event.workspace, event.id),
+            Self::Presence(event) => {
+                format!("presence\0{}\0{}", event.workspace, event.fingerprint)
+            }
         }
     }
 
@@ -381,6 +416,40 @@ impl Event<'_> {
             }),
             Self::Time(event) => Value::Object(event.payload.clone()),
             Self::Source(event) => Value::Object(event.payload.clone()),
+            Self::Invocation(event) => json!({
+                "id": event.id,
+                "type": "invocation",
+                "workspace": event.workspace,
+                "data": {
+                    "invocation": event.id,
+                    "phase": event.phase,
+                    "path": event.path,
+                    "by": event.by,
+                    "started_ms": event.started_ms,
+                    "ended_ms": event.ended_ms,
+                },
+            }),
+            Self::Presence(event) => json!({
+                "id": event.fingerprint,
+                "type": "presence",
+                "workspace": event.workspace,
+                "data": {"here": event.here},
+            }),
+        }
+    }
+
+    /// The body a webhook posts: the event as its kinds gave it to the API's event stream, with
+    /// the invocation and presence shapes this host reads.
+    #[must_use]
+    pub fn webhook_json(&self) -> Value {
+        match self {
+            Self::Record(event) => json!({
+                "id": event.change,
+                "type": "change",
+                "workspace": event.workspace,
+                "data": serde_json::to_value(event).unwrap_or(Value::Null),
+            }),
+            other => other.to_json(),
         }
     }
 }

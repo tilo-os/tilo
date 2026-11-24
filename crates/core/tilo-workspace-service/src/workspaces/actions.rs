@@ -67,7 +67,8 @@ use tilo_actions::{
 };
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::{
-    ADMINISTER_WORKSPACES, FETCH_GRANT, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
+    ADMINISTER_WORKSPACES, CREATE_WEBHOOK, DELETE_WEBHOOK, FETCH_GRANT, HOST_ACTIONS_PROVIDER,
+    HOST_WORKSPACES_RESOURCE, LIST_WEBHOOKS as WEBHOOKS,
 };
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
@@ -245,7 +246,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 44] = [
+const VERBS: [Verb; 47] = [
     Verb {
         id: WORKSPACE_INVITE,
         label: "Invite",
@@ -555,6 +556,29 @@ const VERBS: [Verb; 44] = [
         check: "",
         kind: roles::GOVERNANCE_KIND,
         params: key_params,
+    },
+    Verb {
+        id: WEBHOOKS,
+        label: "List the webhooks this key registered",
+        // A key's webhooks are its own: the handler lists the records it owns.
+        check: "",
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: CREATE_WEBHOOK,
+        label: "Register a webhook",
+        // A key reaching the workspace registers one there; the handler owns it to that key.
+        check: "",
+        kind: roles::GOVERNANCE_KIND,
+        params: webhook_params,
+    },
+    Verb {
+        id: DELETE_WEBHOOK,
+        label: "Stop a webhook this key registered",
+        check: "",
+        kind: roles::GOVERNANCE_KIND,
+        params: webhook_delete_params,
     },
     Verb {
         id: FETCH_GRANT,
@@ -886,6 +910,30 @@ fn key_params() -> Vec<ActionParam> {
         "grant",
         ParamType::Text,
         "The key's grant, as the workspace lists it: the key itself or one it minted.",
+    )]
+}
+
+fn webhook_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("url", ParamType::Text, "The URL events are posted to."),
+        ActionParam::optional(
+            "events",
+            ParamType::Array,
+            "The kinds posted: `change`, `invocation` or `presence`; every one when left out.",
+        ),
+        ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "The record whose changes are posted; every record's when left out.",
+        ),
+    ]
+}
+
+fn webhook_delete_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "webhook",
+        ParamType::Text,
+        "The webhook, as `webhook.list` names it.",
     )]
 }
 
@@ -2134,8 +2182,11 @@ impl Workspaces {
         let action = address.action.as_str();
         let check = server::check_of(action).ok_or(ActionCallError::UnknownAction)?;
         // A key's own grant is revoked by the key itself, whatever its grant may
-        // govern, or by the key that minted it.
-        let key_revoke = action == REVOKE_KEY;
+        // govern, or by the key that minted it. Its webhooks are its own records too.
+        let key_revoke = matches!(
+            action,
+            REVOKE_KEY | WEBHOOKS | CREATE_WEBHOOK | DELETE_WEBHOOK
+        );
         let (governed, device) = match self.governed_by(workspace_id, caller).await {
             Some(found) => found,
             None if key_revoke => self
@@ -2291,6 +2342,7 @@ impl Workspaces {
             APP_OFFERS => self.apps_offers(call.workspace).await,
             EARLIER_APP_VERSIONS => self.earlier_app_versions(call).await,
             REVOKE_KEY => self.governance_revoke_key(call).await,
+            WEBHOOKS | CREATE_WEBHOOK | DELETE_WEBHOOK => self.webhook_actions(action, call).await,
             WORKSPACE_GRANT_REVOKE => self.revoke_policy_grant(call).await,
             _ => self.governance_members(action, call).await,
         }
@@ -2355,7 +2407,131 @@ impl Workspaces {
                 reason: "that key is revoked already, or this workspace never admitted it".into(),
             });
         }
+        // The webhooks it registered stop with it.
+        let described = self.described().await;
+        if let Some(workspace) = described
+            .iter()
+            .find(|workspace| workspace.id().to_string() == call.workspace)
+        {
+            for webhook in crate::apps::webhooks::saved(workspace, call.workspace)
+                .iter()
+                .filter(|webhook| webhook.owner == id)
+            {
+                if let Err(error) = self
+                    .change_own_shortcuts(
+                        call.workspace,
+                        tilo_automation::ShortcutChange::Delete(webhook.id.clone()),
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, webhook = %webhook.id, "a revoked key's webhook was not removed");
+                }
+            }
+        }
         Ok(json!({"revoked": id}))
+    }
+
+    /// The webhooks the calling key registered in this workspace: a record of the workspace,
+    /// saved as a shortcut whose one trigger posts its events, and changed only through these
+    /// actions. Registering signs the record as the device that keeps the workspace, so only it
+    /// posts; listing and deleting reach the key's own alone.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one webhook's actions in order: listing the key's, registering one, removing one"
+    )]
+    async fn webhook_actions(
+        &self,
+        action: &str,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionCallError> {
+        use crate::apps::webhooks;
+        // The key that registered a webhook, by its grant: revoking it takes its webhooks with
+        // it, as it did when a server kept them.
+        let owner =
+            collab_types::workspace_grant::WorkspaceGrant::id_of(&call.device.device_public_key);
+        let saved = || async {
+            let described = self.described().await;
+            let workspace = described
+                .iter()
+                .find(|workspace| workspace.id().to_string() == call.workspace)
+                .ok_or(ActionCallError::UnknownAction)?;
+            Ok::<_, ActionCallError>(webhooks::saved(workspace, call.workspace))
+        };
+        match action {
+            WEBHOOKS => {
+                let rows: Vec<Value> = saved()
+                    .await?
+                    .iter()
+                    .filter(|webhook| webhook.owner == owner)
+                    .map(|webhook| webhook.json(webhooks::refusal(&webhook.url)))
+                    .collect();
+                Ok(json!({"webhooks": rows}))
+            }
+            CREATE_WEBHOOK => {
+                let url = call.args.required_text("url")?.to_owned();
+                if let Some(why) = webhooks::refusal(&url) {
+                    return Err(ActionCallError::Refused {
+                        reason: why.to_owned(),
+                    });
+                }
+                let events: Vec<String> = call.args.texts("events")?.into_iter().collect();
+                if let Some(unknown) = events
+                    .iter()
+                    .find(|kind| !tilo_automation::WEBHOOK_EVENTS.contains(&kind.as_str()))
+                {
+                    return Err(ActionCallError::invalid_request(format!(
+                        "`{unknown}` is no kind of event; `change`, `invocation` and `presence` are"
+                    )));
+                }
+                let path = call.args.text("path")?.map(str::to_owned);
+                let id = format!("wh_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+                let shortcut = webhooks::shortcut(
+                    &id,
+                    &url,
+                    &events,
+                    path.as_deref(),
+                    &owner,
+                    tilo_clock::unix_now_ms_i64(),
+                );
+                self.change_own_shortcuts(
+                    call.workspace,
+                    tilo_automation::ShortcutChange::Save(Box::new(shortcut)),
+                )
+                .await
+                .map_err(ActionCallError::refused)?;
+                let mut made = json!({
+                    "id": id,
+                    "workspace": call.workspace,
+                    "url": url,
+                    "events": events,
+                    "key": hex::encode(self.device_cert().device_public_key),
+                });
+                if let Some(path) = path {
+                    made["path"] = json!(path);
+                }
+                Ok(made)
+            }
+            DELETE_WEBHOOK => {
+                let id = call.args.required_text("webhook")?;
+                if !saved()
+                    .await?
+                    .iter()
+                    .any(|webhook| webhook.id == id && webhook.owner == owner)
+                {
+                    return Err(ActionCallError::Refused {
+                        reason: "no such webhook of this key".into(),
+                    });
+                }
+                self.change_own_shortcuts(
+                    call.workspace,
+                    tilo_automation::ShortcutChange::Delete(id.to_owned()),
+                )
+                .await
+                .map_err(ActionCallError::refused)?;
+                Ok(json!({"deleted": id}))
+            }
+            _ => Err(ActionCallError::UnknownAction),
+        }
     }
 
     /// Take back one grant of the workspace's policy (`workspace/permissions/<grant>#revoke`):

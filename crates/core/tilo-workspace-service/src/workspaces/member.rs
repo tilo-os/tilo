@@ -531,7 +531,7 @@ impl Workspaces {
     /// The device this service signs its own roles' writes as: the device its member copies
     /// act as where its embedder keeps one, else this device itself, which governs the
     /// workspaces it serves.
-    pub(super) fn signing_device(&self) -> Arc<MemberDevice> {
+    pub(crate) fn signing_device(&self) -> Arc<MemberDevice> {
         if let Some(device) = self.inner.member.device.get().cloned() {
             return device;
         }

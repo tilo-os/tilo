@@ -85,7 +85,7 @@ pub fn dispatch(armed: &[Armed<'_>], event: Event<'_>) -> Dispatched {
                 trigger_index: index,
                 trigger: trigger.clone(),
                 invocation: invocation_id(&armed.firer, index, event),
-                inputs: inputs(armed.shortcut, event),
+                inputs: inputs(armed.shortcut, index, event),
                 event: event.identity(),
             });
         }
@@ -176,8 +176,55 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
         // Whoever looked at the source already held what it found to the
         // trigger's filter.
         (TriggerSpec::SourceChanged { .. }, Event::Source(found)) => found.trigger == index,
+        (TriggerSpec::Webhook { url, .. }, _) if url.trim().is_empty() => false,
+        (TriggerSpec::Webhook { events, path, .. }, Event::Record(change)) => {
+            webhook_wants(events, "change")
+                && path_matches(path.as_deref(), change)
+                && !webhook_delivery(change)
+        }
+        (
+            TriggerSpec::Webhook {
+                events, since_ms, ..
+            },
+            Event::Invocation(fired),
+        ) => {
+            webhook_wants(events, "invocation")
+                && i64::try_from(fired.started_ms).unwrap_or(i64::MAX) >= *since_ms
+                && !fired
+                    .path
+                    .starts_with(&format!("{}/", crate::WEBHOOK_PROVIDER))
+        }
+        (TriggerSpec::Webhook { events, .. }, Event::Presence(_)) => {
+            webhook_wants(events, "presence")
+        }
         _ => false,
     }
+}
+
+/// Whether a webhook whose `events` names these kinds posts `kind`: every kind when it names
+/// none.
+fn webhook_wants(events: &[String], kind: &str) -> bool {
+    events.is_empty() || events.iter().any(|wanted| wanted == kind)
+}
+
+/// Whether `change` is a webhook delivery's own call, which a webhook never posts: a delivery
+/// that posted itself would post for ever.
+fn webhook_delivery(change: &super::event::DocumentEvent) -> bool {
+    change.kind.starts_with(crate::WEBHOOK_PROVIDER)
+        || change.record.starts_with(crate::WEBHOOK_PROVIDER)
+}
+
+/// Whether a webhook narrowed to `path` posts `change`: one that names none posts every change,
+/// and one that names a record posts the changes of that record, or of its kind.
+fn path_matches(path: Option<&str>, change: &super::event::DocumentEvent) -> bool {
+    let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return true;
+    };
+    path == change.record
+        || path == change.kind
+        || path
+            .rsplit_once('/')
+            .is_some_and(|(_, last)| last == change.record || last == change.kind)
 }
 
 fn connector_matches(
@@ -224,14 +271,25 @@ fn looped(firer: &Firer<'_>, event: Event<'_>) -> Option<String> {
         .filter(|through| through != firer.shortcut)
 }
 
-fn inputs(shortcut: &Shortcut, event: Event<'_>) -> Map<String, Value> {
+fn inputs(shortcut: &Shortcut, trigger: usize, event: Event<'_>) -> Map<String, Value> {
     let declares = shortcut
         .inputs
         .iter()
         .any(|input| input.name.as_ref() == EVENT_INPUT && input.ty == ParamType::Object);
     let mut inputs = Map::new();
     if declares {
-        inputs.insert(EVENT_INPUT.to_owned(), event.to_json());
+        // A webhook's receiver reads the same event the API's own stream carried, under the
+        // type that names its kind.
+        let webhook = shortcut
+            .triggers
+            .get(trigger)
+            .is_some_and(TriggerSpec::is_webhook);
+        let value = if webhook {
+            event.webhook_json()
+        } else {
+            event.to_json()
+        };
+        inputs.insert(EVENT_INPUT.to_owned(), value);
     }
     inputs
 }

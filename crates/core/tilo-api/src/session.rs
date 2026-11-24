@@ -160,6 +160,35 @@ pub trait AccountHere: Send + Sync {
         workspace: String,
         grant: String,
     ) -> AccountAnswer<Result<bool, ServerError>>;
+    /// The webhooks the key registered, in `workspace` alone when one is named, each with why
+    /// nothing is posted to its URL where nothing is: `{"webhooks": [...]}`.
+    fn webhooks(
+        &self,
+        _key: crate::grant_key::GrantKey,
+        _workspace: Option<String>,
+    ) -> AccountAnswer<Result<serde_json::Value, ServerError>> {
+        Box::pin(async { Err(ServerError::NoAccountHere) })
+    }
+    /// Register a webhook of the key's in `workspace`, answered as it was made, with the key
+    /// its deliveries are signed with.
+    fn create_webhook(
+        &self,
+        _key: crate::grant_key::GrantKey,
+        _workspace: String,
+        _url: String,
+        _events: Vec<String>,
+        _path: Option<String>,
+    ) -> AccountAnswer<Result<serde_json::Value, ServerError>> {
+        Box::pin(async { Err(ServerError::NoAccountHere) })
+    }
+    /// Remove a webhook the key registered, wherever it is kept: `{"deleted": webhook}`.
+    fn delete_webhook(
+        &self,
+        _key: crate::grant_key::GrantKey,
+        _webhook: String,
+    ) -> AccountAnswer<Result<serde_json::Value, ServerError>> {
+        Box::pin(async { Err(ServerError::NoAccountHere) })
+    }
 }
 
 /// What an [`AccountHere`] method answers, awaited where the account runs it.

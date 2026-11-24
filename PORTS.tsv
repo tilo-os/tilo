@@ -50,7 +50,7 @@ workspace_actions::api_unattended::a_workspaces_own_key_runs_commands_unasked_on
 workspace_actions::api_v1::a_call_is_served_after_the_host_it_used_goes_away	ok	port-api	
 workspace_actions::api_v1::a_call_reaches_the_server_that_keeps_the_workspace_though_another_answers	ok	port-api	
 workspace_actions::api_v1::a_file_larger_than_one_request_goes_up_in_pieces_that_resume	ok	port-api	
-workspace_actions::api_v1::a_hosted_apis_webhook_reaches_its_receiver_signed	ok	port-api	
+api_hosted::a_hosted_apis_webhook_reaches_its_receiver_signed	test written, waiting on its run	port-api	a webhook is a shortcut of the workspace: a signed delivery to a local receiver, a URL that does not answer retried to a failed invocation, and a key reaching another workspace refused
 workspace_actions::api_v1::a_hosted_workspace_streams_changes_finds_and_undoes_runs	ok	port-api	
 workspace_actions::api_v1::a_key_its_program_holds_reaches_the_host_directly	ok	port-api	
 workspace_actions::api_v1::a_key_made_for_a_script_reaches_the_workspaces_stores_as_its_persons_agent	ok	port-api	
@@ -480,7 +480,7 @@ gap M: a web entry (site) announced by a device's daemon, for share links	-	desk
 gap N: slow_read needs a slow registered read; the old switch was a test shim	test written, waiting on its run	one-dispatch	files_collab::a_slow_read_leaves_its_thread_answering: a provider registered through Daemon::provide holds its thread on every call; a view of a record answers meanwhile
 gap O: the workspace's own tree is not published as an app on the daemon's /v1 and MCP path lookup (unknown_app workspace)	-	one-dispatch	publish workspace/* through the registry, with noun-commands' table
 gap P: no model gateway on a device (/model/ask goes to the account, 403)	-	one-dispatch	account/models#ask served from the device's dispatch
-gap Q: a webhook is kept but not delivered without an app event	-	one-dispatch	follows gap 1
+gap Q: a webhook is a record of the workspace, armed by the trigger runner and posted signed by the device that keeps it	test written, waiting on its run	one-dispatch	api_hosted::a_hosted_apis_webhook_reaches_its_receiver_signed (register, one signed delivery, a retried failure shown on its invocation, a refusal)
 gap R: the fixture's daemon has no held login session and no server list	-	daemon-host-fixture	fixture, with ticket sign-in helpers
 gap S: a daemon cannot redeem an invitation; a second person cannot join from their own computer's daemon	-	one-dispatch	with the account surface (G)
 main 67541d0852a, 115fa702c49, e93e461613c, babde88be75: tree and file actions naming another workspace are refused (through the deleted WorkspaceActions::serve)	ok	one-dispatch	port: a caller in workspace A naming workspace B is refused at the one admission, through the dispatch

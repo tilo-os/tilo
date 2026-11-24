@@ -35,7 +35,8 @@ use tilo_actions::ActionContext;
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_automation::dispatch::retry;
 use tilo_automation::dispatch::{
-    self, AppEvent, ConnectorEvent, DocumentEvent, Event, Firer, ScheduleEvent, event_of,
+    self, AppEvent, ConnectorEvent, DocumentEvent, Event, Firer, InvocationEvent, PresenceEvent,
+    ScheduleEvent, event_of,
 };
 use tilo_automation::schedule::{SchedulePlan, Timed, plan};
 #[cfg(feature = "agents")]
@@ -485,6 +486,7 @@ pub fn store_events(
                 write: (stamp.invocation.clone(), stamp.moment),
                 event: DocumentEvent {
                     workspace: workspace.to_owned(),
+                    app: app.to_owned(),
                     record: id,
                     did: tilo_actions::Did::verb(
                         tilo_actions::ActionKey::new(app, &kind, &stamp.verb),
@@ -600,6 +602,14 @@ pub struct Runner {
     /// What is heard of the mail arriving in the accounts of the shortcuts' savers (`mail`).
     #[cfg(feature = "agents")]
     heard: mail::Heard,
+    /// The device's record of the invocations it was asked for, when this runner fires a
+    /// webhook on one: what it lists to find the ones this device has not posted yet.
+    invocations: Option<Arc<tilo_actions::remote::invocation_record::Invocations>>,
+    /// The invocations already fired, by workspace: a look that lists them again fires nothing.
+    seen_invocations: BTreeMap<String, BTreeSet<String>>,
+    /// The fingerprint of who was here each workspace was last seen, by workspace: a webhook
+    /// on presence fires when it changes, and the first look only learns it.
+    presence: BTreeMap<String, String>,
 }
 
 impl Runner {
@@ -628,6 +638,9 @@ impl Runner {
             outside: outside::Outside::default(),
             #[cfg(feature = "agents")]
             heard: mail::Heard::default(),
+            invocations: None,
+            seen_invocations: BTreeMap::new(),
+            presence: BTreeMap::new(),
         }
     }
 
@@ -636,6 +649,17 @@ impl Runner {
     #[must_use]
     pub fn watching_connectors(mut self, connectors: Arc<dyn ConnectorEvents>) -> Self {
         self.connectors = Some(connectors);
+        self
+    }
+
+    /// Fire the webhooks on the invocations this device was asked for, read through
+    /// `invocations`.
+    #[must_use]
+    pub fn watching_invocations(
+        mut self,
+        invocations: Arc<tilo_actions::remote::invocation_record::Invocations>,
+    ) -> Self {
+        self.invocations = Some(invocations);
         self
     }
 
@@ -680,6 +704,10 @@ impl Runner {
                 self.arm().await;
             }
             self.pass(std::mem::take(&mut written)).await;
+            // A webhook is woken by the invocation recorded for it and by who is here moving,
+            // rather than by the second that passes while nothing is written.
+            let (wake, woken) = tilo_actions::remote::ResourceWake::new();
+            self.wake_on(&wake);
             tokio::select! {
                 write = writes.recv() => match write {
                     Ok(write) => written.push(write),
@@ -690,6 +718,7 @@ impl Runner {
                     Ok(_) | Err(RecvError::Lagged(_)) => changed = true,
                     Err(RecvError::Closed) => return,
                 },
+                _ = woken => {}
                 () = tokio::time::sleep(TICK) => {}
             }
         }
@@ -754,6 +783,8 @@ impl Runner {
             self.offer(firings);
         }
         self.schedules(now_ms).await;
+        self.invocation_events(now_ms);
+        self.presence_events(now_ms);
         #[cfg(feature = "agents")]
         self.moments(now_ms).await;
         #[cfg(feature = "agents")]
@@ -953,6 +984,137 @@ impl Runner {
             }
         }
         self.offer(fired);
+    }
+
+    /// Wake `wake` for every workspace an armed webhook watches: the next invocation recorded
+    /// there and the next move of who is here.
+    fn wake_on(&self, wake: &tilo_actions::remote::ResourceWake) {
+        let watched: BTreeSet<&str> = self
+            .armed
+            .iter()
+            .filter(|armed| armed.shortcut.triggers.iter().any(TriggerSpec::is_webhook))
+            .map(|armed| armed.workspace.as_str())
+            .collect();
+        if watched.is_empty() {
+            return;
+        }
+        if let Some(invocations) = &self.invocations {
+            for workspace in &watched {
+                invocations.watch(workspace, wake);
+            }
+        }
+        crate::workspaces::on_presence_change(wake);
+    }
+
+    /// Fire the webhooks on the invocations this device was asked for and has not posted yet.
+    /// Every invocation is listed, and the ones already fired here are passed over; a firing
+    /// kept done in the workspace stops a restart from posting one twice.
+    fn invocation_events(&mut self, now_ms: i64) {
+        let Some(invocations) = self.invocations.clone() else {
+            return;
+        };
+        let waited: BTreeSet<String> = self
+            .armed
+            .iter()
+            .filter(|armed| !armed.shortcut.paused)
+            .filter(|armed| {
+                armed.shortcut.triggers.iter().any(|trigger| {
+                    matches!(
+                        trigger,
+                        TriggerSpec::Webhook { events, .. }
+                            if wants_event(events, "invocation")
+                    )
+                })
+            })
+            .map(|armed| armed.workspace.clone())
+            .collect();
+        self.seen_invocations
+            .retain(|workspace, _| waited.contains(workspace));
+        let mut firings = Vec::new();
+        for workspace in waited {
+            let seen = self.seen_invocations.entry(workspace.clone()).or_default();
+            for recorded in invocations.listed(&workspace) {
+                let id = recorded.request.invocation.0.to_string();
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                // A delivery is itself an invocation, and an account call is the device's
+                // rather than the workspace's: neither is the workspace's invocation.
+                if matches!(
+                    recorded.request.target.provider.as_str(),
+                    tilo_automation::WEBHOOK_PROVIDER | "tilo.account"
+                ) {
+                    continue;
+                }
+                let addressed = &recorded.request.target.address;
+                let event = InvocationEvent {
+                    workspace: workspace.clone(),
+                    id,
+                    phase: phase_of(&recorded).to_owned(),
+                    path: format!(
+                        "{}/{}#{}",
+                        recorded.request.target.provider, addressed.resource, addressed.action
+                    ),
+                    by: recorded
+                        .asked
+                        .acting()
+                        .person_id()
+                        .or_else(|| recorded.asked.acting().agent_id())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    started_ms: recorded.started_ms,
+                    ended_ms: recorded.ended_ms,
+                };
+                firings.extend(dispatched(&self.armed, Event::Invocation(&event), now_ms));
+            }
+        }
+        self.offer(firings);
+    }
+
+    /// Fire the webhooks on who is here, for each workspace whose roster moved since the last
+    /// look. The first look only learns it: a webhook posts what changes after it was made.
+    fn presence_events(&mut self, now_ms: i64) {
+        use crate::workspaces::PresentDevices as _;
+        let watched: BTreeSet<String> = self
+            .armed
+            .iter()
+            .filter(|armed| !armed.shortcut.paused)
+            .filter(|armed| {
+                armed.shortcut.triggers.iter().any(|trigger| {
+                    matches!(
+                        trigger,
+                        TriggerSpec::Webhook { events, .. } if wants_event(events, "presence")
+                    )
+                })
+            })
+            .map(|armed| armed.workspace.clone())
+            .collect();
+        self.presence
+            .retain(|workspace, _| watched.contains(workspace));
+        let mut firings = Vec::new();
+        for workspace in watched {
+            let mut here = Vec::new();
+            self.workspaces.attach(&workspace, &mut here);
+            let fingerprint = blake3::hash(
+                &serde_json::to_vec(&here).unwrap_or_else(|_| workspace.as_bytes().to_vec()),
+            )
+            .to_hex()
+            .to_string();
+            let previous = self.presence.insert(workspace.clone(), fingerprint.clone());
+            let Some(previous) = previous else {
+                continue;
+            };
+            if previous == fingerprint {
+                continue;
+            }
+            let event = PresenceEvent {
+                workspace: workspace.clone(),
+                fingerprint,
+                here,
+            };
+            firings.extend(dispatched(&self.armed, Event::Presence(&event), now_ms));
+        }
+        self.offer(firings);
     }
 
     /// Fire the file-changed triggers on what settled in the folders they watch.
@@ -1328,6 +1490,23 @@ fn counted(shortcut: &Shortcut, report: &InvocationReport) -> bool {
     })
 }
 
+/// Whether a webhook whose `events` names these kinds posts `kind`: every kind when it names
+/// none.
+fn wants_event(events: &[String], kind: &str) -> bool {
+    events.is_empty() || events.iter().any(|wanted| wanted == kind)
+}
+
+/// How an invocation stands, as a webhook's receiver reads it.
+fn phase_of(recorded: &tilo_actions::remote::invocation_record::Recorded) -> &'static str {
+    match recorded.state.as_ref().map(|state| &state.update) {
+        None => "running",
+        Some(tilo_actions::InvocationUpdate::Succeeded { .. }) => "succeeded",
+        Some(tilo_actions::InvocationUpdate::Failed { .. }) => "failed",
+        Some(tilo_actions::InvocationUpdate::Cancelled { .. }) => "cancelled",
+        Some(_) => "running",
+    }
+}
+
 /// Whether `trigger` fires on changes to records.
 const fn watches_records(trigger: &TriggerSpec) -> bool {
     matches!(
@@ -1335,6 +1514,7 @@ const fn watches_records(trigger: &TriggerSpec) -> bool {
         TriggerSpec::ResourceChanged { .. }
             | TriggerSpec::IncomingMessage { .. }
             | TriggerSpec::AppEvent { .. }
+            | TriggerSpec::Webhook { .. }
     )
 }
 
@@ -1345,6 +1525,19 @@ pub async fn run_on_device(
     broker: Arc<crate::apps::collab_broker::AppActionBroker>,
 ) {
     Runner::new(workspaces, broker, Order::WORKSPACE)
+        .run()
+        .await;
+}
+
+/// [`run_on_device`], firing the webhooks on the invocations the device was asked for, read
+/// through `invocations`.
+pub async fn run_on_device_watching_invocations(
+    workspaces: Workspaces,
+    broker: Arc<crate::apps::collab_broker::AppActionBroker>,
+    invocations: Arc<tilo_actions::remote::invocation_record::Invocations>,
+) {
+    Runner::new(workspaces, broker, Order::WORKSPACE)
+        .watching_invocations(invocations)
         .run()
         .await;
 }

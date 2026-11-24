@@ -13,8 +13,7 @@
 //! - [`lines`]: the lines `tilo` prints for a listing of workspaces, keys and people;
 //! - [`errors`]: the one refusal shape, and its statuses;
 //! - [`idempotency`]: retried mutating calls answer what the first did;
-//! - [`events`] and [`webhooks`]: what happens, as a stream and posted; a key's webhooks are
-//!   the account's (`account/webhooks`).
+//! - [`events`]: what happens, as a stream.
 
 pub mod answers;
 pub mod contents;
@@ -27,7 +26,6 @@ pub mod names;
 pub mod openapi;
 pub mod operations;
 pub mod routing;
-pub mod webhooks;
 
 use crate::session::Session;
 use crate::store::Grant;
@@ -65,7 +63,6 @@ const MAX_WAIT_SECONDS: u64 = 60;
 #[derive(Default)]
 pub struct State {
     pub(crate) remembered: idempotency::Remembered,
-    pub(crate) deliveries: webhooks::Deliveries,
     /// The content puts a key has yet to send every byte of: where each
     /// stands, so a connection that failed continues instead of starting again.
     pub(crate) contents: contents::Uploads,

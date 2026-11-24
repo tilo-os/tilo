@@ -113,6 +113,15 @@ pub fn fired_shortcut(lease: &str) -> Option<&str> {
 }
 pub const SHORTCUT_RUN_ACTION: &str = "run";
 
+/// The provider that posts a webhook's deliveries from the device that keeps the workspace.
+pub const WEBHOOK_PROVIDER: &str = "tilo.webhooks";
+/// The resource the provider publishes: one action, the delivery itself.
+pub const WEBHOOK_RESOURCE: &str = "webhook";
+/// Post one event to a webhook's URL, signed by this device's key.
+pub const WEBHOOK_POST: &str = "post";
+/// The event kinds a webhook posts: a record change, an invocation, or who is here.
+pub const WEBHOOK_EVENTS: [&str; 3] = ["change", "invocation", "presence"];
+
 /// Application that publishes the model-backed transform actions an
 /// [`Ai`](StepKind::Ai) step lowers to.
 pub use tilo_app_id::apps::AGENT as AGENT_APP_ID;

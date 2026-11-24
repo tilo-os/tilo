@@ -198,6 +198,35 @@ pub fn public_only(lookup: Lookup) -> Lookup {
     })
 }
 
+/// Why no webhook delivery is posted to `url`, where none is: over `https` to an address on the
+/// public internet, or over plain `http` to this machine's own loopback, for the person's own
+/// programs there. A name is judged where the connection looks it up (see `public_only`); this
+/// refuses only what the URL itself writes out.
+#[must_use]
+pub fn webhook_refusal(url: &str) -> Option<&'static str> {
+    /// What either says of an address of its own written into a URL.
+    const OWN_ADDRESS: &str = "a webhook posts to the public internet, and this URL names an \
+                               address of the device's own machine or network";
+    /// What a URL that is no such address says.
+    const PUBLIC_OR_HERE: &str = "a webhook posts to an https URL on the public internet, or \
+                                  over plain http to this computer";
+    const LOCALHOST: &str = "localhost";
+    let Ok(url) = url::Url::parse(url) else {
+        return Some(PUBLIC_OR_HERE);
+    };
+    let written = written_out(&url);
+    match url.scheme() {
+        "https" if written.is_some_and(|address| !is_public(address)) => Some(OWN_ADDRESS),
+        "https" => None,
+        "http" => match written {
+            Some(address) if address.is_loopback() => None,
+            None if url.domain() == Some(LOCALHOST) => None,
+            _ => Some(PUBLIC_OR_HERE),
+        },
+        _ => Some(PUBLIC_OR_HERE),
+    }
+}
+
 /// The system's resolver, as a [`Lookup`]. A name that is itself an address
 /// is answered with that address at once: the resolver is not asked for it.
 #[cfg(not(target_family = "wasm"))]
