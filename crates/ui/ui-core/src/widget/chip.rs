@@ -2010,44 +2010,39 @@ mod activation_tests {
             }
         }
 
-        // A chip that both runs a press and offers its own removal publishes one
-        // resource for its control: the host keeps one spec per id, so the
-        // remove would be shadowed by the press's spec and answer nothing.
-        phase a_chip_with_a_press_and_a_remove_publishes_one_resource_both_reach;
+        // A chip that both runs a press and offers its own removal keeps both reachable: its ×
+        // is an accessibility control of its own where it is drawn, so a reader or an agent
+        // shown the window removes the chip as a person's click does, beside the press the chip
+        // itself answers.
+        phase a_chip_with_a_press_and_a_remove_offers_its_remove_as_a_control_of_its_own;
         {
+            let opened = Rc::new(Cell::new(0));
             let removed = Rc::new(Cell::new(0));
-            let counted = Rc::clone(&removed);
+            let counted_open = Rc::clone(&opened);
+            let counted_remove = Rc::clone(&removed);
             let chip = Chip::new("Book: The Tideglass")
                 .with_id("view-chip:book")
-                .on_open(|| {})
-                .on_remove(move || counted.set(counted.get() + 1));
+                .on_open(move || counted_open.set(counted_open.get() + 1))
+                .on_remove(move || counted_remove.set(counted_remove.get() + 1));
+
             let mut harness = crate::headless::FrameHarness::new(
                 crate::State::new(),
                 Box::new(crate::widget::Row::new().push(Box::new(chip))),
                 (400, 100),
             );
-            let resources = harness.resources();
-            let published: Vec<&tilo_actions::ResourceSpec> = resources
-                .iter()
-                .filter(|resource| resource.id.as_str() == "tilo.control:view-chip:book")
-                .collect();
-            assert_eq!(published.len(), 1, "one resource for the control");
-            let actions: Vec<&str> = published
-                .first()
-                .expect("the chip publishes its control")
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
-                .collect();
-            assert_eq!(actions, ["invoke", "remove"]);
+            let remove = harness.a11y_nodes_named("Remove Book: The Tideglass");
+            assert_eq!(remove.len(), 1, "the × is published as its own control");
             harness
-                .invoke_published(
-                    "tilo.control:view-chip:book",
-                    "remove",
-                    &serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(false))]),
-                )
+                .perform_a11y_action(remove[0], &crate::a11y::Action::Activate)
                 .expect("the remove answers");
-            assert_eq!(removed.get(), 1, "the chip's own handler ran");
+            assert_eq!(removed.get(), 1, "the chip's own remove handler ran");
+
+            let press = harness.a11y_nodes_named("Book: The Tideglass");
+            assert_eq!(press.len(), 1, "the chip itself is one control");
+            harness
+                .perform_a11y_action(press[0], &crate::a11y::Action::Activate)
+                .expect("the press answers");
+            assert_eq!(opened.get(), 1, "the chip's own press handler ran");
         }
 
         phase a_menu_chip_reserves_its_chevron_and_a_wide_face_centres_its_label;
