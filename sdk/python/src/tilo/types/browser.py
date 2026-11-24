@@ -20,10 +20,12 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "SuggestionKind",
     "Notice",
     "Bookmark",
     "Visit",
     "ImportedVisit",
+    "Suggestion",
     "RememberedForm",
     "Question",
     "Address",
@@ -85,6 +87,9 @@ __all__ = [
     "ImportBookmarksArgs",
     "RevealDownloadArgs",
 ]
+
+SuggestionKind = Literal["bookmark", "visited", "imported", "search"]
+"""Where a row the address bar offers comes from."""
 
 RemoveBookmarkArgs = TypedDict("RemoveBookmarkArgs", {
 })
@@ -299,7 +304,7 @@ RevealDownloadArgs = TypedDict("RevealDownloadArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -360,7 +365,7 @@ class Notice(Resource):
 
 class Bookmark(Resource):
     """Bookmark — `tl.so.tilo.browser.Bookmark`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     @property
     def _44buv5tt(self) -> str:
         """url (`44buv5tt` on the wire)."""
@@ -403,7 +408,7 @@ class Bookmark(Resource):
 
 class Visit(Resource):
     """Visit — `tl.so.tilo.browser.Visit`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     k73mxvmp: str  # url
     qy6vtgjc: str  # title
     @property
@@ -439,7 +444,7 @@ class Visit(Resource):
 
 class ImportedVisit(Resource):
     """ImportedVisit — `tl.so.tilo.browser.ImportedVisit`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     my4dhx2s: str  # url
     @property
     def _43vnrbh6(self) -> str:
@@ -453,9 +458,18 @@ class ImportedVisit(Resource):
     srpuiw6c: int  # count
 
 
+class Suggestion(Resource):
+    """Suggestion — `tl.so.tilo.browser.Suggestion`."""
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    zl6ois7x: SuggestionKind  # kind
+    iwoez6ar: str  # title
+    np2bxhf4: str  # url
+    dermimxj: str  # secondary
+
+
 class RememberedForm(Resource):
     """RememberedForm — `tl.so.tilo.browser.RememberedForm`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     @property
     def _3wdvc5zt(self) -> str:
         """origin (`3wdvc5zt` on the wire)."""
@@ -493,7 +507,7 @@ class RememberedForm(Resource):
 
 class Question(Resource):
     """Question — `tl.so.tilo.browser.Question`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     @property
     def _2wlmb5rp(self) -> str:
         """name (`2wlmb5rp` on the wire)."""
@@ -510,7 +524,7 @@ class Question(Resource):
 
 class Address(Resource):
     """Address — `tl.so.tilo.browser.Address`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     fnyioh2y: str  # label
     @property
     def _3ewzn2z4(self) -> str:
@@ -543,7 +557,7 @@ class Address(Resource):
 
 class Page(Resource):
     """Page — `tl.so.tilo.browser.Page`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     hf6q2oo4: str  # url
     tyhunk32: str  # title
     @property
@@ -1028,7 +1042,7 @@ class Page(Resource):
         return self.action("capture_page", **args)
 
     def navigate(self, *, url: str) -> Answer:
-        """Open an address in the page's own window."""
+        """Open an address in the page's own window: a site named without its scheme opens as one (`example.org`), and words that name no address open the search engine's answer to them."""
         return self.action("navigate", url=url)
 
     def submit_address(self, *, typed: str) -> Answer:
@@ -1233,19 +1247,19 @@ class Page(Resource):
         return self.action("ask_site_permissions_again")
 
     def discover_logins(self) -> Answer:
-        """Reads the login forms this page asks for, through the engine's own credential store."""
+        """Reads the login forms this page asks for."""
         return self.action("discover_logins")
 
     def list_saved_logins(self) -> Answer:
-        """Lists the logins the engine keeps for this site."""
+        """Lists the logins the workspace's vault keeps for this site, by name."""
         return self.action("list_saved_logins")
 
     def capture_login(self, *, f: LoginForm) -> Answer:
-        """Takes what the person typed into a login form, so it can be saved for this site. The password stays in the engine's credential store and never crosses to the app."""
+        """Takes what the person typed into a login form, so it can be saved for this site. The password stays in the engine until saving hands it to the vault, and never crosses to the app."""
         return self.action("capture_login", f=f)
 
     def save_login(self) -> Answer:
-        """Saves the capture the engine took for this site."""
+        """Saves the capture the engine took in the workspace's vault, as a login of this site the Browser keeps."""
         return self.action("save_login")
 
     def fill_saved_login(self,
@@ -1253,7 +1267,7 @@ class Page(Resource):
         f: LoginForm,
         a: LoginAccount,
     ) -> Answer:
-        """Fills a form of this page with a login the engine keeps."""
+        """Fills a form of this page with a login the vault keeps for this site. A login the Browser saved itself fills at once; any other is filled once its person allowed the Browser that one login."""
         return self.action("fill_saved_login", f=f, a=a)
 
     def update_saved_login(self,
@@ -1261,11 +1275,11 @@ class Page(Resource):
         f: LoginForm,
         a: LoginAccount,
     ) -> Answer:
-        """Replaces a saved login with the capture the engine took."""
+        """Replaces a login the vault keeps with the capture the engine took."""
         return self.action("update_saved_login", f=f, a=a)
 
     def delete_saved_login(self, *, a: LoginAccount) -> Answer:
-        """Forgets a login the engine keeps for this site."""
+        """Forgets a login of this site from the vault: one the Browser saved, or one it may fill."""
         return self.action("delete_saved_login", a=a)
 
     def cancel_login(self) -> Answer:
@@ -1431,7 +1445,7 @@ class Page(Resource):
         username: str,
         late: bool,
     ) -> None:
-        """Writes what the engine's credential store answered into the page's record: the forms and accounts it listed, the capture it took, and its own words. The window raises it; a person, agent or script never does."""
+        """Writes what a login action came to into the page's record: the forms the engine found, the vault's logins for the site, the capture the engine took, and their own words. The window raises it; a person, agent or script never does."""
         return self.action("remember_credential", did=did, success=success, message=message, forms=forms, accounts=accounts, capture=capture, username=username, late=late)
 
     def remember_credential_many(self, items: list[RememberCredentialArgs]) -> list[dict[str, Any]]:
@@ -1528,7 +1542,7 @@ class Page(Resource):
 
 class PageStep(Resource):
     """PageStep — `tl.so.tilo.browser.PageStep`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     cpjp36fw: int  # at
     @property
     def _4mcq24cu(self) -> str | None:
@@ -1568,7 +1582,7 @@ class PageStep(Resource):
 
 class DialogAsk(Resource):
     """DialogAsk — `tl.so.tilo.browser.DialogAsk`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     trchguwk: int  # request
     plkldhkl: str  # kind
     ruephqmr: str  # origin
@@ -1585,7 +1599,7 @@ class DialogAsk(Resource):
 
 class MenuAsk(Resource):
     """MenuAsk — `tl.so.tilo.browser.MenuAsk`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     hjqv4o64: int  # request
     f2gbwl6v: str  # link
     @property
@@ -1600,7 +1614,7 @@ class MenuAsk(Resource):
 
 class MenuRow(Resource):
     """MenuRow — `tl.so.tilo.browser.MenuRow`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     kybyncey: int  # command
     cgfpo6b7: str  # label
     hn5vxavq: bool  # disabled
@@ -1617,7 +1631,7 @@ class MenuRow(Resource):
 
 class PageMedia(Resource):
     """PageMedia — `tl.so.tilo.browser.PageMedia`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     @property
     def _3rpnjayb(self) -> str:
         """element (`3rpnjayb` on the wire)."""
@@ -1631,7 +1645,7 @@ class PageMedia(Resource):
 
 class Download(Resource):
     """Download — `tl.so.tilo.browser.Download`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     anfisgsq: int  # transfer
     in525zqp: str  # state
     wz6wi2p3: str  # name
@@ -1645,7 +1659,7 @@ class Download(Resource):
 
 class SiteInfo(Resource):
     """SiteInfo — `tl.so.tilo.browser.SiteInfo`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     hrkhpkbd: str  # origin
     scje2sv3: int  # generation
     lyopffwi: int  # blocked
@@ -1667,7 +1681,7 @@ class SiteInfo(Resource):
 
 class HistoryEntry(Resource):
     """HistoryEntry — `tl.so.tilo.browser.HistoryEntry`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     eyk6uw4k: int  # entry
     @property
     def _2chmpqlt(self) -> str:
@@ -1682,7 +1696,7 @@ class HistoryEntry(Resource):
 
 class PageButton(Resource):
     """PageButton — `tl.so.tilo.browser.PageButton`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     t25qin6v: str  # ext
     pigtj7mb: str  # label
     dizhfbps: str  # badge
@@ -1699,7 +1713,7 @@ class PageButton(Resource):
 
 class ExtensionNotice(Resource):
     """ExtensionNotice — `tl.so.tilo.browser.ExtensionNotice`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     bmmxddfi: str  # ext
     @property
     def _7wjg3mlt(self) -> str:
@@ -1716,7 +1730,7 @@ class ExtensionNotice(Resource):
 
 class Panel(Resource):
     """Panel — `tl.so.tilo.browser.Panel`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     @property
     def _52ms3sap(self) -> str:
         """kind (`52ms3sap` on the wire)."""
@@ -1739,7 +1753,7 @@ class Panel(Resource):
 
 class Omnibox(Resource):
     """Omnibox — `tl.so.tilo.browser.Omnibox`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     yf5tqm24: str  # ext
     h6pi6u6y: str  # name
     tzxibbua: str  # text
@@ -1748,14 +1762,14 @@ class Omnibox(Resource):
 
 class OmniboxRow(Resource):
     """OmniboxRow — `tl.so.tilo.browser.OmniboxRow`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     wdpe6rh5: str  # title
     d662kmwa: str  # content
 
 
 class Addressed(Resource):
     """Addressed — `tl.so.tilo.browser.Addressed`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     mkrajvka: str  # ext
     @property
     def _7sy22uee(self) -> str:
@@ -1770,7 +1784,7 @@ class Addressed(Resource):
 
 class Extension(Resource):
     """Extension — `tl.so.tilo.browser.Extension`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     iymjskx5: str  # key
     vhst373v: str  # name
     @property
@@ -1798,7 +1812,7 @@ class Extension(Resource):
 
 class LoginForm(Resource):
     """LoginForm — `tl.so.tilo.browser.LoginForm`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     hdxbxfcl: str  # form
     enz3azev: str  # username
     kqqay3gr: str  # kind
@@ -1806,7 +1820,7 @@ class LoginForm(Resource):
 
 class LoginAccount(Resource):
     """LoginAccount — `tl.so.tilo.browser.LoginAccount`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     @property
     def _53raewop(self) -> str:
         """account (`53raewop` on the wire)."""
@@ -1823,11 +1837,13 @@ class LoginAccount(Resource):
     @_5oqresy2.setter
     def _5oqresy2(self, value: str) -> None:
         self.edit("5oqresy2", value=value)
+    qpgkf2v5: str  # title
+    ultqehya: bool  # own
 
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.browser.Ask`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     fqvhxdyr: str  # op
     hfpnr6ua: str | None  # element
     tpz54oe5: str | None  # text
@@ -1953,7 +1969,7 @@ class Ask(Resource):
 
 class Answer(Resource):
     """Answer — `tl.so.tilo.browser.Answer`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     @property
     def _2ubdeo5l(self) -> bool:
         """ok (`2ubdeo5l` on the wire)."""
@@ -1993,7 +2009,7 @@ class Answer(Resource):
 
 class Browser(Resource):
     """Browser — `tl.so.tilo.browser.Browser`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     v73p6lyt: bool  # adblock
     @property
     def _4mcclqi3(self) -> bool:
@@ -2194,7 +2210,7 @@ class Browser(Resource):
 
 class TiloBrowser(Resource):
     """Browser — `tl.so.tilo.browser`."""
-    __surface__ = "so.tilo.browser@a85c1e83f1c420ff"
+    __surface__ = "so.tilo.browser@a477f41188dd8c52"
     def open_download(self,
         *,
         name: str,
