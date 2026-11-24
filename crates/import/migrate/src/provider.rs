@@ -30,10 +30,7 @@ use tilo_actions::remote::{
     InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
     Reservation,
 };
-use tilo_actions::{
-    ActionFailure, ActionKind, ActionOutput, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
-    InvocationId, InvocationUpdate, OperationKind, ParamType, ResourceSpec,
-};
+use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
 
@@ -179,236 +176,148 @@ impl Moved {
     }
 }
 
-/// What each action is, takes and does.
-struct Declared {
-    id: &'static str,
-    label: &'static str,
-    description: &'static str,
-    params: Vec<ActionParam>,
-    execution: ExecutionMode,
+/// The migrations, as their actions publish them.
+#[derive(tilo_resource::Row)]
+#[row(kind = "devices.migrate", label = "Migrations")]
+struct MigrationsRow;
+
+/// What a caller does with the migrations of the device that holds the data. Each step lands in
+/// its `workspace`: one this device is a member of, by its id, or the device's own when not given.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.migrate")]
+pub enum MigrateAction {
+    /// Every source, what it holds on this device, and how to connect the ones that need it.
+    #[effect(kind = "outside", returns)]
+    Sources,
+    /// Connect a source that needs signing in. Its key or password goes into this device's vault.
+    #[effect(kind = "outside", job, returns)]
+    Connect {
+        #[param(
+            "A source, as `sources` names it: home, browsers, thunderbird, mail, gdrive, onedrive, dropbox, icloud, nextcloud, webdav, outline, linear or forgejo."
+        )]
+        source: String,
+        #[param(
+            "The address: a Nextcloud or WebDAV server, Outline's site, the Forgejo repository or owner whose issues come over."
+        )]
+        url: Option<String>,
+        #[param("The account: a mail address, an Apple ID, a Nextcloud or WebDAV user name.")]
+        login: Option<String>,
+        #[param(secret, "The key or password.")]
+        secret: Option<String>,
+    },
+    /// List what a source holds, with counts, keeping what was chosen. A cloud drive is listed a
+    /// folder and a page at a time.
+    #[effect(kind = "outside", job, returns)]
+    Review {
+        #[param(
+            "A source, as `sources` names it: home, browsers, thunderbird, mail, gdrive, onedrive, dropbox, icloud, nextcloud, webdav, outline, linear or forgejo."
+        )]
+        source: String,
+        #[param(
+            "The Thunderbird profile: one of this device's by its name, when it has several, or any profile by the path of its folder or its prefs.js, as the person handed it over."
+        )]
+        profile: Option<String>,
+        #[param("A cloud drive: the connected account to read, by its id.")]
+        account: Option<String>,
+        #[param(
+            "A cloud drive: the folder to list, by the key a review listed it under; its top when not given."
+        )]
+        within: Option<String>,
+        #[param("A cloud drive: where the page starts, the `next` the page before answered.")]
+        cursor: Option<String>,
+        #[param("A cloud drive: how many items the page lists at most.")]
+        limit: Option<i64>,
+        #[param(
+            "The workspace the migration lands in, by its id: one this device is a member of. The device's own when not given."
+        )]
+        workspace: Option<String>,
+    },
+    /// Choose what of a reviewed source comes over, or what stays.
+    #[effect(kind = "outside", job, returns)]
+    Choose {
+        #[param(
+            "A source, as `sources` names it: home, browsers, thunderbird, mail, gdrive, onedrive, dropbox, icloud, nextcloud, webdav, outline, linear or forgejo."
+        )]
+        source: String,
+        #[param(
+            "Items by the key a review lists them under, of any depth for a cloud drive: a folder brings everything under it, and `path:Work/Essay.docx` names an item by its path in the drive."
+        )]
+        keys: Option<Vec<String>>,
+        #[param("A cloud drive: the connected account to read, by its id.")]
+        account: Option<String>,
+        #[param("Items by the key the review lists; for home, also a folder by its path.")]
+        items: Option<Vec<String>>,
+        #[param("Leave these out instead.")]
+        leave_out: Option<bool>,
+        #[param("Choose only these: everything else is left out.")]
+        only: Option<bool>,
+        #[param(
+            "The workspace the migration lands in, by its id: one this device is a member of. The device's own when not given."
+        )]
+        workspace: Option<String>,
+    },
+    /// Bring the chosen things over, as one run in the workspace; resumes a stopped run.
+    /// Cancelling it stops it after the item it is on.
+    #[effect(kind = "outside", cancellable, returns)]
+    Start {
+        #[param(
+            "A source, as `sources` names it: home, browsers, thunderbird, mail, gdrive, onedrive, dropbox, icloud, nextcloud, webdav, outline, linear or forgejo."
+        )]
+        source: String,
+        #[param("The person said yes to connecting the chosen mail accounts.")]
+        yes: Option<bool>,
+        #[param("A cloud drive: the connected account to read, by its id.")]
+        account: Option<String>,
+        #[param(
+            "A cloud drive: the workspace folder its files go into, by its path in the workspace's files (Documents/Trip); a folder named after the drive when not given."
+        )]
+        destination: Option<String>,
+        #[param(
+            "The workspace the migration lands in, by its id: one this device is a member of. The device's own when not given."
+        )]
+        workspace: Option<String>,
+    },
+    /// Stop the source's run after the item it is on, as cancelling its `start` does; a later
+    /// `start` resumes it.
+    #[effect(kind = "outside", returns)]
+    Stop {
+        #[param(
+            "A source, as `sources` names it: home, browsers, thunderbird, mail, gdrive, onedrive, dropbox, icloud, nextcloud, webdav, outline, linear or forgejo."
+        )]
+        source: String,
+        #[param(
+            "The workspace the migration lands in, by its id: one this device is a member of. The device's own when not given."
+        )]
+        workspace: Option<String>,
+    },
+    /// How each source's migration stands.
+    #[effect(kind = "outside", returns)]
+    Status {
+        #[param("One source; all of them when not given.")]
+        source: Option<String>,
+        #[param(
+            "The workspace the migration lands in, by its id: one this device is a member of. The device's own when not given."
+        )]
+        workspace: Option<String>,
+    },
+    /// Take a run back: what it brought leaves the workspace, as undoing its History entry does.
+    #[effect(kind = "outside", job, returns)]
+    Undo {
+        #[param("The run, by the id `status` names, or a source for its last run.")]
+        run: String,
+        #[param(
+            "The workspace the migration lands in, by its id: one this device is a member of. The device's own when not given."
+        )]
+        workspace: Option<String>,
+    },
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table of every step, read as the actions a caller sees"
-)]
-fn declared() -> Vec<Declared> {
-    let workspace = || {
-        ActionParam::optional(
-            "workspace",
-            ParamType::Text,
-            "The workspace the migration lands in, by its id: one this device is a member of. \
-             The device's own when not given.",
-        )
-    };
-    let source = || {
-        ActionParam::required(
-            "source",
-            ParamType::Text,
-            "A source, as `sources` names it: home, browsers, thunderbird, mail, gdrive, \
-             onedrive, dropbox, icloud, nextcloud, webdav, outline, linear or forgejo.",
-        )
-    };
-    // Item keys are text, so code calls `choose` with a `List<Text>` (the window's checkbox).
-    let texts = || serde_json::json!({"type": "array", "items": {"type": "string"}});
-    vec![
-        Declared {
-            id: "sources",
-            label: "Sources",
-            description: "Every source, what it holds on this device, and how to connect the \
-                          ones that need it.",
-            params: Vec::new(),
-            execution: ExecutionMode::Immediate,
-        },
-        Declared {
-            id: "connect",
-            label: "Connect",
-            description: "Connect a source that needs signing in. Its key or password goes into \
-                          this device's vault.",
-            params: vec![
-                source(),
-                ActionParam::optional(
-                    "url",
-                    ParamType::Text,
-                    "The address: a Nextcloud or WebDAV server, Outline's site, the Forgejo \
-                     repository or owner whose issues come over.",
-                ),
-                ActionParam::optional(
-                    "login",
-                    ParamType::Text,
-                    "The account: a mail address, an Apple ID, a Nextcloud or WebDAV user name.",
-                ),
-                ActionParam::optional("secret", ParamType::Secret, "The key or password."),
-            ],
-            execution: ExecutionMode::Background { cancellable: false },
-        },
-        Declared {
-            id: "review",
-            label: "Review",
-            description: "List what a source holds, with counts, keeping what was chosen. A \
-                          cloud drive is listed a folder and a page at a time.",
-            params: vec![
-                source(),
-                ActionParam::optional(
-                    "profile",
-                    ParamType::Text,
-                    "The Thunderbird profile: one of this device's by its name, when it has \
-                     several, or any profile by the path of its folder or its prefs.js, as the \
-                     person handed it over.",
-                ),
-                ActionParam::optional(
-                    "account",
-                    ParamType::Text,
-                    "A cloud drive: the connected account to read, by its id.",
-                ),
-                ActionParam::optional(
-                    "within",
-                    ParamType::Text,
-                    "A cloud drive: the folder to list, by the key a review listed it under; \
-                     its top when not given.",
-                ),
-                ActionParam::optional(
-                    "cursor",
-                    ParamType::Text,
-                    "A cloud drive: where the page starts, the `next` the page before answered.",
-                ),
-                ActionParam::optional(
-                    "limit",
-                    ParamType::Integer,
-                    "A cloud drive: how many items the page lists at most.",
-                ),
-                workspace(),
-            ],
-            execution: ExecutionMode::Background { cancellable: false },
-        },
-        Declared {
-            id: "choose",
-            label: "Choose",
-            description: "Choose what of a reviewed source comes over, or what stays.",
-            params: vec![
-                source(),
-                ActionParam::optional(
-                    "keys",
-                    ParamType::Array,
-                    "Items by the key a review lists them under, of any depth for a cloud \
-                     drive: a folder brings everything under it, and `path:Work/Essay.docx` \
-                     names an item by its path in the drive.",
-                )
-                .with_schema(texts()),
-                ActionParam::optional(
-                    "account",
-                    ParamType::Text,
-                    "A cloud drive: the connected account to read, by its id.",
-                ),
-                ActionParam::optional(
-                    "items",
-                    ParamType::Array,
-                    "Items by the key the review lists; for home, also a folder by its path.",
-                )
-                .with_schema(texts()),
-                ActionParam::optional("leave_out", ParamType::Boolean, "Leave these out instead."),
-                ActionParam::optional(
-                    "only",
-                    ParamType::Boolean,
-                    "Choose only these: everything else is left out.",
-                ),
-                workspace(),
-            ],
-            execution: ExecutionMode::Background { cancellable: false },
-        },
-        Declared {
-            id: "start",
-            label: "Start",
-            description: "Bring the chosen things over, as one run in the workspace; resumes a \
-                          stopped run. Cancelling it stops it after the item it is on.",
-            params: vec![
-                source(),
-                ActionParam::optional(
-                    "yes",
-                    ParamType::Boolean,
-                    "The person said yes to connecting the chosen mail accounts.",
-                ),
-                ActionParam::optional(
-                    "account",
-                    ParamType::Text,
-                    "A cloud drive: the connected account to read, by its id.",
-                ),
-                ActionParam::optional(
-                    "destination",
-                    ParamType::Text,
-                    "A cloud drive: the workspace folder its files go into, by its path in the \
-                     workspace's files (Documents/Trip); a folder named after the drive when \
-                     not given.",
-                ),
-                workspace(),
-            ],
-            execution: ExecutionMode::Background { cancellable: true },
-        },
-        Declared {
-            id: "stop",
-            label: "Stop",
-            description: "Stop the source's run after the item it is on, as cancelling its \
-                          `start` does; a later `start` resumes it.",
-            params: vec![source(), workspace()],
-            execution: ExecutionMode::Immediate,
-        },
-        Declared {
-            id: "status",
-            label: "Status",
-            description: "How each source's migration stands.",
-            params: vec![
-                ActionParam::optional(
-                    "source",
-                    ParamType::Text,
-                    "One source; all of them when not given.",
-                ),
-                workspace(),
-            ],
-            execution: ExecutionMode::Immediate,
-        },
-        Declared {
-            id: "undo",
-            label: "Undo",
-            description: "Take a run back: what it brought leaves the workspace, as undoing its \
-                          History entry does.",
-            params: vec![
-                ActionParam::required(
-                    "run",
-                    ParamType::Text,
-                    "The run, by the id `status` names, or a source for its last run.",
-                ),
-                workspace(),
-            ],
-            execution: ExecutionMode::Background { cancellable: false },
-        },
-    ]
-}
-
-/// The resource `resource` with an action for each step.
+/// The resource `resource` with the migrations' actions.
 fn resources(resource: &str) -> Vec<ResourceSpec> {
-    let mut spec = ResourceSpec::new(resource, "devices.migrate", "Migrations");
+    let mut spec = tilo_resource::offer::<MigrateAction>(tilo_resource::typed_resource::<
+        MigrationsRow,
+    >(resource, "Migrations"));
     spec.app_id = Some(PACKAGE.to_owned());
-    for step in declared() {
-        let type_id = format!("{PROVIDER}/{}", step.id);
-        let encoded = type_id.clone();
-        let mut action = ActionSpec::typed_operation(
-            step.id,
-            step.label,
-            "",
-            OperationKind::Effect,
-            type_id,
-            step.params,
-            move |_| EncodedAction {
-                type_id: encoded.clone(),
-                payload: Vec::new(),
-            },
-        )
-        .with_description(step.description);
-        let contract = &mut action.type_mut().contract;
-        contract.kind = ActionKind::Outside;
-        contract.execution = step.execution;
-        spec.actions.push(action);
-    }
     vec![spec]
 }
 

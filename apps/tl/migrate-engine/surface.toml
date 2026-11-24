@@ -87,7 +87,7 @@ type = "text"
 [[resources.verbs.params]]
 name = "keys"
 required = false
-type = { list = "text" }
+type = { option = { list = "text" } }
 
 [[resources.verbs.params]]
 name = "account"
@@ -97,7 +97,7 @@ type = "text"
 [[resources.verbs.params]]
 name = "items"
 required = false
-type = { list = "text" }
+type = { option = { list = "text" } }
 
 [[resources.verbs.params]]
 name = "leave_out"
