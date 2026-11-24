@@ -14,6 +14,7 @@ pub mod served_notices;
 /// runner is an agents build's.
 #[cfg(feature = "agents")]
 pub mod triggers;
+pub mod wakeups;
 pub mod webhooks;
 /// The channel engine every host runs: its groups, the governance that settles them, and the
 /// keys an endpoint reads a sealed record with.

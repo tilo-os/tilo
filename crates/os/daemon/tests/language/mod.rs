@@ -12,6 +12,7 @@ mod resource_writes_tests;
 mod served_notices_tests;
 mod task_work_tests;
 mod triggers_tests;
+mod wakeups_tests;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

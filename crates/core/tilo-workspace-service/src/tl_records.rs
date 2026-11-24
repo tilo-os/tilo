@@ -202,8 +202,52 @@ pub trait Records: Send + Sync {
         action: &str,
     ) -> Result<(), String>;
 
+    /// Run `action`, one of `app`'s actions, on the resource `opens` (its type and id) as
+    /// `person`: what a notice offering it runs, whether or not the notice is in the record yet.
+    ///
+    /// # Errors
+    /// The record does not open, the app does not declare the action, or it was refused.
+    fn act_on(
+        &self,
+        record: Record,
+        policy: Option<Arc<WorkspacePolicy>>,
+        person: &str,
+        app: (&str, Option<&Package>),
+        opens: (&str, &str),
+        action: &str,
+    ) -> Result<(), String>;
+
+    /// The moments `app`'s triggers land on `device`, the device of `person`, after `now_s`
+    /// (seconds since the epoch), read through `package`: each with what it tells there, so the
+    /// device arms its own wakeup for it.
+    ///
+    /// # Errors
+    /// The record does not open.
+    fn wakeups(
+        &self,
+        record: Record,
+        policy: Option<Arc<WorkspacePolicy>>,
+        here: (&str, &str),
+        app: &str,
+        package: Option<&Package>,
+        now_s: i64,
+    ) -> Result<Vec<Wakeup>, String>;
+
     /// Serve the records of every app built into the build on `workspaces`, from now on.
     fn serve(&self, workspaces: &Workspaces);
+}
+
+/// A moment one of an app's triggers lands on this device (`at r.when on r.device`): what the
+/// device arms its own wakeup with, so the moment comes there offline and asleep too.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Wakeup {
+    /// The trigger and the record: one wakeup, moved as the record's instant moves.
+    pub key: String,
+    /// The instant, in ms since the epoch.
+    pub at_ms: i64,
+    /// What it tells here, each under the id of the notice record the trigger's run writes
+    /// ([`Raised::doc`]): a device that rang it shows that notice no more when it arrives.
+    pub told: Vec<Raised>,
 }
 
 /// The package a record is read through here: the one this build carries for the app, the one
@@ -252,6 +296,8 @@ pub struct Raised {
     pub actions: Vec<(String, String)>,
     /// The device it is for, empty for every device of the person's.
     pub device: String,
+    /// What it opens, which an action it offers runs on: the resource's type and its id.
+    pub opens: (String, String),
 }
 
 /// The rich text a record's published action takes, as the runtime writes it.
@@ -744,6 +790,83 @@ impl Workspaces {
                 &app,
                 package.as_ref(),
                 &doc,
+                &action,
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    /// The moments `app`'s triggers land on `device`, of `person`, in `workspace` after `now_ms`,
+    /// read through `package`, the app's package as this device has it (`None` for the one this
+    /// build carries): what this device arms its own wakeups for.
+    ///
+    /// # Errors
+    /// The app is neither built in nor installed here, its package does not load, or the record
+    /// could not be opened.
+    pub async fn app_wakeups(
+        &self,
+        workspace: &str,
+        app: &str,
+        package: Option<&Package>,
+        (person, device): (&str, &str),
+        now_ms: i64,
+    ) -> Result<Vec<Wakeup>, String> {
+        let records = self.running(app)?;
+        let record = self.tl_record(workspace, app, person)?;
+        let policy = self.policy_of(workspace).await.map(Arc::new);
+        let (person, device, app, package) = (
+            person.to_owned(),
+            device.to_owned(),
+            app.to_owned(),
+            package.cloned(),
+        );
+        tokio::task::spawn_blocking(move || {
+            records.wakeups(
+                record,
+                policy,
+                (&person, &device),
+                &app,
+                package.as_ref(),
+                now_ms.div_euclid(1000),
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    /// Run `action`, one of `app`'s actions, on the resource `opens` (its type and id) of its
+    /// record of `workspace`, as `person`, read through `package`: what a wakeup's button runs,
+    /// with no network.
+    ///
+    /// # Errors
+    /// The record could not be opened, the action is not the app's, or it was refused.
+    pub async fn wakeup_action(
+        &self,
+        workspace: &str,
+        (app, package): (&str, Option<&Package>),
+        person: &str,
+        opens: (&str, &str),
+        action: &str,
+    ) -> Result<(), String> {
+        let records = self.running(app)?;
+        let record = self.tl_record(workspace, app, person)?;
+        let policy = self.policy_of(workspace).await.map(Arc::new);
+        let (person, app, package, ty, id, action) = (
+            person.to_owned(),
+            app.to_owned(),
+            package.cloned(),
+            opens.0.to_owned(),
+            opens.1.to_owned(),
+            action.to_owned(),
+        );
+        tokio::task::spawn_blocking(move || {
+            records.act_on(
+                record,
+                policy,
+                &person,
+                (&app, package.as_ref()),
+                (&ty, &id),
                 &action,
             )
         })

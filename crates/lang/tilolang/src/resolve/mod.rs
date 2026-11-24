@@ -124,6 +124,9 @@ pub struct TriggerInfo {
     pub ty: String,
     pub args: Vec<TriggerArg>,
     pub when: TriggerWhen,
+    /// The `Text` field naming the device the action's effect lands on (`on t.device`): empty in
+    /// a record means every device of the person's.
+    pub device: Option<FieldId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

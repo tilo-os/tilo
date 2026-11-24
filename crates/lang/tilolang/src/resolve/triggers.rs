@@ -23,6 +23,11 @@ fn accepts(expected: &Ty, actual: &Ty) -> bool {
     }
 }
 
+/// What an action a device rehearses may use: telling a person, and the clock, which the
+/// rehearsal reads at the trigger's instant.
+const REHEARSED: &[crate::effects::Effect] =
+    &[crate::effects::Effect::Notify, crate::effects::Effect::Time];
+
 fn is_time(ty: &Ty) -> bool {
     matches!(ty, Ty::Time) || matches!(ty, Ty::Option(inner) if **inner == Ty::Time)
 }
@@ -125,6 +130,16 @@ impl Resolver<'_> {
                     TriggerWhen::At(field.id.clone())
                 }
             };
+            let device = match &t.device {
+                None => None,
+                Some(expr) => {
+                    let Some(field) = self.trigger_device(&t.when, expr, &param.name.name, &info)
+                    else {
+                        continue;
+                    };
+                    Some(field)
+                }
+            };
             let ast::ExprKind::Call { callee, args, .. } = &t.call.kind else {
                 self.err(
                     "E134",
@@ -154,6 +169,26 @@ impl Resolver<'_> {
                 );
                 continue;
             };
+            if device.is_some() {
+                let reaching: Vec<&str> = action
+                    .uses
+                    .iter()
+                    .filter(|effect| !REHEARSED.contains(effect))
+                    .map(|effect| effect.word())
+                    .collect();
+                if !reaching.is_empty() {
+                    self.err(
+                        "E149",
+                        t.call.span,
+                        format!(
+                            "a trigger that lands `on` a device has that device run `{}` ahead of time, to know what it tells, and takes the run back: it may use `notify` and `time`, and it uses {}",
+                            action.name,
+                            reaching.join(", ")
+                        ),
+                    );
+                    continue;
+                }
+            }
             let mut built = Vec::new();
             let mut sound = args.len() <= action.params.len();
             if !sound {
@@ -238,8 +273,66 @@ impl Resolver<'_> {
                 ty: info.id.clone(),
                 args: built,
                 when,
+                device,
             });
         }
+    }
+
+    /// The field `on <param>.<field>` names: a `Text` field of the record, read by the host
+    /// without running the package, for a trigger at an instant. A diagnostic says why not for
+    /// anything else.
+    fn trigger_device(
+        &mut self,
+        when: &ast::TriggerWhen,
+        expr: &ast::Expr,
+        param: &str,
+        info: &crate::resolve::TypeInfo,
+    ) -> Option<String> {
+        if matches!(when, ast::TriggerWhen::Every { .. }) {
+            self.err(
+                "E133",
+                expr.span,
+                "`on` names the device a trigger's moment lands on, and `every` names no moment: write `at {param}.<a time> on {param}.<the device>`",
+            );
+            return None;
+        }
+        let named = match &expr.kind {
+            ast::ExprKind::Field { base, name } if matches!(&base.kind, ast::ExprKind::Ident(p) if p == param) => {
+                Some(name.clone())
+            }
+            _ => None,
+        };
+        let Some(named) = named else {
+            self.err(
+                "E133",
+                expr.span,
+                format!("`on` reads the device `{param}` names: write `on {param}.<the field>`"),
+            );
+            return None;
+        };
+        let Some(field) = info.field(&named.name) else {
+            self.err(
+                "E133",
+                named.span,
+                format!(
+                    "`{}` has no field `{}`: `on` reads the device one of its fields names",
+                    info.key.name, named.name
+                ),
+            );
+            return None;
+        };
+        if field.ty != Ty::Text {
+            self.err(
+                "E133",
+                named.span,
+                format!(
+                    "`{}.{}` is not `Text`: `on` reads a device's id, or nothing for every device of the person's, and the host reads it without running the package",
+                    info.key.name, named.name
+                ),
+            );
+            return None;
+        }
+        Some(field.id.clone())
     }
 
     /// The root `root T` names: its type and its id, for one of this package's roots. A diagnostic says why

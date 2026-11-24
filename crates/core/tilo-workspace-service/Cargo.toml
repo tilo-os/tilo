@@ -49,6 +49,9 @@ tilo-action-policy = { path = "../action-policy" }
 # The ranking the device's search index answers `search#find` with.
 tilo-search = { path = "../../platform/search", optional = true }
 tilo-clock = { path = "../../platform/tilo-clock" }
+# The platform's own wakeups: a moment an app's trigger lands on this device is handed to the OS
+# as a scheduled notification, so it comes offline and asleep.
+tilo-notify.workspace = true
 # Where the desktop service keeps its key, and where a workspace's files appear in the Files
 # mount, which its access list names.
 tilo-paths.workspace = true

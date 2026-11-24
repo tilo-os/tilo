@@ -46,6 +46,24 @@ public class TiloActivity extends NativeActivity {
         super.onCreate(savedInstanceState);
         getWindow().getDecorView().setOnApplyWindowInsetsListener(this::applyInsets);
         installExtensions();
+        activated(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        activated(intent);
+    }
+
+    /**
+     * A notification's button the person pressed opens the app with the URI it names: the app
+     * hears it as the notification's activation.
+     */
+    private static void activated(Intent intent) {
+        String uri = intent == null ? null : intent.getDataString();
+        if (uri != null && Intent.ACTION_VIEW.equals(intent.getAction())) {
+            nativeActivated(uri);
+        }
     }
 
     private void installExtensions() {
@@ -141,4 +159,6 @@ public class TiloActivity extends NativeActivity {
     }
 
     private static native void nativeSafeAreaChanged(int left, int top, int right, int bottom);
+
+    private static native void nativeActivated(String uri);
 }

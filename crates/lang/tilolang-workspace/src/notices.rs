@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use tilo_action_policy::WorkspacePolicy;
-use tilo_workspace_service::tl_records::{Package, Raised, Record};
+use tilo_workspace_service::tl_records::{Package, Raised, Record, Wakeup};
 use tilolang_tilo::action::EDIT_FLAG_ACTION;
 use tilolang_tilo::runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::tilolang::{
@@ -73,7 +73,14 @@ pub(crate) fn raised(opened: &Opened, person: &str) -> Result<Vec<Raised>, Strin
                 .collect(),
             _ => Vec::new(),
         };
+        let opens = match runtime.read(&at, NOTICE_OPENS) {
+            Ok(Value::Ref(reference)) => {
+                (reference.target.ty.clone(), reference.target.id_string())
+            }
+            _ => (String::new(), String::new()),
+        };
         out.push(Raised {
+            opens,
             actions: labelled(opened, &at, &names),
             device: text(NOTICE_DEVICE),
             title: text(NOTICE_TITLE),
@@ -84,14 +91,49 @@ pub(crate) fn raised(opened: &Opened, person: &str) -> Result<Vec<Raised>, Strin
     Ok(out)
 }
 
+/// The moments the triggers of `opened`, an app's record, land on `device`, the device of
+/// `person`, after `now_s`: each with what it tells there, labelled as the notices it will write
+/// are ([`raised`]), and under the ids of those notices.
+pub(crate) fn wakeups(opened: &Opened, person: &str, device: &str, now_s: i64) -> Vec<Wakeup> {
+    opened
+        .host()
+        .landing(device, person, now_s)
+        .into_iter()
+        .map(|landed| Wakeup {
+            key: landed.key,
+            at_ms: landed.at.saturating_mul(1000),
+            told: landed
+                .told
+                .into_iter()
+                .map(|(doc, notice)| Raised {
+                    actions: labelled_for(opened, &notice.opens, &notice.actions),
+                    opens: (notice.opens.ty.clone(), notice.opens.id_string()),
+                    device: notice.device,
+                    title: notice.title,
+                    body: notice.body,
+                    doc,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 /// The actions `names` the notice `at` offers, each with the words the app that keeps what it
 /// opens labels it by: one the app does not declare keeps the name it was offered by.
 fn labelled(opened: &Opened, at: &ResourceRef, names: &[String]) -> Vec<(String, String)> {
-    let package = match opened.host().runtime().read(at, NOTICE_OPENS) {
-        Ok(Value::Ref(reference)) => tilolang_tilo::schema::lookup(&reference.target.ty)
-            .and_then(|schema| opened.host().package(&schema.app)),
-        _ => None,
-    };
+    match opened.host().runtime().read(at, NOTICE_OPENS) {
+        Ok(Value::Ref(reference)) => labelled_for(opened, &reference.target, names),
+        _ => names
+            .iter()
+            .map(|name| (name.clone(), name.clone()))
+            .collect(),
+    }
+}
+
+/// The actions `names` a notice that opens `opens` offers, labelled as [`labelled`] says.
+fn labelled_for(opened: &Opened, opens: &ResourceRef, names: &[String]) -> Vec<(String, String)> {
+    let package = tilolang_tilo::schema::lookup(&opens.ty)
+        .and_then(|schema| opened.host().package(&schema.app));
     names
         .iter()
         .map(|name| {
@@ -147,6 +189,20 @@ pub(crate) fn choose(opened: &Opened, person: &str, doc: &str, action: &str) -> 
         Ok(Value::Ref(reference)) => ResourceRef::clone(&reference.target),
         other => return Err(format!("the notice opens nothing it can run: {other:?}")),
     };
+    choose_on(opened, person, &opens, action)
+}
+
+/// Run `action`, one of the app's actions by its name, on `opens`, as `person`: what a notice
+/// offering it runs, whether or not the notice reached the record yet.
+///
+/// # Errors
+/// No app keeps `opens`, the app does not declare the action, or the action was refused.
+pub(crate) fn choose_on(
+    opened: &Opened,
+    person: &str,
+    opens: &ResourceRef,
+    action: &str,
+) -> Result<(), String> {
     let schema = tilolang_tilo::schema::lookup(&opens.ty)
         .ok_or_else(|| format!("no app keeps `{}`", opens.ty))?;
     let package = opened
@@ -163,7 +219,7 @@ pub(crate) fn choose(opened: &Opened, person: &str, doc: &str, action: &str) -> 
     opened
         .host()
         .runtime()
-        .invoke_action(&by, (named.id.as_str(), vec![Value::resource(&opens)]))
+        .invoke_action(&by, (named.id.as_str(), vec![Value::resource(opens)]))
         .map(drop)
         .map_err(|error| error.to_string())
 }

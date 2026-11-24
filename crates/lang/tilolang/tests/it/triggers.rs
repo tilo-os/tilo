@@ -120,6 +120,68 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_trigger_at_an_instant_names_the_device_its_moment_lands_on;
+    {
+        let compiled = compile(
+            r#"app t.ring "Ring"
+
+type Alarm {
+    at: Option<Time> = .none
+    rings_on: Text = ""
+}
+
+action ring(a: Alarm) uses notify, time {
+    notify(to: invoker, title: "Wake up", body: "{now}", opens: a, device: a.rings_on)
+}
+
+trigger rings(a: Alarm) at a.at on a.rings_on: ring(a)
+
+root Alarm
+
+default view alarm for Alarm
+
+view alarm(a: Alarm) {
+    page { text("Alarm") }
+}
+"#,
+        );
+        let alarm = compiled.meta.types.iter().find(|t| t.name == "Alarm").unwrap();
+        let rings_on = alarm.fields.iter().find(|f| f.name == "rings_on").unwrap();
+        let rings = compiled.meta.triggers.iter().find(|t| t.name == "rings").unwrap();
+        assert_eq!(
+            rings.device.as_deref(),
+            Some(rings_on.id.as_str()),
+            "the field the host reads the device from"
+        );
+        let due = compile(SOURCE);
+        assert!(
+            due.meta.triggers.iter().all(|t| t.device.is_none()),
+            "a trigger that names no device lands on none"
+        );
+
+        const ALARM: &str = "type Alarm { at: Option<Time> = .none\n rings_on: Text = \"\"\n hour: Int = 7 }\n";
+        says(
+            &format!("{ALARM}action ring(a: Alarm) {{ }}\ntrigger x(a: Alarm) at a.at on a.hour: ring(a)\n"),
+            "E133",
+            "is not `Text`",
+        );
+        says(
+            &format!("{ALARM}action ring(a: Alarm) {{ }}\ntrigger x(a: Alarm) at a.at on a.nowhere: ring(a)\n"),
+            "E133",
+            "has no field `nowhere`",
+        );
+        says(
+            &format!("{ALARM}action ring(a: Alarm) {{ }}\ntrigger x(a: Alarm) every 30m on a.rings_on: ring(a)\n"),
+            "E133",
+            "`every` names no moment",
+        );
+        says(
+            &format!("{ALARM}action ring(a: Alarm) uses web {{ }}\ntrigger x(a: Alarm) at a.at on a.rings_on: ring(a)\n"),
+            "E149",
+            "it uses web",
+        );
+    }
+
     phase a_trigger_hands_its_action_only_the_record_or_a_root;
     {
         says(

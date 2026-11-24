@@ -2080,10 +2080,20 @@ impl Daemon {
         start_triggers(&broker, &workspaces, &invocations);
         // A device that serves the workspace's pages runs its apps with no session, so nothing
         // but this daemon would carry their notices to the person: it keeps them in the record
-        // of their devices, where every device of theirs and every page raises them.
+        // of their devices, where every device of theirs and every page raises them. A device
+        // whose program mounted the platform's wakeups arms the moments its apps land on it.
         #[cfg(not(windows))]
-        if serves_pages {
-            start_notices(&workspaces, &apps);
+        {
+            let alarms = super::capabilities::alarms();
+            if alarms.is_none() {
+                tracing::info!(
+                    "this program mounts no platform wakeups: a moment an app's trigger lands on \
+                     this device reaches it as the notice the workspace sends"
+                );
+            }
+            if serves_pages || alarms.is_some() {
+                start_notices(&workspaces, &apps, serves_pages, alarms);
+            }
         }
         let replicas = take_work_files(
             &TakenFiles {
@@ -6137,21 +6147,48 @@ fn start_triggers(
 #[cfg(not(windows))]
 const NOTICES_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Carry the notices this device's apps raise into the record of the person's devices, and carry
-/// out what the person answers of them there, from now on: what a device serving pages does in
-/// place of a desktop session, which the person may not have anywhere.
+/// Look after what this device's apps tell from now on, as their records change: where it serves
+/// pages (`serves_pages`), carry their notices into the record of the person's devices and carry
+/// out what the person answers of them there, as a device serving pages does in place of a
+/// desktop session, which the person may not have anywhere; where the program mounted the
+/// platform's wakeups (`alarms`), arm one for each moment an app's trigger lands on this device,
+/// so it comes offline and asleep, and carry out the buttons the person presses on it.
 #[cfg(not(windows))]
-fn start_notices(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<apps::Apps>) {
+fn start_notices(
+    workspaces: &Arc<ServiceWorkspaces>,
+    apps: &Arc<apps::Apps>,
+    serves_pages: bool,
+    alarms: Option<Arc<dyn tilo_workspace_service::apps::wakeups::Notifier>>,
+) {
+    use tilo_workspace_service::apps::wakeups::{self, Wakeups};
     let copies = workspaces.copies().clone();
     let cert = workspaces.device_cert().clone();
     let apps = Arc::clone(apps);
     tilo_rt::app().handle().spawn(async move {
         use tilo_workspace_service::tl_records::Package;
-        let mut notices = tilo_workspace_service::apps::served_notices::ServedNotices::new(
-            copies.clone(),
-            cert.device_public_key,
-            cert.user_public_key,
-        );
+        let mut notices = serves_pages.then(|| {
+            tilo_workspace_service::apps::served_notices::ServedNotices::new(
+                copies.clone(),
+                cert.device_public_key,
+                cert.user_public_key,
+            )
+        });
+        let mut wakeups = alarms.map(|alarms| {
+            Wakeups::new(
+                copies.clone(),
+                alarms,
+                cert.device_public_key,
+                cert.user_public_key,
+            )
+        });
+        // The buttons the person presses on a wakeup that rang, as the platform reports them.
+        let (pressed, mut presses) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let mut listening = wakeups.is_some();
+        if listening {
+            wakeups::set_activation_handler(wakeups::ACTIVATION, move |uri| {
+                let _ = pressed.send(uri.to_owned());
+            });
+        }
         let mut writes = copies.document_writes();
         // The app records whose notices are read: every one the workspaces hold at the start, and
         // each written since.
@@ -6172,6 +6209,19 @@ fn start_notices(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<apps::Apps>) {
         loop {
             tokio::select! {
                 _ = tick.tick() => {}
+                press = presses.recv(), if listening => {
+                    // A daemon started after this one hears the buttons from here on.
+                    let Some(uri) = press else {
+                        listening = false;
+                        continue;
+                    };
+                    if let Some(wakeups) = wakeups.as_mut()
+                        && let Err(error) = wakeups.chosen(&uri).await
+                    {
+                        tracing::warn!(%uri, %error, "a wakeup's button was not carried out");
+                    }
+                    continue;
+                }
                 write = writes.recv() => {
                     match write {
                         Ok(write) => {
@@ -6196,6 +6246,13 @@ fn start_notices(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<apps::Apps>) {
                 }
             }
             let now = tilo_clock::unix_now_ms_i64();
+            // What rang here on its own since the last pass is not told again when it arrives.
+            if let Some(wakeups) = wakeups.as_mut() {
+                let rang = wakeups.look();
+                if let Some(notices) = notices.as_mut() {
+                    notices.rang_here(rang);
+                }
+            }
             for (workspace, app) in std::mem::take(&mut pending) {
                 let package = packages
                     .entry((workspace.clone(), app.clone()))
@@ -6217,15 +6274,28 @@ fn start_notices(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<apps::Apps>) {
                 if !readable {
                     continue;
                 }
-                if let Err(error) = notices
-                    .project(
-                        &workspace,
-                        &app,
-                        &apps.display_name(&app),
-                        Some(&package),
-                        now,
-                    )
-                    .await
+                let name = apps.display_name(&app);
+                if let Some(wakeups) = wakeups.as_mut()
+                    && let Err(error) = wakeups
+                        .arm(
+                            &workspace,
+                            (app.as_str(), name.as_str()),
+                            Some(&package),
+                            now,
+                        )
+                        .await
+                {
+                    tracing::warn!(
+                        %workspace,
+                        %app,
+                        %error,
+                        "an app's moments on this device are not armed"
+                    );
+                }
+                if let Some(notices) = notices.as_mut()
+                    && let Err(error) = notices
+                        .project(&workspace, &app, &name, Some(&package), now)
+                        .await
                 {
                     tracing::warn!(
                         %workspace,
@@ -6235,7 +6305,9 @@ fn start_notices(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<apps::Apps>) {
                     );
                 }
             }
-            if let Err(error) = notices.follow(now).await {
+            if let Some(notices) = notices.as_mut()
+                && let Err(error) = notices.follow(now).await
+            {
                 // This device keeps no copy of the person's own workspace yet (it settles
                 // once they are here): nothing of theirs to carry out until it does.
                 tracing::debug!(

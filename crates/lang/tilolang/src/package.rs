@@ -709,6 +709,7 @@ fn build_meta(
                     crate::meta::TriggerWhenMeta::At(field.clone())
                 }
             },
+            device: t.device.clone(),
         })
         .collect();
     meta.views_of = env

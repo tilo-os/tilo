@@ -54,6 +54,10 @@ pub struct ServedNotices {
     /// The package each app's record is read through here, by workspace and app: the one this
     /// device installed, or the one this build carries.
     packages: BTreeMap<(String, String), Package>,
+    /// The notices this device rang on its own when their moment came
+    /// ([`crate::apps::wakeups::Wakeups::look`]), by workspace, app and notice: the person was
+    /// told, and is not told again when the notice arrives.
+    rang: std::collections::BTreeSet<crate::apps::wakeups::Rang>,
 }
 
 impl ServedNotices {
@@ -68,7 +72,14 @@ impl ServedNotices {
             record: tilo_server_protocol::servers::person_workspace_id(&person),
             out: BTreeMap::new(),
             packages: BTreeMap::new(),
+            rang: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// This device rang `rang` on its own when its moment came: the notice it is shows nowhere
+    /// from here when it arrives.
+    pub fn rang_here(&mut self, rang: impl IntoIterator<Item = crate::apps::wakeups::Rang>) {
+        self.rang.extend(rang);
     }
 
     /// Show the notices `app` raised in `workspace` that the person has not seen, named as
@@ -98,6 +109,11 @@ impl ServedNotices {
         let read: Vec<&Raised> = raised
             .iter()
             .filter(|notice| notice.device.is_empty() || notice.device.as_str() == me.as_str())
+            .filter(|notice| {
+                !self
+                    .rang
+                    .contains(&(workspace.to_owned(), app.to_owned(), notice.doc.clone()))
+            })
             .collect();
         // What this device showed of the app and the app no longer raises leaves the record: the
         // app withdrew it, or its notice was seen.

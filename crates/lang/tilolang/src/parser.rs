@@ -869,6 +869,12 @@ impl<'a> Parser<'a> {
             return self
                 .unexpected("`every` and a length of time, or `at` and a time the record holds");
         };
+        let device = if matches!(self.peek(), Tok::Ident(n) if n == "on") {
+            self.bump();
+            Some(self.expr()?)
+        } else {
+            None
+        };
         self.expect(&Tok::Colon)?;
         let call = self.expr()?;
         Ok(TriggerDecl {
@@ -877,6 +883,7 @@ impl<'a> Parser<'a> {
             name,
             param,
             when,
+            device,
             call,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })

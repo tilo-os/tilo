@@ -306,8 +306,9 @@ action ring_alarm(a: Alarm) uses notify, time (icon: .alarm_clock, label: "Ring 
     a.snoozed = false
 }
 
-/// Rings an alarm when its moment comes, once for the whole workspace, window or not.
-trigger alarm_rings(a: Alarm) at a.at: ring_alarm(a)
+/// Rings an alarm when its moment comes, once for the whole workspace, window or not. The device
+/// it names arms its own wakeup for the moment, so it rings there offline and asleep too.
+trigger alarm_rings(a: Alarm) at a.at on a.rings_on: ring_alarm(a)
 
 /// Starts a timer of `seconds`.
 action add_timer(c: Clocks, label: Text, seconds: Int) -> Timer uses time (

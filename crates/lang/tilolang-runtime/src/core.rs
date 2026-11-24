@@ -204,6 +204,10 @@ pub struct Core {
     /// The host a notice is raised to (`Runtime::set_notices`): the desktop's notifications, or
     /// a test's record. Until the host sets one, a notice is only the record the run wrote.
     pub notices: RefCell<Option<Box<dyn crate::notify::Notices>>>,
+    /// The notices a rehearsal's run told, each under the record id it writes
+    /// ([`crate::Runtime::rehearse_named`]): `Some` while one runs, when a notice is kept here
+    /// and raised to no host.
+    pub rehearsed: RefCell<Option<Vec<(String, crate::notify::Notice)>>>,
     /// What the code said in passing (`notice(...)`) since the host last took it
     /// ([`crate::Runtime::take_said`]): the window the action ran from shows it in its bar.
     pub said: RefCell<Vec<crate::notice::Said>>,
@@ -451,6 +455,7 @@ impl Core {
             files: RefCell::new(None),
             clipboard: RefCell::new(None),
             notices: RefCell::new(None),
+            rehearsed: RefCell::new(None),
             said: RefCell::new(Vec::new()),
             engine_work: RefCell::new(None),
             vault: RefCell::new(None),

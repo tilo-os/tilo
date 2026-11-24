@@ -285,6 +285,11 @@ pub struct TriggerMeta {
     /// The action's arguments, in the order the call passes them.
     pub args: Vec<TriggerArgMeta>,
     pub when: TriggerWhenMeta,
+    /// The `Text` field (by id) naming the device the action's effect lands on, for an `at`
+    /// trigger declared `on` one: that device arms its own wakeup for the instant. Empty in a
+    /// record means every device of the person's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
 }
 
 /// What a trigger passes its action: the record it runs for, or a root of the package.

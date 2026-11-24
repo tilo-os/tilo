@@ -1205,8 +1205,15 @@ impl Printer<'_> {
                         format!("at {}", self.ex(expr))
                     }
                 };
+                let device = t
+                    .device
+                    .as_ref()
+                    .map_or_else(String::new, |device| format!(" on {}", self.ex(device)));
                 let call = self.ex(&t.call);
-                self.line(&format!("trigger {}{params} {when}: {call}", t.name.name));
+                self.line(&format!(
+                    "trigger {}{params} {when}{device}: {call}",
+                    t.name.name
+                ));
             }
             Item::Action(a) => {
                 let role = a

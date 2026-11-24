@@ -3387,7 +3387,10 @@ impl Core {
             (txn, id)
         };
         self.write_notice(txn, &id, &notice)?;
-        if let Some(host) = self.notices.borrow().as_ref() {
+        // A rehearsal keeps what it would tell, and tells no one: its run is taken back.
+        if let Some(rehearsed) = self.rehearsed.borrow_mut().as_mut() {
+            rehearsed.push((id, notice));
+        } else if let Some(host) = self.notices.borrow().as_ref() {
             host.raised(&notice);
         }
         self.journal_push(crate::run::JournalEntry::Notified)?;

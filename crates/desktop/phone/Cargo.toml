@@ -101,6 +101,9 @@ tilo-actions = { path = "../../../crates/core/actions" }
 hex.workspace = true
 # The server's Automerge workers are this test binary, started again.
 tilo-automerge-isolate.workspace = true
+# Clocks' records, written as another device of the person's writes them, and the language the
+# person's server runs.
+tilolang-workspace = { path = "../../../crates/lang/tilolang-workspace" }
 
 [lints]
 workspace = true

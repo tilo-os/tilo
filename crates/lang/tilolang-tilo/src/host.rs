@@ -1804,6 +1804,13 @@ impl Host {
         crate::triggers::run_due(self, &self.inner.triggers, now)
     }
 
+    /// What this host's triggers that name a device land on `device`, the device of `person`,
+    /// after `now`: the moments it arms its own wakeups for ([`crate::triggers::landing`]).
+    #[must_use]
+    pub fn landing(&self, device: &str, person: &str, now: i64) -> Vec<crate::triggers::Landing> {
+        crate::triggers::landing(self, device, person, now)
+    }
+
     /// Run the `done:` action of each job of this host's apps that ended, as the one who started
     /// it ([`Runtime::finish_jobs`]). Returns how many ran.
     pub fn finish_jobs(&self) -> usize {

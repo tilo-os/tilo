@@ -54,7 +54,7 @@ use tilolang_tilo::runtime::store::Run;
 use tilolang_tilo::runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 
 pub use tilo_workspace_service::tl_records::{
-    Package, Raised, Record, RecordCall, member, runs_elsewhere,
+    Package, Raised, Record, RecordCall, Wakeup, member, runs_elsewhere,
 };
 pub use tilolang_tilo::resources::{LocalPort, Port, ResourceStore};
 pub use tilolang_tilo::runtime;
@@ -242,6 +242,11 @@ const BUILT_IN: &[&[(&str, &str)]] = &[
     &[(
         include_str!("../../../../apps/tl/discord/app.tl"),
         include_str!("../../../../apps/tl/discord/app.ids"),
+    )],
+    // A device's daemon arms the alarms set for it from Clocks' record, window or no window.
+    &[(
+        include_str!("../../../../apps/tl/clocks/app.tl"),
+        include_str!("../../../../apps/tl/clocks/app.ids"),
     )],
     &[
         (
@@ -1077,6 +1082,34 @@ impl Records for crate::Service {
     ) -> Result<(), String> {
         let opened = crate::notices::open(record, policy, person, app, package.cloned())?;
         crate::notices::seen(&opened, person, doc)
+    }
+
+    fn act_on(
+        &self,
+        record: Record,
+        policy: Option<Arc<WorkspacePolicy>>,
+        person: &str,
+        (app, package): (&str, Option<&Package>),
+        opens: (&str, &str),
+        action: &str,
+    ) -> Result<(), String> {
+        let opened = crate::notices::open(record, policy, person, app, package.cloned())?;
+        let at = ResourceRef::parse_id(opens.1, opens.0)
+            .ok_or_else(|| format!("`{}` names no resource", opens.1))?;
+        crate::notices::choose_on(&opened, person, &at, action)
+    }
+
+    fn wakeups(
+        &self,
+        record: Record,
+        policy: Option<Arc<WorkspacePolicy>>,
+        (person, device): (&str, &str),
+        app: &str,
+        package: Option<&Package>,
+        now_s: i64,
+    ) -> Result<Vec<Wakeup>, String> {
+        let opened = crate::notices::open(record, policy, person, app, package.cloned())?;
+        Ok(crate::notices::wakeups(&opened, person, device, now_s))
     }
 
     fn notice_action(

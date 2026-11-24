@@ -351,6 +351,127 @@ fn due(host: &Host, now: i64) -> Vec<Due> {
     out
 }
 
+/// A trigger's run that lands on a device at an instant still to come: what the device arms its
+/// own wakeup with, so the moment comes there whether or not it hears from the device that runs
+/// the trigger.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landing {
+    /// The trigger and the record, as one wakeup: the same while the record's instant moves, so
+    /// a moved instant re-arms the wakeup it had.
+    pub key: String,
+    /// The app whose trigger it is.
+    pub app: String,
+    /// The instant, in seconds since the epoch.
+    pub at: i64,
+    /// What the run tells on this device, each notice under the id of the record the run writes
+    /// for it ([`tilolang_runtime::notify::record_id`]): the device that runs the trigger writes
+    /// that record, and a device that rang it already shows it no more.
+    pub told: Vec<(String, tilolang_runtime::notify::Notice)>,
+}
+
+/// What `host`'s triggers that name a device (`at r.when on r.device`) land on `device`, the
+/// person `person`'s, after `now`: for each record of the trigger's type whose instant is still
+/// to come and whose device field names `device` or none, what the trigger's run would tell
+/// there, learned by running it ahead as the run it will be, at its instant, and taking it back
+/// ([`tilolang_runtime::Runtime::rehearse_named`]). A run that tells this person nothing on this
+/// device lands nothing.
+#[must_use]
+pub fn landing(host: &Host, device: &str, person: &str, now: i64) -> Vec<Landing> {
+    let mut out = Vec::new();
+    for package in host.packages() {
+        for trigger in &package.meta.triggers {
+            let (TriggerWhenMeta::At(field), Some(names)) = (&trigger.when, &trigger.device) else {
+                continue;
+            };
+            let pred = time_where(field, CmpOp::Gt, now);
+            let records = host
+                .store()
+                .select(&trigger.ty, &pred, None)
+                .unwrap_or_default();
+            for doc in &records {
+                let Some(at) = time_of(host, doc, field).filter(|at| *at > now) else {
+                    continue;
+                };
+                let named = text_of(host, doc, names);
+                if !named.is_empty() && !named.eq_ignore_ascii_case(device) {
+                    continue;
+                }
+                let value = at.to_string();
+                if host.store().triggered(doc, &trigger.id).as_deref() == Some(value.as_str()) {
+                    continue;
+                }
+                let Some(args) = arguments(host, trigger, &package.meta.app, doc) else {
+                    continue;
+                };
+                let due = Due {
+                    app: package.meta.app.clone(),
+                    name: trigger.name.clone(),
+                    action: trigger.action.clone(),
+                    args,
+                    target: doc.clone(),
+                    triggering: Triggering {
+                        doc: doc.id_string(),
+                        key: trigger.id.clone(),
+                        value,
+                    },
+                };
+                let by = crate::runtime::Actor::App(due.app.as_str().into());
+                let told = match host.runtime().rehearse_named(
+                    &due.run(),
+                    &by,
+                    (due.action.as_str(), due.args.clone()),
+                    &crate::host::iso_utc(at.cast_unsigned()),
+                ) {
+                    Ok(told) => told,
+                    Err(error) => {
+                        tracing::warn!(
+                            app = due.app,
+                            trigger = due.name,
+                            %error,
+                            "a trigger's moment could not be learned ahead; it is told when it runs"
+                        );
+                        continue;
+                    }
+                };
+                let told: Vec<_> = told
+                    .into_iter()
+                    .filter(|(_, notice)| {
+                        notice
+                            .to
+                            .member_id()
+                            .and_then(|member| member.person_id())
+                            .is_some_and(|told| told.eq_ignore_ascii_case(person))
+                            && (notice.device.is_empty()
+                                || notice.device.eq_ignore_ascii_case(device))
+                    })
+                    .collect();
+                if told.is_empty() {
+                    continue;
+                }
+                out.push(Landing {
+                    key: format!("{}:{}", due.triggering.key, due.triggering.doc),
+                    app: due.app,
+                    at,
+                    told,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The text the field `field` holds in the document `at`; empty where it holds none.
+fn text_of(host: &Host, at: &ResourceRef, field: &str) -> String {
+    let spec = FieldSpec {
+        id: field.to_owned(),
+        kind: FieldKind::Register,
+    };
+    match host.store().read(at, &spec) {
+        Ok(FieldValue::Scalar(Scalar::Text(text) | Scalar::Json(Json::String(text)))) => text,
+        _ => String::new(),
+    }
+}
+
 /// The instant the field `field` holds in the document `at`: `Time`, or an `Option<Time>` with a
 /// time in it.
 fn time_of(host: &Host, at: &ResourceRef, field: &str) -> Option<i64> {
