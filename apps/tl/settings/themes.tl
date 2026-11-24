@@ -67,6 +67,11 @@ view themes_pane() {
             ui.Button("New theme", icon: .plus, role: .primary, size: .small) {
                 on press: settings.new_theme(a, id: new_id, base: base)
             }
+            // A theme saved with Export on another workspace, taken in whole: every role, tuned
+            // value and glass shader, under an id made from its name.
+            ui.Button("Import", icon: .upload, size: .small) {
+                on press: file.choose(import_theme(a), accept: [".theme.json", "application/json"])
+            }
         }
     }
     for t in a.themes {
@@ -377,4 +382,23 @@ fn preset_ids() -> List<Text> {
         "mono-dark",
         "mono-light",
     ]
+}
+
+/// Takes in a theme saved with Export, from this workspace or another: every role, tuned value
+/// and glass shader, once it is admitted and keeps every contrast floor. Importing names it by
+/// its own name, so what a person exported under a name comes back under one.
+action import_theme(a: settings.AppearancePrefs, file: File) (
+    icon: .upload,
+    label: "Import a theme…",
+    did: "imported a theme",
+    opens: [".theme.json", "application/json"],
+) {
+    let text = match file.text() {
+        .ok(said) => said,
+        .err(_) => "",
+    }
+    if text == "" {
+        return
+    }
+    settings.import_theme(a, id: "", document: text)
 }
