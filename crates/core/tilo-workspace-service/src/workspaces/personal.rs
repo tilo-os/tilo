@@ -76,18 +76,6 @@ impl Workspaces {
         })
     }
 
-    /// Add `device`, a key of its person's that asked for their record, to
-    /// it: a browser's root certifies the browser itself, in the tab, and the
-    /// person's Tilo on the web certifies a script's key, so neither
-    /// certificate reaches a host but with the key itself. A stand-in is no key
-    /// of theirs.
-    pub(super) async fn note_own_device(&self, device: &DeviceCert) {
-        if device.capabilities.stand_in {
-            return;
-        }
-        self.keep_issued_device(device, "").await;
-    }
-
     /// Mark the device `entry` names taken back in its person's record, where
     /// this host holds it and the record holds that device of theirs: every
     /// list of their devices shows it revoked.

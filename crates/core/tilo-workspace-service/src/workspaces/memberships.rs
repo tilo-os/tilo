@@ -80,12 +80,6 @@ impl Memberships {
         }
     }
 
-    /// Whether this host serves `workspace`: it settled it since it started, and did not forget
-    /// it since.
-    pub(crate) fn serves(&self, workspace: &str) -> bool {
-        self.by_workspace.read_recover().contains_key(workspace)
-    }
-
     /// Whether `person` is a member of `workspace` now.
     pub(crate) fn holds(&self, person: &[u8; 32], workspace: &str) -> bool {
         self.by_person

@@ -53,16 +53,6 @@ pub struct WorkspaceRuntime {
     pub extensions: Extensions,
 }
 
-/// What a workspace tells a key its person revoked: the one command that approves another, in the
-/// words every surface uses.
-pub(crate) fn key_revoked_reason() -> String {
-    format!(
-        "{}: this key was revoked. {}",
-        tilo_actions::remote::KEY_REVOKED,
-        tilo_actions::remote::APPROVE_AGAIN
-    )
-}
-
 impl WorkspaceRuntime {
     /// The workspace this runtime is of.
     #[must_use]
@@ -149,13 +139,6 @@ impl WorkspaceRuntime {
             workspace_authority: None,
             device_access: None,
         })
-    }
-
-    /// Whether this workspace keeps `device` as a key its person revoked: nothing it asks is
-    /// answered as a member's until they approve another.
-    #[must_use]
-    pub(crate) fn revoked_key(&self, device: &[u8; 32]) -> bool {
-        self.revoked_keys.contains(device)
     }
 }
 
