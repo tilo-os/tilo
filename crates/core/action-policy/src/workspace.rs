@@ -669,17 +669,14 @@ impl WorkspacePolicy {
     /// member's grant or answer for an agent of the same id is theirs, for
     /// their own agent, and reaches this one not at all. An answer a person
     /// gave one agent session is not among them ([`crate::is_session_answer`]).
-    /// A rule of the workspace's own that denies an agent id (one governance
-    /// admitted, never a person's answer for their agent) keeps every agent of
-    /// that id from what it names, whoever it acts for: what the workspace keeps
-    /// from an agent is refused, never put to its person.
     /// An agent its person stopped ([`crate::agent_answers::stop_grant`]) is
     /// refused everything, as a banned person is: no more specific grant lifts
     /// the stop, not the rights its certificate carries nor an answer its
-    /// person gave it before. A grant of the workspace's governance that denies
-    /// the agent something (one that is no person's answer for it,
-    /// [`crate::agent_answers::is_answer`]) refuses every agent of that id
-    /// alike, whoever set it, and nothing more specific lifts it either.
+    /// person gave it before. A rule of the workspace's own that denies an
+    /// agent id (one governance admitted, never a person's answer for their
+    /// agent, [`crate::agent_answers::is_answer`]) holds off every agent of that
+    /// id from what it names the same way, whoever it acts for: what the
+    /// workspace keeps from an agent is refused, never put to its person.
     #[must_use]
     pub fn party_of_agent(&self, agent: &str, person: &str) -> Party<'_> {
         let grantee = Grantee::agent(agent);
@@ -701,9 +698,7 @@ impl WorkspacePolicy {
                 !crate::is_session_answer(grant)
                     && (grant.grantee.agent_id().is_none()
                         || (grant.grantee == grantee
-                            && (grant.granted_by.person_id() == Some(person)
-                                || (grant.answer == Answer::Deny
-                                    && !crate::agent_answers::is_answer(grant)))))
+                            && grant.granted_by.person_id() == Some(person)))
             })
             .collect();
         Party::new(vec![grantee], &[])
