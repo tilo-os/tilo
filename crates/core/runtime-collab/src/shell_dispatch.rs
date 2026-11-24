@@ -12,8 +12,8 @@ use runtime_portal::NotAvailable;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, RESOURCE_READ_REFUSED, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, ResourceReadRequest, ResourceReads, UpdateMark,
+    InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionFrame,
+    RemoteActionMessage, ResourceReadRequest, ResourceReads, UpdateMark,
 };
 
 use crate::ShellClient;
@@ -62,11 +62,11 @@ impl ShellDispatch {
         Self::ask_as(shell, workspace, None, message).await
     }
 
-    /// [`Self::ask`], as `app` acting for the person where it names one.
+    /// [`Self::ask`], as `caller` ([`named`]) where it names one.
     async fn ask_as(
         shell: &ShellClient,
         workspace: Option<String>,
-        app: Option<String>,
+        caller: Option<Vec<u8>>,
         message: RemoteActionMessage,
     ) -> Result<RemoteActionMessage, ActionCallError> {
         let unavailable = |reason: String| ActionCallError::Unavailable { reason };
@@ -77,7 +77,7 @@ impl ShellDispatch {
             .call(ShellCall::Action {
                 workspace,
                 frame,
-                app,
+                caller,
             })
             .await
             .map_err(|error| unavailable(error.to_string()))?
@@ -101,8 +101,13 @@ impl ShellDispatch {
         let (done, result) = tilo_actions::remote::pending();
         let shell = self.0.shell.clone();
         let workspace = caller.workspace().map(str::to_owned);
+        let named = named(caller);
         self.0.runtime.spawn(async move {
-            done.complete(Self::ask(&shell, workspace, message).await.and_then(answer));
+            let asked = match named {
+                Ok(named) => Self::ask_as(&shell, workspace, named, message).await,
+                Err(error) => Err(error),
+            };
+            done.complete(asked.and_then(answer));
         });
         result
     }
@@ -200,9 +205,27 @@ fn unexpected() -> ActionCallError {
     }
 }
 
+/// Who the daemon decides a call as: `None` for the person the shell's link was made for (and for
+/// the shell's own system work, which the link carries as that person), else the caller itself,
+/// an app or an agent acting for them, kept ([`tilo_actions::remote::KeptCaller`]) as JSON.
+fn named(caller: &Caller) -> Result<Option<Vec<u8>>, ActionCallError> {
+    let acting = caller.acting();
+    let person = acting.is_person()
+        && acting.app().is_none()
+        && !caller.is_session_delegated()
+        && !caller.is_foreign_device();
+    if person || caller.is_system() {
+        return Ok(None);
+    }
+    serde_json::to_vec(&caller.kept())
+        .map(Some)
+        .map_err(|error| ActionCallError::Unavailable {
+            reason: format!("the caller does not encode: {error}"),
+        })
+}
+
 /// A read of a record outside its app, asked of the daemon, which holds the workspaces and decides
-/// it there: the person's own read, or an app's acting for them. An agent here reads no record
-/// outside its app: the link names no agent, and its read is never the person's.
+/// it there as the caller reading: the person, or an app or an agent acting for them.
 impl ResourceReads for ShellDispatch {
     fn answer_read(
         self: Arc<Self>,
@@ -211,23 +234,7 @@ impl ResourceReads for ShellDispatch {
         read: ResourceReadRequest,
     ) -> Pending<RemoteActionMessage> {
         let (done, result) = tilo_actions::remote::pending();
-        let acting = caller.acting();
-        let refused = caller.is_session_delegated()
-            || caller.is_foreign_device()
-            || acting.is_agent()
-            || acting.is_bot()
-            || acting.is_automation()
-            || (acting.app().is_none() && acting.person_id().is_none());
-        if refused {
-            done.complete(RemoteActionMessage::ResourceReading {
-                correlation,
-                result: Err(ActionCallError::Refused {
-                    reason: RESOURCE_READ_REFUSED.into(),
-                }),
-            });
-            return result;
-        }
-        let app = acting.app().map(ToString::to_string);
+        let named = named(caller);
         let shell = self.0.shell.clone();
         let workspace = Some(read.workspace.clone());
         let message = RemoteActionMessage::ResourceRead {
@@ -236,13 +243,15 @@ impl ResourceReads for ShellDispatch {
             read,
         };
         self.0.runtime.spawn(async move {
+            let asked = match named {
+                Ok(named) => Self::ask_as(&shell, workspace, named, message).await,
+                Err(error) => Err(error),
+            };
             done.complete(
-                Self::ask_as(&shell, workspace, app, message)
-                    .await
-                    .unwrap_or_else(|error| RemoteActionMessage::ResourceReading {
-                        correlation,
-                        result: Err(error),
-                    }),
+                asked.unwrap_or_else(|error| RemoteActionMessage::ResourceReading {
+                    correlation,
+                    result: Err(error),
+                }),
             );
         });
         result

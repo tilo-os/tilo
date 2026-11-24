@@ -743,7 +743,7 @@ pub fn serve(
         fanout,
     )?;
     // A record outside an app's own is read at the device's daemon, which holds the workspaces
-    // and decides the read as the app reading it: this session keeps no reader of its own.
+    // and decides the read as the caller reading it: this session keeps no reader of its own.
     if let (Ok(link), Some(apps)) = (daemon, broker.app_action_broker()) {
         let _inside = tilo_rt::app().handle().enter();
         apps.state()

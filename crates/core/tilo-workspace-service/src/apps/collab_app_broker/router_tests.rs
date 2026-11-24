@@ -643,7 +643,7 @@ async fn an_apps_connection_is_refused_the_persons_shell() {
         runtime_collab::wire::shell::ShellCall::Action {
             workspace: None,
             frame,
-            app: None,
+            caller: None,
         },
     )
     .await

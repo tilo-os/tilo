@@ -217,8 +217,17 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
         ShellCall::Action {
             workspace,
             frame,
-            app,
-        } => ShellReply::Action(dispatch(&services, &shell.caller, workspace, app, &frame).await?),
+            caller,
+        } => ShellReply::Action(
+            dispatch(
+                &services,
+                &shell.caller,
+                workspace,
+                caller.as_deref(),
+                &frame,
+            )
+            .await?,
+        ),
         // The connection registers what its shell serves itself (`WireConnection::provide`).
         ShellCall::Provide { .. } => {
             return Err("a provider is served on the shell's own connection".to_owned());
@@ -228,15 +237,15 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
 }
 
 /// `frame`, a `tilo_actions::remote::RemoteActionFrame` request the shell made in `workspace`,
-/// answered as the person the shell's link was made for: the frame answering it. A read of
-/// resources is answered by the device's one resource reader, as every device of theirs reads,
-/// decided as `app` acting for the person where the shell names the app reading; a typed action
-/// of a resource by the provider that applies it; any other request by the device's one dispatch.
+/// answered as the person the shell's link was made for, or as the app or agent acting for them
+/// the shell names (`named`): the frame answering it. A read of resources is answered by the
+/// device's one resource reader, as every device of theirs reads; a typed action of a resource by
+/// the provider that applies it; any other request by the device's one dispatch.
 async fn dispatch(
     services: &ShellServices,
     caller: &ShellCaller,
     workspace: Option<String>,
-    app: Option<String>,
+    named: Option<&[u8]>,
     frame: &[u8],
 ) -> Result<Vec<u8>, String> {
     use tilo_actions::remote::RemoteActionFrame;
@@ -248,10 +257,12 @@ async fn dispatch(
     if caller.person != device.user_public_key {
         return Err("this device acts for its own person only".to_owned());
     }
-    let person = Caller::authenticated(device.user_public_key, device.device_public_key);
-    if app.is_some() && !matches!(message, RemoteActionMessage::ResourceRead { .. }) {
-        return Err("only a read is asked as an app on the shell's link".to_owned());
-    }
+    let named = named
+        .map(|named| named_caller(named, &device))
+        .transpose()?;
+    let person = named
+        .clone()
+        .unwrap_or_else(|| Caller::authenticated(device.user_public_key, device.device_public_key));
     let answer = match message {
         RemoteActionMessage::ResourceRead {
             correlation, read, ..
@@ -268,12 +279,7 @@ async fn dispatch(
                 .encode()
                 .map_err(|error| error.to_string());
             }
-            let caller = match app {
-                Some(app) => Caller::local_app(app)
-                    .acting_for(super::person_id_for_root(device.user_public_key)),
-                None => person,
-            }
-            .in_workspace(read.workspace.clone());
+            let caller = person.in_workspace(read.workspace.clone());
             workspaces
                 .resource_reads()
                 .answer_read(&caller, correlation, read)
@@ -335,7 +341,12 @@ async fn dispatch(
             RemoteActionMessage::Receipt(receipt)
         }
         message => {
-            let (dispatch, caller) = services.actions.dispatch(caller, workspace).await?;
+            let (dispatch, admitted) = services.actions.dispatch(caller, workspace.clone()).await?;
+            let caller = match (named, workspace) {
+                (Some(named), Some(workspace)) => named.in_workspace(workspace),
+                (Some(named), None) => named,
+                (None, _) => admitted,
+            };
             tilo_actions::remote::serve(&dispatch, &caller, message)
                 .ok_or("the dispatch answers requests, and that frame is none")?
                 .await
@@ -345,6 +356,35 @@ async fn dispatch(
     RemoteActionFrame::new(answer)
         .encode()
         .map_err(|error| error.to_string())
+}
+
+/// The caller the shell names on its link (`named`, a [`tilo_actions::remote::KeptCaller`] as
+/// JSON): an app or an agent acting for the device's person, decided as itself from here on. The
+/// shell speaks for its own person alone, so a caller that names another person, another root, a
+/// system caller, or that claims this device's own key without being the person, is refused.
+fn named_caller(named: &[u8], device: &tilo_user_identity::DeviceCert) -> Result<Caller, String> {
+    let caller = serde_json::from_slice::<tilo_actions::remote::KeptCaller>(named)
+        .map_err(|error| format!("the shell names no caller: {error}"))?
+        .carried();
+    let person = super::person_id_for_root(device.user_public_key);
+    let root = &device.user_public_key;
+    let acting = caller.acting();
+    let named_person = caller
+        .acting_for_person()
+        .or_else(|| acting.person_id().filter(|person| !person.is_empty()));
+    let plain_person = acting.is_person() && acting.app().is_none();
+    let theirs = !caller.is_system()
+        && caller.user_public_key().is_none_or(|key| key == root)
+        && caller.turn_person().is_none_or(|key| key == root)
+        && (plain_person || caller.device_public_key() != Some(&device.device_public_key))
+        && match named_person {
+            Some(named) => named == person,
+            None => caller.user_public_key() == Some(root),
+        };
+    if !theirs {
+        return Err("the shell names a caller that does not act for its person".to_owned());
+    }
+    Ok(caller.in_new_execution())
 }
 
 /// Whether the device's services publish `record`, decided for `caller`: `None` when none here

@@ -203,7 +203,7 @@ fn dispatched(workspace: Option<&str>, message: &RemoteActionMessage) -> Result<
         frame: RemoteActionFrame::new(message.clone())
             .encode()
             .map_err(|error| format!("a call does not encode: {error}"))?,
-        app: None,
+        caller: None,
     })
 }
 
