@@ -243,10 +243,18 @@ tilo_test_env::scenario! {
     {
         let few = work_for_one_more_card(20);
         let many = work_for_one_more_card(600);
+        // The write into the part is ServerPreferred: the workspace's broker applies it, so its
+        // answer arrives as one model sync of each copy. Whatever the part holds, that is one
+        // sync and no layout: a second frame, or a layout, would cost what the part holds.
         assert_eq!(
             (ran(&few, "ui.frame_sync"), ran(&many, "ui.frame_sync")),
+            (1, 1),
+            "the write costs one model sync of either copy: {many:?}"
+        );
+        assert_eq!(
+            (ran(&few, "ui.layout"), ran(&many, "ui.layout")),
             (0, 0),
-            "one more card lays out no frame of either copy: {many:?}"
+            "and lays neither copy's view out: {many:?}"
         );
         let grown: Vec<(&str, usize, usize)> = many
             .iter()
