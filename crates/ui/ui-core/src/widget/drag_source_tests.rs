@@ -319,12 +319,18 @@ fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
         vec![crate::component::Fired {
             key: "target".to_owned(),
             event: "drop".to_owned(),
-            value: Some(crate::component::Value::Resource(
-                "notes.pages:page_1".to_owned()
-            )),
+            // The resource, and where inside the target it was let go: a view that lays what
+            // arrived at the drop puts it where the person's hand was, not at a corner.
+            value: Some(crate::component::Value::List(vec![
+                crate::component::Value::Resource("notes.pages:page_1".to_owned()),
+                crate::component::Value::List(vec![
+                    crate::component::Value::Int(60),
+                    crate::component::Value::Int(120),
+                ]),
+            ])),
             gesture: None,
         }],
-        "the drop carries the resource the drag let go with, by its address"
+        "the drop carries the resource the drag let go with, and where in the target it landed"
     );
 }
 

@@ -18,10 +18,11 @@ pub struct DropTargetProps {
     /// What it draws.
     #[component(part(default))]
     pub content: Option<Element>,
-    /// A resource was dropped on it: carries the resource the drag carried, as its address.
-    /// The view decides what to do with it — a composer attaches it to the draft, a canvas
-    /// places it where it was dropped.
-    #[component(event(value = ResourceId))]
+    /// A resource was dropped on it: carries the resource the drag carried, as its address,
+    /// and where inside the target it was let go — its x, then its y, in the target's own
+    /// logical pixels. The view decides what to do with it — a composer attaches it to the
+    /// draft, a canvas places it where it was dropped, a shell puts what it holds back there.
+    #[component(event(value = ResourceId, at = Vec<i64>))]
     pub drop: Event,
 }
 

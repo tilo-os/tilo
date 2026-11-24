@@ -3,8 +3,9 @@
 //!
 //! A drop target reads the drag bus ([`crate::widget::drag_bus`]): while a drag is in flight it
 //! shows the toolkit's drop line over itself, and when the drag is let go inside its box it
-//! fires `drop` with the resource the drag carried. Nothing is taken that the target's view did
-//! not ask for: a drag let go elsewhere is left for whatever target does hold the pointer.
+//! fires `drop` with the resource the drag carried and the point inside it the person let go
+//! at. Nothing is taken that the target's view did not ask for: a drag let go elsewhere is left
+//! for whatever target does hold the pointer.
 
 use std::collections::HashMap;
 
@@ -83,13 +84,14 @@ impl DropTarget {
         self.rect
     }
 
-    /// Take the drop the last drag left inside this target, if any: the resource it carried.
-    /// One target takes it; the rest see nothing.
-    fn take(&mut self) -> Option<String> {
+    /// Take the drop the last drag left inside this target, if any: the resource it carried and
+    /// where inside the target it was let go, in the target's own logical pixels. One target
+    /// takes it; the rest see nothing.
+    fn take(&mut self) -> Option<(String, Point)> {
         let landed = crate::widget::drag_bus::take(&self.key, self.rect)?;
         let resource = resource_of(&landed.payload)?;
         self.dirty = true;
-        Some(resource)
+        Some((resource, landed.pointer - self.rect.origin().to_vec2()))
     }
 
     /// The resource a drag over the target now carries, while one hovers it.
@@ -117,9 +119,14 @@ impl Decorator for DropTarget {
         let mut changed = self.column.update(state, path);
         // A drop let go inside this target since the last pass is the event it fires; a drag
         // that came or went changes the line it draws.
-        if let Some(resource) = self.take() {
-            self.drop
-                .fire(Some(crate::component::Value::Resource(resource)));
+        if let Some((resource, at)) = self.take() {
+            self.drop.fire(Some(crate::component::Value::List(vec![
+                crate::component::Value::Resource(resource),
+                crate::component::Value::List(vec![
+                    crate::component::Value::Int(at.x.round() as i64),
+                    crate::component::Value::Int(at.y.round() as i64),
+                ]),
+            ])));
             changed = true;
         }
         let over = self.over_now();
