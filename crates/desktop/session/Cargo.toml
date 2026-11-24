@@ -95,7 +95,7 @@ tilo-broker-core = { path = "../../core/broker-core" }
 # Settings' pages are every desktop's own, the page's included: its search offers them wherever
 # the session runs.
 tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
-settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["model"] }
 settings-model = { package = "tilo-settings-model", path = "../../sdk/settings-model" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files" }

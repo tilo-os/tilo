@@ -1035,14 +1035,36 @@ fields = [
   { path = "night_light", type = "bool" },
   { path = "night_light_temperature", type = "int" },
   { path = "night_light_schedule", type = "bool" },
-  { path = "placement", type = "any", readonly = true },
+  { path = "placement", type = { collection = { named = "PlacedDisplay" } }, readonly = true, stored = "keyed" },
+  { path = "placement.*.device", type = "text" },
+  { path = "placement.*.output", type = "text" },
+  { path = "placement.*.order", type = "int" },
+  { path = "placement.*.placed", type = "bool" },
+  { path = "placement.*.x", type = "int" },
+  { path = "placement.*.y", type = "int" },
 ]
 
 [[resources.verbs]]
-id = "arrange-displays"
+id = "place-display"
 kind = "undoable"
 params = [
-  { name = "placement", required = true, schema = {} },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "output", type = "text", required = true, schema = { type = "string" } },
+  { name = "x", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
+  { name = "y", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
+  { name = "order", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
+  { name = "placed", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.types]]
+name = "PlacedDisplay"
+fields = [
+  { name = "device", type = "text" },
+  { name = "output", type = "text" },
+  { name = "order", type = "int" },
+  { name = "placed", type = "bool" },
+  { name = "x", type = "int" },
+  { name = "y", type = "int" },
 ]
 
 [[resources]]

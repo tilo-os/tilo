@@ -29,7 +29,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
-use settings_store::person_displays::{Layout, PersonDisplays, Placements, ResolvedDisplay};
+use settings_sections::desktop::placements_in;
+use settings_store::person_displays::{Layout, PersonDisplays, PlacedDisplay, ResolvedDisplay};
 use tilo_compositor::clipboard_history::{Pull, Pulled};
 use tilo_compositor::{Compositor, InputEvent, ObservedInput};
 use tilo_lock::MutexRecover as _;
@@ -131,20 +132,22 @@ pub(crate) struct SharedInput {
 /// The person's placement of their screens, as the session's settings watch last read it, and
 /// how many times it changed.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PlacementWatch(std::sync::Arc<std::sync::Mutex<(u64, Placements)>>);
+pub(crate) struct PlacementWatch(
+    std::sync::Arc<std::sync::Mutex<(u64, tilo_resource::Keyed<PlacedDisplay>)>>,
+);
 
 impl PlacementWatch {
     /// The placement the settings say now.
     pub(crate) fn loaded() -> Self {
         Self(std::sync::Arc::new(std::sync::Mutex::new((
             1,
-            Placements::load(),
+            placements_in(&settings_store::load()),
         ))))
     }
 
     /// Take the placement from a settings document, as Settings writes it.
     pub(crate) fn read(&self, document: &serde_json::Map<String, Json>) {
-        let placement = Placements::from_document(document);
+        let placement = placements_in(document);
         let mut kept = self.0.lock_recover();
         if kept.1 != placement {
             *kept = (kept.0.wrapping_add(1), placement);
@@ -155,7 +158,7 @@ impl PlacementWatch {
         self.0.lock_recover().0
     }
 
-    fn placement(&self) -> Placements {
+    fn placement(&self) -> tilo_resource::Keyed<PlacedDisplay> {
         self.0.lock_recover().1.clone()
     }
 }
@@ -797,11 +800,10 @@ impl SharedInput {
             .filter(|(device, lease)| granted.get(*device).is_none_or(|kept| kept != *lease))
             .map(|(_, lease)| lease.nonce)
             .collect();
-        state.leases.retain(|_, lease| !ended.contains(&lease.nonce));
-        if let Some(active) = state
-            .active
-            .take_if(|active| ended.contains(&active.nonce))
-        {
+        state
+            .leases
+            .retain(|_, lease| !ended.contains(&lease.nonce));
+        if let Some(active) = state.active.take_if(|active| ended.contains(&active.nonce)) {
             self.end(state, active);
         }
         // What this device let in is ended once the record no longer holds it; one it let in a

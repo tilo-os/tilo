@@ -88174,13 +88174,43 @@
         ],
         "description": ""
       },
-      "settings.display-person.arrange-displays.Arguments": {
+      "settings.display-person.place-display.Arguments": {
         "type": "object",
         "properties": {
-          "placement": {}
+          "device": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
+          },
+          "x": {
+            "maximum": 2147483647,
+            "minimum": -2147483648,
+            "type": "integer"
+          },
+          "y": {
+            "maximum": 2147483647,
+            "minimum": -2147483648,
+            "type": "integer"
+          },
+          "order": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "placed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
         },
         "required": [
-          "placement"
+          "device",
+          "output",
+          "x",
+          "y"
         ],
         "description": ""
       },
@@ -118544,8 +118574,8 @@
     {
       "app": "so.tilo.settings.sections",
       "resource": "settings.display-person",
-      "action": "arrange-displays",
-      "arguments": "#/components/schemas/settings.display-person.arrange-displays.Arguments"
+      "action": "place-display",
+      "arguments": "#/components/schemas/settings.display-person.place-display.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",

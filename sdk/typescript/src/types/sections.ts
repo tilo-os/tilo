@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@d4b2ea0cd53d9cf9";
+export const SURFACE = "so.tilo.settings.sections@f00b3793a302d0f0";
 
 export interface Ink {
   primary: number;
@@ -202,6 +202,15 @@ export interface SystemSoundPrefs {
   volume: number;
   theme: string | null;
   events: SystemSoundEvents;
+}
+
+export interface PlacedDisplay {
+  device: string;
+  output: string;
+  order: number;
+  placed: boolean;
+  x: number;
+  y: number;
 }
 
 /** One of "USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "CNY", "INR". */
@@ -604,9 +613,14 @@ export interface SetRotationLockArgs {
   locked: boolean;
 }
 
-/** The arguments of `arrange-displays`. */
-export interface ArrangeDisplaysArgs {
-  placement: unknown;
+/** The arguments of `place-display`. */
+export interface PlaceDisplayArgs {
+  device: string;
+  output: string;
+  x: number;
+  y: number;
+  order?: number;
+  placed?: boolean;
 }
 
 /** The arguments of `allow-continuity`. */
@@ -1314,17 +1328,22 @@ export interface DisplayPerson extends tilo.Resource {
   night_light: boolean;
   night_light_temperature: number;
   night_light_schedule: boolean;
-  readonly placement: unknown;
-  arrangeDisplays(args: {
-    placement: unknown;
+  readonly placement: Array<tilo.Entry<PlacedDisplay>>;
+  placeDisplay(args: {
+    device: string;
+    output: string;
+    x: number;
+    y: number;
+    order?: number;
+    placed?: boolean;
   }): Promise<void>;
-  /** Runs `arrange-displays` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  arrangeDisplaysMany(items: ArrangeDisplaysArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `place-display` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  placeDisplayMany(items: PlaceDisplayArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `DisplayPerson` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DISPLAYPERSON_ACTIONS = ["arrangeDisplays", "arrangeDisplaysMany"] as const;
+export const DISPLAYPERSON_ACTIONS = ["placeDisplay", "placeDisplayMany"] as const;
 
 /** The `settings.display-person` kind at `path`. */
 export function displayPerson(ws: tilo.Workspace, path: string): DisplayPerson {

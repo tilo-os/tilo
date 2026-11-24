@@ -578,5 +578,9 @@
   "so.tilo.settings settings.*#group": {
     "to": "so.tilo.settings.sections settings/appearance#set-mode",
     "test": "crates/desktop/settings-sections/src/service/tests.rs:268"
+  },
+  "so.tilo.settings settings.display-placement#arrange-displays": {
+    "to": "so.tilo.settings.sections settings/display-person#place-display",
+    "test": "crates/desktop/settings/src/workspace_tests.rs:257"
   }
 }
