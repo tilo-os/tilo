@@ -73,7 +73,7 @@ fn pressed_in(q: invocations.Invocation, w: device.Window) -> Bool {
 /// The questions no window here stands for: an agent's, a device's, and a press made on another
 /// device or in a window that is gone. Newest first.
 fn asked_elsewhere() -> List<invocations.Invocation> {
-    return waiting().filter(q -> not device.windows.all.any(w -> w.local and pressed_in(q, w)))
+    return waiting().filter(q -> not device.windows.all.any(w -> not w.elsewhere and pressed_in(q, w)))
 }
 
 /// How many questions wait for the person: what the bell counts beside the unread notices.

@@ -365,7 +365,7 @@ view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
                     // and a window that answers keeps its body the whole room.
                     let w = shown_window(p)
                     if let window = w {
-                        if window.ended.is_some() {
+                        if let _ = window.ended {
                             // The app left this place and said why: the card says what it says,
                             // with asking for the app again in this same place, or dismissing it.
                             crashed_card(window)
@@ -578,9 +578,9 @@ fn author_here(a: device.Author) -> Bool {
     return layout.people.any(p -> p.key == a.identity)
 }
 
-/// The parts a window's app declared for its bar, drawn in its own order before the shell's/// The parts a window's app declared for its bar, drawn in its own order before the shell's
+/// The parts a window's app declared for its bar, drawn in its own order before the shell's
 /// controls. An action the bar is too narrow for folds into one menu, its menu items under it.
-view bar_parts(w: device.Window, bar: device.Bar) {
+view window_bar_parts(w: device.Window, bar: device.Bar) {
     for a in bar.leading {
         bar_button(w, a)
     }
@@ -753,9 +753,9 @@ view window_bar_actions(w: device.Window) {
     // the person, and the reactions to what it shows. Every press is the app's own action, sent
     // back to it by the session.
     if let bar = w.bar {
-        bar_parts(w, bar)
+        window_bar_parts(w, bar)
     }
-    if w.opens_tabs and w.local {
+    if w.opens_tabs and not w.elsewhere {
         ui.Button("New tab of this window", icon: .plus, icon_only: true, role: .plain) {
             on press: session.open_app(app: w.app_key, beside: w.key)
         }
@@ -1101,12 +1101,12 @@ view this_window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool
         }
         ui.MenuSeparator()
         // What the window shows and what it is called.
-        if w.opens_tabs and w.local {
+        if w.opens_tabs and not w.elsewhere {
             ui.MenuItem("New tab of this app", icon: .plus) {
                 on choose: session.open_app(app: w.app_key, beside: w.key)
             }
         }
-        if w.renameable and w.local {
+        if w.renameable and not w.elsewhere {
             ui.MenuItem("Rename", icon: .pencil) {
                 on choose: session.rename_in_bar(tab: w.key)
             }
