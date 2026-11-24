@@ -387,7 +387,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         "the desk enters the person's own workspace at the server its ticket names"
     );
     let listed = desk_session
-        .personal_list(
+        .person_workspaces(
             &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             None,
         )

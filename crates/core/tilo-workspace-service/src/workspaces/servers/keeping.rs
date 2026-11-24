@@ -164,7 +164,6 @@ async fn keep_again(workspaces: &Workspaces, workspace: &str) -> Result<bool, St
     workspaces.serve_kept(std::slice::from_ref(&state)).await?;
     workspaces.keep_reading(&state).await;
     let _ = workspaces.inner.changes.send(workspace.to_owned());
-    workspaces.personal_changed();
     tracing::info!(%workspace, "a workspace let go of here is kept again");
     Ok(true)
 }

@@ -60,7 +60,11 @@ impl super::Workspaces {
     ///
     /// Returns why the workspace could not be created, persisted or bound.
     pub async fn create(&self, name: &str) -> Result<WorkspaceSummary, String> {
-        self.create_workspace(name, None).await
+        let summary = self.create_workspace(name, None).await?;
+        let person = self.serving_certificate().user_public_key;
+        self.list_for(&person, &summary.workspace, &summary.name)
+            .await;
+        Ok(summary)
     }
 
     /// Create a governed workspace named `name`, under the identity `workspace` when
@@ -230,6 +234,12 @@ impl super::Workspaces {
         drop(governed);
         self.keep_reading(&workspace).await;
         tracing::info!(workspace = %summary.workspace, workspace_id = %summary.workspace_id, "governed workspace created");
+        // The person's list names the workspace they now have, where this device holds their own
+        // list: a daemon that makes one for them writes it without a desktop session.
+        if let Some(person) = person {
+            self.list_for(&person, &summary.workspace, &summary.name)
+                .await;
+        }
         Ok(summary)
     }
 }

@@ -42,6 +42,34 @@ pub fn record_value(readings: &serde_json::Value) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+/// The name each of the person's devices reads by, by its key, as their devices record keeps
+/// it: the name they gave it, else the label its certificate was made with.
+#[must_use]
+pub fn names(records: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
+    let Some(entries) = records
+        .get("devices")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return std::collections::BTreeMap::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(key, entry)| {
+            // A collection keeps each item under its id, with its place beside it.
+            let device = entry.get("v").unwrap_or(entry);
+            let certificate = device.get("certificate")?.as_str()?;
+            let cert: tilo_user_identity::DeviceCert =
+                postcard::from_bytes(&hex::decode(certificate).ok()?).ok()?;
+            let name = device
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .map_or_else(|| cert.device_label.clone(), str::to_owned);
+            Some((key.clone(), name))
+        })
+        .collect()
+}
+
 /// Who is here, from a read of who is in a workspace ([`tilo_actions::remote::PRESENCE`]): nobody
 /// when the read answered no one.
 #[must_use]

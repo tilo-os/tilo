@@ -379,6 +379,10 @@ mod copy {
             if let Err(error) = self.keep_membership(branch, &person, "owner") {
                 tracing::warn!(%branch, %error, "a branch's owner's membership of it is not kept");
             }
+            if let Ok(summary) = self.summary(branch).await {
+                self.list_for(&person, &summary.workspace, &summary.name)
+                    .await;
+            }
             let held = self
                 .workspace(branch)
                 .await

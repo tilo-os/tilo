@@ -26,9 +26,9 @@ use tilo_server_protocol::workspaces::{
     ActionInvitation, AdminRefusal, CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE,
     CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE,
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
-    HOST_WORKSPACES_RESOURCE, HostedWorkspace, LIST_PERSONAL, LIST_REVOCATIONS, LIST_WORKSPACES,
-    PersonalList, StandingPage, UNHOST_WORKSPACE, WEB_SERVE, WorkspaceLabels, WorkspaceListing,
-    administered_answer, administered_request, check_labels, labelled,
+    HOST_WORKSPACES_RESOURCE, HostedWorkspace, LIST_REVOCATIONS, LIST_WORKSPACES, StandingPage,
+    UNHOST_WORKSPACE, WEB_SERVE, WorkspaceLabels, WorkspaceListing, administered_answer,
+    administered_request, check_labels, labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -112,16 +112,6 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 24] = [
             params: Vec::new,
         },
         ServiceOperation::ListWorkspaces,
-    ),
-    (
-        Verb {
-            id: LIST_PERSONAL,
-            label: "List your workspaces, wherever they are hosted",
-            check: LIST_PERSONAL,
-            kind: ActionKind::Read,
-            params: list_personal_params,
-        },
-        ServiceOperation::ReadPersonalList,
     ),
     (
         Verb {
@@ -511,27 +501,6 @@ impl Listed {
             .as_deref()
             .is_none_or(|only| only == workspace)
     }
-
-    /// Whether a workspace of the person's list, labelled `labels`, is one
-    /// the listing names.
-    pub(in crate::workspaces) fn holds(&self, workspace: &str, labels: &WorkspaceLabels) -> bool {
-        self.names(workspace) && labelled(labels, &self.labels)
-    }
-}
-
-fn list_personal_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::optional(
-            "labels",
-            ParamType::Object,
-            "Only the workspaces of yours labelled with every one of these (names to values).",
-        ),
-        ActionParam::optional(
-            "workspace",
-            ParamType::Text,
-            "Only this workspace (a UUID), when it is yours.",
-        ),
-    ]
 }
 
 fn host_workspace_params() -> Vec<ActionParam> {
@@ -864,11 +833,6 @@ impl Workspaces {
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 self.branch_own_invoke(device, &args, request_id, now).await
             }
-            ServiceOperation::ReadPersonalList => {
-                self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                self.personal_invoke(device, &args).await
-            }
             ServiceOperation::ListRevocations => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
@@ -1116,66 +1080,6 @@ impl Workspaces {
         .await
     }
 
-    /// Read or keep `device`'s person's workspace list, already permitted to.
-    async fn personal_invoke(
-        &self,
-        device: &DeviceCert,
-        args: &Args,
-    ) -> Result<Value, ActionCallError> {
-        self.note_own_device(device).await;
-        // A page names its browser's tab keys; one it can't name as the
-        // contract says still reads the list.
-        if let Ok(Some(browser)) = args.object("browser") {
-            self.note_browser(device, browser).await;
-        }
-        // A backend finds its customer's workspace by its labels: only
-        // the workspaces labelled so are read, however many it has.
-        let only = Listed {
-            labels: args.object("labels")?.unwrap_or_default(),
-            workspace: args.text("workspace")?.map(str::to_owned),
-        };
-        check_labels(&only.labels).map_err(ActionCallError::invalid_request)?;
-        let here = self.listed(device, &only).await;
-        let mut list = self.personal(device, &here, &only).await;
-        if only.workspace.is_some() {
-            self.sign_own_addresses(&mut list).await;
-        }
-        answer(&list)
-    }
-
-    /// Name, in each workspace of `list` this host keeps, its own signed
-    /// address for it ([`PersonalWorkspace::enter_at`]): what a device of the
-    /// person's that asks for one workspace dials to be taken in as their
-    /// further device. A whole list leaves them out, so a person with
-    /// hundreds of workspaces here waits on no signing; one asked alone is
-    /// what a device enters.
-    ///
-    /// [`PersonalWorkspace::enter_at`]: tilo_server_protocol::workspaces::PersonalWorkspace::enter_at
-    async fn sign_own_addresses(&self, list: &mut PersonalList) {
-        let own = self.inner.host.cert.device_public_key;
-        for entry in &mut list.workspaces {
-            // A hint in the entry names another device that keeps it.
-            if entry.host.as_ref().is_none_or(|host| host.hint.is_some()) {
-                continue;
-            }
-            let Ok(hints) = self.hosts(&entry.workspace).await else {
-                continue;
-            };
-            let Some(hint) = hints
-                .into_iter()
-                .find(|hint| hint.host.device_public_key == own)
-            else {
-                continue;
-            };
-            match postcard::to_allocvec(&hint) {
-                Ok(bytes) => entry.enter_at = Some(hex::encode(bytes)),
-                Err(error) => {
-                    tracing::warn!(%error, workspace = %entry.workspace, "this host's address did not encode");
-                }
-            }
-        }
-    }
-
     /// Block or unblock the key `args` names, as this host's operator: the
     /// operator's own record of it, which every host they run refuses
     /// ([`crate::workspaces::blocked`]). One key is named: a device's, or a
@@ -1263,14 +1167,6 @@ impl Workspaces {
     /// so a host with many workspaces answers a person with a few of them in
     /// the time those few take. With `only`, only the workspaces it names,
     /// the others never read.
-    /// `device`'s person's whole workspace list as their devices read it now:
-    /// what the host sends every session of theirs when the list changes.
-    pub(in crate::workspaces) async fn personal_of(&self, device: &DeviceCert) -> PersonalList {
-        let only = Listed::default();
-        let here = self.listed(device, &only).await;
-        self.personal(device, &here, &only).await
-    }
-
     async fn listed(&self, device: &DeviceCert, only: &Listed) -> Vec<WorkspaceListing> {
         let labels = &only.labels;
         let person = device.user_public_key;
@@ -1503,6 +1399,15 @@ impl Workspaces {
             // Another one, for a person the site let in ([`Self::check_account`]):
             // there is no bound on how many a person keeps, and one they did
             // not name is named in their language.
+            // A server that makes workspaces for a person holds their own workspace for them
+            // when no device of theirs does, so their list of workspaces is kept there and
+            // complete without a desktop session.
+            if person != self.inner.host.cert.user_public_key
+                && let Err(error) =
+                    crate::workspaces::person_workspace::found_for(self, &person).await
+            {
+                tracing::debug!(%error, "the person's own workspace is not kept here");
+            }
             let name = name.map_or_else(|| crate::i18n::workspace_name(language), str::to_owned);
             let summary = self
                 .create_for(&name, moving, person)
@@ -1810,7 +1715,6 @@ mod own_tests;
 #[cfg(test)]
 mod page_use_tests;
 #[cfg(test)]
-mod personal_tests;
 #[cfg(test)]
 mod sign_in_tests;
 #[cfg(test)]

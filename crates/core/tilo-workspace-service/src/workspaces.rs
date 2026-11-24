@@ -210,6 +210,7 @@ mod governed_grants_tests;
 pub mod membership;
 #[cfg(test)]
 mod naming_tests;
+pub mod person_list;
 pub mod person_workspace;
 // The person's own workspace's resources, as a part of a session reads and writes them.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1207,9 +1208,6 @@ struct WorkspacesInner {
     /// The owner invitations the host handed out and nobody accepted yet
     /// ([`host_invitations`]).
     owner_invitations: host_invitations::OwnerInvitations,
-    /// The counter a person's workspace list moves when it changes
-    /// ([`personal::PersonalPushes`]).
-    personal_pushes: personal::PersonalPushes,
     /// Each person's devices as their own workspace lists them, by device key:
     /// the name each reads by and whether a revocation here refuses it. Kept
     /// beside the resource so the host answers a pairing synchronously.
@@ -1534,7 +1532,6 @@ impl Workspaces {
                 puts: std::sync::OnceLock::new(),
                 memberships,
                 owner_invitations: host_invitations::OwnerInvitations::open(&dir),
-                personal_pushes: personal::PersonalPushes::default(),
                 device_names: std::sync::Mutex::default(),
                 mcp_server: mcp_server::McpServer::default(),
                 own_address: std::sync::OnceLock::new(),
@@ -1719,8 +1716,6 @@ impl Workspaces {
         tracing::info!(%workspace, workspace_id = %governed.workspace_id(), "governed workspace released");
         drop(governed);
         let _ = self.inner.changes.send(workspace.to_owned());
-        // No list here names a workspace the host governs no longer.
-        self.personal_changed();
         Ok(())
     }
 
@@ -3215,8 +3210,6 @@ impl Workspaces {
             sink.settled(&name, workspace.peer().clone());
         }
         let _ = self.inner.changes.send(name);
-        // Whose workspaces those are changed: what their devices list.
-        self.personal_changed();
     }
 
     /// The revocations this host holds from its people's roots, as they stand now.

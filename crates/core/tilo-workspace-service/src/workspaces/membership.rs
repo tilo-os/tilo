@@ -14,10 +14,10 @@ use std::collections::BTreeMap;
 use tilo_resource::{Model, Refusal, resource};
 
 /// The app whose records the members' memberships are.
-pub const APP: &str = "so.tilo.membership";
+pub const APP: &str = tilo_server_protocol::workspaces::MEMBERSHIP_APP;
 
 /// The record of what the workspace's owner alone keeps of it.
-pub const OWNERSHIP: (&str, &str) = (tilo_action_policy::roles::OWNER_ONLY_APP, "ownership");
+pub const OWNERSHIP: (&str, &str) = tilo_server_protocol::workspaces::OWNERSHIP;
 
 /// The most labels one workspace carries.
 const MAX_LABELS: usize = 64;
@@ -27,7 +27,7 @@ const MAX_LABEL: usize = 256;
 /// The record of `person`'s membership of the workspace.
 #[must_use]
 pub fn member_record(person: &[u8; 32]) -> String {
-    format!("member.{}", hex::encode(person))
+    tilo_server_protocol::workspaces::member_record(person)
 }
 
 /// One member's membership of the workspace.

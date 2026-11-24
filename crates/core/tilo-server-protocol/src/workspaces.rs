@@ -890,26 +890,91 @@ pub const IDENTITY_LIST: (&str, &str) = (
     tilo_user_identity::workspace_list::RESOURCE,
 );
 
+/// The app a workspace keeps its members' memberships in, under [`member_record`].
+pub const MEMBERSHIP_APP: &str = "so.tilo.membership";
+
+/// The record of `person`'s membership of a workspace: the role they hold there and when the
+/// workspace was made.
+#[must_use]
+pub fn member_record(person: &[u8; 32]) -> String {
+    format!("member.{}", hex::encode(person))
+}
+
+/// The record of what a workspace's owner alone keeps of it: the labels they gave it and
+/// whether keys reaching it alone run commands in its machine unasked.
+pub const OWNERSHIP: (&str, &str) = (tilo_action_policy::roles::OWNER_ONLY_APP, "ownership");
+
+/// The role a person holds in a workspace of their own.
+pub const OWNER_ROLE: &str = "owner";
+
 /// The person's list of their workspaces ([`IDENTITY_LIST`]), as read from that record through
 /// the record API: each workspace by its id and the name the person last saw it by, in their
-/// order. What else a list shows of a workspace is that workspace's own membership record.
+/// order. What else a list shows of a workspace is that workspace's own records: its membership
+/// ([`MEMBERSHIP_APP`]) for the role and when it was made, and its owner's ownership record for
+/// the labels and whether it runs unattended.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonWorkspaces {
     pub workspaces: Vec<ListedWorkspace>,
 }
 
-/// One workspace of the person's list.
+/// One workspace of the person's list, as a reader of the record shows it: the entry their own
+/// workspace keeps, joined with the membership the workspace holds of them and its owner's
+/// labels.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListedWorkspace {
     /// The workspace's UUID.
     pub workspace: String,
     /// The name the person last saw it by.
     pub name: String,
+    /// Where it is hosted, as the list keeps it: `None` while no device of theirs said how to
+    /// reach it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<KeepingDeviceAddress>,
+    /// The part the person takes in it, as the workspace's membership says: `owner` for one of
+    /// their own, else the role they hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// What its owner labelled it with, where the reader may read it.
+    #[serde(default, skip_serializing_if = "WorkspaceLabels::is_empty")]
+    pub labels: WorkspaceLabels,
+    /// When the workspace was made, ms since the epoch, as its membership says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_at_ms: Option<i64>,
+    /// Whether its owner let keys made for it alone run commands in its machine without asking
+    /// them each time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unattended: bool,
+    /// The device the list says keeps it, by key, until the person's devices name it; only
+    /// [`PersonWorkspaces::with_hosts`] reads it.
+    #[serde(skip)]
+    pub host_device: Option<String>,
+    /// Where that device says it is reached, postcard in hex, until the reader is given its host.
+    #[serde(skip)]
+    pub host_hint: Option<String>,
+}
+
+/// What a membership record's read holds: the role and when the workspace was made.
+#[derive(Default, serde::Deserialize)]
+struct MembershipRead {
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    made_at_ms: Option<i64>,
+}
+
+/// What an ownership record's read holds: the owner's labels and whether it runs unattended.
+#[derive(Default, serde::Deserialize)]
+struct OwnershipRead {
+    #[serde(default)]
+    labels: WorkspaceLabels,
+    #[serde(default)]
+    unattended: bool,
 }
 
 impl PersonWorkspaces {
-    /// The list a whole-document read answered (`{"revision", "records": [...]}`): `None` while
-    /// the record is still arriving, an empty list where the person's workspace holds none yet.
+    /// The list a whole-document read answered (`{"revision", "records": [{..., "document"}]}`):
+    /// `None` while the record is still arriving, an empty list where the person's workspace
+    /// holds none yet.
     ///
     /// # Errors
     /// The answer names no reading of the list, or its document does not read.
@@ -937,10 +1002,44 @@ impl PersonWorkspaces {
                 .map(|(workspace, listed)| ListedWorkspace {
                     workspace: workspace.to_string(),
                     name: listed.name.clone(),
+                    host: None,
+                    role: None,
+                    labels: WorkspaceLabels::default(),
+                    made_at_ms: None,
+                    unattended: false,
+                    host_device: Some(listed.host.clone()).filter(|host| !host.is_empty()),
+                    host_hint: listed.address().map(hex::encode),
                 })
                 .collect(),
         }))
     }
+
+    /// Name each workspace's host from the person's devices record (`names`, by device key):
+    /// the reader is answered where it is reached, and a host that is `answering`, the device
+    /// the read was asked of, is reached there and names no address.
+    pub fn with_hosts(
+        &mut self,
+        names: &std::collections::BTreeMap<String, String>,
+        answering: Option<&[u8; 32]>,
+    ) {
+        let answering = answering.map(hex::encode);
+        for entry in &mut self.workspaces {
+            let Some(device) = entry.host_device.clone() else {
+                continue;
+            };
+            let name = names
+                .get(&device)
+                .cloned()
+                .unwrap_or_else(|| device.clone());
+            let hint = if Some(&device) == answering.as_ref() {
+                None
+            } else {
+                entry.host_hint.clone()
+            };
+            entry.host = Some(KeepingDeviceAddress { name, hint });
+        }
+    }
+
     /// The revision a record read answered, which the next read of it follows past.
     #[must_use]
     pub fn revision_of(readings: &serde_json::Value) -> Option<String> {
@@ -948,6 +1047,66 @@ impl PersonWorkspaces {
             .get("revision")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
+    }
+
+    /// Fill `workspace`'s role and when it was made from a read of its membership record
+    /// (`{"records": [{..., "value"}]}`): a record the workspace keeps none of leaves it as it
+    /// was, as a workspace this device reaches nowhere does.
+    pub fn with_membership(&mut self, workspace: &str, reading: &serde_json::Value) {
+        let Some(entry) = self
+            .workspaces
+            .iter_mut()
+            .find(|one| one.workspace == workspace)
+        else {
+            return;
+        };
+        let Ok(facts) =
+            serde_json::from_value::<MembershipRead>(crate::devices::record_value(reading))
+        else {
+            return;
+        };
+        entry.role = facts.role;
+        entry.made_at_ms = facts.made_at_ms;
+    }
+
+    /// Fill `workspace`'s labels and whether it runs unattended from a read of its ownership
+    /// record: one the reader may not read leaves both as they were.
+    pub fn with_ownership(&mut self, workspace: &str, reading: &serde_json::Value) {
+        let Some(entry) = self
+            .workspaces
+            .iter_mut()
+            .find(|one| one.workspace == workspace)
+        else {
+            return;
+        };
+        let Ok(facts) =
+            serde_json::from_value::<OwnershipRead>(crate::devices::record_value(reading))
+        else {
+            return;
+        };
+        entry.labels = facts.labels;
+        entry.unattended = facts.unattended;
+    }
+}
+
+impl ListedWorkspace {
+    /// Where a device of the person's that does not hold it enters it: the signed address the
+    /// list keeps for its host, checked against the host's certificate.
+    ///
+    /// # Errors
+    /// No device of theirs said where it is kept, or the address does not read.
+    pub fn entered_at(&self) -> Result<tilo_workspace_join::TransportHint, String> {
+        let host = self
+            .host
+            .as_ref()
+            .ok_or("no device of yours says where it is kept yet")?;
+        host.address()?;
+        let hint = host
+            .hint
+            .as_deref()
+            .ok_or("the host that answered keeps it: it is reached there")?;
+        postcard::from_bytes(&hex::decode(hint).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -996,92 +1155,8 @@ pub const CATCH_UP_ABSENT: &str = "workspace.catch-up.absent";
 /// store keeps a lineage per record and author, more than one frame carries.
 /// Answers a [`StandingPage`].
 pub const CATCH_UP_STANDING: &str = "workspace.catch-up.standing";
-/// The caller's person's workspace list ([`PersonalList`]): the one their
-/// own workspace holds ([`IDENTITY_LIST`]), with the workspaces this host keeps for them, each
-/// naming its host and how to reach it. Any certified key of the person's
-/// reads it; an agent's grant reads only what its scope reaches. A page
-/// asking it may name its browser's tab devices (argument `browser`, a
-/// [`PersonalBrowser`]): they join the person's devices in their own
-/// workspace, kept there as that browser's. Asked for one workspace
-/// (argument `workspace`), the host names its own signed address for it
-/// ([`PersonalWorkspace::enter_at`]): where a device of the person's that
-/// does not hold it yet asks to be taken in.
-pub const LIST_PERSONAL: &str = "workspace.personal";
 /// The most devices a person's record keeps.
 pub const MAX_PERSONAL_DEVICES: usize = 1024;
-
-/// A person's workspaces, each with where it is hosted: what
-/// [`LIST_PERSONAL`] answers.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersonalList {
-    pub workspaces: Vec<PersonalWorkspace>,
-}
-
-/// The most tab keys one browser profile names ([`PersonalBrowser`]).
-pub const MAX_BROWSER_DEVICES: usize = 64;
-
-/// One browser profile's tab devices, as a page of it names them when it
-/// asks for the person's record ([`LIST_PERSONAL`]'s `browser` argument):
-/// the profile's random id and the certificate of each tab's key, newest
-/// last. Every tab of the profile shares what it names, so whichever tab
-/// asks names them all.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersonalBrowser {
-    /// 32 lowercase hex characters.
-    pub id: String,
-    /// At most [`MAX_BROWSER_DEVICES`].
-    pub certs: Vec<tilo_user_identity::DeviceCert>,
-}
-
-impl PersonalBrowser {
-    /// Whether `id` is a browser profile's id: 32 lowercase hex characters.
-    #[must_use]
-    pub fn is_id(id: &str) -> bool {
-        id.len() == 32
-            && id
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    }
-}
-
-/// One workspace of a person's list.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersonalWorkspace {
-    /// The workspace's UUID.
-    pub workspace: String,
-    /// Its name.
-    pub name: String,
-    /// Where it is hosted, when the list says: `None` for a workspace no
-    /// device of the person said the host of yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host: Option<KeepingDeviceAddress>,
-    /// The part the person takes in it, when the host that answers knows:
-    /// `owner` for one of their own, else the role they hold.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    /// What its owner labelled it with ([`WorkspaceLabels`]), when the host
-    /// that answers keeps it for them.
-    #[serde(default, skip_serializing_if = "WorkspaceLabels::is_empty")]
-    pub labels: WorkspaceLabels,
-    /// When the server that answers made it, ms since the epoch: two
-    /// workspaces of one name are told apart by it. `None` when the list's
-    /// keeper does not say.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub made_at_ms: Option<i64>,
-    /// Whether its owner let keys made for it alone run commands in its
-    /// machine without asking them each time
-    /// ([`RUN_UNATTENDED`]), when the host that answers keeps it for them.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub unattended: bool,
-    /// The answering host's own signed address for it
-    /// (`tilo_peer_state::join::TransportHint`, postcard in hex), when the
-    /// host keeps it and the reader asked for this workspace alone: where a
-    /// device of the person's that holds none of it asks to be taken in.
-    /// [`Self::host`] stays as the list has it, so a hint there still names
-    /// another device that keeps it, never the host that answered.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enter_at: Option<String>,
-}
 
 /// Where a workspace is hosted, as a device dials it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1153,32 +1228,6 @@ pub struct HostedDevice {
 struct HintPayload {
     workspace_id: WorkspaceId,
     endpoint_addr: iroh_base::EndpointAddr,
-}
-
-impl PersonalList {
-    /// The workspaces `list` names, in the person's order, each with where its host is reached
-    /// as a device of theirs said.
-    #[must_use]
-    pub fn of_list(list: &tilo_user_identity::WorkspaceList) -> Self {
-        Self {
-            workspaces: list
-                .listed()
-                .map(|(workspace, listed)| PersonalWorkspace {
-                    workspace: workspace.to_string(),
-                    name: listed.name.clone(),
-                    host: listed
-                        .address()
-                        .as_deref()
-                        .and_then(KeepingDeviceAddress::of_hint),
-                    role: None,
-                    labels: WorkspaceLabels::default(),
-                    made_at_ms: None,
-                    unattended: false,
-                    enter_at: None,
-                })
-                .collect(),
-        }
-    }
 }
 
 /// What [`HOST_WORKSPACE`] answers.

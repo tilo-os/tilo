@@ -696,31 +696,42 @@ mod tests {
                     })
                     .map_err(|error| error.to_string())
                 }
-                ws::LIST_PERSONAL => {
-                    let row = |id: &str, name: &str, role: &str| ws::PersonalWorkspace {
-                        workspace: id.to_owned(),
-                        name: name.to_owned(),
-                        host: None,
-                        role: Some(role.to_owned()),
-                        labels: ws::WorkspaceLabels::new(),
-                        made_at_ms: None,
-                        unattended: false,
-                        enter_at: None,
-                    };
-                    let mut workspaces = vec![row(SHARED, "Shared", "editor")];
-                    workspaces.extend(
-                        self.made
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .map(|(id, name)| row(id, name, "owner")),
-                    );
-                    serde_json::to_value(ws::PersonalList { workspaces })
-                        .map_err(|error| error.to_string())
-                }
                 _ => Err(format!("{action} is not this server's")),
             };
             Box::pin(async move { answer })
+        }
+
+        fn listed(
+            &self,
+            _person: &[u8; 32],
+            _labels: &tilo_server_protocol::workspaces::WorkspaceLabels,
+            workspace: Option<&str>,
+        ) -> crate::session::Asked<
+            '_,
+            Result<tilo_server_protocol::workspaces::PersonWorkspaces, String>,
+        > {
+            use tilo_server_protocol::workspaces as ws;
+            let row = |id: &str, name: &str, role: &str| ws::ListedWorkspace {
+                workspace: id.to_owned(),
+                name: name.to_owned(),
+                host: None,
+                role: Some(role.to_owned()),
+                labels: ws::WorkspaceLabels::new(),
+                made_at_ms: None,
+                unattended: false,
+                host_device: None,
+                host_hint: None,
+            };
+            let mut workspaces = vec![row(SHARED, "Shared", "editor")];
+            workspaces.extend(
+                self.made
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(id, name)| row(id, name, "owner")),
+            );
+            workspaces.retain(|row| workspace.is_none_or(|only| row.workspace == only));
+            Box::pin(async move { Ok(ws::PersonWorkspaces { workspaces }) })
         }
     }
 

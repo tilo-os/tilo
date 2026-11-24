@@ -66,13 +66,14 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// `listed`, a workspace of the person's list as their server keeps it.
-    pub(crate) fn personal(listed: tilo_server_protocol::workspaces::PersonalWorkspace) -> Self {
+    /// `listed`, a workspace of the person's list as their own workspace's record names it,
+    /// joined with its membership.
+    pub(crate) fn record(listed: tilo_server_protocol::workspaces::ListedWorkspace) -> Self {
         Self {
             id: listed.workspace,
             name: listed.name,
             host: listed.host.as_ref().map(|host| host.name.clone()),
-            own: listed.role.as_deref() == Some("owner"),
+            own: listed.role.as_deref() == Some(tilo_server_protocol::workspaces::OWNER_ROLE),
             kept_here: false,
             role: listed.role,
             labels: listed.labels,
@@ -382,7 +383,7 @@ impl Server {
     ) -> Result<Vec<Workspace>, ServerError> {
         let listed = connection
             .device
-            .personal_list(labels, workspace)
+            .person_workspaces(labels, workspace)
             .await
             .map_err(ServerError::from)?;
         // A list is kept, and a workspace listed, only for a person who
@@ -393,7 +394,7 @@ impl Server {
         Ok(listed
             .workspaces
             .into_iter()
-            .map(Workspace::personal)
+            .map(Workspace::record)
             .collect())
     }
 

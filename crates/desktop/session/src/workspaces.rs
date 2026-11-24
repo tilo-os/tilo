@@ -31,6 +31,7 @@ use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::SheetState as _;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 use tilo_user_identity::{ListedWorkspace, WorkspaceList};
+use tilo_workspace_service::workspaces::person_list;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices, KeyKind};
 
 use crate::directory;
@@ -458,16 +459,12 @@ impl Personal {
             match list.get(id) {
                 Some(listed) => {
                     if !name.trim().is_empty() && listed.name != *name {
-                        writes.push(
-                            WorkspaceList::LIST_WORKSPACE.with((id.to_string(), name.clone())),
-                        );
+                        writes.extend(person_list::listing(&id.to_string(), name, None));
                     }
                     if let Some(host) = held_host
                         && listed.host() != Some(host)
                     {
-                        writes.push(
-                            WorkspaceList::HOST_WORKSPACE.with((id.to_string(), hex::encode(host))),
-                        );
+                        writes.push(person_list::hosting(&id.to_string(), host));
                     }
                 }
                 None => {
@@ -477,11 +474,15 @@ impl Personal {
                     if gone_elsewhere || !(new_here || made_here) {
                         continue;
                     }
-                    writes.push(WorkspaceList::LIST_WORKSPACE.with((id.to_string(), name.clone())));
                     let host = held_host.unwrap_or(self.device);
-                    writes.push(
-                        WorkspaceList::HOST_WORKSPACE.with((id.to_string(), hex::encode(host))),
-                    );
+                    writes.extend(person_list::listing(
+                        &id.to_string(),
+                        name,
+                        Some(&person_list::KeptAt {
+                            device: host,
+                            hint: None,
+                        }),
+                    ));
                 }
             }
         }
@@ -494,7 +495,7 @@ impl Personal {
                 .get(*workspace)
                 .is_some_and(|listed| listed.shows_on(&self.device))
             {
-                writes.push(WorkspaceList::UNLIST_WORKSPACE.with(workspace.to_string()));
+                writes.push(person_list::unlisting(&workspace.to_string()));
             }
         }
         writes.extend(Self::publish_order(list, before, &now));

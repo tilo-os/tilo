@@ -270,6 +270,18 @@ pub trait AccountServer: Send + Sync {
         target: tilo_actions::remote::RemoteActionTarget,
         arguments: Map<String, Value>,
     ) -> Asked<'_, Value>;
+
+    /// The person's workspaces as their own workspace's list record names them, read through the
+    /// record API and joined with each workspace's membership for its role and its owner's
+    /// labels: none for an account that reads no records.
+    fn listed(
+        &self,
+        _person: &[u8; 32],
+        _labels: &tilo_server_protocol::workspaces::WorkspaceLabels,
+        _workspace: Option<&str>,
+    ) -> Asked<'_, Result<tilo_server_protocol::workspaces::PersonWorkspaces, String>> {
+        Box::pin(async { Ok(tilo_server_protocol::workspaces::PersonWorkspaces::default()) })
+    }
 }
 
 /// What [`Here::import`] answers once it took in a desktop's workspaces.

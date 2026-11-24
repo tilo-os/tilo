@@ -61,8 +61,8 @@ use tilo_actions::{
 };
 use tilo_server_protocol::workspaces::{
     BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CREATE_WEBHOOK, CreatedWorkspace, DELETE_WEBHOOK,
-    DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL,
-    LIST_WEBHOOKS, PersonalList, REVOKE_KEY, RUN_UNATTENDED, WorkspaceLabels,
+    DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_WEBHOOKS, REVOKE_KEY,
+    RUN_UNATTENDED, WorkspaceLabels,
 };
 use tilo_session_actions::SessionActions;
 use tilo_user_identity::AgentScope;
@@ -2608,21 +2608,12 @@ async fn listed_here(
     };
     let mut workspaces = here.workspaces(key);
     if let Some(account) = here.account() {
-        let mut arguments = Map::new();
-        if !labels.is_empty() {
-            arguments.insert("labels".into(), json!(labels));
-        }
-        match account
-            .call(host(LIST_PERSONAL), arguments)
-            .await
-            .and_then(|listed| {
-                serde_json::from_value::<PersonalList>(listed).map_err(|error| error.to_string())
-            }) {
+        match account.listed(&key.user_public_key, &labels, None).await {
             Ok(listed) => {
                 for row in listed
                     .workspaces
                     .into_iter()
-                    .map(crate::server::Workspace::personal)
+                    .map(crate::server::Workspace::record)
                 {
                     match workspaces.iter_mut().find(|kept| kept.id == row.id) {
                         Some(kept) => {

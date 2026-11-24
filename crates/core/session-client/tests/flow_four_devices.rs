@@ -22,8 +22,7 @@ use tilo_actions::remote::{person_models, person_vault};
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
-    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
-    WorkspaceLabels,
+    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, WorkspaceLabels,
 };
 use tilo_session_client::Link;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
@@ -182,7 +181,7 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
     ] {
         let client = f.client(session, device, &label.replace(' ', "-"));
         let listed = client
-            .personal_list_in(f.work_id(), &WorkspaceLabels::new(), None)
+            .person_workspaces(&WorkspaceLabels::new(), None)
             .await
             .unwrap_or_else(|error| panic!("{label} reads the person's list: {error:?}"));
         let ids: Vec<&str> = listed
@@ -346,20 +345,6 @@ async fn flow_always_on_server_holds_all_workspaces_at_once() {
              person's device, without being asked: {listed}"
         );
     }
-
-    // The person's list names both, as their devices keep it.
-    let mut list = personal(&f);
-    for (_, workspace) in &made {
-        list.workspaces.push(PersonalWorkspace {
-            workspace: workspace.clone(),
-            name: "Ada's work".into(),
-            ..list.workspaces[0].clone()
-        });
-    }
-    desktop
-        .keep_personal(&list)
-        .await
-        .expect("a device of the person's keeps their list");
 
     // Keeping off for the laptop's workspace, through the server's entry: the server lets it
     // go, and no member reads it among the workspace's keepers any more.

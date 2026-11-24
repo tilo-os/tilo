@@ -1220,9 +1220,6 @@ pub struct WasmPeer {
     durable_events: Events,
     live_events: Events,
     voice_events: Events,
-    /// The person's workspace list as their host sends it: what the
-    /// switcher offers without asking the host again.
-    personal: tilo_session_client::PersonalWorkspaces,
     /// Joined workspaces by workspace, to name them in call events.
     voice_workspaces: RefCell<std::collections::HashMap<WorkspaceId, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
@@ -1292,16 +1289,19 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// The person's workspaces as their host lists them, in the page's shape: what every device
-    /// of theirs reads ([`tilo_session_client::PersonalWorkspaces`]), so a page offers every
-    /// workspace of theirs, not only the ones this browser's storage still remembers.
+    /// The person's workspaces as their own workspace's list record names them, joined with each
+    /// workspace's membership, in the page's shape: so a page offers every workspace of theirs,
+    /// not only the ones this browser's storage still remembers.
     pub(crate) async fn personal_workspaces(&self) -> Result<serde_json::Value, JsError> {
-        let list = self
-            .personal
-            .read(&self.device)
+        let listed = self
+            .device
+            .person_workspaces(
+                &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
+                None,
+            )
             .await
             .map_err(|refusal| js_error(refusal.message))?;
-        serde_json::to_value(&list).map_err(js_error)
+        serde_json::to_value(&listed).map_err(js_error)
     }
 }
 
@@ -1425,9 +1425,6 @@ impl WasmPeer {
         // A lobby started beside the workspace's peer does not speak for the
         // page's person.
         crate::page_person::claim(id);
-        // The person's lists as the host sends them: read beside what this
-        // page remembered, never asked for again.
-        let personal = tilo_session_client::PersonalWorkspaces::follow(&handle);
         let listeners: Rc<RefCell<Vec<Function>>> = Rc::default();
         let changed = Arc::new(tokio::sync::Notify::new());
         handle.on_change({
@@ -1457,7 +1454,6 @@ impl WasmPeer {
             durable_events: handle.events_where(is_durable),
             live_events: handle.events_where(is_live),
             voice_events: handle.events_where(is_voice),
-            personal,
             voice_workspaces: RefCell::default(),
             handle,
             device,

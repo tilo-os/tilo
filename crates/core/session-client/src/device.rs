@@ -16,7 +16,7 @@ use tilo_server_client::login::{Entry, SignIn};
 use tilo_server_client::{CertifyError, DeviceSigner, LinkError};
 use tilo_server_protocol::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
-    LIST_PERSONAL, PersonalList, WorkspaceLabels, WorkspaceListing,
+    WorkspaceLabels, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 use web_time::Duration as Wait;
@@ -547,9 +547,12 @@ impl Device {
 
     /// The person's list of their workspaces, read from the record of their own workspace through
     /// the record API ([`IDENTITY_LIST`]) on the device holding it, decided there as every read
-    /// is: each workspace by its id and the name they last saw it by, in their order. A device
-    /// reads it from the moment it entered their workspace with its ticket, while its own copy
-    /// still fills in behind; a record still arriving there is waited for.
+    /// is: each workspace by its id and the name they last saw it by, in their order, joined with
+    /// the membership the workspace holds of them for the role it shows and when it was made, and
+    /// with its owner's labels where they own it. A device reads it from the moment it entered
+    /// their workspace with its ticket, while its own copy still fills in behind; a record still
+    /// arriving there is waited for. With `labels`, only the workspaces labelled with every one
+    /// of them, and with `workspace` only that one.
     ///
     /// # Errors
     /// The host did not answer or refused, or the list did not arrive on it in time.
@@ -557,14 +560,20 @@ impl Device {
     /// [`IDENTITY_LIST`]: tilo_server_protocol::workspaces::IDENTITY_LIST
     pub async fn person_workspaces(
         &self,
+        labels: &WorkspaceLabels,
+        workspace: Option<&str>,
     ) -> Result<tilo_server_protocol::workspaces::PersonWorkspaces, DeviceRefusal> {
-        use tilo_server_protocol::workspaces::{IDENTITY_LIST, PersonWorkspaces};
+        use tilo_server_protocol::workspaces::{
+            IDENTITY_LIST, MEMBERSHIP_APP, OWNER_ROLE, PersonWorkspaces, member_record,
+        };
         let person = self.cert.user_public_key;
+        let own = tilo_server_protocol::servers::person_workspace_id(&person);
         let actions = self.actions(WorkspaceId::from(collab_types::person_workspace(&person)));
         let mut after: Option<String> = None;
+        let mut found = None;
         for _ in 0..PERSON_LIST_READS {
             let read = tilo_actions::remote::ResourceReadRequest {
-                workspace: tilo_server_protocol::servers::person_workspace_id(&person),
+                workspace: own.clone(),
                 app: IDENTITY_LIST.0.to_owned(),
                 record: IDENTITY_LIST.1.to_owned(),
                 joined: false,
@@ -572,73 +581,111 @@ impl Device {
                 answer: tilo_actions::remote::ReadAnswer::Document,
                 after: after.clone(),
             };
-            let answered = actions
-                .read_record(read)
-                .await
-                .unwrap_or(Err(ActionCallError::Unanswered))
-                .map_err(|error| DeviceRefusal::of(&error))?;
+            let answered = match actions.read_record(read).await {
+                Some(Ok(answered)) => answered,
+                Some(Err(ActionCallError::Unanswered)) | None => {
+                    return Err(DeviceRefusal::of(&ActionCallError::Unanswered));
+                }
+                // A server that holds nothing for the person says it does not know them, in the
+                // code a person reads: the host never let them in and no invitation brought them.
+                Some(Err(_)) => {
+                    return Err(DeviceRefusal::of(
+                        &tilo_actions::remote::not_on_this_server(&person),
+                    ));
+                }
+            };
             let readings: Value = serde_json::from_str(&answered)
                 .map_err(|error| DeviceRefusal::malformed(error.to_string()))?;
             if let Some(list) =
                 PersonWorkspaces::of_readings(&readings).map_err(DeviceRefusal::malformed)?
             {
-                return Ok(list);
+                found = Some(list);
+                break;
             }
             after = PersonWorkspaces::revision_of(&readings);
         }
-        Err(DeviceRefusal::unanswered(
-            "your list of workspaces has not reached the host yet",
-        ))
-    }
-
-    /// The person's workspace list as the host keeps it: every
-    /// workspace of theirs their devices said, wherever it is hosted, with the workspaces this host
-    /// keeps for them, each naming its host. A key for one workspace reads that one alone. With
-    /// `labels`, only the workspaces labelled with every one of them, and with `workspace` only
-    /// that one: the host reads no other.
-    ///
-    /// # Errors
-    /// The host did not answer, refused, or answered something else.
-    pub async fn personal_list(
-        &self,
-        labels: &WorkspaceLabels,
-        workspace: Option<&str>,
-    ) -> Result<PersonalList, DeviceRefusal> {
-        self.personal_list_in(self.workspace_id, labels, workspace)
-            .await
-    }
-
-    /// [`Self::personal_list`], asked in `entered`, a workspace this device is in on the host
-    /// ([`crate::session::HOST_ITSELF`] for none): how a device that took a workspace in on this
-    /// session asks it there.
-    ///
-    /// # Errors
-    /// The host did not answer, refused, or answered something else.
-    pub async fn personal_list_in(
-        &self,
-        entered: WorkspaceId,
-        labels: &WorkspaceLabels,
-        workspace: Option<&str>,
-    ) -> Result<PersonalList, DeviceRefusal> {
-        let mut arguments = Map::new();
-        if let Some(workspace) = workspace {
-            arguments.insert("workspace".to_owned(), serde_json::Value::from(workspace));
-        }
-        if !labels.is_empty() {
-            arguments.insert(
-                "labels".to_owned(),
-                serde_json::to_value(labels)
-                    .map_err(|error| DeviceRefusal::malformed(error.to_string()))?,
-            );
-        }
-        let target = RemoteActionTarget {
-            provider: HOST_ACTIONS_PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, LIST_PERSONAL),
+        let Some(mut list) = found else {
+            return Err(DeviceRefusal::unanswered(
+                "your list of workspaces has not reached the host yet",
+            ));
         };
-        let listed = self.ask_host(entered, target, arguments).await?;
-        serde_json::from_value(listed).map_err(|error| {
-            DeviceRefusal::malformed(format!("The host answered no workspace list: {error}"))
-        })
+        // Each workspace's host is a device of theirs: the answer names it as their devices do.
+        let devices = Self::read_fields(
+            &actions,
+            tilo_actions::remote::ResourceReadRequest {
+                workspace: own.clone(),
+                app: tilo_server_protocol::devices::DEVICES.0.to_owned(),
+                record: tilo_server_protocol::devices::DEVICES.1.to_owned(),
+                joined: false,
+                after: None,
+                wait_ms: None,
+                document: false,
+                listing: false,
+                decide: false,
+            },
+        )
+        .await;
+        let names = devices
+            .as_ref()
+            .map_or_else(std::collections::BTreeMap::new, |value| {
+                tilo_server_protocol::devices::names(value)
+            });
+        list.with_hosts(&names, Some(&self.server_cert.device_public_key));
+        let member = member_record(&person);
+        for index in 0..list.workspaces.len() {
+            let named = list.workspaces[index].workspace.clone();
+            let Some(workspace_id) = WorkspaceId::parse(&named) else {
+                continue;
+            };
+            let actions = self.actions(workspace_id);
+            let record = |app: &str, record: &str| tilo_actions::remote::ResourceReadRequest {
+                workspace: named.clone(),
+                app: app.to_owned(),
+                record: record.to_owned(),
+                joined: false,
+                after: None,
+                wait_ms: None,
+                document: false,
+                listing: false,
+                decide: false,
+            };
+            if let Some(reading) =
+                Self::read_fields(&actions, record(MEMBERSHIP_APP, &member)).await
+            {
+                list.with_membership(&named, &reading);
+            }
+            if list.workspaces[index].role.as_deref() == Some(OWNER_ROLE)
+                && let Some(reading) = Self::read_fields(
+                    &actions,
+                    record(
+                        tilo_server_protocol::workspaces::OWNERSHIP.0,
+                        tilo_server_protocol::workspaces::OWNERSHIP.1,
+                    ),
+                )
+                .await
+            {
+                list.with_ownership(&named, &reading);
+            }
+        }
+        list.workspaces.retain(|entry| {
+            tilo_server_protocol::workspaces::labelled(&entry.labels, labels)
+                && workspace.is_none_or(|only| entry.workspace == only)
+        });
+        Ok(list)
+    }
+
+    /// The fields a read of a record answered (`{"records": [{..., "value"}]}`): `None` where the
+    /// host does not hold it, refused the caller, or did not answer.
+    async fn read_fields(
+        actions: &SessionActions,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> Option<Value> {
+        let answered = actions
+            .read_record(read)
+            .await
+            .unwrap_or(Err(ActionCallError::Unanswered))
+            .ok()?;
+        serde_json::from_str(&answered).ok()
     }
 
     /// The server's own operation `action` with `arguments`, asked in the workspace this

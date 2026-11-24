@@ -27,7 +27,6 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::workspaces::PersonalList;
 use tilo_workspace_service::files;
 
 use tilo_api::daemon::folders;
@@ -122,15 +121,6 @@ const CONTENT_WAIT: Duration = Duration::from_secs(20);
 /// How often the folders look at `tilo folders` again, and a server not reached is asked again.
 const PEER_LOOK: Duration = Duration::from_secs(5);
 
-/// The follow of the person's list, ended when it is let go.
-struct Following(tokio::task::JoinHandle<()>);
-
-impl Drop for Following {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 impl Peer {
     /// A peer keeping its files' state under `device_dir` and showing them
     /// below `home`. Must be called on a tokio runtime.
@@ -195,49 +185,38 @@ impl Peer {
     /// server not reached is asked again then, and the folders of what this device keeps stay
     /// shown meanwhile.
     pub(crate) async fn keep(self: Arc<Self>, own: Arc<ServiceWorkspaces>, account: Arc<Account>) {
-        let woken = Arc::new(tokio::sync::Notify::new());
-        // The follow ends with this, when the task keeping the folders is let go.
-        let _following = Following(tokio::spawn(
-            Arc::clone(&self).follow(Arc::clone(&account), Arc::clone(&woken)),
-        ));
+        let person = own.device_cert().user_public_key;
         loop {
-            self.reconcile(&own, Some(&account)).await;
-            tokio::select! {
-                () = woken.notified() => {}
-                () = tokio::time::sleep(PEER_LOOK) => {}
-            }
-        }
-    }
-
-    /// Take in each list `account` answers, waking `woken` when it moved.
-    async fn follow(self: Arc<Self>, account: Arc<Account>, woken: Arc<tokio::sync::Notify>) {
-        let mut version: Option<String> = None;
-        loop {
-            match account.list(version.as_deref()).await {
+            match account
+                .listed(
+                    &person,
+                    &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
+                    None,
+                )
+                .await
+            {
                 Ok(listed) => {
                     self.connected
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                     *super::serve::NOT_IN.lock_recover() = None;
-                    if version.as_deref() != Some(listed.version.as_str()) {
-                        *self.listed.lock().await = Some(Self::listed_from(&listed.list));
-                        woken.notify_one();
-                    }
-                    version = Some(listed.version);
+                    *self.listed.lock().await = Some(Self::listed_from(&listed));
                 }
                 Err(why) => {
                     tracing::debug!(%why, "the person's workspaces are not listed now");
                     self.connected
                         .store(false, std::sync::atomic::Ordering::Relaxed);
                     *super::serve::NOT_IN.lock_recover() = Some(why);
-                    tokio::time::sleep(PEER_LOOK).await;
                 }
             }
+            self.reconcile(&own).await;
+            tokio::time::sleep(PEER_LOOK).await;
         }
     }
 
-    /// `personal`, as the peer lists it.
-    fn listed_from(personal: &PersonalList) -> Vec<Listed> {
-        personal
+    /// `listed`, the person's workspaces as their server's record names them, as the peer lists
+    /// them.
+    fn listed_from(listed: &tilo_server_protocol::workspaces::PersonWorkspaces) -> Vec<Listed> {
+        listed
             .workspaces
             .iter()
             .filter_map(|entry| {
@@ -256,7 +235,7 @@ impl Peer {
     /// the person set them. Each folder's tree is held in `own`, this device's
     /// own workspace service; a workspace it does not keep yet is entered
     /// where the list, or `account`, names.
-    pub(crate) async fn reconcile(&self, own: &ServiceWorkspaces, account: Option<&Account>) {
+    pub(crate) async fn reconcile(&self, own: &ServiceWorkspaces) {
         let (listed, complete) = self.listed(own).await;
         let mut wanted = match folders::Folders::load(&self.device_dir) {
             Ok(wanted) => wanted,
@@ -345,7 +324,7 @@ impl Peer {
             if shown {
                 continue;
             }
-            if let Err(why) = self.enter(own, account, entry).await {
+            if let Err(why) = self.enter(own, entry).await {
                 self.not_shown(entry.workspace, &why);
                 continue;
             }
@@ -371,16 +350,11 @@ impl Peer {
         }
     }
 
-    /// Have `own` keep `entry`'s workspace, entering it as a member copy where the list, else
-    /// `account`, names it is kept, waiting at most [`ENTERING_ONE`]; why not, when it was not
-    /// entered. A workspace that could not be entered is tried again only once its wait is over,
-    /// and until then answers why it was not.
-    async fn enter(
-        &self,
-        own: &ServiceWorkspaces,
-        account: Option<&Account>,
-        entry: &Listed,
-    ) -> Result<(), String> {
+    /// Have `own` keep `entry`'s workspace, entering it as a member copy where the person's list
+    /// says it is kept, waiting at most [`ENTERING_ONE`]; why not, when it was not entered. A
+    /// workspace that could not be entered is tried again only once its wait is over, and until
+    /// then answers why it was not.
+    async fn enter(&self, own: &ServiceWorkspaces, entry: &Listed) -> Result<(), String> {
         let workspace = entry.workspace;
         if own.keeps(workspace).await {
             return Ok(());
@@ -403,13 +377,10 @@ impl Peer {
             ));
         }
         let entering = async {
-            let hint = match (&entry.entered_at, account) {
-                (Some(hint), _) => hint.clone(),
-                (None, Some(account)) => account.address(workspace).await?,
-                (None, None) => {
-                    return Err("no server of the person's names where it is kept".to_owned());
-                }
-            };
+            let hint = entry
+                .entered_at
+                .clone()
+                .ok_or("no device of yours says where it is kept yet")?;
             own.copies().hold_as_member(workspace, &hint).await
         };
         let why = match tokio::time::timeout(ENTERING_ONE, entering).await {
@@ -694,14 +665,14 @@ mod folder_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_server_protocol::workspaces::{KeepingDeviceAddress, PersonalWorkspace};
+    use tilo_server_protocol::workspaces::{KeepingDeviceAddress, ListedWorkspace};
 
     /// The server's list names each folder after its workspace.
     #[test]
     fn a_list_sent_by_the_host_names_the_folders() {
         let second = "22222222-2222-4222-8222-222222222222";
-        let personal = PersonalList {
-            workspaces: vec![PersonalWorkspace {
+        let personal = tilo_server_protocol::workspaces::PersonWorkspaces {
+            workspaces: vec![ListedWorkspace {
                 workspace: second.to_owned(),
                 name: "Second".to_owned(),
                 host: Some(KeepingDeviceAddress {
@@ -711,10 +682,10 @@ mod tests {
                 role: Some("owner".to_owned()),
                 labels: tilo_server_protocol::workspaces::WorkspaceLabels::default(),
                 unattended: false,
-                enter_at: None,
                 made_at_ms: None,
+                host_device: None,
+                host_hint: None,
             }],
-            devices: Vec::new(),
         };
         let listed = Peer::listed_from(&personal);
         assert_eq!(listed.len(), 1);

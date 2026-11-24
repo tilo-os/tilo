@@ -24,8 +24,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
-    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
-    WorkspaceLabels,
+    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, WorkspaceLabels,
 };
 use tilo_session_client::Link;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
@@ -152,7 +151,7 @@ async fn flow_signs_in_and_controls_all_workspaces_without_tilosh() {
 
     // Both workspaces of the person are listed, and the laptop's own device is theirs.
     let listed = laptop
-        .personal_list_in(f.work_id(), &WorkspaceLabels::new(), None)
+        .person_workspaces(&WorkspaceLabels::new(), None)
         .await
         .expect("the server answers the person's list");
     let ids: Vec<&str> = listed
@@ -182,7 +181,7 @@ async fn flow_signs_in_and_controls_all_workspaces_without_tilosh() {
         .expect("the new workspace's id")
         .to_owned();
     let listed = laptop
-        .personal_list_in(f.work_id(), &WorkspaceLabels::new(), None)
+        .person_workspaces(&WorkspaceLabels::new(), None)
         .await
         .expect("the list grew by the workspace");
     assert!(

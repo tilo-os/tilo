@@ -31,11 +31,18 @@ pub const NAME: &str = "Servers";
 /// Whether this device holds its person's workspace: the workspace names it
 /// among its holders, whether it founded the workspace or was taken in.
 pub async fn holds_person_workspace(workspaces: &Workspaces) -> bool {
+    holds_person_workspace_of(
+        workspaces,
+        &workspaces.serving_certificate().user_public_key,
+    )
+    .await
+}
+
+/// Whether this device holds `person`'s workspace: the workspace names this device among its
+/// holders.
+pub async fn holds_person_workspace_of(workspaces: &Workspaces, person: &[u8; 32]) -> bool {
     let own = workspaces.serving_certificate();
-    let Some(state) = workspaces
-        .state(&person_workspace_id(&own.user_public_key))
-        .await
-    else {
+    let Some(state) = workspaces.state(&person_workspace_id(person)).await else {
         return false;
     };
     state
@@ -54,12 +61,23 @@ pub async fn holds_person_workspace(workspaces: &Workspaces) -> bool {
 /// Another device of the person keeps the workspace, or it could not be made.
 pub async fn found(workspaces: &Workspaces) -> Result<String, String> {
     let person = workspaces.serving_certificate().user_public_key;
-    let id = person_workspace_id(&person);
-    if holds_person_workspace(workspaces).await {
+    found_for(workspaces, &person).await
+}
+
+/// [`found`] for `person`: found their own workspace here when this device is to hold it, which
+/// a server that makes workspaces for a person with no device of their own does. What this host
+/// records them in is listed there, so their list is complete on the device that now holds it.
+///
+/// # Errors
+/// Another device of the person keeps the workspace, or it could not be made.
+pub async fn found_for(workspaces: &Workspaces, person: &[u8; 32]) -> Result<String, String> {
+    let id = person_workspace_id(person);
+    if holds_person_workspace_of(workspaces, person).await {
         return Ok(id);
     }
-    may_found(workspaces, &person).await?;
-    workspaces.create_workspace(NAME, Some(&id)).await?;
+    may_found(workspaces, person).await?;
+    workspaces.create_for(NAME, Some(&id), *person).await?;
+    workspaces.list_known_for(person).await;
     Ok(id)
 }
 

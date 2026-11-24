@@ -144,7 +144,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // list the CLI's peer asks for, so a page whose own storage remembers nothing still offers
     // them. A workspace the answering host keeps itself names no other host.
     let listed = device
-        .personal_list(
+        .person_workspaces(
             &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             None,
         )
@@ -178,7 +178,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         "tilo api: Mover",
     );
     let listed_by_api = api
-        .personal_list(
+        .person_workspaces(
             &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             None,
         )
@@ -252,7 +252,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     assert_eq!(first.0.workspace, second.0.workspace);
     assert_eq!(first.0.name, "Twice");
     let named_twice = device
-        .personal_list(
+        .person_workspaces(
             &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             None,
         )

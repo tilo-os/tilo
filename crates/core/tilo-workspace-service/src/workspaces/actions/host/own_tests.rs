@@ -207,10 +207,9 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
             CREATE_OWN_WORKSPACE,
             DELETE_WORKSPACE,
             tilo_server_protocol::workspaces::LIST_WORKSPACES,
-            tilo_server_protocol::workspaces::LIST_PERSONAL,
         ],
-        "a stranger makes, branches, deletes and lists the workspaces of their own, reads their \
-         list, and nothing else"
+        "a stranger makes, branches, deletes and lists the workspaces of their own, and nothing \
+         else"
     );
     let created = create_own(&host, &guest, json!({"name": "Ada's workspace"}))
         .await
@@ -2017,49 +2016,6 @@ async fn a_persons_first_device_joins_their_own_workspace_before_any_entry() {
         subscribe(workspaces, &workspace, &stranger).await,
         Err(crate::workspace_access::DenyReason::NotAMember),
         "a stranger's device is still no member"
-    );
-    server.shutdown().await;
-}
-
-/// A workspace this host records as the person's own is listed as this host's, whatever a
-/// device's kept list said of where it is: a key of theirs asks it here, never at a device
-/// that may be gone, and a workspace not open right now is no other device's.
-#[tokio::test]
-async fn a_kept_own_workspace_lists_as_this_hosts_whatever_a_devices_list_said() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let host = ServiceWorkspaceActions::new();
-    host.attach(workspaces.clone());
-    let home = open(workspaces).await;
-    let root = SigningKey::from_bytes(&rand::random());
-    let person = root.verifying_key().to_bytes();
-    let_in(workspaces, &home, person).await;
-    let device = tab_of(&root, "Firefox on Linux");
-    // The host holds their own workspace, where a device of theirs lists their workspaces.
-    super::personal_tests::hold_person_workspace(workspaces, person).await;
-    // A workspace of theirs this host records, kept closed here as it is when its runtime
-    // was let go; a device of theirs listed it.
-    let workspace = uuid::Uuid::new_v4().to_string();
-    workspaces
-        .own()
-        .unwrap()
-        .record(&person, &workspace)
-        .unwrap();
-    super::personal_tests::list_workspaces(workspaces, person, &[(&workspace, "Company")]).await;
-
-    let listed = workspaces.personal_of(&device).await;
-    let entry = listed
-        .workspaces
-        .iter()
-        .find(|one| one.workspace == workspace)
-        .expect("the workspace is listed");
-    let addressed = entry.host.as_ref().expect("it names its host");
-    assert!(
-        addressed.hint.is_none(),
-        "a workspace this host keeps for the person is reached here: {}",
-        addressed.name
     );
     server.shutdown().await;
 }

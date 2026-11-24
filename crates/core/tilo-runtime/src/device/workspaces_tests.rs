@@ -213,7 +213,11 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
         crate::device::account::Account::at(&own, &found.endpoint_addr, signs_as, &workspace);
     tilo_test_env::within(
         "the server answers the account its copy names",
-        account.list(None),
+        account.listed(
+            &laptop_cert.user_public_key,
+            &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
+            None,
+        ),
     )
     .await
     .expect("the person's workspace list");

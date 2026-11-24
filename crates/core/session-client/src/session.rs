@@ -1122,9 +1122,6 @@ impl Task {
         self.begun.insert(workspace_id);
         self.live_sessions_due.insert(workspace_id);
         self.reopen_records(workspace_id);
-        if workspace_id == self.own_workspace() {
-            self.emit_personal();
-        }
         self.outbound_due = true;
         self.follow_governance(workspace_id);
         self.check_admission();
@@ -2431,9 +2428,6 @@ impl Task {
         if !held {
             return;
         }
-        if self.is_identity_list(route) {
-            self.emit_personal();
-        }
         self.engine.arrivals().landed();
         self.reports.emit(&crate::Event::Landed {
             author,
@@ -2441,43 +2435,11 @@ impl Task {
         });
     }
 
-    /// Whether `route` is the person's list of their workspaces, kept in their own workspace.
-    fn is_identity_list(&self, route: &DocumentRoute) -> bool {
-        let (app, record) = tilo_server_protocol::workspaces::IDENTITY_LIST;
-        route.app_id == app
-            && route.document == record
-            && route
-                .workspace_id()
-                .is_ok_and(|workspace| workspace == self.own_workspace())
-    }
-
     /// The person's own workspace: the one their list of their workspaces is kept in.
     fn own_workspace(&self) -> WorkspaceId {
         WorkspaceId::from(collab_types::person_workspace(
             &self.config.cert.user_public_key,
         ))
-    }
-
-    /// The person's workspace list, read from their own workspace's record: the one list every
-    /// device and host of theirs keeps. `None` while this device holds no such workspace or its
-    /// record has not arrived.
-    fn personal_list(&self) -> Option<tilo_server_protocol::workspaces::PersonalList> {
-        use tilo_server_protocol::workspaces::{IDENTITY_LIST, PersonalList};
-        let own = self.own_workspace();
-        let link = self.links.get(&own)?;
-        let bytes = link
-            .sync
-            .replica()
-            .read(|peer| peer.document(IDENTITY_LIST.0, IDENTITY_LIST.1))?;
-        let list = tilo_user_identity::WorkspaceList::of_document(&bytes).ok()?;
-        Some(PersonalList::of_list(&list))
-    }
-    /// Tell this session's readers the person's list of their workspaces, as their own
-    /// workspace's record holds it now.
-    fn emit_personal(&self) {
-        if let Some(list) = self.personal_list() {
-            self.reports.emit(&crate::Event::Personal(Box::new(list)));
-        }
     }
 
     /// Whether this device reads `route`'s workspace as a member: its replica's governance

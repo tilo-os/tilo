@@ -40,7 +40,6 @@ pub mod membership_check;
 pub mod message_policy;
 pub mod narration;
 pub mod network;
-pub mod personal;
 pub mod presence;
 /// This session's presence tracks, as a member's client says on them.
 pub mod saying;
@@ -64,7 +63,6 @@ pub use network::{
     Receipt, RecvTimeoutError, RosterDevice, SayPresence, Topic, Transport, TryRecvError, Waits,
     answer, topic_of,
 };
-pub use personal::PersonalWorkspaces;
 pub use presence::OwnPresence;
 pub use saying::saying;
 #[cfg(not(target_arch = "wasm32"))]

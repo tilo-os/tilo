@@ -321,4 +321,46 @@ mod tests {
             .unwrap();
         assert!(!list.state().unwrap().went(a));
     }
+
+    /// A second device of the person reads the list the first one keeps: an entry the first
+    /// lists appears there, a rename it makes reaches it, and one it takes off is gone.
+    #[test]
+    fn a_second_device_reads_what_the_first_listed_renamed_and_took_off() {
+        let mut first = replica();
+        first
+            .apply(WorkspaceList::LIST_WORKSPACE.with((A.to_owned(), "Notes".to_owned())))
+            .unwrap();
+        let mut second = first.fork();
+        let listed = |list: &tilo_resource::Replica<WorkspaceList>| -> Vec<(String, String)> {
+            list.state()
+                .unwrap()
+                .listed()
+                .map(|(id, entry)| (id.to_string(), entry.name.clone()))
+                .collect()
+        };
+        first.sync_with(&mut second).unwrap();
+        assert_eq!(
+            listed(&second),
+            [(A.to_owned(), "Notes".to_owned())],
+            "the workspace the first device listed is the second's too"
+        );
+        first
+            .apply(WorkspaceList::LIST_WORKSPACE.with((A.to_owned(), "Notebook".to_owned())))
+            .unwrap();
+        first.sync_with(&mut second).unwrap();
+        assert_eq!(
+            listed(&second),
+            [(A.to_owned(), "Notebook".to_owned())],
+            "the rename reaches the second device"
+        );
+        first
+            .apply(WorkspaceList::UNLIST_WORKSPACE.with(A.to_owned()))
+            .unwrap();
+        first.sync_with(&mut second).unwrap();
+        assert!(
+            listed(&second).is_empty(),
+            "the workspace the first device took off is gone for the second"
+        );
+        assert!(second.state().unwrap().went(WorkspaceId::parse(A).unwrap()));
+    }
 }

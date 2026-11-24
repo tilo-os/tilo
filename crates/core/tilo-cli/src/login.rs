@@ -24,12 +24,12 @@ use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent};
 use crate::api::Calls;
-pub(crate) use tilo_api::daemon::enter::{
-    LOGIN_ENDED, NOT_LOGGED_IN, UNREACHED, choose_workspace, connect, debug_why,
-    host_of, signed_over_iroh,
-};
 #[cfg(test)]
 use tilo_api::daemon::enter::enter_said;
+pub(crate) use tilo_api::daemon::enter::{
+    LOGIN_ENDED, NOT_LOGGED_IN, UNREACHED, choose_workspace, connect, debug_why, host_of,
+    signed_over_iroh,
+};
 pub use tilo_device_identity::login::{Device, Place, served_device_key};
 
 /// What Tilo's tools let the agent do, as it tells the person.
@@ -639,8 +639,8 @@ mod tests {
         workspace: &str,
         role: &str,
         made_at_ms: i64,
-    ) -> tilo_server_protocol::workspaces::PersonalWorkspace {
-        tilo_server_protocol::workspaces::PersonalWorkspace {
+    ) -> tilo_server_protocol::workspaces::ListedWorkspace {
+        tilo_server_protocol::workspaces::ListedWorkspace {
             workspace: workspace.into(),
             name: workspace.to_uppercase(),
             host: None,
@@ -648,7 +648,8 @@ mod tests {
             labels: tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             made_at_ms: Some(made_at_ms),
             unattended: false,
-            enter_at: None,
+            host_device: None,
+            host_hint: None,
         }
     }
 

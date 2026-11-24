@@ -53,6 +53,10 @@ impl Workspaces {
     /// deleted, or the deletion could not be recorded. Once recorded, what is
     /// left of it is removed when the host opens again.
     pub async fn delete(&self, workspace: &str) -> Result<(), String> {
+        let owner = self
+            .own()
+            .and_then(|own| own.owner_of(workspace))
+            .unwrap_or_else(|| self.serving_certificate().user_public_key);
         let governed = self
             .inner
             .workspaces
@@ -100,8 +104,8 @@ impl Workspaces {
             .deletions
             .send((workspace.to_owned(), workspace_id));
         let _ = self.inner.changes.send(workspace.to_owned());
-        // Gone from every list that named it.
-        self.personal_changed();
+        // Gone from their list too, remembered as gone so a device that was away lets it go.
+        self.unlist_for(&owner, workspace).await;
         Ok(())
     }
 

@@ -978,8 +978,14 @@ impl Workspaces {
         administrator: &DeviceCert,
         request: RemoveMemberRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        self.change_membership(workspace, administrator, request, Membership::Remove)
-            .await
+        let person = request.user_public_key;
+        let done = self
+            .change_membership(workspace, administrator, request, Membership::Remove)
+            .await;
+        if done.is_ok() {
+            self.unlist_for(&person, workspace).await;
+        }
+        done
     }
 
     /// Remove the members `people` from `workspace` in one governance change and
@@ -996,6 +1002,7 @@ impl Workspaces {
         people: &std::collections::BTreeSet<[u8; 32]>,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
+        let named = workspace.to_owned();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         for person in people {
@@ -1042,6 +1049,9 @@ impl Workspaces {
             "idle members pruned"
         );
         drop(workspace);
+        for person in people {
+            self.unlist_for(person, &named).await;
+        }
         Ok(completion)
     }
 

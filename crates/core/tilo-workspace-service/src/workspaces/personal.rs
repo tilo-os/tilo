@@ -1,14 +1,14 @@
-//! The person's workspace list and devices, read from their own workspace
-//! ([`ServiceOperation::ReadPersonalList`]).
+//! The person's devices and the list of their workspaces, in their own workspace.
 //!
 //! The person's devices hold their list: every workspace of theirs, wherever
 //! it is hosted (a desktop of theirs, a paired device, a server), each with its
 //! host's own signed address. The list is a resource of the person's own
 //! workspace ([`IDENTITY_LIST`], a [`WorkspaceList`]), which their devices
 //! change through its actions, so it reaches their devices as any resource
-//! does. Any certified key of theirs (a script, an agent's grant, the entry
-//! that serves the person's agents) reads it back: how a key that runs on no
-//! device of theirs finds the workspaces it may enter, and at which host.
+//! does, and every reader reads it through the record API. Any certified key of
+//! theirs (a script, an agent's grant, the entry that serves the person's
+//! agents) reads it back: how a key that runs on no device of theirs finds the
+//! workspaces it may enter, and at which host.
 //!
 //! The devices the person's root certified are another resource of their own
 //! workspace ([`super::person_workspace::devices`]), which every device of
@@ -16,37 +16,22 @@
 //! key their root certified through it, when a session of a key was last here,
 //! the agent a key's session said it runs, and a revocation it took in. A
 //! device is never taken out; its root's revocation marks it.
-//!
-//! A browser keeps one key per open tab, since a key has one writer; a page
-//! asking for the record names its browser's tab keys, which are kept together
-//! in `so.tilo.shell`'s `tab-groups` of the person's own workspace, so a list
-//! of their devices says which keys are one browser's.
-//!
-//! [`ServiceOperation::ReadPersonalList`]: crate::service_authority::ServiceOperation::ReadPersonalList
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use automerge::transaction::Transactable as _;
-use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_server_protocol::workspaces::{
-    IDENTITY_LIST, KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES,
-    PersonalBrowser, PersonalList, PersonalWorkspace,
-};
+use tilo_server_protocol::workspaces::{IDENTITY_LIST, MAX_PERSONAL_DEVICES};
 use tilo_user_identity::{DeviceCert, RevocationEntry, WorkspaceList, verify_device_cert};
 
 use super::Workspaces;
+use super::person_workspace;
+use super::person_workspace::devices::{self, Devices};
 
 /// One person's devices by key: the name each reads by, and whether a
 /// revocation here refuses it.
 pub(super) type DeviceNames = BTreeMap<String, (String, bool)>;
-use super::person_workspace;
-use super::person_workspace::devices::{self, Devices};
-/// The resource of the person's own workspace each browser's tab keys are
-/// kept in: a page naming its tabs says which keys are one browser's.
-const TAB_GROUPS: (&str, &str) = ("so.tilo.shell", "tab-groups");
 
 /// How often a session opening writes when a key was last here: a host serves
 /// many sessions, and the record is read back rather than streamed.
@@ -57,36 +42,7 @@ fn now_ms() -> i64 {
     i64::try_from(tilo_clock::unix_now_ns() / 1_000_000).unwrap_or(i64::MAX)
 }
 
-/// The counter a person's workspace list moves when a write of it lands: what
-/// a device following its list waits on, rather than asking the host again and
-/// again.
-pub(super) struct PersonalPushes {
-    changed: tokio::sync::watch::Sender<u64>,
-}
-
-impl Default for PersonalPushes {
-    fn default() -> Self {
-        Self {
-            changed: tokio::sync::watch::channel(0).0,
-        }
-    }
-}
-
 impl Workspaces {
-    /// The list changed: every device following its person's list reads it
-    /// again.
-    pub fn personal_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.inner.personal_pushes.changed.subscribe()
-    }
-
-    /// A person's workspace list changed.
-    pub(super) fn personal_changed(&self) {
-        self.inner
-            .personal_pushes
-            .changed
-            .send_modify(|changed| *changed = changed.wrapping_add(1));
-    }
-
     /// The workspaces `person`'s own list names that this server does not govern, each by
     /// its id and the name the list gives it: what another server keeps for them, as a
     /// device of theirs last said. Nothing this server governs is among them, whoever is in
@@ -118,107 +74,6 @@ impl Workspaces {
                 .values()
                 .any(|(name, refused)| !*refused && name == label)
         })
-    }
-
-    /// `device`'s person's list as `device` reads it: the one in their own
-    /// workspace, in their order, each workspace this host keeps for them
-    /// named and placed as this host knows it, then the ones here the list
-    /// does not name yet; limited to what an agent's grant reaches.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one reading of the list: its own entries, then the ones only this host knows"
-    )]
-    pub(super) async fn personal(
-        &self,
-        device: &DeviceCert,
-        here: &[tilo_server_protocol::workspaces::WorkspaceListing],
-        only: &super::actions::host::Listed,
-    ) -> PersonalList {
-        let name = self.host_name();
-        let person = device.user_public_key;
-        let mut local: Vec<PersonalWorkspace> = Vec::new();
-        for listed in here {
-            // The reader reached this host to ask: it names itself, and signs
-            // no address a person with hundreds of workspaces here would wait on.
-            let host = Some(KeepingDeviceAddress {
-                name: name.clone(),
-                hint: None,
-            });
-            local.push(PersonalWorkspace {
-                workspace: listed.workspace.clone(),
-                name: listed.name.clone(),
-                host,
-                role: listed.role.clone(),
-                labels: listed.labels.clone(),
-                unattended: listed.unattended,
-                enter_at: None,
-                made_at_ms: listed.made_at_ms,
-            });
-        }
-        let reaches = |workspace: &str| {
-            device
-                .capabilities
-                .agent
-                .is_none_or(|scope| scope.reaches(workspace))
-        };
-        // Only those the listing names, when it names some.
-        let wanted = |kept: &PersonalWorkspace| only.holds(&kept.workspace, &kept.labels);
-        let list = self.list_of(&person).await;
-        let mut workspaces: Vec<PersonalWorkspace> = Vec::new();
-        for (id, kept) in list.listed() {
-            let workspace = id.to_string();
-            // A workspace this host governs is listed as its governance has the person, never as
-            // a device of theirs last kept it: one they left, or were taken out of, is in no list
-            // of theirs here, so their devices let it go.
-            let governed_here = self.inner.memberships.serves(&workspace);
-            if (governed_here && !local.iter().any(|one| one.workspace == workspace))
-                || !reaches(&workspace)
-                || !wanted(&PersonalWorkspace {
-                    workspace: workspace.clone(),
-                    name: kept.name.clone(),
-                    host: None,
-                    role: None,
-                    labels: BTreeMap::default(),
-                    unattended: false,
-                    enter_at: None,
-                    made_at_ms: None,
-                })
-                || workspaces.iter().any(|known| known.workspace == workspace)
-            {
-                continue;
-            }
-            let host = kept
-                .address()
-                .and_then(|hint| KeepingDeviceAddress::of_hint(&hint));
-            if let Some(at) = local.iter().position(|one| one.workspace == workspace) {
-                workspaces.push(local.remove(at));
-            } else {
-                // A workspace this host records as the person's own is kept here, whatever a
-                // device's list said of where it is: a key's session asks it here, not at a
-                // device that may be gone.
-                let own = self.own().and_then(|own| own.owner_of(&workspace)) == Some(person);
-                let host = if own {
-                    Some(KeepingDeviceAddress {
-                        name: name.clone(),
-                        hint: None,
-                    })
-                } else {
-                    host
-                };
-                workspaces.push(PersonalWorkspace {
-                    workspace,
-                    name: kept.name.clone(),
-                    host,
-                    role: None,
-                    labels: BTreeMap::default(),
-                    unattended: false,
-                    enter_at: None,
-                    made_at_ms: None,
-                });
-            }
-        }
-        workspaces.extend(local);
-        PersonalList { workspaces }
     }
 
     /// Add `device`, a key of its person's that asked for their record, to
@@ -254,101 +109,6 @@ impl Workspaces {
             tracing::warn!(%error, "a revoked device is not marked in its person's record");
         }
         self.refresh_names(&person).await;
-    }
-
-    /// Keep `browser`, the tab keys a page of `device`'s person names as it
-    /// asks for their record, as that browser's (see [`LIST_PERSONAL`]).
-    /// Only a device of the person's own names them: an agent's grant and a
-    /// stand-in are no browser of theirs.
-    ///
-    /// [`LIST_PERSONAL`]: tilo_server_protocol::workspaces::LIST_PERSONAL
-    pub(super) async fn note_browser(&self, device: &DeviceCert, browser: PersonalBrowser) {
-        if device.capabilities.agent.is_some() || device.capabilities.stand_in {
-            return;
-        }
-        if !PersonalBrowser::is_id(&browser.id) {
-            return;
-        }
-        // The newest, when a page names more than a browser keeps.
-        let older = browser.certs.len().saturating_sub(MAX_BROWSER_DEVICES);
-        let certs: Vec<DeviceCert> = browser
-            .certs
-            .into_iter()
-            .skip(older)
-            .filter(|cert| cert.capabilities.agent.is_none() && !cert.capabilities.stand_in)
-            .collect();
-        for cert in &certs {
-            self.keep_issued_device(cert, "").await;
-        }
-        let person = device.user_public_key;
-        // Only keys their root signed for them: the resource holds no other.
-        let devices = self.devices_of(&person).await;
-        let keys: Vec<String> = certs
-            .iter()
-            .map(|cert| hex::encode(cert.device_public_key))
-            .filter(|key| {
-                devices
-                    .devices
-                    .get(&tilo_resource::Id::from_raw(key.clone()))
-                    .is_some()
-            })
-            .collect();
-        let workspace = person_workspace_id(&person);
-        let browser_id = browser.id;
-        let chosen = keys.clone();
-        let applied =
-            person_workspace::edit_document_on(self, &workspace, TAB_GROUPS, move |document| {
-                // A key is one browser's: a page naming it takes it from any other.
-                let others: Vec<String> = document
-                    .keys(ROOT)
-                    .filter(|key| key.starts_with("tab:"))
-                    .filter(|key| {
-                        document
-                            .get(ROOT, key.as_str())
-                            .ok()
-                            .flatten()
-                            .and_then(|(value, _)| value.into_string().ok())
-                            .is_some_and(|id| id != browser_id)
-                    })
-                    .filter(|key| chosen.contains(&key.trim_start_matches("tab:").to_owned()))
-                    .collect();
-                for key in others {
-                    document
-                        .delete(ROOT, key.as_str())
-                        .map_err(|error| error.to_string())?;
-                }
-                let named: std::collections::BTreeSet<String> =
-                    chosen.iter().map(|key| format!("tab:{key}")).collect();
-                for key in document
-                    .keys(ROOT)
-                    .filter(|key| key.starts_with("tab:"))
-                    .filter(|key| {
-                        document
-                            .get(ROOT, key.as_str())
-                            .ok()
-                            .flatten()
-                            .and_then(|(value, _)| value.into_string().ok())
-                            .as_deref()
-                            == Some(browser_id.as_str())
-                            && !named.contains(key)
-                    })
-                    .collect::<Vec<_>>()
-                {
-                    document
-                        .delete(ROOT, key.as_str())
-                        .map_err(|error| error.to_string())?;
-                }
-                for key in &chosen {
-                    document
-                        .put(ROOT, format!("tab:{key}"), browser_id.clone())
-                        .map_err(|error| error.to_string())?;
-                }
-                Ok(())
-            })
-            .await;
-        if let Err(error) = applied {
-            tracing::debug!(%error, "a page's browser is not in the person's record");
-        }
     }
 
     /// Add `cert`, a key its person's root just certified through this host
@@ -469,15 +229,6 @@ impl Workspaces {
             tracing::debug!(%error, "the agent a key runs is not in its person's record");
         }
     }
-
-    /// This host as people know it: the name it offers workspaces of their
-    /// own under, else its device's label.
-    fn host_name(&self) -> String {
-        self.own().map_or_else(
-            || self.inner.host.cert.device_label.clone(),
-            |own| own.offer().host.clone(),
-        )
-    }
 }
 
 impl Workspaces {
@@ -497,31 +248,6 @@ impl Workspaces {
         person_workspace::read_on::<Devices>(self, &workspace, devices::DEVICES)
             .await
             .unwrap_or_default()
-    }
-
-    /// Each tab key's browser, by key, as the person's own workspace holds it.
-    #[cfg(test)]
-    pub(crate) async fn tab_groups(&self, person: &[u8; 32]) -> BTreeMap<String, String> {
-        let workspace = person_workspace_id(person);
-        let Ok(Some(bytes)) = person_workspace::document_on(self, &workspace, TAB_GROUPS).await
-        else {
-            return BTreeMap::new();
-        };
-        let Ok(document) = AutoCommit::load(&bytes) else {
-            return BTreeMap::new();
-        };
-        document
-            .keys(ROOT)
-            .filter_map(|key| {
-                let key = key.strip_prefix("tab:")?.to_owned();
-                let browser = document
-                    .get(ROOT, format!("tab:{key}").as_str())
-                    .ok()
-                    .flatten()
-                    .and_then(|(value, _)| value.into_string().ok())?;
-                Some((key, browser))
-            })
-            .collect()
     }
 
     /// Apply `action` to the person's devices resource.

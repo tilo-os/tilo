@@ -8,12 +8,11 @@
 //! of the host, say) changes this table rather than a comparison in a
 //! handler.
 //!
-//! Five are anyone's: making the workspace of their own a host that offers
+//! Four are anyone's: making the workspace of their own a host that offers
 //! them keeps for each person ([`ServiceOperation::CreateOwnWorkspace`]),
-//! deleting one of theirs ([`ServiceOperation::DeleteOwnWorkspace`]), listing
-//! workspaces, which answers anyone but the host's person only the ones of
-//! their own, and reading their own workspace list
-//! ([`ServiceOperation::ReadPersonalList`]). The workspace is governed here like any other; the
+//! deleting one of theirs ([`ServiceOperation::DeleteOwnWorkspace`]), and
+//! listing workspaces, which answers anyone but the host's person only the
+//! ones of their own. The workspace is governed here like any other; the
 //! person administers it.
 //!
 //! Holding a workspace another host governs is asked of anyone too, and
@@ -90,9 +89,6 @@ pub enum ServiceOperation {
     /// on a host that keeps workspaces of people's own; an agent's grant only
     /// when it reaches all its person's workspaces, as for making one.
     BranchOwnWorkspace,
-    /// Read the caller's person's workspace list: anyone's for their own
-    /// list; an agent's grant reads what its scope reaches.
-    ReadPersonalList,
     /// Plan a machine that is not installed yet: enter the plan document the
     /// caller wrote as an entry in their Servers workspace, which the host
     /// makes when it does not hold it yet. Only a device of the host's person
@@ -158,7 +154,6 @@ impl ServiceOperation {
             Self::CreateOwnWorkspace => "workspace.create-own",
             Self::DeleteOwnWorkspace => "workspace.delete",
             Self::BranchOwnWorkspace => "workspace.branch-own",
-            Self::ReadPersonalList => "workspace.personal",
             Self::PlanMachine => "machine.plan",
             Self::ListMachines => "machine.list",
             Self::ShowMachine => "machine.show",
@@ -214,7 +209,6 @@ impl ServiceOperation {
                     | Self::DeleteOwnWorkspace
                     | Self::BranchOwnWorkspace
                     | Self::ListWorkspaces
-                    | Self::ReadPersonalList
                     | Self::HostWorkspace
                     | Self::UnhostWorkspace
                     | Self::CatchUpWorkspace
@@ -234,10 +228,7 @@ impl ServiceOperation {
             // workspace asks for the invitation into that one, which its person already has:
             // making another is for a grant reaching all of them, and the handler holds a
             // narrower one to the workspace it names.
-            Self::ListWorkspaces
-            | Self::ListRevocations
-            | Self::ReadPersonalList
-            | Self::CreateOwnWorkspace => true,
+            Self::ListWorkspaces | Self::ListRevocations | Self::CreateOwnWorkspace => true,
             Self::EnterWorkspace
             | Self::PreAdmit
             | Self::PutWorkspaceGrants
@@ -268,7 +259,7 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 29] = [
+    const ALL: [ServiceOperation; 27] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
@@ -285,7 +276,6 @@ mod tests {
         ServiceOperation::CreateOwnWorkspace,
         ServiceOperation::DeleteOwnWorkspace,
         ServiceOperation::BranchOwnWorkspace,
-        ServiceOperation::ReadPersonalList,
         ServiceOperation::PlanMachine,
         ServiceOperation::ListMachines,
         ServiceOperation::ShowMachine,
@@ -322,7 +312,6 @@ mod tests {
                     | ServiceOperation::DeleteOwnWorkspace
                     | ServiceOperation::BranchOwnWorkspace
                     | ServiceOperation::ListWorkspaces
-                    | ServiceOperation::ReadPersonalList
                     | ServiceOperation::HostWorkspace
                     | ServiceOperation::UnhostWorkspace
                     | ServiceOperation::CatchUpWorkspace
@@ -355,9 +344,7 @@ mod tests {
         for operation in ALL {
             let reads = matches!(
                 operation,
-                ServiceOperation::ListWorkspaces
-                    | ServiceOperation::ListRevocations
-                    | ServiceOperation::ReadPersonalList
+                ServiceOperation::ListWorkspaces | ServiceOperation::ListRevocations
             );
             let makes = matches!(
                 operation,
@@ -393,7 +380,6 @@ mod tests {
                         | ServiceOperation::DeleteOwnWorkspace
                         | ServiceOperation::BranchOwnWorkspace
                         | ServiceOperation::ListWorkspaces
-                        | ServiceOperation::ReadPersonalList
                 ),
                 "{}",
                 operation.name()

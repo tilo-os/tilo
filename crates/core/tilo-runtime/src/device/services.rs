@@ -557,6 +557,7 @@ impl Daemon {
             return Some(Arc::clone(account));
         }
         let person = tilo_server_protocol::servers::person_workspace_id(&self.cert.user_public_key);
+        let person_key = self.cert.user_public_key;
         let home = self.home()?;
         let server = home.server_address.as_ref()?;
         let account = Arc::new(super::account::Account::at(
@@ -566,17 +567,28 @@ impl Daemon {
             &home.workspace,
         ));
         // The person's own workspace, whose roster lists every device of theirs, is the first
-        // this device keeps: entered where the server says it is.
+        // this device keeps: entered where the person's list says it is.
         let (own, asked) = (Arc::clone(&self.workspaces), Arc::clone(&account));
         tilo_rt::app().handle().spawn(async move {
-            let Some(person) = WorkspaceId::parse(&person) else {
+            let Some(own_workspace) = WorkspaceId::parse(&person) else {
                 return;
             };
-            if own.keeps(person).await {
+            if own.keeps(own_workspace).await {
                 return;
             }
-            let entered = match asked.address(person).await {
-                Ok(hint) => own.copies().hold_as_member(person, &hint).await.map(drop),
+            let entered = match asked
+                .listed(&person_key, &WorkspaceLabels::new(), Some(&person))
+                .await
+            {
+                Ok(listed) => match listed.workspaces.first().map(|entry| entry.entered_at()) {
+                    Some(Ok(hint)) => own
+                        .copies()
+                        .hold_as_member(own_workspace, &hint)
+                        .await
+                        .map(drop),
+                    Some(Err(why)) => Err(why),
+                    None => Err("the person's list does not name it yet".to_owned()),
+                },
                 Err(why) => Err(why),
             };
             if let Err(why) = entered {
@@ -2132,10 +2144,20 @@ impl tilo_api::session::Here for Daemon {
             if self.workspaces.keeps(id).await {
                 return Ok(());
             }
-            let hint = Daemon::account(self)
-                .ok_or(NO_ACCOUNT_YET)?
-                .address(id)
+            let person = self.cert.user_public_key;
+            let account = Daemon::account(self).ok_or(NO_ACCOUNT_YET)?;
+            let listed = account
+                .listed(
+                    &person,
+                    &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
+                    Some(&workspace),
+                )
                 .await?;
+            let entry = listed
+                .workspaces
+                .first()
+                .ok_or("the person's list of workspaces names no such workspace")?;
+            let hint = entry.entered_at()?;
             self.workspaces
                 .copies()
                 .hold_as_member(id, &hint)
