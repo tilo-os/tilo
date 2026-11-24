@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Notice` is a `Resource` of the app's `tl.tilo.host.Notice`, made by its factory with the
+ * `Reading` is a `Resource` of the app's `tl.so.tilo.publisher.Reading`, made by its factory with the
  * resource's path (`publisher/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.publisher@41c7fd9c6c160376";
+export const SURFACE = "so.tilo.publisher@10d59cfeee8fcfea";
 
 /** The arguments of `read_key`. */
 export interface ReadKeyArgs {
@@ -42,26 +42,6 @@ export interface CheckStatusArgs {
 
 /** The arguments of `poll`. */
 export interface PollArgs {
-}
-
-/** Notice — `tl.tilo.host.Notice`. */
-export interface Notice extends tilo.Resource {
-  notice_to: string;  // to
-  notice_title: string;  // title
-  notice_body: string;  // body
-  notice_opens: unknown;  // opens
-  notice_seen: boolean;  // seen
-  notice_device: string;  // device
-  notice_actions: string[];  // actions
-}
-
-/** The actions `Notice` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const NOTICE_ACTIONS = [] as const;
-
-/** The `tl.tilo.host.Notice` kind at `path`. */
-export function notice(ws: tilo.Workspace, path: string): Notice {
-  return resourceProxy(ws, path, SURFACE, NOTICE_ACTIONS) as unknown as Notice;
 }
 
 /** Reading — `tl.so.tilo.publisher.Reading`. */

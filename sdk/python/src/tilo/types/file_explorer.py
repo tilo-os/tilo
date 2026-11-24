@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Notice` is the app's `tl.tilo.host.Notice` at `file-explorer/<resource>`, read with
+`Entry` is the app's `tl.so.tilo.file-explorer.Entry` at `file-explorer/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,7 +21,6 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "SortBy",
-    "Notice",
     "Entry",
     "Listing",
     "Place",
@@ -309,70 +308,9 @@ NameItArgs = TypedDict("NameItArgs", {
 })
 """The arguments of `name_it`."""
 
-class Notice(Resource):
-    """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.file-explorer@0e7f6404f2e5daae"
-    @property
-    def notice_to(self) -> str:
-        """to (`notice-to` on the wire)."""
-        return self.fields["notice-to"]
-
-    @notice_to.setter
-    def notice_to(self, value: str) -> None:
-        self.edit("notice-to", value=value)
-    @property
-    def notice_title(self) -> str:
-        """title (`notice-title` on the wire)."""
-        return self.fields["notice-title"]
-
-    @notice_title.setter
-    def notice_title(self, value: str) -> None:
-        self.edit("notice-title", value=value)
-    @property
-    def notice_body(self) -> str:
-        """body (`notice-body` on the wire)."""
-        return self.fields["notice-body"]
-
-    @notice_body.setter
-    def notice_body(self, value: str) -> None:
-        self.edit("notice-body", value=value)
-    @property
-    def notice_opens(self) -> Any:
-        """opens (`notice-opens` on the wire)."""
-        return self.fields["notice-opens"]
-
-    @notice_opens.setter
-    def notice_opens(self, value: Any) -> None:
-        self.edit("notice-opens", value=value)
-    @property
-    def notice_seen(self) -> bool:
-        """seen (`notice-seen` on the wire)."""
-        return self.fields["notice-seen"]
-
-    @notice_seen.setter
-    def notice_seen(self, value: bool) -> None:
-        self.edit("notice-seen", value=value)
-    @property
-    def notice_device(self) -> str:
-        """device (`notice-device` on the wire)."""
-        return self.fields["notice-device"]
-
-    @notice_device.setter
-    def notice_device(self, value: str) -> None:
-        self.edit("notice-device", value=value)
-    @property
-    def notice_actions(self) -> list[str]:
-        """actions (`notice-actions` on the wire)."""
-        return self.fields["notice-actions"]
-
-    @notice_actions.setter
-    def notice_actions(self, value: list[str]) -> None:
-        self.edit("notice-actions", value=value)
-
-
 class Entry(Resource):
     """Entry — `tl.so.tilo.file-explorer.Entry`."""
-    __surface__ = "so.tilo.file-explorer@0e7f6404f2e5daae"
+    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
     lm429k0c: str  # name
     sq7vzl81: str  # path
     @property
@@ -391,7 +329,7 @@ class Entry(Resource):
 
 class Listing(Resource):
     """Listing — `tl.so.tilo.file-explorer.Listing`."""
-    __surface__ = "so.tilo.file-explorer@0e7f6404f2e5daae"
+    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
     uzztpcqp: str  # path
     @property
     def _9ilrk28j(self) -> list[Entry]:
@@ -408,7 +346,7 @@ class Listing(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.file-explorer.Place`."""
-    __surface__ = "so.tilo.file-explorer@0e7f6404f2e5daae"
+    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
     kcy1i0qo: str  # label
     z0dyhfw9: str  # path
     @property
@@ -423,13 +361,13 @@ class Place(Resource):
 
 class Favorite(Resource):
     """Favorite — `tl.so.tilo.file-explorer.Favorite`."""
-    __surface__ = "so.tilo.file-explorer@0e7f6404f2e5daae"
+    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
     m5mpzvqt: str  # place
 
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.file-explorer.Recent`."""
-    __surface__ = "so.tilo.file-explorer@0e7f6404f2e5daae"
+    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
     v8w5s5s2: str  # name
     ddeyygde: str  # path
     flcdg3ss: str  # opened
@@ -437,7 +375,7 @@ class Recent(Resource):
 
 class Session(Resource):
     """Session — `tl.so.tilo.file-explorer.Session`."""
-    __surface__ = "so.tilo.file-explorer@0e7f6404f2e5daae"
+    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
     zxu7qmx7: str  # here
     roylouv1: SortBy  # sort
     hm8xkfti: bool  # ascending
@@ -510,7 +448,7 @@ class Session(Resource):
 
 class Files(Resource):
     """Files — `tl.so.tilo.file-explorer.Files`."""
-    __surface__ = "so.tilo.file-explorer@0e7f6404f2e5daae"
+    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
     @property
     def _7dfrn16h(self) -> list[Entry[Session]]:
         """sessions (`7dfrn16h` on the wire)."""
@@ -976,12 +914,12 @@ class Files(Resource):
 
 class Crumb(Resource):
     """Crumb — `tl.so.tilo.file-explorer.Crumb`."""
-    __surface__ = "so.tilo.file-explorer@0e7f6404f2e5daae"
+    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
     lbeg1rhd: str  # label
     sv3ucdrd: str  # path
 
 
 class FileExplorer(Resource):
     """Files — `tl.so.tilo.file-explorer`."""
-    __surface__ = "so.tilo.file-explorer@0e7f6404f2e5daae"
+    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
 

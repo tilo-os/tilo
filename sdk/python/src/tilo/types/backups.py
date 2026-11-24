@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Notice` is the app's `tl.tilo.host.Notice` at `backups/<resource>`, read with
+`Entry` is the app's `tl.so.tilo.backups.Entry` at `backups/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -25,7 +25,6 @@ __all__ = [
     "Taken",
     "Cadence",
     "Origin",
-    "Notice",
     "Entry",
     "Snapshot",
     "Policy",
@@ -187,70 +186,9 @@ AllowOverwriteArgs = TypedDict("AllowOverwriteArgs", {
 })
 """The arguments of `allow_overwrite`."""
 
-class Notice(Resource):
-    """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
-    @property
-    def notice_to(self) -> str:
-        """to (`notice-to` on the wire)."""
-        return self.fields["notice-to"]
-
-    @notice_to.setter
-    def notice_to(self, value: str) -> None:
-        self.edit("notice-to", value=value)
-    @property
-    def notice_title(self) -> str:
-        """title (`notice-title` on the wire)."""
-        return self.fields["notice-title"]
-
-    @notice_title.setter
-    def notice_title(self, value: str) -> None:
-        self.edit("notice-title", value=value)
-    @property
-    def notice_body(self) -> str:
-        """body (`notice-body` on the wire)."""
-        return self.fields["notice-body"]
-
-    @notice_body.setter
-    def notice_body(self, value: str) -> None:
-        self.edit("notice-body", value=value)
-    @property
-    def notice_opens(self) -> Any:
-        """opens (`notice-opens` on the wire)."""
-        return self.fields["notice-opens"]
-
-    @notice_opens.setter
-    def notice_opens(self, value: Any) -> None:
-        self.edit("notice-opens", value=value)
-    @property
-    def notice_seen(self) -> bool:
-        """seen (`notice-seen` on the wire)."""
-        return self.fields["notice-seen"]
-
-    @notice_seen.setter
-    def notice_seen(self, value: bool) -> None:
-        self.edit("notice-seen", value=value)
-    @property
-    def notice_device(self) -> str:
-        """device (`notice-device` on the wire)."""
-        return self.fields["notice-device"]
-
-    @notice_device.setter
-    def notice_device(self, value: str) -> None:
-        self.edit("notice-device", value=value)
-    @property
-    def notice_actions(self) -> list[str]:
-        """actions (`notice-actions` on the wire)."""
-        return self.fields["notice-actions"]
-
-    @notice_actions.setter
-    def notice_actions(self, value: list[str]) -> None:
-        self.edit("notice-actions", value=value)
-
-
 class Entry(Resource):
     """Entry — `tl.so.tilo.backups.Entry`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     cvlieest: str  # name
     c2m5wzf4: int  # depth
     pfl5jyx2: int  # size
@@ -259,7 +197,7 @@ class Entry(Resource):
 
 class Snapshot(Resource):
     """Snapshot — `tl.so.tilo.backups.Snapshot`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     dallfwqf: str  # label
     ngqbekfc: int  # at
     hydekdnu: Taken  # taken
@@ -288,7 +226,7 @@ class Snapshot(Resource):
 
 class Policy(Resource):
     """Policy — `tl.so.tilo.backups.Policy`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     cyugw7lh: int  # hourly
     avot6p6r: int  # daily
     ywba2jzd: int  # weekly
@@ -304,14 +242,14 @@ class Policy(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.backups.Place`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     dho3qqg3: str  # name
     f3pl3mol: str  # path
 
 
 class Backups(Resource):
     """Backups — `tl.so.tilo.backups.Backups`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     p2imk5l5: Policy  # policy
     srrmxp5i: str  # source
     @property
@@ -594,14 +532,14 @@ class Backups(Resource):
 
 class CatalogAsk(Resource):
     """CatalogAsk — `tl.so.tilo.backups.CatalogAsk`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     gbluxeo3: str  # source
     ixnr6cnx: str  # destination
 
 
 class BackupAsk(Resource):
     """BackupAsk — `tl.so.tilo.backups.BackupAsk`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     w7elqfbk: str  # source
     ebybhxkw: str  # destination
     qqrrtmrs: int  # policy_hourly
@@ -619,7 +557,7 @@ class BackupAsk(Resource):
 
 class SnapshotAsk(Resource):
     """SnapshotAsk — `tl.so.tilo.backups.SnapshotAsk`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     @property
     def _2stygd3d(self) -> str:
         """destination (`2stygd3d` on the wire)."""
@@ -633,7 +571,7 @@ class SnapshotAsk(Resource):
 
 class RestoreAsk(Resource):
     """RestoreAsk — `tl.so.tilo.backups.RestoreAsk`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     z2pcuhft: str  # destination
     qz4acm4a: str  # snapshot
     @property
@@ -649,7 +587,7 @@ class RestoreAsk(Resource):
 
 class WorkState(Resource):
     """WorkState — `tl.so.tilo.backups.WorkState`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     ptww3noe: str  # state
     pnevrulc: str  # progress
     lrfiygoo: str  # answer
@@ -658,12 +596,12 @@ class WorkState(Resource):
 
 class Checked(Resource):
     """Checked — `tl.so.tilo.backups.Checked`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
     lg6ud7lc: int  # files
     deudvrko: int  # bytes
 
 
 class TiloBackups(Resource):
     """Backups — `tl.so.tilo.backups`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@7cec2ef76c91fd8a"
 

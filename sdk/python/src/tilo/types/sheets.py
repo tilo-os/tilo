@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Notice` is the app's `tl.tilo.host.Notice` at `sheets/<resource>`, read with
+`Workbook` is the app's `tl.so.tilo.sheets.Workbook` at `sheets/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -24,7 +24,6 @@ __all__ = [
     "Currency",
     "DateStyle",
     "TimeStyle",
-    "Notice",
     "Workbook",
     "Sheet",
     "Chart",
@@ -346,70 +345,9 @@ EditReplyArgs = TypedDict("EditReplyArgs", {
 })
 """The arguments of `edit_reply`."""
 
-class Notice(Resource):
-    """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
-    @property
-    def notice_to(self) -> str:
-        """to (`notice-to` on the wire)."""
-        return self.fields["notice-to"]
-
-    @notice_to.setter
-    def notice_to(self, value: str) -> None:
-        self.edit("notice-to", value=value)
-    @property
-    def notice_title(self) -> str:
-        """title (`notice-title` on the wire)."""
-        return self.fields["notice-title"]
-
-    @notice_title.setter
-    def notice_title(self, value: str) -> None:
-        self.edit("notice-title", value=value)
-    @property
-    def notice_body(self) -> str:
-        """body (`notice-body` on the wire)."""
-        return self.fields["notice-body"]
-
-    @notice_body.setter
-    def notice_body(self, value: str) -> None:
-        self.edit("notice-body", value=value)
-    @property
-    def notice_opens(self) -> Any:
-        """opens (`notice-opens` on the wire)."""
-        return self.fields["notice-opens"]
-
-    @notice_opens.setter
-    def notice_opens(self, value: Any) -> None:
-        self.edit("notice-opens", value=value)
-    @property
-    def notice_seen(self) -> bool:
-        """seen (`notice-seen` on the wire)."""
-        return self.fields["notice-seen"]
-
-    @notice_seen.setter
-    def notice_seen(self, value: bool) -> None:
-        self.edit("notice-seen", value=value)
-    @property
-    def notice_device(self) -> str:
-        """device (`notice-device` on the wire)."""
-        return self.fields["notice-device"]
-
-    @notice_device.setter
-    def notice_device(self, value: str) -> None:
-        self.edit("notice-device", value=value)
-    @property
-    def notice_actions(self) -> list[str]:
-        """actions (`notice-actions` on the wire)."""
-        return self.fields["notice-actions"]
-
-    @notice_actions.setter
-    def notice_actions(self, value: list[str]) -> None:
-        self.edit("notice-actions", value=value)
-
-
 class Workbook(Resource):
     """Workbook — `tl.so.tilo.sheets.Workbook`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     meovofcz: str  # title
     pkbcb37f: list[Entry[Sheet]]  # sheets
     xwh3fsa2: list[Entry[Comment]]  # comments
@@ -881,7 +819,7 @@ class Workbook(Resource):
 
 class Sheet(Resource):
     """Sheet — `tl.so.tilo.sheets.Sheet`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     l36xpi4o: str  # name
     hotvvuda: str  # source
     @property
@@ -978,7 +916,7 @@ class Sheet(Resource):
 
 class Chart(Resource):
     """Chart — `tl.so.tilo.sheets.Chart`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     iipmzvk6: str  # title
     todwcigp: ChartKind  # kind
     urs2nvtf: str  # range
@@ -1010,7 +948,7 @@ class Chart(Resource):
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.sheets.Comment`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     fhfswroi: str  # sheet
     lfxsmldw: str  # range
     @property
@@ -1110,7 +1048,7 @@ class Comment(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.sheets.Reply`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     rehztzuy: str  # text
 
     def edit_block(self,
@@ -1166,7 +1104,7 @@ class Reply(Resource):
 
 class SheetInput(Resource):
     """SheetInput — `tl.so.tilo.sheets.SheetInput`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     d4n4c4j6: str  # name
     iitrsrcd: bool  # hidden
     owwnyfq7: dict[str, str]  # cells
@@ -1176,14 +1114,14 @@ class SheetInput(Resource):
 
 class BookInput(Resource):
     """BookInput — `tl.so.tilo.sheets.BookInput`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     z2cfbg2g: list[SheetInput]  # sheets
     ktfpf6rx: str  # currency
 
 
 class RecordsRequest(Resource):
     """RecordsRequest — `tl.so.tilo.sheets.RecordsRequest`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     quawedop: list[dict[str, str]]  # records
     uslgkxn3: int | None  # row
     vstmdg7x: list[str] | None  # columns
@@ -1192,7 +1130,7 @@ class RecordsRequest(Resource):
 
 class UpsertRequest(Resource):
     """UpsertRequest — `tl.so.tilo.sheets.UpsertRequest`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     styf7w4a: list[dict[str, str]]  # records
     s3tgj4q3: dict[str, str]  # matching
     wlypu6mi: dict[str, str]  # value
@@ -1200,14 +1138,14 @@ class UpsertRequest(Resource):
 
 class RecordWrites(Resource):
     """RecordWrites — `tl.so.tilo.sheets.RecordWrites`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     tloxk2t5: dict[str, str]  # cells
     chuotih4: dict[str, str]  # formats
 
 
 class Extent(Resource):
     """Extent — `tl.so.tilo.sheets.Extent`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     @property
     def _5pdxnqaj(self) -> int:
         """columns (`5pdxnqaj` on the wire)."""
@@ -1221,7 +1159,7 @@ class Extent(Resource):
 
 class Sheets(Resource):
     """Sheets — `tl.so.tilo.sheets`."""
-    __surface__ = "so.tilo.sheets@8758f1a47a1af40a"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     def copy_cells(self, *, text: str) -> None:
         """Copies the cells a person chose to their clipboard as a table: a line per row and a tab between columns, which a sheet, a word processor or a mail app reads."""
         return self.action("copy_cells", text=text)

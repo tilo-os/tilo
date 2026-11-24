@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Notice` is the app's `tl.tilo.host.Notice` at `shortcuts/<resource>`, read with
+`Param` is the app's `tl.so.tilo.shortcuts.Param` at `shortcuts/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -33,7 +33,6 @@ __all__ = [
     "FocusMode",
     "FocusTransition",
     "TriggerKind",
-    "Notice",
     "Param",
     "Member",
     "BindValue",
@@ -306,70 +305,9 @@ DismissNoticeArgs = TypedDict("DismissNoticeArgs", {
 })
 """The arguments of `dismiss_notice`."""
 
-class Notice(Resource):
-    """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
-    @property
-    def notice_to(self) -> str:
-        """to (`notice-to` on the wire)."""
-        return self.fields["notice-to"]
-
-    @notice_to.setter
-    def notice_to(self, value: str) -> None:
-        self.edit("notice-to", value=value)
-    @property
-    def notice_title(self) -> str:
-        """title (`notice-title` on the wire)."""
-        return self.fields["notice-title"]
-
-    @notice_title.setter
-    def notice_title(self, value: str) -> None:
-        self.edit("notice-title", value=value)
-    @property
-    def notice_body(self) -> str:
-        """body (`notice-body` on the wire)."""
-        return self.fields["notice-body"]
-
-    @notice_body.setter
-    def notice_body(self, value: str) -> None:
-        self.edit("notice-body", value=value)
-    @property
-    def notice_opens(self) -> Any:
-        """opens (`notice-opens` on the wire)."""
-        return self.fields["notice-opens"]
-
-    @notice_opens.setter
-    def notice_opens(self, value: Any) -> None:
-        self.edit("notice-opens", value=value)
-    @property
-    def notice_seen(self) -> bool:
-        """seen (`notice-seen` on the wire)."""
-        return self.fields["notice-seen"]
-
-    @notice_seen.setter
-    def notice_seen(self, value: bool) -> None:
-        self.edit("notice-seen", value=value)
-    @property
-    def notice_device(self) -> str:
-        """device (`notice-device` on the wire)."""
-        return self.fields["notice-device"]
-
-    @notice_device.setter
-    def notice_device(self, value: str) -> None:
-        self.edit("notice-device", value=value)
-    @property
-    def notice_actions(self) -> list[str]:
-        """actions (`notice-actions` on the wire)."""
-        return self.fields["notice-actions"]
-
-    @notice_actions.setter
-    def notice_actions(self, value: list[str]) -> None:
-        self.edit("notice-actions", value=value)
-
-
 class Param(Resource):
     """Param — `tl.so.tilo.shortcuts.Param`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     w7j2mzpu: str  # name
     ckvfwyfc: str  # ty
     lovculcl: bool  # required
@@ -378,14 +316,14 @@ class Param(Resource):
 
 class Member(Resource):
     """Member — `tl.so.tilo.shortcuts.Member`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     mvlmdz3t: str  # at
     orfu2qci: BindValue  # value
 
 
 class BindValue(Resource):
     """BindValue — `tl.so.tilo.shortcuts.BindValue`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     a43zwzxm: Bind  # kind
     nu47tafs: str  # ty
     q5rbcvgr: str  # name
@@ -426,7 +364,7 @@ class BindValue(Resource):
 
 class Condition(Resource):
     """Condition — `tl.so.tilo.shortcuts.Condition`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     @property
     def _5qdigjgy(self) -> Cond:
         """kind (`5qdigjgy` on the wire)."""
@@ -464,7 +402,7 @@ class Condition(Resource):
 
 class Choice(Resource):
     """Choice — `tl.so.tilo.shortcuts.Choice`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     jjnl5c5u: Bind  # kind
     mf4qff6c: str  # ty
     kufc2lcn: str  # name
@@ -494,7 +432,7 @@ class Choice(Resource):
 
 class Arg(Resource):
     """Arg — `tl.so.tilo.shortcuts.Arg`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     jrmg23bl: str  # name
     @property
     def _6cqaypb4(self) -> str:
@@ -511,7 +449,7 @@ class Arg(Resource):
 
 class Slot(Resource):
     """Slot — `tl.so.tilo.shortcuts.Slot`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     @property
     def _6l2kcrfo(self) -> str:
         """name (`6l2kcrfo` on the wire)."""
@@ -527,14 +465,14 @@ class Slot(Resource):
 
 class Problem(Resource):
     """Problem — `tl.so.tilo.shortcuts.Problem`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     ddjwwbo3: str  # path
     yyjdqeh7: str  # message
 
 
 class Grant(Resource):
     """Grant — `tl.so.tilo.shortcuts.Grant`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     @property
     def _44e6m2wx(self) -> str:
         """label (`44e6m2wx` on the wire)."""
@@ -548,7 +486,7 @@ class Grant(Resource):
 
 class Step(Resource):
     """Step — `tl.so.tilo.shortcuts.Step`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     h3opbkx5: Step | None  # parent
     wb3ui23u: Branch  # branch
     so6ey5xl: str  # step_id
@@ -641,7 +579,7 @@ class Step(Resource):
 
 class Input(Resource):
     """Input — `tl.so.tilo.shortcuts.Input`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     snpnqwju: str  # name
     tg4tli3b: InputType  # ty
     m7r4ya7c: bool  # required
@@ -651,7 +589,7 @@ class Input(Resource):
 
 class Trigger(Resource):
     """Trigger — `tl.so.tilo.shortcuts.Trigger`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     @property
     def _5bbzhstm(self) -> TriggerKind:
         """kind (`5bbzhstm` on the wire)."""
@@ -743,7 +681,7 @@ class Trigger(Resource):
 
 class Offer(Resource):
     """Offer — `tl.so.tilo.shortcuts.Offer`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     xitbwh3f: str  # app_id
     @property
     def _2oava6yw(self) -> str:
@@ -771,7 +709,7 @@ class Offer(Resource):
 
 class Program(Resource):
     """Program — `tl.so.tilo.shortcuts.Program`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     @property
     def _6ddumpv3(self) -> list[Entry[Input]]:
         """inputs (`6ddumpv3` on the wire)."""
@@ -859,7 +797,7 @@ class Program(Resource):
 
 class Suggested(Resource):
     """Suggested — `tl.so.tilo.shortcuts.Suggested`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     m53kboqe: str  # name
     duorb75u: Program  # program
     pshhv3vt: list[str]  # problems
@@ -875,7 +813,7 @@ class Suggested(Resource):
 
 class Saved(Resource):
     """Saved — `tl.so.tilo.shortcuts.Saved`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     l4rxg53i: str  # id
     @property
     def _2hqp5wnu(self) -> str:
@@ -912,7 +850,7 @@ class Saved(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.shortcuts.Draft`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     qodc2wld: str  # name
     imvb73zl: str  # shortcut_id
     jdjr5ygm: bool  # replaces_saved
@@ -990,7 +928,7 @@ class Draft(Resource):
 
 class Workbench(Resource):
     """Workbench — `tl.so.tilo.shortcuts.Workbench`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     rwdjyqtz: list[Entry[Draft]]  # drafts
     daxqqmym: list[Entry[Saved]]  # saved
     fbadmr47: list[Entry[Suggested]]  # suggested
@@ -1404,7 +1342,7 @@ class Workbench(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.shortcuts.Place`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     uccg2srx: Step | None  # parent
     d5s4qkn6: Branch  # branch
     lmkmjowh: int  # index
@@ -1412,7 +1350,7 @@ class Place(Resource):
 
 class Heard(Resource):
     """Heard — `tl.so.tilo.shortcuts.Heard`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     gjnz55fw: str  # app_id
     ld52mtpg: str  # action_name
     mflabbsc: str  # kind
@@ -1422,14 +1360,14 @@ class Heard(Resource):
 
 class Repeated(Resource):
     """Repeated — `tl.so.tilo.shortcuts.Repeated`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     jhdyurec: list[Heard]  # steps
     qyjikemy: int  # times
 
 
 class Shortcuts(Resource):
     """Shortcuts — `tl.so.tilo.shortcuts`."""
-    __surface__ = "so.tilo.shortcuts@68b6226c2ffe01a0"
+    __surface__ = "so.tilo.shortcuts@52cfdb378445b13d"
     def agent_address(self) -> str:
         """The agent's action that drafts, when this workspace is offered it; empty when it is not."""
         return self.action("agent_address")

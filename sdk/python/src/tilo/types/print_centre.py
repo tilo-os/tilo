@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Notice` is the app's `tl.tilo.host.Notice` at `print-centre/<resource>`, read with
+`Defaults` is the app's `tl.so.tilo.print-centre.Defaults` at `print-centre/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,7 +20,6 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "Notice",
     "Defaults",
     "ScannedPage",
     "ScanSession",
@@ -145,70 +144,9 @@ SetScannerArgs = TypedDict("SetScannerArgs", {
 })
 """The arguments of `set_scanner`."""
 
-class Notice(Resource):
-    """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
-    @property
-    def notice_to(self) -> str:
-        """to (`notice-to` on the wire)."""
-        return self.fields["notice-to"]
-
-    @notice_to.setter
-    def notice_to(self, value: str) -> None:
-        self.edit("notice-to", value=value)
-    @property
-    def notice_title(self) -> str:
-        """title (`notice-title` on the wire)."""
-        return self.fields["notice-title"]
-
-    @notice_title.setter
-    def notice_title(self, value: str) -> None:
-        self.edit("notice-title", value=value)
-    @property
-    def notice_body(self) -> str:
-        """body (`notice-body` on the wire)."""
-        return self.fields["notice-body"]
-
-    @notice_body.setter
-    def notice_body(self, value: str) -> None:
-        self.edit("notice-body", value=value)
-    @property
-    def notice_opens(self) -> Any:
-        """opens (`notice-opens` on the wire)."""
-        return self.fields["notice-opens"]
-
-    @notice_opens.setter
-    def notice_opens(self, value: Any) -> None:
-        self.edit("notice-opens", value=value)
-    @property
-    def notice_seen(self) -> bool:
-        """seen (`notice-seen` on the wire)."""
-        return self.fields["notice-seen"]
-
-    @notice_seen.setter
-    def notice_seen(self, value: bool) -> None:
-        self.edit("notice-seen", value=value)
-    @property
-    def notice_device(self) -> str:
-        """device (`notice-device` on the wire)."""
-        return self.fields["notice-device"]
-
-    @notice_device.setter
-    def notice_device(self, value: str) -> None:
-        self.edit("notice-device", value=value)
-    @property
-    def notice_actions(self) -> list[str]:
-        """actions (`notice-actions` on the wire)."""
-        return self.fields["notice-actions"]
-
-    @notice_actions.setter
-    def notice_actions(self, value: list[str]) -> None:
-        self.edit("notice-actions", value=value)
-
-
 class Defaults(Resource):
     """Defaults — `tl.so.tilo.print-centre.Defaults`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     coq3zrug: bool  # two_sided
     @property
     def _26zbe323(self) -> int:
@@ -225,7 +163,7 @@ class Defaults(Resource):
 
 class ScannedPage(Resource):
     """ScannedPage — `tl.so.tilo.print-centre.ScannedPage`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     zphe26i4: Any  # file
     @property
     def _67hjm6gx(self) -> str:
@@ -268,7 +206,7 @@ class ScannedPage(Resource):
 
 class ScanSession(Resource):
     """ScanSession — `tl.so.tilo.print-centre.ScanSession`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     @property
     def _3kybq73d(self) -> str:
         """scanner (`3kybq73d` on the wire)."""
@@ -284,7 +222,7 @@ class ScanSession(Resource):
 
 class PrintDocument(Resource):
     """PrintDocument — `tl.so.tilo.print-centre.PrintDocument`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     lurulxdl: Any | None  # file
     nfdtbdvt: Any | None  # preview
     hkdu56wa: str  # name
@@ -331,7 +269,7 @@ class PrintDocument(Resource):
 
 class Choice(Resource):
     """Choice — `tl.so.tilo.print-centre.Choice`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     ybptuzdv: str  # key
     n2rjd6ws: str  # label
     q5qiqhve: bool  # default
@@ -339,7 +277,7 @@ class Choice(Resource):
 
 class PrinterOptions(Resource):
     """PrinterOptions — `tl.so.tilo.print-centre.PrinterOptions`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     nov3upcs: list[Choice]  # page_sizes
     pvufqhii: list[Choice]  # colour_modes
     boxhaco3: list[Choice]  # duplex_modes
@@ -348,7 +286,7 @@ class PrinterOptions(Resource):
 
 class PrintCentre(Resource):
     """PrintCentre — `tl.so.tilo.print-centre.PrintCentre`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     kqm47afv: Defaults  # defaults
     lz7ue3si: list[Entry[PrintDocument]]  # documents
     iysceybl: list[Entry[ScanSession]]  # scans
@@ -515,19 +453,19 @@ class PrintCentre(Resource):
 
 class OptionsAsk(Resource):
     """OptionsAsk — `tl.so.tilo.print-centre.OptionsAsk`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     aun3edzr: str  # queue
 
 
 class JobAnswer(Resource):
     """JobAnswer — `tl.so.tilo.print-centre.JobAnswer`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     hovq2inv: str  # job
 
 
 class JobState(Resource):
     """JobState — `tl.so.tilo.print-centre.JobState`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     @property
     def _3ofqxf34(self) -> str:
         """state (`3ofqxf34` on the wire)."""
@@ -542,7 +480,7 @@ class JobState(Resource):
 
 class OcrAsk(Resource):
     """OcrAsk — `tl.so.tilo.print-centre.OcrAsk`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     vuwh5pv6: str  # url
     @property
     def _56cimtrv(self) -> str:
@@ -556,33 +494,33 @@ class OcrAsk(Resource):
 
 class OcrAnswer(Resource):
     """OcrAnswer — `tl.so.tilo.print-centre.OcrAnswer`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     qegnvsxr: str  # text
 
 
 class PdfPage(Resource):
     """PdfPage — `tl.so.tilo.print-centre.PdfPage`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     qxzi756t: str  # url
     mytppaxs: str  # text
 
 
 class PagesAsk(Resource):
     """PagesAsk — `tl.so.tilo.print-centre.PagesAsk`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     omod5rbh: list[PdfPage]  # pages
     u566k7ni: str  # name
 
 
 class UrlAnswer(Resource):
     """UrlAnswer — `tl.so.tilo.print-centre.UrlAnswer`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     y2ejci4l: str  # url
 
 
 class PrintAsk(Resource):
     """PrintAsk — `tl.so.tilo.print-centre.PrintAsk`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     fk3jkxxv: str  # queue
     tddc4c3j: str  # url
     dkvqbxny: str  # name
@@ -611,7 +549,7 @@ class PrintAsk(Resource):
 
 class ScanAsk(Resource):
     """ScanAsk — `tl.so.tilo.print-centre.ScanAsk`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     vilpbf2g: str  # scanner
     onyv6rml: int  # resolution
     dvoh6l75: str  # colour
@@ -635,7 +573,7 @@ class ScanAsk(Resource):
 
 class TiloPrintCentre(Resource):
     """Print Centre — `tl.so.tilo.print-centre`."""
-    __surface__ = "so.tilo.print-centre@802f2b547814cacf"
+    __surface__ = "so.tilo.print-centre@4ff71c790b5be855"
     def preview_of_file(self, *, file: Any) -> Any | None:
         """The first page's picture, for the print form: a PDF's first page, or the picture itself."""
         return self.action("preview_of_file", file=file)

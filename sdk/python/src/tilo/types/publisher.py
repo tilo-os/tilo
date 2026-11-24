@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Notice` is the app's `tl.tilo.host.Notice` at `publisher/<resource>`, read with
+`Reading` is the app's `tl.so.tilo.publisher.Reading` at `publisher/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,7 +20,6 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "Notice",
     "Reading",
     "Publisher",
     "ForgeParts",
@@ -58,77 +57,16 @@ PollArgs = TypedDict("PollArgs", {
 })
 """The arguments of `poll`."""
 
-class Notice(Resource):
-    """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
-    @property
-    def notice_to(self) -> str:
-        """to (`notice-to` on the wire)."""
-        return self.fields["notice-to"]
-
-    @notice_to.setter
-    def notice_to(self, value: str) -> None:
-        self.edit("notice-to", value=value)
-    @property
-    def notice_title(self) -> str:
-        """title (`notice-title` on the wire)."""
-        return self.fields["notice-title"]
-
-    @notice_title.setter
-    def notice_title(self, value: str) -> None:
-        self.edit("notice-title", value=value)
-    @property
-    def notice_body(self) -> str:
-        """body (`notice-body` on the wire)."""
-        return self.fields["notice-body"]
-
-    @notice_body.setter
-    def notice_body(self, value: str) -> None:
-        self.edit("notice-body", value=value)
-    @property
-    def notice_opens(self) -> Any:
-        """opens (`notice-opens` on the wire)."""
-        return self.fields["notice-opens"]
-
-    @notice_opens.setter
-    def notice_opens(self, value: Any) -> None:
-        self.edit("notice-opens", value=value)
-    @property
-    def notice_seen(self) -> bool:
-        """seen (`notice-seen` on the wire)."""
-        return self.fields["notice-seen"]
-
-    @notice_seen.setter
-    def notice_seen(self, value: bool) -> None:
-        self.edit("notice-seen", value=value)
-    @property
-    def notice_device(self) -> str:
-        """device (`notice-device` on the wire)."""
-        return self.fields["notice-device"]
-
-    @notice_device.setter
-    def notice_device(self, value: str) -> None:
-        self.edit("notice-device", value=value)
-    @property
-    def notice_actions(self) -> list[str]:
-        """actions (`notice-actions` on the wire)."""
-        return self.fields["notice-actions"]
-
-    @notice_actions.setter
-    def notice_actions(self, value: list[str]) -> None:
-        self.edit("notice-actions", value=value)
-
-
 class Reading(Resource):
     """Reading — `tl.so.tilo.publisher.Reading`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
+    __surface__ = "so.tilo.publisher@10d59cfeee8fcfea"
     hia3wxhi: str  # at
     ntbsg676: str  # summary
 
 
 class Publisher(Resource):
     """Publisher — `tl.so.tilo.publisher.Publisher`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
+    __surface__ = "so.tilo.publisher@10d59cfeee8fcfea"
     izqbnlov: str  # registry
     @property
     def _4hwurbpa(self) -> str:
@@ -221,14 +159,14 @@ class Publisher(Resource):
 
 class ForgeParts(Resource):
     """ForgeParts — `tl.so.tilo.publisher.ForgeParts`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
+    __surface__ = "so.tilo.publisher@10d59cfeee8fcfea"
     y36hrf57: str  # host
     iwdc7ejj: str  # account
 
 
 class KeyFile(Resource):
     """KeyFile — `tl.so.tilo.publisher.KeyFile`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
+    __surface__ = "so.tilo.publisher@10d59cfeee8fcfea"
     @property
     def _6347lg4i(self) -> str:
         """text (`6347lg4i` on the wire)."""
@@ -241,7 +179,7 @@ class KeyFile(Resource):
 
 class ApplyAsk(Resource):
     """ApplyAsk — `tl.so.tilo.publisher.ApplyAsk`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
+    __surface__ = "so.tilo.publisher@10d59cfeee8fcfea"
     gh566qcn: str  # registry
     eb4v6asr: str  # domain
     hjj2vyhq: str  # forge_account
@@ -250,13 +188,13 @@ class ApplyAsk(Resource):
 
 class StatusAsk(Resource):
     """StatusAsk — `tl.so.tilo.publisher.StatusAsk`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
+    __surface__ = "so.tilo.publisher@10d59cfeee8fcfea"
     lbble236: str  # registry
 
 
 class JobState(Resource):
     """JobState — `tl.so.tilo.publisher.JobState`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
+    __surface__ = "so.tilo.publisher@10d59cfeee8fcfea"
     jqgcvhvb: str  # state
     wu2vhifg: str  # summary
     ghygxnrv: str  # error
@@ -264,13 +202,13 @@ class JobState(Resource):
 
 class JobAnswer(Resource):
     """JobAnswer — `tl.so.tilo.publisher.JobAnswer`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
+    __surface__ = "so.tilo.publisher@10d59cfeee8fcfea"
     q55hkx2s: str  # job
 
 
 class KeyState(Resource):
     """KeyState — `tl.so.tilo.publisher.KeyState`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
+    __surface__ = "so.tilo.publisher@10d59cfeee8fcfea"
     iyvbvvra: str  # state
     @property
     def _5gktvyxf(self) -> str:
@@ -284,5 +222,5 @@ class KeyState(Resource):
 
 class TiloPublisher(Resource):
     """App Publisher — `tl.so.tilo.publisher`."""
-    __surface__ = "so.tilo.publisher@41c7fd9c6c160376"
+    __surface__ = "so.tilo.publisher@10d59cfeee8fcfea"
 

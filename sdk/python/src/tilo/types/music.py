@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Notice` is the app's `tl.tilo.host.Notice` at `music/<resource>`, read with
+`Track` is the app's `tl.so.tilo.music.Track` at `music/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,7 +20,6 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "Notice",
     "Track",
     "Album",
     "Artist",
@@ -160,70 +159,9 @@ LikePlayingArgs = TypedDict("LikePlayingArgs", {
 })
 """The arguments of `like_playing`."""
 
-class Notice(Resource):
-    """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
-    @property
-    def notice_to(self) -> str:
-        """to (`notice-to` on the wire)."""
-        return self.fields["notice-to"]
-
-    @notice_to.setter
-    def notice_to(self, value: str) -> None:
-        self.edit("notice-to", value=value)
-    @property
-    def notice_title(self) -> str:
-        """title (`notice-title` on the wire)."""
-        return self.fields["notice-title"]
-
-    @notice_title.setter
-    def notice_title(self, value: str) -> None:
-        self.edit("notice-title", value=value)
-    @property
-    def notice_body(self) -> str:
-        """body (`notice-body` on the wire)."""
-        return self.fields["notice-body"]
-
-    @notice_body.setter
-    def notice_body(self, value: str) -> None:
-        self.edit("notice-body", value=value)
-    @property
-    def notice_opens(self) -> Any:
-        """opens (`notice-opens` on the wire)."""
-        return self.fields["notice-opens"]
-
-    @notice_opens.setter
-    def notice_opens(self, value: Any) -> None:
-        self.edit("notice-opens", value=value)
-    @property
-    def notice_seen(self) -> bool:
-        """seen (`notice-seen` on the wire)."""
-        return self.fields["notice-seen"]
-
-    @notice_seen.setter
-    def notice_seen(self, value: bool) -> None:
-        self.edit("notice-seen", value=value)
-    @property
-    def notice_device(self) -> str:
-        """device (`notice-device` on the wire)."""
-        return self.fields["notice-device"]
-
-    @notice_device.setter
-    def notice_device(self, value: str) -> None:
-        self.edit("notice-device", value=value)
-    @property
-    def notice_actions(self) -> list[str]:
-        """actions (`notice-actions` on the wire)."""
-        return self.fields["notice-actions"]
-
-    @notice_actions.setter
-    def notice_actions(self, value: list[str]) -> None:
-        self.edit("notice-actions", value=value)
-
-
 class Track(Resource):
     """Track — `tl.so.tilo.music.Track`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     wapyyydf: str  # key
     zpnajesf: str  # title
     pzaz5i7w: str  # artist
@@ -309,7 +247,7 @@ class Track(Resource):
 
 class Album(Resource):
     """Album — `tl.so.tilo.music.Album`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     xlmick3d: str  # key
     ui7q6nc2: str  # title
     c36cztfw: str  # artist
@@ -363,7 +301,7 @@ class Album(Resource):
 
 class Artist(Resource):
     """Artist — `tl.so.tilo.music.Artist`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     a3jwtsne: str  # key
     aht5vji7: str  # name
     p7suhaoo: int  # subscribers
@@ -396,7 +334,7 @@ class Artist(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.music.Playlist`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     zliedtfz: str  # key
     rtkxqj2p: str  # title
     htibtwee: str  # subtitle
@@ -422,7 +360,7 @@ class Playlist(Resource):
 
 class SpotifyDevice(Resource):
     """SpotifyDevice — `tl.so.tilo.music.SpotifyDevice`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     @property
     def _4ruem7bk(self) -> str:
         """key (`4ruem7bk` on the wire)."""
@@ -439,7 +377,7 @@ class SpotifyDevice(Resource):
 
 class Section(Resource):
     """Section — `tl.so.tilo.music.Section`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     jsrmddga: str  # key
     @property
     def _2kqqdved(self) -> str:
@@ -454,7 +392,7 @@ class Section(Resource):
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.music.Suggestion`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     qh34h2ch: str  # key
     xh6birha: str  # section
     a5bkjkyq: str  # kind
@@ -480,7 +418,7 @@ class Suggestion(Resource):
 
 class Mixtape(Resource):
     """Mixtape — `tl.so.tilo.music.Mixtape`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     @property
     def _5d2oxk4b(self) -> str:
         """name (`5d2oxk4b` on the wire)."""
@@ -539,7 +477,7 @@ class Mixtape(Resource):
 
 class Taste(Resource):
     """Taste — `tl.so.tilo.music.Taste`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     nhxvxvrt: bool  # followed_artists
     fygjzxca: bool  # liked_songs
     splmmoir: bool  # saved_albums
@@ -550,7 +488,7 @@ class Taste(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.music.Library`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     hkr3ia6d: str  # name
     cp5uymkx: list[Entry[Track]]  # tracks
     phkx3ocv: list[Entry[Album]]  # albums
@@ -744,7 +682,7 @@ class Library(Resource):
 
 class Music(Resource):
     """Music — `tl.so.tilo.music`."""
-    __surface__ = "so.tilo.music@c11132d5bc5b3e7b"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     def queue_moved(self,
         *,
         p: Any,

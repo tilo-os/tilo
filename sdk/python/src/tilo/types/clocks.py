@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Notice` is the app's `tl.tilo.host.Notice` at `clocks/<resource>`, read with
+`WorldClock` is the app's `tl.so.tilo.clocks.WorldClock` at `clocks/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,7 +21,6 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Weekday",
-    "Notice",
     "WorldClock",
     "Alarm",
     "Timer",
@@ -124,77 +123,16 @@ ResetStopwatchArgs = TypedDict("ResetStopwatchArgs", {
 })
 """The arguments of `reset_stopwatch`."""
 
-class Notice(Resource):
-    """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
-    @property
-    def notice_to(self) -> str:
-        """to (`notice-to` on the wire)."""
-        return self.fields["notice-to"]
-
-    @notice_to.setter
-    def notice_to(self, value: str) -> None:
-        self.edit("notice-to", value=value)
-    @property
-    def notice_title(self) -> str:
-        """title (`notice-title` on the wire)."""
-        return self.fields["notice-title"]
-
-    @notice_title.setter
-    def notice_title(self, value: str) -> None:
-        self.edit("notice-title", value=value)
-    @property
-    def notice_body(self) -> str:
-        """body (`notice-body` on the wire)."""
-        return self.fields["notice-body"]
-
-    @notice_body.setter
-    def notice_body(self, value: str) -> None:
-        self.edit("notice-body", value=value)
-    @property
-    def notice_opens(self) -> Any:
-        """opens (`notice-opens` on the wire)."""
-        return self.fields["notice-opens"]
-
-    @notice_opens.setter
-    def notice_opens(self, value: Any) -> None:
-        self.edit("notice-opens", value=value)
-    @property
-    def notice_seen(self) -> bool:
-        """seen (`notice-seen` on the wire)."""
-        return self.fields["notice-seen"]
-
-    @notice_seen.setter
-    def notice_seen(self, value: bool) -> None:
-        self.edit("notice-seen", value=value)
-    @property
-    def notice_device(self) -> str:
-        """device (`notice-device` on the wire)."""
-        return self.fields["notice-device"]
-
-    @notice_device.setter
-    def notice_device(self, value: str) -> None:
-        self.edit("notice-device", value=value)
-    @property
-    def notice_actions(self) -> list[str]:
-        """actions (`notice-actions` on the wire)."""
-        return self.fields["notice-actions"]
-
-    @notice_actions.setter
-    def notice_actions(self, value: list[str]) -> None:
-        self.edit("notice-actions", value=value)
-
-
 class WorldClock(Resource):
     """WorldClock — `tl.so.tilo.clocks.WorldClock`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@ea82f8d081f7cae3"
     kbeao6ct: str  # city
     g5vsvo2p: str  # zone
 
 
 class Alarm(Resource):
     """Alarm — `tl.so.tilo.clocks.Alarm`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@ea82f8d081f7cae3"
     e6jhyy6h: str  # label
     cb6boqqg: int  # hour
     bvmw7lxl: int  # minute
@@ -284,7 +222,7 @@ class Alarm(Resource):
 
 class Timer(Resource):
     """Timer — `tl.so.tilo.clocks.Timer`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@ea82f8d081f7cae3"
     nhqnhguz: str  # label
     @property
     def _5b7nw57j(self) -> int:
@@ -339,13 +277,13 @@ class Timer(Resource):
 
 class Lap(Resource):
     """Lap — `tl.so.tilo.clocks.Lap`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@ea82f8d081f7cae3"
     mq5diuqb: int  # at
 
 
 class Stopwatch(Resource):
     """Stopwatch — `tl.so.tilo.clocks.Stopwatch`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@ea82f8d081f7cae3"
     yhijhjuh: int  # elapsed
     fg2gmze6: str | None  # since
     ngcmcd7g: list[Entry[Lap]]  # laps
@@ -353,12 +291,11 @@ class Stopwatch(Resource):
 
 class Clocks(Resource):
     """Clocks — `tl.so.tilo.clocks.Clocks`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@ea82f8d081f7cae3"
     r2amisi7: list[Entry[WorldClock]]  # world_clocks
     gneumngu: list[Entry[Alarm]]  # alarms
     kahapraa: list[Entry[Timer]]  # timers
     rjh2x76r: Stopwatch  # stopwatch
-    hnwcprw3: bool  # active
 
     def add_world_clock(self,
         *,
@@ -458,5 +395,5 @@ class Clocks(Resource):
 
 class TiloClocks(Resource):
     """Clocks — `tl.so.tilo.clocks`."""
-    __surface__ = "so.tilo.clocks@860b782a67ee26a5"
+    __surface__ = "so.tilo.clocks@ea82f8d081f7cae3"
 
