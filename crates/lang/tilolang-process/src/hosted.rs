@@ -4121,7 +4121,7 @@ impl Hosted {
         let message = RemoteActionMessage::Invoke(request);
         if !self.connection.manager().send(CollabRequest::RemoteAction {
             message,
-            press: None,
+            press: ui_core::press::current(),
         }) {
             self.instance
                 .failed("The workspace could not be reached to run the check".to_owned());
@@ -4340,7 +4340,7 @@ impl Invoker for Apis {
             .borrow_mut()
             .try_send(CollabRequest::RemoteAction {
                 message,
-                press: None,
+                press: ui_core::press::current(),
             })
         {
             tracing::warn!(to = app, %error, "a child call did not reach the dispatch");

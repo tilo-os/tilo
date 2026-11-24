@@ -263,6 +263,14 @@ impl AppHandler {
         None
     }
 
+    /// The window is about to handle `event`, which it received with `serial`: a press among
+    /// them is what an invocation it makes now follows.
+    fn note_press_serial(&self, event: &WindowEvent, serial: Option<u32>) {
+        if let Some(serial) = serial {
+            crate::press::note_event(event, serial);
+        }
+    }
+
     /// The input with the shell's `serial` was routed to the window: what the shell pressed
     /// after it runs now, before what the window handles next.
     fn note_input_handled(&mut self, serial: Option<u32>) {
@@ -3339,6 +3347,9 @@ impl AppHandler {
             wake_ends,
             crate::time::now,
             |window_id, event, serial| {
+                // What an invocation the event makes names: the press it is handling, set before
+                // the window sees it.
+                self.note_press_serial(&event, serial);
                 // The input reached the window now, never while it waited: a control the shell
                 // pressed after it runs behind what the event did, not behind the queue.
                 self.platform_window_event(window_id, event);
@@ -3904,6 +3915,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         } else {
             self.route_input_backlog(true);
             let serial = self.input_serial();
+            self.note_press_serial(&event, serial);
             self.platform_window_event(window_id, event);
             self.note_input_handled(serial);
         }

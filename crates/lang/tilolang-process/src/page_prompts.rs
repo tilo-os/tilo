@@ -127,7 +127,7 @@ fn note(
     let message = RemoteActionMessage::Invoke(request);
     if send(CollabRequest::RemoteAction {
         message,
-        press: None,
+        press: ui_core::press::current(),
     }) {
         true
     } else {
@@ -208,7 +208,7 @@ impl PagePrompts {
         let message = RemoteActionMessage::Invoke(request);
         if send(CollabRequest::RemoteAction {
             message,
-            press: None,
+            press: ui_core::press::current(),
         }) {
             self.raised.insert(key, Raised { invocation, no });
         } else {
@@ -307,18 +307,23 @@ mod tests {
     /// site, raised once however often the window says it.
     #[test]
     fn a_camera_request_is_the_apps_call_naming_the_site() {
+        // The person's press in the window, which the page's call names.
+        ui_core::press::note(7);
         let mut prompts = PagePrompts::default();
         let sent = raise(&mut prompts, &camera());
         assert!(raise(&mut prompts, &camera()).is_empty(), "raised once");
         let [
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
-                ..
+                press,
             },
         ] = sent.as_slice()
         else {
             panic!("one call: {sent:?}");
         };
+        // The page host names the press the window was handling: what lets the call run as the
+        // person.
+        assert_eq!(*press, Some(7));
         assert_eq!(request.target.address.resource, PAGE);
         assert_eq!(request.target.address.action, "allow_permission");
         let InvokeArgument::Json(arguments) = &request.argument else {

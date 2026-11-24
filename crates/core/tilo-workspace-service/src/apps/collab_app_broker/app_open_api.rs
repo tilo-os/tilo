@@ -189,22 +189,6 @@ impl AppBrokerState {
             .then_some(OpenAuthority::Press)
     }
 
-    /// [`Self::app_open_authority`] for a caller that cannot wait for the shell link to carry the
-    /// press: an attestation on its way proves nothing here.
-    pub(super) fn app_open_authority_now(
-        &self,
-        peer_id: u64,
-        app_id: &str,
-        parent: Option<tilo_actions::InvocationId>,
-        press: Option<u32>,
-    ) -> Option<OpenAuthority> {
-        if let Some(authority) = self.open_authority_continuing(peer_id, app_id, parent) {
-            return Some(authority);
-        }
-        self.person_pressed_now(peer_id, press)
-            .then_some(OpenAuthority::Press)
-    }
-
     /// The authority an invocation `parent` this connection still runs gives an open, if any.
     fn open_authority_continuing(
         &self,

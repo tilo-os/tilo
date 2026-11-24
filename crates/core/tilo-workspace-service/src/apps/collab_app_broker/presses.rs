@@ -89,15 +89,6 @@ impl Presses {
         }
     }
 
-    /// Whether the person's press in `window`, issued serial `serial`, is behind a call now, taking
-    /// it: what a caller that may not wait asks, and answers no for a serial not attested yet.
-    pub(super) fn take_now(&self, window: Option<u64>, serial: Option<u32>) -> bool {
-        let (Some(window), Some(serial)) = (window, serial) else {
-            return false;
-        };
-        self.consume(window, serial, tilo_clock::now())
-    }
-
     /// Take the press if it is there, without waiting.
     fn consume(&self, window: u64, serial: u32, now: Instant) -> bool {
         let Ok(mut seen) = self.seen.lock() else {
@@ -136,12 +127,6 @@ impl super::AppBrokerState {
         self.presses
             .take(self.window_of_peer(peer_id), serial)
             .await
-    }
-
-    /// [`Self::person_pressed`] for a caller that may not wait: a serial the shell link still
-    /// carries proves nothing here.
-    pub(super) fn person_pressed_now(&self, peer_id: u64, serial: Option<u32>) -> bool {
-        self.presses.take_now(self.window_of_peer(peer_id), serial)
     }
 }
 

@@ -105,21 +105,6 @@ pub enum Operation {
         of: Changes,
         after: u64,
     },
-    /// Open the installed app `app_id`, from `package_root` (`tapp:<hex>`)
-    /// if not empty, for the invocation `on_behalf_of` (UUID bytes, or none
-    /// for the person's press); answered as [`Reply::Invoked`] once it
-    /// started or failed to.
-    Launch {
-        record: Record,
-        app_id: String,
-        package_root: String,
-        on_behalf_of: Vec<u8>,
-        /// The input serial the person's press that asked for the launch travelled with: what
-        /// the host checks to admit it as them ([`shell::ShellCall::Press`]). None for no press:
-        /// a positional encoding still writes it, so a call always reads back.
-        #[serde(default)]
-        press: Option<u32>,
-    },
     /// What the app says, or asks, of an invocation it was handed.
     Invocation {
         record: Record,
@@ -436,12 +421,6 @@ pub enum Reply {
     Workspace(WorkspaceStatus),
     /// Whether an invocation's cancellation was asked.
     Cancelled(bool),
-    /// The invocation a launch started, and its state now as
-    /// `InvocationUpdate` JSON.
-    Invoked {
-        id: u64,
-        update: String,
-    },
     /// The revision a [`Operation::Changed`] waits from next.
     Changed(u64),
     /// A [`Operation::Command`]'s answer, in its service's encoding.
@@ -592,22 +571,6 @@ mod tests {
             let bytes = FRAMING.encode_value(&call).unwrap();
             let read: Call = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
             assert_eq!(read, call);
-
-            // A call's fields are positional: what a launch with no press leaves out must still
-            // read back, or the frame the app sends ends the connection.
-            let launch = Call {
-                id: 8,
-                request: Operation::Launch {
-                    record: Record::new("app/workspace", ""),
-                    app_id: "so.tilo.chat".into(),
-                    package_root: String::new(),
-                    on_behalf_of: Vec::new(),
-                    press: None,
-                },
-            };
-            let bytes = FRAMING.encode_value(&launch).unwrap();
-            let read: Call = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
-            assert_eq!(read, launch);
 
             let event = HostFrame::Event {
                 subscription: 7,

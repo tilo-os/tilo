@@ -2491,25 +2491,18 @@ impl AppBrokerState {
     }
 
     /// Where a view `caller`'s action needs opens in `workspace`: where a person
-    /// is looking, for the person's own invocation and for a call admitted on
-    /// the person's own press in the app asking (a link clicked in Chat, a
-    /// file opened from Files), which takes them there; beside the asking
-    /// app's own view for an app's call nobody pressed for; else beside
-    /// the view the actor last worked in, so an agent or a Shortcut keeps
-    /// working next to where it already is, and beside the person's view
-    /// without taking their focus when it has none yet: nobody but the
-    /// person moves the person's view.
+    /// is looking, for the person's own invocation (a pressed call admitted as
+    /// them runs as them, so it opens there too); beside the asking app's own
+    /// view for a call made by an app; else beside the view the actor last
+    /// worked in, so an agent or a Shortcut keeps working next to where it
+    /// already is, and beside the person's view without taking their focus
+    /// when it has none yet: nobody but the person moves the person's view.
     pub(super) fn launch_place(
         &self,
         caller: &Caller,
         workspace: &str,
         launch: Option<&LaunchScope>,
     ) -> LaunchPlace {
-        // A call the person's press admitted runs as the person, so their view is where it
-        // opens, whichever app asked.
-        if caller.acting().is_person() {
-            return LaunchPlace::Focus;
-        }
         if let Some(scope) = launch {
             return LaunchPlace::Beside {
                 app_id: scope.app_id.clone(),
@@ -2519,6 +2512,9 @@ impl AppBrokerState {
             return LaunchPlace::Beside {
                 app_id: app_id.to_string(),
             };
+        }
+        if caller.acting().is_person() {
+            return LaunchPlace::Focus;
         }
         self.launchable
             .view_of(workspace, BrokerActor::for_caller(caller).member())

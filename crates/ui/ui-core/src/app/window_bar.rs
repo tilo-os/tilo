@@ -211,8 +211,6 @@ impl App {
     /// the person did in the bar after it, and the controls the shell pressed after it, run
     /// now, before the window handles the input after.
     pub fn input_handled(&mut self, serial: u32) {
-        // What a control pressed from now on follows: the invocation it makes names this serial.
-        crate::press::note(serial);
         let bar = &mut self.floating.window_bar;
         if bar.handled_input != Some(serial) {
             bar.handled_input = Some(serial);

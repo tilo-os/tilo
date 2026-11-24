@@ -56,9 +56,6 @@ pub trait DocumentChangeServices: Send + Sync {
     ) -> Result<serde_json::Value, String>;
 }
 
-/// The normal desktop opening deadline, shared with placement retirement.
-pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
 /// Reads the host's committed authority in place; mutations go back to that host, and this owns
 /// no replica or persistence.
 ///
@@ -268,143 +265,6 @@ pub struct LaunchContent<'a> {
     pub author: Option<&'a str>,
 }
 
-/// One admitted launch's actual startup observation. Dropping an unanswered one retires its
-/// host-side subscription; enqueueing a worker is never sufficient for this receipt.
-pub struct LaunchReadiness {
-    receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
-    adoption: Option<tokio::sync::oneshot::Receiver<Option<LaunchAdoption>>>,
-    retire: Option<Box<dyn FnOnce() + Send>>,
-}
-
-/// Host-observed public window identity, never an application-claimed PID.
-/// Kernel process attribution is available only through device-owner control.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LaunchAdoption {
-    /// Host-issued identity of this exact Wayland resource lifetime; not a grant.
-    pub adoption_id: uuid::Uuid,
-    pub surface_id: u64,
-    pub package_id: String,
-    pub workspace: String,
-}
-
-/// Distinguishes a reported startup failure from a lost startup observation.
-/// Losing observation does not establish that the launched process stopped.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LaunchReadinessError {
-    Failed(String),
-    ObserverStopped,
-    AdoptionObserverStopped,
-    TimedOut,
-}
-
-impl LaunchReadinessError {
-    #[must_use]
-    pub fn is_uncertain(&self) -> bool {
-        !matches!(self, Self::Failed(_))
-    }
-}
-
-impl std::fmt::Display for LaunchReadinessError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Failed(message) => f.write_str(message),
-            Self::ObserverStopped => f.write_str("the application startup observer stopped"),
-            Self::AdoptionObserverStopped => f.write_str("the adopted window observer stopped"),
-            Self::TimedOut => f.write_str("the application did not open a window in time"),
-        }
-    }
-}
-
-impl std::error::Error for LaunchReadinessError {}
-
-impl LaunchReadiness {
-    pub fn new(
-        receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
-        retire: impl FnOnce() + Send + 'static,
-    ) -> Self {
-        Self {
-            receiver,
-            adoption: None,
-            retire: Some(Box::new(retire)),
-        }
-    }
-
-    #[must_use]
-    pub fn with_adoption(
-        mut self,
-        receiver: tokio::sync::oneshot::Receiver<Option<LaunchAdoption>>,
-    ) -> Self {
-        self.adoption = Some(receiver);
-        self
-    }
-
-    /// Wait for an adopted window or a terminal startup failure.
-    pub async fn wait(self) -> Result<(), String> {
-        self.wait_with_adoption()
-            .await
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
-    /// Observe the adopted window association when the native host supplies ownership.
-    /// Legacy hosts still settle readiness without inventing an association.
-    pub async fn wait_with_adoption(
-        mut self,
-    ) -> Result<Option<LaunchAdoption>, LaunchReadinessError> {
-        (&mut self.receiver)
-            .await
-            .map_err(|_| LaunchReadinessError::ObserverStopped)?
-            .map_err(LaunchReadinessError::Failed)?;
-        match self.adoption.take() {
-            Some(receiver) => receiver
-                .await
-                .map_err(|_| LaunchReadinessError::AdoptionObserverStopped),
-            None => Ok(None),
-        }
-    }
-}
-
-#[cfg(test)]
-mod launch_readiness_tests {
-    use super::{LaunchReadiness, LaunchReadinessError};
-
-    #[tokio::test]
-    async fn lost_observers_are_uncertain_but_reported_failures_are_not() {
-        for scenario in ["startup_lost", "adoption_lost", "reported_failure"] {
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            let (adopt, adopted) = tokio::sync::oneshot::channel();
-            let ready = LaunchReadiness::new(receiver, || {}).with_adoption(adopted);
-            match scenario {
-                "startup_lost" => drop(sender),
-                "adoption_lost" => sender.send(Ok(())).unwrap(),
-                _ => sender
-                    .send(Err("the application startup observer stopped".into()))
-                    .unwrap(),
-            }
-            drop(adopt);
-            let error = ready.wait_with_adoption().await.unwrap_err();
-            let expected = match scenario {
-                "startup_lost" => LaunchReadinessError::ObserverStopped,
-                "adoption_lost" => LaunchReadinessError::AdoptionObserverStopped,
-                _ => {
-                    LaunchReadinessError::Failed("the application startup observer stopped".into())
-                }
-            };
-            assert_eq!(error, expected);
-            assert_eq!(error.is_uncertain(), scenario != "reported_failure");
-        }
-    }
-}
-
-impl Drop for LaunchReadiness {
-    fn drop(&mut self) {
-        if let Some(retire) = self.retire.take() {
-            retire();
-        }
-    }
-}
-
 /// Original host-retained facts for one authenticated live launch.
 #[derive(Clone, Debug)]
 pub struct AuthenticatedApplicationLaunch {
@@ -451,44 +311,6 @@ pub enum ExecutingBindingPhase {
 /// dropped unsent is a host that stopped starting it.
 pub type WindowlessStart = tokio::sync::oneshot::Receiver<Result<(), String>>;
 
-/// Host-retained original ownership for one exact observed launch, built only by the broker from
-/// the launch it observed: no wire form, and it never grants rights.
-#[derive(Clone)]
-pub struct ObservedApplicationLaunch {
-    workspace: String,
-    app: String,
-    package_root: Option<String>,
-    check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
-}
-
-impl ObservedApplicationLaunch {
-    #[must_use]
-    pub fn new(
-        workspace: String,
-        app: String,
-        package_root: Option<String>,
-        check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
-    ) -> Self {
-        Self {
-            workspace,
-            app,
-            package_root,
-            check,
-        }
-    }
-
-    pub fn matches(&self, app: &str, root: Option<&str>, workspace: &Workspace) -> bool {
-        self.app == app
-            && self.package_root.as_deref() == root
-            && self.workspace == workspace.id().to_string()
-    }
-
-    /// Recheck the actual original caller, pending invocation and policy clock.
-    pub fn certificate(&self) -> Result<tilo_user_identity::DeviceCert, String> {
-        (self.check)()
-    }
-}
-
 pub trait LauncherServices: Send + Sync {
     /// Bind an optional diagnostic observation to the host's current exact
     /// launcher task. The returned ID is correlation only, never authority.
@@ -517,35 +339,6 @@ pub trait LauncherServices: Send + Sync {
         record: Option<&str>,
         place: &LaunchPlace,
     ) -> Result<(), String>;
-    /// Launch an exact installed package, or an ordinary host application,
-    /// and observe its real startup in the authenticated workspace.
-    fn begin_launch(
-        &self,
-        app: &str,
-        package_root: Option<&str>,
-        workspace: &Workspace,
-        author: Option<&str>,
-    ) -> Result<LaunchReadiness, String> {
-        let _ = (app, package_root, workspace, author);
-        Err("observed application startup is unavailable on this host".into())
-    }
-    /// Observe startup with host-retained original ownership, when available.
-    fn begin_launch_from_original(
-        &self,
-        app: &str,
-        package_root: Option<&str>,
-        workspace: &Workspace,
-        author: Option<&str>,
-        original: Option<ObservedApplicationLaunch>,
-    ) -> Result<LaunchReadiness, String> {
-        if let Some(original) = original {
-            if !original.matches(app, package_root, workspace) {
-                return Err("original launch target changed".into());
-            }
-            original.certificate()?;
-        }
-        self.begin_launch(app, package_root, workspace, author)
-    }
     /// Launch `app` into `workspace` at `place`, opening the
     /// content-addressed bytes `content` names read-only, read through the
     /// calling application's own scope. An empty hash is a plain launch. A
