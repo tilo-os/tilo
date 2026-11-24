@@ -1316,12 +1316,23 @@ tilo_test_env::scenario! {
         for part in ["ada", "ben"] {
             assert!(shown.contains(&part.to_owned()), "{part} in {shown:?}");
         }
-        let labels: Vec<String> = page
-            .tree()
-            .of_kind("ui.Button")
-            .iter()
-            .filter_map(|b| text_prop(b, "label"))
-            .collect();
+        // The row's own controls: what a person's card holds opens from the row's "About" and
+        // is not the row's.
+        fn row_buttons(node: &UiNode, out: &mut Vec<String>) {
+            if node.kind == "ui.PopoverButton" {
+                return;
+            }
+            if node.kind == "ui.Button"
+                && let Some(label) = text_prop(node, "label")
+            {
+                out.push(label);
+            }
+            for child in &node.children {
+                row_buttons(child, out);
+            }
+        }
+        let mut labels = Vec::new();
+        row_buttons(page.tree(), &mut labels);
         assert_eq!(
             labels.iter().filter(|l| *l == "Message").count(),
             1,
