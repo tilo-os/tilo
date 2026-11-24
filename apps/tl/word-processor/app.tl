@@ -3,6 +3,7 @@ app so.tilo.word-processor "Writer" (
     category: .office,
     tagline: "Formatted documents you write alone or together",
     keywords: ["word", "docs", "document", "documents", "writer", "microsoft word", "docx", "odt", "rtf", "libreoffice writer", "wordpad", "textverarbeitung", "dokument", "schreiben", "brief", "lebenslauf", "bericht"],
+    document: document,
 )
 
 use so.tilo.lang.discussion as discussion
@@ -48,7 +49,7 @@ type Document (untitled: "Untitled Document") {
     chosen_count: Int merge counter = 0
 }
 
-root Document
+root document: Document
 
 default view writer for Document
 

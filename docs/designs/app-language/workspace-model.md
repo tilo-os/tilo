@@ -136,6 +136,12 @@ default view note_editor for Note
   which only their devices hold the key to and every action API decides as theirs alone, the
   workspace's owner included. Another member opening the app in the same workspace starts from
   their own, empty resource.
+- An app whose windows show what the person keeps for themselves (Settings) says
+  `windows: .personal`: each window stands on that person's own layout and never on a
+  workspace's shared desktop. A `resources: .own` app's windows are personal already.
+- An app each window of which shows a document of its own (a workbook, a film being cut) names
+  that root in its header, `app so.tilo.sheets "Sheets" (document: workbook)`. It keeps no
+  workbook for the workspace: a document is named by its id, `@sheets.Workbook:<id>`.
 - `open(r)` is an action usable from views and from actions.
 
 ## 9. The layout is a resource

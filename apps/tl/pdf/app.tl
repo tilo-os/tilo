@@ -3,6 +3,7 @@ app so.tilo.pdf-viewer "PDF Viewer" (
     category: .office,
     tagline: "Read, mark up and sign PDFs",
     keywords: ["pdf", "reader", "document", "annotate", "highlight", "sign", "form", "dokument", "lesen", "kommentieren", "markieren", "unterschreiben", "formular", "pdf-betrachter"],
+    document: library,
 )
 
 /// A PDF the workspace reads: the pages it shows, and every mark, comment and signature its

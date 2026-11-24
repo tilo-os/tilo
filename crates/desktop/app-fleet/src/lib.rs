@@ -198,8 +198,8 @@ mod tests {
             Some("so.tilo.sheets")
         );
         assert_eq!(
-            metadata("so.tilo.lang.todo").map(|app| app.id),
-            Some("so.tilo.lang.tasks")
+            metadata("so.tilo.lang.chat").map(|app| app.id),
+            Some("so.tilo.chat")
         );
         for app in apps() {
             assert_eq!(metadata(app.id).map(|known| known.id), Some(app.id));

@@ -111,6 +111,11 @@ pub struct PackageMeta {
     /// Each member keeps the app's records in their own workspace (`resources: .own`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_resources: bool,
+    /// Each window is the person's own who opened it and never stands on a workspace's shared
+    /// desktop (`windows: .personal`). An app whose resources are each member's own has such
+    /// windows whether it says so or not ([`Self::windows_are_personal`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub personal_windows: bool,
     /// The hosts the app's `uses web` requests may reach (`web: ["example.com"]`). A request to any
     /// other host is refused as a value.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -936,6 +941,14 @@ impl PackageMeta {
     #[must_use]
     pub fn keeps_own_resources(&self) -> bool {
         self.own_resources
+    }
+
+    /// Whether each window of the package is the person's own who opened it: the app says so
+    /// (`windows: .personal`), or it keeps its records in each member's own workspace, whose
+    /// windows show what only that member reads.
+    #[must_use]
+    pub fn windows_are_personal(&self) -> bool {
+        self.personal_windows || self.own_resources
     }
 
     /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.

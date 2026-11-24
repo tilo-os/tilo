@@ -3,6 +3,7 @@ app so.tilo.hex-editor "Hex Editor" (
     category: .development,
     tagline: "Reads and changes a file's bytes",
     keywords: ["hex editor", "hex", "bytes", "binary", "binary editor", "editor", "disk", "byte", "hexadezimal", "binär"],
+    document: library,
 )
 
 /// One edit of the bytes: at `at`, `remove` bytes stand as `insert`'s hexadecimal ones.

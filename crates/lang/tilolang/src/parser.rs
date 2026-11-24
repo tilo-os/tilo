@@ -208,6 +208,8 @@ struct AppOptions {
     previously: Vec<String>,
     schemes: Vec<String>,
     own_resources: bool,
+    personal_windows: bool,
+    document: Option<Ident>,
     web: Vec<String>,
     engine: Option<String>,
     splash_budget: Option<u32>,
@@ -497,6 +499,7 @@ impl<'a> Parser<'a> {
         let mut seen_web = false;
         let mut seen_schemes = false;
         let mut resources: Option<String> = None;
+        let mut windows: Option<String> = None;
         if !self.eat(&Tok::LParen) {
             return Ok(out);
         }
@@ -507,7 +510,7 @@ impl<'a> Parser<'a> {
             }
             let key = self.ident(
                 "`icon`, `category`, `tagline`, `keywords`, `previously`, `splash_budget`, \
-                 `resources`, `web`, `schemes` or `engine`",
+                 `resources`, `windows`, `document`, `web`, `schemes` or `engine`",
             )?;
             self.expect(&Tok::Colon)?;
             if key.name == "tagline" {
@@ -620,6 +623,13 @@ impl<'a> Parser<'a> {
                     );
                 };
                 out.splash_budget = Some(ms);
+            } else if key.name == "document" {
+                if out.document.is_some() {
+                    return self.fail(key.span, "`document:` is given twice".to_owned());
+                }
+                out.document = Some(self.ident(
+                    "the name of the root each window keeps one of, such as `document: workbook`",
+                )?);
             } else if key.name == "previously" {
                 if std::mem::replace(&mut seen_previously, true) {
                     return self.fail(key.span, "`previously:` is given twice".to_owned());
@@ -642,13 +652,16 @@ impl<'a> Parser<'a> {
                     out.previously.push(self.app_id()?);
                 }
             } else {
-                if !matches!(key.name.as_str(), "icon" | "category" | "resources") {
+                if !matches!(
+                    key.name.as_str(),
+                    "icon" | "category" | "resources" | "windows"
+                ) {
                     return self.fail(
                         key.span,
                         format!(
                             "an app has an `icon:`, a `category:`, a `tagline:`, `keywords:`, \
-                             `previously:`, `splash_budget:`, `resources:`, `web:`, `schemes:` \
-                             and `engine:`, not `{}:`",
+                             `previously:`, `splash_budget:`, `resources:`, `windows:`, \
+                             `document:`, `web:`, `schemes:` and `engine:`, not `{}:`",
                             key.name
                         ),
                     );
@@ -687,13 +700,27 @@ impl<'a> Parser<'a> {
                         }
                         &mut resources
                     }
+                    "windows" => {
+                        if !matches!(value.name.as_str(), "shared" | "personal") {
+                            return self.fail(
+                                value.span,
+                                format!(
+                                    "`.{}` is not whose windows are; an app's windows are \
+                                     `.shared` on the workspace's desktop or each person's \
+                                     `.personal`",
+                                    value.name
+                                ),
+                            );
+                        }
+                        &mut windows
+                    }
                     other => {
                         return self.fail(
                             key.span,
                             format!(
                                 "an app has an `icon:`, a `category:`, a `tagline:`, `keywords:`, \
-                                 `previously:`, `splash_budget:`, `resources:` and `web:`, not \
-                                 `{other}:`"
+                                 `previously:`, `splash_budget:`, `resources:`, `windows:` and \
+                                 `web:`, not `{other}:`"
                             ),
                         );
                     }
@@ -710,6 +737,7 @@ impl<'a> Parser<'a> {
             }
         }
         out.own_resources = resources.as_deref() == Some("own");
+        out.personal_windows = windows.as_deref() == Some("personal");
         Ok(out)
     }
 
@@ -921,6 +949,8 @@ impl<'a> Parser<'a> {
                 previously: options.previously,
                 splash_budget: options.splash_budget,
                 own_resources: options.own_resources,
+                personal_windows: options.personal_windows,
+                document: options.document,
                 web: options.web,
                 schemes: options.schemes,
                 engine: options.engine,
@@ -973,6 +1003,8 @@ impl<'a> Parser<'a> {
                         previously: options.previously,
                         splash_budget: options.splash_budget,
                         own_resources: options.own_resources,
+                        personal_windows: options.personal_windows,
+                        document: options.document,
                         web: options.web,
                         schemes: options.schemes,
                         engine: options.engine,

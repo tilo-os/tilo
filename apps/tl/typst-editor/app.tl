@@ -3,6 +3,7 @@ app so.tilo.typst-editor "Typst" (
     category: .office,
     tagline: "Typesets Typst documents, the page beside the source",
     keywords: ["typst", "typesetting", "typeset", "document", "paper", "pdf", "editor", "markup", "satz", "dokument", "schreiben", "typst-editor"],
+    document: library,
 )
 
 /// How much a problem the typesetter found matters.

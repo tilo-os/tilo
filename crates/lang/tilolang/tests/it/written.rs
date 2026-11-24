@@ -107,16 +107,23 @@ tilo_test_env::scenario! {
 
     phase a_kind_kept_for_each_document_is_named_by_its_id_and_never_alone;
     {
-        let mut notes = compile_with(NOTES, &[]).expect("notes").meta;
+        let notes = compile_with(NOTES, &[]).expect("notes").meta;
         let view = |source: &str, notes: &tilolang::PackageMeta| {
             tilolang::compile_view_definition(source, "ada", std::slice::from_ref(notes))
         };
         // The workspace's notebook: named alone it is that one.
         view(ALONE, &notes).unwrap_or_else(|d| panic!("{d:#?}"));
 
-        // A package that keeps a notebook for each document keeps none for the workspace:
-        // named alone it is none of them, and the fault ends with the form that works.
-        notes.each_document = vec!["notebook".to_owned()];
+        // A package that says it keeps a notebook for each document (`document: notebook`) keeps
+        // none for the workspace: named alone it is none of them, and the fault ends with the
+        // form that works.
+        let notes = compile_with(
+            &NOTES.replacen("\"Notes\"", "\"Notes\" (document: notebook)", 1),
+            &[],
+        )
+        .expect("notes kept for each document")
+        .meta;
+        assert_eq!(notes.each_document, ["notebook"]);
         let alone = view(ALONE, &notes).unwrap_err();
         let said: Vec<&str> = alone.iter().map(|d| d.code.as_str()).collect();
         assert_eq!(said, ["E142"], "{alone:#?}");

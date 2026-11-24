@@ -54,6 +54,12 @@ pub struct AppHeader {
     pub splash_budget: Option<u32>,
     /// Each member keeps the app's records in their own workspace (`resources: .own`).
     pub own_resources: bool,
+    /// Each window is the person's own who opened it, and never stands on a workspace's shared
+    /// desktop (`windows: .personal`).
+    pub personal_windows: bool,
+    /// `(document: workbook)`: the named root of which the app keeps one for each document, each
+    /// window showing one, and none for the workspace.
+    pub document: Option<Ident>,
     /// `(web: ["example.com", "*.rss.org"])`: the hosts `uses web` requests may reach; any other is
     /// refused. `*.rss.org` covers subdomains, not `rss.org`.
     pub web: Vec<String>,

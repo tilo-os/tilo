@@ -47,6 +47,17 @@ An app promises how long a person waits for its window: `app so.tilo.chat "Chat"
 becomes the manifest's `[entrypoint] splash-budget`. The session holds each open to that budget,
 counted as the work the open took. An app that declares none keeps the manifest's own default.
 
+Two header options say what an app's windows are. `app so.tilo.settings "Settings" (windows:
+.personal)` makes each window the person's own who opened it: it stands on their own layout, and a
+workspace's shared desktop never holds it, so nobody else sees or opens it there. The default is
+`windows: .shared`. An app with `resources: .own` already has personal windows, and saying
+`windows: .personal` as well is an error.
+
+`app so.tilo.sheets "Sheets" (document: workbook)` says each window shows a document of its own,
+one `root workbook: Workbook` for each, and the app keeps none for the workspace. Another package
+then names one workbook by its id, `@sheets.Workbook:<id>`; `sheets.workbook` alone names none of
+them and is refused. The option names a root by its name, so the root needs one.
+
 A package migrates its own records when its schema changes shape. The field the type no longer
 uses stays as an ordinary field: its values stay in the records, and a migration reads them. A
 `migration action` on the type moves what a field held to where the type keeps it now:

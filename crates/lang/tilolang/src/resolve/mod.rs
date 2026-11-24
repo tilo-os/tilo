@@ -2727,6 +2727,63 @@ impl Resolver<'_> {
                 .unwrap_or_default();
             self.err("E018", span, format!("the root `{0}` has no default view, which is what opening it shows; add `default view <view> for {0}`", key.name));
         }
+        self.window_decls(module);
+    }
+
+    /// `windows: .personal` and `document: root` in the app's header: the root a window keeps one
+    /// of is one the app names, and windows are said personal only where they are not already.
+    fn window_decls(&mut self, module: &ast::Module) {
+        let app = &module.app;
+        if app.personal_windows && app.own_resources {
+            self.err(
+                "E146",
+                app.span,
+                "`windows: .personal` says what `resources: .own` already does: an app whose \
+                 resources are each member's own shows them in windows only that member has. \
+                 Leave out `windows: .personal`"
+                    .to_owned(),
+            );
+        }
+        let Some(document) = &app.document else {
+            return;
+        };
+        if self.env.named_roots.iter().any(|(n, _)| *n == document.name) {
+            return;
+        }
+        let unnamed = self
+            .env
+            .roots
+            .iter()
+            .find(|key| {
+                key.name == document.name && !self.env.named_roots.iter().any(|(_, k)| k == *key)
+            })
+            .map(|key| key.name.clone());
+        let named: Vec<String> = self
+            .env
+            .named_roots
+            .iter()
+            .map(|(n, _)| format!("`{n}`"))
+            .collect();
+        let what = if let Some(ty) = unnamed {
+            format!(
+                "`document: {ty}` names a type; it names the root by its name. Give the root \
+                 one, `root {}: {ty}`, and write that name here",
+                crate::meta::in_words(&ty).replace(' ', "_")
+            )
+        } else if named.is_empty() {
+            format!(
+                "`document: {0}` names a root the app keeps one of for each window, and the app \
+                 declares no named root: add one, such as `root {0}: Document`",
+                document.name
+            )
+        } else {
+            format!(
+                "`document: {}` names no root of this app; its named roots are {}",
+                document.name,
+                named.join(", ")
+            )
+        };
+        self.err("E147", document.span, what);
     }
 
     /// A type that says when it is live names the view that shows it then: `view live(x: T)`, the

@@ -11,10 +11,24 @@ pub(super) const PREVIOUS: &[(&str, &str)] = &[
 ];
 
 /// The apps a window of which is the person's own (`WINDOWS_ARE_PERSONAL`).
-pub(super) const OWN_WINDOWS: &[&str] = &["so.tilo.shell", "so.tilo.lang.views"];
+pub(super) const OWN_WINDOWS: &[&str] =
+    &["so.tilo.settings", "so.tilo.shell", "so.tilo.lang.views"];
 
 /// The apps each window of which shows a document of its own (`ResourceApp::WINDOW_RESOURCE`).
-pub(super) const DOCUMENT_WINDOWS: &[&str] = &["so.tilo.slides", "so.tilo.terminal"];
+pub(super) const DOCUMENT_WINDOWS: &[&str] = &[
+    "so.tilo.slides",
+    "so.tilo.terminal",
+    "so.tilo.canvas",
+    "so.tilo.chip-design",
+    "so.tilo.code-editor",
+    "so.tilo.diffmerge",
+    "so.tilo.hex-editor",
+    "so.tilo.pdf-viewer",
+    "so.tilo.sheets",
+    "so.tilo.typst-editor",
+    "so.tilo.video-editor",
+    "so.tilo.word-processor",
+];
 
 /// `(app, kind)`: the kinds of record of which each member of a workspace keeps one that
 /// only they read and change (`[resources] private`).

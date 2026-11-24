@@ -3,6 +3,7 @@ app so.tilo.settings "Settings" (
     category: .system,
     tagline: "This device, your workspace and the accounts they keep",
     keywords: ["settings", "preferences", "configuration", "einstellungen", "system", "options"],
+    windows: .personal,
 )
 
 use so.tilo.settings.sections as settings

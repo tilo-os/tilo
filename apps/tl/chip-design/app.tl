@@ -4,6 +4,7 @@ app so.tilo.chip-design "Chip Design" (
     tagline: "Read reported chip evidence and sketch the operators behind it",
     keywords: ["chip", "chip design", "chip-design", "operator", "operator graph", "hardware", "verification", "report", "evidence", "rtl", "netlist", "silicon", "chip-entwurf", "halbleiter", "nachweis"],
     splash_budget: 250,
+    document: project,
 )
 
 /// The structural operator kinds a design is built from.

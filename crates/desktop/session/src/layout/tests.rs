@@ -997,16 +997,15 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
     let workspace = WorkspaceId::new();
     service.found(workspace, "Layout");
 
-    // One strip of one window of the person's own (Views keeps its records in each member's own
-    // workspace, so its windows are theirs): what the workspace's layout never holds.
+    // One strip of one window of the person's own: what the workspace's layout never holds.
     let mut ids = tilo_desktop_model::IdMinter::new(salt);
     let (strip, group, tab) = (ids.mint(), ids.mint(), ids.mint());
     let window = Tab {
         id: tab,
-        title: "Views".to_owned(),
+        title: "Settings".to_owned(),
         tile: TileContent::LocalApp {
-            app_id: "so.tilo.lang.views".to_owned(),
-            label: "Views".to_owned(),
+            app_id: "so.tilo.settings".to_owned(),
+            label: "Settings".to_owned(),
             note: String::new(),
         },
         app_title: None,
@@ -1245,7 +1244,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
 
     // The window of the app of the person's own, and a window of a workspace's behind it.
     let mut ids = tilo_desktop_model::IdMinter::new(salt);
-    let (home_strip, home_group, chat, views) = (ids.mint(), ids.mint(), ids.mint(), ids.mint());
+    let (home_strip, home_group, chat, settings) = (ids.mint(), ids.mint(), ids.mint(), ids.mint());
     let (studio_strip, studio_group, notes) = (ids.mint(), ids.mint(), ids.mint());
     let window = |id: u64, title: &str, app: &str| Tab {
         id,
@@ -1267,9 +1266,9 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
             id: home_group,
             tabs: vec![
                 window(chat, "Chat", "so.tilo.chat"),
-                window(views, "Views", "so.tilo.lang.views"),
+                window(settings, "Settings", "so.tilo.settings"),
             ],
-            active_tab: views,
+            active_tab: settings,
             width: WindowWidth::Wide,
             maximized: false,
             focus_history: Vec::new(),
@@ -1348,11 +1347,11 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
         look(&before, &mut shown);
         assert_eq!(
             windows_of(&shown.workspaces[0]),
-            BTreeSet::from([chat, views]),
+            BTreeSet::from([chat, settings]),
             "the document shows the windows of the workspace"
         );
         let moved = shown
-            .remove_tab(views)
+            .remove_tab(settings)
             .expect("the window this shell shows");
         let strip = shown.workspaces[1]
             .strips
@@ -1363,7 +1362,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
             .first_mut()
             .expect("the other workspace's group");
         group.tabs.push(moved.tab);
-        group.active_tab = views;
+        group.active_tab = settings;
         hold.hold();
         before.finish_writes(&shown, std::time::Duration::from_millis(1));
         let pending_own = |workspace: WorkspaceId| {
@@ -1375,7 +1374,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
         };
         assert_eq!(
             pending_own(studio),
-            Some(vec![views]),
+            Some(vec![settings]),
             "the view, the moved window with it, waits for the session after"
         );
         assert!(
@@ -1408,7 +1407,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
     );
     assert_eq!(
         windows_of(&reopened.workspaces[1]),
-        BTreeSet::from([notes, views]),
+        BTreeSet::from([notes, settings]),
         "it is where the person put it"
     );
     let waits = |workspace: WorkspaceId| {
@@ -1446,7 +1445,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
     );
     assert_eq!(
         written(studio),
-        vec![views],
+        vec![settings],
         "the workspace it went to holds it"
     );
 }

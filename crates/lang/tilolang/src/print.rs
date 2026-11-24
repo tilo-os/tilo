@@ -61,6 +61,12 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
         if app.own_resources {
             options.push("resources: .own".to_owned());
         }
+        if app.personal_windows {
+            options.push("windows: .personal".to_owned());
+        }
+        if let Some(document) = &app.document {
+            options.push(format!("document: {}", document.name));
+        }
         if !app.web.is_empty() {
             let hosts: Vec<String> = app.web.iter().map(|host| quote(host)).collect();
             options.push(format!("web: [{}]", hosts.join(", ")));

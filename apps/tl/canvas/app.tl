@@ -3,6 +3,7 @@ app so.tilo.canvas "Canvas" (
     category: .graphics,
     tagline: "Draw and paint that stays editable",
     keywords: ["draw", "drawing", "paint", "sketch", "whiteboard", "art", "illustration", "canvas", "vector", "watercolour", "oil", "zeichnen", "malen", "skizze", "zeichenbrett", "leinwand", "tafel"],
+    document: library,
 )
 
 /// An artwork: layers of marks, each a vector object with a stable id, over a ground. The

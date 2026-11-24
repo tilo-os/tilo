@@ -524,6 +524,8 @@ fn build_meta(
         previously: module.app.previously.clone(),
         splash_budget: module.app.splash_budget,
         own_resources: module.app.own_resources,
+        personal_windows: module.app.personal_windows,
+        each_document: module.app.document.iter().map(|root| root.name.clone()).collect(),
         web: module.app.web.clone(),
         schemes: module.app.schemes.clone(),
         engine: module.app.engine.clone(),

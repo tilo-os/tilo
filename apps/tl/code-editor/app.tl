@@ -3,6 +3,7 @@ app so.tilo.code-editor "Code Editor" (
     category: .development,
     tagline: "Reads and changes a project's code, with its language's colours",
     keywords: ["code editor", "code", "editor", "source", "ide", "programming editor", "code editor online", "notepad", "text editor", "quelltext", "code-editor", "editor", "programmieren", "entwickeln"],
+    document: project,
 )
 
 /// What an entry of the project is: code that is written, or a place that holds entries.

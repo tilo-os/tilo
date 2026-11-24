@@ -3,6 +3,7 @@ app so.tilo.sheets "Sheets" (
     category: .office,
     tagline: "Spreadsheets with formulas, shared live",
     keywords: ["spreadsheet", "spreadsheets", "excel", "calc", "table", "tables", "csv", "xls", "xlsx", "formulas", "numbers", "libreoffice calc", "tabelle", "tabellen", "kalkulation", "rechnen", "tabellenkalkulation"],
+    document: workbook,
 )
 
 use tilo.workspace as workspace

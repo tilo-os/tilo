@@ -3,6 +3,7 @@ app so.tilo.video-editor "Video Editor" (
     category: .multimedia,
     tagline: "Cuts video and sound into a film",
     keywords: ["video editor", "video", "film", "timeline", "cut", "trim", "split", "transition", "title", "export", "videobearbeitung", "video schneiden", "film", "zeitleiste", "schnitt", "exportieren"],
+    document: editor,
 )
 
 use so.tilo.playback as playback

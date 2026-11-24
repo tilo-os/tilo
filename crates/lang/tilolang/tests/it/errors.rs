@@ -1,6 +1,6 @@
 //! One test per error code, plus the shape of diagnostics.
 
-use crate::common::{codes, codes_with, compile, todo_meta};
+use crate::common::{codes, codes_with, compile, compile_with, todo_meta};
 use tilolang::IdsLock;
 
 const C: &str = "type C {\n    n: Int merge counter\n    r: Int\n    t: Text\n    o: Option<Int>\n    items: Collection<C>\n    s: Set<Text>\n}\n";
@@ -1012,5 +1012,62 @@ tilo_test_env::scenario! {
         expect("E090", &sends("[e.to]"));
         expect("E090", &sends("[(d.to, .loud)]"));
         expect("E090", &sends("d.to"));
+    }
+}
+
+tilo_test_env::scenario! {
+    /// E146 and E147: what an app's header says of its windows. A window is the person's own
+    /// where the app says so or keeps each member's own resources, and a root kept for each
+    /// document is one the app declares by name.
+    fn window_declarations_e146_e147;
+
+    phase windows_are_personal_where_the_app_says_so_or_its_resources_are_own;
+    {
+        let app = |options: &str| {
+            compile(&format!("app t.x \"X\" ({options})\ntype Pane {{\n    n: Int\n}}\n")).meta
+        };
+        assert!(app("windows: .personal").windows_are_personal());
+        assert!(app("resources: .own").windows_are_personal());
+        assert!(!app("windows: .shared").windows_are_personal());
+        assert!(!app("category: .utility").windows_are_personal());
+        assert_eq!(
+            codes_header("resources: .own, windows: .personal", ""),
+            ["E146"],
+            "`.own` already makes them personal"
+        );
+        assert_eq!(codes_header("windows: .mine", ""), ["E003"]);
+        assert_eq!(codes_header("windows: .personal, windows: .shared", ""), ["E003"]);
+    }
+
+    phase a_document_root_is_one_the_app_names;
+    {
+        let book = "type Book {\n    title: Text\n}\nview book(b: Book) {\n    text(b.title)\n}\ndefault view book for Book\n";
+        let fine = compile(&format!("app t.x \"X\" (document: book)\n{book}root book: Book\n"));
+        assert_eq!(fine.meta.each_document, ["book"]);
+        assert!(compile(&format!("app t.x \"X\"\n{book}root book: Book\n")).meta.each_document.is_empty());
+        // A name no root has, a root without a name, and an app with no named root at all.
+        let fault = |options: &str, root: &str| {
+            let src = format!("app t.x \"X\" ({options})\n{book}{root}\n");
+            compile_with(&src, &[]).expect_err("refused")
+        };
+        let other = fault("document: shelf", "root book: Book");
+        assert_eq!(other.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(), ["E147"]);
+        assert!(other[0].line == 1, "{other:#?}");
+        assert!(other[0].message.contains("its named roots are `book`"), "{other:#?}");
+        let unnamed = fault("document: Book", "root Book");
+        assert_eq!(unnamed.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(), ["E147"]);
+        assert!(unnamed[0].message.contains("`root book: Book`"), "{unnamed:#?}");
+        let none = fault("document: book", "");
+        assert_eq!(none.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(), ["E147"]);
+        assert!(none[0].message.contains("declares no named root"), "{none:#?}");
+        assert_eq!(codes_header("document: book, document: book", ""), ["E003"]);
+    }
+}
+
+/// Error codes reported for a module whose `app` header carries `options`.
+fn codes_header(options: &str, body: &str) -> Vec<String> {
+    match compile_with(&format!("app t.x \"X\" ({options})\n{body}\n"), &[]) {
+        Ok(_) => Vec::new(),
+        Err(d) => d.into_iter().map(|d| d.code).collect(),
     }
 }
