@@ -103,17 +103,22 @@ impl Core {
         }
     }
 
-    /// The record's document with the edits waiting for its store made in a
-    /// copy of it, which the caller then lets go.
+    /// `read` the record's document with the edits waiting for its store
+    /// made in a copy of it, which is then let go here: the generic code
+    /// that reads never holds a document, so a document's teardown is
+    /// compiled once rather than in every app. Whether there was one.
     #[inline(never)]
-    fn document_with_waiting(&self) -> Option<ui_core::automerge::AutoCommit> {
-        let mut doc = self.record.read(Clone::clone)?;
+    fn read_with_waiting(&self, read: &mut dyn FnMut(&ui_core::automerge::AutoCommit)) -> bool {
+        let Some(mut doc) = self.record.read(Clone::clone) else {
+            return false;
+        };
         for (action, invoker) in self.waiting.borrow().iter() {
             if let Err(error) = self.apply_to(&mut doc, action, invoker) {
                 tracing::warn!(kind = self.kind, %error, "a waiting edit does not apply");
             }
         }
-        Some(doc)
+        read(&doc);
+        true
     }
 
     /// Refuse `action` now if, after the edits waiting for the store, it
@@ -287,14 +292,17 @@ impl<P: Resource> Shared<P> {
     /// The state the record has once the edits waiting for the store are
     /// made: read from a copy of it they are made in, which is then let go.
     fn with_waiting(&self) -> Option<Rc<P::State>> {
-        let doc = self.core.document_with_waiting()?;
-        match tilo_resource::Reader::<P>::read(&doc) {
-            Ok(reader) => Some(Rc::clone(reader.state())),
-            Err(error) => {
-                unreadable_person_resource(P::KIND, &error);
-                None
-            }
-        }
+        let mut state = None;
+        self.core.read_with_waiting(&mut |doc| {
+            state = match tilo_resource::Reader::<P>::read(doc) {
+                Ok(reader) => Some(Rc::clone(reader.state())),
+                Err(error) => {
+                    unreadable_person_resource(P::KIND, &error);
+                    None
+                }
+            };
+        });
+        state
     }
 }
 

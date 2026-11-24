@@ -22,11 +22,13 @@ pub fn linked_ui() -> *const () {
 /// this view. The decoders must come from this library too: the view encodes
 /// its edits with this code, which the running code may not read.
 pub fn publish_root<A: ResourceApp>() -> i32 {
-    let mut doc = Doc::new();
-    if <A::Resource as Resource>::initialize(&mut doc).is_err() {
-        return 0;
-    }
-    let Ok(reader) = Reader::<A::Resource>::read(&doc) else {
+    let mut reader = None;
+    on_new_doc(&mut |doc| {
+        reader = <A::Resource as Resource>::initialize(doc)
+            .ok()
+            .and_then(|()| Reader::<A::Resource>::read(doc).ok());
+    });
+    let Some(reader) = reader else {
         return 0;
     };
     let permissions =
@@ -48,6 +50,13 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
         registry: action_registry::<A>(),
     });
     1
+}
+
+/// `apply` to a new document, dropped here: not generic, so a document's
+/// teardown is compiled once rather than in every app.
+#[inline(never)]
+fn on_new_doc(apply: &mut dyn FnMut(&mut Doc)) {
+    apply(&mut Doc::new());
 }
 
 /// Copy one window's state back to the host.

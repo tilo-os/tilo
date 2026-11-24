@@ -127,6 +127,14 @@ fn ask<A: ResourceApp>() -> Result<(), String> {
     } else {
         ui_core::i18n::I18nManager::register_widget_messages();
     }
+    answer(&kinds_of::<A>(), A::ID)
+}
+
+/// [`ask`] of the app `app_id` whose kinds are `kinds`. Not generic, so
+/// reading the document, its teardown and writing the entries are compiled
+/// once rather than in every app.
+#[inline(never)]
+fn answer(kinds: &Kinds, app_id: &str) -> Result<(), String> {
     let mut bytes = Vec::new();
     std::io::stdin()
         .lock()
@@ -134,7 +142,7 @@ fn ask<A: ResourceApp>() -> Result<(), String> {
         .map_err(|error| format!("the record is not read: {error}"))?;
     let doc =
         Doc::load(&bytes).map_err(|error| format!("the record is not a document: {error}"))?;
-    let entries = entries::<A>(&doc);
+    let entries = entries_of(kinds, app_id, &doc);
     let mut out = Vec::new();
     serde_json::to_writer(&mut out, &entries)
         .map_err(|error| format!("the entries are not written: {error}"))?;
