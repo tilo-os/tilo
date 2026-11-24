@@ -453,9 +453,12 @@ impl Host {
         self.dial(key, workspace).await
     }
 
-    /// A device of another person than this computer's, `label`, entered into `workspace` as a
-    /// test fixture admits them: who a workspace shared with other people has among its members.
+    /// A device of another person than this computer's, `label`, in `workspace` as an editor:
+    /// the workspace's owner adds the person, and their device enters. Who a workspace shared
+    /// with other people has among its members.
     pub async fn other_person(&self, label: &str, workspace: &str) -> Member {
+        use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
+
         let (root, user) = tilo_user_identity::UserIdentity::generate(label, 1);
         let mut secret = [0; 32];
         getrandom::fill(&mut secret).unwrap();
@@ -472,12 +475,27 @@ impl Host {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        tilo_workspace_service::workspaces::fixtures::enter_key(
-            self.daemon().workspaces(),
-            workspace,
-            &cert,
-        )
-        .await;
+        let daemon = self.daemon();
+        let workspaces = daemon.workspaces();
+        // The owner's add-member action through the workspace's governance: a person is a
+        // member before any device of theirs may enter.
+        workspaces
+            .add_member(
+                workspace,
+                workspaces.device_cert(),
+                AddMemberRequest {
+                    request_id: *blake3::hash(&user.public_key).as_bytes(),
+                    user_public_key: user.public_key,
+                    place: MemberPlace::Role(tilo_peer_state::join::Role::Editor),
+                    name: Some(label.to_owned()),
+                },
+            )
+            .await
+            .expect("the workspace's owner adds the person");
+        workspaces
+            .enter(workspace, &cert)
+            .await
+            .expect("their device enters the workspace");
         self.dial(key, workspace).await
     }
 
