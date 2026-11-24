@@ -20,8 +20,18 @@ view content_pane() {
                 if owner {
                     ui.Button("Change") {
                         on press: set(file_mib, workspace.content.file_bytes.to_float() / 1048576.0)
-                            .then(set(member_mib, workspace.content.member_bytes.to_float() / 1048576.0))
-                            .then(set(hourly_mib, workspace.content.hourly_bytes.to_float() / 1048576.0))
+                            .then(
+                                set(
+                                    member_mib,
+                                    workspace.content.member_bytes.to_float() / 1048576.0,
+                                ),
+                            )
+                            .then(
+                                set(
+                                    hourly_mib,
+                                    workspace.content.hourly_bytes.to_float() / 1048576.0,
+                                ),
+                            )
                             .then(set(editing, true))
                     }
                 }

@@ -193,6 +193,7 @@ session-magnifier-toggle = Lupe ein- oder ausschalten
 session-magnifier-zoom-in = Stärker vergrößern
 session-magnifier-zoom-out = Weniger vergrößern
 session-displays = Bildschirme
+session-input-devices = Eingabegeräte
 wireless-unavailable = Kabellose Bildschirme sind gerade nicht verfügbar
 wireless-unavailable-detail = Versuch es gleich noch einmal.
 wireless-search-failed = Die Suche nach kabellosen Bildschirmen ist fehlgeschlagen

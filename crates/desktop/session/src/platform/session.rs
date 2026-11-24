@@ -1591,6 +1591,11 @@ impl Session {
         // A brightness key or slider anywhere wakes the loop, so a display
         // dimmed in software follows at once.
         displays_service.watch(&options.wake.handle());
+        // The keyboards, pointers and drawing tablets attached now, each by the identity its
+        // settings are kept under: what a pane lists to change one.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::input_devices::Served::new()));
         services
             .borrow_mut()
             .add(Box::new(crate::keyboard::KeyboardService::new(

@@ -232,6 +232,7 @@ mod held;
 mod here;
 #[cfg(target_os = "linux")]
 mod host_shell;
+mod input_devices;
 #[cfg(target_os = "linux")]
 mod listings;
 mod live_list;

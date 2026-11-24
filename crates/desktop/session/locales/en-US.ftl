@@ -188,6 +188,7 @@ session-magnifier-toggle = Turn the magnifier on or off
 session-magnifier-zoom-in = Magnify more
 session-magnifier-zoom-out = Magnify less
 session-displays = Displays
+session-input-devices = Input devices
 wireless-unavailable = Wireless displays aren't available right now
 wireless-unavailable-detail = Try again in a moment.
 wireless-search-failed = Couldn't look for wireless displays

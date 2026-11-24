@@ -9116,6 +9116,114 @@
       ]
     },
     {
+      "kind": "input-devices",
+      "label": "Input devices",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "devices",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "InputDevice"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "active_keyboard",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "InputDevice",
+          "doc": "One input device attached now.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": {
+                "named": "InputKind"
+              }
+            },
+            {
+              "name": "pad_buttons",
+              "type": "int"
+            },
+            {
+              "name": "pad_rings",
+              "type": {
+                "list": "int"
+              }
+            },
+            {
+              "name": "pad_strips",
+              "type": {
+                "list": "int"
+              }
+            },
+            {
+              "name": "pad_mode_buttons",
+              "type": {
+                "list": "int"
+              }
+            },
+            {
+              "name": "physical_device",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "InputKind",
+          "doc": "What kind of device one is.",
+          "cases": [
+            {
+              "name": "other",
+              "label": "Other"
+            },
+            {
+              "name": "keyboard",
+              "label": "Keyboard"
+            },
+            {
+              "name": "mouse",
+              "label": "Mouse"
+            },
+            {
+              "name": "touchpad",
+              "label": "Touchpad"
+            },
+            {
+              "name": "touchscreen",
+              "label": "Touchscreen"
+            },
+            {
+              "name": "tablet",
+              "label": "Tablet"
+            },
+            {
+              "name": "tablet_pad",
+              "label": "Tablet pad"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "notifications",
       "label": "Notifications",
       "version": 1,

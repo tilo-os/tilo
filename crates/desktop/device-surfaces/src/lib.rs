@@ -18,6 +18,7 @@ pub mod clipboard;
 pub mod controls;
 pub mod devices;
 pub mod displays;
+pub mod inputs;
 pub mod lists;
 pub mod live;
 pub mod notifications;
@@ -68,6 +69,7 @@ pub fn device_surfaces() -> Vec<Surface> {
         tilo_system_service::time_zone_surface(),
         displays::surface(),
         displays::screen_surface(),
+        inputs::surface(),
         notifications::surface(),
         osd::surface(),
         controls::night_light_surface(),

@@ -449,11 +449,7 @@ view appearance_pane() {
         )
         widget_setting(.team, "People here", "Who else is in this workspace")
         widget_setting(.calendar, "Calendar", "Today, and the month around it")
-        widget_setting(
-            .system_monitor,
-            "System load",
-            "This machine's processors, memory and heat",
-        )
+        widget_setting(.system_monitor, "System load", "This machine's processors, memory and heat")
     }
 }
 
@@ -466,11 +462,7 @@ view widget_setting(kind: ShellWidget, name: Text, about: Text) {
     ui.Text(name, role: .label, secondary: true)
     setting("Keep it on the shell", about) {
         ui.Toggle(shown: prefs.enabled, label: "Keep {name} on the shell") {
-            on check(on): settings.set_widget_enabled(
-                settings.widgets,
-                widget: key,
-                enabled: on,
-            )
+            on check(on): settings.set_widget_enabled(settings.widgets, widget: key, enabled: on)
         }
     }
     setting("When it shows", "Back after a pause, always, or only when you ask") {
@@ -486,7 +478,10 @@ view widget_setting(kind: ShellWidget, name: Text, about: Text) {
             }
         }
     }
-    setting("Where it rests", "The corner or edge you left it at; a drag from its header moves it") {
+    setting(
+        "Where it rests",
+        "The corner or edge you left it at; a drag from its header moves it",
+    ) {
         ui.Button("Back to its corner", icon: .undo_2, role: .plain) {
             on press: settings.place_widget(
                 settings.widgets,
@@ -507,16 +502,12 @@ fn widget_prefs_of(kind: ShellWidget) -> settings.WidgetPrefs {
         settings.widgets.team
     } else if kind == .calendar {
         settings.widgets.calendar
-    } else {
-        settings.widgets.system_monitor
-    }
+    } else { settings.widgets.system_monitor }
 }
 
 /// Which of the three show modes is chosen, in the order the group lists them.
 fn show_index(show: settings.ShowMode) -> Int {
-    if show == .pause {
-        0
-    } else if show == .always { 1 } else { 2 }
+    if show == .pause { 0 } else if show == .always { 1 } else { 2 }
 }
 
 /// How far across a widget first rests on a display, as a fraction of the room it moves in.
@@ -526,9 +517,7 @@ fn widget_home_x(kind: ShellWidget) -> Float {
 
 /// How far down a widget first rests on a display, as a fraction of the room it moves in.
 fn widget_home_y(kind: ShellWidget) -> Float {
-    if kind == .music or kind == .system_monitor {
-        1.0
-    } else if kind == .team { 0.5 } else { 0.25 }
+    if kind == .music or kind == .system_monitor { 1.0 } else if kind == .team { 0.5 } else { 0.25 }
 }
 
 /// The widgets the shell can keep, as Settings lists them.

@@ -121,6 +121,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("power", "Power", "power"),
     ("displays", "Displays", "session:displays"),
     ("screen", "Screen", "session:screen"),
+    ("input_devices", "InputDevices", "session:input-devices"),
     ("notifications", "Notifications", "session:notifications"),
     ("osd", "Osd", "session:osd"),
     ("vpn", "Vpn", "vpn"),
