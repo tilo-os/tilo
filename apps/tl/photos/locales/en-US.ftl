@@ -50,6 +50,9 @@ d-4xox6lum = Longitude
 d-brtcqh34 = Description
     .doc = What the picture shows, as a person or an analysis wrote it.
 
+d-p4pebna2 = Recognized
+    .doc = The words in the picture, as this device read them: a sign, a page, a shopfront.
+
 d-6esqywn4 = Objects
     .doc = Objects and pets the picture shows, named.
 
@@ -102,11 +105,27 @@ d-tqa4lyow = Albums
 
 d-xr5mtp2m = People
 
+d-tp7e7pzd = Import found
+    .doc = The last folder import: how many files it looked at, how many became photos, and what it could not read, so a person knows what arrived and what did not.
+
+d-6jdgyzo3 = Import done
+
+d-ybraeglq = Import issues
+
+d-j45kskqf-filter-import_found = Import found
+
+d-j45kskqf-filter-import_done = Import done
+
 d-z2bwvzat = Import photo
     .doc = Imports a photograph the person picks: the library keeps the address of its bytes, the name it came in with, what its own container says of it (when and where it was taken) and a small preview the grid draws.
     .did = added a photo
 
 d-z2bwvzat-file = File
+
+d-3cyhe74u = Absorb picture
+    .doc = Adds the picture a file holds to the library: the photo the same picture already made, brought up to what the file says now, or a new one.
+
+d-3cyhe74u-file = File
 
 d-hexbnfml = Import photo meta
     .doc = Imports a photograph a caller already knows the capture time and place of (the camera's handoff).
@@ -119,10 +138,13 @@ d-hexbnfml-captured_at = Captured at
 d-hexbnfml-location = Location
 
 d-vk76kjxc = Import dropped
-    .doc = Imports the pictures a person drops on the window or picks a folder of: each picture file becomes a photo, with the folder it came in, and a file that is no picture is left alone.
+    .doc = Imports the pictures a person drops on the window or picks a folder of: each picture file becomes a photo, with the folder it came in, and a file that is no picture is left alone and said so in the report.
     .did = added photos
 
 d-vk76kjxc-files = Files
+
+d-34ridqnu = Dismiss the import report
+    .doc = Takes the last import's report off the window.
 
 d-4y5pwp2y = Toggle favorite
     .doc = Marks a photo as a favorite, or takes that back.
@@ -140,6 +162,12 @@ d-6a6afnkj = Reset edits
 
 d-jwejbqyn = Describe
     .doc = What a picture shows, in a sentence, as the device's image model reads it: the sentence the library's details show and search finds.
+
+d-psxrvclu = Read the text
+    .doc = The words in the photograph, read on this device and kept with the photo, so the library finds it by what it says.
+
+d-5lnp7pby = Copy
+    .doc = Copies the photograph to the person's clipboard as a picture, so it pastes into another app.
 
 d-3uzo3qzj = Tags
     .doc = The objects and pets the device's image model finds in a picture, added to what the photo already lists.
@@ -276,6 +304,8 @@ d-hfgcskel = Library
     .w-open = Open
     .w-import-folder = Import folder
     .w-select = Select
+    .w-smaller-thumbnails = Smaller thumbnails
+    .w-larger-thumbnails = Larger thumbnails
     .w-present = Present
     .w-analyzing-of = Analyzing { $completed } of { $total }
     .w-analysis-paused = Analysis paused
@@ -288,6 +318,10 @@ d-hfgcskel = Library
     .w-folders = Folders
     .w-places = Places
     .w-albums = Albums
+    .w-imported-of = Imported { $import_done } of { $import_found }
+    .w-every-file-became-a-photo = Every file became a photo.
+    .w-not-pictures = Not pictures: { $join }
+    .w-dismiss = Dismiss
     .w-previous = Previous
     .w-next = Next
     .w-stop = Stop
@@ -301,6 +335,8 @@ d-hfgcskel = Library
     .w-rotate-right = Rotate right
     .w-crop = Crop
     .w-describe = Describe
+    .w-read-the-text = Read the text
+    .w-copy = Copy
     .w-reset-edits = Reset edits
     .w-share = Share
     .w-remove = Remove
@@ -312,6 +348,8 @@ d-hfgcskel = Library
     .w-no-people-yet = No people yet
     .w-the-vision-service-proposes-the-people = The vision service proposes the people in your photos; name them, merge them and split them here.
     .w-no-capture-date = No capture date
+    .w-map = Map
+    .w-list = List
     .w-named-places = Named places
 
 d-i4ssir2r = Person row
@@ -342,7 +380,10 @@ d-dy2z5spw = Details fields
     .w-place = Place
     .w-description = Description
     .w-where-it-was-taken = Where it was taken
+    .w-text-in-the-picture = Text in the picture
     .w-save-photograph = Save photograph
+    .w-read-the-text = Read the text
+    .w-copy = Copy
     .w-clear-place = Clear place
 
 d-dho5ecc7 = Details

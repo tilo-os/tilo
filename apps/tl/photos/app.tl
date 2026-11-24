@@ -38,6 +38,9 @@ type Photo (untitled: "Photo") {
     longitude: Float = 0.0
     /// What the picture shows, as a person or an analysis wrote it.
     description: Text = ""
+    /// The words in the picture, as this device read them: a sign, a page, a shopfront. Search
+    /// finds the photo by them.
+    recognized: Text = ""
     /// Objects and pets the picture shows, named.
     objects: Set<Text>
     pets: Set<Text>
@@ -68,6 +71,11 @@ type Library {
     photos: Collection<Photo>
     albums: Collection<Album>
     people: Collection<Person>
+    /// The last folder import: how many files it looked at, how many became photos, and what it
+    /// could not read, so a person knows what arrived and what did not.
+    import_found: Int = 0
+    import_done: Int = 0
+    import_issues: List<Text>
 }
 
 root library: Library
@@ -92,22 +100,46 @@ primary action import_photo(lib: Library, file: File) -> Photo uses image (
     did: "added a photo",
     opens: ["image/png", "image/jpeg", "image/webp", .png, .jpg, .jpeg, .webp],
 ) {
-    let photo = Photo(name: base_name(file.name), picture: file.url, folder: folder_name(file.path))
+    let photo = absorb_picture(lib, file)
+    lib.import_found = 1
+    lib.import_done = 1
+    lib.import_issues = []
+    photo
+}
+
+/// Adds the picture a file holds to the library: the photo the same picture already made, brought
+/// up to what the file says now, or a new one. What the person set on a photo — its place, its
+/// tags — is theirs, so reading the file again never overwrites it.
+action absorb_picture(lib: Library, file: File) -> Photo uses image {
+    let photo = if let held = lib.photos.find(p -> p.picture == file.url) {
+        held
+    } else {
+        lib.photos.insert(
+            Photo(name: base_name(file.name), picture: file.url, folder: folder_name(file.path)),
+        )
+    }
+    if photo.folder == "" {
+        photo.folder = folder_name(file.path)
+    }
     if let info = file.image_info() {
-        if let when = info.captured_at {
-            photo.captured_at = when
+        if photo.captured_at == "" {
+            if let when = info.captured_at {
+                photo.captured_at = when
+            }
         }
-        if let north = info.latitude {
-            photo.latitude = north
-        }
-        if let east = info.longitude {
-            photo.longitude = east
+        if photo.latitude == 0.0 and photo.longitude == 0.0 {
+            if let north = info.latitude {
+                photo.latitude = north
+            }
+            if let east = info.longitude {
+                photo.longitude = east
+            }
         }
     }
     if let small = file.thumbnail(512) {
         photo.thumb = small.url
     }
-    lib.photos.insert(photo)
+    photo
 }
 
 /// The folder a file came in, where it came in one: the name of the folder above it, and empty for
@@ -126,27 +158,17 @@ action import_photo_meta(
     captured_at: Text = "",
     location: Text = "",
 ) -> Photo uses image (icon: .image, did: "added a photo") {
-    let photo = Photo(
-        name: base_name(file.name),
-        picture: file.url,
-        captured_at: captured_at,
-        location: location,
-    )
-    if let info = file.image_info() {
-        if let when = info.captured_at {
-            photo.captured_at = when
-        }
-        if let north = info.latitude {
-            photo.latitude = north
-        }
-        if let east = info.longitude {
-            photo.longitude = east
-        }
+    let photo = absorb_picture(lib, file)
+    if captured_at != "" {
+        photo.captured_at = captured_at
     }
-    if let small = file.thumbnail(512) {
-        photo.thumb = small.url
+    if location != "" {
+        photo.location = location
     }
-    lib.photos.insert(photo)
+    lib.import_found = 1
+    lib.import_done = 1
+    lib.import_issues = []
+    photo
 }
 
 /// The file's own name, without the folders it came in.
@@ -155,32 +177,31 @@ fn base_name(path: Text) -> Text {
 }
 
 /// Imports the pictures a person drops on the window or picks a folder of: each picture file
-/// becomes a photo, with the folder it came in, and a file that is no picture is left alone.
+/// becomes a photo, with the folder it came in, and a file that is no picture is left alone and
+/// said so in the report. Picking the same folder again brings what the files say to the photos
+/// already there, rather than making a second copy of each.
 action import_dropped(lib: Library, files: List<File>) uses image (did: "added photos") {
+    let found = files.len()
+    let done = 0
+    let issues: List<Text> = []
     for file in files {
         if file.media.starts_with("image/") {
-            let photo = Photo(
-                name: base_name(file.name),
-                picture: file.url,
-                folder: folder_name(file.path),
-            )
-            if let info = file.image_info() {
-                if let when = info.captured_at {
-                    photo.captured_at = when
-                }
-                if let north = info.latitude {
-                    photo.latitude = north
-                }
-                if let east = info.longitude {
-                    photo.longitude = east
-                }
-            }
-            if let small = file.thumbnail(512) {
-                photo.thumb = small.url
-            }
-            lib.photos.insert(photo)
+            absorb_picture(lib, file)
+            done = done + 1
+        } else {
+            issues = [issues, ["{base_name(file.name)} is not a picture"]].flat_map(x -> x)
         }
     }
+    lib.import_found = found
+    lib.import_done = done
+    lib.import_issues = issues
+}
+
+/// Takes the last import's report off the window.
+action dismiss_import(lib: Library) (icon: .x, label: "Dismiss the import report") {
+    lib.import_found = 0
+    lib.import_done = 0
+    lib.import_issues = []
 }
 
 /// Marks a photo as a favorite, or takes that back.
@@ -228,6 +249,24 @@ action describe_photo(p: Photo) (icon: .sparkles, label: "Describe", group: "Det
             p.description = sentence
         }
         .err(_) => {}
+    }
+}
+
+/// The words in the photograph, read on this device and kept with the photo, so the library
+/// finds it by what it says. Needs no model: a device without one still reads its text.
+action recognize_text(p: Photo) uses image (icon: .scan_line, label: "Read the text") {
+    match try vision.ocr(vision.image_model, image: shown_picture(p)) {
+        .ok(words) => {
+            p.recognized = words
+        }
+        .err(_) => {}
+    }
+}
+
+/// Copies the photograph to the person's clipboard as a picture, so it pastes into another app.
+action copy_photo(p: Photo) uses clipboard (icon: .copy, label: "Copy") {
+    if shown_picture(p) != "" {
+        clipboard.copy_image(File.at(p.name, shown_picture(p)))
     }
 }
 
@@ -535,6 +574,7 @@ view library(lib: Library) {
     state place: Text = "library"
     state viewing: Text = ""
     state selecting: Bool = false
+    state big: Bool = false
     state selection: List<Text> = []
     state presenting: Bool = false
     state slide: Int = 0
@@ -587,6 +627,13 @@ view library(lib: Library) {
                 }
                 ui.Button("Select", icon: .check) {
                     on press: set(selecting, true)
+                }
+                ui.Button(
+                    if big { "Smaller thumbnails" } else { "Larger thumbnails" },
+                    icon: if big { .layout_grid } else { .maximize },
+                    icon_only: true,
+                ) {
+                    on press: set(big, not big)
                 }
                 if not lib.photos.is_empty() {
                     ui.Button("Present", icon: .play) {
@@ -660,22 +707,40 @@ view library(lib: Library) {
             }
         }
         content: {
-            if presenting {
-                present(lib, slide, presenting)
-            } else if let p = lib.photos.find(x -> x.id == viewing) {
-                ui.PageSlide(level: 1) {
-                    viewer(lib, p, viewing, zoom, confirming, shared, cropping, crop_edges)
+            stack(gap: .related, fill) {
+                // What the last import did: what arrived, and what could not, so a folder of a
+                // thousand pictures says at once how many of them the library has.
+                if lib.import_found > 0 {
+                    ui.Banner(
+                        "Imported {lib.import_done} of {lib.import_found}",
+                        message: if lib.import_issues.is_empty() {
+                            "Every file became a photo."
+                        } else {
+                            "Not pictures: {lib.import_issues.join(", ")}"
+                        },
+                        kind: if lib.import_issues.is_empty() { .info } else { .warning },
+                        action: "Dismiss",
+                    ) {
+                        on act: dismiss_import(lib)
+                    }
                 }
-            } else if place == "people" {
-                people_list(lib, place, viewing)
-            } else if lib.photos.filter(p -> shown(lib, place, p)).is_empty() {
-                empty_place(lib, place)
-            } else if place == "timeline" {
-                timeline_page(lib, viewing)
-            } else if place == "places" {
-                places_page(lib, viewing)
-            } else {
-                library_grid(lib, place, viewing, selecting, selection, confirming, shared)
+                if presenting {
+                    present(lib, slide, presenting)
+                } else if let p = lib.photos.find(x -> x.id == viewing) {
+                    ui.PageSlide(level: 1) {
+                        viewer(lib, p, viewing, zoom, confirming, shared, cropping, crop_edges)
+                    }
+                } else if place == "people" {
+                    people_list(lib, place, viewing)
+                } else if lib.photos.filter(p -> shown(lib, place, p)).is_empty() {
+                    empty_place(lib, place)
+                } else if place == "timeline" {
+                    timeline_page(lib, viewing)
+                } else if place == "places" {
+                    places_page(lib, viewing)
+                } else {
+                    library_grid(lib, place, viewing, selecting, selection, confirming, shared, big)
+                }
             }
         }
     }
@@ -760,10 +825,11 @@ view library_grid(
     selection: State<List<Text>>,
     confirming: State<Bool>,
     shared: State<Text>,
+    big: Bool,
 ) {
     let photos = lib.photos.filter(p -> shown(lib, place, p))
     if selecting {
-        ui.MediaGrid(size: .small, fill) {
+        ui.MediaGrid(size: if big { .regular } else { .small }, fill) {
             // A press with shift, or a drag over the cards, takes the range of cards it covers
             // as the selection: what a person expects of a grid of photographs.
             on select(picked: List<Photo>): set(selection, picked.map(x -> x.id))
@@ -779,7 +845,7 @@ view library_grid(
             }
         }
     } else {
-        ui.MediaGrid(size: .small, fill) {
+        ui.MediaGrid(size: if big { .regular } else { .small }, fill) {
             for p in photos {
                 ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
                     on activate: set(viewing, p.id)
@@ -827,42 +893,68 @@ view timeline_page(lib: Library, viewing: State<Text>) {
 /// The places the library's photographs were taken: a map with a pin for each one that says
 /// where it was taken, opening the photograph, and the ones whose place is only a name under it.
 view places_page(lib: Library, viewing: State<Text>) {
+    state list: Bool = false
     let mapped = lib.photos.filter(p -> p.latitude != 0.0 or p.longitude != 0.0)
     let named = lib.photos.filter(
         p -> p.location != "" and p.latitude == 0.0 and p.longitude == 0.0,
     )
     stack(gap: .group, fill) {
-        // The photographs on the world: each a card that keeps the size it is given on screen
-        // at every zoom, standing on the place it was taken.
-        if let first = mapped.first() {
-            ui.Map(
-                name: "Places",
-                latitude: first.latitude,
-                longitude: first.longitude,
-                world: true,
-                aspect: 1.6,
-            ) {
-                for p in mapped {
-                    ui.MapPin(
-                        name: p.name,
-                        latitude: p.latitude,
-                        longitude: p.longitude,
-                        width: 96,
-                        height: 96,
-                    ) {
-                        ui.MediaCard(p, picture: card_picture(p)) {
-                            on activate: set(viewing, p.id)
+        row(gap: .tight) {
+            ui.Button("Map", icon: .map_pin, toggled: not list) {
+                on press: set(list, false)
+            }
+            ui.Button("List", icon: .list, toggled: list) {
+                on press: set(list, true)
+            }
+        }
+        if list {
+            ui.VirtualList(selection_follows_focus: true, in_column: false) {
+                on activate(p: Photo): set(viewing, p.id)
+                for p in [mapped, named].flat_map(x -> x) {
+                    ui.ListItem(item: p) {
+                        ui.ListRow(
+                            title: p.name,
+                            secondary: if p.location != "" {
+                                p.location
+                            } else { "{p.latitude}, {p.longitude}" },
+                            icon: .map_pin,
+                        )
+                    }
+                }
+            }
+        } else {
+            // The photographs on the world: each a card that keeps the size it is given on screen
+            // at every zoom, standing on the place it was taken.
+            if let first = mapped.first() {
+                ui.Map(
+                    name: "Places",
+                    latitude: first.latitude,
+                    longitude: first.longitude,
+                    world: true,
+                    aspect: 1.6,
+                ) {
+                    for p in mapped {
+                        ui.MapPin(
+                            name: p.name,
+                            latitude: p.latitude,
+                            longitude: p.longitude,
+                            width: 96,
+                            height: 96,
+                        ) {
+                            ui.MediaCard(p, picture: card_picture(p)) {
+                                on activate: set(viewing, p.id)
+                            }
                         }
                     }
                 }
             }
-        }
-        if not named.is_empty() {
-            ui.Text("Named places", role: .caption, secondary: true)
-            ui.MediaGrid(size: .small, fill) {
-                for p in named {
-                    ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
-                        on activate: set(viewing, p.id)
+            if not named.is_empty() {
+                ui.Text("Named places", role: .caption, secondary: true)
+                ui.MediaGrid(size: .small, fill) {
+                    for p in named {
+                        ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                            on activate: set(viewing, p.id)
+                        }
                     }
                 }
             }
@@ -932,6 +1024,7 @@ view viewer(
             ui.Button("Actual size", icon: .maximize_2, icon_only: true) {
                 on press: set(zoom, 1.0)
             }
+            ui.Text("{zoom * 100.0}%", role: .caption, numeric: true)
             ui.Button("Back", icon: .arrow_left) {
                 on press: set(viewing, "").then(set(cropping, false))
             }
@@ -958,6 +1051,12 @@ view viewer(
             }
             ui.Button("Tags", icon: .tag) {
                 on press: tag_photo(p)
+            }
+            ui.Button("Read the text", icon: .scan_line) {
+                on press: recognize_text(p)
+            }
+            ui.Button("Copy", icon: .copy) {
+                on press: copy_photo(p)
             }
             if p.edited != "" {
                 ui.Button("Reset edits", icon: .undo_2) {
@@ -1083,9 +1182,20 @@ view details_fields(lib: Library, p: Photo) {
                 ui.Text(p.name)
             }
         }
-        row(gap: .related) {
+        if p.recognized != "" {
+            ui.Section("Text in the picture") {
+                text(p.recognized, role: .reading)
+            }
+        }
+        row(gap: .related, wrap: true) {
             ui.Button("Save photograph", icon: .download) {
                 on press: file.save(export_photo(p), name: p.name)
+            }
+            ui.Button("Read the text", icon: .scan_line) {
+                on press: recognize_text(p)
+            }
+            ui.Button("Copy", icon: .copy) {
+                on press: copy_photo(p)
             }
             if p.latitude != 0.0 or p.longitude != 0.0 {
                 ui.Button("Clear place", icon: .map_pin) {

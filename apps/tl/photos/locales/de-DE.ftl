@@ -313,6 +313,16 @@ d-hfgcskel = Bibliothek
     .w-no-capture-date = Kein Aufnahmedatum
     .w-named-places = Benannte Orte
     .w-the-vision-service-proposes-the-people = Der Sehdienst schlägt die Personen in deinen Fotos vor; benenne, führe und teile sie hier.
+    .w-smaller-thumbnails = Kleinere Vorschaubilder
+    .w-larger-thumbnails = Größere Vorschaubilder
+    .w-imported-of = { $import_done } von { $import_found } importiert
+    .w-every-file-became-a-photo = Jede Datei wurde ein Foto.
+    .w-not-pictures = Keine Bilder: { $join }
+    .w-dismiss = Schließen
+    .w-read-the-text = Text lesen
+    .w-copy = Kopieren
+    .w-map = Karte
+    .w-list = Liste
 
 d-i4ssir2r = Personenzeile
     .w-photos = { $len } Fotos
@@ -344,6 +354,9 @@ d-dy2z5spw = Detailfelder
     .w-where-it-was-taken = Wo es aufgenommen wurde
     .w-save-photograph = Foto speichern
     .w-clear-place = Ort löschen
+    .w-text-in-the-picture = Text im Bild
+    .w-read-the-text = Text lesen
+    .w-copy = Kopieren
 
 d-dho5ecc7 = Details
     .w-albums = Alben
@@ -359,3 +372,31 @@ d-vy4hppbk = Fotozeile
 
 d-5qykqlov = Fotos
     .w-no-photos-yet = Noch keine Fotos
+
+d-34ridqnu = Bericht schließen
+    .doc = Nimmt den Bericht des letzten Imports vom Fenster.
+
+d-3cyhe74u = Bild aufnehmen
+    .doc = Fügt das Bild einer Datei der Bibliothek hinzu: das Foto, das dasselbe Bild schon ergab, auf den Stand der Datei gebracht, oder ein neues.
+
+d-3cyhe74u-file = Datei
+
+d-5lnp7pby = Kopieren
+    .doc = Kopiert das Foto als Bild in die Zwischenablage, sodass es sich in eine andere App einfügen lässt.
+
+d-6jdgyzo3 = Importiert
+
+d-ybraeglq = Importprobleme
+
+d-p4pebna2 = Erkannter Text
+    .doc = Die Wörter im Bild, wie dieses Gerät sie gelesen hat: ein Schild, eine Seite, ein Schaufenster.
+
+d-psxrvclu = Text lesen
+    .doc = Die Wörter im Foto, auf diesem Gerät gelesen und beim Foto behalten, sodass die Bibliothek es an seinem Text findet.
+
+d-tp7e7pzd = Gefundene Dateien
+    .doc = Der letzte Ordnerimport: wie viele Dateien er ansah, wie viele Fotos wurden und was er nicht lesen konnte.
+
+d-j45kskqf-filter-import_found = Gefundene Dateien
+
+d-j45kskqf-filter-import_done = Importiert
