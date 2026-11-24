@@ -55,6 +55,12 @@ action greet() -> Text {
 type Tally {
     seen: Float
     missing: Float
+    count: Int
+    absent: Int
+    order: Text
+    kept: Map<Int>
+    kept_count: Int
+    kept_absent: Int
 }
 
 root Tally
@@ -67,10 +73,50 @@ action tally(t: Tally) {
     scores.put(\"b\", 1.5)
     t.seen = scores.get(\"a\") ?? 0.0
     t.missing = scores.get(\"z\") ?? -1.0
+    let counts = Map<Int>()
+    bump(counts, \"a\", 2)
+    bump(counts, \"b\", 5)
+    bump(counts, \"a\", 1)
+    t.count = counts.get(\"a\") ?? 0
+    t.absent = counts.get(\"z\") ?? -1
+    t.order = counts.keys().sort_by(k -> counts.get(k) ?? 0, desc).join(\",\")
+}
+
+action keep(t: Tally) {
+    t.kept.put(\"a\", 4)
+    t.kept.put(\"a\", (t.kept.get(\"a\") ?? 0) + 3)
+}
+
+action read_kept(t: Tally) {
+    t.kept_count = t.kept.get(\"a\") ?? 0
+    t.kept_absent = t.kept.get(\"z\") ?? -1
+}
+
+fn bump(counts: Map<Int>, key: Text, by: Int) -> () {
+    counts.put(key, (counts.get(key) ?? 0) + by)
 }
 
 view card(t: Tally) {
     text(\"{t.seen}\")
+}
+
+view ranked(t: Tally) {
+    text(\"{ranking().join(\",\")} {t.kept.get(\"a\") ?? 0} {t.kept.get(\"z\") ?? 5}\")
+}
+
+fn ranking() -> List<Text> {
+    let counts = Map<Int>()
+    let latest = Map<Text>()
+    bump(counts, \"a\", 1)
+    bump(counts, \"b\", 4)
+    bump(counts, \"a\", 1)
+    bump(counts, \"c\", 0)
+    counts
+        .keys()
+        .sort_by(k -> k)
+        .sort_by(k -> latest.get(k) ?? \"\", desc)
+        .sort_by(k -> counts.get(k) ?? 0, desc)
+        .map(k -> \"{k}{counts.get(k) ?? -1}\")
 }
 ";
 
@@ -137,6 +183,49 @@ view card(t: Tally) {
             Value::Float(-1.0),
             "a key the map does not hold answers the fallback"
         );
+        assert_eq!(
+            rt.read(&t, "count").unwrap(),
+            Value::Int(3),
+            "a whole number counted up through a fn reads back as the number"
+        );
+        assert_eq!(
+            rt.read(&t, "absent").unwrap(),
+            Value::Int(-1),
+            "a key a map of whole numbers does not hold answers the fallback"
+        );
+        assert_eq!(
+            rt.read(&t, "order").unwrap(),
+            Value::text("b,a"),
+            "a map's whole numbers order its keys"
+        );
+        rt.invoke_action(&me(), (app.action("keep"), vec![res(&t)]))
+            .unwrap();
+        rt.invoke_action(&me(), (app.action("read_kept"), vec![res(&t)]))
+            .unwrap();
+        assert_eq!(
+            rt.read(&t, "kept_count").unwrap(),
+            Value::Int(7),
+            "a whole number a record's map keeps reads back as the number"
+        );
+        assert_eq!(
+            rt.read(&t, "kept_absent").unwrap(),
+            Value::Int(-1),
+            "a key a record's map does not keep answers the fallback"
+        );
+    }
+
+    #[test]
+    fn a_view_ranks_by_the_whole_numbers_a_map_its_fn_fills_holds() {
+        let app = App::compile(TALLY, &[]);
+        let rt = runtime();
+        app.load(&rt);
+        let t = rt.create_root("Tally").unwrap();
+        rt.invoke_action(&me(), (app.action("keep"), vec![res(&t)]))
+            .unwrap();
+        let view = rt
+            .open_view(&me(), &app.view("ranked"), vec![res(&t)])
+            .unwrap();
+        assert_eq!(textual(view.tree()), "b4,a2,c0 7 5");
     }
 
     #[test]
