@@ -2212,11 +2212,14 @@ impl DirectSync {
         let placed = admit.scope.reads.is_some();
         #[cfg(target_arch = "wasm32")]
         let placed = false;
-        if !dialing
-            && !placed
-            && let Err(reason) = self.admits(remote, false)
-        {
-            return Err(refuse(transport, &self.refusal_to(remote, reason)));
+        // A device the workspace names among its holders is no member and is
+        // in no roster row: the address it signed, which its naming carries,
+        // is the name it is known by here.
+        if !dialing && !placed {
+            let names_holder = self.names_holder(remote);
+            if let Err(reason) = self.admits(remote, names_holder) {
+                return Err(refuse(transport, &self.refusal_to(remote, reason)));
+            }
         }
         if !dialing {
             // Subscribed by the caller already: the dialling device publishes
@@ -2966,6 +2969,18 @@ impl DirectSync {
             return Err("the device's certificate expired".into());
         }
         Ok(())
+    }
+
+    /// Whether the workspace names `device` among its holders: a device that
+    /// keeps the workspace links to it without being one of its members.
+    fn names_holder(&self, device: [u8; 32]) -> bool {
+        self.0
+            .replica
+            .lock()
+            .governance()
+            .keeping_devices()
+            .iter()
+            .any(|hint| hint.host.device_public_key == device)
     }
 
     /// Why this device turned `device` away, `reason` being what
