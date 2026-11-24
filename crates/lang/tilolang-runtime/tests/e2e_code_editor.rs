@@ -55,9 +55,7 @@ mod cases {
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
             match op {
-                "list" if input.contains("/nowhere") => {
-                    Err("no folder stands there".to_owned())
-                }
+                "list" if input.contains("/nowhere") => Err("no folder stands there".to_owned()),
                 "list" => Ok(r#"{"entries":[
                     {"name":"src","path":"/p/src","folder":true,"hidden":false},
                     {"name":"README.md","path":"/p/README.md","folder":false,"hidden":false},
@@ -379,10 +377,7 @@ mod cases {
         let main = editor.file("main.rs", None);
         editor.call(
             "replace_text",
-            vec![
-                Value::resource(&main),
-                Value::text("one\ntwo\nthree"),
-            ],
+            vec![Value::resource(&main), Value::text("one\ntwo\nthree")],
         );
         editor.call(
             "duplicate_line",
@@ -407,21 +402,12 @@ mod cases {
         );
         assert_eq!(editor.text(&main, "text"), "one\none\nthree\ntwo");
 
-        editor.call(
-            "indent_line",
-            vec![Value::resource(&main), Value::Int(0)],
-        );
+        editor.call("indent_line", vec![Value::resource(&main), Value::Int(0)]);
         assert_eq!(editor.text(&main, "text"), "    one\none\nthree\ntwo");
-        editor.call(
-            "outdent_line",
-            vec![Value::resource(&main), Value::Int(0)],
-        );
+        editor.call("outdent_line", vec![Value::resource(&main), Value::Int(0)]);
         assert_eq!(editor.text(&main, "text"), "one\none\nthree\ntwo");
 
-        editor.call(
-            "delete_line",
-            vec![Value::resource(&main), Value::Int(3)],
-        );
+        editor.call("delete_line", vec![Value::resource(&main), Value::Int(3)]);
         assert_eq!(editor.text(&main, "text"), "one\none\nthree");
     }
 
@@ -507,6 +493,39 @@ mod cases {
     }
 
     #[test]
+    fn the_window_colours_a_file_as_the_language_it_is_written_in() {
+        let cases = [
+            ("a.rs", "rust"),
+            ("a.toml", "toml"),
+            ("a.md", "markdown"),
+            ("a.json", "json"),
+            ("a.yml", "yaml"),
+            ("a.py", "python"),
+            ("a.js", "javascript"),
+            ("a.ts", "typescript"),
+            ("a.html", "html"),
+            ("a.css", "css"),
+            ("a.sh", "shell"),
+            ("a.c", "c"),
+            ("a.cpp", "cpp"),
+            ("a.go", "go"),
+            ("a.v", "verilog"),
+            ("a.sv", "system_verilog"),
+            ("a.unknown", "plain_text"),
+        ];
+        for (name, language) in cases {
+            let editor = Editor::new();
+            editor.file(name, None);
+            let window = editor.window();
+            let node = of_kind(window.tree(), "ui.CodeEditor")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("no editor for {name}"));
+            assert_eq!(text_prop(node, "language"), language, "{name}");
+        }
+    }
+
+    #[test]
     fn a_file_is_kept_as_the_language_a_person_chose() {
         let editor = Editor::new();
         let plain = editor.file("notes", None);
@@ -549,7 +568,11 @@ mod cases {
             "a hidden folder is not a source file"
         );
         assert!(
-            editor.engine.asks("list").iter().any(|ask| ask.contains("/p")),
+            editor
+                .engine
+                .asks("list")
+                .iter()
+                .any(|ask| ask.contains("/p")),
             "the device read the folder"
         );
     }
@@ -571,7 +594,10 @@ mod cases {
             "replace_text",
             vec![Value::resource(&readme), Value::text("# changed\n")],
         );
-        editor.call("save", vec![Value::resource(&editor.root), Value::resource(&readme)]);
+        editor.call(
+            "save",
+            vec![Value::resource(&editor.root), Value::resource(&readme)],
+        );
         assert_eq!(editor.text(&readme, "saved"), "# changed\n");
         assert_eq!(editor.number(&readme, "stamp"), 42);
         let saved = editor.engine.asks("save");
@@ -586,9 +612,16 @@ mod cases {
             "replace_text",
             vec![Value::resource(&readme), Value::text("# second\n")],
         );
-        editor.call("save", vec![Value::resource(&editor.root), Value::resource(&readme)]);
+        editor.call(
+            "save",
+            vec![Value::resource(&editor.root), Value::resource(&readme)],
+        );
         assert!(editor.flag(&readme, "stale"), "the file changed on disk");
-        assert_eq!(editor.text(&readme, "saved"), "# changed\n", "nothing was written");
+        assert_eq!(
+            editor.text(&readme, "saved"),
+            "# changed\n",
+            "nothing was written"
+        );
 
         editor.call(
             "overwrite",
@@ -700,7 +733,13 @@ mod cases {
                 Value::Int(0),
             ],
         );
-        assert!(editor.engine.asks("ask").iter().any(|ask| ask.contains("\"what\":\"complete\"")));
+        assert!(
+            editor
+                .engine
+                .asks("ask")
+                .iter()
+                .any(|ask| ask.contains("\"what\":\"complete\""))
+        );
     }
 
     #[test]
@@ -738,7 +777,11 @@ mod cases {
             "check",
             vec![Value::resource(&editor.root), Value::resource(&file)],
         );
-        assert_eq!(editor.text(&editor.root, "server_job"), "", "no server started");
+        assert_eq!(
+            editor.text(&editor.root, "server_job"),
+            "",
+            "no server started"
+        );
     }
 
     #[test]

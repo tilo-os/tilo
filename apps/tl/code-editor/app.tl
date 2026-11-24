@@ -400,9 +400,33 @@ fn language_of(name: Text) -> Text {
     } else if lower == "sv" or lower == "svh" { "SystemVerilog" } else { "Plain Text" }
 }
 
-/// Whether `language` is one the editor knows, by its name.
-fn known_language(language: Text) -> Bool {
-    language_of("x.{language}") == language or language_of("x.{language.lower()}") == language
+/// Every language a file can be kept as, as the editor names it.
+fn language_labels() -> List<Text> {
+    [
+        "Rust",
+        "TOML",
+        "Markdown",
+        "JSON",
+        "YAML",
+        "Python",
+        "JavaScript",
+        "TypeScript",
+        "HTML",
+        "CSS",
+        "Shell",
+        "C",
+        "C++",
+        "Go",
+        "Verilog",
+        "SystemVerilog",
+        "Plain Text",
+    ]
+}
+
+/// The language `text` names, however its letters are typed; none when it names no language
+/// the editor knows.
+fn language_named(text: Text) -> Option<Text> {
+    language_labels().find(one -> one.lower() == text.trim().lower())
 }
 
 /// How many spaces one step of indentation is in `language`.
@@ -665,8 +689,10 @@ destructive action delete(p: Project, entry: Entry) (icon: .trash, key: "Delete"
 /// Sets the language `entry` is coloured and checked as, by the name of a language the editor
 /// knows.
 action set_language(entry: Entry, language: Text) (icon: .code, label: "Language") {
-    require known_language(language) "`{language}` is not a language the editor knows"
-    entry.language = language
+    require language_named(language) != .none "`{language}` is not a language the editor knows"
+    if let named = language_named(language) {
+        entry.language = named
+    }
 }
 
 /// Writes `text` as the whole file, for an agent or a script that holds a file's new text.
@@ -2018,25 +2044,7 @@ view file_row(e: Entry) {
 /// The languages a file can be kept as, each choosing it for `e`.
 view language_menu(e: Entry, current: Text) {
     ui.MenuButton("Language", icon: .code, icon_only: true) {
-        for name in [
-            "Rust",
-            "TOML",
-            "Markdown",
-            "JSON",
-            "YAML",
-            "Python",
-            "JavaScript",
-            "TypeScript",
-            "HTML",
-            "CSS",
-            "Shell",
-            "C",
-            "C++",
-            "Go",
-            "Verilog",
-            "SystemVerilog",
-            "Plain Text",
-        ] {
+        for name in language_labels() {
             ui.MenuItem(name, checked: name == current) {
                 on choose: set_language(e, name)
             }
@@ -2159,20 +2167,54 @@ template view file_page(
 ) {
     stack(gap: .related) {
         file_head(p, e, panel, finding, found)
-        ui.CodeEditor(
-            bind: e.text,
-            language: if e.language == "Rust" {
-                .rust
-            } else if e.language == "JSON" { .json } else { .plain_text },
-            min_lines: 18,
-            placeholder: "Write the file",
-        )
+        file_code(e)
         if finding != "" {
             found_list(p, e, finding)
         }
         file_panel(p, e, panel)
         status_line(p, e)
     }
+}
+
+/// The open file's code, coloured as the language it is written in: every language the editor
+/// names in a file's extension has its own colours.
+template view file_code(e: Entry) {
+    ui.CodeEditor(
+        bind: e.text,
+        language: if e.language == "Rust" {
+            .rust
+        } else if e.language == "TOML" {
+            .toml
+        } else if e.language == "Markdown" {
+            .markdown
+        } else if e.language == "JSON" {
+            .json
+        } else if e.language == "YAML" {
+            .yaml
+        } else if e.language == "Python" {
+            .python
+        } else if e.language == "JavaScript" {
+            .javascript
+        } else if e.language == "TypeScript" {
+            .typescript
+        } else if e.language == "HTML" {
+            .html
+        } else if e.language == "CSS" {
+            .css
+        } else if e.language == "Shell" {
+            .shell
+        } else if e.language == "C" {
+            .c
+        } else if e.language == "C++" {
+            .cpp
+        } else if e.language == "Go" {
+            .go
+        } else if e.language == "Verilog" {
+            .verilog
+        } else if e.language == "SystemVerilog" { .system_verilog } else { .plain_text },
+        min_lines: 18,
+        placeholder: "Write the file",
+    )
 }
 
 /// The file's own line: its name, whether it changed here, what it is written in, and what can
@@ -2450,12 +2492,7 @@ view file_view(e: Entry) {
     ui.NavShell(content_kind: .page, title: e.name) {
         content: {
             ui.Scroll {
-                ui.CodeEditor(
-                    bind: e.text,
-                    language: .plain_text,
-                    min_lines: 12,
-                    placeholder: "Write the file",
-                )
+                file_code(e)
             }
         }
     }

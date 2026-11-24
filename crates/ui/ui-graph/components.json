@@ -1568,12 +1568,18 @@
                   "git",
                   "python",
                   "javascript",
+                  "typescript",
                   "yaml",
                   "markdown",
                   "html",
                   "css",
                   "toml",
                   "dockerfile",
+                  "c",
+                  "cpp",
+                  "go",
+                  "verilog",
+                  "system_verilog",
                   "tilolang"
                 ]
               }

@@ -79,12 +79,18 @@ pub enum Language {
     Git,
     Python,
     JavaScript,
+    TypeScript,
     Yaml,
     Markdown,
     Html,
     Css,
     Toml,
     Dockerfile,
+    C,
+    Cpp,
+    Go,
+    Verilog,
+    SystemVerilog,
     /// tilolang, the app language, coloured by its own lexer.
     Tilolang,
 }
@@ -99,12 +105,18 @@ crate::component::choice!(Language, "Language", {
     Git => "git",
     Python => "python",
     JavaScript => "javascript",
+    TypeScript => "typescript",
     Yaml => "yaml",
     Markdown => "markdown",
     Html => "html",
     Css => "css",
     Toml => "toml",
     Dockerfile => "dockerfile",
+    C => "c",
+    Cpp => "cpp",
+    Go => "go",
+    Verilog => "verilog",
+    SystemVerilog => "system_verilog",
     Tilolang => "tilolang",
 });
 
@@ -123,6 +135,7 @@ impl Language {
             Language::Git => Some(Box::new(SyntaxHighlighter::for_token_or_plain("sh"))),
             Language::Python => Some(Box::new(SyntaxHighlighter::for_token_or_plain("py"))),
             Language::JavaScript => Some(Box::new(SyntaxHighlighter::for_token_or_plain("js"))),
+            Language::TypeScript => Some(Box::new(SyntaxHighlighter::for_token_or_plain("ts"))),
             Language::Yaml => Some(Box::new(SyntaxHighlighter::for_token_or_plain("yaml"))),
             Language::Markdown => Some(Box::new(SyntaxHighlighter::for_token_or_plain("md"))),
             Language::Html => Some(Box::new(SyntaxHighlighter::for_token_or_plain("html"))),
@@ -131,6 +144,11 @@ impl Language {
             Language::Dockerfile => Some(Box::new(SyntaxHighlighter::for_token_or_plain(
                 "dockerfile",
             ))),
+            Language::C => Some(Box::new(SyntaxHighlighter::for_token_or_plain("c"))),
+            Language::Cpp => Some(Box::new(SyntaxHighlighter::for_token_or_plain("cpp"))),
+            Language::Go => Some(Box::new(SyntaxHighlighter::for_token_or_plain("go"))),
+            Language::Verilog => Some(Box::new(SyntaxHighlighter::for_token_or_plain("v"))),
+            Language::SystemVerilog => Some(Box::new(SyntaxHighlighter::for_token_or_plain("sv"))),
             Language::Tilolang => Some(Box::new(TilolangHighlighter)),
         }
     }
@@ -1182,12 +1200,18 @@ mod tests {
                     (Language::Git, "git commit -m \"hi\""),
                     (Language::Python, "def f(): pass"),
                     (Language::JavaScript, "const x = 1;"),
+                    (Language::TypeScript, "let x: number = 1;"),
                     (Language::Yaml, "a: 1"),
                     (Language::Markdown, "# Title"),
                     (Language::Html, "<p>hi</p>"),
                     (Language::Css, "a { color: red; }"),
                     (Language::Toml, "a = 1"),
                     (Language::Dockerfile, "FROM rust:1"),
+                    (Language::C, "int main(void) { return 0; }"),
+                    (Language::Cpp, "std::vector<int> v;"),
+                    (Language::Go, "func main() {}"),
+                    (Language::Verilog, "module m; endmodule"),
+                    (Language::SystemVerilog, "logic [7:0] x;"),
                     (Language::Tilolang, "app x \"X\""),
                 ];
                 for (language, sample) in samples {
@@ -1202,7 +1226,7 @@ mod tests {
                 assert!(Language::PlainText.highlighter().is_none());
                 // Each grammar-backed language resolves a grammar of its own, not the plain
                 // fallback that colours nothing.
-                for token in ["rs", "sql", "json", "sh", "py", "js", "yaml", "md", "html", "css", "toml", "dockerfile"] {
+                for token in ["rs", "sql", "json", "sh", "py", "js", "ts", "yaml", "md", "html", "css", "toml", "dockerfile", "c", "cpp", "go", "v", "sv"] {
                     let highlighter = SyntaxHighlighter::for_token(token)
                         .unwrap_or_else(|| panic!("no grammar for `{token}`"));
                     assert_ne!(highlighter.name(), "Plain Text", "`{token}` is plain text");
