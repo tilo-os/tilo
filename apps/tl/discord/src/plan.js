@@ -372,6 +372,7 @@ export function toDiscord(state, conversation, message) {
   const files = (message.attachments ?? []).map((file) => ({
     blob: bareBlob(file.blob),
     name: file.name,
+    media: file.media ?? "",
     size: file.size ?? 0,
   }));
   if (files.some((file) => file.size > MAX_UPLOAD_BYTES) || files.length > MAX_UPLOADS) return [];

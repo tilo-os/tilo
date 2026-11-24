@@ -5,6 +5,8 @@
 // A webhook's own token is a secret too: the bridge keeps it as a vault item and names it, and
 // a send through the webhook goes through the vault the same way.
 
+import { CHAT } from "./plan.js";
+
 export const API = "https://discord.com/api/v10";
 
 /// The API `origin` names, or Discord's own: a test's fake server, which the account record
@@ -14,24 +16,49 @@ function at(origin) {
 }
 
 /// Sends a message through a webhook, answering the message it made there.
+///
+/// Files go as a multipart body: `payload_json` and one `files[n]` per file, each naming the
+/// content the workspace keeps by its BLAKE3 address. The vault reads those bytes from the
+/// workspace's store, so an attachment never passes through this process.
 export function webhookSend({ webhook, tokenItem, origin = API }, op) {
   const query = "?wait=true";
-  return {
+  const payload = {
+    username: op.username,
+    avatar_url: op.avatar_url ?? undefined,
+    content: op.content,
+    thread_id: op.thread ?? undefined,
+    attachments: op.attachments.map((file, index) => ({
+      id: index,
+      filename: file.name,
+    })),
+  };
+  const call = {
     url: `${at(origin)}/webhooks/${webhook}${query}`,
     key: tokenItem,
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      username: op.username,
-      avatar_url: op.avatar_url ?? undefined,
-      content: op.content,
-      thread_id: op.thread ?? undefined,
-      attachments: op.attachments.map((file, index) => ({
-        id: index,
-        filename: file.name,
-      })),
-    }),
     reason: "a message written in the workspace",
+  };
+  if (op.attachments.length === 0) {
+    return {
+      ...call,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    };
+  }
+  return {
+    ...call,
+    bodyParts: [
+      { name: "payload_json", json: payload },
+      ...op.attachments.map((file, index) => ({
+        name: `files[${index}]`,
+        content: {
+          app: CHAT,
+          hash: file.blob,
+          filename: file.name,
+          contentType: file.media || "application/octet-stream",
+        },
+      })),
+    ],
   };
 }
 

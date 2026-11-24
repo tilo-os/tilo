@@ -210,7 +210,9 @@ test("a workspace message goes through the webhook, cut where Discord takes it",
   expect(op.channel).toBe("456");
   expect(op.webhook).toBe("555");
   expect(op.username).toBe("Ada");
-  expect(op.attachments).toEqual([{ blob: "abc123", name: "a.png", size: 10 }]);
+  expect(op.attachments).toEqual([
+    { blob: "abc123", name: "a.png", media: "", size: 10 },
+  ]);
   expect([...op.content].length).toBe(2000);
   expect(op.content.endsWith("…")).toBe(true);
   expect(op.tilo).toBe("tl:so.tilo.chat:m9");
@@ -440,4 +442,46 @@ test("a message reads in the words the planners use", () => {
   expect(message.attachments).toEqual([{ blob: "tilo-blob://abc", name: "shot.png", size: 3 }]);
   expect(message.reactions).toEqual(["🎉"]);
   expect(message.thread).toBe("root-lmdoxbnn/c1/threads/t1");
+});
+
+test("a webhook post with files names workspace content as parts, never the bytes", () => {
+  const op = {
+    op: "send",
+    webhook: "555",
+    thread: null,
+    username: "Ada",
+    avatar_url: null,
+    content: "look",
+    attachments: [
+      { blob: "abc123", name: "a.png", media: "image/png", size: 10 },
+    ],
+  };
+  const origin = "http://discord.test/api/v10";
+  const call = webhookSend({ webhook: "555", tokenItem: "v", origin }, op);
+  expect(call.url).toBe(`${origin}/webhooks/555?wait=true`);
+  expect(call.method).toBe("POST");
+  expect(call.body).toBeUndefined();
+  expect(call.headers).toBeUndefined();
+  expect(call.bodyParts[0].name).toBe("payload_json");
+  expect(call.bodyParts[0].json.content).toBe("look");
+  expect(call.bodyParts[0].json.attachments).toEqual([
+    { id: 0, filename: "a.png" },
+  ]);
+  expect(call.bodyParts[1]).toEqual({
+    name: "files[0]",
+    content: {
+      app: "so.tilo.chat",
+      hash: "abc123",
+      filename: "a.png",
+      contentType: "image/png",
+    },
+  });
+  // No file: the same call as before, its payload as JSON.
+  const plain = webhookSend({ webhook: "555", tokenItem: "v", origin }, {
+    ...op,
+    attachments: [],
+  });
+  expect(plain.bodyParts).toBeUndefined();
+  expect(plain.headers["content-type"]).toBe("application/json");
+  expect(JSON.parse(plain.body).content).toBe("look");
 });
