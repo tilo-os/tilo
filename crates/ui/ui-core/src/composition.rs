@@ -44,6 +44,10 @@ pub struct Composed {
     /// It shows as a picture of its paint ([`page::shows_paint`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub picture: Option<Picture>,
+    /// The vector glyph it draws in place of words, by its name in the shared icon set
+    /// (`clock`): a host with no paint draws it from the same sources a native host strokes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glyph: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Composed>,
 }
@@ -76,6 +80,7 @@ impl Composed {
             flows: false,
             appears_from: None,
             picture: None,
+            glyph: None,
             children: Vec::new(),
         }
     }

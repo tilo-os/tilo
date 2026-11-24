@@ -121,6 +121,28 @@ pub fn icon_svg(icon: Icon) -> String {
     )
 }
 
+/// `icon` as the `<svg>` a page strokes where a native host paints it: its source paths on the
+/// 24 × 24 grid, in the ink of the words around it.
+#[must_use]
+pub fn glyph_svg(icon: Icon) -> String {
+    let paths: String = icon_subpaths(icon)
+        .iter()
+        .map(|path| format!("<path d=\"{}\"/>", path.to_svg()))
+        .collect();
+    if icon.is_brand() {
+        format!(
+            "<svg class=\"tilo-glyph\" viewBox=\"0 0 24 24\" fill=\"currentColor\" \
+             aria-hidden=\"true\">{paths}</svg>"
+        )
+    } else {
+        format!(
+            "<svg class=\"tilo-glyph\" viewBox=\"0 0 24 24\" fill=\"none\" \
+             stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" \
+             stroke-linejoin=\"round\" aria-hidden=\"true\">{paths}</svg>"
+        )
+    }
+}
+
 /// The icon grid: every source draws in a 24 × 24 box; [`draw_icon`] scales it to the requested rect.
 pub const LUCIDE_VIEWBOX: f64 = 24.0;
 

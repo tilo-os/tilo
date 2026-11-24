@@ -681,6 +681,15 @@ impl Page {
                     picture.attr("src", &data);
                     picture.attr("alt", "");
                     element.children.push(picture);
+                } else if let Some(glyph) = node.glyph.as_deref() {
+                    // A glyph is a vector: stroked from the icon set's own sources where the host
+                    // drew no picture of it.
+                    if let Some(icon) = crate::icons::Icon::from_name(glyph) {
+                        element.own.push_str(&crate::icons::glyph_svg(icon));
+                    }
+                } else if let Some(access) = semantics {
+                    // Nothing drew its paint: what it says of itself is what the page shows.
+                    caption_into(&mut element, access);
                 }
                 // What acts in what it paints stands over the picture where it is.
                 if let Some(access) = semantics {

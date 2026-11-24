@@ -642,3 +642,50 @@ fn a_screenshot_being_marked_up_is_its_picture_with_its_tools_over_it() {
         "a tool acts on a press: {html:.2000}"
     );
 }
+
+/// A glyph is a vector: the page strokes it from the icon set's own sources, in the ink around
+/// it, where the host drew no picture of the widget.
+#[test]
+fn a_glyph_is_drawn_from_the_icon_set_where_no_host_drew_it() {
+    let mut composition = window("Icon");
+    let mut icon = Composed::new(
+        "Root[0]/IconWidget[0]".to_owned(),
+        "IconWidget",
+        [40.0, 100.0, 20.0, 20.0],
+    );
+    icon.glyph = Some("clock".to_owned());
+    icon.picture = Some(Picture::default());
+    composition.root.children.push(icon);
+    let html = Page::new().render(&composition);
+    assert!(
+        html.contains("<svg class=\"tilo-glyph\" viewBox=\"0 0 24 24\""),
+        "the glyph is drawn: {html}"
+    );
+    assert!(html.contains("<path d=\"M"), "its source path: {html}");
+    assert!(!html.contains("tilo-paint"), "no empty picture: {html}");
+}
+
+/// A widget shown as a picture of its paint that no host drew says its words on the page
+/// instead of standing there an empty box.
+#[test]
+fn a_widget_with_no_picture_shows_the_words_it_says() {
+    let mut composition = window("Empty");
+    let mut empty = Composed::new(
+        "Root[0]/EmptyState[0]".to_owned(),
+        "EmptyState",
+        [40.0, 100.0, 400.0, 200.0],
+    );
+    empty.picture = Some(Picture::default());
+    empty.semantics = Some(
+        AccessNode::new(Role::Group)
+            .with_name("No artwork yet".to_owned())
+            .with_description("New artwork starts one".to_owned()),
+    );
+    composition.root.children.push(empty);
+    let html = Page::new().render(&composition);
+    assert!(
+        html.contains("<span class=\"tilo-title\">No artwork yet</span>")
+            && html.contains("<span class=\"tilo-detail\">New artwork starts one</span>"),
+        "{html}"
+    );
+}

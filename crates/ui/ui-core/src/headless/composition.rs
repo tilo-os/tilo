@@ -256,6 +256,11 @@ impl<'a> Walk<'a> {
         {
             composed.picture = Some(Picture::default());
         }
+        // A glyph is a vector: a host that draws no pictures still has the shape to show.
+        composed.glyph = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<crate::widget::IconWidget>())
+            .map(|icon| icon.icon().name().to_owned());
         composed.semantics = semantics;
         composed.children = children;
         composed
