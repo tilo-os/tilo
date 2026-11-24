@@ -810,10 +810,9 @@ fn count_leading(one: Text, at: Int) -> Int {
     } else { at }
 }
 
-// ---------------------------------------------------------------- find and replace
-
 /// The window's search finds the words in the open file and across the project's files: the
 /// first place in the file is shown, so a hit is in sight as the words are typed.
+// ---------------------------------------------------------------- find and replace
 action find_in_window(p: Project, entry: Option<Entry>, text: Text) uses time (
     icon: .search,
     label: "Find",
@@ -826,13 +825,9 @@ action find_in_window(p: Project, entry: Option<Entry>, text: Text) uses time (
     } else {
         if let e = entry {
             p.found = find_text(e, words)
-            if let first = p.found.at(0) {
-                reveal_line(e, first.line, first.column)
-            }
+            if let first = p.found.at(0) { reveal_line(e, first.line, first.column) }
         }
-        if words.len() >= 2 {
-            search_project(p, words)
-        }
+        if words.len() >= 2 { search_project(p, words) }
     }
 }
 
@@ -1899,7 +1894,8 @@ action ensure_server(p: Project, entry: Entry) {
         }
         .err(why) => {
             p.server = ""
-            p.server_trouble = if why.contains("not installed") or why.contains("not found")
+            p.server_trouble = if why.contains("not installed")
+                or why.contains("not found")
                 or why.contains("No such file") {
                 "The {entry.language} language server is not installed on this computer. {install_hint(entry.language)}"
             } else {
@@ -2157,12 +2153,7 @@ view explorer_footer(p: Project) {
 }
 
 /// The open file's page: its name and state, its code, and the panel under it.
-template view file_page(
-    p: Project,
-    e: Entry,
-    panel: State<Text>,
-    goto: State<Text>,
-) {
+template view file_page(p: Project, e: Entry, panel: State<Text>, goto: State<Text>) {
     stack(gap: .related) {
         file_head(p, e, panel, goto)
         file_code(e)
@@ -2220,12 +2211,7 @@ template view file_code(e: Entry) {
 
 /// The file's own line: its name, whether it changed here, what it is written in, and what can
 /// be done with it.
-template view file_head(
-    p: Project,
-    e: Entry,
-    panel: State<Text>,
-    goto: State<Text>,
-) {
+template view file_head(p: Project, e: Entry, panel: State<Text>, goto: State<Text>) {
     let dirty = e.text != e.saved
     row(gap: .related, align: .center, fill: 0.0, wrap: true) {
         ui.EditableLabel(bind: e.name)

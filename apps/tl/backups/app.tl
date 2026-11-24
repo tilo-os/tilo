@@ -153,9 +153,6 @@ type Backups (untitled: "Backups") {
     overwrite: Bool = false
 }
 
-/// What this device protects, where its snapshots go and the snapshots it holds are the
-/// device's: a person's computers back up their own folders to their own drives, and one
-/// computer's paths, picker and running job are never another's.
 device root backups: Backups
 
 default view window for Backups

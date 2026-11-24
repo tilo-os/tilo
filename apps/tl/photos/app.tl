@@ -1330,9 +1330,7 @@ view library(lib: Library) {
 view import_progress(lib: Library) {
     let record = if let j = engine.job(lib.import_job) {
         json.decode<ImportRecord>(j.detail)
-    } else {
-        .err("not started")
-    }
+    } else { .err("not started") }
     row(gap: .related, align: .center) {
         match record {
             .ok(now) => {
