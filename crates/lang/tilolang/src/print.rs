@@ -43,6 +43,9 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
         if let Some(tagline) = &app.tagline {
             options.push(format!("tagline: {}", quote(tagline)));
         }
+        if let Some(engine) = &app.engine {
+            options.push(format!("engine: {}", quote(engine)));
+        }
         if !app.keywords.is_empty() {
             let words: Vec<String> = app.keywords.iter().map(|word| quote(word)).collect();
             options.push(format!("keywords: [{}]", words.join(", ")));

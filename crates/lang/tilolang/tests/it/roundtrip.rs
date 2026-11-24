@@ -140,6 +140,14 @@ tilo_test_env::scenario! {
         assert_eq!(print_of(src), src);
     }
 
+    phase an_apps_engine_option_survives_printing;
+    {
+        // A package that shows a web page names the runtime its window runs: rewriting the
+        // source must keep the option, or the page stops being shown.
+        let src = "app t.x \"X\" (engine: \"tilo-runtime/2026.10.23-chromium\")\n\nfn f() -> Int {\n    return 1\n}\n";
+        assert_eq!(print_of(src), src);
+    }
+
     phase a_parameter_marker_prints_as_it_is_written;
     {
         let src = "app t.x \"X\"\n\ntype Item {\n    title: Text\n    saved: Bool\n}\n\naction move(i: Item, above: Option<Item> (above)) {\n    i.title = \"x\"\n}\n\naction keep(i: Item, saved: Bool (label: \"On the Watch later list\") = not i.saved) {\n    i.saved = saved\n}\n";

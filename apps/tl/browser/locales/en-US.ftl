@@ -142,15 +142,12 @@ d-dedg3fev = Steps
     .doc = What was done in the page, newest last.
 
 d-mk755sf3 = Dialog
-    .doc = What the page waits on, as its window last read it: a question a person answers, and the menu it showed.
-
-d-fkg36eze = Sign in
-
-d-noux3jmj = Permission
-
-d-kebkpaeq = Held
+    .doc = What the page's own script asks, and the menu it showed, as its window last read them.
 
 d-tveuvbse = Menu
+
+d-o2occ235 = Downloads
+    .doc = The files the page downloads, as its window last read them: engine state, never the page's own record.
 
 d-eiqyiw53 = Loading
     .doc = How far the page has loaded, what it is zoomed to, and where the find bar stands.
@@ -232,71 +229,6 @@ d-4v2f3ua3 = Default text
 
 d-o3koqzgj-filter-request = Request
 
-d-p6pwa4v4 = Sign in ask
-    .doc = A server or a proxy asking for a user name and a password.
-    .noun = { $count ->
-        [one] sign in ask
-       *[other] sign in asks
-    }
-
-d-7ktwjqfg = Request
-
-d-mlo3tjcu = Asker
-    .doc = Who asks, and where the credentials go.
-
-d-7infiywo = Site
-    .doc = The asker as a person reads a site.
-
-d-djj5lwiv = Proxy
-
-d-3qkj7lmg = Realm
-
-d-tjzwabeg = Retry
-
-d-p6pwa4v4-filter-request = Request
-
-d-p6pwa4v4-filter-proxy = Proxy
-
-d-p6pwa4v4-filter-retry = Retry
-
-d-rw2sdui6 = Permission ask
-    .doc = A site asking to use the device: its camera, its microphone, its location.
-    .noun = { $count ->
-        [one] permission ask
-       *[other] permission asks
-    }
-
-d-wzq3w73u = Request
-
-d-a7uxwo36 = Origin
-
-d-ehb3lndh = Permissions
-    .doc = What it asks for, as the engine names them.
-
-d-rw2sdui6-filter-request = Request
-
-d-e57ag7a5 = Held ask
-    .doc = A request the page holds until a person lets it leave.
-    .noun = { $count ->
-        [one] held ask
-       *[other] held asks
-    }
-
-d-js3kljh3 = Request
-
-d-aokfp2qg = Kind
-    .doc = `submit`, `navigate`, `request`, `download` or `payment`.
-
-d-vqbr3tb7 = Method
-
-d-45sdzq5i = Origin
-
-d-6luk533x = Has picture
-
-d-e57ag7a5-filter-request = Request
-
-d-e57ag7a5-filter-has_picture = Has picture
-
 d-3hxkb5pc = Menu ask
     .doc = The menu the page showed: its rows, and where it showed them.
     .noun = { $count ->
@@ -336,6 +268,36 @@ d-hmusuedw-filter-disabled = Disabled
 d-hmusuedw-filter-checked = Checked
 
 d-hmusuedw-filter-separator = Separator
+
+d-cjw2xcfs = Download
+    .doc = One file a page downloads: where it comes from, where it went, and how far it has come.
+    .noun = { $count ->
+        [one] download
+       *[other] downloads
+    }
+
+d-anfisgsq = Transfer
+    .doc = The engine's number for the transfer, which what the person does to it names.
+
+d-in525zqp = State
+    .doc = `awaiting`, `downloading`, `completed`, `failed` or `cancelled`.
+
+d-wz6wi2p3 = Name
+
+d-z4gzfvzw = Url
+
+d-feka5n4y = Path
+    .doc = Where it was saved, once it is complete.
+
+d-kubpqqew = Retryable
+    .doc = Whether the engine can start it again after it failed.
+
+d-cokrfftg = Received
+    .doc = How many bytes have come, of how many the engine knows: none when it does not.
+
+d-pbavpdyk = Total
+
+d-wfaksaa6 = Error
 
 d-e43kzg7c = Ask
     .doc = What a page is asked, as the window that holds it reads it: one operation and the fields it takes.
@@ -388,6 +350,9 @@ d-lqvkggvx = Level
 
 d-zroiv7hs = Values
 
+d-ntpmcicu = Answers
+    .doc = What each question of a form is answered with, by the question's name.
+
 d-ky26jv4a = Paths
 
 d-iabkjt2r = Steps
@@ -429,6 +394,9 @@ d-wbwndzhw = Asker
 d-nqkenrjw = Username
 
 d-ns2mfzwr = Password
+
+d-qvvu7twk = Typed
+    .doc = The answer carries what the person typed answering the ask, filled in on its way to the window from their approve: it is never a value of the run.
 
 d-vwi6rjsr = Accept
 
@@ -481,6 +449,8 @@ d-e43kzg7c-filter-command = Command
 d-e43kzg7c-filter-max_width = Max width
 
 d-e43kzg7c-filter-id = Id
+
+d-e43kzg7c-filter-typed = Typed
 
 d-e43kzg7c-filter-accept = Accept
 
@@ -767,6 +737,19 @@ d-arvpanvu-cross_origin = Cross origin
 
 d-arvpanvu-frame = Frame
 
+d-4unqkzgu = Answer a form
+    .doc = Answers a whole form of the page in one ask: each question's answer by its name, through the page's own validation, and the form's first button when `submit` is on.
+
+d-4unqkzgu-form = Form
+
+d-4unqkzgu-answers = Answers
+
+d-4unqkzgu-submit = Submit
+
+d-4unqkzgu-cross_origin = Cross origin
+
+d-4unqkzgu-frame = Frame
+
 d-ag3d3seg = Pointer page
     .doc = A trusted pointer gesture: press at the first point, move through the rest and release at the last, for drawing on canvases.
 
@@ -844,41 +827,95 @@ d-hpktlikg-accept = Accept
 
 d-hpktlikg-text = Text
 
-d-oi6ze4kg = Sign in to the page
-    .doc = Answer a server's sign-in request, or cancel it with no username.
-
-d-oi6ze4kg-id = Id
-
-d-oi6ze4kg-asker = Asker
-
-d-oi6ze4kg-username = Username
-
-d-oi6ze4kg-password = Password
-
-d-vey6ausp = Answer held request
-    .doc = Let a held request leave, or keep the page as it is.
-
-d-vey6ausp-id = Id
-
-d-vey6ausp-allow = Allow
-
 d-4djvsjzf = Check the page’s questions
     .doc = Reads what the page waits on into its window's record: the question it asks, the menu it showed, and how far it has loaded.
 
 d-u7fbemnk = Opened page
     .doc = The page's window opened: it reads what the page asks and shows before anyone looks.
 
-d-plw5fzqs = Answer permission
-    .doc = Answers a site's request to use the device.
+d-lvbnkhyd = Allow the site
+    .doc = Lets a site use what it asked for (its camera, microphone, location, notifications).
 
-d-plw5fzqs-id = Id
+d-lvbnkhyd-id = Id
 
-d-plw5fzqs-allow = Allow
+d-lvbnkhyd-origin = Origin
 
-d-v7gqhtah = Dismiss permission
-    .doc = Turns a site's request down without answering it, so it may ask again later.
+d-lvbnkhyd-wants = Wants
 
-d-v7gqhtah-id = Id
+d-p7w6i37f = Save the download
+    .doc = Saves the file a page offers.
+
+d-p7w6i37f-id = Id
+
+d-p7w6i37f-name = Name
+
+d-p7w6i37f-url = Url
+
+d-jzj2zsuv = Do not save the download
+    .doc = Turns down the file a page offers: nothing is saved, and the page is told so.
+
+d-jzj2zsuv-id = Id
+
+d-jzj2zsuv-name = Name
+
+d-6a4m4f4s = Download an address
+    .doc = Saves what an address serves into the browser's downloads.
+    .w-type-the-address-to-download = Type the address to download
+
+d-6a4m4f4s-url = Url
+
+d-boafhtzg = Cancel the download
+    .doc = Stops a download that is still going.
+
+d-boafhtzg-d = D
+
+d-dmiputmu = Retry the download
+    .doc = Starts a failed download again from the beginning.
+
+d-dmiputmu-d = D
+
+d-boev3sbj = Cancel every download
+    .doc = Stops every download this page has going.
+
+d-trhtau5i = Allow the extension
+    .doc = Gives an extension the more access it asked for.
+
+d-trhtau5i-id = Id
+
+d-trhtau5i-extension = Extension
+
+d-trhtau5i-could = Could
+
+d-4xa6zyzf = Sign in to the site
+    .doc = Signs in to a site that asks for a user name and a password.
+    .take-1 = User name
+    .take-2 = Password
+
+d-4xa6zyzf-id = Id
+
+d-4xa6zyzf-asker = Asker
+
+d-4xa6zyzf-site = Site
+
+d-4xa6zyzf-realm = Realm
+
+d-4i65tg5t = Cancel the sign-in
+    .doc = Turns down a site's sign-in: nothing is sent, and the server shows its own page instead.
+
+d-4i65tg5t-id = Id
+
+d-4i65tg5t-asker = Asker
+
+d-psytxnym = Let it leave
+    .doc = Lets what the page sends leave it: a form, a navigation or a request kept until the person says so.
+
+d-psytxnym-id = Id
+
+d-psytxnym-origin = Origin
+
+d-psytxnym-method = Method
+
+d-psytxnym-leaving = Leaving
 
 d-qbox6son = Context menu action
     .doc = Takes a row of the page's own menu, by the command the engine gave it.
@@ -898,6 +935,17 @@ d-nwpvyebd-title = Title
 
 d-4v7rayfx = Remove bookmark
     .doc = Takes a bookmark back.
+
+d-7gjwwcba = Name this bookmark
+    .doc = Renames a saved page, when the person likes their own name for it better than its title.
+    .w-a-bookmark-is-called-by-some = A bookmark is called by some name
+
+d-7gjwwcba-title = Title
+
+d-vyepjajq = Put the bookmark in a folder
+    .doc = Puts a bookmark in a folder of the person's library, such as `Work/Reading`, or at the top of the bookmarks when the folder is empty.
+
+d-vyepjajq-folder = Folder
 
 d-ogasu5l3 = Tracker protection for a site
     .doc = Turns tracker protection off for one site, or back on.
@@ -946,6 +994,14 @@ d-xhjamynn = Add an address
 
 d-wcffcb7a = Delete address
     .doc = Deletes an address, and stops filling forms with it.
+
+d-eb3wtiud = Fill the form with an address
+    .doc = Fills a form of the page with a saved address, question by question, without sending it.
+    .w-this-form-asks-nothing-an-address = This form asks nothing an address answers
+
+d-eb3wtiud-form = Form
+
+d-eb3wtiud-a = A
 
 d-luyziriq = Name this visit
     .doc = Names a visit, when the person likes their own name for a page better than its title.
@@ -1005,13 +1061,19 @@ d-og3g2nds-request = Request
 
 d-t3d7dnlx = Go~present
 
+d-tqd4wzqk = Download~present
+
 d-sayctunu = Bookmark~present
+
+d-asdqm6oc = Name bookmark~present
 
 d-qrtmsrs3 = Set site protection~present
 
 d-4j4jisai = Forget site forms~present
 
 d-t5atc53e = Remember form~present
+
+d-xbrdtvx6 = Fill address~present
 
 d-y7tjvycu = Name visit~present
 
@@ -1036,31 +1098,21 @@ d-vsaswu4a = Page view
     .w-reader-view = Reader view
     .w-zoom-in = Zoom in
     .w-zoom-out = Zoom out
-    .w-actual-size = Actual size
     .w-turn-tracker-protection-on-for-this = Turn tracker protection on for this site
     .w-turn-tracker-protection-off-for-this = Turn tracker protection off for this site
     .w-forget-this-site-s-forms = Forget this site’s forms
     .w-from-your-history = From your history
     .w-of = { $find_at } of { $find_count }
+    .w-previous = Previous
     .w-next = Next
     .w-close = Close
     .w-this-page-could-not-be-shown = This page could not be shown
     .w-this-page-asks = This page asks
     .w-ok = OK
     .w-cancel = Cancel
-    .w-sign-in-to = Sign in to { $site }
-    .w-the-last-sign-in-was-not = The last sign-in was not accepted
-    .w-sign-in = Sign in
-    .w-user-name = User name
-    .w-password = Password
-    .w-asks-to-use-your = { $origin } asks to use your { $permissions }
-    .w-allow = Allow
-    .w-deny = Deny
-    .w-waiting-for-you = Waiting for you
+    .w-downloads = Downloads
+    .w-cancel-every-download = Cancel every download
     .w-what-was-done = What was done
-
-d-dmgfdflc = Held row
-    .w-to = { $kind } to { $origin }
 
 d-23a4az4u = Suggestion row
 
@@ -1068,9 +1120,25 @@ d-pu2zdrbu = Step row
 
 d-uppzh7ic = Bookmark page
     .w-address = Address
+    .w-details = Details
+    .w-name = Name
     .w-folder = Folder
-    .w-bookmarks = Bookmarks
+    .w-top-of-the-bookmarks = Top of the bookmarks
     .w-remove-bookmark = Remove bookmark
+
+d-fxq6nhpy = Address page
+    .w-the-address = The address
+    .w-name-for-it = Name for it
+    .w-home = Home
+    .w-full-name = Full name
+    .w-given-name = Given name
+    .w-family-name = Family name
+    .w-street = Street
+    .w-city = City
+    .w-region = Region
+    .w-postal-code = Postal code
+    .w-country = Country
+    .w-delete-address = Delete address
 
 d-y2shuesh = Visit page
     .w-address = Address
@@ -1121,3 +1189,8 @@ d-ok2yuain = Browser settings
 d-36vwukxk = History list
     .w-no-pages-visited-yet = No pages visited yet
     .w-from-another-browser = From another browser
+
+d-6w4zu5de = Download row
+    .w-downloading = Downloading
+    .w-cancel = Cancel
+    .w-retry = Retry

@@ -2,11 +2,11 @@ app so.tilo.browser "Browser" (
     icon: .globe,
     category: .network,
     tagline: "Web browser with ad blocking and Chrome extensions",
+    engine: "tilo-runtime/2026.10.23-chromium",
     keywords: ["web", "internet", "surf", "website", "url", "www", "web browser", "chrome", "safari", "edge", "firefox", "browser", "browsen", "webseite", "internetseite"],
 )
 
 /// A site someone saved: where it is and what it is called.
-// The runtime bundle whose engine shows the page: the app's window runs where it does.
 type Bookmark (title: title) {
     url: Text
     title: Text
@@ -757,7 +757,11 @@ action refresh_page(p: Page) -> Answer uses page (
     p.menu = menu_of(value)
     p.loading = json_flag(value, "loading")
     p.progress = json_number(value, "progress")
-    p.zoom_level = json_number(value, "zoom")
+    // An engine that reports no zoom has none to tell: the page keeps the size it had.
+    let asked_zoom = json_number(value, "zoom")
+    if asked_zoom > 0.0 {
+        p.zoom_level = asked_zoom
+    }
     let found = json_field(value, "find") ?? value
     p.find_at = json_number(found, "active").to_int()
     p.find_count = json_number(found, "count").to_int()
