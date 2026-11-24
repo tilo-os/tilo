@@ -1925,7 +1925,6 @@ impl Daemon {
             tickets: Arc::clone(&self.tickets),
             invocations: Arc::clone(&self.invocations),
             asked: Arc::clone(&self.asked),
-            who_is_here: Arc::clone(&self.who_is_here),
         })
     }
 }
@@ -1942,7 +1941,6 @@ pub(super) struct PersonDispatch {
     tickets: Arc<Tickets>,
     invocations: Arc<Invocations>,
     asked: Arc<super::asked::DeviceAsked>,
-    who_is_here: Arc<who_is_here::WhoIsHere>,
 }
 
 impl PersonDispatch {
