@@ -50,8 +50,9 @@ pub trait GroupKeySource: collab_types::signer::MaybeSendSync + 'static {
 ///
 /// A host installs its answer once ([`install_device_trust`]); this crate asks it wherever it
 /// admits a device, so a device the person revoked is refused at the next call and nothing keeps
-/// a second copy of their list.
-pub trait DeviceTrust: collab_types::signer::MaybeSendSync + 'static {
+/// a second copy of their list. It lives in a process-wide static, so it is `Send + Sync` on every
+/// target, the browser too.
+pub trait DeviceTrust: Send + Sync + 'static {
     /// Whether the root of `person` took `device` back; `None` where this host does not know
     /// their devices.
     fn revoked(&self, person: &[u8; 32], device: &[u8; 32]) -> Option<bool>;
