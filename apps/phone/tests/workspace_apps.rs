@@ -25,7 +25,7 @@ use server::Server;
 
 #[test]
 fn a_fresh_phone_lists_its_workspaces_apps() {
-    let home = support::Home::new();
+    let _home = support::Home::new();
     let server = Server::start();
     let scratch = tempfile::tempdir().unwrap();
     // The workspace runs Notes before the phone ever joins it; nothing is installed on the phone.

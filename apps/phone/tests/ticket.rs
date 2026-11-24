@@ -47,7 +47,7 @@ fn install_notes(scratch: &std::path::Path) {
 
 #[test]
 fn a_phone_signs_in_with_a_ticket_and_sees_its_workspace_and_its_apps() {
-    let home = support::Home::new();
+    let _home = support::Home::new();
     let server = Server::start();
     let laptop = support::Issuing::start(server.runtime.handle(), &server.person, server.entry());
     let scratch = tempfile::tempdir().unwrap();
