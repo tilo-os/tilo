@@ -913,3 +913,64 @@ impl Raised {
         self.0.borrow().clone()
     }
 }
+
+/// A record an app's origin writes, as its poll writes an answer from a service: a new item of
+/// `ty` in the collection `field` of `owner`, its `fields` set, all in one change made by
+/// `origin`. The item is answered. The app reads it exactly as it reads what its outside service
+/// brings, so a test seeds the catalogue, the video site's answer or a model's reading the way
+/// they arrive rather than by writing the app's own record.
+pub fn seed_origin(
+    rt: &Runtime,
+    origin: &str,
+    owner: &tilolang_runtime::ResourceRef,
+    field: &str,
+    ty: &str,
+    fields: Vec<(&str, Value)>,
+) -> tilolang_runtime::ResourceRef {
+    let write = tilolang_runtime::origin::OriginWrite::Insert {
+        owner: owner.clone(),
+        field: field.to_owned(),
+        ty: ty.to_owned(),
+        fields: fields
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+    };
+    let made = rt
+        .write_origin(origin, None, |change| change.write(vec![write]))
+        .unwrap_or_else(|why| panic!("seeding a record for {origin}: {why}"));
+    match made.into_iter().next() {
+        Some(Some(item)) => item,
+        other => panic!("an origin's insert of {ty} into {field} made no record: {other:?}"),
+    }
+}
+
+/// The id of the type `name` in `app`'s package: what an origin names in an insert, since the
+/// store knows a type by its id and not by the name the package writes.
+pub fn type_id(app: &App, name: &str) -> String {
+    app.meta()
+        .types
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("{name} is no type of this package"))
+        .id
+        .clone()
+}
+
+/// The id of the field `name` of the type `ty` in `app`'s package: a collection insert names
+/// the collection by its id, since the store keys a document's parts by them.
+pub fn field_id(app: &App, ty: &str, name: &str) -> String {
+    let declared = app
+        .meta()
+        .types
+        .iter()
+        .find(|t| t.name == ty)
+        .unwrap_or_else(|| panic!("{ty} is no type of this package"));
+    declared
+        .fields
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| panic!("{ty} has no field {name}"))
+        .id
+        .clone()
+}

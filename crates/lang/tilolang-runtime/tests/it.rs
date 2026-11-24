@@ -74,6 +74,8 @@ mod e2e_layout;
 mod e2e_mail_files;
 #[path = "e2e_maps.rs"]
 mod e2e_maps;
+#[path = "e2e_music.rs"]
+mod e2e_music;
 #[path = "e2e_native.rs"]
 mod e2e_native;
 #[path = "e2e_native_ui.rs"]
@@ -82,6 +84,8 @@ mod e2e_native_ui;
 mod e2e_notes;
 #[path = "e2e_pdf.rs"]
 mod e2e_pdf;
+#[path = "e2e_photos.rs"]
+mod e2e_photos;
 #[path = "e2e_publisher.rs"]
 mod e2e_publisher;
 #[path = "e2e_removals.rs"]
@@ -106,6 +110,8 @@ mod e2e_tool_context;
 mod e2e_video_editor;
 #[path = "e2e_weather.rs"]
 mod e2e_weather;
+#[path = "e2e_youtube.rs"]
+mod e2e_youtube;
 #[path = "engine.rs"]
 mod engine;
 
