@@ -93,6 +93,38 @@ pub struct FleetRecords {
     pub workspaces: serde_json::Value,
 }
 
+/// The device kept under `key` in `records`, the value of the person's devices record
+/// ([`DEVICES`]), when `person`'s root signed its certificate: the certificate, and the revocation
+/// that root signed for it when the entry the record keeps verifies. `None` for an entry another
+/// root signed, one kept under another key, or one whose certificate does not read.
+#[must_use]
+pub fn kept(
+    records: &serde_json::Value,
+    key: &str,
+    person: &[u8; 32],
+) -> Option<(
+    tilo_user_identity::DeviceCert,
+    Option<tilo_user_identity::RevocationEntry>,
+)> {
+    let entry = records.get("devices")?.as_object()?.get(key)?.clone();
+    // A collection keeps each item under its id, with its place beside it.
+    let device = entry.get("v").unwrap_or(&entry);
+    let cert: tilo_user_identity::DeviceCert =
+        postcard::from_bytes(&hex::decode(device.get("certificate")?.as_str()?).ok()?).ok()?;
+    // Each device is kept under its own key, which its certificate names.
+    if cert.user_public_key != *person
+        || key != hex::encode(cert.device_public_key)
+        || tilo_user_identity::verify_device_cert(&cert).is_err()
+    {
+        return None;
+    }
+    let revocation = device
+        .get("revocation")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|entry| tilo_user_identity::revocation_of(entry, &cert));
+    Some((cert, revocation))
+}
+
 /// The person's devices as every list of them shows them, joined from `records` and from who is
 /// here now (`here`), whose devices are online. `this` is the device the list is shown on.
 ///
@@ -128,15 +160,7 @@ pub fn fleet(
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned)
             };
-            let cert: tilo_user_identity::DeviceCert =
-                postcard::from_bytes(&hex::decode(text("certificate")?).ok()?).ok()?;
-            // Each device is kept under its own key, which its certificate names.
-            if cert.user_public_key != *person
-                || *key != hex::encode(cert.device_public_key)
-                || tilo_user_identity::verify_device_cert(&cert).is_err()
-            {
-                return None;
-            }
+            let (cert, revocation) = kept(&records.devices, key, person)?;
             let agent = text("agent");
             let seen = device
                 .get("facts")
@@ -175,11 +199,7 @@ pub fn fleet(
                     .collect::<Vec<_>>()
                     .join(" "),
                 current,
-                // The record keeps the root's revocation of the device beside its certificate:
-                // it is the root's only when that root's own signature verifies it.
-                revoked: text("revocation")
-                    .and_then(|entry| tilo_user_identity::revocation_of(&entry, &cert))
-                    .is_some(),
+                revoked: revocation.is_some(),
                 kind: device
                     .get("kind")
                     .and_then(|kind| serde_json::from_value::<KeyKind>(kind.clone()).ok())

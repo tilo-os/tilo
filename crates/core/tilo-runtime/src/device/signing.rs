@@ -59,39 +59,6 @@ pub(crate) fn sign_tab(tab: &tilo_device_identity::login::Tab) -> io::Result<Dev
     Ok(cert)
 }
 
-/// The daemon's `devices#personalDevices` answer: the person's devices as their record lists them,
-/// each with the revocation their root signed and kept there, and whether this daemon keeps that
-/// root.
-///
-/// # Errors
-/// This daemon holds no workspace service, or its root cannot be read.
-pub fn personal_devices(workspaces: Option<&Arc<ServiceWorkspaces>>) -> io::Result<Value> {
-    let workspaces =
-        workspaces.ok_or_else(|| io::Error::other("this daemon holds no workspaces"))?;
-    let copies = workspaces.copies().clone();
-    let person = copies.serving_certificate().user_public_key;
-    let devices =
-        block_on_owned(async move { person_workspace::devices::of(&copies, &person).await });
-    let listed = devices.listed(&person);
-    Ok(json!({
-        "person": hex::encode(person),
-        "key_holder": root_record().is_ok(),
-        "devices": listed
-            .iter()
-            .map(|listed| json!({
-                "certificate": hex::encode(postcard::to_allocvec(&listed.cert).unwrap_or_default()),
-                // The root's own signature over this device, kept in the record's entry of it:
-                // a reader takes it only after checking it against the root the certificate names.
-                "revocation": listed
-                    .device
-                    .revocation(&listed.cert)
-                    .and_then(|entry| postcard::to_allocvec(&entry).ok())
-                    .map(hex::encode),
-            }))
-            .collect::<Vec<_>>(),
-    }))
-}
-
 /// A key this daemon certified with the person's root: its certificate, the person it belongs to,
 /// and the time the certificate ends.
 #[derive(Debug)]
@@ -300,17 +267,19 @@ pub fn enrol_boot_key(
         .map_err(|error| io::Error::other(error.to_string()))?;
     // Every one of the person's devices carries the half, named as the record names them.
     let siblings = devices
-        .personal_devices(&person, now)
+        .listed(&person)
         .into_iter()
-        .filter(|key| Some(*key) != enrollee)
-        .map(|key| {
-            let label = devices
-                .listed(&person)
-                .into_iter()
-                .find(|listed| listed.cert.device_public_key == key)
-                .map(|listed| listed.device.called(&listed.cert))
-                .unwrap_or_default();
-            json!({ "device": hex::encode(key), "label": label })
+        .filter(|listed| {
+            listed.cert.capabilities.is_personal_device()
+                && tilo_user_identity::verify_device_cert_at(&listed.cert, now).is_ok()
+                && !listed.device.revoked(&listed.cert)
+        })
+        .filter(|listed| Some(listed.cert.device_public_key) != enrollee)
+        .map(|listed| {
+            json!({
+                "device": hex::encode(listed.cert.device_public_key),
+                "label": listed.device.called(&listed.cert),
+            })
         })
         .collect::<Vec<_>>();
     let approval_signature = match args
@@ -519,6 +488,4 @@ impl tilo_workspace_service::agents::agent_keys::AgentGrants for GrantsOf {
 
 /// The device actions this daemon answers that read or sign with the person's root: their names,
 /// as the session, the CLI and the login tools call them.
-pub use tilo_device_identity::login::{
-    ANSWER_SIGN_IN, ENROL_BOOT_KEY, PERSONAL_DEVICES, RELEASE_HALF,
-};
+pub use tilo_device_identity::login::{ANSWER_SIGN_IN, ENROL_BOOT_KEY, RELEASE_HALF};

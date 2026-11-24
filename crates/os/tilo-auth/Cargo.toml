@@ -70,6 +70,7 @@ service = [
     "dep:tilo-seal",
     "dep:tilo-unlock-protocol",
     "dep:tilo-device-identity",
+    "dep:tilo-server-protocol",
     "dep:tilo-user-identity",
     "dep:tokio",
     "dep:unicode-normalization",
@@ -112,6 +113,8 @@ tilo-files = { path = "../../platform/tilo-files" }
 tilo-identity = { path = "../../core/tilo-identity", optional = true }
 # The daemon that keeps the person's devices record: whom an enrolment asks for them.
 tilo-api = { path = "../../core/tilo-api", optional = true }
+# The record of the person's devices as the daemon's record API answers it.
+tilo-server-protocol = { path = "../../core/tilo-server-protocol", optional = true }
 tilo-device-identity = { path = "../../core/tilo-device-identity", optional = true }
 tilo-user-identity = { path = "../../core/tilo-user-identity", optional = true }
 # Where NetworkManager keeps an unlock network's saved connection.

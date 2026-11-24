@@ -35,9 +35,9 @@ use tilo_actions::{
 };
 use tilo_device_identity::login::{
     ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_AGENT, Device, Direction, ENROL_BOOT_KEY, FOUND,
-    IDENTITIES, ISSUE, LOG_IN, PENDING, PERSONAL_DEVICES, PROTECT_IDENTITY, PROVIDER, Place,
-    RECOVERY_WORDS, RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE,
-    Report, TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
+    IDENTITIES, ISSUE, LOG_IN, PENDING, PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS,
+    RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report,
+    TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
 };
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
@@ -239,13 +239,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
                 ParamType::Text,
                 "The agent's grant key, as hex.",
             )],
-        ))),
-        row(Some(descriptor(
-            PERSONAL_DEVICES,
-            "List your devices",
-            "The devices your root certified, each with the revocation it signed, and whether \
-             this computer keeps your root.",
-            &[],
         ))),
         row(Some(descriptor(
             ENROL_BOOT_KEY,
@@ -920,7 +913,6 @@ impl Tickets {
                         | RECOVERY_WORDS
                         | BACKUP
                         | CERTIFY_AGENT
-                        | PERSONAL_DEVICES
                         | ENROL_BOOT_KEY
                         | RELEASE_HALF
                         | ANSWER_SIGN_IN
@@ -987,9 +979,6 @@ impl Tickets {
                 .map(|backup| json!({ "backup": hex::encode(backup) }))
                 .map_err(Into::into),
                 CERTIFY_AGENT => self.certify_agent(&args),
-                PERSONAL_DEVICES => {
-                    super::signing::personal_devices(self.0.workspaces.as_ref()).map_err(Into::into)
-                }
                 ENROL_BOOT_KEY => super::signing::enrol_boot_key(self.0.workspaces.as_ref(), &args)
                     .map_err(Into::into),
                 RELEASE_HALF => super::signing::release_half(&args).map_err(Into::into),

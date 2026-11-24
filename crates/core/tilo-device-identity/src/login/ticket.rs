@@ -54,9 +54,6 @@ pub const BACKUP: &str = "backup";
 /// an agent that acts for them (`grant`, hex) with that root, unless it is revoked or certified
 /// for long enough already. Answers `{identity, expires_at_ns, cert?}`, or `{revoked: true}`.
 pub const CERTIFY_AGENT: &str = "certifyAgent";
-/// The action a daemon answers: the person's devices as their record lists them, each with the
-/// revocation their root signed and kept there, and whether this daemon keeps that root.
-pub const PERSONAL_DEVICES: &str = "personalDevices";
 /// The action a daemon that holds the person's root answers: certify a device's boot key with
 /// that root and seal its sibling half to the person's secret-sync key.
 pub const ENROL_BOOT_KEY: &str = "enrolBootKey";

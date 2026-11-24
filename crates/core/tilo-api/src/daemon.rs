@@ -369,10 +369,33 @@ impl DaemonPlace {
                     );
                 }
                 _ => {
-                    return Self::answered(&typed, &text, failed).map_err(|refused| refused.message);
+                    return Self::answered(&typed, &text, failed)
+                        .map_err(|refused| refused.message);
                 }
             }
         }
+    }
+
+    /// The record `record` of `app`, in this login's workspace, read through the one record API
+    /// (`tilo_read` of `record:<app>:<record>`): the reading, its records each with the value the
+    /// app keeps, or the refusal's words.
+    ///
+    /// # Errors
+    /// The daemon does not answer, or refused the read.
+    pub fn read_record(&self, app: &str, record: &str) -> Result<serde_json::Value, String> {
+        let (typed, text, failed) = self
+            .tool(
+                "tilo_read",
+                serde_json::json!({ "path": format!("record:{app}:{record}") }),
+            )
+            .map_err(|refused| refused.message)?;
+        if typed.get("records").is_some() {
+            return Ok(typed);
+        }
+        if failed {
+            return Err(text);
+        }
+        serde_json::from_str(&text).map_err(|_| format!("Tilo read no record of {app}: {text}"))
     }
 
     /// The daemon's answer to `devices#<action>` with `args`, or to following the call
@@ -383,10 +406,6 @@ impl DaemonPlace {
         args: &serde_json::Value,
         following: Option<&str>,
     ) -> Result<(serde_json::Value, String, bool), DeviceRefusal> {
-        use std::io::{BufRead as _, Write as _};
-        let mut native = tilo_files::native::socket::connect(&self.native()).map_err(|error| {
-            DeviceRefusal::said(format!("Tilo isn't answering on this computer: {error}"))
-        })?;
         let mut arguments = serde_json::json!({
             "path": format!("{}#{action}", tilo_device_identity::login::RESOURCE),
             "args": args,
@@ -395,11 +414,25 @@ impl DaemonPlace {
             fields.insert("invocation_id".into(), invocation.into());
             fields.insert("wait_ms".into(), FOLLOW_WAIT_MS.into());
         }
+        self.tool("tilo_do", arguments)
+    }
+
+    /// The daemon's answer to the tool `tool` with `arguments`: its typed answer, its words, and
+    /// whether it says it failed.
+    fn tool(
+        &self,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<(serde_json::Value, String, bool), DeviceRefusal> {
+        use std::io::{BufRead as _, Write as _};
+        let mut native = tilo_files::native::socket::connect(&self.native()).map_err(|error| {
+            DeviceRefusal::said(format!("Tilo isn't answering on this computer: {error}"))
+        })?;
         let line = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {"name": "tilo_do", "arguments": arguments,
+            "params": {"name": tool, "arguments": arguments,
                 "_meta": {"so.tilo.mcp": {"structured": true}}},
         });
         writeln!(native, "{line}").map_err(|error| DeviceRefusal::said(error.to_string()))?;

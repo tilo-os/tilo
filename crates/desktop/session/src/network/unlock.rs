@@ -69,8 +69,8 @@ pub(crate) struct EnrolQuestion {
     pub unattended: bool,
 }
 
-/// The person's devices this session answers as, as the daemon that holds their record lists
-/// them, and whether that daemon keeps their root.
+/// The person's devices this session answers as, read from the record of their own workspace
+/// through this computer's daemon, and whether that daemon keeps their root.
 struct Ownership {
     fleet: CertifiedFleet,
     /// Whether this device holds the person's root, so it can release.
@@ -734,42 +734,32 @@ pub(crate) fn slot_name(slot: &SlotId) -> String {
     format!("{}:{}", hex::encode(slot.volume_uuid), slot.keyslot)
 }
 
-/// The person's devices, as the daemon that holds their record lists them, and whether it keeps
-/// their root.
+/// The person's devices, read from the record of their own workspace through this computer's
+/// daemon, and whether that daemon keeps their root.
 fn read_ownership() -> Option<Ownership> {
-    let answer = tilo_api::daemon::this_computer()
-        .ok()?
-        .act(
-            tilo_device_identity::login::PERSONAL_DEVICES,
-            serde_json::json!({}),
-        )
-        .ok()?;
-    let person: [u8; 32] = hex::decode(answer.get("person")?.as_str()?)
-        .ok()?
-        .try_into()
-        .ok()?;
+    use tilo_server_protocol::devices::{DEVICES, kept, record_value};
+    let who = tilo_api::daemon::who::who().ok()?;
+    let person = who.person?;
+    let place = tilo_api::daemon::this_computer().ok()?;
+    let records = record_value(&place.read_record(DEVICES.0, DEVICES.1).ok()?);
     let mut fleet = CertifiedFleet::new(person);
-    for device in answer.get("devices")?.as_array()? {
-        let cert = device
-            .get("certificate")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|cert| hex::decode(cert).ok())
-            .and_then(|cert| postcard::from_bytes::<DeviceCert>(&cert).ok());
-        let Some(cert) = cert else { continue };
-        // The record keeps the root's revocation of the device beside its certificate: it is the
-        // root's only when that root's own signature verifies it.
-        let entry = device
-            .get("revocation")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|entry| tilo_user_identity::revocation_of(entry, &cert));
-        let _ = fleet.certify(cert);
-        if let Some(entry) = entry {
-            let _ = fleet.revoke(entry);
+    if let Some(devices) = records
+        .get("devices")
+        .and_then(serde_json::Value::as_object)
+    {
+        for key in devices.keys() {
+            let Some((cert, revocation)) = kept(&records, key, &person) else {
+                continue;
+            };
+            let _ = fleet.certify(cert);
+            if let Some(revocation) = revocation {
+                let _ = fleet.revoke(revocation);
+            }
         }
     }
     Some(Ownership {
         fleet,
-        key_holder: answer.get("key_holder")?.as_bool()?,
+        key_holder: who.holds_root,
     })
 }
 

@@ -267,10 +267,11 @@ impl PeerRegistrar {
     }
 
     /// This device's own key and the person's other devices, as the daemon this machine runs
-    /// lists them: the record of their own workspace, answered by the daemon that holds it. Boot
-    /// unlock exists only where that daemon runs. `relays` reaches them when the caller knows the
-    /// network; `None` uses the peer network's default.
+    /// lists them: the record of their own workspace, read through the daemon's one record API.
+    /// Boot unlock exists only where that daemon runs. `relays` reaches them when the caller knows
+    /// the network; `None` uses the peer network's default.
     pub fn find(session_uid: Option<u32>, relays: Option<RelayMap>) -> Result<Self> {
+        use tilo_server_protocol::devices::{DEVICES, kept, record_value};
         let paths = identity_paths();
         let device = tilo_device_identity::persist::load_device_key(&paths)
             .map_err(|error| anyhow!("this device's key: {error}"))?;
@@ -280,39 +281,26 @@ impl PeerRegistrar {
         if cert.device_public_key != this {
             bail!("this device's key is not the one its certificate names");
         }
-        let answer = local_daemon(session_uid)?
-            .act(
-                tilo_device_identity::login::PERSONAL_DEVICES,
-                serde_json::json!({}),
-            )
+        let reading = local_daemon(session_uid)?
+            .read_record(DEVICES.0, DEVICES.1)
             .map_err(|error| anyhow!("your devices: {error}"))?;
+        let records = record_value(&reading);
         let now = tilo_clock::unix_now_ns();
-        let devices: Vec<[u8; 32]> = answer
+        let devices: Vec<[u8; 32]> = records
             .get("devices")
-            .and_then(serde_json::Value::as_array)
+            .and_then(serde_json::Value::as_object)
             .into_iter()
             .flatten()
-            .filter_map(|listed| {
-                let kept: tilo_user_identity::DeviceCert = listed
-                    .get("certificate")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|bytes| hex::decode(bytes).ok())
-                    .and_then(|bytes| postcard::from_bytes(&bytes).ok())?;
-                // The record keeps the root's revocation of a device beside its certificate: the
-                // entry is taken only when that root's own signature verifies it.
-                let revoked = listed
-                    .get("revocation")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|entry| tilo_user_identity::revocation_of(entry, &kept))
-                    .is_some();
-                // Every device of the person's but this one: this device asks the others, and
-                // holds the half like any other, so a person with two has one to ask at boot.
-                (kept.user_public_key == cert.user_public_key
-                    && kept.capabilities.is_personal_device()
-                    && tilo_user_identity::verify_device_cert_at(&kept, now).is_ok()
-                    && !revoked
-                    && kept.device_public_key != this)
-                    .then_some(kept.device_public_key)
+            .filter_map(|(key, _)| {
+                // Each device is whose its certificate says, verified with the revocation their
+                // root signed for it. Every one of theirs but this: this device asks the others,
+                // and holds the half like any other, so a person with two has one to ask at boot.
+                let (kept_cert, revocation) = kept(&records, key, &cert.user_public_key)?;
+                (kept_cert.capabilities.is_personal_device()
+                    && tilo_user_identity::verify_device_cert_at(&kept_cert, now).is_ok()
+                    && revocation.is_none()
+                    && kept_cert.device_public_key != this)
+                    .then_some(kept_cert.device_public_key)
             })
             .collect();
         if devices.is_empty() {
