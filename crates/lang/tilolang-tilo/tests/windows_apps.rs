@@ -211,8 +211,8 @@ struct Installed {
 impl Installed {
     fn over(reading: String) -> Self {
         let host = Host::new(me(), || None).expect("a host");
-        let metas =
-            tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+        let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
+            .expect("the platform's packages read");
         for meta in &metas {
             host.runtime()
                 .load_foreign(meta.clone())
@@ -554,13 +554,10 @@ fn a_windows_image_is_imported_and_a_document_opens_in_its_program() {
     let app = Installed::full();
     app.call(
         "imported_iso",
-        vec![
-            app.root_value(),
-            Value::file(FileValue {
-                path: "/home/ada/win11.iso".to_owned(),
-                ..FileValue::new("win11.iso", "application/x-cd-image", 4096, "h2")
-            }),
-        ],
+        vec![Value::file(FileValue {
+            path: "/home/ada/win11.iso".to_owned(),
+            ..FileValue::new("win11.iso", "application/x-cd-image", 4096, "h2")
+        })],
     );
     assert!(app.sent.all().iter().any(|name| name == "import-iso"));
     app.call(
@@ -586,9 +583,9 @@ fn the_appliance_works_with_the_window_closed() {
         ("suspend_windows", "suspend"),
         ("resume_windows", "resume"),
         ("shutdown_windows", "shutdown"),
-        ("temporary_network", "temporary_network"),
-        ("update_network", "update_network"),
-        ("revoke_network", "revoke_network"),
+        ("temporary_network", "temporary-network"),
+        ("update_network", "update-network"),
+        ("revoke_network", "revoke-network"),
     ] {
         app.call(action, Vec::new());
         assert!(
