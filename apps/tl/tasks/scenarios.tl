@@ -41,12 +41,7 @@ scenario "a busy week" -> Task {
     invoke(new_task(tasks, title: "Reply to Mia about Sunday lunch", due: 2026-07-01))
     invoke(new_task(tasks, p: flat, title: "Order boxes and tape", due: 2026-07-02))
     let notice = invoke(
-        new_task(
-            tasks,
-            p: flat,
-            title: "Give notice to the electricity company",
-            due: 2026-07-04,
-        ),
+        new_task(tasks, p: flat, title: "Give notice to the electricity company", due: 2026-07-04),
     )
     invoke(set_priority_medium(notice))
     invoke(new_task(tasks, p: flat, title: "Measure the new bedroom"))
@@ -71,14 +66,7 @@ scenario "a busy week" -> Task {
     invoke(move_to(draft, copy, .none))
     let shots = invoke(new_task(tasks, p: launch, title: "Screenshots"))
     invoke(move_to(shots, copy, .none))
-    invoke(
-        new_task(
-            tasks,
-            p: launch,
-            title: "Check the pricing page on phones",
-            due: 2026-07-08,
-        ),
-    )
+    invoke(new_task(tasks, p: launch, title: "Check the pricing page on phones", due: 2026-07-08))
     invoke(new_task(tasks, p: launch, title: "Set up the redirects", status: .some(.done)))
     call
 }

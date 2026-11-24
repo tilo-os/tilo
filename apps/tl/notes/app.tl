@@ -2147,9 +2147,7 @@ scenario "a week of notes" {
         new_note(notebook, "Tuesday", "The importer handles tables now.", parent: .some(standups)),
     )
     invoke(new_note(notebook, "Interviews", "Two rounds, a pairing each.", parent: .some(plan)))
-    let home = invoke(
-        new_note(notebook, "Home", "What the flat needs, and what we cook in it."),
-    )
+    let home = invoke(new_note(notebook, "Home", "What the flat needs, and what we cook in it."))
     invoke(new_note(notebook, "Groceries", "Oat milk, eggs, two lemons.", parent: .some(home)))
     let soup = invoke(
         new_note(
