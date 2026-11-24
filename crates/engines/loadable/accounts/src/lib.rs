@@ -17,6 +17,34 @@ pub use tilo_dav;
 #[cfg(feature = "thin")]
 pub use tilo_oauth;
 
+/// The engine's self-check ([`self_check`]) for its check binary, by the
+/// unmangled name the binary links: a program that is no crate's dependent
+/// links this library by name, so it exports no Rust item. Prints the report;
+/// whether it passed.
+#[cfg(feature = "thin")]
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn tilo_accounts_engine_check() -> bool {
+    match self_check() {
+        Ok(report) => {
+            println!("tilo-accounts-engine: {report}");
+            true
+        }
+        Err(error) => {
+            eprintln!("tilo-accounts-engine: {error}");
+            false
+        }
+    }
+}
+
+/// The protected-grant protocol of the account credentials this library ships,
+/// by the unmangled name `tilo-runtime-account-capability` links, so the
+/// publisher certifies the very code the bundle carries.
+#[cfg(feature = "thin")]
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn tilo_accounts_engine_protected_grant_protocol() -> u32 {
+    account_credentials::protected_grant_protocol()
+}
+
 /// Run the engine's own code without a network or an account: the `OAuth`
 /// client's PKCE against RFC 7636's example, the committed client table's
 /// providers and scopes, and the IMAP parser on a server's capabilities.
