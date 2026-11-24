@@ -2247,7 +2247,21 @@ impl Workspaces {
                 if !asking {
                     continue;
                 }
-                for answer in workspaces.content_answer(&name, &frame.author, &body) {
+                // A mounted workspace's file bytes are read from its Files daemon, whose answer
+                // comes in on a socket this runtime serves: read on the runtime's own thread, the
+                // read would wait out every ask for an answer that cannot arrive.
+                let answers = {
+                    let (workspaces, name, author) =
+                        (workspaces.clone(), name.clone(), frame.author);
+                    tokio::task::spawn_blocking(move || {
+                        workspaces.content_answer(&name, &author, &body)
+                    })
+                    .await
+                };
+                let Ok(answers) = answers else {
+                    continue;
+                };
+                for answer in answers {
                     let Ok(message) = tilo_failure::ignored!(
                         "a content answer this device made itself does not decode",
                         NeighbourMsg::decode(&answer)
