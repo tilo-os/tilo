@@ -112,10 +112,16 @@ primary action new_note(
 }
 
 /// The note a new note under `parent` comes after: the note given, else the last of the notes
-/// already there, else `parent` itself, and nothing under a parent with no notes at all.
+/// under it — the end of the branch it opens, its own notes' notes included, so the note comes
+/// after all of them and the tree still reads in the order its notes were made — else `parent`
+/// itself, and nothing under a parent with no notes at all.
 fn place_under(nb: Notebook, parent: Option<Note>, made: Note) -> Option<Note> {
     if let p = parent {
-        .some(nb.notes.filter(x -> x.parent == parent and x != made).last() ?? p)
+        if let last = nb.notes.filter(x -> x.parent == parent and x != made).last() {
+            .some(nb.notes.descendants(last, .parent).last() ?? last)
+        } else {
+            .some(p)
+        }
     } else { .none }
 }
 
@@ -127,7 +133,7 @@ fn place_under(nb: Notebook, parent: Option<Note>, made: Note) -> Option<Note> {
 action new_child(n: Note, words: Text = "") -> Note (icon: .plus, label: "New sub-note") {
     let made = notebook.notes.insert(Note(title: words, parent: n))
     if let last = notebook.notes.filter(x -> x.parent == n and x != made).last() {
-        notebook.notes.move(made, after: last)
+        notebook.notes.move(made, after: notebook.notes.descendants(last, .parent).last() ?? last)
     } else { notebook.notes.move(made, after: n) }
     made
 }
@@ -2128,6 +2134,11 @@ fn pictures_shown(markdown: Text, page: Text, pictures: List<File>) -> Text {
     let folder = folder_of(page)
     for picture in pictures {
         if let at = page_ref(folder, picture.name) {
+            // An export writes the path in angle brackets, as this app's own does, so a name
+            // holding a space or a parenthesis reads as the path it is.
+            if shown.contains("](<{at}>)") {
+                shown = shown.replace("](<{at}>)", "]({picture.url})")
+            }
             if shown.contains("]({at})") {
                 shown = shown.replace("]({at})", "]({picture.url})")
             }
