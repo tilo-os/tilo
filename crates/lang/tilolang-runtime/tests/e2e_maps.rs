@@ -652,8 +652,117 @@ mod cases {
         );
         assert_eq!(m.offline().len(), 1);
         assert_eq!(m.text(&m.offline()[0], "name"), "Marienplatz");
+        m.call(
+            "note_saved",
+            vec![
+                Value::resource(&m.root),
+                Value::Text("Marienplatz".to_owned()),
+                Value::List(vec![Value::Int(5), Value::Int(100)]),
+            ],
+        );
+        // A download the person stops keeps what it already has and takes no more reports.
+        m.call(
+            "stop_offline_area",
+            vec![
+                Value::resource(&m.root),
+                Value::Text("Marienplatz".to_owned()),
+            ],
+        );
+        let kept = m.float(&m.offline()[0], "done");
+        assert_eq!(kept, 5.0, "the tiles it got before the stop stay");
+        assert_eq!(
+            m.rt.read(&m.offline()[0], "stopped").unwrap(),
+            Value::Bool(true)
+        );
+        m.call(
+            "note_saved",
+            vec![
+                Value::resource(&m.root),
+                Value::Text("Marienplatz".to_owned()),
+                Value::List(vec![Value::Int(99), Value::Int(100)]),
+            ],
+        );
+        assert_eq!(
+            m.float(&m.offline()[0], "done"),
+            kept,
+            "a stopped area is not filled further"
+        );
+        assert!(
+            m.text(&m.root, "status").contains("stay available offline"),
+            "it says what it keeps: {}",
+            m.text(&m.root, "status")
+        );
+        // Starting it again lets its reports through.
+        m.call(
+            "continue_offline_area",
+            vec![
+                Value::resource(&m.root),
+                Value::Text("Marienplatz".to_owned()),
+            ],
+        );
+        m.call(
+            "note_saved",
+            vec![
+                Value::resource(&m.root),
+                Value::Text("Marienplatz".to_owned()),
+                Value::List(vec![Value::Int(99), Value::Int(100)]),
+            ],
+        );
+        assert_eq!(m.float(&m.offline()[0], "done"), 99.0);
         m.call("clear_offline_areas", vec![Value::resource(&m.root)]);
         assert!(m.offline().is_empty());
+    }
+
+    phase a_saved_place_is_renamed_and_keeps_its_name;
+    {
+        let m = Maps::new();
+        m.search("Marienplatz");
+        let place = m
+            .places()
+            .into_iter()
+            .find(|p| m.text(p, "name") == "Marienplatz")
+            .expect("the place the geocoder answered is on the map");
+        m.call("save_place", vec![Value::resource(&place)]);
+        // A saved place is named by what the search brought until the person renames it.
+        m.call(
+            "rename_place",
+            vec![
+                Value::resource(&place),
+                Value::Text("  Office  ".to_owned()),
+            ],
+        );
+        assert_eq!(m.text(&place, "name"), "Office", "the typed name, trimmed");
+        assert_eq!(
+            m.text(&place, "key"),
+            "node/1",
+            "renaming keeps where the place is"
+        );
+        // The action refuses a place with no name of its own.
+        let failed = m.rt.invoke_action(
+            &me(),
+            (
+                m.app.action("rename_place").as_str(),
+                vec![Value::resource(&place), Value::text("   ")],
+            ),
+        );
+        assert!(failed.is_err(), "a place needs a name");
+        // The place's own page offers the rename beside its save and directions.
+        let mut view = m
+            .rt
+            .open_view(&me(), &m.app.view("place"), vec![Value::resource(&place)])
+            .unwrap();
+        view.poll_patches().unwrap();
+        let labels: Vec<String> = of_kind(view.tree(), "ui.Button")
+            .iter()
+            .filter_map(|node| match node.props.get("label") {
+                Some(Value::Text(label)) => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            labels.iter().any(|label| label == "Rename"),
+            "the place's page offers Rename: {labels:?}"
+        );
     }
 
     phase a_geo_link_searches_or_shows_its_point;

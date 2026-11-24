@@ -645,8 +645,9 @@ d-oeeojlox = Karte
 
 d-sb4mqylm = Aktionen am Ort
     .w-saved = Gespeichert
-    .w-save = Save
-    .w-directions-to-this-place = Directions to this place
+    .w-save = Speichern
+    .w-directions-to-this-place = Wegbeschreibung zu diesem Ort
+    .w-rename-this-place = Diesen Ort umbenennen
 
 d-rfg2gu4h = Zeile eines nahen Ortes
     .w-directions-to-this-place = Directions to this place
@@ -684,8 +685,11 @@ d-tqnx77nc = Abschnitt einer Fahrt
     .w-towards = { $line } towards { $headsign }
 
 d-3p2cxc7k = Zeile einer Offline-Karte
-    .w-of-tiles = { $done } of { $tiles } tiles
-    .w-delete-downloaded-area = Delete downloaded area
+    .w-of-tiles = { $done } von { $tiles } Kacheln
+    .w-delete-downloaded-area = Heruntergeladenes Gebiet löschen
+    .w-stop-downloading = Download stoppen
+    .w-download-it-again = Erneut herunterladen
+    .w-stopped-what-it-kept-stays-available = Angehalten; was es behalten hat, bleibt offline verfügbar.
 
 d-up2iielj = Hinweiskarte zur Route
     .w-to-go = { $distance_text } to go
@@ -698,6 +702,29 @@ d-ex73ittg = Laufende Navigation
 
 d-wjvabv4j = Ort
     .w-saved = Gespeichert
-    .w-save = Save
-    .w-directions = Directions
-    .w-open-on-the-map = Open on the map
+    .w-save = Speichern
+    .w-directions = Wegbeschreibung
+    .w-open-on-the-map = Auf der Karte öffnen
+    .w-rename = Umbenennen
+
+d-2as5emqc = Angehalten
+    .doc = Ob die Person den Download gestoppt hat; die bisher behaltenen Kacheln bleiben auf dem Gerät.
+
+d-fvuozxco = Umbenennen
+    .doc = Benennt einen gespeicherten Ort um; der Name, den eine Suche brachte, bleibt der des Ortes, bis die Person ihm einen anderen gibt.
+    .did = benannte einen Ort um
+    .w-a-place-needs-a-name = Ein Ort braucht einen Namen
+
+d-fvuozxco-name = Name
+
+d-4yfv2cmr = Download stoppen
+    .doc = Stoppt den Download eines Gebiets: die bisher behaltenen Kacheln bleiben offline verfügbar.
+
+d-4yfv2cmr-area = Gebiet
+
+d-xnob7shn = Erneut herunterladen
+    .doc = Startet den Download eines angehaltenen Gebiets erneut und behält, was es schon hat.
+
+d-xnob7shn-area = Gebiet
+
+d-tgiiomgy = Ort umbenennen

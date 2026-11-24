@@ -186,6 +186,8 @@ type OfflineArea (title: name) {
     tiles: Int = 0
     /// How many of them are kept on the device.
     done: Int = 0
+    /// Whether the person stopped its download; the tiles kept so far stay on the device.
+    stopped: Bool = false
 
     search {
         sort name a_z
@@ -989,6 +991,13 @@ action save_place(p: Place, saved: Bool = not p.saved) (
     p.saved = saved
 }
 
+/// Renames a saved place; the name a search brought is the place's until the person gives it
+/// another.
+action rename_place(p: Place, name: Text) (icon: .pencil, label: "Rename", did: "renamed a place") {
+    require name.trim() != "" "A place needs a name"
+    p.name = name.trim()
+}
+
 /// Shows the place `place` on the map: the map opens on it.
 action open_place(a: Atlas, place: Text) (
     icon: .map_pin,
@@ -1523,13 +1532,32 @@ fn latitude_tile(latitude: Float, columns: Int) -> Int {
 
 /// Says how far saving an area has come, as the map reports it.
 action note_saved(a: Atlas, area: Text, at: List<Int>) (did: "changed the map") {
-    if let held = a.offline.find(o -> o.name == area) {
+    if let held = a.offline.find(o -> o.name == area and not o.stopped) {
         held.done = at.at(0) ?? 0
         let total = at.at(1) ?? 0
         if held.done >= total {
             held.tiles = total
             a.status = "Offline area ready ({total} tiles)"
         }
+    }
+}
+
+/// Stops an area's download: the tiles kept so far stay available offline.
+action stop_offline_area(a: Atlas, area: Text) (icon: .x, label: "Stop downloading") {
+    if let held = a.offline.find(o -> o.name == area) {
+        held.stopped = true
+        a.status = "Stopped {area}; {held.done} tiles stay available offline"
+    }
+}
+
+/// Starts a stopped area's download again, keeping what it already has.
+action continue_offline_area(a: Atlas, area: Text) (
+    icon: .cloud_download,
+    label: "Download it again",
+) {
+    if let held = a.offline.find(o -> o.name == area) {
+        held.stopped = false
+        a.status = "Downloading the rest of {area}…"
     }
 }
 
@@ -1778,7 +1806,7 @@ view map_pane(a: Atlas, chosen: State<Text>) {
             }
         }
         areas: {
-            for area in a.offline {
+            for area in a.offline.filter(o -> not o.stopped) {
                 ui.MapArea(
                     name: area.name,
                     north: area.north,
@@ -1943,6 +1971,11 @@ view place_acts(place: Place) {
         ui.Button("Directions to this place", icon: .route, icon_only: true, role: .plain) {
             on press: directions(atlas, from_words: "", to_words: place.name)
         }
+        if place.saved {
+            ui.Button("Rename this place", icon: .pencil, icon_only: true, role: .plain) {
+                on press: rename_place(place)
+            }
+        }
     }
 }
 
@@ -1974,6 +2007,11 @@ view place_card(place: Place, chosen: State<Text>) {
             }
             ui.Button("Directions", icon: .route, role: .primary) {
                 on press: directions(atlas, from_words: "", to_words: place.name)
+            }
+            if place.saved {
+                ui.Button("Rename", icon: .pencil) {
+                    on press: rename_place(place)
+                }
             }
         }
     }
@@ -2236,6 +2274,15 @@ view area_row(a: Atlas, area: OfflineArea) {
                     numeric: true,
                     secondary: true,
                 )
+                if area.stopped {
+                    ui.Button("Download it again", icon: .cloud_download) {
+                        on press: continue_offline_area(a, area.name)
+                    }
+                } else if area.done < area.tiles {
+                    ui.Button("Stop downloading", icon: .x) {
+                        on press: stop_offline_area(a, area.name)
+                    }
+                }
                 ui.Button("Delete downloaded area", icon: .trash_2, icon_only: true, role: .plain) {
                     on press: delete_offline_area(a, area.name)
                 }
@@ -2243,6 +2290,13 @@ view area_row(a: Atlas, area: OfflineArea) {
         }
         if area.tiles > 0 {
             ui.ProgressBar(area.done.to_float() / area.tiles.to_float())
+        }
+        if area.stopped {
+            ui.Text(
+                "Stopped; what it kept stays available offline.",
+                role: .caption,
+                secondary: true,
+            )
         }
     }
 }
@@ -2331,6 +2385,11 @@ view place(p: Place) {
             }
             ui.Button("Open on the map", icon: .map) {
                 on press: open_place(atlas, p.key)
+            }
+            if p.saved {
+                ui.Button("Rename", icon: .pencil) {
+                    on press: rename_place(p)
+                }
             }
         }
     }
