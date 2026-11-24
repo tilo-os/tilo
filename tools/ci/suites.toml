@@ -296,7 +296,6 @@ suites = [
   "os/tests/server_firstboot_sibling.sh",
   "os/tests/disk_encrypt_finish_sibling.sh",
   "os/tests/plan_network_keyfile.sh",
-  "tools/tests/test_runtime_packages.py",
 ]
 
 [[group]]
@@ -667,6 +666,7 @@ suites = [
   "crates/core/tilo-browser-runtime/web/voice-video.test.mjs",
   "crates/core/tilo-browser-runtime/web/voice.test.mjs",
   "crates/core/tilo-browser-runtime/web/runtime-surface.test.mjs",
+  "crates/core/tilo-browser-runtime/web/page-calls.test.mjs",
 ]
 
 [[group]]
@@ -704,7 +704,6 @@ inputs = [
   "crates/ui/themes/liquid-glass-light/theme.json",
 ]
 readers = [
-  "crates/ui/ui-core/build.rs",
   "crates/ui/ui-core/src/app/close_admission.rs",
   "crates/ui/ui-core/src/webview/paint.rs",
   "crates/ui/ui-core/src/widget/webview.rs",
@@ -724,6 +723,7 @@ inputs = [
   "crates/lang/*/tilo-runtime.toml",
   "apps/*/search/*.ftl",
   "crates/engines/chromium-host/browser.tilo-app.toml",
+  "dist/apps/app-collections.toml",
 ]
 readers = [
   "crates/core/tilo-app-package/tests/app_manifests.rs",
@@ -762,7 +762,6 @@ inputs = [
   "crates/lang/tilolang-tilo/tests/native-chat/",
   "apps/tl/",
   "apps/tl/settings/",
-  "apps/clocks/surface.toml",
   "crates/lang/tilolang-process/tilo-runtime.toml",
   "docs/developers/tasks/",
   "examples/apps/",
@@ -798,13 +797,10 @@ readers = ["crates/core/tilo-app-id/src/chat.rs"]
 package = "tilo-runtime"
 # The host tests install the tilolang apps and the Rust apps from their sources, and the customer
 # workspace test holds the tilo.sh book to the pages it lists.
-inputs = ["apps/", "docs/tilo-sh/pages.toml"]
+inputs = ["apps/", "dist/macos/collection_local_runtime.py", "docs/tilo-sh/pages.toml"]
 readers = [
   "crates/core/tilo-runtime/tests/customer_workspaces.rs",
   "crates/core/tilo-runtime/tests/host/apps.rs",
-  "crates/core/tilo-runtime/tests/host/app_actions.rs",
-  "crates/core/tilo-runtime/tests/host/messages_for_agents.rs",
-  "crates/core/tilo-runtime/tests/host/console_no_window.rs",
 ]
 
 [[cargo]]
@@ -825,6 +821,7 @@ package = "tilolang-runtime"
 # agent's recorded script.
 inputs = [
   "apps/tl/",
+  "crates/engines/tilo-chip-design-engine/fixtures/",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/lang/tilolang-runtime/tests/fixtures/",
   "scripts/headless-examples/agent-tilolang/",
@@ -839,16 +836,41 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_ebook.rs",
   "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
   "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
-  "crates/lang/tilolang-runtime/tests/programs.rs",
-  "crates/lang/tilolang-runtime/tests/multi_select.rs",
   "crates/lang/tilolang-runtime/tests/provenance.rs",
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
   "crates/lang/tilolang-runtime/tests/window_bar.rs",
-  "crates/lang/tilolang-runtime/tests/view_state_seed.rs",
   "crates/lang/tilolang-runtime/tests/common/mod.rs",
   "crates/lang/tilolang-runtime/tests/calendar.rs",
   "crates/lang/tilolang-runtime/tests/e2e_canvas.rs",
   "crates/lang/tilolang-runtime/tests/e2e_video_editor.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_api_tester.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_backups.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_browser.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_chip_design.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_clocks.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_code_editor.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_console.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_db_client.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_diffmerge.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_disk_usage.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_feeds.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_git_client.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_hex_editor.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_maps.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_music.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_pdf.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_photos.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_publisher.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_removals.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_scratchpad.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_sheets.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_snippets.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_speed_test.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_store.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_typst_editor.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_weather.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_word_processor.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_youtube.rs",
 ]
 
 [[cargo]]
@@ -859,12 +881,18 @@ package = "tilolang-tilo"
 inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
+  "apps/moderation-model/surface.json",
   "crates/lang/tilolang-tilo/tests/native-chat/",
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/desktop/device-surfaces/device-surface.json",
   "crates/desktop/settings-sections/published.toml",
-  "apps/contacts/surface.toml",
+  "crates/desktop/session/activity-surface.json",
+  "crates/desktop/session/window-menu-surface.toml",
+  "crates/core/tilo-workspace-service/mcp-server-surface.json",
+  "crates/core/tilo-workspace-service/models-surface.json",
+  "crates/core/tilo-workspace-service/styles-surface.json",
+  "crates/core/actions/src/remote/invocations-surface.json",
   "crates/services/vision/surface.json",
   "crates/core/tilo-contact-directory/surface.json",
   "crates/core/tilo-workspace-service/workspace-surface.toml",
@@ -873,22 +901,28 @@ readers = [
   "crates/lang/tilolang-tilo/examples/write_rate.rs",
   "crates/lang/tilolang-tilo/src/platform_apps.rs",
   "crates/lang/tilolang-tilo/src/shell.rs",
+  "crates/lang/tilolang-tilo/src/surface.rs",
   "crates/lang/tilolang-tilo/tests/agent_queries.rs",
   "crates/lang/tilolang-tilo/tests/block_search.rs",
   "crates/lang/tilolang-tilo/tests/bundle.rs",
-  "crates/lang/tilolang-tilo/tests/capture.rs",
   "crates/lang/tilolang-tilo/tests/chat.rs",
-  "crates/lang/tilolang-tilo/tests/discussion.rs",
+  "crates/lang/tilolang-tilo/tests/chat_persona_shot.rs",
+  "crates/lang/tilolang-tilo/tests/containers.rs",
+  "crates/lang/tilolang-tilo/tests/discord_migration.rs",
+  "crates/lang/tilolang-tilo/tests/disks.rs",
+  "crates/lang/tilolang-tilo/tests/files.rs",
+  "crates/lang/tilolang-tilo/tests/firewall.rs",
   "crates/lang/tilolang-tilo/tests/fixtures.rs",
   "crates/lang/tilolang-tilo/tests/gallery.rs",
   "crates/lang/tilolang-tilo/tests/headings.rs",
-  "crates/lang/tilolang-tilo/tests/legibility.rs",
+  "crates/lang/tilolang-tilo/tests/levels.rs",
   "crates/lang/tilolang-tilo/tests/link_editor.rs",
   "crates/lang/tilolang-tilo/tests/links.rs",
-  "crates/lang/tilolang-tilo/tests/make_from.rs",
+  "crates/lang/tilolang-tilo/tests/logs.rs",
+  "crates/lang/tilolang-tilo/tests/mail_recipients.rs",
+  "crates/lang/tilolang-tilo/tests/monitor.rs",
   "crates/lang/tilolang-tilo/tests/naming.rs",
   "crates/lang/tilolang-tilo/tests/native_chat.rs",
-  "crates/lang/tilolang-tilo/tests/native_mail.rs",
   "crates/lang/tilolang-tilo/tests/native_notes.rs",
   "crates/lang/tilolang-tilo/tests/note_import.rs",
   "crates/lang/tilolang-tilo/tests/settings_panes.rs",
@@ -896,17 +930,15 @@ readers = [
   "crates/lang/tilolang-tilo/tests/notes.rs",
   "crates/lang/tilolang-tilo/tests/notes_checklist.rs",
   "crates/lang/tilolang-tilo/tests/outbox.rs",
-  "crates/lang/tilolang-tilo/tests/outcomes.rs",
   "crates/lang/tilolang-tilo/tests/policy.rs",
+  "crates/lang/tilolang-tilo/tests/print_centre.rs",
   "crates/lang/tilolang-tilo/tests/removed.rs",
   "crates/lang/tilolang-tilo/tests/resource_store.rs",
   "crates/lang/tilolang-tilo/tests/rich_text.rs",
   "crates/lang/tilolang-tilo/tests/scenarios.rs",
-  "crates/lang/tilolang-tilo/tests/suggest.rs",
   "crates/lang/tilolang-tilo/tests/surface.rs",
-  "crates/lang/tilolang-tilo/tests/task.rs",
-  "crates/lang/tilolang-tilo/tests/tasks.rs",
   "crates/lang/tilolang-tilo/tests/tube.rs",
+  "crates/lang/tilolang-tilo/tests/windows_apps.rs",
   "crates/lang/tilolang-tilo/tests/words.rs",
   "crates/lang/tilolang-tilo/tests/written_views.rs",
   "crates/lang/tilolang-tilo/tests/contacts.rs",
@@ -1428,11 +1460,6 @@ inputs = ["os/usr/libexec/tilo-installer-profile-extract"]
 readers = ["tools/imager-profile/tests/embed.rs"]
 
 [[cargo]]
-package = "disks"
-inputs = ["crates/os/block-devices/tests/fixtures/disks.json"]
-readers = ["apps/disks/src/probe.rs"]
-
-[[cargo]]
 package = "tilo-doc-codecs"
 inputs = ["crates/engines/doc-fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 readers = ["crates/engines/tilo-doc-codecs/build.rs"]
@@ -1461,15 +1488,15 @@ readers = ["crates/platform/font-catalog/build.rs"]
 
 [[cargo]]
 package = "tilo-workspace-service"
-# The packaged-model tests bind actions against the surface the Clocks app
-# ships, read from the tree; the module its package carries comes from the
-# app-models check.
+# The web-search tests answer from the pages a real answer was saved as, the
+# nearby-send test runs the sender script the image ships, and the record and
+# task tests compile the built-in packages from their sources.
 inputs = [
-  "apps/clocks/surface.toml",
   "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
   "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
   "tools/protocols/airdrop_sender.py",
   "apps/tl/chat/",
+  "apps/tl/discord/",
   "apps/tl/discussion/",
   "apps/tl/notes/",
   "apps/tl/contacts/",
@@ -1477,8 +1504,8 @@ inputs = [
 ]
 readers = [
   "crates/core/tilo-workspace-service/src/apps/collab_app_broker/web_search_tests.rs",
-  "crates/core/tilo-workspace-service/src/workspaces/packaged_model_tests.rs",
   "crates/core/tilo-workspace-service/src/apps/nearby_send/airdrop.rs",
+  "crates/core/tilo-workspace-service/src/agents/task_work.rs",
   "crates/core/tilo-workspace-service/src/tl_records.rs",
 ]
 
@@ -1541,8 +1568,11 @@ inputs = [
   # The settings sections' committed surface, which the session's own API types their
   # setters by.
   "crates/desktop/settings-sections/published.toml",
+  # The example Rust app a test installs beside its built binary.
+  "examples/apps/shared-checklist/",
 ]
 readers = [
+  "crates/desktop/session/examples/session_perf.rs",
   "crates/desktop/session/tests/no_locale_leaks.rs",
   "crates/desktop/session/tests/own_api.rs",
   "crates/desktop/session/src/page_track.rs",
@@ -1572,8 +1602,8 @@ package = "tilo-session-client"
 # script the CI setup uses, so that script and the build it runs are read too.
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
-inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh"]
-readers = ["crates/core/session-client/tests/voice_browsers.rs", "crates/core/session-client/tests/headless_audio_lifetime.rs", "crates/core/session-client/tests/surface_by_hash.rs", "crates/core/session-client/src/device.rs", "crates/core/session-client/tests/support/mod.rs"]
+inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh", "apps/phone/tests/support/"]
+readers = ["crates/core/session-client/tests/voice_browsers.rs", "crates/core/session-client/tests/headless_audio_lifetime.rs", "crates/core/session-client/tests/surface_by_hash.rs", "crates/core/session-client/src/device.rs", "crates/core/session-client/tests/support/mod.rs", "crates/core/session-client/tests/flow_laptop_phone_server.rs"]
 scope = { inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
 [[cargo]]
@@ -1582,6 +1612,25 @@ package = "tilo-test-env"
 # that ends with its owner.
 inputs = [".config/nextest.toml", "tools/test-env-setup.sh", "tools/with-headless-audio.sh", "tools/with-test-environment.sh"]
 readers = ["tools/test-env/tests/run_environment.rs"]
+
+[[cargo]]
+package = "tilo-phone"
+# The phone's server tests build Notes from its tilolang package, from the tree.
+inputs = ["apps/tl/"]
+readers = ["apps/phone/tests/server/mod.rs"]
+
+[[cargo]]
+package = "terminal"
+# A rerun's failing-test fixture is the terminal engine's, read from its source.
+inputs = ["crates/engines/tilo-terminal/src/parse/fixtures/nextest.txt"]
+readers = ["apps/terminal/src/run_tests.rs"]
+
+[[cargo]]
+package = "settings-sections"
+# The own-themes tests load the finish fixtures the toolkit's tests keep and the
+# built-in Liquid theme's document.
+inputs = ["crates/ui/ui-core/tests/fixtures/finishes/", "crates/ui/themes/liquid-glass/theme.json"]
+readers = ["crates/desktop/settings-sections/src/own_themes_tests.rs"]
 
 # Exercised by a suite that is already guarded.
 
@@ -1746,6 +1795,11 @@ check = "encrypted-install-tpm-x86_64"
 suite = "os/tests/validation_drive_qemu.sh"
 reason = "requires a native ARM KVM host and QEMU"
 check = "validation-drive-aarch64"
+
+[[unrequired]]
+suite = "tools/ci/windows/native-test.sh"
+reason = "runs the Windows build's platform tests on Windows itself, which Wine cannot show; the windows/x86_64-platform check runs it on a Windows machine when named"
+check = "windows/x86_64-platform"
 
 [[unrequired]]
 suite = "os/dev/test-installed-desktop.sh"
@@ -2140,40 +2194,9 @@ inputs = ["os/components.toml"]
 readers = ["crates/core/tilo-cli/src/aliases.rs"]
 
 # The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
-# sdk-python check, which carries uv and the SDK's locked dependencies. test_openapi.py checks the
-# fake against docs/api/openapi.json, as every exchange the fake answers is checked in the suite.
+# sdk-python check, which carries uv and the SDK's locked dependencies.
 [[covered]]
-suite = "sdk/python/tests/test_host.py"
-check = "sdk-python"
-
-[[covered]]
-suite = "sdk/python/tests/test_keys.py"
-check = "sdk-python"
-
-# The native part's test skips in the suite above and runs in sdk-native, under the api-on-server
-# harness, which hands it a key file (TILO_KEY_FILE).
-[[covered]]
-suite = "sdk/python/tests/test_native.py"
-check = "sdk-native"
-
-[[covered]]
-suite = "sdk/python/tests/test_session.py"
-check = "sdk-python"
-
-[[covered]]
-suite = "sdk/python/tests/test_sync.py"
-check = "sdk-python"
-
-[[covered]]
-suite = "sdk/python/tests/test_openapi.py"
-check = "sdk-python"
-
-[[covered]]
-suite = "sdk/python/tests/test_types.py"
-check = "sdk-python"
-
-[[covered]]
-suite = "sdk/python/tests/test_workspace.py"
+suite = "sdk/python/tests/test_daemon.py"
 check = "sdk-python"
 
 [[covered]]
