@@ -1408,37 +1408,26 @@ impl Workspaces {
     }
 
     /// `device`, a host at `addr`, reached for its host operations: its
-    /// certificate, as its handshake proves it, and the session they are
-    /// asked on. The handshake pins the device, whoever's it is. The session
-    /// subscribes to nothing, so it takes no session of the device's place
-    /// there.
+    /// certificate, as its dispatch hands it, and the dispatch it is asked on.
+    /// The connection pins the device, whoever's it is.
     async fn reach_host(&self, device: [u8; 32], addr: EndpointAddr) -> Result<OtherHost, String> {
         let host = &self.inner.host;
-        // The host is proved by the handshake it answers on a records link,
-        // as any device of a workspace proves itself: its certificate, signed
-        // over a nonce this device chose, and valid now.
-        let dialer = tilo_server_client::link::Dialer::from_endpoint(
-            tilo_server_client::host::ServerAddress::at(addr.clone()),
-            host.endpoint.clone(),
-        );
-        let link = dialer
-            .link(tilo_server_client::link::Purpose::Records)
-            .await
-            .map_err(|error| error.to_string())?;
-        let certificate = Box::pin(prove_host(&link, host)).await?;
-        if certificate.device_public_key != device {
-            return Err(format!(
-                "the device reached is {}, not {}",
-                hex::encode(certificate.device_public_key),
-                hex::encode(device)
-            ));
-        }
-        link.close("the host is proved");
         let actions = Arc::new(self.action_service().remote(
             &host.endpoint,
             &addr,
             &tilo_server_protocol::WorkspaceId::nil().to_string(),
         ));
+        if actions.device() != device {
+            return Err(format!(
+                "the device reached is {}, not {}",
+                hex::encode(actions.device()),
+                hex::encode(device)
+            ));
+        }
+        let certificate = actions
+            .certificate()
+            .await
+            .map_err(|error| format!("the host did not say who it is: {error}"))?;
         Ok(OtherHost {
             certificate,
             actions,
@@ -1446,72 +1435,9 @@ impl Workspaces {
     }
 }
 
-/// Prove the host at the other end of `link`, answering its certificate: the
-/// session handshake, without a pinned certificate, as one device proves
-/// another host's device. The certificate must be a valid device certificate
-/// the host holds the key of.
-///
-/// # Errors
-///
-/// The host refused this device, answered nothing, or did not prove itself.
-async fn prove_host(
-    link: &tilo_server_client::link::Link,
-    host: &crate::workspaces::WorkspaceServices,
-) -> Result<DeviceCert, String> {
-    use tilo_server_client::frame::{Answer, read_answer, write_frame};
-    use tilo_server_protocol::auth::{self, Hello, HelloAck, HelloRefused};
-
-    const MAX_HANDSHAKE_BYTES: usize = 64 * 1024;
-    let (mut send, mut recv) = link.open_bi().await.map_err(|error| error.to_string())?;
-    let client_nonce: [u8; 32] = rand::random();
-    let hello = Hello::new(host.cert.clone(), client_nonce);
-    let hello = postcard::to_allocvec(&hello).map_err(|error| error.to_string())?;
-    write_frame(&mut send, &hello)
-        .await
-        .map_err(|error| error.to_string())?;
-    let answer = read_answer(&mut recv, MAX_HANDSHAKE_BYTES)
-        .await
-        .map_err(|error| error.to_string())?;
-    let ack: HelloAck = match answer {
-        Some(Answer::Frame(bytes)) => {
-            auth::decode_handshake(&bytes).map_err(|error| error.to_string())?
-        }
-        Some(Answer::Refusal(bytes)) => {
-            let refused: HelloRefused =
-                auth::decode_handshake(&bytes).map_err(|error| error.to_string())?;
-            return Err(format!(
-                "the host refused this host's session: {}",
-                refused.refusal
-            ));
-        }
-        None => {
-            return Err(
-                "the host refused this host's session: it keeps workspaces only for the \
-                 people it let in, and this one keeps none"
-                    .into(),
-            );
-        }
-    };
-    let peer = auth::verify_pinned_host_ack(
-        &ack,
-        &tilo_user_identity::RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-        &client_nonce,
-    )
-    .map_err(|error| format!("the host did not prove itself: {error}"))?;
-    let ack2 = tilo_server_client::signer::signed_ack2(&host.key, &ack.server_nonce)
-        .await
-        .map_err(|error| format!("this host did not sign its answer: {error}"))?;
-    let ack2 = postcard::to_allocvec(&ack2).map_err(|error| error.to_string())?;
-    write_frame(&mut send, &ack2)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(peer.cert)
-}
-
 /// Another host, reached for its host operations ([`Workspaces::reach_host`]).
 struct OtherHost {
-    /// Its certificate, as its handshake proved it.
+    /// Its certificate, as its dispatch handed it.
     certificate: DeviceCert,
     /// Its actions, asked over the link this host holds to it.
     actions: Arc<RemoteDevice>,

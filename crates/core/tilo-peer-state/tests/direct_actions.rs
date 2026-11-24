@@ -280,6 +280,46 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
     b_endpoint.close().await;
 }
 
+/// A device asked through its dispatch says whose device answered: the certificate it answers
+/// under, which the asker checks names the device it reached and verifies. One that names no
+/// certificate answers nothing, and one answering under another device's is not believed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_says_whose_device_answers_its_dispatch() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let roster = vec![a.1.clone(), b.1.clone()];
+    let engine = Engine::serving(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        Arc::new(TestProvider::new()),
+        Bounds::default(),
+    )
+    .await;
+    let (b_endpoint, b_action_service) = asking(&b.0).await;
+    let nowhere = tilo_server_protocol::WorkspaceId::nil().to_string();
+    let remote = b_action_service.remote(&b_endpoint, &engine.addr(), &nowhere);
+
+    assert!(
+        remote.certificate().await.is_err(),
+        "a device that names no certificate says nothing of who it is"
+    );
+    engine.service.answer_under(a.1.clone());
+    assert_eq!(
+        remote.certificate().await,
+        Ok(a.1.clone()),
+        "the device answers under its own"
+    );
+    engine.service.answer_under(b.1.clone());
+    assert!(
+        remote.certificate().await.is_err(),
+        "a certificate of another device than the one reached is not believed"
+    );
+
+    engine.close().await;
+    b_endpoint.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn where_the_asker_serves_rides_the_request_and_is_not_what_it_asks() {
     let root = SigningKey::from_bytes(&[1; 32]);

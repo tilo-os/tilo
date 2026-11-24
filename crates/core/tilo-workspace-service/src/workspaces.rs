@@ -1418,17 +1418,20 @@ impl Workspaces {
         // renamed since serves with the record's own, verified.
         let host = record_authority::host_serving(host, &dir);
         let workspaces = Arc::new(device_actions::WorkspacesMap::default());
-        // The device actions answer on the endpoint, so they sign as the key it is keyed by: a
-        // member device's own key where its service writes under a key of its own, else the host's.
+        // The device actions answer on the endpoint, so they sign as the key it is keyed by, and
+        // hand whoever asks the certificate of that key: a member device's own where its service
+        // writes under a key of its own, else the host's.
         let endpoint_key = *host.endpoint.id().as_bytes();
-        let signer: Arc<dyn collab_types::signer::DeviceSigner> = match &host.member {
-            Some(member) if member.cert.device_public_key == endpoint_key => {
-                Arc::clone(&member.signer)
-            }
-            _ => Arc::new(host.key.clone()),
-        };
+        let (signer, answering): (Arc<dyn collab_types::signer::DeviceSigner>, _) =
+            match &host.member {
+                Some(member) if member.cert.device_public_key == endpoint_key => {
+                    (Arc::clone(&member.signer), member.cert.clone())
+                }
+                _ => (Arc::new(host.key.clone()), host.cert.clone()),
+            };
         let (action_service, jobs, answers) =
             device_actions::action_service(Arc::clone(&workspaces), signer);
+        action_service.answer_under(answering);
         // The apps this host serves answer on the same action service its workspaces' devices
         // reach it on, beside the work and governance it answers itself.
         if let Some(apps) = host.apps.clone() {

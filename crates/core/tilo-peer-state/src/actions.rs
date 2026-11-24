@@ -307,6 +307,9 @@ struct Inner {
     /// What answers requests naming no workspace, the host's own operations
     /// ([`ActionService::admit_host_operations`]).
     host_operations: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
+    /// The certificate this device answers under, which it hands whoever asks
+    /// ([`ActionService::answer_under`]).
+    certificate: Mutex<Option<tilo_user_identity::DeviceCert>>,
     /// Where the approves its people gave are kept: a request carrying one admits only where
     /// this store handed it back ([`ActionService::admit_approvals_from`]).
     asked: std::sync::OnceLock<Arc<tilo_actions::remote::asked::AskedStore>>,
@@ -340,6 +343,12 @@ impl std::fmt::Debug for ActionService {
 }
 
 impl ActionService {
+    /// Hand `certificate` to every device that asks which certificate this one answers under
+    /// ([`RemoteDevice::certificate`]): until it is named, they are answered nothing.
+    pub fn answer_under(&self, certificate: tilo_user_identity::DeviceCert) {
+        *self.0.certificate.lock_recover() = Some(certificate);
+    }
+
     /// Admit the approves `store` hands back from now on: until it is named, a request carrying
     /// an approve is refused. The first store named stays.
     pub fn admit_approvals_from(&self, store: Arc<tilo_actions::remote::asked::AskedStore>) {
@@ -379,6 +388,7 @@ impl ActionService {
             providers: Mutex::default(),
             uncertified: Mutex::default(),
             host_operations: Mutex::default(),
+            certificate: Mutex::default(),
             asked: std::sync::OnceLock::new(),
             replay: Mutex::default(),
             visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
@@ -412,6 +422,7 @@ impl ActionService {
             providers: Mutex::default(),
             uncertified: Mutex::default(),
             host_operations: Mutex::default(),
+            certificate: Mutex::default(),
             asked: std::sync::OnceLock::new(),
             replay: Mutex::default(),
             visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
@@ -800,8 +811,10 @@ impl ActionService {
         // carries is that device's to vouch for, not this one's to check.
         if remote.is_some()
             && let RemoteActionMessage::Invoke(invoke) = request
-            && let Err(error) =
-                tilo_actions::remote::asked::admit_frame(self.0.asked.get().map(Arc::as_ref), invoke)
+            && let Err(error) = tilo_actions::remote::asked::admit_frame(
+                self.0.asked.get().map(Arc::as_ref),
+                invoke,
+            )
         {
             return tilo_actions::remote::refuse(request, error);
         }
@@ -1408,12 +1421,23 @@ impl ActionService {
         };
         let frame: ActionServiceFrame =
             postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-        let ActionServiceFrame::Action(signed) = frame;
-        if let Some(reply) = self.answer(remote, execution, client, *signed).await {
-            let bytes = RemoteActionFrame::new(reply)
-                .encode()
-                .map_err(|error| error.to_string())?;
-            write_frame(&mut send, &bytes).await?;
+        match frame {
+            ActionServiceFrame::Action(signed) => {
+                if let Some(reply) = self.answer(remote, execution, client, *signed).await {
+                    let bytes = RemoteActionFrame::new(reply)
+                        .encode()
+                        .map_err(|error| error.to_string())?;
+                    write_frame(&mut send, &bytes).await?;
+                }
+            }
+            ActionServiceFrame::Certificate => {
+                let certificate = self.0.certificate.lock_recover().clone();
+                if let Some(certificate) = certificate {
+                    let bytes =
+                        postcard::to_allocvec(&certificate).map_err(|error| error.to_string())?;
+                    write_frame(&mut send, &bytes).await?;
+                }
+            }
         }
         tokio::io::AsyncWriteExt::shutdown(&mut send)
             .await
@@ -1656,6 +1680,38 @@ impl RemoteDevice {
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
         self.0.target
+    }
+
+    /// The certificate the device answering these actions answers under, as its dispatch hands
+    /// it: one of the device asked ([`Self::device`]), which the connection to it already proves
+    /// is the one there, valid now and signed by its person's chain. Revocations are the
+    /// caller's to check against the list it keeps.
+    ///
+    /// # Errors
+    ///
+    /// The device was not reached, answered no certificate, or one of another device or one
+    /// that does not verify.
+    pub async fn certificate(
+        &self,
+    ) -> Result<tilo_user_identity::DeviceCert, tilo_actions::remote::ActionCallError> {
+        let asked = postcard::to_allocvec(&ActionServiceFrame::Certificate)
+            .map_err(|error| unavailable(&error.to_string()))?;
+        let answer = self.0.exchange(&asked).await?;
+        let certificate: tilo_user_identity::DeviceCert =
+            postcard::from_bytes(&answer).map_err(|error| {
+                unavailable(&format!("the device answered no certificate: {error}"))
+            })?;
+        if certificate.device_public_key != self.0.target {
+            return Err(unavailable(
+                "the device answered under another device's certificate",
+            ));
+        }
+        tilo_user_identity::verify_device_cert_at(&certificate, now_ns()).map_err(|error| {
+            unavailable(&format!(
+                "the device's certificate does not verify: {error}"
+            ))
+        })?;
+        Ok(certificate)
     }
 
     /// Send one message to the device and hand back its one answer, as the

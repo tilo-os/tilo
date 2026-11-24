@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the server session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 67
+version = 68
 version_const = "crates/core/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -59,6 +59,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "ActionKey.kind" = "#1 String"
 "ActionServiceFrame" = "enum external"
 "ActionServiceFrame::Action" = "#0 tuple(Box<SignedDeviceAction>)"
+"ActionServiceFrame::Certificate" = "#1 unit"
 "AgentScope" = "enum external"
 "AgentScope::Agent" = "#2 struct"
 "AgentScope::Agent.agent" = "#1 [u8; 32]"

@@ -316,6 +316,10 @@ fn signing_message(issued_at_ns: u64, encoded: &[u8]) -> Vec<u8> {
 pub enum ActionServiceFrame {
     /// An action this device asks the addressed one to run.
     Action(Box<SignedDeviceAction>),
+    /// What certificate the addressed device answers under, answered on the same stream with
+    /// that certificate's postcard bytes: whoever asks a device learns from its dispatch whose
+    /// device answered, and where it holds none, nothing comes back.
+    Certificate,
 }
 
 /// Signed actions a target admitted while they are still fresh, so a device
