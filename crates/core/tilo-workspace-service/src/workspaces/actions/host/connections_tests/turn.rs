@@ -19,9 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use collab_types::WorkspaceId;
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{
-    ActionKind, Answer, Grant, GrantId, Grantee, KindSet, Level, Rule, TreePath,
-};
+use tilo_action_policy::{ActionKind, Answer, Grant, GrantId, Grantee, KindSet, Rule, TreePath};
 use tilo_actions::remote::asked::{AskedFacts, asked_person};
 use tilo_actions::remote::person_connections::{
     self, ADD, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, PROPOSE, REFRESH, REMOVE, USES,
@@ -32,7 +30,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_user_identity::DeviceCert;
 
-use super::super::turn_use_tests::{approved, asks, fact, on_turn};
+use super::super::turn_use_tests::{approved, asks, dispatched, fact, narrowed_elsewhere, on_turn};
 use super::super::vault_tests::ask_at;
 use super::{Refused, Served, admit, caller, governed, governor, start_serving};
 use crate::connections::DEFINED_ANEW;
@@ -265,7 +263,7 @@ impl<'a> Team<'a> {
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
     ) -> Result<Value, Refused> {
-        self.workspaces.connections_for_turn(turn, request).await
+        dispatched(&self.workspaces, turn, request).await
     }
 
     /// `request` of `turn` again, as its person's approve admits it.
@@ -275,7 +273,7 @@ impl<'a> Team<'a> {
         request: &InvokeRequest,
     ) -> Result<Value, Refused> {
         let approved = approved(request, &self.workspace_id.to_string());
-        self.workspaces.connections_for_turn(turn, &approved).await
+        dispatched(&self.workspaces, turn, &approved).await
     }
 
     /// The actions `turn` finds of its person's connections in its listing.
@@ -786,53 +784,63 @@ async fn a_command_its_service_defines_anew_asks_again_also_after_always() {
     started.shutdown().await;
 }
 
-/// The rule that names the connection `id` for calling its commands.
-fn naming(id: &str, answer: Answer) -> Rule {
-    tilo_automation::action_rule(
-        person_connections::PROVIDER,
-        person_connections::CONNECTION_KIND,
-        Some(&person_connections::connection_resource(id)),
-        CALL,
+/// The rule that names the connection `id` in `workspace` for calling its commands: the one
+/// form in which the workspace's list of its agents keeps an outside effect allowed unasked for
+/// a connection.
+fn naming(workspace: &str, id: &str, answer: Answer) -> Rule {
+    Rule::new(
+        TreePath::workspace(workspace)
+            .app(person_connections::PROVIDER)
+            .kind(person_connections::CONNECTION_KIND)
+            .resource(person_connections::connection_resource(id))
+            .rest()
+            .action(CALL),
         KindSet::of(ActionKind::Outside),
         answer,
     )
 }
 
-/// Rules that name no connection, another one, or this one only to deny
-/// it: each with why it lets a narrowed agent reach nothing of `id`.
-fn rules_that_do_not_reach(id: &str, other: &str) -> Vec<(&'static str, Vec<Rule>)> {
-    let outside = KindSet::of(ActionKind::Outside);
-    let provider = TreePath::root()
-        .any(Level::Workspace)
-        .app(person_connections::PROVIDER);
-    let this_connection = provider
-        .clone()
-        .kind(person_connections::CONNECTION_KIND)
-        .resource(person_connections::connection_resource(id));
-    let every_connection = tilo_automation::action_rule(
-        person_connections::PROVIDER,
-        person_connections::CONNECTION_KIND,
-        None,
-        CALL,
-        outside,
+/// Rules in `workspace` that name no connection, another one, or this one only to deny it:
+/// each with why it lets a narrowed agent reach nothing of `id`.
+fn rules_that_do_not_reach(
+    workspace: &str,
+    id: &str,
+    other: &str,
+) -> Vec<(&'static str, Vec<Rule>)> {
+    let provider = TreePath::workspace(workspace).app(person_connections::PROVIDER);
+    // Calling any connection's commands names none of them.
+    let every_connection = Rule::new(
+        provider
+            .clone()
+            .kind(person_connections::CONNECTION_KIND)
+            .rest()
+            .action(CALL),
+        KindSet::of(ActionKind::Outside),
         Answer::Allow,
     );
     vec![
-        ("no rule at all", Vec::new()),
         (
-            "a rule for the whole provider",
-            vec![Rule::new(provider, outside, Answer::Allow)],
+            "a rule for another app alone",
+            narrowed_elsewhere(workspace),
+        ),
+        (
+            "a rule for the whole provider's changes",
+            vec![Rule::new(
+                provider,
+                KindSet::of(ActionKind::Undoable),
+                Answer::Allow,
+            )],
         ),
         ("a rule for every connection", vec![every_connection]),
         (
             "a rule that names another connection",
-            vec![naming(other, Answer::Allow)],
+            vec![naming(workspace, other, Answer::Allow)],
         ),
         (
             "a rule that names it and one that denies calling it",
             vec![
-                Rule::new(this_connection, outside, Answer::Allow),
-                naming(id, Answer::Deny),
+                naming(workspace, id, Answer::Allow),
+                naming(workspace, id, Answer::Deny),
             ],
         ),
     ]
@@ -857,7 +865,7 @@ async fn a_narrowed_agent_reaches_only_a_connection_a_rule_of_its_own_names() {
     let its = person_connections::connection_resource(&id);
     let finding = calling(&id, "find_trees", json!({"orchard": "north"}));
 
-    for (why, bound) in rules_that_do_not_reach(&id, &other) {
+    for (why, bound) in rules_that_do_not_reach(&team.workspace, &id, &other) {
         let turn = team.narrowed(&sub, &bound);
         let refused = team.takes(&turn, &finding).await;
         assert_eq!(refused, Err(Refused::NotPermitted), "{why}");
@@ -891,7 +899,7 @@ async fn with_a_rule_that_names_it_it_reads_and_still_asks(
     (id, other): (&str, &str),
     service: &StandIn,
 ) {
-    let bound = vec![naming(id, Answer::Allow)];
+    let bound = vec![naming(&team.workspace, id, Answer::Allow)];
     let turn = team.narrowed(sub, &bound);
     let listed = done(team.takes(&turn, &of(LIST, json!({}))).await);
     let listed = listed["connections"].as_array().unwrap();

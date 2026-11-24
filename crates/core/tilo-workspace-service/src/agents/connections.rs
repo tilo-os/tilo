@@ -1,10 +1,10 @@
 //! What a turn on this server reaches of the services its person connected.
 //!
 //! An agent's tools act on the workspace's action service, which knows the workspace's
-//! resources and nothing of a person's own connections. Those are the server's own to answer,
-//! through its entry for a turn it carries out
-//! ([`crate::workspaces::Workspaces::connections_for_turn`]): the turn is one this server carries out, and
-//! an agent that anything narrows reaches only a connection a rule of its own names.
+//! resources and nothing of a person's own connections. Those are the device's own to answer:
+//! the turn asks them of the device's dispatch, signed with its agent's key, which decides it
+//! for the turn ([`crate::workspaces::Workspaces::connections_for_turn`]), and an agent that
+//! anything narrows reaches only a connection a rule of its own names.
 //! [`TurnConnections`] is that entry as one turn's tools reach it, a provider of the turn's own
 //! ([`TurnProvider`]): at every listing it names what an agent does with its person's
 //! connections and each command of each connection, with whether it asks first, and it takes
@@ -20,17 +20,14 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use serde_json::Value;
 use tilo_actions::remote::person_connections;
 use tilo_actions::remote::{
     Caller, CatalogueProvider, CatalogueQuery, InvokeRequest, RemoteActionTarget,
 };
-use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_workspace_agent::Agent;
 
 use super::turn_provider::{Ending, Rows};
-use super::{Reply, Turn, TurnProvider, WorkspaceId};
-use crate::workspaces::Workspaces;
+use super::{Reply, ServerAgents, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::hosted_use::HostedTurn;
 
 /// What one turn reaches of its person's connections. A turn's caller changes when its person
@@ -41,7 +38,7 @@ use crate::workspaces::hosted_use::HostedTurn;
 type Ended = <Ending as Future>::Output;
 
 pub(super) struct TurnConnections {
-    workspaces: Workspaces,
+    agents: ServerAgents,
     workspace: String,
     workspace_id: WorkspaceId,
     agent: Agent,
@@ -55,7 +52,7 @@ pub(super) struct TurnConnections {
 /// What `turn` reaches of its person's connections in the workspace `workspace_id`, where
 /// `reply` holds what its tools begin as.
 pub(super) async fn of(
-    workspaces: Workspaces,
+    agents: &ServerAgents,
     turn: &Turn,
     reply: &Reply,
     workspace_id: WorkspaceId,
@@ -66,9 +63,9 @@ pub(super) async fn of(
         caller: &reply.caller,
         bound: narrowed.as_deref(),
     };
-    let theirs = workspaces.asked_turn(&hosted).await.is_ok();
+    let theirs = agents.workspaces.asked_turn(&hosted).await.is_ok();
     Arc::new(TurnConnections {
-        workspaces,
+        agents: agents.clone(),
         workspace: reply.workspace.clone(),
         workspace_id,
         agent: turn.agent.clone(),
@@ -80,19 +77,9 @@ pub(super) async fn of(
 impl TurnConnections {
     /// Take the request `request` as `caller`: how it ended, or the server's refusal.
     async fn take(&self, caller: &Caller, request: &InvokeRequest) -> Ended {
-        let invocation = request.invocation;
-        let workspace = self.workspace_id;
-        let narrowed = self.agent.bound_rules();
-        let hosted = HostedTurn {
-            workspace,
-            caller,
-            bound: narrowed.as_deref(),
-        };
-        let value = self
-            .workspaces
-            .connections_for_turn(&hosted, request)
-            .await?;
-        Ok(succeeded(invocation, value))
+        self.agents
+            .ask_device(self.workspace_id, caller, request)
+            .await
     }
 }
 
@@ -120,7 +107,7 @@ impl TurnProvider for TurnConnections {
         }
         let workspace = self.workspace_id;
         let (completer, rows) = tilo_actions::remote::pending();
-        let workspaces = self.workspaces.clone();
+        let workspaces = self.agents.workspaces.clone();
         let (caller, agent) = (caller.clone(), self.agent.clone());
         self.runtime.spawn(async move {
             let narrowed = agent.bound_rules();
@@ -156,15 +143,5 @@ impl TurnProvider for TurnConnections {
 
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {
         Box::pin(async move { self.take(&caller, &request).await })
-    }
-}
-
-fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpdate {
-    InvocationUpdate::Succeeded {
-        invocation,
-        output: ActionOutput {
-            value: Some(value),
-            resources: Vec::new(),
-        },
     }
 }

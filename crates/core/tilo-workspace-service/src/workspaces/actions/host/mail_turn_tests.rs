@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
+use tilo_action_policy::{ActionKind, Answer, KindSet, Rule, TreePath};
 use tilo_actions::remote::asked::{AskedFacts, asked_person};
 use tilo_actions::remote::person_accounts::{
     self, FetchedMail, FetchedMessage, FoundMail, MailAccounts, MailArrivals, StartedSend,
@@ -28,7 +28,9 @@ use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{admit, governed};
 use super::accounts_tests::asking;
 use super::mail_assistant_tests::{lunch, lunch_with};
-use super::turn_use_tests::{approved, asks, not_hosted_turns, on_turn};
+use super::turn_use_tests::{
+    approved, asks, dispatched, naming, narrowed_elsewhere, not_a_turn, not_hosted_turns, on_turn,
+};
 use crate::workspaces::hosted_use::HostedTurn;
 use crate::workspaces::mail_watch::testing::{Watched, keep};
 use crate::workspaces::tests::{governor, test_host as test_server};
@@ -94,9 +96,7 @@ impl Mail {
         action: &str,
         argument: Value,
     ) -> Result<Value, ActionCallError> {
-        self.workspaces
-            .mail_for_turn(turn, &asking(action, argument))
-            .await
+        dispatched(&self.workspaces, turn, &asking(action, argument)).await
     }
 
     /// The mail actions `turn` is offered, by their ids.
@@ -112,7 +112,7 @@ impl Mail {
     async fn sends(&self, turn: &HostedTurn<'_>, begun: Value) -> (InvokeRequest, AskedFacts) {
         let started: StartedSend = done(self.asks(turn, person_accounts::BEGIN_SEND, begun).await);
         let sending = asking(person_accounts::SEND, json!({"send": started.send}));
-        let shown = asks(self.workspaces.mail_for_turn(turn, &sending).await);
+        let shown = asks(dispatched(&self.workspaces, turn, &sending).await);
         (sending, shown)
     }
 
@@ -157,9 +157,12 @@ async fn approve_in(
     turn: &HostedTurn<'_>,
     request: &InvokeRequest,
 ) -> Result<Value, ActionCallError> {
-    workspaces
-        .mail_for_turn(turn, &approved(request, &turn.workspace.to_string()))
-        .await
+    dispatched(
+        workspaces,
+        turn,
+        &approved(request, &turn.workspace.to_string()),
+    )
+    .await
 }
 
 /// What an answered request carries, read as `T`.
@@ -295,8 +298,10 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     ));
     for (who, asks) in others {
         let turn = mail.turn(&asks, None);
-        let reads = mail.asks(&turn, person_accounts::READ, reading()).await;
-        assert_eq!(reads, nobody, "{who}");
+        not_a_turn(
+            who,
+            mail.asks(&turn, person_accounts::READ, reading()).await,
+        );
         assert!(mail.offered(&turn).await.is_empty(), "{who}");
     }
     // A turn carried out in the other workspace reaches that one's mail,
@@ -380,30 +385,30 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
     let sub = on_turn(&mail.ada, &mail.workspace, "sub-agent");
-    let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
-        tilo_automation::action_rule(
+        naming(
+            &mail.workspace,
             person_accounts::PROVIDER,
             person_accounts::RESOURCE,
-            None,
             action,
-            outside,
             answer,
         )
     };
+    // Every change of the provider's that can be undone: no outside effect.
     let whole_provider = Rule::new(
-        TreePath::root()
-            .any(Level::Workspace)
-            .app(person_accounts::PROVIDER),
-        outside,
+        TreePath::workspace(&mail.workspace).app(person_accounts::PROVIDER),
+        KindSet::of(ActionKind::Undoable),
         Answer::Allow,
     );
     let listing = named(person_accounts::LIST, Answer::Allow);
     let denying = named(person_accounts::READ, Answer::Deny);
     for (why, bound) in [
-        ("no rule at all", Vec::new()),
         (
-            "a rule for the whole provider",
+            "a rule for another app alone",
+            narrowed_elsewhere(&mail.workspace),
+        ),
+        (
+            "a rule for the whole provider's changes",
             vec![whole_provider.clone()],
         ),
         ("a rule for another action", vec![listing]),

@@ -2,10 +2,10 @@
 //!
 //! An agent this server runs works with every device of whoever asked it off, so no transport
 //! verified a device behind what it asks, and the check a device's request passes
-//! ([`Workspaces::reaching`]) has nothing to compare. This is the server's own entry for such a
-//! turn. It is reached from no transport: only the code that carries out the turn calls it, with
-//! the very caller the turn's tools act as and what the workspace's list of its agents says of the
-//! agent ([`HostedTurn`]).
+//! ([`Workspaces::reaching`]) has nothing to compare. This is the device's own entry for such a
+//! turn. The turn's tools reach it as every other action, through the device's dispatch
+//! ([`answers`], [`Workspaces::answer_turn`]), with the very caller they act as; what narrows
+//! the agent is what the workspace's list of its agents keeps for it ([`HostedTurn`]).
 //!
 //! The rule is the vault's own, and nothing here hands a secret to whoever
 //! asks. A reference becomes its secret only inside this server, only in the
@@ -66,7 +66,7 @@ use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
 use tilo_actions::remote::person_models::{self, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{self, FillPage, ItemRef};
 use tilo_actions::remote::{
-    Caller, CatalogueRow, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    Caller, CatalogueRow, InvokeArgument, InvokeRequest, RemoteActionTarget, person_connections,
 };
 
 use super::workspace_stores::Store;
@@ -143,6 +143,112 @@ pub fn bound_allows(bound: Option<&[Rule]>, workspace: &str, target: &RemoteActi
         .action(target.address.action.clone());
     let granted = tilo_automation::grant_answer(bound, &node, ActionKind::Outside);
     granted.names_action && granted.answer != Answer::Deny
+}
+
+/// What an agent's turn asks of what its workspace keeps for the person who asked it, as the
+/// device's dispatch answers it ([`Workspaces::answer_turn`]).
+#[derive(Clone, Copy)]
+enum TurnCall {
+    /// A use of their vault by reference: a key added to a web call, a sign-in kept from an item.
+    Use,
+    /// Their mail.
+    Mail,
+    /// A read of their calendars.
+    #[cfg(feature = "agents")]
+    Calendars,
+    /// A call of a service they connected.
+    Connections,
+}
+
+impl TurnCall {
+    /// What a call of `target` asks, where it is one of these. Filling a page's field and
+    /// asking for a secret the vault does not hold yet are carried out where the turn runs,
+    /// and so are signing a mail account or a calendar in from what the person said.
+    fn of(target: &RemoteActionTarget) -> Option<Self> {
+        if person_vault::described_use(target).is_some()
+            && *target != person_vault::page_target()
+            && *target != person_vault::ask_target()
+        {
+            return Some(Self::Use);
+        }
+        if target.provider == person_connections::PROVIDER {
+            return Some(Self::Connections);
+        }
+        if target.provider != person_accounts::PROVIDER {
+            return None;
+        }
+        let (resource, action) = (&target.address.resource, &target.address.action);
+        #[cfg(feature = "agents")]
+        if resource == CALENDARS && action != CALENDAR_CONNECT {
+            return Some(Self::Calendars);
+        }
+        #[cfg(feature = "agents")]
+        if action == MAIL_CONNECT {
+            return None;
+        }
+        #[cfg(not(feature = "agents"))]
+        let _ = action;
+        (resource == person_accounts::RESOURCE).then_some(Self::Mail)
+    }
+}
+
+/// Whether the device's dispatch answers `target`, called by `caller`, as something an agent's
+/// turn asks of what its workspace keeps for the person who asked it
+/// ([`Workspaces::answer_turn`]): every agent on a turn asks those there, whatever is then
+/// decided for it.
+#[must_use]
+pub fn answers(caller: &Caller, target: &RemoteActionTarget) -> bool {
+    caller.acting().is_agent() && caller.turn().is_some() && TurnCall::of(target).is_some()
+}
+
+impl Workspaces {
+    /// Answer `request`, what an agent's turn asks of what its workspace keeps for the person
+    /// who asked it, for `caller`, the agent on that turn. What narrows the agent is what the
+    /// workspace's list of its agents keeps for it now; an agent the list does not name reaches
+    /// nothing. A use its person must allow first is refused with what they will be shown
+    /// ([`ActionCallError::ConfirmationRequired`]), and their approve admits the same call again.
+    ///
+    /// # Errors
+    /// [`UnknownAction`] for a caller that is no agent on a turn in a workspace's list, or a
+    /// call none of these answers; otherwise the refusal of whichever answers it.
+    pub(crate) async fn answer_turn(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
+        let (Some(call), Some(workspace), Some(agent)) = (
+            TurnCall::of(&request.target),
+            caller.workspace().and_then(WorkspaceId::parse),
+            caller.acting().agent_id(),
+        ) else {
+            return Err(UnknownAction);
+        };
+        let Some(bound) = self.kept_bound(&workspace.to_string(), agent, true).await else {
+            return Err(UnknownAction);
+        };
+        let bound = Some(bound).filter(|bound| !bound.is_empty());
+        let turn = HostedTurn {
+            workspace,
+            caller,
+            bound: bound.as_deref(),
+        };
+        let value = match call {
+            TurnCall::Use => self.use_for_turn(&turn, request).await?,
+            TurnCall::Mail => self.mail_for_turn(&turn, request).await?,
+            #[cfg(feature = "agents")]
+            TurnCall::Calendars => self.calendars_for_turn(&turn, request).await?,
+            TurnCall::Connections => self.connections_for_turn(&turn, request).await?,
+        };
+        Ok(tilo_actions::remote::InvocationReceipt {
+            invocation: request.invocation,
+            status: tilo_actions::remote::ReceiptStatus::Completed {
+                output: tilo_actions::ActionOutput {
+                    value: Some(value),
+                    resources: Vec::new(),
+                },
+            },
+        })
+    }
 }
 
 /// What uses of a vault item by reference keep on this server: what proves a

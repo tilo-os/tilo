@@ -3,9 +3,10 @@
 //! An agent's tools act on the workspace's action service, which knows the
 //! workspace's resources and nothing of a person's own vault. The uses of a
 //! vault item by reference (adding a mail account whose password the vault
-//! keeps, keeping a provider's key from it) are the server's own to answer,
-//! through its entry for a turn it carries out
-//! ([`crate::workspaces::hosted_use`]). [`TurnUses`] is that entry as one
+//! keeps, keeping a provider's key from it) are the device's own to answer:
+//! the turn asks them of the device's dispatch, signed with its agent's key,
+//! which decides them for the turn ([`crate::workspaces::hosted_use`]).
+//! [`TurnUses`] is that entry as one
 //! turn's tools reach it, a provider of the turn's own ([`TurnProvider`]): it
 //! lists the uses the turn is offered beside the workspace's resources, and
 //! takes them.
@@ -129,13 +130,9 @@ impl TurnUses {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let narrowed = self.agent.bound_rules();
-        let value = self
-            .agents
-            .workspaces
-            .use_for_turn(&self.hosted(caller, narrowed.as_deref()), request)
-            .await?;
-        Ok(succeeded(request.invocation, value))
+        self.agents
+            .ask_device(self.workspace_id, caller, request)
+            .await
     }
 
     /// Have the field `request` names filled, in the page of this workspace's Browser window,

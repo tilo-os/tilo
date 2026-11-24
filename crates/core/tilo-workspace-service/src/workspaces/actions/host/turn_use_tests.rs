@@ -14,7 +14,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Level, Rule, TreePath};
+use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Rule, TreePath};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::{
     self, InvalidRequest, NotPermitted, Refused, UnknownAction,
@@ -53,6 +53,134 @@ pub(super) fn on_turn(person: &DeviceCert, workspace: &str, agent: &str) -> Call
 /// The turn a test's agent works.
 pub(super) fn turn() -> tilo_action_policy::turn::Turn {
     tilo_action_policy::turn::Turn::new("conversation-1", "message-1")
+}
+
+/// `request`, asked by `turn`'s caller of the device's dispatch, as a turn's tools ask it: what
+/// it answered, or its refusal. An agent on a turn in the turn's workspace is listed there
+/// first, narrowed to `turn`'s bound, as the workspace's list of its agents keeps every agent a
+/// turn works. The test's device lets in no agent another of the person's devices hands its
+/// session to, as a device's settings start.
+pub(super) async fn dispatched(
+    workspaces: &Workspaces,
+    turn: &HostedTurn<'_>,
+    request: &InvokeRequest,
+) -> Result<Value, ActionCallError> {
+    let caller = turn.caller;
+    let workspace = turn.workspace.to_string();
+    if crate::workspaces::hosted_use::answers(caller, &request.target)
+        && caller.workspace() == Some(workspace.as_str())
+        && let (Some(agent), Some(person)) = (caller.acting().agent_id(), caller.turn_person())
+    {
+        listed(
+            workspaces,
+            &workspace,
+            &hex::encode(person),
+            agent,
+            turn.bound.unwrap_or_default(),
+        )
+        .await;
+    }
+    workspaces.accept_agents_from_other_devices(false);
+    let receipt = workspaces
+        .device_actions()
+        .invoke(caller, request.clone())
+        .await
+        .expect("the device's dispatch answers")?;
+    match receipt.status {
+        tilo_actions::remote::ReceiptStatus::Completed { output } => {
+            Ok(output.value.unwrap_or_default())
+        }
+        other => panic!("a turn's call is answered at once or refused: {other:?}"),
+    }
+}
+
+/// The rule of an agent's bound that answers `action` of `resource` of `provider` in
+/// `workspace` alone with `answer`: an outside effect is allowed unasked only by a rule that
+/// names its one action, which is the one form the workspace's list of its agents keeps.
+pub(super) fn naming(
+    workspace: &str,
+    provider: &str,
+    resource: &str,
+    action: &str,
+    answer: Answer,
+) -> Rule {
+    Rule::new(
+        TreePath::workspace(workspace)
+            .app(provider)
+            .kind(resource)
+            .rest()
+            .action(action),
+        KindSet::of(ActionKind::Outside),
+        answer,
+    )
+}
+
+/// A bound that narrows an agent in `workspace` to the changes of another app that can be
+/// undone: none of what a person's vault, mail, calendars or connections answer.
+pub(super) fn narrowed_elsewhere(workspace: &str) -> Vec<Rule> {
+    vec![Rule::new(
+        TreePath::workspace(workspace).app("so.tilo.notes"),
+        KindSet::of(ActionKind::Undoable),
+        Answer::Allow,
+    )]
+}
+
+/// `agent` in `workspace`'s list of its agents, narrowed to `bound`, as `person` keeps it.
+pub(super) async fn listed(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &str,
+    agent: &str,
+    bound: &[Rule],
+) {
+    use tilo_resource::{Id, NonBlank, Replica};
+    use tilo_workspace_agent::{Bound, WorkspaceAgents, workspace_agents};
+    let bound = bound.iter().map(Bound::of).collect();
+    workspaces
+        .author_agents(workspace, |doc| {
+            let mut agents = Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                .as_author(person)
+                .in_app(tilo_workspace_agent::OWNER, "Chat");
+            let kept = agents.state().map_err(|error| error.to_string())?;
+            if kept.agents.find(&Id::from_raw(agent)).is_none() {
+                agents
+                    .apply(
+                        WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                            name: NonBlank::parse("Scout").unwrap(),
+                            id: Some(agent.into()),
+                            model: None,
+                            mcp_client: None,
+                        }),
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            agents
+                .apply(
+                    WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
+                        agent: Id::from_raw(agent),
+                        bound,
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
+            std::mem::swap(doc, agents.doc_mut());
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+/// The refusal the device's dispatch answers `who`, one of [`not_hosted_turns`], with: none
+/// knows the call, except an agent another of the person's devices hands its session to, which
+/// this device lets in only where its settings say so ([`dispatched`]) and so refuses first.
+pub(super) fn not_a_turn<T: std::fmt::Debug + PartialEq>(
+    who: &str,
+    refused: Result<T, ActionCallError>,
+) {
+    if who == HANDED {
+        assert!(matches!(refused, Err(Refused { .. })), "{who}: {refused:?}");
+    } else {
+        assert_eq!(refused, Err(UnknownAction), "{who}");
+    }
 }
 
 fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
@@ -224,7 +352,7 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
     assert_eq!(workspaces.uses_offered(&turn).await.len(), 2);
 
     let adding = add_mail("ada@example.test", "imap.example.test", &login);
-    let facts = asks(workspaces.use_for_turn(&turn, &adding).await);
+    let facts = asks(dispatched(workspaces, &turn, &adding).await);
     assert!(asked_by(&facts, "scout", "Scout"), "{facts:?}");
     assert_eq!(
         tilo_actions::remote::asked::asked_person(&scout),
@@ -257,7 +385,7 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
 
     // Asked the same again, it waits again: the dispatch keeps one record per call.
     let again = add_mail("ada@example.test", "imap.example.test", &login);
-    assert_eq!(asks(workspaces.use_for_turn(&turn, &again).await), facts);
+    assert_eq!(asks(dispatched(workspaces, &turn, &again).await), facts);
 
     // Declined, the call is never admitted again: nothing is used and no grant stands.
     assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
@@ -291,9 +419,8 @@ async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
     let add = |address: &str| add_mail(address, "imap.example.test", &login);
 
     let wanted = add("ada@example.test");
-    asks(workspaces.use_for_turn(&turn, &wanted).await);
-    let account = workspaces
-        .use_for_turn(&turn, &approved(&wanted, &workspace))
+    asks(dispatched(workspaces, &turn, &wanted).await);
+    let account = dispatched(workspaces, &turn, &approved(&wanted, &workspace))
         .await
         .expect("approved, it is made");
     assert_eq!(account["address"], "ada@example.test");
@@ -315,7 +442,7 @@ async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
 
     // The next account asks again.
     let wanted = add("news@example.test");
-    asks(workspaces.use_for_turn(&turn, &wanted).await);
+    asks(dispatched(workspaces, &turn, &wanted).await);
     assert_eq!(proved.lock().unwrap().len(), 1, "nothing more signed in");
     assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
     server.shutdown().await;
@@ -389,7 +516,7 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
 
     // "Always" writes the leave, and the approved call is made.
     let wanted = add("news@example.test");
-    asks(workspaces.use_for_turn(&turn, &wanted).await);
+    asks(dispatched(workspaces, &turn, &wanted).await);
     always(
         workspaces,
         (&workspace, &owner, &ada),
@@ -397,8 +524,7 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
         (&wanted.target, &login, &[IMAP, SMTP]),
     )
     .await;
-    workspaces
-        .use_for_turn(&turn, &approved(&wanted, &workspace))
+    dispatched(workspaces, &turn, &approved(&wanted, &workspace))
         .await
         .expect("allowed always, it is made");
     let remembers = remembered(&service, workspace_id, hers, &login).await;
@@ -419,9 +545,7 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
 
     // From now on that agent uses that item there without a question, and
     // each use is written down.
-    let second = workspaces
-        .use_for_turn(&turn, &add("work@example.test"))
-        .await;
+    let second = dispatched(workspaces, &turn, &add("work@example.test")).await;
     assert!(
         matches!(&second, Ok(account) if account["address"] == "work@example.test"),
         "{second:?}"
@@ -447,14 +571,14 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
         ..turn
     };
     let wanted = add("more@example.test");
-    asks(workspaces.use_for_turn(&others, &wanted).await);
+    asks(dispatched(workspaces, &others, &wanted).await);
 
     // She takes the leave back, and then her agent is asked again.
     let taken = she_alone_takes_the_leave_back(&service, workspace_id, &ada, &login).await;
     assert_eq!(taken.get("always"), None, "{taken}");
     assert_eq!(taken["uses"].as_array().unwrap().len(), 2);
     let wanted = add("late@example.test");
-    asks(workspaces.use_for_turn(&turn, &wanted).await);
+    asks(dispatched(workspaces, &turn, &wanted).await);
     assert_eq!(proved.lock().unwrap().len(), 2, "nothing more signed in");
     assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
     server.shutdown().await;
@@ -492,9 +616,12 @@ pub(super) fn not_hosted_turns(ada: &DeviceCert, workspace: &str) -> Vec<(&'stat
         ("an app", app),
         ("a turn confined to no workspace", unconfined),
         ("a turn confined to another workspace", confined_elsewhere),
-        ("an agent her own device hands its session to", handed),
+        (HANDED, handed),
     ]
 }
+
+/// What [`not_hosted_turns`] calls the agent a person's own device hands its session to.
+pub(super) const HANDED: &str = "an agent her own device hands its session to";
 
 /// Every caller that is not a turn this server carries out is refused before the vault is
 /// opened: a person, an agent with no turn, an agent admitted as a member, a bot, an app, a turn
@@ -522,8 +649,7 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
             caller: &asks,
             bound: None,
         };
-        let refused = workspaces.use_for_turn(&turn, &adding).await;
-        assert_eq!(refused, Err(UnknownAction), "{who}");
+        not_a_turn(who, dispatched(workspaces, &turn, &adding).await);
         assert!(workspaces.uses_offered(&turn).await.is_empty(), "{who}");
     }
 
@@ -551,14 +677,14 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
         workspaces.uses_offered(&hers).await,
         workspaces.uses_offered(&his).await
     );
-    let facts = asks(workspaces.use_for_turn(&his, &adding).await);
+    let facts = asks(dispatched(workspaces, &his, &adding).await);
     assert_eq!(
         tilo_actions::remote::asked::asked_person(his.caller),
         Some(bo_id),
         "the workspace's item asks whoever asked"
     );
     assert!(asked_by(&facts, "scout", "Scout"), "{facts:?}");
-    let facts = asks(workspaces.use_for_turn(&hers, &adding).await);
+    let facts = asks(dispatched(workspaces, &hers, &adding).await);
     assert_eq!(
         tilo_actions::remote::asked::asked_person(hers.caller),
         Some(ada_id)
@@ -611,7 +737,7 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
         .await
         .unwrap();
     assert_eq!(
-        workspaces.use_for_turn(&turn(&scout), &adding).await,
+        dispatched(workspaces, &turn(&scout), &adding).await,
         Err(NotPermitted),
         "the agent is kept from the vault"
     );
@@ -620,7 +746,7 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
         remembered(&service, workspace_id, (&ada, &as_ada), &login).await["uses"].is_array(),
         "Ada still reads the item herself"
     );
-    let facts = asks(workspaces.use_for_turn(&turn(&other), &adding).await);
+    let facts = asks(dispatched(workspaces, &turn(&other), &adding).await);
     assert!(
         asked_by(&facts, "other", "Scout"),
         "another agent is not held by the grant: {facts:?}"
@@ -637,7 +763,7 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
         )
         .await
         .unwrap();
-    let facts = asks(workspaces.use_for_turn(&turn(&scout), &adding).await);
+    let facts = asks(dispatched(workspaces, &turn(&scout), &adding).await);
     assert!(
         asked_by(&facts, "scout", "Scout"),
         "without the grant the agent reaches the item: {facts:?}"
@@ -662,29 +788,29 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
     let proved = proving(workspaces);
     let scout = on_turn(&ada, &workspace, "sub-agent");
     let adding = add_mail("ada@example.test", "imap.example.test", &login);
-    let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
-        tilo_automation::action_rule(
+        naming(
+            &workspace,
             person_accounts::PROVIDER,
             person_accounts::RESOURCE,
-            None,
             action,
-            outside,
             answer,
         )
     };
+    // Every change of the provider's that can be undone: no outside effect.
     let whole_provider = Rule::new(
-        TreePath::root()
-            .any(Level::Workspace)
-            .app(person_accounts::PROVIDER),
-        outside,
+        TreePath::workspace(&workspace).app(person_accounts::PROVIDER),
+        KindSet::of(ActionKind::Undoable),
         Answer::Allow,
     );
 
     for (why, bound) in [
-        ("no rule at all", Vec::new()),
         (
-            "a rule for the whole provider",
+            "a rule for another app alone",
+            narrowed_elsewhere(&workspace),
+        ),
+        (
+            "a rule for the whole provider's changes",
             vec![whole_provider.clone()],
         ),
         (
@@ -704,7 +830,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
             caller: &scout,
             bound: Some(&bound),
         };
-        let refused = workspaces.use_for_turn(&turn, &adding).await;
+        let refused = dispatched(workspaces, &turn, &adding).await;
         assert_eq!(refused, Err(NotPermitted), "{why}");
         assert!(
             workspaces.uses_offered(&turn).await.is_empty(),
@@ -720,7 +846,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
     };
     let offered = workspaces.uses_offered(&turn).await;
     assert_eq!(offered.len(), 1, "the one use its bound names");
-    asks(workspaces.use_for_turn(&turn, &adding).await);
+    asks(dispatched(workspaces, &turn, &adding).await);
     assert!(
         proved.lock().unwrap().is_empty(),
         "a rule of its bound is no leave of its person's: it still asks"
@@ -774,7 +900,7 @@ async fn a_use_the_vault_refuses_asks_nobody() {
             "That item is not kept here",
         ),
     ] {
-        let refused = workspaces.use_for_turn(&turn, &asking).await;
+        let refused = dispatched(workspaces, &turn, &asking).await;
         assert!(
             matches!(&refused, Err(Refused { reason }) if reason == words),
             "{words}: {refused:?}"
@@ -784,21 +910,21 @@ async fn a_use_the_vault_refuses_asks_nobody() {
         person_models::target(person_models::SET_KEY_FROM_ITEM),
         json!({"provider": provider, "key": login}),
     );
-    let wrong_kind = workspaces.use_for_turn(&turn, &as_key).await;
+    let wrong_kind = dispatched(workspaces, &turn, &as_key).await;
     assert!(
         matches!(&wrong_kind, Err(Refused { .. })),
         "a login is no key: {wrong_kind:?}"
     );
     // A password typed where the reference belongs is refused unread.
     let typed = add_mail("ada@example.test", "imap.example.test", &json!(PASSWORD));
-    let unread = workspaces.use_for_turn(&turn, &typed).await;
+    let unread = dispatched(workspaces, &turn, &typed).await;
     assert!(
         matches!(&unread, Err(InvalidRequest { reason }) if !reason.contains(PASSWORD)),
         "{unread:?}"
     );
     let other = request(person_accounts::target(person_accounts::LIST), json!({}));
     assert_eq!(
-        workspaces.use_for_turn(&turn, &other).await,
+        dispatched(workspaces, &turn, &other).await,
         Err(UnknownAction),
         "only the uses by reference are taken here"
     );
@@ -841,7 +967,7 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     };
 
     let first = keeping();
-    let facts = asks(workspaces.use_for_turn(&turn, &first).await);
+    let facts = asks(dispatched(workspaces, &turn, &first).await);
     assert_eq!(fact(&facts, "Item"), "key");
     assert_eq!(fact(&facts, "Goes to"), "https://models.example");
     always(
@@ -851,12 +977,11 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
         (&first.target, &api_key, &["https://models.example"]),
     )
     .await;
-    let view = workspaces
-        .use_for_turn(&turn, &approved(&first, &workspace))
+    let view = dispatched(workspaces, &turn, &approved(&first, &workspace))
         .await
         .expect("allowed always, the key is kept");
     assert_eq!(view["configured"], json!(true), "{view}");
-    let alone = workspaces.use_for_turn(&turn, &keeping()).await;
+    let alone = dispatched(workspaces, &turn, &keeping()).await;
     assert!(alone.is_ok(), "{alone:?}");
     let kept = ask_at(
         &service,

@@ -963,6 +963,43 @@ impl ServerAgents {
         )
     }
 
+    /// Ask `request` of the device's own dispatch as `caller`, signed with its agent's key:
+    /// what a turn asks of what its workspace keeps for the person who asked it, decided there
+    /// as every other call of the device's ([`crate::workspaces::hosted_use::answers`]).
+    ///
+    /// # Errors
+    /// The call could not be signed as the agent, or the dispatch refused it.
+    async fn ask_device(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<InvocationUpdate, ActionCallError> {
+        let mut signed = request.clone();
+        self.actions
+            .sign_for(workspace, caller, &mut signed)
+            .map_err(|reason| ActionCallError::Refused { reason })?;
+        let receipt = self
+            .workspaces
+            .device_actions()
+            .invoke(caller, signed)
+            .await
+            .unwrap_or(Err(ActionCallError::Unanswered))?;
+        let invocation = receipt.invocation;
+        match receipt.status {
+            ReceiptStatus::Completed { output } => {
+                Ok(InvocationUpdate::Succeeded { invocation, output })
+            }
+            ReceiptStatus::Rejected { error } => Err(error),
+            ReceiptStatus::Failed { error } => Ok(InvocationUpdate::Failed { invocation, error }),
+            ReceiptStatus::Cancelled { message } => Ok(InvocationUpdate::Cancelled {
+                invocation,
+                message,
+            }),
+            ReceiptStatus::Accepted => Err(ActionCallError::Unanswered),
+        }
+    }
+
     fn build(
         workspaces: Workspaces,
         actions: EngineActions,
@@ -1484,19 +1521,12 @@ impl ServerAgents {
         // What the turn's tools reach beside the workspace's resources, each a provider of the
         // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
         // Beside that, the services its person connected, by this server's own entry for a turn.
-        let own = connections::of(
-            self.workspaces.clone(),
-            turn,
-            &scope.reply(turn),
-            workspace_id,
-        )
-        .await;
+        let own = connections::of(self, turn, &scope.reply(turn), workspace_id).await;
         scope.provider = scope.provider.answering(own);
         let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;
         let mail = mail::TurnMail::for_turn(self, turn, &scope.reply(turn)).await;
         // What its person's calendars hold, to read, under the bound their mail is under.
-        let calendars =
-            calendars::TurnCalendars::for_turn(&self.workspaces, turn, &scope.reply(turn)).await;
+        let calendars = calendars::TurnCalendars::for_turn(self, turn, &scope.reply(turn)).await;
         scope.provider = scope
             .provider
             .answering(uses)

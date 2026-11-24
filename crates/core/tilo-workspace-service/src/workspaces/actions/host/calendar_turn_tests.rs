@@ -6,10 +6,12 @@
 //! rule of its names the read; and no turn changes a calendar, so the
 //! calendar server is asked to read and nothing else, and writes to nobody.
 
-use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
+use tilo_action_policy::{ActionKind, Answer, KindSet, Rule, TreePath};
 
 use super::super::super::tests::{admit, governed};
-use super::super::turn_use_tests::{not_hosted_turns, on_turn};
+use super::super::turn_use_tests::{
+    dispatched, naming, narrowed_elsewhere, not_a_turn, not_hosted_turns, on_turn,
+};
 use super::*;
 use crate::workspaces::hosted_use::HostedTurn;
 
@@ -128,7 +130,7 @@ impl Hers {
             appearance: None,
             signed: None,
         };
-        self.workspaces.calendars_for_turn(turn, &request).await
+        dispatched(&self.workspaces, turn, &request).await
     }
 
     /// The calendar actions `turn` is offered, by their ids.
@@ -259,7 +261,7 @@ async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_
     // Every caller that is not a turn this server carries out.
     for (who, asks) in not_hosted_turns(&hers.ada, &hers.workspace) {
         let turn = hers.turn(&asks, None);
-        nobody(who, hers.asks(&turn, held::ENTRIES, week()).await);
+        not_a_turn(who, hers.asks(&turn, held::ENTRIES, week()).await);
         assert!(hers.offered(&turn).await.is_empty(), "{who}");
     }
     assert_eq!(
@@ -291,28 +293,28 @@ async fn a_narrowed_agent_reads_them_only_where_a_rule_names_the_read() {
     let hers = Hers::new().await;
     hers.adds().await;
     let sub = on_turn(&hers.ada, &hers.workspace, "sub-agent");
-    let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
-        tilo_automation::action_rule(
+        naming(
+            &hers.workspace,
             person_accounts::PROVIDER,
             held::RESOURCE,
-            None,
             action,
-            outside,
             answer,
         )
     };
+    // Every change of the provider's that can be undone: no outside effect.
     let whole_provider = Rule::new(
-        TreePath::root()
-            .any(Level::Workspace)
-            .app(person_accounts::PROVIDER),
-        outside,
+        TreePath::workspace(&hers.workspace).app(person_accounts::PROVIDER),
+        KindSet::of(ActionKind::Undoable),
         Answer::Allow,
     );
     for (why, bound) in [
-        ("no rule at all", Vec::new()),
         (
-            "a rule for the whole provider",
+            "a rule for another app alone",
+            narrowed_elsewhere(&hers.workspace),
+        ),
+        (
+            "a rule for the whole provider's changes",
             vec![whole_provider.clone()],
         ),
         (

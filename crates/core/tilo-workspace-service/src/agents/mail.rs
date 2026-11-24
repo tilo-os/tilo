@@ -1,10 +1,10 @@
 //! What a turn on this server reaches of its person's mail.
 //!
 //! An agent's tools act on the workspace's action service, which knows the workspace's
-//! resources and nothing of a person's own mail. That mail is the server's own to answer,
-//! through its entry for a turn it carries out
-//! ([`crate::workspaces::Workspaces::mail_for_turn`]): the turn is one this server carries out, and its
-//! person named the agent for the account. [`TurnMail`] is that entry as one turn's tools reach
+//! resources and nothing of a person's own mail. That mail is the device's own to answer: the
+//! turn asks it of the device's dispatch, signed with its agent's key, which decides it for the
+//! turn ([`crate::workspaces::Workspaces::mail_for_turn`]) where its person named the agent for
+//! the account. [`TurnMail`] is that entry as one turn's tools reach
 //! it, a provider of the turn's own ([`TurnProvider`]): it lists the mail actions the turn is
 //! offered beside the workspace's resources, and takes them. So an assistant lists what
 //! arrived, reads a message with the files it carries by name and size, searches and keeps a
@@ -18,12 +18,11 @@
 
 use std::sync::Arc;
 
+use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
     Pending, RemoteActionTarget, person_accounts,
 };
-use tilo_actions::{ActionOutput, InvocationUpdate};
-use tilo_workspace_agent::Agent;
 
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, ServerAgents as Agents, Turn, TurnProvider, WorkspaceId};
@@ -36,7 +35,6 @@ pub(super) struct TurnMail {
     workspace: String,
     /// The workspace's id; `None` where the turn names none, which reaches nothing.
     workspace_id: Option<WorkspaceId>,
-    agent: Agent,
     /// The mail actions this turn is offered: none for a turn the entry refuses.
     offered: Vec<CatalogueRow>,
 }
@@ -60,7 +58,6 @@ impl TurnMail {
             agents: agents.clone(),
             workspace: reply.workspace.clone(),
             workspace_id,
-            agent: turn.agent.clone(),
             offered,
         })
     }
@@ -71,28 +68,10 @@ impl TurnMail {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let invocation = request.invocation;
         let Some(workspace) = self.workspace_id else {
             return Err(ActionCallError::UnknownAction);
         };
-        let narrowed = self.agent.bound_rules();
-        let hosted = HostedTurn {
-            workspace,
-            caller,
-            bound: narrowed.as_deref(),
-        };
-        let value = self
-            .agents
-            .workspaces
-            .mail_for_turn(&hosted, request)
-            .await?;
-        Ok(InvocationUpdate::Succeeded {
-            invocation,
-            output: ActionOutput {
-                value: Some(value),
-                resources: Vec::new(),
-            },
-        })
+        self.agents.ask_device(workspace, caller, request).await
     }
 }
 

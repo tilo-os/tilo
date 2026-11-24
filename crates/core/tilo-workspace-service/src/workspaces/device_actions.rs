@@ -374,6 +374,25 @@ impl DeviceWork {
         })
     }
 
+    /// Answer `request`, what an agent's turn asks of what its workspace keeps, for `caller`,
+    /// as the workspaces this work belongs to decide it ([`super::Workspaces::answer_turn`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn answer_turn(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let Some(workspaces) = self.turns.get().and_then(super::WeakWorkspaces::upgrade) else {
+            return Pending::ready(Err(not_served()));
+        };
+        let caller = caller.clone();
+        let (completer, answer) = tilo_actions::remote::pending();
+        self.runtime.spawn(async move {
+            completer.complete(workspaces.answer_turn(&caller, &request).await);
+        });
+        answer
+    }
+
     /// Take `request`, a device's ask that this one take a turn of work
     /// (`tilo.work#take`): claim it when it is this device's turn and answer at
     /// once that it runs, then run it, renewing the claim while it does. A turn
@@ -919,6 +938,13 @@ impl ActionProvider for Answers {
                     &tilo_history::FluentArgs::new(),
                 ),
             }));
+        }
+        // What an agent's turn asks of what its workspace keeps for the person who asked it
+        // (their vault's uses by reference, mail, calendars, connections) is decided for that
+        // turn, before anything a person's device asks of the same providers.
+        #[cfg(not(target_arch = "wasm32"))]
+        if super::hosted_use::answers(caller, &request.target) {
+            return self.work.answer_turn(caller, request);
         }
         if governed(&request.target.provider)
             || request.target.provider == tilo_actions::remote::asked::PROVIDER
