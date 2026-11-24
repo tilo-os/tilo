@@ -26,6 +26,7 @@ so-tilo-connectivity-network-connect-hidden-wifi = Einem verborgenen Netz beitre
 so-tilo-connectivity-network-connect-wifi = Mit Passwort beitreten
 so-tilo-connectivity-network-scan-wifi = Erneut nach WLAN-Netzen suchen
 so-tilo-connectivity-network-set-airplane-mode = Den Flugmodus ein- oder ausschalten
+so-tilo-connectivity-network-set-ask-before-open-networks = Vor dem Beitritt zu einem offenen Netz fragen oder den gemerkten von selbst beitreten
 so-tilo-connectivity-network-set-enterprise-identity = Die 802.1X-Identität festlegen
 so-tilo-connectivity-network-set-mobile-apn = Den Zugangspunkt festlegen
 so-tilo-connectivity-network-set-mobile-data = Mobile Daten ein- oder ausschalten

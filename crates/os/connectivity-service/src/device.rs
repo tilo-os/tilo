@@ -49,6 +49,11 @@ pub enum Change {
         profile: String,
         on: bool,
     },
+    /// Keep the open networks this device saves from joining by itself, or let each join as its
+    /// own setting says.
+    OpenNetworks {
+        ask: bool,
+    },
     /// Send a saved network's traffic through a proxy, or straight out.
     Proxy {
         profile: String,
@@ -261,6 +266,7 @@ fn with_settings(mut saved: SavedNetwork) -> SavedNetwork {
     }
     saved.proxy = settings.proxy.and_then(|proxy| proxy.manual);
     saved.hidden = settings.hidden.unwrap_or_default();
+    saved.open = settings.open;
     saved.ipv4 = settings.ipv4.as_ref().map(SavedIpv4::from);
     saved.wake = read_or_log("network wake", os_actions::network_wake::status(&saved.id))
         .map(|status| NetworkWake::from(&status));
@@ -434,6 +440,7 @@ impl Device for OsDevice {
             Change::Autoconnect { profile, on } => {
                 os_actions::set_network_autoconnect(profile, *on)
             }
+            Change::OpenNetworks { ask } => os_actions::set_open_wifi_autoconnect(!*ask),
             Change::Proxy { profile, server } => os_actions::configure_connection_policy_patch(
                 profile,
                 &os_actions::ConnectionPolicyPatch {

@@ -16379,6 +16379,7 @@ dependencies = [
  "tilo-actions",
  "tilo-resource",
  "tilo-service",
+ "tilo-settings-store",
  "tracing",
  "workspace-hack",
  "zeroize",

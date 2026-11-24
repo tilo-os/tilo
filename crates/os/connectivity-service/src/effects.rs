@@ -344,6 +344,19 @@ pub enum NetworkAction {
         #[param(secret, "The network's password")]
         password: String,
     },
+    /// Ask before joining an open Wi-Fi network this device keeps, or let the ones it keeps join
+    /// by themselves.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "wifi",
+        keywords = "open network, ask first, join by itself, auto connect"
+    )]
+    SetAskBeforeOpenNetworks {
+        #[param("Whether this device asks before it joins an open network")]
+        on: bool,
+    },
 }
 
 /// The `bluetooth` resource's actions.

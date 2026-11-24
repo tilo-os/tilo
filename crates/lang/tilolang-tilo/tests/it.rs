@@ -99,6 +99,7 @@ mod settings_billing;
 mod settings_displays;
 mod settings_input;
 mod settings_input_tablets;
+mod settings_network;
 mod settings_panes;
 mod settings_permissions;
 mod settings_shell;

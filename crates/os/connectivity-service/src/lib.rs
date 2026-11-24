@@ -84,23 +84,80 @@ enum Landed {
         result: Result<(), String>,
         readings: Box<Readings>,
     },
+    /// A change the service made itself, with no action behind it: keeping the device to a
+    /// policy of the person's.
+    Kept {
+        part: Part,
+        result: Result<(), String>,
+        readings: Box<Readings>,
+    },
+}
+
+/// Where this device's own network policy is kept: the leaves Tilo holds itself, beside what
+/// `NetworkManager` holds per connection.
+pub trait Preferences: Send + Sync {
+    /// Whether this device asks before it joins an open Wi-Fi network it keeps.
+    fn ask_before_open_networks(&self) -> bool;
+
+    /// Keep whether it asks, or say why it could not be written.
+    ///
+    /// # Errors
+    /// The settings could not be written.
+    fn set_ask_before_open_networks(&self, on: bool) -> Result<(), String>;
+}
+
+/// The settings store this device keeps its policy in.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SettingsPreferences;
+
+impl Preferences for SettingsPreferences {
+    fn ask_before_open_networks(&self) -> bool {
+        settings_store::network::ASK_BEFORE_OPEN_NETWORKS.get()
+    }
+
+    fn set_ask_before_open_networks(&self, on: bool) -> Result<(), String> {
+        settings_store::network::ASK_BEFORE_OPEN_NETWORKS
+            .set(on)
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// The connectivity service.
 pub struct Connectivity {
     readings: Readings,
+    preferences: Arc<dyn Preferences>,
+    /// Whether this device asks before it joins an open network, as its settings last said: the
+    /// service is the one that changes it, so the settings are read once, where the loop never
+    /// waits for them.
+    asking: bool,
     worker: Worker<dyn Device, Landed>,
 }
 
 impl Connectivity {
     /// The service over `device`, reading it once at the start; `wake` is
-    /// called whenever something landed for the session to take in.
+    /// called whenever something landed for the session to take in. This
+    /// device's own policy is read from its settings.
     ///
     /// # Errors
     /// The worker's thread did not start.
     pub fn new(device: Arc<dyn Device>, wake: Option<Wake>) -> std::io::Result<Self> {
+        Self::over(device, wake, Arc::new(SettingsPreferences))
+    }
+
+    /// [`Connectivity::new`] over the policy `preferences` holds, as a test
+    /// lends its own.
+    ///
+    /// # Errors
+    /// The worker's thread did not start.
+    pub fn over(
+        device: Arc<dyn Device>,
+        wake: Option<Wake>,
+        preferences: Arc<dyn Preferences>,
+    ) -> std::io::Result<Self> {
         let service = Self {
             readings: Readings::default(),
+            asking: preferences.ask_before_open_networks(),
+            preferences,
             worker: Worker::spawn("tilo-connectivity", device, wake)?,
         };
         service.refresh();
@@ -141,6 +198,7 @@ impl Connectivity {
     }
 
     fn land(&mut self, landed: Landed) {
+        let joining = self.open_networks_joining_by_themselves();
         match landed {
             Landed::Read(readings) => self.take(*readings),
             Landed::Changed {
@@ -156,11 +214,55 @@ impl Connectivity {
                 }
                 *problem = result.err();
             }
+            Landed::Kept {
+                part,
+                result,
+                readings,
+            } => {
+                self.take(*readings);
+                let (_, problem) = self.status(part);
+                *problem = result.err();
+            }
+        }
+        // An open network this device keeps that joined by itself while it asks first is put
+        // back in step once, when it starts doing so: a change that fails leaves the reading as
+        // it was, so nothing loops.
+        let out_of_step = self.open_networks_joining_by_themselves();
+        if !out_of_step.is_empty() && out_of_step != joining {
+            self.keep_open_networks_asked();
         }
     }
 
+    /// The open Wi-Fi networks this device keeps that join by themselves, while it asks before
+    /// joining one.
+    fn open_networks_joining_by_themselves(&self) -> Vec<String> {
+        let network = &self.readings.network;
+        if !network.ask_before_open_networks {
+            return Vec::new();
+        }
+        network
+            .saved
+            .iter()
+            .filter(|saved| saved.open && saved.autoconnect)
+            .map(|saved| saved.id.clone())
+            .collect()
+    }
+
+    /// Keep the open networks this device keeps from joining by themselves: the person asks
+    /// first, as the policy says.
+    fn keep_open_networks_asked(&mut self) {
+        self.worker.run(move |device| {
+            let result = device.change(&Change::OpenNetworks { ask: true });
+            Landed::Kept {
+                part: Part::Network,
+                result,
+                readings: Box::new(device.read()),
+            }
+        });
+    }
+
     /// Take a fresh reading, keeping what is the service's own: the actions
-    /// pending and the last problem.
+    /// pending, the last problem and the person's network policy.
     fn take(&mut self, mut readings: Readings) {
         let old = &mut self.readings;
         readings.network.pending = std::mem::take(&mut old.network.pending);
@@ -173,6 +275,7 @@ impl Connectivity {
         readings.vpn.problem = old.vpn.problem.take();
         readings.tethering.pending = std::mem::take(&mut old.tethering.pending);
         readings.tethering.problem = old.tethering.problem.take();
+        readings.network.ask_before_open_networks = self.asking;
         address_rows(&mut readings);
         self.readings = readings;
     }
@@ -350,6 +453,14 @@ impl Connectivity {
                     ca_certificate,
                 },
             },
+            NetworkAction::SetAskBeforeOpenNetworks { on } => {
+                self.preferences
+                    .set_ask_before_open_networks(on)
+                    .map_err(ApiError::Failed)?;
+                self.asking = on;
+                self.readings.network.ask_before_open_networks = on;
+                Change::OpenNetworks { ask: on }
+            }
             NetworkAction::SetWifiPassword { profile, password } => {
                 Change::WifiPassword { profile, password }
             }
@@ -857,6 +968,7 @@ fn mark_what_the_device_lacks(resource: &mut ResourceSpec, network: &Network) {
             "connect-wifi",
             "connect-hidden-wifi",
             "connect-enterprise-wifi",
+            "set-ask-before-open-networks",
         ] {
             unavailable(resource, action, "no_wifi", "This device has no Wi-Fi");
         }

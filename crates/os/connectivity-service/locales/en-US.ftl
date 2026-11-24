@@ -26,6 +26,7 @@ so-tilo-connectivity-network-connect-hidden-wifi = Join a hidden network
 so-tilo-connectivity-network-connect-wifi = Join with its password
 so-tilo-connectivity-network-scan-wifi = Look again for Wi-Fi networks
 so-tilo-connectivity-network-set-airplane-mode = Turn airplane mode on or off
+so-tilo-connectivity-network-set-ask-before-open-networks = Ask before joining an open network, or join the ones this device keeps by itself
 so-tilo-connectivity-network-set-enterprise-identity = Set the 802.1X identity
 so-tilo-connectivity-network-set-mobile-apn = Set the access point name
 so-tilo-connectivity-network-set-mobile-data = Turn mobile data on or off

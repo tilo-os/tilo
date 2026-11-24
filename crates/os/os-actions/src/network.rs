@@ -1139,6 +1139,8 @@ pub struct ConnectionProfileSettings {
     pub priority: Option<i32>,
     /// A Wi-Fi network that does not broadcast its name.
     pub hidden: Option<bool>,
+    /// A Wi-Fi network that asks for no password to join.
+    pub open: bool,
     pub ipv6: Option<crate::network_settings::Ipv6Configuration>,
     /// Who a work or school (802.1X) network knows this device as.
     pub enterprise: Option<crate::network_settings::EnterpriseIdentity>,
@@ -1380,6 +1382,41 @@ pub fn set_network_autoconnect(uuid: &str, enabled: bool) -> Result<(), String> 
     })
 }
 
+/// Whether `settings` is a Wi-Fi profile that joins without a password: no key management,
+/// or the one that keeps a network's traffic from being read rather than one that signs in.
+fn wifi_open(settings: &Settings) -> bool {
+    if settings.kind() != "802-11-wireless" {
+        return false;
+    }
+    matches!(
+        settings
+            .string("802-11-wireless-security", "key-mgmt")
+            .as_deref(),
+        None | Some("") | Some("none" | "owe")
+    )
+}
+
+/// Whether the open Wi-Fi networks this device keeps join by themselves: `enabled` is what every
+/// such profile's `autoconnect` becomes, and a profile already there is left alone.
+pub fn set_open_wifi_autoconnect(enabled: bool) -> Result<(), String> {
+    with_nm(|nm| async move {
+        for profile in nm.profiles().await? {
+            if !wifi_open(&profile.settings)
+                || profile.settings.autoconnect() == enabled
+                || validate_uuid(&profile.settings.uuid()).is_err()
+            {
+                continue;
+            }
+            nm.edit(&profile.settings.uuid(), |settings| {
+                settings.set("connection", "autoconnect", enabled);
+                Ok(())
+            })
+            .await?;
+        }
+        Ok(())
+    })
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IpConfiguration {
     pub automatic: bool,
@@ -1517,6 +1554,7 @@ fn profile_settings_of(settings: &Settings) -> ConnectionProfileSettings {
                 .boolean("802-11-wireless", "hidden")
                 .unwrap_or(false)
         }),
+        open: wifi_open(settings),
         ipv6: crate::network_settings::ipv6_of(settings),
         enterprise: crate::network_settings::enterprise_identity_of(settings),
     }

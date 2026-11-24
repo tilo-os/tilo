@@ -12,7 +12,7 @@ use crate::model::{
     ModemUnit, Nearby, Network, SavedKind, SavedNetwork, Tethering, Vpn, VpnProfile, Wifi,
     WifiNetwork, Wired,
 };
-use crate::{BLUETOOTH, Connectivity, MODEM, NETWORK, TETHERING, VPN};
+use crate::{BLUETOOTH, Connectivity, MODEM, NETWORK, Preferences, TETHERING, VPN};
 
 /// A device in memory: changes recorded and applied to what it reads.
 #[derive(Default)]
@@ -228,6 +228,13 @@ fn apply_network(network: &mut Network, change: &Change) {
                 }
             }
         }
+        Change::OpenNetworks { ask } => {
+            for saved in &mut network.saved {
+                if saved.open {
+                    saved.autoconnect = !*ask;
+                }
+            }
+        }
         Change::Proxy { profile, server } => {
             for saved in &mut network.saved {
                 if saved.id == *profile {
@@ -420,6 +427,31 @@ fn service(fake: &Arc<Fake>) -> Connectivity {
     let mut service = Connectivity::new(device, None).expect("service");
     service.settle();
     service
+}
+
+/// This device's policy as a test keeps it, in memory.
+#[derive(Default)]
+struct Policy(Mutex<bool>);
+
+impl Preferences for Policy {
+    fn ask_before_open_networks(&self) -> bool {
+        *self.0.lock().expect("policy")
+    }
+
+    fn set_ask_before_open_networks(&self, on: bool) -> Result<(), String> {
+        *self.0.lock().expect("policy") = on;
+        Ok(())
+    }
+}
+
+/// [`service`] over a policy of `ask`, which the test keeps.
+fn service_asking(fake: &Arc<Fake>, ask: bool) -> (Connectivity, Arc<Policy>) {
+    let policy = Arc::new(Policy(Mutex::new(ask)));
+    let device: Arc<dyn Device> = Arc::clone(fake) as Arc<dyn Device>;
+    let held: Arc<dyn Preferences> = Arc::clone(&policy) as Arc<dyn Preferences>;
+    let mut service = Connectivity::over(device, None, held).expect("service");
+    service.settle();
+    (service, policy)
 }
 
 fn arguments(value: Value) -> Map<String, Value> {
@@ -1252,4 +1284,114 @@ fn a_saved_network_wakes_the_device_and_its_password_is_shared_by_the_device() {
         }],
         "the device is asked to share it"
     );
+}
+
+/// A laptop whose Wi-Fi keeps a network that asks for no password, which `NetworkManager` would
+/// join by itself.
+fn laptop_with_open_network() -> Arc<Fake> {
+    let fake = Fake::default();
+    {
+        let mut readings = fake.readings.lock().expect("readings");
+        readings.network = Network {
+            wifi: Wifi {
+                available: true,
+                on: true,
+                hardware_blocked: false,
+                networks: vec![network("Cafe", false, false, false)],
+            },
+            saved: vec![SavedNetwork {
+                name: "Cafe".into(),
+                id: "uuid-cafe".into(),
+                kind: SavedKind::Wifi,
+                autoconnect: true,
+                open: true,
+                ..SavedNetwork::default()
+            }],
+            ..Network::default()
+        };
+    }
+    Arc::new(fake)
+}
+
+/// An open network this device keeps does not join by itself while it asks first: the policy is
+/// kept, the device's profile follows it, and a network saved later is kept too.
+#[test]
+fn an_open_network_waits_for_the_person_while_the_device_asks() {
+    let fake = laptop_with_open_network();
+    let (mut service, policy) = service_asking(&fake, false);
+    service.settle();
+    assert!(
+        fake.changes().is_empty(),
+        "the device keeps joining it by itself until the person asks first: {:?}",
+        fake.changes()
+    );
+    assert_eq!(
+        read(&service, NETWORK)["saved"][0]["open"],
+        json!(true),
+        "the pane knows which networks ask for no password"
+    );
+    assert_eq!(
+        read(&service, NETWORK)["ask-before-open-networks"],
+        json!(false)
+    );
+
+    service
+        .invoke(
+            NETWORK,
+            "set-ask-before-open-networks",
+            &self::arguments(json!({"on": true})),
+        )
+        .expect("taken");
+    service.settle();
+    assert!(policy.ask_before_open_networks(), "the policy is kept");
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::OpenNetworks { ask: true }),
+        "the open profile follows the policy"
+    );
+    let network = read(&service, NETWORK);
+    assert_eq!(network["ask-before-open-networks"], json!(true));
+    assert_eq!(network["saved"][0]["autoconnect"], json!(false));
+
+    // A network saved after the policy was set, as a join saves one, waits too.
+    {
+        let mut readings = fake.readings.lock().expect("readings");
+        readings.network.saved.push(SavedNetwork {
+            name: "Hotel".into(),
+            id: "uuid-hotel".into(),
+            kind: SavedKind::Wifi,
+            autoconnect: true,
+            open: true,
+            ..SavedNetwork::default()
+        });
+    }
+    service.refresh();
+    service.settle();
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::OpenNetworks { ask: true }),
+        "the network saved later is put in step"
+    );
+    let network = read(&service, NETWORK);
+    assert_eq!(network["saved"][1]["name"], json!("Hotel"));
+    assert_eq!(network["saved"][1]["autoconnect"], json!(false));
+
+    // The person lets them join by themselves again: each follows its own setting.
+    service
+        .invoke(
+            NETWORK,
+            "set-ask-before-open-networks",
+            &self::arguments(json!({"on": false})),
+        )
+        .expect("taken");
+    service.settle();
+    assert!(!policy.ask_before_open_networks());
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::OpenNetworks { ask: false })
+    );
+    let network = read(&service, NETWORK);
+    assert_eq!(network["ask-before-open-networks"], json!(false));
+    assert_eq!(network["saved"][0]["autoconnect"], json!(true));
 }

@@ -24,6 +24,9 @@ pub struct Network {
     pub link: Option<Link>,
     /// The networks this device keeps, in the order it lists them.
     pub saved: Vec<SavedNetwork>,
+    /// Whether this device asks before it joins an open Wi-Fi network it keeps: on, none of
+    /// them joins by itself.
+    pub ask_before_open_networks: bool,
     /// Actions taken and not yet answered by the device, by id.
     pub pending: Vec<String>,
     /// Why the last change did not happen, until the next one.
@@ -155,6 +158,8 @@ pub struct SavedNetwork {
     pub proxy: Option<String>,
     /// The Wi-Fi profile keeps its name hidden.
     pub hidden: bool,
+    /// A Wi-Fi network that joins without a password.
+    pub open: bool,
     /// How its addresses are set; `None` when the device could not read them.
     pub ipv4: Option<SavedIpv4>,
     /// Whether a wake packet over it wakes this device; `None` when the device could not read it.

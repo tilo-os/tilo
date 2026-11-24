@@ -1163,6 +1163,12 @@ d-c4tbp74f = Network pane
     .w-change-the-password = Passwort ändern
     .w-join-a-hidden-network = Einem verborgenen Netzwerk beitreten
     .w-one-that-does-not-say-its = Eines, das seinen Namen nicht sendet
+    .w-open-networks = Offene Netze
+    .w-asks-before-joining-one-this-device = Fragt, bevor es einem beitritt, das dieses Gerät kennt
+    .w-joins-the-ones-it-keeps-by = Tritt den gemerkten von selbst bei
+    .w-ask-first = Zuerst fragen
+    .w-asks-first = Fragt zuerst
+    .w-never-this-device-asks-before-joining = Nie: Dieses Gerät fragt, bevor es einem offenen Netz beitritt
 
 d-un4ag5eg = Hotspot page
     .w-hotspot = Hotspot

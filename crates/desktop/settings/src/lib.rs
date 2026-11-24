@@ -79,6 +79,7 @@ pub mod keyboard_shortcuts;
 pub mod keyboard_sources;
 pub mod lockdown;
 pub mod magnifier;
+pub mod network;
 pub mod notification_policy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod outside;

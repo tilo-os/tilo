@@ -1254,6 +1254,22 @@
               "type": "text"
             }
           ]
+        },
+        {
+          "id": "set-ask-before-open-networks",
+          "label": "Ask before joining an open network, or join the ones this device keeps by itself",
+          "description": "Ask before joining an open Wi-Fi network this device keeps, or let the ones it keeps join by themselves.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
         }
       ],
       "fields": [
@@ -1315,6 +1331,12 @@
               "named": "SavedNetwork"
             }
           },
+          "readonly": true
+        },
+        {
+          "path": "ask-before-open-networks",
+          "stored": "value",
+          "type": "bool",
           "readonly": true
         },
         {
@@ -1577,6 +1599,10 @@
             },
             {
               "name": "hidden",
+              "type": "bool"
+            },
+            {
+              "name": "open",
               "type": "bool"
             },
             {
@@ -15547,7 +15573,7 @@
         {
           "id": "open-link",
           "label": "Open a link",
-          "description": "Open what a `tilo://open#…` link names: the app that keeps it shows it, started first when no window of it does. An app that shows a link opens it this way, whoever it was copied from.",
+          "description": "Open what a `tilo://open#\u2026` link names: the app that keeps it shows it, started first when no window of it does. An app that shows a link opens it this way, whoever it was copied from.",
           "kind": "read",
           "params": [
             {

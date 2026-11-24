@@ -104,6 +104,29 @@ view network_first(page: State<Text>, chosen: State<Text>) {
             if let problem = net.problem {
                 ui.StatusLine(problem, status: .error)
             }
+            if wifi.available {
+                ui.ListRow(
+                    "Open networks",
+                    secondary: if net.ask_before_open_networks {
+                        "Asks before joining one this device keeps"
+                    } else { "Joins the ones it keeps by itself" },
+                    icon: if net.ask_before_open_networks { .eye } else { .wifi },
+                ) {
+                    trailing: {
+                        ui.Button(
+                            if net.ask_before_open_networks {
+                                "Ask first"
+                            } else { "Join by itself" },
+                            toggled: net.ask_before_open_networks,
+                        ) {
+                            on press: device.set_ask_before_open_networks(
+                                device.network,
+                                not net.ask_before_open_networks,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
     ui.Section("Mobile data") {
@@ -303,7 +326,8 @@ view all_networks(page: State<Text>, chosen: State<Text>) {
 /// The networks this device keeps: what it joins by itself, whether it is metered and its proxy,
 /// each forgettable.
 view known_networks(page: State<Text>) {
-    let saved = device.network.saved
+    let net = device.network
+    let saved = net.saved
     ui.Section("Known networks") {
         ui.ListRow("Back", icon: .chevron_left) {
             on activate: set(page, "")
@@ -314,7 +338,9 @@ view known_networks(page: State<Text>) {
         for s in saved {
             ui.ListRow(
                 s.name,
-                secondary: if s.autoconnect { "Joins by itself" } else { "Saved" },
+                secondary: if s.open and net.ask_before_open_networks {
+                    "Asks first"
+                } else if s.autoconnect { "Joins by itself" } else { "Saved" },
                 value: if s.proxy != .none { "Proxy" },
                 icon: if s.kind == .wired {
                     .ethernet_port
@@ -328,13 +354,15 @@ view known_networks(page: State<Text>) {
                         icon_only: true,
                         role: .plain,
                     ) {
-                        ui.MenuItem(
-                            if s.autoconnect {
-                                "Stop joining by itself"
-                            } else { "Join by itself" },
-                            icon: .refresh,
-                        ) {
-                            on choose: s.set_autoconnect(not s.autoconnect)
+                        if not (s.open and net.ask_before_open_networks) {
+                            ui.MenuItem(
+                                if s.autoconnect {
+                                    "Stop joining by itself"
+                                } else { "Join by itself" },
+                                icon: .refresh,
+                            ) {
+                                on choose: s.set_autoconnect(not s.autoconnect)
+                            }
                         }
                         ui.MenuItem("Forget this network", icon: .trash) {
                             on choose: s.forget()
@@ -387,14 +415,22 @@ view network_page(name: Text, page: State<Text>) {
     let kept = net.saved.find(s -> s.name == name)
     if let saved = kept {
         ui.Section("What this device keeps") {
-            ui.ListRow(
-                "Joins by itself",
-                secondary: if saved.autoconnect { "On" } else { "Off" },
-                icon: .refresh,
-            ) {
-                trailing: {
-                    ui.Button("Change", role: .plain, size: .small) {
-                        on press: saved.set_autoconnect(not saved.autoconnect)
+            if saved.open and net.ask_before_open_networks {
+                ui.ListRow(
+                    "Joins by itself",
+                    secondary: "Never: this device asks before joining an open network",
+                    icon: .eye,
+                )
+            } else {
+                ui.ListRow(
+                    "Joins by itself",
+                    secondary: if saved.autoconnect { "On" } else { "Off" },
+                    icon: .refresh,
+                ) {
+                    trailing: {
+                        ui.Button("Change", role: .plain, size: .small) {
+                            on press: saved.set_autoconnect(not saved.autoconnect)
+                        }
                     }
                 }
             }
