@@ -2602,13 +2602,12 @@
     },
     {
       "name": "DragSource",
-      "doc": "A view a person can pick up and drag to a drop target in the same window: a search hit, a row of a list, a message's attachment. What it carries is `resource`; the ghost under the pointer says `title`.\nA press that does not travel is the content's own, so a dragged row still opens when clicked and a dragged chip still presses.",
+      "doc": "A view a person can pick up and drag: to a drop target in the same window (a search hit, a row of a list, a message's attachment), carrying `resource`, or, given `files`, out of the window as a real file drag another app can take. The ghost under the pointer says `title`.\nA press that does not travel is the content's own, so a dragged row still opens when clicked and a dragged chip still presses.",
       "props": [
         {
           "name": "resource",
-          "doc": "The resource the drag carries, as its published address (`chat.workspace/messages/m1`): what a drop target receives.",
+          "doc": "The resource the drag carries, as its published address (`chat.workspace/messages/m1`): what a drop target receives. Empty for a drag of files alone, which leaves the window.",
           "type": "text",
-          "required": true,
           "positional": true,
           "data": true
         },
@@ -2617,6 +2616,13 @@
           "doc": "What the drag's ghost says under the pointer, and what assistive technology reads instead of the resource's address.",
           "type": {
             "option": "text"
+          }
+        },
+        {
+          "name": "files",
+          "doc": "The device files the drag offers another app, by path: a press that travels starts the desktop's own drag of them, so a person can drop them into another window. Without them the drag carries its `resource` on this window's drag bus.",
+          "type": {
+            "list": "text"
           }
         }
       ],

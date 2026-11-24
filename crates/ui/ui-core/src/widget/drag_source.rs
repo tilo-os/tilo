@@ -14,6 +14,7 @@
 //! without the wrapper.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
@@ -39,8 +40,11 @@ pub use component::DragSourceProps;
 #[derive(Clone, Copy, Debug)]
 struct Lift {
     start: Point,
-    /// The press travelled past the threshold: the drag is live on the bus.
+    /// The press travelled past the threshold: the drag is live.
     active: bool,
+    /// The desktop carries it: the files went out as a real file drag, so nothing goes on the
+    /// window's own bus.
+    offered: bool,
 }
 
 /// One view a person can drag out of, as a source on the drag bus. See the module docs.
@@ -53,6 +57,9 @@ pub struct DragSource {
     resource: String,
     /// What the ghost under the pointer says.
     title: String,
+    /// The device files the drag offers another app: a press that travels starts the desktop's
+    /// own drag of them. Empty for a drag that stays in this window.
+    files: Vec<PathBuf>,
     /// The view's own key: what the bus knows this source by, so its payload never lands back
     /// on itself.
     key: String,
@@ -79,6 +86,7 @@ impl DragSource {
                 .push_part(Part::new(child)),
             resource: resource.into(),
             title: title.into(),
+            files: Vec::new(),
             key: key.into(),
             rect: Rect::ZERO,
             lift: None,
@@ -103,21 +111,31 @@ impl DragSource {
             .map_or_else(|| &self.column as &dyn Widget, |child| child)
     }
 
-    /// Take new content, a resource and a title, as a rebuilt view gives them.
+    /// The device files the drag offers another app, by path.
+    #[must_use]
+    pub fn with_files(mut self, files: Vec<PathBuf>) -> Self {
+        self.files = files;
+        self
+    }
+
+    /// Take new content, a resource, a title and the files it offers, as a rebuilt view gives
+    /// them.
     pub(crate) fn set_content(
         &mut self,
         content: Option<Element>,
         resource: String,
         title: String,
+        files: Vec<PathBuf>,
     ) {
         if let Some(content) = content {
             let _ = self.column.replace(0, content);
         }
-        if self.resource != resource || self.title != title {
+        if self.resource != resource || self.title != title || self.files != files {
             self.dirty = true;
         }
         self.resource = resource;
         self.title = title;
+        self.files = files;
     }
 
     /// What the drag publishes: the resource's address in the blob.
@@ -137,6 +155,7 @@ impl DragSource {
         self.lift = Some(Lift {
             start: point,
             active: false,
+            offered: false,
         });
         self.dirty = true;
         true
@@ -158,6 +177,14 @@ impl DragSource {
         };
         if !lift.active && lift.start.distance(point) > DRAG_START_THRESHOLD_PX {
             lift.active = true;
+            // A drag of device files leaves the window: the desktop carries it, and another app
+            // takes it. It is started here, where the press that began it still holds the
+            // pointer, so the drag is the person's own.
+            if !self.files.is_empty() && crate::dnd::start_file_drag(&self.files) {
+                lift.offered = true;
+                self.dirty = true;
+                return;
+            }
         }
         if !lift.active {
             return;
@@ -179,7 +206,10 @@ impl DragSource {
     fn release(&mut self) -> Option<bool> {
         let lift = self.lift.take()?;
         self.dirty = true;
-        if lift.active {
+        if lift.offered {
+            // The desktop carried it; this window's bus never held it.
+            crate::widget::drag_bus::end(None);
+        } else if lift.active {
             let landed = crate::widget::drag_bus::Landed {
                 source: self.key.clone(),
                 payload: self.payload(),

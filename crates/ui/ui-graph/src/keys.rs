@@ -103,7 +103,22 @@ impl Chord {
     /// twice, a key before a modifier, or an empty part.
     pub fn parse(text: &str) -> Result<Self, String> {
         let text = text.trim();
-        let mut parts: Vec<&str> = text.split('+').map(str::trim).collect();
+        // `Ctrl+=` and `Ctrl+-` name the equals and minus keys, which a split on `+` would read
+        // as no key at all: a key that is the separator's neighbour is the chord's last
+        // character.
+        let (modifiers, own) = match text.strip_suffix(['=', '-']) {
+            // Only after a modifier: a chord of the equals key alone is a part split on `+`
+            // reads as the key it is.
+            Some(rest) if rest.contains('+') => (
+                rest.trim_end_matches('+'),
+                Some(&text[text.len().saturating_sub(1)..]),
+            ),
+            _ => (text, None),
+        };
+        let mut parts: Vec<&str> = modifiers.split('+').map(str::trim).collect();
+        if let Some(own) = own {
+            parts.push(own);
+        }
         if text.is_empty() || parts.iter().any(|part| part.is_empty()) {
             return Err(format!(
                 "`{text}` is no shortcut: it is modifiers and one key, such as `Ctrl+Enter`"
@@ -215,6 +230,15 @@ mod tests {
         assert_eq!(
             Chord::parse("Ctrl+Enter").unwrap(),
             Chord::parse("Control+Return").unwrap()
+        );
+        // The equals and minus keys are written with the separator beside them.
+        assert_eq!(
+            Chord::parse("Ctrl+=").expect("the equals key").text(),
+            "Ctrl+="
+        );
+        assert_eq!(
+            Chord::parse("Ctrl+-").expect("the minus key").text(),
+            "Ctrl+-"
         );
         for (wrong, said) in [
             ("", "no shortcut"),

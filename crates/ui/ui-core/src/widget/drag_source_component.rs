@@ -5,9 +5,9 @@ use crate::widget::Element;
 
 use super::DragSource;
 
-/// A view a person can pick up and drag to a drop target in the same window: a search hit, a
-/// row of a list, a message's attachment. What it carries is `resource`; the ghost under the
-/// pointer says `title`.
+/// A view a person can pick up and drag: to a drop target in the same window (a search hit, a
+/// row of a list, a message's attachment), carrying `resource`, or, given `files`, out of the
+/// window as a real file drag another app can take. The ghost under the pointer says `title`.
 ///
 /// A press that does not travel is the content's own, so a dragged row still opens when clicked
 /// and a dragged chip still presses.
@@ -15,12 +15,17 @@ use super::DragSource;
 #[component(name = "DragSource", role = "Group", label = "title")]
 pub struct DragSourceProps {
     /// The resource the drag carries, as its published address
-    /// (`chat.workspace/messages/m1`): what a drop target receives.
-    #[component(required, positional, data)]
+    /// (`chat.workspace/messages/m1`): what a drop target receives. Empty for a drag of files
+    /// alone, which leaves the window.
+    #[component(positional, data)]
     pub resource: String,
     /// What the drag's ghost says under the pointer, and what assistive technology reads
     /// instead of the resource's address.
     pub title: Option<String>,
+    /// The device files the drag offers another app, by path: a press that travels starts the
+    /// desktop's own drag of them, so a person can drop them into another window. Without them
+    /// the drag carries its `resource` on this window's drag bus.
+    pub files: Vec<String>,
     /// What it draws.
     #[component(part(default))]
     pub content: Option<Element>,
@@ -37,6 +42,7 @@ impl Described for DragSource {
         let DragSourceProps {
             resource,
             title,
+            files,
             content,
             ..
         } = props;
@@ -48,16 +54,23 @@ impl Described for DragSource {
             resource,
             title.unwrap_or_default(),
         )
+        .with_files(files.into_iter().map(std::path::PathBuf::from).collect())
     }
 
     fn set_props(&mut self, props: DragSourceProps) -> bool {
         let DragSourceProps {
             resource,
             title,
+            files,
             content,
             ..
         } = props;
-        self.set_content(content, resource, title.unwrap_or_default());
+        self.set_content(
+            content,
+            resource,
+            title.unwrap_or_default(),
+            files.into_iter().map(std::path::PathBuf::from).collect(),
+        );
         true
     }
 
