@@ -9,7 +9,6 @@ function Get-TiloWindowsAppName {
         'diffmerge' { 'Diff and Merge' }
         'db-client' { 'Database Client' }
         'ebook' { 'Books' }
-        'totp' { 'Authenticator' }
         default { (Get-Culture).TextInfo.ToTitleCase($Application) }
     }
 }

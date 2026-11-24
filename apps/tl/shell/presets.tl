@@ -257,3 +257,40 @@ scenario "the minimal preset" {
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
     apply(shell, .minimal)
 }
+
+/// Two windows side by side for someone new to the shell: nothing learned yet, so the control
+/// hints stand over everything the style draws, ready to teach moving a window by its bar.
+scenario "two windows, nothing learned yet" -> Layout {
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Layout
+    let row = a_workspace(a, "Main")
+    let left = a_strip(a, row, "Notes", 500)
+    a_note_place(a, left, 0)
+    let right = a_strip(a, row, "More notes", 500)
+    a_note_place(a, right, 1)
+    a.front = right
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(settings.control_hints, settings.ControlHints(learned: settings.Learned()))
+    a
+}
+
+/// The same two windows for someone who turned control hints off: the hints' layer stands, and
+/// shows nothing.
+scenario "two windows, control hints off" -> Layout {
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Layout
+    let row = a_workspace(a, "Main")
+    let left = a_strip(a, row, "Notes", 500)
+    a_note_place(a, left, 0)
+    let right = a_strip(a, row, "More notes", 500)
+    a_note_place(a, right, 1)
+    a.front = right
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        settings.control_hints,
+        settings.ControlHints(learned: settings.Learned(enabled: false, known: ["move-window"])),
+    )
+    a
+}

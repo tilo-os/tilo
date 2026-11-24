@@ -130,11 +130,6 @@ profile-visibility-where-detail = Your face, the window you're in and your point
 profile-visibility-here-detail = Your face, never which window or your pointer
 profile-visibility-nothing-detail = You don't appear, and you don't see others' pointers
 profile-control-hints = Show control hints
-control-hint-open = Open anything
-control-hint-move = Drag to move
-control-hint-resize = Drag to resize
-control-hint-pan = Scroll sideways
-control-hint-pan-touch = Swipe left or right
 
 # Workspace activity
 activity-view-tasks = Tasks

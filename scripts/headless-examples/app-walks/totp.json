@@ -1,0 +1,166 @@
+{
+  "app": "totp",
+  "said": "Authenticator",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.totp",
+    "package": "totp"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Authenticator with no accounts: it asks for the first",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": "No accounts yet"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "link",
+      "said": "Paste a setup link, fill the form, save, and reveal the account's code",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Add account"
+            ]
+          },
+          {
+            "wait_for": "Setup link"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Setup link"
+              }
+            ]
+          },
+          {
+            "type": "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&issuer=Acme"
+          },
+          {
+            "press_any": [
+              "Fill from the link"
+            ]
+          },
+          {
+            "wait_for": "Acme"
+          },
+          {
+            "press_any": [
+              "Save"
+            ]
+          },
+          {
+            "wait_for": "Acme"
+          },
+          {
+            "offered": [
+              "Reveal",
+              "Edit",
+              "More"
+            ]
+          },
+          {
+            "press_any": [
+              "Reveal"
+            ]
+          },
+          {
+            "offered": [
+              "Copy",
+              "Edit",
+              "More"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "invalid",
+      "said": "Saving with no service name keeps the form and says why",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Add account"
+            ]
+          },
+          {
+            "press_any": [
+              "Save"
+            ]
+          },
+          {
+            "wait_for": "The account needs a service name"
+          },
+          {
+            "offered": [
+              "Save",
+              "Back"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "details",
+      "said": "The form takes the details and the advanced options",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Back"
+            ]
+          },
+          {
+            "press_any": [
+              "Add account"
+            ]
+          },
+          {
+            "offered": [
+              "Advanced options",
+              "Scan a QR image"
+            ]
+          },
+          {
+            "press_any": [
+              "Advanced options"
+            ]
+          },
+          {
+            "offered": [
+              "SHA1",
+              "SHA256",
+              "SHA512"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ],
+      "dark": true
+    }
+  ]
+}

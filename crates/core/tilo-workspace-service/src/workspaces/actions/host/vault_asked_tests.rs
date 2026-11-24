@@ -376,3 +376,59 @@ async fn an_asked_mail_account_keeps_its_password_in_memory_alone() {
     assert!(clear.is_empty(), "the password in the clear: {clear:?}");
     server.shutdown().await;
 }
+
+/// What a device takes for secret is what an action is published with where the device holds
+/// its descriptor: the vault's add names its secret, note and fields, a governance verb its
+/// own. An action a provider registered here lists only as it is asked, a secret among its
+/// parameters, is described nowhere the device reads at once, so every argument of a call of
+/// it is taken for a secret.
+#[tokio::test]
+async fn an_action_listed_only_as_it_is_asked_is_taken_for_all_secret() {
+    use tilo_actions::remote::{CataloguePage, RemoteActionTarget, TestProvider};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host_holding(dir.path(), &key, &owner, Arc::default()).await;
+    let workspaces = server.workspaces();
+    let mut row = person_vault::call_rows().remove(0);
+    row.provider = "test.dynamic".to_owned();
+    let mut action = row.action.take().unwrap();
+    action.address = tilo_actions::ActionAddress::new("dynamic.accounts", "connect");
+    action.params.push(tilo_actions::ActionParam::required(
+        "token",
+        tilo_actions::ParamType::Secret,
+        "The token it connects with.",
+    ));
+    let target = RemoteActionTarget {
+        provider: row.provider.clone(),
+        address: action.address.clone(),
+    };
+    row.action = Some(action);
+    let listed = Arc::new(TestProvider::new().with_catalogue(move |_, query| {
+        Ok(CataloguePage::from_rows(
+            "1".into(),
+            vec![row.clone()],
+            &query,
+        ))
+    }));
+    workspaces.providers().provide(
+        "test.dynamic",
+        "test.dynamic",
+        crate::workspaces::providers::Reach::Devices,
+        listed,
+    );
+    let secrets = workspaces.secret_parameters();
+    assert_eq!(secrets(&target), None, "described nowhere read at once");
+    let mut vault_add = secrets(&person_vault::target(person_vault::ADD)).unwrap();
+    vault_add.sort();
+    assert_eq!(vault_add, ["fields", "notes", "secret"]);
+    assert_eq!(
+        secrets(&RemoteActionTarget {
+            provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new("workspace.permissions:w", "rename"),
+        }),
+        Some(Vec::new()),
+        "a governance verb is described, and takes no secret"
+    );
+    server.shutdown().await;
+}

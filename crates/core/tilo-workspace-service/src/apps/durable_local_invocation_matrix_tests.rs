@@ -54,7 +54,9 @@ mod durable_local_matrix {
                 .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
             tilo_identity::sources::test_trust::install();
             tilo_identity::provisioning::ensure_collaboration_identity(
-                &tilo_identity::store::account_identity_dir(&root.path().join("config/tilo/identity")),
+                &tilo_identity::store::account_identity_dir(
+                    &root.path().join("config/tilo/identity"),
+                ),
                 &tilo_device_identity::IdentityPaths::under(root.path().join("identity")),
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
@@ -244,8 +246,13 @@ mod durable_local_matrix {
             app_id: &str,
             agent: Option<&str>,
         ) -> Connection {
-            let (rpc, server, client) =
-                certified_rpc(&self.state, &self.directories, peer, env.cert.clone(), agent);
+            let (rpc, server, client) = certified_rpc(
+                &self.state,
+                &self.directories,
+                peer,
+                env.cert.clone(),
+                agent,
+            );
             let route = CrdtRoute::app(app_id, env.route.cluster_id.clone());
             let handle = opened(&rpc, &route.channel_key()).await.unwrap();
             Connection {
@@ -255,8 +262,13 @@ mod durable_local_matrix {
             }
         }
         async fn caller(&self, env: &Environment, peer: u64, agent: Option<&str>) -> Connection {
-            let (rpc, server, client) =
-                certified_rpc(&self.state, &self.directories, peer, env.cert.clone(), agent);
+            let (rpc, server, client) = certified_rpc(
+                &self.state,
+                &self.directories,
+                peer,
+                env.cert.clone(),
+                agent,
+            );
             let route = CrdtRoute::cluster(env.route.cluster_id.clone());
             let handle = opened(&rpc, &route.channel_key()).await.unwrap();
             Connection {

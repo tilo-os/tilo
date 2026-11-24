@@ -307,10 +307,7 @@ impl Workspaces {
     /// Sign an `Apple ID` in through `auth` from now on: a test's stand-in
     /// stands in for Apple's own.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn icloud_sign_in_through(
-        &self,
-        auth: Arc<dyn account_credentials::icloud::ICloudAuth>,
-    ) {
+    pub fn icloud_sign_in_through(&self, auth: Arc<dyn account_credentials::icloud::ICloudAuth>) {
         *self
             .inner
             .icloud_sign_in

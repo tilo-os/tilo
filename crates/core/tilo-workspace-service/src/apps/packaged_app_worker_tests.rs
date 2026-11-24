@@ -640,11 +640,12 @@ async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
                 };
                 let rig = Rig::with_own_journal(&env, services, &config).await;
                 assert!(rig.state.durable_owner_required);
-                rig.state.serve_records(crate::workspaces::RecordReads::with_apps(
-                    host.workspaces(),
-                    &rig.state,
-                    None,
-                ));
+                rig.state
+                    .serve_records(crate::workspaces::RecordReads::with_apps(
+                        host.workspaces(),
+                        &rig.state,
+                        None,
+                    ));
                 let (launched, _server, _client) = launched_app_connection(
                     &rig.state,
                     &rig.directories,

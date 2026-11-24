@@ -170,6 +170,18 @@ pub enum ImagerEffect {
     /// Cancel the installer download; what was verified is kept for resume.
     #[effect(kind = "outside", on = InstallerDownload)]
     CancelDownload,
+    /// Choose a Tilo release to write; one not on this machine yet is downloaded and verified first.
+    #[effect(kind = "outside")]
+    ChooseRelease {
+        #[param("Selection id of an offered release, as its row names it")]
+        release: String,
+    },
+    /// Stop the image write that is running.
+    #[effect(kind = "outside", on = ImageWrite)]
+    CancelWrite,
+    /// Eject the drive the image was written to, so it can be unplugged.
+    #[effect(kind = "outside", on = ImageWrite)]
+    Eject,
     #[effect(own_device, kind = "read")]
     #[effect(label = "imager-rescan-drives")]
     Rescan,

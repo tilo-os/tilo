@@ -190,6 +190,10 @@ pub struct WindowFrame {
     description: Option<String>,
     /// Where the pointer last was, in the frame's logical coordinates.
     cursor: Point,
+    /// The pointer rests on the bar.
+    on_bar: bool,
+    /// Where the window stands for the shell's control hints ([`crate::control_hints`]).
+    anchor: crate::control_hints::anchors::WindowAnchor,
 }
 
 /// A press on the bar that may become a drag of the window's own bar.
@@ -346,6 +350,8 @@ impl Described for WindowFrame {
             enabled,
             description,
             cursor: Point::ZERO,
+            on_bar: false,
+            anchor: crate::control_hints::anchors::WindowAnchor::new(),
         }
     }
 
@@ -650,11 +656,26 @@ impl WindowFrame {
         );
     }
 
+    /// The pointer came to rest on the bar (`on`) or left it: resting there is where a window is
+    /// taken to move it.
+    fn rest_on_bar(&mut self, on: bool) {
+        if on && !self.on_bar {
+            crate::control_hints::performed::note(
+                crate::control_hints::performed::Performed::HoveredWindowBar,
+            );
+        }
+        self.on_bar = on;
+    }
+
     /// The bar was let go: `Some(true)` when the press travelled and the drag ended here (the
     /// content sees no click), `Some(false)` when it never travelled.
     fn let_go(&mut self) -> Option<bool> {
         let lift = self.lift.take()?;
         if lift.active {
+            // The person carried the window by its bar to where it was let go.
+            crate::control_hints::performed::note(
+                crate::control_hints::performed::Performed::MovedWindow,
+            );
             let Some(carries) = self.carries.clone() else {
                 return Some(true);
             };
@@ -710,6 +731,7 @@ impl Decorator for WindowFrame {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
                 self.cursor = point;
+                self.rest_on_bar(self.lift.is_none() && self.bar.contains(point));
                 if self.lift.is_some() {
                     self.carry(point);
                     if self.lift.is_some_and(|lift| lift.active) {
@@ -720,6 +742,7 @@ impl Decorator for WindowFrame {
                 self.layers.handle_event(event, ctx);
             }
             WindowEvent::CursorLeft { .. } => {
+                self.rest_on_bar(false);
                 if self.lift.take().is_some() {
                     crate::widget::drag_bus::end(None);
                 }
@@ -901,6 +924,14 @@ impl Decorator for WindowFrame {
                 rect,
             );
         });
+        // Where the window stands for the shell's control hints, and while a hint may show,
+        // where it shows text and controls: what a hint never covers. Content too much to read
+        // counts whole.
+        let ink = crate::control_hints::anchors::wants_ink()
+            .then(|| crate::control_hints::ink::of(&*self).unwrap_or_else(|| vec![rect]));
+        self.anchor
+            .state(self.focused, self.on_bar, self.carries.is_some());
+        self.anchor.drawn(transform, rect, self.bar, ink);
     }
 
     /// What the window holds is cut at its edge: a list scrolled past its top is not seen over

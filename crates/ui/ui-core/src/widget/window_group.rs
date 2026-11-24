@@ -2091,11 +2091,6 @@ impl WindowGroup {
         self.bar.close_rect_for_tests(tab_id)
     }
 
-    /// The window's bar, as it last laid out: its tabs, its toolbar and its controls.
-    pub(crate) fn bar(&self) -> &crate::widget::TabBar {
-        &self.bar
-    }
-
     #[cfg(any(test, debug_assertions))]
     pub fn bar_for_tests(&self) -> &crate::widget::TabBar {
         &self.bar

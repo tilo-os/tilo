@@ -1023,6 +1023,50 @@ fn clicking_through_the_wizard_refuses_a_fake_write_when_backend_is_disabled() {
 }
 
 #[test]
+fn stopping_a_write_and_ejecting_are_the_published_effects() {
+    let mut host = TestHost::capture(Some("source"));
+    let control = JobControl::new();
+    host.with_widget::<ImagerApp, _>(|app| {
+        app.job_control = Some(control.clone());
+        app.goto(Step::Write);
+    })
+    .unwrap();
+    host.settle();
+    host.harness().click_named("imager.cancel-write").unwrap();
+    host.settle();
+    assert!(
+        control.is_cancelled(),
+        "the press stops the write through the published effect"
+    );
+
+    host.with_widget::<ImagerApp, _>(|app| app.job_control = None)
+        .unwrap();
+    let refused = host
+        .effect(&ImagerEffect::CancelWrite)
+        .expect_err("with no write running there is nothing to stop");
+    assert!(
+        format!("{refused:?}").contains("No image is being written"),
+        "{refused:?}"
+    );
+    let refused = host
+        .effect(&ImagerEffect::Eject)
+        .expect_err("with no drive written there is nothing to eject");
+    assert!(
+        format!("{refused:?}").contains("No written drive"),
+        "{refused:?}"
+    );
+    let refused = host
+        .effect(&ImagerEffect::ChooseRelease {
+            release: "no-such-release".into(),
+        })
+        .expect_err("a release that is not offered is refused");
+    assert!(
+        format!("{refused:?}").contains("no-such-release"),
+        "{refused:?}"
+    );
+}
+
+#[test]
 fn erase_and_write_presses_the_drives_name_confirmed_write() {
     let (mut app, _doc) = seeded_app();
     app.select_target(0); // sdb

@@ -309,6 +309,17 @@ mod cases {
         }
     }
 
+    /// Every line of text the window shows, in view order.
+    fn view_texts(view: &ViewInstance) -> Vec<String> {
+        of_kind(view.tree(), "ui.Text")
+            .into_iter()
+            .filter_map(|node| match node.props.get("value") {
+                Some(Value::Text(text)) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn text_inputs(view: &ViewInstance) -> Vec<String> {
         of_kind(view.tree(), "ui.TextInput")
             .into_iter()
@@ -670,9 +681,17 @@ mod cases {
         }));
         b.page("refresh_page", &[]);
         let view = b.page_view();
-        assert_eq!(row_secondary(&view, "https://example.org"), "secure");
+        assert_eq!(
+            row_secondary(&view, "https://example.org"),
+            "Secure connection"
+        );
         assert_eq!(row_secondary(&view, "Requests blocked"), "7");
         assert_eq!(row_secondary(&view, "Certificate"), "Example CA");
+        assert!(
+            view_texts(&view).contains(&"Camera: asks first".to_owned()),
+            "a permission reads as words:\n{}",
+            dump(view.tree())
+        );
 
         b.page("read_site", &[]);
         assert_eq!(b.page.ops().last().map(String::as_str), Some("site_status"));
@@ -713,6 +732,66 @@ mod cases {
             .filter_map(Json::as_str)
             .collect();
         assert_eq!(origins, ["https://example.org"]);
+    }
+
+    /// A name of the engine's the Browser has no words for reads as a plain fact: a site's
+    /// connection, a login form and a permission never show their token in a window.
+    #[test]
+    fn a_name_the_engine_grows_reads_as_words_and_never_as_its_token() {
+        let b = Browser::new();
+        b.page(
+            "went_to",
+            &[("url", Value::text("https://example.org/private"))],
+        );
+        b.page.answer_asks(json!({
+            "site": {
+                "origin": "https://example.org",
+                "generation": 1,
+                "blocked": 0,
+                "protected": true,
+                "security": "quantum",
+                "certificate": 0,
+                "issuer": "",
+                "subject": "example.org",
+                "permissions": [{"kind": "usb", "state": "allowed"}],
+                "can_reset": false,
+            },
+        }));
+        b.page("refresh_page", &[]);
+        let view = b.page_view();
+        assert_eq!(
+            row_secondary(&view, "https://example.org"),
+            "Unknown connection"
+        );
+        assert!(
+            view_texts(&view).contains(&"Something else: allowed".to_owned()),
+            "a permission the Browser knows no word for says so:\n{}",
+            dump(view.tree())
+        );
+
+        b.page(
+            "remember_credential",
+            &[
+                ("did", Value::text("discover")),
+                ("success", Value::Bool(true)),
+                ("message", Value::text("")),
+                (
+                    "forms",
+                    Value::text(r#"[{"form":"1","username":"","kind":"sso"}]"#),
+                ),
+                ("accounts", Value::text("[]")),
+                ("capture", Value::text("")),
+                ("username", Value::text("")),
+                ("late", Value::Bool(false)),
+            ],
+        );
+        let view = b.page_view();
+        assert_eq!(
+            row_secondary(&view, "Form"),
+            "Form",
+            "a form kind with no words is a form:\n{}",
+            dump(view.tree())
+        );
     }
 
     /// The person's history stays within its bound: the oldest visits go and the newest stay.
@@ -1440,7 +1519,7 @@ mod cases {
                 ("message", Value::text("")),
                 (
                     "forms",
-                    Value::text(r#"[{"form":"1","username":"ada","kind":"login"}]"#),
+                    Value::text(r#"[{"form":"1","username":"ada","kind":"current-password"}]"#),
                 ),
                 ("accounts", Value::text(accounts)),
                 ("capture", Value::text(capture)),
@@ -1452,7 +1531,7 @@ mod cases {
         let view = b.page_view();
         assert_eq!(
             row_secondary(&view, "ada"),
-            "login",
+            "Sign-in form",
             "the form the engine found is on the page"
         );
 

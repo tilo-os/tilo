@@ -171,15 +171,6 @@ pub trait TileSource {
     }
 }
 
-/// What a strip reads for control hints as it draws.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HintReading {
-    /// Where its windows' bars and edges are.
-    Places,
-    /// Those, and where its windows show text and controls: while a hint may show soon.
-    WithInk,
-}
-
 /// What a window says in the place its app left: the outcome the host wrote when the app could
 /// not open or stopped, with the label of the button that asks for it again.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -283,10 +274,6 @@ pub struct Shared {
     pub float_covers: Vec<(TabId, Rect)>,
     /// The shown strip, the area it is drawn in and how far it is panned, as last laid out.
     pub shown_strip: Option<(StripId, Rect, f64)>,
-    /// Where the shown strip's controls are for control hints, as last drawn.
-    pub hint_places: ui::widget::HintPlaces,
-    /// What the strip reads for control hints as it draws.
-    pub hint_reading: HintReading,
     /// Carets and selections of the focused window's editors, as last laid out
     /// ([`ui::presence::capability::subtree_presence`]).
     pub focused_presence: Vec<(PresenceKey, PresencePayload)>,
@@ -555,22 +542,6 @@ impl DesktopHandle {
     /// `x - area.x0 + pan` along the strip, however wide the surface or wherever it is panned to.
     pub fn shown_strip(&self) -> Option<(StripId, Rect, f64)> {
         self.shared.borrow().shown_strip
-    }
-
-    /// Where the shown strip's window bars and edges are for control hints,
-    /// in the surface's coordinates, as last drawn.
-    pub fn hint_places(&self) -> ui::widget::HintPlaces {
-        self.shared.borrow().hint_places.clone()
-    }
-
-    /// Whether the desktop's control hints may show soon: while they may, each frame also reads
-    /// where the shown windows show text and controls, which a hint keeps off.
-    pub fn read_hint_ink(&self, read: bool) {
-        self.shared.borrow_mut().hint_reading = if read {
-            HintReading::WithInk
-        } else {
-            HintReading::Places
-        };
     }
 
     /// The caret or selection this desktop publishes as its presence, given the keyboard-focused

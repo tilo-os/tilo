@@ -30,9 +30,6 @@ use crate::widget::{
 #[path = "group_row_edges.rs"]
 mod edges;
 use edges::RowEdgeDrag;
-#[path = "group_row_hint_places.rs"]
-mod hint_places;
-pub use hint_places::HintPlaces;
 #[path = "group_row_canvas.rs"]
 mod canvas;
 #[path = "group_row_crossing.rs"]
@@ -4578,7 +4575,6 @@ impl Widget for GroupRow {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.refresh_tab_drop_preview();
-            self.note_bar_hover();
         }
 
         // Runs before resize-handle and per-child dispatch so, once past threshold, it claims the

@@ -79,6 +79,9 @@ view shell_view(a: Layout) window "Desktop shell" {
         if not space.compact {
             widget_layer(a)
         }
+        // The control hints stand over all of it: a hint teaches a control beside where it is,
+        // whatever the style drew there.
+        control_hints()
     }
 }
 

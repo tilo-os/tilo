@@ -625,13 +625,8 @@ impl Workspaces {
             let keep: Keeping<'_> = &|peer, at| admission.keep(peer, at);
             let shared = workspace.peer.shared();
             let mut replica = shared.lock();
-            let mut held = HeldWorkspace::new(
-                key,
-                self.device_cert(),
-                workspace,
-                &mut replica,
-                Some(keep),
-            );
+            let mut held =
+                HeldWorkspace::new(key, self.device_cert(), workspace, &mut replica, Some(keep));
             let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
             (admitted, held.committed, held.kept, held.written)
         };

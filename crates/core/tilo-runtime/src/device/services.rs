@@ -1278,17 +1278,16 @@ impl Daemon {
         workspace: &str,
     ) -> io::Result<tilo_mcp::McpServer<RuntimeActionProvider>> {
         let policy_time = self.policy_origin.capture().map_err(io::Error::other)?;
-        let (host, caller) = self.provider_for(workspace)?.agent_session(
-            workspace,
-            &self.actor,
-            &policy_time,
-            |person| {
-                (
-                    tilo_actions::remote::device_agent_id(person, name),
-                    name.to_owned(),
-                )
-            },
-        )?;
+        let host = self.provider_for(workspace)?;
+        let admission = host
+            .admission()
+            .ok_or_else(|| io::Error::other("this dispatch admitted no run to delegate"))?;
+        let (host, caller) = host.agent_session_of(admission, &policy_time, |person| {
+            (
+                tilo_actions::remote::device_agent_id(person, name),
+                name.to_owned(),
+            )
+        })?;
         // The apps of the workspace: what the agent's task programs compile against, run in this
         // daemon's processes.
         let tasks = self.task_hosts(host.clone(), caller.clone(), &self.actor);
@@ -2912,11 +2911,9 @@ impl RuntimeServices for Daemon {
         requested: &str,
     ) -> io::Result<tilo_mcp::SessionFactory<RuntimeActionProvider>> {
         let workspace = self.mcp_workspace(Some(requested))?;
-        let actor = self.actor.clone();
         let host = self.action_provider()?;
         Ok(host.session_factory(
             workspace,
-            actor,
             self.policy_origin.capture().map_err(io::Error::other)?,
         ))
     }
@@ -3305,6 +3302,16 @@ impl tilo_api::session::Here for DaemonHere {
     fn invocations(&self) -> Option<Arc<Invocations>> {
         tilo_api::session::Here::invocations(&*self.daemon().ok()?)
     }
+
+    /// The account this device serves for its person, when it keeps their workspaces itself: the
+    /// daemon that founded their workspace answers their list, never a read of the copy a
+    /// restarted daemon is still taking in.
+    fn account_here(&self) -> Option<Arc<dyn tilo_api::session::AccountHere>> {
+        let daemon: Arc<Daemon> = self.daemon().ok()?;
+        daemon
+            .keeps_its_own_account()
+            .then(|| daemon as Arc<dyn tilo_api::session::AccountHere>)
+    }
 }
 
 impl tilo_api::session::Here for Daemon {
@@ -3457,14 +3464,14 @@ impl tilo_api::session::Here for Daemon {
             Ok(imported)
         })
     }
+}
 
-    fn account_here(&self) -> Option<&dyn tilo_api::session::AccountHere> {
-        // A computer that logged in reaches the account through the server that keeps its
-        // workspaces; one that founded its person here keeps them itself, and answers for them.
-        if !self.first.founds() {
-            return None;
-        }
-        Some(self as &dyn tilo_api::session::AccountHere)
+impl Daemon {
+    /// Whether this computer keeps its person's account itself: a computer that logged in
+    /// reaches the account through the server that keeps its workspaces, and one that founded
+    /// its person here keeps them itself, and answers for them.
+    pub(crate) fn keeps_its_own_account(&self) -> bool {
+        self.first.founds()
     }
 }
 
@@ -4117,6 +4124,16 @@ fn hand_on_to_root(
 }
 
 impl RuntimeActionProvider {
+    /// The run this dispatch was admitted as: what a session it starts here goes on as, rather
+    /// than a second admission of the same person in the same workspace.
+    pub(super) fn admission(
+        &self,
+    ) -> Option<Arc<tilo_workspace_service::workspaces::SessionAdmission>> {
+        self.session
+            .as_ref()
+            .map(|session| Arc::clone(&session.admission))
+    }
+
     /// The caller the run was admitted as, where it has a run: the caller the API session keeps
     /// rather than minting another.
     fn admission_caller(&self) -> Option<Caller> {
@@ -4275,15 +4292,17 @@ impl RuntimeActionProvider {
     fn session_factory(
         self,
         workspace: String,
-        actor: String,
         policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
     ) -> tilo_mcp::SessionFactory<Self> {
         let provider = self;
         Arc::new(move || {
             // The MCP client is the person's agent, under a key of its own: the admission stays
             // the person's, and every call the client makes is signed by the agent's key.
+            let admission = provider
+                .admission()
+                .ok_or_else(|| io::Error::other("this dispatch admitted no run to delegate"))?;
             let (session_host, caller) =
-                provider.agent_session(&workspace, &actor, &policy_time, |person| {
+                provider.agent_session_of(admission, &policy_time, |person| {
                     (device_agent_id(person, MCP_CLIENT), MCP_CLIENT.to_owned())
                 })?;
             let run = tilo_mcp::agent_id(&caller);
@@ -4308,9 +4327,8 @@ impl RuntimeActionProvider {
     }
 
     /// A run of `actor`'s agent in `workspace`, which `agent` names (its id and name) from the
-    /// person's public key: the provider its calls go through and the caller its admission is.
-    /// The agent acts under a key of its own this device makes it, its calls signed by that key
-    /// and taken by the broker as the agent's.
+    /// person's public key: admitted here for a dispatch that holds no run of its own, then
+    /// [`Self::agent_session_of`].
     pub(super) fn agent_session(
         &self,
         workspace: &str,
@@ -4323,6 +4341,20 @@ impl RuntimeActionProvider {
         let admission =
             block_on_owned(async move { workspaces.admit_execution(&workspace, &actor).await })
                 .map_err(io::Error::other)?;
+        self.agent_session_of(admission, policy_time, agent)
+    }
+
+    /// A run of the person `admission` admits, delegated to the agent `agent` names (its id and
+    /// name) from the person's public key: the provider its calls go through and the caller its
+    /// admission is. The agent acts under a key of its own this device makes it, its calls
+    /// signed by that key and taken by the broker as the agent's. A dispatch that already holds
+    /// the person's admission hands it here rather than admitting them a second time.
+    pub(super) fn agent_session_of(
+        &self,
+        admission: Arc<tilo_workspace_service::workspaces::SessionAdmission>,
+        policy_time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
+        agent: impl FnOnce(&[u8; 32]) -> (String, String),
+    ) -> io::Result<(Self, Caller)> {
         let caller = admission.caller().clone();
         let (Some(person), Some(user), Some(workspace)) = (
             caller.acting().person_id(),

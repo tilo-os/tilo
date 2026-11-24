@@ -4745,8 +4745,8 @@ const TAKEN_BACK: &str = "Whoever asked took the question back";
 pub(super) const HOST_DISPATCH: &str = "host";
 
 /// The parameters the action `target` names is published with, where it is one of the host's
-/// own that takes what a person keeps secret: its vault's and its mail accounts', by their own
-/// provider or in a workspace's governance tree. `None` for any other.
+/// own: a workspace's governance verbs, its vault's, its mail accounts' and its model
+/// providers', by their own provider or in the governance tree. `None` for any other.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn published_params(
     target: &tilo_actions::remote::RemoteActionTarget,
@@ -4758,9 +4758,17 @@ pub(super) fn published_params(
     if let Some((_, action)) = mail::account_action(address) {
         return mail::account_params_of(action);
     }
+    if let Some((_, action)) = models::models_action(address) {
+        return models::params_of(action);
+    }
     match target.provider.as_str() {
         person_vault::PROVIDER => vault::params_of(&address.action),
         person_accounts::PROVIDER => mail::account_params_of(&address.action),
+        model_providers::PROVIDER => models::params_of(&address.action),
+        WORKSPACE_GOVERNANCE_PROVIDER => VERBS
+            .iter()
+            .find(|verb| verb.id == address.action)
+            .map(|verb| (verb.params)()),
         _ => None,
     }
 }

@@ -151,10 +151,9 @@ impl Workspaces {
     ) -> Result<(), CollaborationError> {
         for frame in written {
             let body = postcard::to_stdvec(frame).map_err(|error| error.to_string())?;
-            self.inner.records.commit(
-                workspace,
-                &crate::workspace_documents::HostCommit { body },
-            )?;
+            self.inner
+                .records
+                .commit(workspace, &crate::workspace_documents::HostCommit { body })?;
         }
         Ok(())
     }

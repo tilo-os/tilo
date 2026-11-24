@@ -227,7 +227,8 @@ impl AppBrokerState {
                 Refusal::Reason("a Store disclosure is shown only to the person it asks".into())
             })?;
             Some(
-                super::super::approval::store_disclosure(caller, request).map_err(Refusal::Error)?,
+                super::super::approval::store_disclosure(caller, request)
+                    .map_err(Refusal::Error)?,
             )
         } else {
             None

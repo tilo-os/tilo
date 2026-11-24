@@ -142,6 +142,13 @@ pub struct PackageMeta {
     pub words: Vec<WordMeta>,
     pub actions: Vec<ActionMeta>,
     pub views: Vec<ViewMeta>,
+    /// The views the module expands where they are called: a `view` taking `State`, functions or
+    /// views of an item, a generic one, or one with defaults. It has no function of the module and
+    /// no window of its own, so it stands beside [`Self::views`], never among them; its metadata
+    /// names the anchors its body declares and the views it calls, which a test reaches through
+    /// the view that expands it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub template_views: Vec<ViewMeta>,
     pub fns: Vec<FnMeta>,
     /// Ids of the root types (`root T`): one resource each per workspace, listed and opened by the
     /// launcher.

@@ -43,14 +43,11 @@ use ui::widget::DrawChild;
 pub(crate) enum Command {
     PickFile,
     Dropped(PathBuf),
-    Release(usize),
     Recent(usize),
     Back,
     Station(usize),
     Next,
-    CancelWrite,
     WriteAnother,
-    Eject,
 }
 
 pub(crate) type Commands = Rc<RefCell<Vec<Command>>>;
@@ -635,20 +632,21 @@ impl ImagerApp {
                     .job_control
                     .as_ref()
                     .is_some_and(JobControl::is_cancelled);
-                self.button(
+                Button::new(
                     "imager.cancel-write",
-                    if stopping {
+                    &CATALOG.t(if stopping {
                         "imager-write-cancelling"
                     } else {
                         "imager-write-cancel"
-                    },
-                    Command::CancelWrite,
+                    }),
                 )
+                .on_click(self.presses(ImagerEffect::CancelWrite))
                 .with_enabled(self.job_control.is_some() && !stopping)
             }
             Step::Done => {
                 if self.offers_eject() {
-                    let eject = self.button("imager.eject", "imager-eject", Command::Eject);
+                    let eject = Button::new("imager.eject", &CATALOG.t("imager-eject"))
+                        .on_click(self.presses(ImagerEffect::Eject));
                     row = row.push(Box::new(eject));
                 }
                 self.button(
@@ -809,7 +807,7 @@ impl ImagerApp {
                 Some((done, total)) if total > 0 => CATALOG.t_args(
                     "imager-release-progress",
                     &[
-                        ("stage", ui::i18n::ArgValue::Text(stage.clone())),
+                        ("stage", ui::i18n::ArgValue::Text(stage)),
                         (
                             "percent",
                             ui::i18n::ArgValue::Number((done * 100 / total) as f64),
@@ -857,8 +855,9 @@ impl ImagerApp {
                     self.presses(ImagerEffect::CancelDownload),
                 )
         } else {
-            let sink = Rc::clone(&self.commands);
-            row.on_activate(move || sink.borrow_mut().push(Command::Release(index)))
+            row.on_activate(self.presses(ImagerEffect::ChooseRelease {
+                release: release.selection_id(),
+            }))
         };
         Some(Box::new(row))
     }
@@ -1524,7 +1523,7 @@ impl ImagerApp {
     }
     fn cancel_write(&mut self) -> Result<(), String> {
         let Some(control) = self.job_control.clone() else {
-            return Err("No image write is currently running".into());
+            return Err(crate::setup::strings::t("imager-status-no-write"));
         };
         control.cancel();
         self.set_status(&crate::setup::strings::t("imager-write-stopping"));
@@ -2037,6 +2036,40 @@ impl ImagerApp {
                 self.cancel_release_download()?;
                 Ok(Effected::done())
             }
+            ImagerEffect::ChooseRelease { release } => {
+                if self.release_download.is_some() {
+                    return Err(crate::setup::strings::t("imager-status-download-busy"));
+                }
+                let Some(index) = self
+                    .releases
+                    .iter()
+                    .position(|offered| offered.selection_id() == release)
+                else {
+                    return Err(format!("No release {release} is offered"));
+                };
+                let release = self.releases[index].clone();
+                if release.url.is_empty() {
+                    self.select_source(&release.to_source());
+                } else {
+                    self.download_release(index, release);
+                }
+                Ok(Effected::done())
+            }
+            ImagerEffect::CancelWrite => {
+                self.cancel_write()?;
+                Ok(Effected::done())
+            }
+            ImagerEffect::Eject => {
+                if !self.offers_eject() {
+                    return Err(crate::setup::strings::t("imager-status-nothing-to-eject"));
+                }
+                self.eject_written_drive();
+                if self.ejected {
+                    Ok(Effected::done())
+                } else {
+                    Err(self.status.clone())
+                }
+            }
             ImagerEffect::ExportConfig => {
                 if self.source.is_none() || self.target().is_none() {
                     return Err("Select an image source and target drive first".into());
@@ -2086,6 +2119,27 @@ impl ImagerApp {
                 ImagerEffect::CANCEL_DOWNLOAD,
                 "no_download",
                 crate::setup::strings::t("imager-status-no-download"),
+            ));
+        }
+        if self.release_download.is_some() {
+            statuses.push(EffectStatus::unavailable(
+                ImagerEffect::CHOOSE_RELEASE,
+                "download_busy",
+                crate::setup::strings::t("imager-status-download-busy"),
+            ));
+        }
+        if self.job_control.is_none() {
+            statuses.push(EffectStatus::unavailable(
+                ImagerEffect::CANCEL_WRITE,
+                "no_write",
+                crate::setup::strings::t("imager-status-no-write"),
+            ));
+        }
+        if !self.offers_eject() {
+            statuses.push(EffectStatus::unavailable(
+                ImagerEffect::EJECT,
+                "nothing_to_eject",
+                crate::setup::strings::t("imager-status-nothing-to-eject"),
             ));
         }
         if self.source.is_none() || self.target().is_none() {
@@ -2255,17 +2309,6 @@ impl ImagerApp {
                 Some(source) => self.select_source(&source),
                 None => self.fail(&crate::setup::strings::t("imager-image-unreadable")),
             },
-            Command::Release(index) => {
-                if self.release_download.is_none() {
-                    if let Some(release) = self.releases.get(index).cloned() {
-                        if release.url.is_empty() {
-                            self.select_source(&release.to_source())
-                        } else {
-                            self.download_release(index, release)
-                        }
-                    }
-                }
-            }
             Command::Recent(index) => {
                 if let Some(source) = self.recent.get(index).cloned() {
                     self.select_source(&source)
@@ -2274,11 +2317,7 @@ impl ImagerApp {
             Command::Back => self.back(),
             Command::Station(index) => self.go_to_station(index),
             Command::Next => self.advance(),
-            Command::CancelWrite => {
-                let _ = self.cancel_write();
-            }
             Command::WriteAnother => self.write_another(),
-            Command::Eject => self.eject_written_drive(),
         }
     }
     fn fail(&mut self, message: &str) {

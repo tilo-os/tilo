@@ -293,6 +293,15 @@ fn sign_in_params() -> Vec<ActionParam> {
     )]
 }
 
+/// The parameters the model providers' action `action` (a `tilo.models` action, or a verb of
+/// them in a workspace's governance tree) is published with.
+pub(super) fn params_of(action: &str) -> Option<Vec<ActionParam>> {
+    MODEL_VERBS
+        .iter()
+        .find(|(verb, named)| verb.id == action || *named == action)
+        .map(|(verb, _)| (verb.params)())
+}
+
 /// The `tilo.models` action `address` asks of a workspace's model providers in
 /// its governance tree, and the workspace it names.
 pub(super) fn models_action(address: &tilo_actions::ActionAddress) -> Option<(&str, &str)> {

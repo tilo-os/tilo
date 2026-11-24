@@ -456,6 +456,63 @@ fn state_meta<'a>(
         .collect()
 }
 
+/// The anchors a view's body declares `as name`, by name: the ids its callers' nodes key them by.
+fn anchors_of(env: &Env, view: &str) -> Vec<AnchorMeta> {
+    let mut anchors: Vec<AnchorMeta> = env
+        .anchors
+        .iter()
+        .filter_map(|(k, id)| {
+            let (of, name) = k.split_once('#')?;
+            (of == view).then(|| AnchorMeta {
+                id: id.clone(),
+                name: name.to_string(),
+            })
+        })
+        .collect();
+    anchors.sort_by(|a, b| a.name.cmp(&b.name));
+    anchors
+}
+
+/// The views `env` expands where they are called, as the metadata that names their anchors and
+/// the views they call: `env`'s own templates, never a library's.
+fn template_views(env: &Env, ir: &crate::ir::Module) -> Vec<ViewMeta> {
+    env.templates
+        .iter()
+        .filter(|t| t.ns.is_none())
+        .filter_map(|t| {
+            let id = t.id.clone()?;
+            let v = &t.decl;
+            Some(ViewMeta {
+                id: id.clone(),
+                name: v.name.name.clone(),
+                window: None,
+                doc: doc(&v.doc),
+                // A template's defaults are filled where it expands, not by an invocation.
+                params: v
+                    .params
+                    .iter()
+                    .map(|p| crate::meta::ParamMeta {
+                        name: p.name.name.clone(),
+                        ty: crate::print::print_type(&p.ty),
+                        default: None,
+                        place: false,
+                        entry: false,
+                        label: p.label.clone(),
+                    })
+                    .collect(),
+                anchors: anchors_of(env, &v.name.name),
+                calls: views_called(ir, &id),
+                reaches: Vec::new(),
+                state: Vec::new(),
+                presents: None,
+                row_of: None,
+                show: None,
+                capture_protected: false,
+            })
+        })
+        .collect()
+}
+
 /// The ids of the views `view` calls, in the order it calls them: the views that stand in its
 /// frame, and so the anchors a test reaches through it.
 fn views_called(ir: &crate::ir::Module, view: &str) -> Vec<String> {
@@ -871,18 +928,7 @@ fn build_meta(
                     continue;
                 };
                 let Some(idx) = c.func else { continue };
-                let mut anchors: Vec<AnchorMeta> = env
-                    .anchors
-                    .iter()
-                    .filter_map(|(k, id)| {
-                        let (view, name) = k.split_once('#')?;
-                        (view == v.name.name).then(|| AnchorMeta {
-                            id: id.clone(),
-                            name: name.to_string(),
-                        })
-                    })
-                    .collect();
-                anchors.sort_by(|a, b| a.name.cmp(&b.name));
+                let anchors = anchors_of(env, &v.name.name);
                 meta.views.push(ViewMeta {
                     id: c.id.clone(),
                     name: c.name.clone(),
@@ -921,6 +967,7 @@ fn build_meta(
             }
         }
     }
+    meta.template_views = template_views(env, ir);
     meta
 }
 

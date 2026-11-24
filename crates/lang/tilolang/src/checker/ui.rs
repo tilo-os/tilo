@@ -436,7 +436,7 @@ impl Checker<'_> {
                 let id = self
                     .env
                     .anchors
-                    .get(&format!("{}#{}", self.view_name(), a.name))
+                    .get(&format!("{}#{}", self.anchor_view(), a.name))
                     .cloned()
                     .unwrap_or_default();
                 if id.is_empty() {
@@ -477,6 +477,26 @@ impl Checker<'_> {
             .find(|c| c.own && c.id == self.st.view_id)
             .map(|c| c.name.clone())
             .unwrap_or_default()
+    }
+
+    /// The view whose anchors the UI statements name: the template being expanded when this
+    /// package declares it, whose anchors its callers show, else the view being checked.
+    pub(super) fn anchor_view(&self) -> String {
+        match self.st.expanding.last() {
+            Some(expanding) if expanding.ns.is_none() => expanding.name.clone(),
+            _ => self.view_name(),
+        }
+    }
+
+    /// The id of the view whose frame the code builds: the innermost template being expanded among
+    /// those this package declares, else the view being checked.
+    pub(super) fn owner_id(&self) -> String {
+        self.st
+            .expanding
+            .iter()
+            .rev()
+            .find_map(|expanding| expanding.id.clone())
+            .unwrap_or_else(|| self.st.view_id.clone())
     }
 
     pub(super) fn ui_call(&mut self, c: &UiCall, parent: Option<LocalId>) -> LocalId {
@@ -639,7 +659,7 @@ impl Checker<'_> {
             }
         };
         if let Some(a) = &c.anchor {
-            let key = format!("{}#{}", self.view_name(), a.name);
+            let key = format!("{}#{}", self.anchor_view(), a.name);
             let id = env.anchors.get(&key).cloned().unwrap_or_default();
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiAnchor,
@@ -1308,8 +1328,7 @@ impl Checker<'_> {
             return self.dead_node();
         }
         // A view showing a view a capture leaves out is part of a frame a capture leaves out.
-        self.view_edges
-            .push((self.st.view_id.clone(), v.id.clone()));
+        self.view_edges.push((self.owner_id(), v.id.clone()));
         if v.capture_protected {
             self.protected.insert(v.id.clone());
         }

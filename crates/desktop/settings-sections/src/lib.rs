@@ -9,6 +9,7 @@
 
 pub mod accessibility;
 pub mod continuity;
+pub mod control_hints;
 pub mod desktop;
 pub mod device_vpn;
 pub mod identity;
@@ -217,6 +218,7 @@ sections!(
     personal_dictionary::PersonalDictionary,
     prefs::PowerPrefs,
     prefs::WidgetsPrefs,
+    control_hints::ControlHintsPrefs,
     search::SearchHistory,
     prefs::UpdatePrefs,
     prefs::NotificationPrefs,

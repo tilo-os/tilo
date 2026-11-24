@@ -90,6 +90,15 @@ pub(crate) const WORKSPACE_DELETED: (&str, &str) = (
     "This workspace was deleted by its owner.",
 );
 
+/// The person's root retired this device's key (`device-revoked`): the host
+/// told the session so, with the entry that retires it, at a hello or on a link
+/// it ended. The session stops there, and only a person asking for a connection
+/// again tries.
+pub(crate) const DEVICE_REVOKED: (&str, &str) = (
+    "device-revoked",
+    "This device was removed from your devices.",
+);
+
 /// How long a connected session waits for the host to admit its workspaces
 /// before it reports `admission-timeout`. Checked on the channel tick.
 const ADMISSION_TIMEOUT_MS: u64 = 30_000;
@@ -1864,6 +1873,11 @@ impl Task {
             Some(tilo_server_protocol::refusal::Refusal::WorkspaceDeleted) => {
                 self.left(workspace_id, WORKSPACE_DELETED);
             }
+            // The host ended the link with the root's entry that retires this device's key: the
+            // device was removed, and asking the workspace again changes nothing.
+            Some(tilo_server_protocol::refusal::Refusal::Revoked(_)) => {
+                self.stop(DEVICE_REVOKED.0, DEVICE_REVOKED.1.to_owned());
+            }
             Some(tilo_server_protocol::refusal::Refusal::NotAMember(_)) => {
                 self.left(workspace_id, NOT_ADMITTED);
             }
@@ -2462,10 +2476,7 @@ fn refusal(error: &LinkError) -> Refusal {
         LinkError::Unavailable(_) | LinkError::Malformed(_) | LinkError::Sign(_) => {
             Refusal::Reachability
         }
-        LinkError::DeviceRevoked => Refusal::Final(
-            "device-revoked",
-            "This device was removed from your devices.".to_owned(),
-        ),
+        LinkError::DeviceRevoked => Refusal::Final(DEVICE_REVOKED.0, DEVICE_REVOKED.1.to_owned()),
         LinkError::CertificateRejected => Refusal::Final(
             "certificate-rejected",
             "This workspace’s server refused this browser’s certificate.".to_owned(),
@@ -2473,10 +2484,9 @@ fn refusal(error: &LinkError) -> Refusal {
         // A host that refuses the member proof a link's first stream carries says why in its
         // refusal's typed code (`HelloRefusal`): neither of the reasons it gives changes by
         // asking again. A refusal with anything else to say is the link's, and is tried again.
-        LinkError::Refused(code) if code.as_str() == "device-revoked" => Refusal::Final(
-            "device-revoked",
-            "This device was removed from your devices.".to_owned(),
-        ),
+        LinkError::Refused(code) if code.as_str() == "device-revoked" => {
+            Refusal::Final(DEVICE_REVOKED.0, DEVICE_REVOKED.1.to_owned())
+        }
         LinkError::Refused(code) if code.as_str() == "certificate-rejected" => Refusal::Final(
             "certificate-rejected",
             "This workspace’s server refused this browser’s certificate.".to_owned(),

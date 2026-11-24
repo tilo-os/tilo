@@ -192,6 +192,18 @@ mod cases {
                 .invoke_action(&me(), (action.as_str(), vec![Value::resource(card)]));
         }
 
+        /// Run the package's action `name` for `client`, as a card, a palette or an agent does.
+        fn client_command(&self, client: &str, name: &str) {
+            let action = self.app.action(name);
+            let _ = self.rt.invoke_action(
+                &me(),
+                (
+                    action.as_str(),
+                    vec![Value::resource(&self.root), Value::text(client)],
+                ),
+            );
+        }
+
         /// A field's text, as the store holds it.
         fn field(&self, at: &ResourceRef, name: &str) -> String {
             self.rt
@@ -868,6 +880,60 @@ mod cases {
             );
             assert!(action.key.is_none(), "{name} declares no shortcut");
         }
+    }
+
+    /// A client's command is Console's own action by the client a card, a palette or an agent
+    /// names: it makes that client's card and acts on it, so the stop reaches that client only.
+    #[test]
+    fn a_clients_command_acts_on_that_client_only() {
+        let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
+        console.publish();
+
+        console.client_command("Claude Code", "undo_client_session");
+        let call = console.dispatch.waiting();
+        assert_eq!(call.app(), "so.tilo.history", "the undo the history offers");
+        assert!(call.name().contains("undo"), "{}", call.name());
+        let (_, args) = console.dispatch.asked();
+        assert_eq!(
+            args.get(1).and_then(Value::as_text),
+            Some("aa"),
+            "Claude Code's run"
+        );
+        assert_eq!(args.get(2).and_then(Value::as_text), Some("bb"));
+
+        console.client_command("Cursor", "undo_client_session");
+        let (_, args) = console.dispatch.asked();
+        assert_eq!(
+            args.get(1).and_then(Value::as_text),
+            Some("01"),
+            "Cursor's run, not the other client's"
+        );
+        assert_eq!(args.get(2).and_then(Value::as_text), Some("02"));
+
+        // The stop ends the working session of the named client, and no other's.
+        console.client_command("Claude Code", "stop_client");
+        let call = console.dispatch.waiting();
+        assert_eq!(call.app(), "tilo.mcp-server", "the stop the server answers");
+        let (_, args) = console.dispatch.asked();
+        let Some(Value::Rec(session)) = args.get(1) else {
+            panic!("the stop names the session: {:?}", args.get(1));
+        };
+        let said = |name: &str| {
+            session
+                .fields
+                .get(&field_id_of("tilo.mcp-server", "AgentSessionRef", name))
+                .and_then(Value::as_text)
+        };
+        assert_eq!(said("session"), Some("Claude Code #2"));
+        assert_eq!(said("grant"), Some("0b1c"));
+
+        let before = console.dispatch.len();
+        console.client_command("Cursor", "stop_client");
+        assert_eq!(
+            console.dispatch.len(),
+            before,
+            "Cursor came in by no grant, so has none to stop"
+        );
     }
 
     /// The card offers the system's Copy link among its own actions: the press is the system's

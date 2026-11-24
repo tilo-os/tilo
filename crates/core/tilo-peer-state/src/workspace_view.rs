@@ -54,8 +54,6 @@ pub struct Listed {
     pub labels: Vec<String>,
     /// The person owns it.
     pub own: bool,
-    /// This device holds it.
-    pub kept_here: bool,
     /// The device that runs its work when that is another than this one (a home server, a cloud
     /// host), by the address it signed into the workspace's membership (postcard, in hex): where
     /// its records' actions run, and where a device of the person's that holds none of it enters.

@@ -2075,10 +2075,11 @@ impl Workspaces {
 /// What a change committed while a workspace is held keeps with it: the
 /// members' records an admission writes ([`super::admitting`]), answering
 /// whose it kept and the frames it wrote.
-pub(super) type Keeping<'a> = &'a dyn Fn(
-    &mut tilo_peer_state::StatePeer,
-    (&SigningKey, std::time::SystemTime),
-) -> Result<(Vec<[u8; 32]>, Vec<neighbour_wire::NeighbourMsg>), String>;
+pub(super) type Keeping<'a> =
+    &'a dyn Fn(
+        &mut tilo_peer_state::StatePeer,
+        (&SigningKey, std::time::SystemTime),
+    ) -> Result<(Vec<[u8; 32]>, Vec<neighbour_wire::NeighbourMsg>), String>;
 
 /// A workspace of this server while a governor decides, under its lock: whether
 /// its log changed unwritten, and whether a governance change was

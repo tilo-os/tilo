@@ -398,6 +398,16 @@ mod tests {
 
     const CHAT: &str = "so.tilo.chat";
 
+    /// Chat's surface, declared as the device that runs the app names it, so a write to its
+    /// record is judged by the types this build carries.
+    fn declare_chat(workspaces: &Workspaces) {
+        let packages = built_in(CHAT).unwrap().expect("Chat is built in");
+        workspaces.declare_package_surface(
+            CHAT,
+            &packages.surface(CHAT).expect("Chat declares its surface"),
+        );
+    }
+
     fn records(workspaces: &Workspaces) -> BuiltInRecords {
         BuiltInRecords {
             workspaces: workspaces.clone(),
@@ -537,6 +547,7 @@ mod tests {
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         workspaces.provide_tilolang(crate::host());
+        declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
         add_scout(&workspaces, &workspace, &owner).await;
@@ -581,6 +592,7 @@ mod tests {
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         workspaces.provide_tilolang(crate::host());
+        declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
         add_scout(&workspaces, &workspace, &owner).await;
@@ -700,6 +712,7 @@ mod tests {
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         workspaces.provide_tilolang(crate::host());
+        declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
         add_scout(&workspaces, &workspace, &owner).await;
@@ -813,6 +826,7 @@ mod tests {
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         workspaces.provide_tilolang(crate::host());
+        declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let ada_person = hex::encode(owner.user_public_key);
         let tasks = built_in(TASKS).unwrap().expect("Tasks is built in");

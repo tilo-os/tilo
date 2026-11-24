@@ -81,18 +81,18 @@ tilo_test_env::scenario! {
             let list = lists[0];
             assert_eq!(
                 list.value(),
-                Some("#E6C84A"),
-                "value is selected swatch hex"
+                Some("Yellow"),
+                "value is the selected swatch's colour"
             );
 
             let items = of_role(&nodes, AkRole::ListItem);
             assert_eq!(items.len(), palette.len(), "one ListItem per swatch");
-            let first = by_label(&nodes, AkRole::ListItem, "#E64A4A");
+            let first = by_label(&nodes, AkRole::ListItem, "Red");
             assert_eq!(first.position_in_set(), Some(1));
             assert_eq!(first.size_of_set(), Some(4));
             // Selection is explicit tri-state on ListItems: the chosen one true, the
             // rest false (so an AT doesn't announce "selected" for the wrong swatch).
-            let chosen = by_label(&nodes, AkRole::ListItem, "#E6C84A");
+            let chosen = by_label(&nodes, AkRole::ListItem, "Yellow");
             assert_eq!(
                 chosen.is_selected(),
                 Some(true),

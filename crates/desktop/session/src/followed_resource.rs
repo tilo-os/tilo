@@ -40,6 +40,38 @@ struct Latest {
     copy: Reading,
 }
 
+/// Writes sent to the daemon without waiting ([`FollowedResource::send`]): how they went, once
+/// they did.
+#[derive(Clone, Default)]
+pub(crate) struct Sending(Arc<(Mutex<Option<Result<(), String>>>, std::sync::Condvar)>);
+
+impl Sending {
+    /// How they went: `None` while they are on their way.
+    pub(crate) fn went(&self) -> Option<Result<(), String>> {
+        self.0.0.lock_recover().clone()
+    }
+
+    fn finish(&self, went: Result<(), String>) {
+        *self.0.0.lock_recover() = Some(went);
+        self.0.1.notify_all();
+    }
+
+    /// Wait until they went: what a test takes its next step after.
+    #[cfg(test)]
+    pub(crate) fn wait(&self) -> Result<(), String> {
+        let (went, done) = &*self.0;
+        let (went, timeout) = done
+            .wait_timeout_while(
+                went.lock_recover(),
+                std::time::Duration::from_secs(120),
+                |went| went.is_none(),
+            )
+            .expect("the writes' lock holds");
+        assert!(!timeout.timed_out(), "the daemon answers the writes");
+        went.clone().expect("they went")
+    }
+}
+
 /// One followed resource of a workspace, of the type `P`. Cloning shares it; the follow stops once
 /// the last clone goes.
 pub(crate) struct FollowedResource<P: Resource> {
@@ -280,28 +312,98 @@ impl<P: Resource> FollowedResource<P> {
 
     /// Run `invoke` at the device's daemon, as the person, without waiting for it: what the
     /// session says of itself on its loop, which must never wait on the daemon's store. `done`
-    /// hears how it went, on the daemon link's runtime; the follow shows what it changed.
+    /// hears how it went, on the daemon link's runtime, once the resource was read again.
     pub(crate) fn invoke_unwaited(
         &self,
         invoke: &Invoke<P>,
         done: impl FnOnce(Result<(), String>) + Send + 'static,
     ) {
-        if let Some(refusal) = invoke.refusal() {
-            done(Err(refusal.to_owned()));
-            return;
-        }
-        let request = self.request(invoke.address(), invoke.arguments.clone(), None);
-        let daemon = self.shared.daemon.clone();
-        let workspace = self.shared.workspace.clone();
-        self.shared.daemon.runtime().spawn(async move {
-            let ran = daemon
-                .dispatch(
-                    Some(&workspace),
-                    &tilo_actions::remote::RemoteActionMessage::Invoke(request),
-                )
-                .await;
-            done(ran.map(|_| ()));
+        self.unwaited(std::slice::from_ref(invoke), done);
+    }
+
+    /// Run `invokes` at the device's daemon, in order, as the person, without waiting for them:
+    /// one that is refused stops the rest. The resource is read again once they ran, so what
+    /// [`Self::get`] reads by the time the answer says they went shows them, and the session is
+    /// woken then.
+    pub(crate) fn send(&self, invokes: &[Invoke<P>]) -> Sending {
+        let sending = Sending::default();
+        let (finished, wake) = (sending.clone(), Arc::clone(&self.shared.wake));
+        self.unwaited(invokes, move |went| {
+            finished.finish(went);
+            wake();
         });
+        sending
+    }
+
+    fn unwaited(
+        &self,
+        invokes: &[Invoke<P>],
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        let requests: Result<Vec<(&'static str, InvokeRequest)>, String> = invokes
+            .iter()
+            .map(|invoke| match invoke.refusal() {
+                Some(refusal) => Err(refusal.to_owned()),
+                None => Ok((
+                    invoke.id,
+                    self.request(invoke.address(), invoke.arguments.clone(), None),
+                )),
+            })
+            .collect();
+        let requests = match requests {
+            Ok(requests) => requests,
+            Err(refusal) => {
+                done(Err(refusal));
+                return;
+            }
+        };
+        let shared = &self.shared;
+        let (daemon, workspace, latest, wake) = (
+            shared.daemon.clone(),
+            shared.workspace.clone(),
+            Arc::clone(&shared.latest),
+            Arc::clone(&shared.wake),
+        );
+        let read = read_of(&shared.workspace, shared.app, &shared.id, None);
+        shared.daemon.runtime().spawn(async move {
+            for (action, request) in requests {
+                let ran = daemon
+                    .dispatch(
+                        Some(&workspace),
+                        &tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                    )
+                    .await;
+                if let Err(error) = ran {
+                    tracing::warn!(%error, kind = P::KIND, action, "a resource was not changed");
+                    done(Err(error));
+                    return;
+                }
+            }
+            // What they changed shows before the caller hears they went.
+            match daemon.read(read).await {
+                Ok(readings) => {
+                    if take(&latest, &readings) {
+                        wake();
+                    }
+                }
+                Err(error) => tilo_failure::ignored!(
+                    "the follow reads what the writes changed a moment later",
+                    tracing::debug!(%error, "a resource was not read again after its writes")
+                ),
+            }
+            done(Ok(()));
+        });
+    }
+
+    /// Read it again now and wait for the answer: what a test reads its next step against.
+    #[cfg(test)]
+    pub(crate) fn read_now(&self) {
+        let shared = &self.shared;
+        let readings = shared
+            .daemon
+            .read_blocking(read_of(&shared.workspace, shared.app, &shared.id, None))
+            .expect("the resource reads");
+        take(&shared.latest, &readings);
     }
 
     fn run(

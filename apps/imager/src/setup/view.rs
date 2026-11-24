@@ -3,9 +3,7 @@
 
 mod support_report;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
@@ -46,7 +44,6 @@ pub(crate) struct FullOsCheck {
     pub plan: super::staging::plan::Plan,
 }
 
-type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
 type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
 type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
 
@@ -98,7 +95,6 @@ enum WorkerMessage {
 pub struct SetupApp {
     capabilities: SetupCapabilities,
     experience: Option<Experience>,
-    commands: CommandSink,
     worker_tx: Sender<WorkerMessage>,
     worker_rx: Receiver<WorkerMessage>,
     worker_launcher: WorkerLauncher,
@@ -324,7 +320,6 @@ impl SetupApp {
             dirty: true,
             capabilities,
             experience: None,
-            commands: Rc::new(RefCell::new(Vec::new())),
             worker_tx,
             worker_rx,
             worker_launcher,
@@ -679,32 +674,57 @@ impl SetupApp {
         changed
     }
 
-    fn drain_commands(&mut self) -> bool {
-        let commands = std::mem::take(&mut *self.commands.borrow_mut());
-        let changed = !commands.is_empty();
-        for command in commands {
-            self.apply_command(command);
-        }
-        changed
+    /// The published effect a press of `command`'s button asks: the same one an agent or a
+    /// script invokes, so a press is checked and answered as theirs is. A command with none
+    /// (the install that cannot run here) is a button that is never enabled.
+    fn press_effect(&self, command: SetupCommand) -> Option<SetupEffect> {
+        let operation_id = || {
+            self.internal_install
+                .pending()
+                .map(|record| record.operation_id.clone())
+                .unwrap_or_default()
+        };
+        Some(match command {
+            SetupCommand::Next => SetupEffect::ContinueSetup,
+            SetupCommand::InstallDesktop => SetupEffect::InstallDesktop,
+            SetupCommand::CancelDesktopDownload => SetupEffect::CancelDesktopDownload,
+            SetupCommand::RetryDesktop => SetupEffect::RecheckDesktop,
+            SetupCommand::StartInternalDownload => SetupEffect::StartInternalDownload,
+            SetupCommand::PauseInternalDownload => SetupEffect::PauseInternalDownload,
+            SetupCommand::ResumeInternalDownload => SetupEffect::ResumeInternalDownload,
+            SetupCommand::CancelInternalDownload => SetupEffect::CancelInternalDownload,
+            SetupCommand::DiscardInternalDownload => SetupEffect::DiscardInternalDownload,
+            SetupCommand::ReleaseInternalDownload => SetupEffect::ReleaseInternalDownload,
+            SetupCommand::InstallInternal => SetupEffect::InstallInternal {
+                reviewed: self
+                    .internal_install
+                    .reviewed_digest()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
+            },
+            SetupCommand::RestartInternal => SetupEffect::RestartInternal,
+            SetupCommand::RestartInternalLater => SetupEffect::RestartInternalLater,
+            SetupCommand::RetryInternal => SetupEffect::RetryInternal {
+                operation_id: operation_id(),
+            },
+            SetupCommand::RemoveInternal => SetupEffect::RemoveInternal {
+                operation_id: operation_id(),
+            },
+            SetupCommand::InternalFirmwareSettings => SetupEffect::InternalFirmwareSettings,
+            SetupCommand::InternalDisableFastStartup => SetupEffect::InternalDisableFastStartup,
+            SetupCommand::RecheckInternal => SetupEffect::RecheckInternal,
+            SetupCommand::InternalInstallUnavailable => return None,
+        })
     }
 
     fn button(&self, id: &str, key: &str, command: SetupCommand) -> Button {
-        let label = crate::setup::strings::t(key);
-        let effect = match command {
-            SetupCommand::InstallDesktop => Some(SetupEffect::InstallDesktop),
-            SetupCommand::CancelDesktopDownload => Some(SetupEffect::CancelDesktopDownload),
-            SetupCommand::RetryDesktop => Some(SetupEffect::RecheckDesktop),
-            _ => None,
-        };
-        if let Some(effect) = effect {
-            return Button::new(id, &label)
-                .control_size(ControlSize::Regular)
-                .on_click(self.port.presses().on(effect));
+        let button =
+            Button::new(id, &crate::setup::strings::t(key)).control_size(ControlSize::Regular);
+        match self.press_effect(command) {
+            Some(effect) => button.on_click(self.port.presses().on(effect)),
+            None => button.with_enabled(false),
         }
-        let sink = Rc::clone(&self.commands);
-        Button::new(id, &label)
-            .control_size(ui::widget::ControlSize::Regular)
-            .on_click(move || sink.borrow_mut().push(command))
     }
 
     fn desktop_install_card(&self) -> Section {
@@ -1977,12 +1997,11 @@ impl Widget for SetupApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.dirty = true;
         self.poll_background();
-        self.drain_commands();
         self.composed.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = self.poll_background() || self.drain_commands();
+        let mut changed = self.poll_background();
         if let Some(composed) = self.composed.element_mut() {
             changed |= composed.update(state, path);
         }
@@ -2088,6 +2107,7 @@ impl crate::hosting::Window for SetupApp {
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
+    use std::cell::RefCell;
     use std::path::{Path, PathBuf};
 
     use std::sync::{

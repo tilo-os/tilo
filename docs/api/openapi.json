@@ -6462,48 +6462,6 @@
         ],
         "description": ""
       },
-      "totp.vault.move-up.Arguments": {
-        "type": "object",
-        "properties": {
-          "account": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "account"
-        ],
-        "description": ""
-      },
-      "totp.vault.move-down.Arguments": {
-        "type": "object",
-        "properties": {
-          "account": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "account"
-        ],
-        "description": ""
-      },
-      "totp.vault.delete.Arguments": {
-        "type": "object",
-        "properties": {
-          "account": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "account"
-        ],
-        "description": ""
-      },
-      "totp.vault.add-account.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "tilolang.personal.view-state.Arguments": {
         "type": "object",
         "properties": {},
@@ -6556,6 +6514,758 @@
             "description": "The name of the field to set.",
             "enum": [
               "seen"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.Account.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.totp.Account.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "issuer",
+              "label",
+              "item"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.Account.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.Account.rename_account.Arguments": {
+        "type": "object",
+        "properties": {
+          "issuer": {
+            "type": "string"
+          },
+          "algorithm": {
+            "type": "string"
+          },
+          "digits": {
+            "type": "integer"
+          },
+          "period": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issuer",
+          "algorithm",
+          "digits",
+          "period"
+        ],
+        "description": "Renames an account's service: what a person changing the name it shows did. The codes'\nsettings come from the form, which read them when it opened: an action never reads the\nvault, so what it keeps is what the window showed the person."
+      },
+      "tl.so.tilo.totp.Account.relabel_account.Arguments": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "algorithm": {
+            "type": "string"
+          },
+          "digits": {
+            "type": "integer"
+          },
+          "period": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "algorithm",
+          "digits",
+          "period"
+        ],
+        "description": "Changes who an account signs in as: what a person changing its name did. Its codes' settings\ncome from the form, as a rename's do."
+      },
+      "tl.so.tilo.totp.Account.recolor_account.Arguments": {
+        "type": "object",
+        "properties": {
+          "color": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "color"
+        ],
+        "description": "Gives an account a colour of its own: what a person recolouring it did."
+      },
+      "tl.so.tilo.totp.Account.recode_account.Arguments": {
+        "type": "object",
+        "properties": {
+          "algorithm": {
+            "type": "string"
+          },
+          "digits": {
+            "type": "integer"
+          },
+          "period": {
+            "type": "integer"
+          },
+          "secret": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "algorithm",
+          "digits",
+          "period"
+        ],
+        "description": "Changes how an account makes its codes, and its key with them: what a person changing the\nalgorithm, the digits, the period or the key did."
+      },
+      "tl.so.tilo.totp.Account.update_account.Arguments": {
+        "type": "object",
+        "properties": {
+          "issuer": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          },
+          "algorithm": {
+            "type": "string"
+          },
+          "digits": {
+            "type": "integer"
+          },
+          "period": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issuer"
+        ],
+        "description": "Changes what an account says, and its key and how its codes are made. A key left out keeps\nthe one the vault holds: the service's key never leaves it, so changing an account's details\ncan never show it."
+      },
+      "tl.so.tilo.totp.Account.copy_code.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Copies an account's current code to the clipboard, and says so: the person asked for it, and\na window that shows nothing would leave them guessing whether it worked."
+      },
+      "tl.so.tilo.totp.Vault.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.totp.Vault.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "notice",
+              "notice_kind",
+              "pending",
+              "pending_issuer",
+              "pending_label",
+              "pending_algorithm"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.Vault.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.Vault.add_account.Arguments": {
+        "type": "object",
+        "properties": {
+          "issuer": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          },
+          "algorithm": {
+            "type": "string"
+          },
+          "digits": {
+            "type": "integer"
+          },
+          "period": {
+            "type": "integer"
+          },
+          "color": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issuer",
+          "secret"
+        ],
+        "description": "Starts an account from what the person typed, or what a setup link said: what an agent, a\nscript or the form asks. The vault keeps the seed; the account keeps the words."
+      },
+      "tl.so.tilo.totp.Vault.import_uri.Arguments": {
+        "type": "object",
+        "properties": {
+          "uri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "uri"
+        ],
+        "description": "Adds the account a setup link names: what the QR scan and the paste field both end in."
+      },
+      "tl.so.tilo.totp.Vault.scan_picture.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Reads the account a picture's QR code names, and keeps its key in the vault for the form to\nshow: nothing is added until the person reads what the picture said and saves it."
+      },
+      "tl.so.tilo.totp.Vault.add_pending.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Adds the account the picture read, with the key the vault already holds for it."
+      },
+      "tl.so.tilo.totp.Vault.drop_pending.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Lets the picture's account go: the key the vault kept for it is forgotten too."
+      },
+      "tl.so.tilo.totp.Vault.move_up.Arguments": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.totp.Account",
+            "type": "object"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "description": "Moves an account one place up the list."
+      },
+      "tl.so.tilo.totp.Vault.move_down.Arguments": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.totp.Account",
+            "type": "object"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "description": "Moves an account one place down the list."
+      },
+      "tl.so.tilo.totp.Vault.delete_account.Arguments": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.totp.Account",
+            "type": "object"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "description": "Deletes an account and the key the vault kept for it."
+      },
+      "tl.so.tilo.totp.Vault.refuse.Arguments": {
+        "type": "object",
+        "properties": {
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "why"
+        ],
+        "description": "Refuse"
+      },
+      "tl.so.tilo.totp.Vault.save_account.Arguments": {
+        "type": "object",
+        "properties": {
+          "editing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.totp.Account",
+            "type": "object"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          },
+          "algorithm": {
+            "type": "string"
+          },
+          "digits": {
+            "type": "integer"
+          },
+          "period": {
+            "type": "integer"
+          },
+          "color": {
+            "type": "integer"
+          },
+          "was_algorithm": {
+            "type": "string"
+          },
+          "was_digits": {
+            "type": "integer"
+          },
+          "was_period": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issuer",
+          "label",
+          "secret",
+          "algorithm",
+          "digits",
+          "period"
+        ],
+        "description": "Saves the form: starts the account, or changes the one it was opened over, answering whether\nit saved. A refusal says why in the bar and leaves the form open with what was typed, so a\nwindow only leaves the form when this answered that it saved."
+      },
+      "tl.so.tilo.totp.Vault.clear_notice.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Clear notice"
+      },
+      "tl.so.tilo.totp.ParseAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.totp.ParseAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "uri"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.ParseAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.ParsedAnswer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.totp.ParsedAnswer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "issuer",
+              "label",
+              "secret",
+              "algorithm"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.ParsedAnswer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.ScanAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.totp.ScanAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "address"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.ScanAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.ScanAnswer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.totp.ScanAnswer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "uri"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.ScanAnswer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.CheckAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.totp.CheckAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "secret"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.CheckAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.CheckAnswer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.totp.CheckAnswer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.totp.CheckAnswer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "ok"
             ],
             "type": "string"
           },
@@ -91758,6 +92468,60 @@
         ],
         "description": ""
       },
+      "settings.control-hints.show-control-hints.Arguments": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "description": ""
+      },
+      "settings.control-hints.learn-control-hint.Arguments": {
+        "type": "object",
+        "properties": {
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hint"
+        ],
+        "description": ""
+      },
+      "settings.control-hints.note-control-hint-shown.Arguments": {
+        "type": "object",
+        "properties": {
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hint"
+        ],
+        "description": ""
+      },
+      "settings.control-hints.withdraw-control-hint-shown.Arguments": {
+        "type": "object",
+        "properties": {
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hint"
+        ],
+        "description": ""
+      },
+      "settings.control-hints.show-control-hints-again.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "settings.updates.record-automatic-updates.Arguments": {
         "type": "object",
         "properties": {
@@ -93244,27 +94008,285 @@
     },
     {
       "app": "so.tilo.totp",
-      "resource": "totp.vault",
-      "action": "move-up",
-      "arguments": "#/components/schemas/totp.vault.move-up.Arguments"
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
     },
     {
       "app": "so.tilo.totp",
-      "resource": "totp.vault",
-      "action": "move-down",
-      "arguments": "#/components/schemas/totp.vault.move-down.Arguments"
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
     },
     {
       "app": "so.tilo.totp",
-      "resource": "totp.vault",
-      "action": "delete",
-      "arguments": "#/components/schemas/totp.vault.delete.Arguments"
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
       "app": "so.tilo.totp",
-      "resource": "totp.vault",
-      "action": "add-account",
-      "arguments": "#/components/schemas/totp.vault.add-account.Arguments"
+      "resource": "tl.tilo.host.Notice",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.tilo.host.Notice",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.tilo.host.Notice",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Account",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Account.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Account",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Account.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Account",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Account.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Account",
+      "action": "rename_account",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Account.rename_account.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Account",
+      "action": "relabel_account",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Account.relabel_account.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Account",
+      "action": "recolor_account",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Account.recolor_account.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Account",
+      "action": "recode_account",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Account.recode_account.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Account",
+      "action": "update_account",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Account.update_account.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Account",
+      "action": "copy_code",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Account.copy_code.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "add_account",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.add_account.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "import_uri",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.import_uri.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "scan_picture",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.scan_picture.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "add_pending",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.add_pending.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "drop_pending",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.drop_pending.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "move_up",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.move_up.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "move_down",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.move_down.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "delete_account",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.delete_account.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "refuse",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.refuse.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "save_account",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.save_account.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.Vault",
+      "action": "clear_notice",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.Vault.clear_notice.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ParseAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ParseAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ParseAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ParseAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ParseAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ParseAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ParsedAnswer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ParsedAnswer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ParsedAnswer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ParsedAnswer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ParsedAnswer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ParsedAnswer.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ScanAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ScanAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ScanAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ScanAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ScanAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ScanAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ScanAnswer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ScanAnswer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ScanAnswer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ScanAnswer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.ScanAnswer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.ScanAnswer.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.CheckAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.CheckAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.CheckAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.CheckAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.CheckAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.CheckAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.CheckAnswer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.CheckAnswer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.CheckAnswer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.CheckAnswer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.totp",
+      "resource": "tl.so.tilo.totp.CheckAnswer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.totp.CheckAnswer.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.activity",
@@ -124999,6 +126021,36 @@
       "resource": "settings.widgets",
       "action": "resize-widget",
       "arguments": "#/components/schemas/settings.widgets.resize-widget.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.control-hints",
+      "action": "show-control-hints",
+      "arguments": "#/components/schemas/settings.control-hints.show-control-hints.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.control-hints",
+      "action": "learn-control-hint",
+      "arguments": "#/components/schemas/settings.control-hints.learn-control-hint.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.control-hints",
+      "action": "note-control-hint-shown",
+      "arguments": "#/components/schemas/settings.control-hints.note-control-hint-shown.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.control-hints",
+      "action": "withdraw-control-hint-shown",
+      "arguments": "#/components/schemas/settings.control-hints.withdraw-control-hint-shown.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.control-hints",
+      "action": "show-control-hints-again",
+      "arguments": "#/components/schemas/settings.control-hints.show-control-hints-again.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",

@@ -149,5 +149,6 @@ pub struct ShellServices {
 }
 
 /// What carries one admitted link of a shell's live session until it ends.
-pub type LiveLinks =
-    Arc<dyn Fn(tilo_socket::tokio::Stream) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+pub type LiveLinks = Arc<
+    dyn Fn(tilo_socket::tokio::Stream) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+>;

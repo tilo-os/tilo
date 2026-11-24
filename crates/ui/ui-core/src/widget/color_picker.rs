@@ -34,6 +34,12 @@ const HUE_STRIP_WIDTH: f64 = 16.0;
 const SV_CURSOR_RADIUS: f64 = 6.0;
 const PREVIEW_SIZE: f64 = 40.0;
 const SLIDER_HEIGHT: f64 = 24.0;
+/// A channel slider's name and value stand beside its track: the columns they take at
+/// the picker's leading and trailing edges, and the step between a column and the track
+/// (the knob overhangs into it).
+const SLIDER_LABEL_WIDTH: f64 = token(SPACE.s8);
+const SLIDER_VALUE_WIDTH: f64 = token(SPACE.s8);
+const SLIDER_SIDE_GAP: f64 = token(SPACE.s3);
 const SLIDER_GAP: f64 = 4.0;
 const COMPONENT_GAP: f64 = 8.0;
 /// A spacing or metric token as a layout length. Layout runs without a
@@ -85,6 +91,19 @@ const TARGET_VALUE: &str = "color_picker";
 const TARGET_CANCEL: &str = "color_picker.cancel";
 const TARGET_DONE: &str = "color_picker.done";
 const TARGET_SWATCH: &str = "color_picker.swatch:";
+const TARGET_HUE: &str = "color_picker.hue";
+const TARGET_R: &str = "color_picker.r";
+const TARGET_G: &str = "color_picker.g";
+const TARGET_B: &str = "color_picker.b";
+
+/// One of the picker's sliders a reader steps or sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Channel {
+    Hue,
+    Red,
+    Green,
+    Blue,
+}
 
 /// Which sub-control owns the current pointer drag, set on press and
 /// routed `CursorMoved` to the matching `set_*` helper until release.
@@ -290,10 +309,6 @@ impl ColorPicker {
         }
     }
 
-    fn has_extras(&self) -> bool {
-        self.confirm_title.is_some() || !self.swatches.is_empty()
-    }
-
     fn swatches_per_row(width: f64) -> usize {
         let per = ((width + SWATCH_GAP) / (SWATCH_SIZE + SWATCH_GAP)).floor();
         #[allow(
@@ -349,17 +364,14 @@ impl ColorPicker {
             layout.hex = Rect::new(hex_x0, top, x1.max(hex_x0), top + FIELD_HEIGHT);
             block_bottom = layout.hex.y1;
         }
-        // The channel sliders: the shared `Slider` face, inset so its knob
-        // overhangs into the picker, never past its edge.
-        let overhang = crate::widget::SliderFace::overhang();
+        // The channel sliders: the shared `Slider` face, between the column that names
+        // the channel and the column that reads it, the knob overhanging into the steps
+        // on either side and never past the picker's edge.
+        let track_x0 = x0 + SLIDER_LABEL_WIDTH + SLIDER_SIDE_GAP;
+        let track_x1 = (x1 - SLIDER_VALUE_WIDTH - SLIDER_SIDE_GAP).max(track_x0);
         let mut top = block_bottom + COMPONENT_GAP;
         for slot in [&mut layout.r, &mut layout.g, &mut layout.b] {
-            *slot = Rect::new(
-                x0 + overhang,
-                top,
-                (x1 - overhang).max(x0 + overhang),
-                top + SLIDER_HEIGHT,
-            );
+            *slot = Rect::new(track_x0, top, track_x1, top + SLIDER_HEIGHT);
             top = slot.y1 + SLIDER_GAP;
         }
         let mut bottom = layout.b.y1;
@@ -852,10 +864,31 @@ impl ColorPicker {
         a.r() == b.r() && a.g() == b.g() && a.b() == b.b()
     }
 
+    /// The column before a channel's track, where the channel is named.
+    fn slider_name_column(&self, slider: Rect) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            slider.y0,
+            self.rect.x0 + SLIDER_LABEL_WIDTH,
+            slider.y1,
+        )
+    }
+
+    /// The column after a channel's track, where the channel's value stands.
+    fn slider_value_column(&self, slider: Rect) -> Rect {
+        Rect::new(
+            self.rect.x1 - SLIDER_VALUE_WIDTH,
+            slider.y0,
+            self.rect.x1,
+            slider.y1,
+        )
+    }
+
     fn draw_preview_and_sliders(
         &self,
         scene: &mut Scene,
         transform: Affine,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         radius_sm: f64,
     ) {
@@ -876,11 +909,58 @@ impl ColorPicker {
             &preview_shape,
         );
 
-        for (slider, channel, target) in [
-            (self.r_slider_rect, self.color.r(), DragTarget::R),
-            (self.g_slider_rect, self.color.g(), DragTarget::G),
-            (self.b_slider_rect, self.color.b(), DragTarget::B),
+        let style = theme.text(TextRole::Caption);
+        let (_, line) = text_renderer.measure_style("Ag", None, &style);
+        for (slider, channel, target, name) in [
+            (
+                self.r_slider_rect,
+                self.color.r(),
+                DragTarget::R,
+                "widget-colour-red",
+            ),
+            (
+                self.g_slider_rect,
+                self.color.g(),
+                DragTarget::G,
+                "widget-colour-green",
+            ),
+            (
+                self.b_slider_rect,
+                self.color.b(),
+                DragTarget::B,
+                "widget-colour-blue",
+            ),
         ] {
+            // What the slider controls before it, what it reads after it: a track with
+            // neither is a bar a person cannot read.
+            let y = slider.y0 + f64::from(slider.height() - f64::from(line)).max(0.0) / 2.0;
+            let name_column = self.slider_name_column(slider);
+            let words = text_renderer.elide_to_width_style(
+                &widget_text(name),
+                crate::num::f32_of_f64(name_column.width()),
+                &style,
+            );
+            text_renderer.draw_style(
+                scene,
+                &words,
+                theme.text_dim,
+                transform.pre_translate(Vec2::new(name_column.x0, y)),
+                None,
+                &style,
+            );
+            let value = channel.to_string();
+            let numeric = style.clone().numeric();
+            let value_column = self.slider_value_column(slider);
+            let (value_width, _) = text_renderer.measure_style(&value, None, &numeric);
+            let value_x = (value_column.x1 - f64::from(value_width)).max(value_column.x0);
+            text_renderer.draw_style(
+                scene,
+                &value,
+                theme.text_primary,
+                transform.pre_translate(Vec2::new(value_x, y)),
+                None,
+                &numeric,
+            );
             crate::widget::Slider::paint(
                 scene,
                 transform,
@@ -978,7 +1058,7 @@ impl Widget for ColorPicker {
         // ring, hue tick, and slider knobs.
         self.draw_title(scene, transform, text_renderer, theme);
         self.draw_sv_and_hue(scene, transform, colors, radius_sm);
-        self.draw_preview_and_sliders(scene, transform, theme, radius_sm);
+        self.draw_preview_and_sliders(scene, transform, text_renderer, theme, radius_sm);
         self.draw_swatches(scene, transform, text_renderer, theme);
         self.draw_buttons(scene, transform, text_renderer, theme);
 
@@ -1188,6 +1268,14 @@ impl Widget for ColorPicker {
     fn is_focusable(&self) -> bool {
         true
     }
+
+    /// Each swatch names itself on hover, as it does for a reader.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        self.swatches
+            .iter()
+            .zip(&self.swatch_rects)
+            .find_map(|(swatch, rect)| ColorSwatchFace::of(*rect, swatch).tooltip_target(point))
+    }
     fn set_focus(&mut self, focused: bool) {
         self.dirty = true;
         if focused && self.hex_input_focus_pending {
@@ -1233,25 +1321,52 @@ impl Widget for ColorPicker {
         self.interaction = environment;
     }
 
-    /// With swatches or in confirm mode the picker is a group: the colour
-    /// value, one radio button per swatch (checked while it is the current
-    /// colour) and, in confirm mode, *Cancel* and *Done* buttons — each with
-    /// its own semantic action.
+    /// The picker is a group of the controls a reader works it with: the colour's hex value,
+    /// the hue strip and the red, green and blue sliders — each named and reading its own
+    /// value — then one radio button per swatch (checked while it is the current colour) and,
+    /// in confirm mode, *Cancel* and *Done*.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let value = AccessNode::new(Role::ComboBox)
             .with_action_target(TARGET_VALUE)
             .with_optional_name(self.accessible_name.as_ref().map(|name| widget_text(name)))
             .with_value(self.hex_string())
+            .with_bounds(self.hex_input_rect)
             .with_state(
                 AccessState::new()
                     .focusable(self.is_focusable())
                     .focused(self.is_focused()),
             );
-        if !self.has_extras() {
-            return Some(value);
-        }
         let mut children = vec![value];
+        let (hue, _, _) = self.current_hsv();
+        children.push(Self::slider_node(
+            "widget-colour-hue",
+            format!("{:.0}°", hue * 360.0),
+            TARGET_HUE,
+            self.hue_strip_rect,
+        ));
+        for (name, channel, target, rect) in [
+            (
+                "widget-colour-red",
+                self.color.r(),
+                TARGET_R,
+                self.r_slider_rect,
+            ),
+            (
+                "widget-colour-green",
+                self.color.g(),
+                TARGET_G,
+                self.g_slider_rect,
+            ),
+            (
+                "widget-colour-blue",
+                self.color.b(),
+                TARGET_B,
+                self.b_slider_rect,
+            ),
+        ] {
+            children.push(Self::slider_node(name, channel.to_string(), target, rect));
+        }
         children.extend(
             self.swatches
                 .iter()
@@ -1314,6 +1429,10 @@ impl Widget for ColorPicker {
                 true
             }
             (TARGET_VALUE, _) => self.perform_action(action, &[], state, root),
+            (TARGET_HUE, action) => self.move_channel(action, Channel::Hue),
+            (TARGET_R, action) => self.move_channel(action, Channel::Red),
+            (TARGET_G, action) => self.move_channel(action, Channel::Green),
+            (TARGET_B, action) => self.move_channel(action, Channel::Blue),
             _ => false,
         }
     }
@@ -1332,6 +1451,76 @@ impl Widget for ColorPicker {
             return false;
         };
         self.set_rgb(color.r(), color.g(), color.b());
+        self.sync_input();
+        true
+    }
+}
+
+impl ColorPicker {
+    /// One of the picker's sliders as a reader meets it: its name, and what it reads now.
+    fn slider_node(
+        name: &str,
+        value: String,
+        target: &'static str,
+        bounds: Rect,
+    ) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        AccessNode::new(Role::Slider)
+            .with_name(widget_text(name))
+            .with_value(value)
+            .with_action_target(target)
+            .with_bounds(bounds)
+            .with_state(AccessState::new().focusable(true))
+    }
+
+    /// A slider's step from a reader: five steps a press, or the value it names.
+    fn move_channel(&mut self, action: &crate::a11y::Action, channel: Channel) -> bool {
+        use crate::a11y::Action;
+        let span = if channel == Channel::Hue {
+            360.0
+        } else {
+            255.0
+        };
+        let current = match channel {
+            Channel::Hue => f64::from(self.current_hsv().0) * 360.0,
+            Channel::Red => f64::from(self.color.r()),
+            Channel::Green => f64::from(self.color.g()),
+            Channel::Blue => f64::from(self.color.b()),
+        };
+        let target = match action {
+            Action::Increment => current + span / 20.0,
+            Action::Decrement => current - span / 20.0,
+            Action::SetValue(value) => {
+                let text = value.trim().trim_end_matches(['%', '°']).trim();
+                let Ok(parsed) = text.parse::<f64>() else {
+                    return false;
+                };
+                if !parsed.is_finite() {
+                    return false;
+                }
+                parsed
+            }
+            _ => return false,
+        }
+        .clamp(0.0, span);
+        match channel {
+            Channel::Hue => {
+                let hue = crate::num::f32_of_f64(target / 360.0).min(0.999_9);
+                self.set_hue(hue);
+            }
+            Channel::Red => {
+                let red = Self::channel_u8(crate::num::f32_of_f64(target));
+                self.set_rgb(red, self.color.g(), self.color.b());
+            }
+            Channel::Green => {
+                let green = Self::channel_u8(crate::num::f32_of_f64(target));
+                self.set_rgb(self.color.r(), green, self.color.b());
+            }
+            Channel::Blue => {
+                let blue = Self::channel_u8(crate::num::f32_of_f64(target));
+                self.set_rgb(self.color.r(), self.color.g(), blue);
+            }
+        }
         self.sync_input();
         true
     }
@@ -1554,18 +1743,28 @@ mod tests {
                 use crate::a11y::Role;
                 let p = ColorPicker::new(Color::from_rgba8(0x12, 0x34, 0x56, 0xff));
                 let node = Widget::accessibility(&p).expect("color picker is a selector");
-                assert_eq!(node.role, Role::ComboBox);
-                assert_eq!(node.value.as_deref(), Some("#123456"));
-                assert!(node.state.focusable);
-                assert!(!node.state.focused);
-                assert_eq!(node.state.expanded, None, "the picker renders inline");
+                assert_eq!(node.role, Role::Group, "the picker holds its controls");
+                let value = node
+                    .children
+                    .iter()
+                    .find(|child| child.role == Role::ComboBox)
+                    .expect("the hex value is one of the picker's controls");
+                assert_eq!(value.value.as_deref(), Some("#123456"));
+                assert!(value.state.focusable);
+                assert!(!value.state.focused);
+                assert_eq!(value.state.expanded, None, "the picker renders inline");
             }
 
             fn accessibility_value_tracks_color_change() {
                 let mut p = ColorPicker::new(Color::from_rgba8(0, 0, 0, 0xff));
                 p.set_rgb(0x0a, 0x00, 0xff);
                 let node = Widget::accessibility(&p).unwrap();
-                assert_eq!(node.value.as_deref(), Some("#0A00FF"));
+                let value = node
+                    .children
+                    .iter()
+                    .find(|child| child.role == crate::a11y::Role::ComboBox)
+                    .expect("the hex value is one of the picker's controls");
+                assert_eq!(value.value.as_deref(), Some("#0A00FF"));
             }
 
             /// Retained-mode embed round-trip: an app drops the picker into its
@@ -1798,7 +1997,7 @@ mod tests {
                     Some(true),
                     "the current colour is checked"
                 );
-                assert_eq!(radios[1].name.as_deref(), Some("#3B82F6"));
+                assert_eq!(radios[1].name.as_deref(), Some("Blue"));
                 assert_eq!(radios[1].state.checked, Some(false));
 
                 let mut doc = AutoCommit::new();
@@ -1824,6 +2023,95 @@ mod tests {
             swatches_lay_out_below_the_sliders_and_inside_the_picker();
             clicking_a_swatch_sets_the_colour_and_reports_the_change();
             every_swatch_is_a_radio_with_its_own_action();
+        }
+
+        phase every_slider_names_its_channel_and_reads_its_value;
+        {
+            fn each_slider_is_named_and_reads_its_value() {
+                use crate::a11y::Role;
+                let p = laid_out(ColorPicker::new(Color::from_rgb8(0x12, 0x34, 0x56)));
+                let node = Widget::accessibility(&p).expect("picker semantics");
+                let sliders: Vec<_> = node
+                    .children
+                    .iter()
+                    .filter(|child| child.role == Role::Slider)
+                    .collect();
+                let named = |name: &str| {
+                    sliders
+                        .iter()
+                        .find(|slider| slider.name.as_deref() == Some(name))
+                        .unwrap_or_else(|| panic!("a slider is named {name}"))
+                };
+                assert_eq!(named("Hue").value.as_deref(), Some("210°"));
+                assert_eq!(named("Red").value.as_deref(), Some("18"));
+                assert_eq!(named("Green").value.as_deref(), Some("52"));
+                assert_eq!(named("Blue").value.as_deref(), Some("86"));
+            }
+
+            fn each_name_and_value_stand_beside_its_slider_inside_the_picker() {
+                let p = laid_out(ColorPicker::new(Color::from_rgb8(0x12, 0x34, 0x56)));
+                for slider in [p.r_slider_rect, p.g_slider_rect, p.b_slider_rect] {
+                    let name = p.slider_name_column(slider);
+                    let value = p.slider_value_column(slider);
+                    assert!(
+                        name.x1 < slider.x0,
+                        "the name stands before the track: {name:?} against {slider:?}"
+                    );
+                    assert!(
+                        value.x0 > slider.x1,
+                        "the value stands after it: {value:?} against {slider:?}"
+                    );
+                    for column in [name, value] {
+                        assert!(
+                            p.rect.contains_rect(column),
+                            "the words are inside the picker: {column:?}"
+                        );
+                    }
+                }
+            }
+
+            fn every_caption_name_and_value_is_painted() {
+                use vello::kurbo::Affine;
+                use vello::Scene;
+                let mut p = laid_out(ColorPicker::new(Color::from_rgb8(0x12, 0x34, 0x56)));
+                let theme = Theme::dark();
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                Widget::draw(
+                    &mut p,
+                    &mut crate::draw::DrawCtx::new(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut text,
+                        &theme,
+                        crate::presence::PresenceCtx::default().draw_env(),
+                    ),
+                );
+                assert!(
+                    scene.encoding().resources.glyph_runs.len() >= 6,
+                    "each channel paints its name and its value"
+                );
+            }
+
+            fn a_reader_steps_a_channel_without_a_pointer() {
+                use crate::a11y::Action;
+                let mut p = laid_out(ColorPicker::new(Color::from_rgb8(0x12, 0x34, 0x56)));
+                let mut doc = AutoCommit::new();
+                assert!(Widget::perform_semantic_action(
+                    &mut p,
+                    TARGET_B,
+                    &Action::SetValue("255".into()),
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                ));
+                assert_eq!(p.color().b(), 255);
+                assert_eq!(p.hex_string(), "#1234FF");
+            }
+
+            each_slider_is_named_and_reads_its_value();
+            each_name_and_value_stand_beside_its_slider_inside_the_picker();
+            every_caption_name_and_value_is_painted();
+            a_reader_steps_a_channel_without_a_pointer();
         }
 
         phase confirm_mode_holds_edits_until_done_or_cancel;

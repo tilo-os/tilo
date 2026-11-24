@@ -1557,6 +1557,10 @@ d-7ugeomrq = Meldungsauswahl
     .w-click-the-window-that-isn-t-2 = Klicke das Fenster an, das nicht funktioniert, oder ziehe darüber.
     .w-cancel = Abbrechen
 
+d-6mnqsxi6 = Bedienhinweise
+    .w-super = Super
+    .w-space = Leertaste
+
 d-lcq7ufsf = Verlauf
     .w-clear = Leeren
     .w-nothing-opened-lately = Zuletzt nichts geöffnet

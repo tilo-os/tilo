@@ -739,3 +739,115 @@ fn the_foreign_device_that_asked_cannot_answer_for_its_person() {
     resolve(&host, &at, &ada(), Offer::Approve, None).expect("her own device approves it");
     assert_eq!(host.dispatch.0.lock().unwrap().len(), 1);
 }
+
+/// A made-up token: no service ever issued it.
+const TOKEN: &str = "made-up-token-6603";
+
+/// A call of an action an app lists only as it is asked (`sync#connect`), which no registry
+/// here describes, carrying a token beside a label.
+fn connect(token: &str) -> InvokeRequest {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("label".into(), "made-up-label-4410".into());
+    arguments.insert("token".into(), token.into());
+    InvokeRequest {
+        target: RemoteActionTarget {
+            provider: "app:sync".into(),
+            address: ActionAddress::new("sync.accounts", "connect"),
+        },
+        argument: InvokeArgument::Json(arguments),
+        ..set_alarm()
+    }
+}
+
+/// A store that keeps what waits through `state`, and knows the alarm's descriptor, which
+/// takes no secret, and nothing else's.
+fn describing(state: &Arc<State>) -> Host {
+    let store = AskedStore::opened(
+        None,
+        Some(Arc::clone(state) as Arc<dyn AskedKeeping>),
+        state.kept(),
+    )
+    .expect("the store keeps what waits");
+    let alarm = set_alarm().target;
+    store.keep_no_secrets(Arc::new(move |target: &RemoteActionTarget| {
+        (*target == alarm).then(Vec::new)
+    }));
+    host_on(store)
+}
+
+/// What the dispatch was handed, once.
+fn handed_once(host: &Host) -> InvokeRequest {
+    let handed = host
+        .dispatch
+        .0
+        .lock()
+        .unwrap()
+        .drain(..)
+        .collect::<Vec<_>>();
+    let [Handed::Readmit(_, request)] = handed.as_slice() else {
+        panic!("the dispatch is handed the call once: {handed:?}");
+    };
+    (**request).clone()
+}
+
+/// A call of an action described nowhere here waits with no argument's value in its record,
+/// every one held in memory: the approve runs it with all of them, and one asked before the
+/// device started again is refused, saying to ask again. A call of an action whose descriptor
+/// is known, and takes no secret, waits whole, and is approved after a restart as before.
+#[test]
+fn a_call_of_an_undescribed_action_keeps_no_argument_with_its_record() {
+    let state = Arc::new(State::default());
+    let host = describing(&state);
+    let call = connect(TOKEN);
+    let at = host
+        .records
+        .write_asked(WORKSPACE, &scout(), &call, &facts())
+        .unwrap();
+    let kept = serde_json::to_string(&state.kept()).unwrap()
+        + &serde_json::to_string(&host.store.kept_ask(&at).unwrap()).unwrap()
+        + &serde_json::to_string(&host.records.asked_of(&ADA)).unwrap();
+    for value in [TOKEN, "made-up-label-4410"] {
+        assert!(!kept.contains(value), "{value} kept: {kept}");
+    }
+    let mut sealed = host.store.kept_ask(&at).unwrap().sealed;
+    sealed.sort();
+    assert_eq!(
+        sealed,
+        ["label", "token"],
+        "its record names what it left out"
+    );
+    resolve(&host, &at, &ada(), Offer::Approve, None).unwrap();
+    let ran = handed_once(&host);
+    assert_eq!(ran.argument, call.argument, "it runs with every argument");
+    assert!(tilo_actions::remote::asked::same_call(&ran, &call));
+
+    // Asked before the device starts again: what it carried went with the device's memory.
+    let later = connect("made-up-token-9152");
+    let later_at = host
+        .records
+        .write_asked(WORKSPACE, &scout(), &later, &facts())
+        .unwrap();
+    let alarm = set_alarm();
+    let alarm_at = host
+        .records
+        .write_asked(WORKSPACE, &scout(), &alarm, &facts())
+        .unwrap();
+    let on_disk = serde_json::to_string(&state.kept()).unwrap();
+    assert!(!on_disk.contains("made-up-token-9152"), "{on_disk}");
+    assert!(
+        on_disk.contains("07:00"),
+        "a call whose descriptor takes no secret is kept whole: {on_disk}"
+    );
+    drop(host);
+    let after = describing(&state);
+    let refused = refusal(resolve(&after, &later_at, &ada(), Offer::Approve, None));
+    assert!(
+        refused.contains(tilo_actions::remote::asked::SECRET_GONE),
+        "{refused}"
+    );
+    assert!(after.dispatch.0.lock().unwrap().is_empty(), "nothing ran");
+    resolve(&after, &alarm_at, &ada(), Offer::Approve, None).unwrap();
+    let ran = handed_once(&after);
+    assert!(tilo_actions::remote::asked::same_call(&ran, &alarm));
+    assert_eq!(ran.argument, alarm.argument);
+}

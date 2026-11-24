@@ -871,7 +871,15 @@ impl Workspaces {
                     "this workspace is admitting the device; link again".into(),
                 ));
             }
-            crate::workspace_access::Decision::Deny(reason) => return Err(reason.refusal()),
+            crate::workspace_access::Decision::Deny(reason) => {
+                // A device the person's root retired is told with the entry that retires it, as a
+                // refused hello is: its session reads the removal and stops, rather than as a
+                // member the workspace took out.
+                return Err(match host.revocations.read() {
+                    Ok(revocations) => reason.refusal_for(&peer, &revocations),
+                    Err(_) => reason.refusal(),
+                });
+            }
         }
         self.inner
             .link_remotes

@@ -253,8 +253,10 @@ pub trait Here: Send + Sync {
     }
 
     /// The person's account as this device serves it itself: `None` for a host that answers only
-    /// its workspaces, whose account is a server's.
-    fn account_here(&self) -> Option<&dyn AccountHere> {
+    /// its workspaces, whose account is a server's. Shared, because the host that keeps its
+    /// person's workspaces itself hands out the account it answers for them, and a host reached
+    /// through a weak reference cannot lend one out for longer than the call that asked.
+    fn account_here(&self) -> Option<Arc<dyn AccountHere>> {
         None
     }
 }

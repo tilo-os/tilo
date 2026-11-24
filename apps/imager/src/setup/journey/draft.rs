@@ -189,7 +189,7 @@ impl TargetChoices {
         };
         if target.report().is_none() && target.architecture() != super::target::host_architecture()
         {
-            choices.architecture = target.architecture().to_owned();
+            target.architecture().clone_into(&mut choices.architecture);
         }
         if let Some(report) = &choices.report
             && !serde_json::to_vec(report).is_ok_and(|bytes| bytes.len() <= MAX_REPORT_BYTES)
@@ -223,6 +223,10 @@ impl Target {
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if hands the field by reference"
+)]
 const fn is_false(value: &bool) -> bool {
     !*value
 }

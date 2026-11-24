@@ -87,8 +87,7 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
                 Some(pending.binding),
                 directories.clone(),
             );
-            let ordinary = opened(&rpc, &env.route.channel_key()).await
-                .unwrap();
+            let ordinary = opened(&rpc, &env.route.channel_key()).await.unwrap();
             assert!(
                 ordinary
                     .settings()
@@ -484,8 +483,12 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
                 member_device_certificate(&env, 97, false),
                 None,
             );
-            let foreign = opened(&rpc, &CrdtRoute::cluster(env.route.cluster_id.clone()).channel_key()).await
-                .unwrap();
+            let foreign = opened(
+                &rpc,
+                &CrdtRoute::cluster(env.route.cluster_id.clone()).channel_key(),
+            )
+            .await
+            .unwrap();
             // Whether or not the other device's call is admitted, it never
             // carries this worker's device into the display transaction.
             let receipt = identify_displays(&foreign).await;
@@ -510,14 +513,8 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
             );
             assert_eq!(delegate.calls.lock().unwrap().len(), 1);
             rig.state.remove_connection(903);
-            let (mut replacement, _) = join_worker(
-                &rig.state,
-                &rig.directories,
-                &env.route,
-                &env.cert,
-                908,
-            )
-            .await;
+            let (mut replacement, _) =
+                join_worker(&rig.state, &rig.directories, &env.route, &env.cert, 908).await;
             assert!(
                 replacement
                     .handle

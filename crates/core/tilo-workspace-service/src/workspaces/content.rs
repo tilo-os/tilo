@@ -89,7 +89,6 @@ impl ContentRefusal {
     }
 }
 
-
 /// Where content members answer the host with goes.
 pub trait ContentKeeper: Send + Sync {
     /// `frame`, a `NeighbourMsg::DocumentContentPiece` the member device
@@ -483,10 +482,9 @@ impl Workspaces {
             {
                 return Ok(false);
             }
-            replica.workspace().check_workspace_administration(
-                self.device_cert().device_public_key,
-                now,
-            )?;
+            replica
+                .workspace()
+                .check_workspace_administration(self.device_cert().device_public_key, now)?;
             let mut candidate = replica.clone();
             let signer = &self.inner.host.key;
             let written = super::sealed_documents::publish_changes(

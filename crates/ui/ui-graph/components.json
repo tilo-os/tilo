@@ -3,6 +3,83 @@
   "toolkit": "0.1.0",
   "components": [
     {
+      "name": "ControlHints",
+      "doc": "The shell's control hints: a pill that teaches one of the shell's controls at the moment it is useful, beside where it is done, and goes once the person does it. The shell's top layer, over the whole area it is given; it takes no input.",
+      "props": [
+        {
+          "name": "shows",
+          "doc": "Whether hints show at all: the person's \"Show control hints\".",
+          "type": "bool"
+        },
+        {
+          "name": "known",
+          "doc": "The hints the person has shown they know, by name.",
+          "type": {
+            "list": "text"
+          },
+          "data": true
+        },
+        {
+          "name": "shown",
+          "doc": "How often each hint showed, by name.",
+          "type": {
+            "map": {
+              "key": "text",
+              "value": "int"
+            }
+          },
+          "data": true
+        },
+        {
+          "name": "search_keys",
+          "doc": "The keys that open search, as the keyboard spells them: what the search hint names.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "touch",
+          "doc": "The person points by touch: hints name what a finger does.",
+          "type": "bool"
+        },
+        {
+          "name": "searching",
+          "doc": "Search is open: the person found it, and a window opened from it is opened from search.",
+          "type": "bool"
+        },
+        {
+          "name": "busy",
+          "doc": "Something has the person's attention (a menu, a sheet, a surface over the windows): no hint begins, and one on screen waits.",
+          "type": "bool"
+        },
+        {
+          "name": "engaged",
+          "doc": "The person is in a call or follows someone: no hint begins, and one on screen goes.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "learn",
+          "doc": "A hint was learned: carries its name.",
+          "value": "text"
+        },
+        {
+          "name": "show",
+          "doc": "A hint began to show: carries its name.",
+          "value": "text"
+        },
+        {
+          "name": "withdraw",
+          "doc": "A hint begun never reached the screen, so its showing does not count: carries its name.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Label"
+      }
+    },
+    {
       "name": "SearchButton",
       "doc": "The one search affordance an app puts in its chrome: an icon button that opens the platform search over the whole app, or — given the `item` it shows — over that one resource and what it holds (a book's passages, a notebook's notes). It never draws a field, and a window bar that searches for the window takes its place.",
       "props": [
