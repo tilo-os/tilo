@@ -203,7 +203,15 @@ template view theme_editor(t: settings.ThemeRecord) {
             ui.Slider(bind: t.rim_span, label: "Rim light", min: 0.0, max: 1.0, step: 0.05, shows_value: true),
         )
     }
-    row(gap: .related, align: .center) {
+    row(gap: .related, align: .center, wrap: true) {
+        ui.Button("Duplicate", icon: .copy) {
+            on press: settings.new_theme(settings.appearance, id: t.id + "-copy", base: t.id)
+        }
+        // Saved where the person chooses, through the system's save path: the file is the theme
+        // itself, which importing it on another workspace reads back role by role.
+        ui.Button("Export", icon: .download) {
+            on press: file.save(File.of_text("{t.name}.theme.json", json.encode(t)), name: "{t.name}.theme.json")
+        }
         ui.Button("Start over from where it came from", icon: .rotate_ccw) {
             on press: settings.reset_theme(settings.appearance, theme: t.id)
         }

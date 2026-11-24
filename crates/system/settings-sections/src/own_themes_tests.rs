@@ -249,3 +249,42 @@ fn refraction_bends_every_glass_role_in_proportion() {
         "a refraction is a number"
     );
 }
+
+/// A theme exported from the Themes page (the record, as JSON) and imported on another
+/// workspace comes back role by role, tuned values and the glass's own stage included, under an
+/// id made from its name when the importer names none.
+#[test]
+fn an_exported_theme_imports_back_as_it_was() {
+    let (mut ours, id) = appearance_with("tilo-dark");
+    let paths = AppearancePrefs::paths().themes.item(&id);
+    edit(&mut ours, &paths.name.set("Harbour at Night".to_owned())).unwrap();
+    edit(&mut ours, &paths.hue.set(Some(210.0))).unwrap();
+    let exported = serde_json::to_string(&theme(&ours, &id)).unwrap();
+
+    let mut theirs = Replica::<AppearancePrefs>::new();
+    theirs
+        .apply(AppearancePrefs::IMPORT_THEME.with((String::new(), exported)))
+        .unwrap();
+    let imported = theme(&theirs, &Id::from_raw("harbour-at-night"));
+    assert_eq!(imported.name, "Harbour at Night");
+    assert_eq!(imported.hue, Some(210.0));
+    assert_eq!(
+        imported.document("harbour-at-night"),
+        theme(&ours, &id).document("harbour-at-night")
+    );
+
+    let glass: ThemeDocument =
+        serde_json::from_str(include_str!("../../../ui/themes/liquid-glass/theme.json")).unwrap();
+    let exported = serde_json::to_string(&ThemeRecord::from_document(&glass)).unwrap();
+    theirs
+        .apply(AppearancePrefs::IMPORT_THEME.with(("glass".to_owned(), exported)))
+        .unwrap();
+    assert_eq!(
+        theme(&theirs, &Id::from_raw("glass"))
+            .document("x")
+            .material
+            .floating
+            .shader(),
+        glass.material.floating.shader()
+    );
+}

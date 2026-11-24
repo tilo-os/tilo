@@ -453,19 +453,40 @@ impl ThemeRecord {
     }
 }
 
-/// A theme document read from JSON, refused unless it is admitted and keeps every contrast
-/// floor: what importing a theme takes.
+/// A theme read from JSON, refused unless it is admitted and keeps every contrast floor: what
+/// importing a theme takes. It is either a theme document (a theme bundle's `theme.json`) or a
+/// theme as Settings' Themes page exports it, which is the record itself.
 ///
 /// # Errors
 /// What is wrong with the document, as a person reads it.
 pub fn admit_document(json: &str) -> Result<ThemeDocument, Refusal> {
-    let document: ThemeDocument = serde_json::from_str(json)
-        .map_err(|error| Refusal::new(format!("not a theme document: {error}")))?;
+    let document = match serde_json::from_str::<ThemeDocument>(json) {
+        Ok(document) => document,
+        Err(error) => match serde_json::from_str::<ThemeRecord>(json) {
+            Ok(theme) => theme.document(&exported_id(&theme.name)),
+            Err(_) => return Err(Refusal::new(format!("not a theme document: {error}"))),
+        },
+    };
     if let Some(reason) = crate::Theme::refusal(&document) {
         return Err(Refusal::new(reason));
     }
     legible(&document)?;
     Ok(document)
+}
+
+/// The id an exported theme comes back under when the importer names none: its name, in the
+/// lowercase words an id is written in.
+fn exported_id(name: &str) -> String {
+    let words = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    if words.is_empty() {
+        "theme".to_owned()
+    } else {
+        words.join("-")
+    }
 }
 
 /// Refused with the pairs that miss their contrast floor, if any do.
