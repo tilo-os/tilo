@@ -365,7 +365,8 @@ fields of its own records.
 The secret lives in that process's memory alone, never in a record, an argument,
 a log or history.
 Every other use stays a call the vault makes itself, such as a web call with the
-secret added where the vault is.
+secret added or a signature made with a signing key, where the vault is; a grant
+to use the item lets people, agents and CI call it without ever holding it.
 
 ### Views
 
