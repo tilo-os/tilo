@@ -888,8 +888,8 @@ fn a_subtask_opens_a_closed_parent_and_moves_out_again() {
     );
     assert_eq!(
         status(&ada, &child),
-        "done",
-        "and the subtask takes its column"
+        "todo",
+        "and the step added under it is work to do"
     );
     call(&ada, "outdent", vec![child.clone()]);
     assert_eq!(
