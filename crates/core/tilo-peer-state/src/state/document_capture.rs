@@ -395,6 +395,31 @@ impl StatePeer {
         write: &SignedOp,
         mutation: &collab_types::DocumentMutation,
     ) -> Result<(), OpenedRefusal> {
+        self.check_carried((app, record), write, mutation)?;
+        // A resource store's change reads the kinds of the records it writes from the changes it
+        // builds on. Where this device holds the record without them (it holds it sealed), it
+        // decides the write by the kinds its claims name, checked above against the changes it
+        // carries, as a device without the key decides it; claims that name none yet (the
+        // writer's own draft) leave it to where it is admitted.
+        if self.store_write_without_its_base((app, record), mutation) {
+            if claims_name_no_kinds(write) {
+                return Err(OpenedRefusal::CannotDecide(
+                    "the record is held here without the changes the write builds on".into(),
+                ));
+            }
+            return self.decide_opened(app, record, write, (write, None));
+        }
+        self.check_opened_write_whole((app, record), write, mutation)
+    }
+
+    /// That `write` is a write, and carries what its claims say: what every decision of an
+    /// opened write checks first.
+    fn check_carried(
+        &self,
+        (app, record): (&str, &str),
+        write: &SignedOp,
+        mutation: &collab_types::DocumentMutation,
+    ) -> Result<(), OpenedRefusal> {
         // A checkpoint is no write of its own and nothing a reader takes on its writer's word:
         // it is read against the writes it stands in for, each decided here as itself
         // ([`super::checkpoints::read_checkpoint`]).
@@ -410,15 +435,30 @@ impl StatePeer {
             collab_types::check_opened_mutation(write, mutation)
                 .map_err(|refusal| self.refused_opened(app, record, write, &refusal))?;
         }
-        // A resource store's change reads the kinds of the records it writes from the changes it
-        // builds on. Where this device holds the record without them (it holds it sealed), it
-        // decides the write by the kinds its claims name, checked above against the changes it
-        // carries, as a device without the key decides it.
-        if self.store_write_without_its_base((app, record), mutation)
-            && !claims_name_no_kinds(write)
-        {
-            return self.decide_opened(app, record, write, (write, None));
-        }
+        Ok(())
+    }
+
+    /// Decide `write` of a record being opened, in the order its log holds the writes: by the
+    /// changes it carries, as admission decides the same write in the clear, before the writes
+    /// it builds on are merged here.
+    pub(crate) fn check_write_in_log(
+        &self,
+        (app, record): (&str, &str),
+        write: &SignedOp,
+        mutation: &collab_types::DocumentMutation,
+    ) -> Result<(), OpenedRefusal> {
+        self.check_carried((app, record), write, mutation)?;
+        self.check_opened_write_whole((app, record), write, mutation)
+    }
+
+    /// Decide `write` by the changes it carries, as admission decides the same write in the
+    /// clear.
+    fn check_opened_write_whole(
+        &self,
+        (app, record): (&str, &str),
+        write: &SignedOp,
+        mutation: &collab_types::DocumentMutation,
+    ) -> Result<(), OpenedRefusal> {
         let mut opened = write.clone();
         // A cleartext op names each change's action in the change itself; the
         // sealed envelope's claims were what a device without the key decided.
@@ -539,13 +579,6 @@ impl StatePeer {
         collab_types::claim::check_claimed(write).map_err(|unclaimed| {
             WriteRefusal::Refused(format!("{record} of {app}: {unclaimed}"))
         })?;
-        // The writer's own draft names no kinds before its store names them: where this device
-        // holds the record without what the draft builds on, it cannot read them either, and the
-        // write is decided where it is admitted.
-        if self.store_write_without_its_base((app, record), mutation) && claims_name_no_kinds(write)
-        {
-            return Ok(());
-        }
         match self.check_opened_write((app, record), write, mutation) {
             Ok(()) | Err(OpenedRefusal::CannotDecide(_)) => Ok(()),
             Err(OpenedRefusal::Refused(refused)) => Err(WriteRefusal::ChangeRefused(refused)),
@@ -936,7 +969,7 @@ fn open_history<'a>(
                     document,
                     &mutation,
                     &mut *open,
-                    &mut |write, mutation| peer.check_opened_write((app, record), write, mutation),
+                    &mut |write, mutation| peer.check_write_in_log((app, record), write, mutation),
                     &|checkpoint| peer.checkpoint_settled((app, record), checkpoint),
                 )
                 .map_err(checkpoint_refused)?;
@@ -948,7 +981,7 @@ fn open_history<'a>(
                 opened.last = Some(op.signature);
                 continue;
             }
-            match peer.check_opened_write((app, record), op, &mutation) {
+            match peer.check_write_in_log((app, record), op, &mutation) {
                 Ok(()) => {
                     writes.push((index, mutation));
                     fresh = fresh.saturating_add(1);

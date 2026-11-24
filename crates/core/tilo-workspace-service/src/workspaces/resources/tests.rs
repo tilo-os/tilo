@@ -1210,7 +1210,10 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
         .resource_command(&context, batch)
         .await
         .unwrap_err();
-    assert!(refused.contains("missing"));
+    assert!(
+        refused.contains("missing"),
+        "the batch is refused for the missing issue: {refused}"
+    );
     assert_eq!(
         title_through_service(&workspaces, &context, "i-1").await,
         Some(Value::Text("Second".into())),
