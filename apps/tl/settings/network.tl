@@ -195,7 +195,9 @@ view hidden_network_page(page: State<Text>) {
         ui.TextInput(bind: name, placeholder: "The network's name")
         ui.TextInput(bind: password, placeholder: "Password, where it has one")
         ui.Button("Join it", icon: .wifi, role: .primary) {
-            on press: device.connect_hidden_wifi(device.network, network: name, password: password)
+            // Named arguments cannot tell the network's name from the root they act on here:
+            // both are called `network`, so the call gives them in order.
+            on press: device.connect_hidden_wifi(device.network, name, .some(password))
         }
         ui.Text(
             "A network whose name is not broadcast is joined by typing it. Where it has no password, leave that empty.",
