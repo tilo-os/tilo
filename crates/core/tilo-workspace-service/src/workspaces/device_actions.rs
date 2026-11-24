@@ -1534,8 +1534,20 @@ async fn serves_live(
     }
 }
 
+/// A device that runs no apps runs no connection an app's call could be forwarded for, and so
+/// serves none.
+#[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
+async fn serves_live(
+    _: &Arc<DeviceWork>,
+    _: &Caller,
+    _: &InvokeRequest,
+) -> Result<(), ActionCallError> {
+    Err(not_served())
+}
+
 /// Whether `apps.0`'s own grants in `workspace` let it run `request`, an action of `apps.1`:
 /// what an app's call for someone is bounded by beside that person's access.
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 async fn app_may(
     work: &Arc<DeviceWork>,
     forwarder: [u8; 32],
