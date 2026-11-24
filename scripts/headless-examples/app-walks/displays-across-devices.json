@@ -13,8 +13,8 @@
   },
   "phone"
  ],
+ "packages": ["settings"],
  "live": "rust",
- "apps": "settings",
  "rust": {},
  "tl": {
   "session_args": []

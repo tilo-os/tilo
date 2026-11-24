@@ -4,8 +4,8 @@
  "family": "devices",
  "devices": ["laptop", "phone"],
  "live": "rust",
- "apps": "settings",
  "packages": [
+   "settings",
    "files",
    "tasks"
  ],
