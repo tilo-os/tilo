@@ -119,3 +119,5 @@ passwords-workspace-vault-keep-uses = Festhalten, wo ein Eintrag verwendet wurde
 
 ## App Store
 store-catalog = Store-Katalog
+store-report-create = Bericht erstellen
+store-catalog-record-moderation-case = Moderationsfall festhalten

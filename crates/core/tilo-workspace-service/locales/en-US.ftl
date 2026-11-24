@@ -119,3 +119,5 @@ passwords-workspace-vault-keep-uses = Record where an entry was used
 
 ## App Store
 store-catalog = Store catalogue
+store-report-create = Create report
+store-catalog-record-moderation-case = Record moderation case
