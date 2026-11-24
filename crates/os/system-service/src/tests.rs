@@ -2202,12 +2202,19 @@ fn the_firmware_resource_reads_the_updates_and_installs_them() {
 struct FakeWindows {
     reading: Mutex<tilo_system_resources::windows_apps::WindowsApps>,
     changes: Mutex<Vec<(String, String)>>,
+    /// Each program an action named, by the action's id and the program: what a row's own
+    /// action carries from the address it was called on.
+    programs: Mutex<Vec<(String, String)>>,
     refusal: Mutex<Option<String>>,
 }
 
 impl FakeWindows {
     fn changes(&self) -> Vec<(String, String)> {
         self.changes.lock().unwrap().clone()
+    }
+
+    fn programs(&self) -> Vec<(String, String)> {
+        self.programs.lock().unwrap().clone()
     }
 }
 
@@ -2230,6 +2237,14 @@ impl crate::windows_apps::WindowsManager for FakeWindows {
             .lock()
             .unwrap()
             .push((workspace.to_owned(), action.id().to_owned()));
+        if let tilo_system_resources::windows_apps::WindowsAppsAction::Launch { program }
+        | tilo_system_resources::windows_apps::WindowsAppsAction::Stop { program } = action
+        {
+            self.programs
+                .lock()
+                .unwrap()
+                .push((action.id().to_owned(), program.clone()));
+        }
         Ok(())
     }
 }
@@ -2338,6 +2353,44 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
     );
     service.settle();
     assert_eq!(windows.changes(), [("w1".to_owned(), "launch".to_owned())]);
+
+    // Each program is a row of the reading and a resource of its own: search lists it by the
+    // program's name, and a press on the row opens that program.
+    let program = published
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == "windows-program:adobe-reader")
+        .expect("a program is a row of its own");
+    assert_eq!(program.label, "Adobe Acrobat Reader");
+    assert_eq!(program.kind, "so.tilo.system.windows-program");
+    let open = program
+        .actions
+        .iter()
+        .find(|action| action.id == "launch")
+        .expect("the row opens the program");
+    assert_eq!(
+        open.label, "Adobe Acrobat Reader",
+        "the row is found by the program's own name"
+    );
+    assert_eq!(
+        service.invoke_for(
+            "so.tilo.windows",
+            "w1",
+            "windows-program:adobe-reader",
+            "launch",
+            &Map::new(),
+        ),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(
+        windows.programs(),
+        [
+            ("launch".to_owned(), "adobe-reader".to_owned()),
+            ("launch".to_owned(), "adobe-reader".to_owned())
+        ],
+        "the row's own action opens the program its address names"
+    );
 
     // The action's own refusal is said in the reading until the next.
     *windows.refusal.lock().unwrap() = Some("The capsule's runner is not installed.".to_owned());
