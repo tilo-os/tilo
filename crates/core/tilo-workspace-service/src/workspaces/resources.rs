@@ -1512,7 +1512,7 @@ impl Workspaces {
     /// what search reads of one document at a time, from the store the workspace is read
     /// through, without its lock. `None` when this server does not know what the workspace is
     /// read through yet.
-    #[cfg(any(feature = "apps", feature = "agents"))]
+    #[cfg(feature = "agents")]
     pub(crate) fn held_resources(
         &self,
         workspace: &str,
