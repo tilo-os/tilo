@@ -225,18 +225,6 @@ pub enum PackageChanges {
         #[param("The app whose installed tree is checked; every installed app's when absent.")]
         app: Option<String>,
     },
-    /// Install the app whose built directory is handed over as this device's development build
-    /// of it: it marks it, packs it, signs it with its own key, and it runs under its own id.
-    #[effect(kind = "outside")]
-    InstallDev {
-        #[param("The app's authored manifest: `{\"source\": \"tilo.content:<hash>\"}`.")]
-        manifest: serde_json::Value,
-        #[param(
-            "The package's files, each `{\"path\": \"bin/app\", \"file\": \
-             {\"source\": \"tilo.content:<hash>\"}}`; each file's bytes are put first."
-        )]
-        payload: Vec<serde_json::Value>,
-    },
     /// Build a runtime bundle from the host root's files `from` and install it.
     #[effect(kind = "outside")]
     RuntimeInstall {
@@ -351,6 +339,18 @@ pub enum PackageChanges {
     /// Add Flathub.
     #[effect(kind = "outside")]
     FlatpakFlathub,
+    /// Install the app whose built directory is handed over as this device's development build
+    /// of it: it marks it, packs it, signs it with its own key, and it runs under its own id.
+    #[effect(kind = "outside")]
+    InstallDev {
+        #[param("The app's authored manifest: `{\"source\": \"tilo.content:<hash>\"}`.")]
+        manifest: serde_json::Value,
+        #[param(
+            "The package's files, each `{\"path\": \"bin/app\", \"file\": \
+             {\"source\": \"tilo.content:<hash>\"}}`; each file's bytes are put first."
+        )]
+        payload: Vec<serde_json::Value>,
+    },
 }
 
 /// What the cache answers about the device, changing nothing: its Flatpak installation, the apps a

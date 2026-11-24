@@ -101,16 +101,6 @@ pub enum Change {
         #[serde(default)]
         payload_from: Option<String>,
     },
-    /// Install the development build of `manifest`'s app: the app's authored manifest and its
-    /// payload, as a build leaves them. The device marks it, packs it, signs it with its own key,
-    /// and installs it under the id its dev marking derives, apart from any installed app and
-    /// its grants.
-    InstallDev {
-        /// The app's authored manifest (`tilo-app.toml`).
-        manifest: Uploaded,
-        /// The package's files, each by its path in the payload.
-        payload: Vec<HostFile>,
-    },
     /// Swap in a newer version of `app` (of every installed package without one), from `file`
     /// or the configured registries.
     Update {
@@ -244,6 +234,16 @@ pub enum Change {
     /// Remove the Flatpak remote `name` from the device's system installation.
     FlatpakRemoteRemove {
         name: String,
+    },
+    /// Install the development build of `manifest`'s app: the app's authored manifest and its
+    /// payload, as a build leaves them. The device marks it, packs it, signs it with its own key,
+    /// and installs it under the id its dev marking derives, apart from any installed app and
+    /// its grants.
+    InstallDev {
+        /// The app's authored manifest (`tilo-app.toml`).
+        manifest: Uploaded,
+        /// The package's files, each by its path in the payload.
+        payload: Vec<HostFile>,
     },
 }
 

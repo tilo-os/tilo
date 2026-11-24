@@ -784,3 +784,8 @@ reason = "the session's own queue between its loop and its resources, never writ
 file = "crates/core/tilo-server-protocol/src/workspaces.rs"
 enum = "WorkspacesRequest"
 reason = "a page's request to its host on a live connection, never stored: the `Enter` variant went because a host no longer lists a device in a workspace for it; the device signs its own row on its entry, and both ends are the same build"
+
+[[break]]
+file = "crates/core/package-actions/src/lib.rs"
+enum = "Change"
+reason = "a change a program asks the device for: JSON with the variant's name, never by position, and never stored as bytes a later build reads back: what the device kept is the change's report"
