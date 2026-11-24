@@ -832,12 +832,6 @@ pub enum ShelfView {
 /// A card's id, as the app names it.
 pub type CardKey = uuid::Uuid;
 
-/// Something with no schema of its own.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Opaque {
-    pub raw: Vec<u8>,
-}
-
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "test.shelf.cards", catalogue = "tests/locales")]
 pub enum CardEffect {
@@ -846,8 +840,6 @@ pub enum CardEffect {
     Show {
         card: CardKey,
         colour: Option<Colour>,
-        #[param(opaque)]
-        opaque: Opaque,
     },
 }
 
@@ -893,7 +885,6 @@ tilo_test_env::scenario! {
             [
                 ("card".to_owned(), tilo_actions::ParamType::Text),
                 ("colour".to_owned(), tilo_actions::ParamType::Object),
-                ("opaque".to_owned(), tilo_actions::ParamType::Object),
             ]
         );
     }

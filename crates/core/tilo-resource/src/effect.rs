@@ -155,43 +155,37 @@
 //!
 //! /// A value that says nothing about its JSON form.
 //! #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-//! pub struct Opaque;
+//! pub struct Snapshot;
 //!
 //! #[derive(Clone, Debug, PartialEq, Effect)]
 //! #[effect(operation = "example.backups")]
 //! pub enum Backups {
 //!     /// Restore a snapshot.
 //!     #[effect(kind = "outside")]
-//!     Restore { snapshot: Opaque },
+//!     Restore { snapshot: Snapshot },
 //! }
 //! # fn main() {}
 //! ```
 //!
-//! A value that really is opaque — a parsed document, an engine's own answer —
-//! says so with `#[param(opaque)]`, and its surface publishes an object with
-//! no schema:
+//! The value a wrapper carries must describe itself too: a list, an option or
+//! a box of a type with no schema is refused as well, so a parameter can never
+//! be published with no type to say what it holds.
 //!
-//! ```
+//! ```compile_fail
 //! use serde::{Deserialize, Serialize};
 //! use tilo_resource::Effect;
 //!
-//! /// A document as this app's engine kept it.
+//! /// A value that says nothing about its JSON form.
 //! #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-//! pub struct Reading;
+//! pub struct Snapshot;
 //!
 //! #[derive(Clone, Debug, PartialEq, Effect)]
 //! #[effect(operation = "example.backups")]
 //! pub enum Backups {
-//!     /// Restore a snapshot.
-//!     #[effect(kind = "read")]
-//!     Restore {
-//!         #[param(opaque)]
-//!         snapshot: Reading,
-//!     },
+//!     /// Restore snapshots.
+//!     #[effect(kind = "outside")]
+//!     Restore { snapshots: Vec<Snapshot> },
 //! }
-//!
-//! let read = &Backups::declarations()[0].params[0];
-//! assert!(read.schema.is_none(), "an opaque value publishes no schema");
 //! # fn main() {}
 //! ```
 
