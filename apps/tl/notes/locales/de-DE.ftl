@@ -251,9 +251,9 @@ d-gc34cbhl-tag = Schlagwort
 
 d-j33acdci-name = Name
 
-d-7ow26bju-name = Name
+d-7ow26bju-tag = Schlagwort
 
-d-3u3bevec-name = Name
+d-3u3bevec-tag = Schlagwort
 
 d-ja7xx6nf-tag = Schlagwort
 
