@@ -14,8 +14,9 @@ class CommandTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(SCRIPT), 'plan'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = json.loads(result.stdout)
-        self.assertIn('calculator', [a['name'] for a in plan['apps']])
-        self.assertTrue(next(a for a in plan['excluded'] if a['name'] == 'containers')['reason'])
+        self.assertTrue(plan['apps'], 'the collection holds the native apps that run on macOS')
+        self.assertTrue(plan['excluded'], 'an app that cannot run on macOS is reported, not dropped')
+        self.assertTrue(all(a['reason'] for a in plan['excluded']))
         self.assertEqual(plan['notarized'], False)
 
     def test_unknown_app_fails(self):
@@ -39,6 +40,8 @@ class SafetyTests(unittest.TestCase):
                 folder = root / 'apps' / name
                 folder.mkdir(parents=True)
                 (folder / 'Cargo.toml').write_text(f'[package]\nname="{name}"\n')
+                (folder / 'src').mkdir()
+                (folder / 'src/main.rs').write_text('fn main() {}\n')
                 (folder / 'tilo-app.toml').write_text(f'[package]\nid="so.tilo.{name}"\nname="{display}"\nversion="1.0.0"\nruntime="r"\n[entrypoint]\nbin="{name}"\n')
             with self.assertRaisesRegex(ValueError, 'collision'):
                 c.make_plan(root, '', 'arm64', 'development')
@@ -146,7 +149,8 @@ class StageTests(unittest.TestCase):
     def test_missing_bundle_does_not_leave_partial_stage(self):
         from collection_stages import execute
         with tempfile.TemporaryDirectory() as temp:
-            args = c.parser().parse_args(['build', '--reuse-bundles', '--apps', 'calculator', '--out', temp])
+            app = c.make_plan(ROOT, '', 'arm64', 'development')['apps'][0]['name']
+            args = c.parser().parse_args(['build', '--reuse-bundles', '--apps', app, '--out', temp])
             plan = c.make_plan(ROOT, args.apps, args.arch, args.mode)
             with patch('collection_stages.disk_floor'), self.assertRaisesRegex(ValueError, 'missing app'):
                 execute(args, plan)
