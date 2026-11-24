@@ -393,7 +393,8 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     assert_eq!(
         undone.len(),
         taken.len(),
-        "each change is taken back; the record's history is {:?}",
+        "each change is taken back; the undo answered {:?}; the record's history is {:?}",
+        asked.last().and_then(|request| request.messages.last()),
         after
             .iter()
             .map(|version| {
