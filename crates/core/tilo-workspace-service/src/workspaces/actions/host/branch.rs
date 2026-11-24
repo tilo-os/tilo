@@ -73,7 +73,7 @@ impl Workspaces {
             .unwrap_or(OWN_INVITATION_SECONDS);
         let own = self
             .own()
-            .ok_or_else(|| refused(&AdminRefusal::NotYourOwn.to_reason()))?;
+            .ok_or_else(|| ActionCallError::refused(&AdminRefusal::NotYourOwn.to_reason()))?;
         // A branch is a workspace made: a grant for one workspace makes none,
         // as it makes no other workspace.
         let makes = device
@@ -83,7 +83,9 @@ impl Workspaces {
         // Only a workspace of the person's own, which they read whole, is
         // theirs to branch; anyone else's is not theirs, as for deleting it.
         if !makes || !own.is_of(&person, source) || !self.lists_to(device, source) {
-            return Err(refused(&AdminRefusal::NotYourOwn.to_reason()));
+            return Err(ActionCallError::refused(
+                &AdminRefusal::NotYourOwn.to_reason(),
+            ));
         }
         // A retry waits for the try it repeats, and answers the branch it made.
         let making = own.making(branch.clone()).await;

@@ -26,9 +26,9 @@ use std::time::{Duration, Instant};
 
 use runtime_collab::NearbyTransferPhase;
 use sha2::{Digest as _, Sha256};
+use tilo_actions::asks::{AskSender, Question};
 use tilo_history::FluentArgs;
 use tilo_lock::MutexRecover as _;
-use tilo_service::{AskSender, Question};
 
 /// The interpreter the wire helper runs under, the system's own.
 const HELPER: &str = "/usr/bin/python3";

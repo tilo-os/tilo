@@ -19,7 +19,7 @@
 //! [`Services`] is the session's side: every service it started, with one
 //! catalogue, one reader and one api over them.
 
-pub mod asks;
+pub use tilo_actions::asks;
 pub mod lines;
 pub mod notice;
 mod worker;

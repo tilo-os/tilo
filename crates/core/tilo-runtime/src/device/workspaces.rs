@@ -32,6 +32,43 @@ use tilo_workspace_service::own_device::{self, KeyService};
 use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
 use tilo_workspace_service::workspaces::{SessionAdmission, Workspaces};
 
+/// Where the key service keeps its sealed group state, below the device's directory.
+const GROUPS: &str = "groups";
+/// The file of the groups' directory naming which group reads each workspace's documents.
+const READER_GROUPS: &str = "reader-groups.json";
+
+/// What a desktop of this device kept itself before this service kept its person's workspaces,
+/// as it hands it over once ([`ServiceWorkspaces::import`]).
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct Carried {
+    /// The key its key groups were sealed with, in hex.
+    #[serde(default)]
+    pub(crate) sealed_with: Option<String>,
+    /// Each file of its key groups' directory by name, its bytes in hex.
+    #[serde(default)]
+    pub(crate) groups: std::collections::BTreeMap<String, String>,
+    /// The workspaces it took part in.
+    #[serde(default)]
+    pub(crate) workspaces: Vec<CarriedWorkspace>,
+    /// Whether it was to found its person's own workspace and had not yet
+    /// ([`tilo_identity::provisioning::founds_person_workspace`]).
+    #[serde(default)]
+    pub(crate) founds_person_workspace: bool,
+    /// What its own workspace service kept, as [`tilo_workspace_service::workspaces::MovingService::to_hex`]
+    /// hands it over.
+    #[serde(default)]
+    pub(crate) service: Option<String>,
+}
+
+/// A workspace a desktop took part in.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct CarriedWorkspace {
+    pub(crate) workspace: String,
+    /// The address its host signed for it, where this device takes part in it as a member.
+    #[serde(default)]
+    pub(crate) hint: Option<tilo_peer_state::join::TransportHint>,
+}
+
 /// What the device's workspace service is opened with.
 pub(crate) struct Opening<'a> {
     /// The device's directory: the service's store and the key service's state are below it.

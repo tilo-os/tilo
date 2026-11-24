@@ -20,13 +20,10 @@
 //! bound to its thread, so the call runs on a blocking thread of its own and hands back only what
 //! the caller's closure returns.
 //!
-//! A program a device runs (a bot, a person's event) holds an app's record as [`ProgramRecord`]:
-//! its resources published as every tilolang resource is ([`Opened::rows`]), each step a call of
-//! a published action ([`Opened::invoke_published`]), each read the core read. Only the packages
-//! built into this build ([`built_in`]) run here; an app a workspace installed is untrusted code
-//! and runs only on a device that installed it: its windows there, and what search reads of it
-//! with none open ([`crate::workspaces::Workspaces::record_entries`], given that device's verified
-//! package).
+//! Only the packages built into this build ([`built_in`]) run here; an app a workspace installed
+//! is untrusted code and runs only on a device that installed it: its windows there, and what
+//! search reads of it with none open ([`crate::workspaces::Workspaces::record_entries`], given
+//! that device's verified package).
 //!
 //! Who may do what is decided by the host's authority, from the workspace's policy as the
 //! acting member holds it: an agent within its delegation, a bot within its grants
@@ -47,7 +44,6 @@ use tilo_actions::remote::{CataloguePage, CatalogueQuery, CatalogueRow};
 use tilo_actions::{
     ActionAddress, ActionContext, ActionInvoker, ActionOutput, ApiError, ResourceSpec,
 };
-use tilo_agent_session::bot::held::TilolangRecord;
 use tilo_automation::dispatch::DocumentEvent;
 use tilo_resource_store::wire::{Command, Reply};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
@@ -958,182 +954,6 @@ impl Opened {
 #[must_use]
 pub fn member(id: tilo_actions::MemberId) -> Actor {
     Actor::Member(id)
-}
-
-/// An app's record as a program run on this device holds it: opened anew through the app's
-/// packages for each step, over the workspace's store, so every step reads what the steps
-/// before it wrote.
-pub struct ProgramRecord {
-    packages: Packages,
-    record: Record,
-    /// The access its own authority decides the run's invocations by: the bot's grants, as the
-    /// workspace made them.
-    access: Option<std::sync::Arc<tilo_action_policy::MemberAccess>>,
-}
-
-impl ProgramRecord {
-    /// `record`, read through `packages`, its invocations decided by `access`.
-    #[must_use]
-    pub const fn new(
-        packages: Packages,
-        record: Record,
-        access: Option<std::sync::Arc<tilo_action_policy::MemberAccess>>,
-    ) -> Self {
-        Self {
-            packages,
-            record,
-            access,
-        }
-    }
-
-    /// The record opened as its app, so nothing a mention in it asks is made here for anyone.
-    fn open(&self) -> Result<Opened, String> {
-        let app = runtime::ids::AppId::from(self.packages.app());
-        let members = self
-            .access
-            .as_ref()
-            .map(|access| std::sync::Arc::clone(&access.policy));
-        let mut opened = Opened::open_with(
-            self.record.store(),
-            &self.packages,
-            Actor::App(app),
-            self.access.clone(),
-            members,
-        )?;
-        opened.open_root()?;
-        Ok(opened)
-    }
-}
-
-/// The `record` a whole-app read asks for: every resource of the app with its collections
-/// expanded, references kept as ids. What a program planning over a whole app reads, such as a
-/// bridge that mirrors a chat.
-pub const TREE: &str = "tree";
-
-/// How deep a whole-app read expands collections: a conversation's channels, their messages and
-/// threads, and a thread's messages. References are never followed, so a loop back to a parent
-/// costs nothing and no bound is needed beyond this.
-const TREE_DEPTH: usize = 5;
-
-impl TilolangRecord for ProgramRecord {
-    fn rows(&self) -> Result<Vec<CatalogueRow>, String> {
-        Ok(self.open()?.rows())
-    }
-
-    fn invoke(
-        &mut self,
-        address: &ActionAddress,
-        arguments: &Map<String, Json>,
-        invoker: &ActionInvoker,
-        context: &ActionContext,
-    ) -> Result<ActionOutput, ApiError> {
-        self.open()
-            .map_err(ApiError::Failed)?
-            .invoke_published(address, arguments, invoker, context)
-    }
-
-    fn read(&self, resource: &str, reader: &Actor) -> Result<Json, String> {
-        let opened = self.open()?;
-        let host = opened.host();
-        if resource == TREE {
-            return tree_read(host, reader);
-        }
-        let args = if resource.is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::json!({ "item": resource })
-        };
-        host.answer_read(&args, reader)
-    }
-}
-
-/// The whole app as the core read answers it: its documents list, each root resource with every
-/// collection expanded ([`TREE_DEPTH`] levels), and each reference kept as `{type, id, label}`.
-fn tree_read(host: &Host, reader: &Actor) -> Result<Json, String> {
-    let mut documents = host.answer_read(&serde_json::json!({}), reader)?;
-    if let Some(records) = documents.get_mut("records").and_then(Json::as_array_mut) {
-        for record in records.iter_mut() {
-            let Some(item) = record.get("item").and_then(Json::as_str).map(str::to_owned) else {
-                continue;
-            };
-            let whole = tree_item(host, &item, reader, TREE_DEPTH)?;
-            if let (Json::Object(dst), Json::Object(src)) = (&mut *record, whole)
-                && let Some(fields) = src.get("fields")
-            {
-                dst.insert("fields".into(), fields.clone());
-            }
-        }
-    }
-    Ok(documents)
-}
-
-/// `item`, one resource of the app, with each collection field's items deepened by `depth` more
-/// levels: each collection is read whole (`items` and `next`, page by page), never only its first
-/// page, since a chat's newest message is its last.
-fn tree_item(host: &Host, item: &str, reader: &Actor, depth: usize) -> Result<Json, String> {
-    let mut answer = host.answer_read(&serde_json::json!({ "item": item }), reader)?;
-    if depth == 0 {
-        return Ok(answer);
-    }
-    // A collection reads as a page (`{items}`); a list, set or map projects with its `count`.
-    let collections: Vec<String> = answer
-        .get("fields")
-        .and_then(Json::as_object)
-        .map(|fields| {
-            fields
-                .iter()
-                .filter(|(_, value)| {
-                    value.get("items").and_then(Json::as_array).is_some()
-                        && value.get("count").is_none()
-                })
-                .map(|(name, _)| name.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-    for name in collections {
-        let mut rows: Vec<Json> = Vec::new();
-        let mut after: Option<String> = None;
-        loop {
-            let mut ask = Json::Object(serde_json::Map::new());
-            if let Json::Object(ask) = &mut ask {
-                ask.insert("item".into(), Json::String(item.to_owned()));
-                ask.insert("field".into(), Json::String(name.clone()));
-                if let Some(after) = &after {
-                    ask.insert("after".into(), Json::String(after.clone()));
-                }
-            }
-            let answer = host.answer_read(&ask, reader)?;
-            // A read of one collection of a resource answers the resource, that collection's
-            // page under its fields.
-            let page = answer
-                .get("fields")
-                .and_then(|fields| fields.get(&name))
-                .cloned()
-                .unwrap_or(Json::Null);
-            if let Some(items) = page.get("items").and_then(Json::as_array) {
-                rows.extend(items.iter().cloned());
-            }
-            after = page.get("next").and_then(Json::as_str).map(str::to_owned);
-            if after.is_none() {
-                break;
-            }
-        }
-        for row in &mut rows {
-            let Some(child) = row.get("item").and_then(Json::as_str).map(str::to_owned) else {
-                continue;
-            };
-            let whole = tree_item(host, &child, reader, depth.saturating_sub(1))?;
-            if let (Json::Object(dst), Json::Object(src)) = (&mut *row, whole)
-                && let Some(fields) = src.get("fields")
-            {
-                dst.insert("fields".into(), fields.clone());
-            }
-        }
-        if let Some(fields) = answer.get_mut("fields").and_then(Json::as_object_mut) {
-            fields.insert(name, serde_json::json!({ "items": rows }));
-        }
-    }
-    Ok(answer)
 }
 
 /// One published action of a tilolang record of a workspace, as a host applies it: the app, who

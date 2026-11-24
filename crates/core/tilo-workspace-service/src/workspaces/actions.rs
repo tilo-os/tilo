@@ -3930,58 +3930,6 @@ impl ActionProvider for InWorkspace {
         let reservation = self.server.log().reserve(caller, &request);
         self.run(workspaces, caller, request, reservation)
     }
-}
-
-impl InWorkspace {
-    /// Run `request` for `caller` as `reservation` admitted it, answering its receipt.
-    fn run(
-        &self,
-        workspaces: Workspaces,
-        caller: &Caller,
-        request: InvokeRequest,
-        reservation: Result<tilo_actions::remote::Reservation, ActionCallError>,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let invocation = request.invocation;
-        match reservation {
-            Err(error) => return Pending::ready(Err(error)),
-            Ok(tilo_actions::remote::Reservation::Admitted) => {
-                return Pending::ready(
-                    self.server
-                        .log()
-                        .get(caller, &invocation)
-                        .map(InvocationState::receipt)
-                        .ok_or(ActionCallError::UnknownInvocation),
-                );
-            }
-            Ok(tilo_actions::remote::Reservation::Reserved) => {}
-        }
-        let call = invocation_states::Call {
-            workspaces,
-            workspace_id: self.workspace_id,
-            certificate: self.certificate.clone(),
-            caller: caller.clone(),
-            request,
-        };
-        let (host, certificate) = (self.server.clone(), self.certificate.clone());
-        let wait = caller_wait(&call.request);
-        let runtime = self.server.shared.runtime.clone();
-        self.server.spawn(async move {
-            let (workspaces, workspace_id, caller, request) = (
-                call.workspaces.clone(),
-                call.workspace_id,
-                call.caller.clone(),
-                call.request.clone(),
-            );
-            let mut work = runtime.spawn(async move {
-                Box::pin(workspaces.invoke(workspace_id, &caller, certificate.as_ref(), &request))
-                    .await
-            });
-            match answered_within(&mut work, wait).await {
-                Some(ran) => ended(&host, &call, ran).await,
-                None => Ok(still_running(&host, call, work)),
-            }
-        })
-    }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         // A follow reads the MCP server as it is now.
@@ -4087,6 +4035,58 @@ impl InWorkspace {
             })
         } else {
             Err(ActionCallError::UnknownInvocation)
+        })
+    }
+}
+
+impl InWorkspace {
+    /// Run `request` for `caller` as `reservation` admitted it, answering its receipt.
+    fn run(
+        &self,
+        workspaces: Workspaces,
+        caller: &Caller,
+        request: InvokeRequest,
+        reservation: Result<tilo_actions::remote::Reservation, ActionCallError>,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let invocation = request.invocation;
+        match reservation {
+            Err(error) => return Pending::ready(Err(error)),
+            Ok(tilo_actions::remote::Reservation::Admitted) => {
+                return Pending::ready(
+                    self.server
+                        .log()
+                        .get(caller, &invocation)
+                        .map(InvocationState::receipt)
+                        .ok_or(ActionCallError::UnknownInvocation),
+                );
+            }
+            Ok(tilo_actions::remote::Reservation::Reserved) => {}
+        }
+        let call = invocation_states::Call {
+            workspaces,
+            workspace_id: self.workspace_id,
+            certificate: self.certificate.clone(),
+            caller: caller.clone(),
+            request,
+        };
+        let (host, certificate) = (self.server.clone(), self.certificate.clone());
+        let wait = caller_wait(&call.request);
+        let runtime = self.server.shared.runtime.clone();
+        self.server.spawn(async move {
+            let (workspaces, workspace_id, caller, request) = (
+                call.workspaces.clone(),
+                call.workspace_id,
+                call.caller.clone(),
+                call.request.clone(),
+            );
+            let mut work = runtime.spawn(async move {
+                Box::pin(workspaces.invoke(workspace_id, &caller, certificate.as_ref(), &request))
+                    .await
+            });
+            match answered_within(&mut work, wait).await {
+                Some(ran) => ended(&host, &call, ran).await,
+                None => Ok(still_running(&host, call, work)),
+            }
         })
     }
 }

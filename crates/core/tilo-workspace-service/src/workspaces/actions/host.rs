@@ -26,9 +26,9 @@ use tilo_server_protocol::workspaces::{
     ActionInvitation, AdminRefusal, CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE,
     CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE,
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
-    HOST_WORKSPACES_RESOURCE, HostedWorkspace, LIST_PERSONAL, LIST_REVOCATIONS,
-    LIST_WORKSPACES, PersonalList, StandingPage, UNHOST_WORKSPACE, WEB_SERVE, WorkspaceLabels,
-    WorkspaceListing, administered_answer, administered_request, check_labels, labelled,
+    HOST_WORKSPACES_RESOURCE, HostedWorkspace, LIST_PERSONAL, LIST_REVOCATIONS, LIST_WORKSPACES,
+    PersonalList, StandingPage, UNHOST_WORKSPACE, WEB_SERVE, WorkspaceLabels, WorkspaceListing,
+    administered_answer, administered_request, check_labels, labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -531,11 +531,6 @@ fn list_personal_params() -> Vec<ActionParam> {
             ParamType::Text,
             "Only this workspace (a UUID), when it is yours.",
         ),
-        ActionParam::optional(
-            tilo_server_protocol::workspaces::PERSONAL_AFTER,
-            ParamType::Text,
-            "The version of the list your device holds: the answer waits until the list changes.",
-        ),
     ]
 }
 
@@ -945,7 +940,10 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
         let args = Args::of(&request.argument)?;
-        let asked = administered_request(&args.0).map_err(invalid)?;
+        let asked =
+            administered_request(&args.0).map_err(|error| ActionCallError::InvalidRequest {
+                reason: error.to_string(),
+            })?;
         let reply = self.answer_administration(device, caller, asked).await;
         administered_answer(&reply).map_err(|reason| ActionCallError::Refused { reason })
     }
@@ -1011,7 +1009,9 @@ impl Workspaces {
                 let theirs =
                     person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
                 if !theirs || !self.lists_to(device, workspace) {
-                    return Err(refused(&AdminRefusal::NotYourOwn.to_reason()));
+                    return Err(ActionCallError::refused(
+                        &AdminRefusal::NotYourOwn.to_reason(),
+                    ));
                 }
                 false
             }
@@ -1405,7 +1405,9 @@ impl Workspaces {
                         .is_some_and(|scope| scope.reaches(workspace))
                 }))
         {
-            return Err(refused(&AdminRefusal::NotYourOwn.to_reason()));
+            return Err(ActionCallError::refused(
+                &AdminRefusal::NotYourOwn.to_reason(),
+            ));
         }
         // A backend that keeps a workspace per customer labels each with its own id for that
         // customer: asking again with the same labels when a call is retried answers the
@@ -1421,7 +1423,7 @@ impl Workspaces {
             let summary = self
                 .summary(&existing)
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(|error| ActionCallError::refused(&error))?;
             return self
                 .invite_own_person(
                     summary,
@@ -1483,7 +1485,9 @@ impl Workspaces {
             // never made. The host makes a person's own workspace under an id
             // of its own choosing, so an id it does not know is never theirs,
             // and it is never read as some other workspace they have.
-            return Err(refused(&AdminRefusal::NotYourOwn.to_reason()));
+            return Err(ActionCallError::refused(
+                &AdminRefusal::NotYourOwn.to_reason(),
+            ));
         } else if name.is_none()
             && let Some(first) = own.first_of(&person)
         {
@@ -1492,7 +1496,9 @@ impl Workspaces {
                 .await
                 .map_err(|error| ActionCallError::refused(error.to_string()))?
         } else if !makes {
-            return Err(refused(&AdminRefusal::NotYourOwn.to_reason()));
+            return Err(ActionCallError::refused(
+                &AdminRefusal::NotYourOwn.to_reason(),
+            ));
         } else {
             // Another one, for a person the site let in ([`Self::check_account`]):
             // there is no bound on how many a person keeps, and one they did
@@ -1538,7 +1544,11 @@ impl Workspaces {
     ) -> Result<Value, ActionCallError> {
         let workspace = match (name, workspace) {
             (None, Some(workspace)) if self.lists_to(device, workspace) => workspace,
-            _ => return Err(refused(&AdminRefusal::NotYourOwn.to_reason())),
+            _ => {
+                return Err(ActionCallError::refused(
+                    &AdminRefusal::NotYourOwn.to_reason(),
+                ));
+            }
         };
         let summary = self
             .summary(workspace)

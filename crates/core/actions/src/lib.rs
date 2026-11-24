@@ -155,6 +155,8 @@ pub mod action;
 pub mod agent_disclosure;
 pub mod api;
 pub mod appearance;
+#[cfg(feature = "asks")]
+pub mod asks;
 pub mod compact;
 pub mod content;
 pub mod context;

@@ -38,9 +38,7 @@ use tilo_peer_state::actions::{ActionService, ReadFuture, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
 use crate::work::{HostJobs, HostLinux, Job, LINUX_RESOURCE, Turn, WORK_PROVIDER};
-use tilo_server_protocol::workspaces::{
-    HOST_ACTIONS_PROVIDER, LIST_PERSONAL, PERSONAL_AFTER, PersonalList,
-};
+use tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER;
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::GovernedWorkspace;
@@ -121,26 +119,19 @@ impl DeviceWork {
 
     /// `request`, one of the host's own operations (`account/…`) asked by a device of a
     /// workspace's roster as itself, decided as the host decides it for that device's
-    /// certificate. A read of the person's workspace list that names the version the device
-    /// holds ([`PERSONAL_AFTER`]) waits until the list moves past it ([`Self::follow_list`]).
+    /// certificate.
     fn account(
         self: &Arc<Self>,
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.as_certified(caller, move |work, governance, _, certificate, caller| {
+        self.as_certified(caller, move |_, governance, _, certificate, caller| {
             Box::pin(async move {
-                let host = governance.as_host(&certificate);
-                match followed_version(&request) {
-                    Some(after) => {
-                        work.follow_list(&host, &certificate, &caller, request, after)
-                            .await
-                    }
-                    None => host
-                        .invoke(&caller, request)
-                        .await
-                        .unwrap_or(Err(ActionCallError::Unanswered)),
-                }
+                governance
+                    .as_host(&certificate)
+                    .invoke(&caller, request)
+                    .await
+                    .unwrap_or(Err(ActionCallError::Unanswered))
             })
         })
     }
@@ -224,74 +215,6 @@ impl DeviceWork {
         answer
     }
 
-    /// Answer `request`, a read of `certificate`'s person's workspace list naming `after`, the
-    /// version their device holds: at once when the list is another, else once it moves or
-    /// [`LIST_FOLLOWED`] went by, whichever comes first. Each read is decided by `host` as any
-    /// other; the invocation is followed here, as a turn is.
-    async fn follow_list<H: ActionProvider + Clone + Send + Sync + 'static>(
-        self: &Arc<Self>,
-        host: &H,
-        _certificate: &tilo_user_identity::DeviceCert,
-        caller: &Caller,
-        request: InvokeRequest,
-        after: String,
-    ) -> Result<InvocationReceipt, ActionCallError> {
-        let invocation = request.invocation;
-        {
-            let mut log = self.log.lock_recover();
-            if log.reserve(caller, &request)? == Reservation::Admitted {
-                return log
-                    .get(caller, &invocation)
-                    .map(InvocationState::receipt)
-                    .ok_or(ActionCallError::UnknownInvocation);
-            }
-        }
-        let workspaces = self
-            .turns
-            .get()
-            .and_then(super::WeakWorkspaces::upgrade)
-            .ok_or_else(not_served)?;
-        // Followed before the first read, so a change between the read and the
-        // wait is not missed.
-        let mut changed = workspaces.personal_changes();
-        let first = match list_now(host, caller, &request).await {
-            Ok(list) => list,
-            Err(error) => {
-                self.log.lock_recover().abandon(&invocation);
-                return Err(error);
-            }
-        };
-        if PersonalList::version(&first) != after {
-            let state = listed(invocation, first);
-            let receipt = state.receipt();
-            self.log.lock_recover().complete(&invocation, state);
-            return Ok(receipt);
-        }
-        let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
-        let receipt = accepted.receipt();
-        self.log.lock_recover().complete(&invocation, accepted);
-        let (work, caller, host) = (Arc::downgrade(self), caller.clone(), host.clone());
-        self.runtime.spawn(async move {
-            let _ = tokio::time::timeout(LIST_FOLLOWED, changed.changed()).await;
-            let update = match list_now(&host, &caller, &request).await {
-                Ok(list) => listed(invocation, list).update,
-                Err(error) => InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: error.code().into(),
-                        message: error.to_string(),
-                        details: None,
-                        retryable: true,
-                    },
-                },
-            };
-            if let Some(work) = work.upgrade() {
-                work.note(&caller, InvocationState::new(invocation, update));
-            }
-        });
-        Ok(receipt)
-    }
-
     /// Run the turns this device takes through `jobs`.
     pub(super) fn serve(&self, jobs: Arc<dyn HostJobs>) {
         *self.jobs.write_recover() = Some(jobs);
@@ -328,21 +251,18 @@ impl DeviceWork {
         self.jobs.read_recover().clone()
     }
 
-    /// Whether this device lets agents from the person's other devices work here: what
-    /// the device's settings say now, or what a test said.
-    #[cfg_attr(
-        any(test, feature = "test-support"),
-        expect(
-            clippy::significant_drop_in_scrutinee,
-            reason = "the guard is released when the condition ends, and nothing waits while it is held"
-        )
-    )]
-    fn accepts_agents_from_other_devices(&self) -> bool {
+    /// The answer this device keeps about agents from the person's other devices in
+    /// `workspace`: what its grants say now, or what a test said.
+    async fn agents_from_other_devices(
+        &self,
+        workspace: Option<&str>,
+    ) -> Option<tilo_action_policy::Answer> {
         #[cfg(any(test, feature = "test-support"))]
         if let Some(accepts) = *self.agents_from_other_devices.read_recover() {
-            return accepts;
+            return accepts.then_some(tilo_action_policy::Answer::Ask);
         }
-        settings_store::mcp_server::accepts_own_devices(&settings_store::load())
+        let workspaces = self.turns.get().and_then(super::WeakWorkspaces::upgrade)?;
+        workspaces.agents_from_other_devices(workspace?).await
     }
 
     /// Let agents from the person's other devices work here, or not, as a test says.
@@ -769,69 +689,6 @@ impl Answers {
     }
 }
 
-/// How long a read of the person's workspace list that names the version the asking device
-/// holds waits for the list to move before it answers the same list again: inside the wait a
-/// device following an invocation gives it.
-const LIST_FOLLOWED: Duration = Duration::from_secs(25);
-
-/// The version of the person's list `request` names as the one its device holds, when it is a
-/// read of that list that follows it.
-fn followed_version(request: &InvokeRequest) -> Option<String> {
-    if request.target.address.action != LIST_PERSONAL {
-        return None;
-    }
-    let tilo_actions::remote::InvokeArgument::Json(arguments) = &request.argument else {
-        return None;
-    };
-    arguments
-        .get(PERSONAL_AFTER)
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-}
-
-/// The person's list as `host` answers `request` now, read under an invocation of its own and
-/// without the version it follows.
-async fn list_now(
-    host: &(impl ActionProvider + Sync),
-    caller: &Caller,
-    request: &InvokeRequest,
-) -> Result<serde_json::Value, ActionCallError> {
-    let mut read = request.clone();
-    read.invocation = InvocationId::new();
-    if let tilo_actions::remote::InvokeArgument::Json(arguments) = &mut read.argument {
-        arguments.remove(PERSONAL_AFTER);
-    }
-    let receipt = host
-        .invoke(caller, read)
-        .await
-        .unwrap_or(Err(ActionCallError::Unanswered))?;
-    match receipt.status {
-        tilo_actions::remote::ReceiptStatus::Completed { output } => {
-            Ok(output.value.unwrap_or_default())
-        }
-        tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error),
-        tilo_actions::remote::ReceiptStatus::Failed { error } => Err(ActionCallError::Refused {
-            reason: error.message,
-        }),
-        tilo_actions::remote::ReceiptStatus::Accepted
-        | tilo_actions::remote::ReceiptStatus::Cancelled { .. } => Err(ActionCallError::Unanswered),
-    }
-}
-
-/// `invocation` answered with `list`.
-fn listed(invocation: InvocationId, list: serde_json::Value) -> InvocationState {
-    InvocationState::new(
-        invocation,
-        InvocationUpdate::Succeeded {
-            invocation,
-            output: ActionOutput {
-                value: Some(list),
-                ..ActionOutput::default()
-            },
-        },
-    )
-}
-
 fn not_served() -> ActionCallError {
     ActionCallError::Unavailable {
         reason: "this device answers only turns of work and its workspaces' governance on the device action service".into(),
@@ -929,62 +786,49 @@ impl ActionProvider for Answers {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // An agent another of the person's devices handed its session to works here only while
-        // this device's settings let such agents in.
-        if caller.acting().handed && !self.work.accepts_agents_from_other_devices() {
-            return Pending::ready(Err(ActionCallError::Refused {
-                reason: crate::i18n::message(
-                    None,
-                    DEVICE_AGENTS_NOT_ACCEPTED,
-                    &tilo_history::FluentArgs::new(),
-                ),
-            }));
+        // the person let such agents in on this device: the grant its workspace keeps for this
+        // device says so, and whether a step their grants ask first goes unasked.
+        if caller.acting().handed {
+            let answers = Self {
+                work: Arc::clone(&self.work),
+                apps: self
+                    .apps
+                    .get()
+                    .cloned()
+                    .map(std::sync::OnceLock::from)
+                    .unwrap_or_default(),
+            };
+            let caller = caller.clone();
+            let (completer, answer) = tilo_actions::remote::pending();
+            self.work.runtime.clone().spawn(async move {
+                let caller = match answers
+                    .work
+                    .agents_from_other_devices(caller.workspace())
+                    .await
+                {
+                    Some(tilo_action_policy::Answer::Allow) => caller.steps_unasked(),
+                    Some(tilo_action_policy::Answer::Ask) => caller,
+                    Some(tilo_action_policy::Answer::Deny) | None => {
+                        completer.complete(Err(ActionCallError::Refused {
+                            reason: crate::i18n::message(
+                                None,
+                                DEVICE_AGENTS_NOT_ACCEPTED,
+                                &tilo_history::FluentArgs::new(),
+                            ),
+                        }));
+                        return;
+                    }
+                };
+                completer.complete(
+                    answers
+                        .admitted(&caller, request)
+                        .await
+                        .unwrap_or(Err(ActionCallError::Unanswered)),
+                );
+            });
+            return answer;
         }
-        // What an agent's turn asks of what its workspace keeps for the person who asked it
-        // (their vault's uses by reference, mail, calendars, connections) is decided for that
-        // turn, before anything a person's device asks of the same providers.
-        #[cfg(not(target_arch = "wasm32"))]
-        if super::hosted_use::answers(caller, &request.target) {
-            return self.work.answer_turn(caller, request);
-        }
-        if governed(&request.target.provider)
-            || request.target.provider == tilo_actions::remote::asked::PROVIDER
-            || tilo_actions::remote::asked::is_resolve(&request.target)
-        {
-            return self.work.govern(caller, request);
-        }
-        if request.target.provider == HOST_ACTIONS_PROVIDER {
-            return self.work.account(caller, request);
-        }
-        if request.target.provider == WORK_PROVIDER {
-            return self.work.take(caller, &request);
-        }
-        if self.work.providers.serves(&request.target.provider) {
-            return self
-                .work
-                .providers
-                .from_device(caller, request, &self.work.workspaces, &self.work.runtime)
-                .expect("a provider that serves the call takes it");
-        }
-        // An address a provider registered on this device publishes is that provider's, whichever
-        // provider token the call names: a workspace's own `app.<app>#open` is the open of an app
-        // this device places, and page actions of what it placed are its own.
-        if self
-            .work
-            .providers
-            .published(&request.target, super::providers::Reach::Devices)
-            .is_some()
-        {
-            return self
-                .work
-                .providers
-                .from_device(caller, request, &self.work.workspaces, &self.work.runtime)
-                .expect("a provider that publishes the call takes it");
-        }
-        if let Some(served) = self.apps() {
-            served.invoke(caller, request)
-        } else {
-            Pending::ready(Err(ActionCallError::UnknownAction))
-        }
+        self.admitted(caller, request)
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
@@ -1261,5 +1105,61 @@ impl super::Workspaces {
                 .map_err(|error| error.to_string())?;
         }
         Ok(())
+    }
+}
+
+impl Answers {
+    /// `request`, of a caller this device admitted, reaching what answers it.
+    fn admitted(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // What an agent's turn asks of what its workspace keeps for the person who asked it
+        // (their vault's uses by reference, mail, calendars, connections) is decided for that
+        // turn, before anything a person's device asks of the same providers.
+        #[cfg(not(target_arch = "wasm32"))]
+        if super::hosted_use::answers(caller, &request.target) {
+            return self.work.answer_turn(caller, request);
+        }
+        if governed(&request.target.provider)
+            || request.target.provider == tilo_actions::remote::asked::PROVIDER
+            || tilo_actions::remote::asked::is_resolve(&request.target)
+        {
+            return self.work.govern(caller, request);
+        }
+        if request.target.provider == HOST_ACTIONS_PROVIDER {
+            return self.work.account(caller, request);
+        }
+        if request.target.provider == WORK_PROVIDER {
+            return self.work.take(caller, &request);
+        }
+        if self.work.providers.serves(&request.target.provider) {
+            return self
+                .work
+                .providers
+                .from_device(caller, request, &self.work.workspaces, &self.work.runtime)
+                .expect("a provider that serves the call takes it");
+        }
+        // An address a provider registered on this device publishes is that provider's, whichever
+        // provider token the call names: a workspace's own `app.<app>#open` is the open of an app
+        // this device places, and page actions of what it placed are its own.
+        if self
+            .work
+            .providers
+            .published(&request.target, super::providers::Reach::Devices)
+            .is_some()
+        {
+            return self
+                .work
+                .providers
+                .from_device(caller, request, &self.work.workspaces, &self.work.runtime)
+                .expect("a provider that publishes the call takes it");
+        }
+        if let Some(served) = self.apps() {
+            served.invoke(caller, request)
+        } else {
+            Pending::ready(Err(ActionCallError::UnknownAction))
+        }
     }
 }

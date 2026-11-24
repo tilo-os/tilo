@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-tilo-actions = { path = "../../core/actions" }
+tilo-actions = { path = "../../core/actions", features = ["asks"] }
 # The event sounds a notice makes, played where it is shown.
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 # The content store a service's documents keep their large parts in.

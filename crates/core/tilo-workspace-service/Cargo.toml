@@ -35,7 +35,7 @@ session-pages = ["device-keys", "dep:tilo-session-client"]
 fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
+apps = ["dep:launcher", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.
@@ -53,6 +53,8 @@ web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
 tilo-actions = { path = "../actions" }
+# Where Nearby Send hands a file to an AirDrop receiver: the descriptors its helper inherits.
+launcher = { path = "../launcher", optional = true }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
 # A short invitation link names this host as every link names one.
 tilo-reference = { path = "../reference" }
