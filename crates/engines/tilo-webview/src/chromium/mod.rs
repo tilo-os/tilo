@@ -2750,6 +2750,7 @@ fn wipe_service_wire(value: &mut Value) {
 /// A page command that carries a text released for one site holds that text until it is
 /// written to the engine: it is wiped then, not left to the allocator.
 fn wipe_released(value: &mut Value) {
+    crate::credentials::wipe(value);
     if value.get("op").and_then(Value::as_str) != Some("page") || value.get("at").is_none() {
         return;
     }

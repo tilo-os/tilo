@@ -1244,9 +1244,11 @@ mod tests {
         // state of the place: the window folds to that one state, and its content column holds
         // it once, never the state beside what it replaced.
         let mut window = node("NavShell", "window", &[("title", Value::text("Disks"))]);
-        window
-            .children
-            .push(part("sidebar", "window", vec![node("EmptyState", "none", &[])]));
+        window.children.push(part(
+            "sidebar",
+            "window",
+            vec![node("EmptyState", "none", &[])],
+        ));
         window.children.push(node("EmptyState", "content", &[]));
         let folded = nothing_listed(window);
         assert!(
@@ -1254,11 +1256,10 @@ mod tests {
             "the window folds to its one state"
         );
         let content = content_children(&folded);
+        assert_eq!(content.len(), 1, "one content view, never two: {content:?}");
         assert_eq!(
-            content.len(),
-            1,
-            "one content view, never two: {content:?}"
+            content[0].key, "none",
+            "the sidebar's state stands in content"
         );
-        assert_eq!(content[0].key, "none", "the sidebar's state stands in content");
     }
 }

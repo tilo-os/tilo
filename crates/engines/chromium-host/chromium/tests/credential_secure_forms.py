@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Real authenticated HTTPS address-form probe; never reads or writes Keychain logins.
+"""Real authenticated HTTPS login- and address-form probe.
 
 Uses an isolated profile and inert DOM in the existing HTTPS document. No TLS
-exceptions, form submissions, or existing user profile access. An explicit
---synthetic-passwords mode uses only fixed test credentials in the fresh profile
-and deletes its account; failed cleanup retains the profile for recovery.
+exceptions, form submissions, or existing user profile access. The engine keeps
+no logins: an explicit --synthetic-passwords mode takes what a fixed test login
+form holds (as the workspace's vault would be handed it) and fills the form with
+a fixed test login (as the vault would hand it over).
 """
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,7 +26,7 @@ def main():
     parser.add_argument('--fixture', type=Path, default=Path(__file__).parent / 'fixtures/credential_forms.js')
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--private-denial', action='store_true', help='Verify all credential operations are denied in an ephemeral private engine')
-    parser.add_argument('--synthetic-passwords', action='store_true', help='Exercise save/update/fill/delete only for this fresh profile and synthetic account')
+    parser.add_argument('--synthetic-passwords', action='store_true', help='Exercise capture/take/fill with a synthetic login in this fresh profile')
     parser.add_argument('--prepare-viewport', action='store_true', help='Wait for an 800x600 empty-page paint before HTTPS navigation')
     parser.add_argument('--navigation-timeout', type=float, default=25, help='HTTPS navigation deadline in seconds (1–120)')
     args = parser.parse_args()
@@ -36,9 +36,8 @@ def main():
         parser.error('--private-denial and --synthetic-passwords are mutually exclusive')
     args.output.mkdir(parents=True, exist_ok=True)
     profile = tempfile.TemporaryDirectory(prefix='tilo-credential-https-', delete=False)
-    report = {'profile': profile.name, 'password_store_commands_sent': 0, 'passed': False}
+    report = {'profile': profile.name, 'passed': False}
     process = None
-    cleanup_account = None
     events = queue.Queue()
     try:
         with (args.output / 'native.log').open('wb') as log:
@@ -106,8 +105,6 @@ def main():
             send(op='scripts', scripts=["if(window===top && location.origin==='https://example.com'){"+fixture+";document.title='tilo-fixture-ready';}"])
             until(lambda e: e['event'] == 'title' and e['title'] == 'tilo-fixture-ready')
             def credential(request, action, document='', **fields):
-                if action in ('save', 'update', 'fill', 'delete', 'list'):
-                    report['password_store_commands_sent'] += 1
                 send(op='credential_action', request_id=request, action=action, origin='https://example.com', document=document, **fields)
                 return until(lambda e: e['event'] == 'credential_result' and e['request_id'] == request)
             report['stage'] = 'native_document_status'
@@ -115,11 +112,9 @@ def main():
             if args.private_denial:
                 assert not status['success']
                 report['stage'] = 'private_credential_denials'
-                attempts = [('discover', {}), ('discover_addresses', {}), ('list', {}),
-                    ('capture', {'form': '1'}), ('save', {'capture': '1'}),
-                    ('update', {'capture': '1', 'account': 'a'*64}),
-                    ('fill', {'form': '1', 'account': 'a'*64}),
-                    ('delete', {'account': 'a'*64}),
+                attempts = [('discover', {}), ('discover_addresses', {}),
+                    ('capture', {'form': '1'}), ('take', {'capture': '1'}),
+                    ('fill', {'form': '1', 'username': 'u', 'password': 'p'}),
                     ('fill_address', {'form': '1', 'profile': {'given_name': 'Forbidden'}})]
                 for request, (action, fields) in enumerate(attempts, 10):
                     denied = credential(request, action, '1', **fields)
@@ -152,17 +147,12 @@ def main():
             assert outcome['title'] == 'tilo-address-pass'
             report['address_filled_without_submission'] = True
             if args.synthetic_passwords:
-                report['public_secret_exposed'] = False
                 username = 'tilo-synthetic-fixture'
-                account = hashlib.sha256(username.encode()).hexdigest()
                 def script(source, title):
                     send(op='scripts', scripts=["if(window===top && location.origin==='https://example.com'){" + source + ";document.title=" + json.dumps(title) + ";}"])
                     until(lambda e: e['event'] == 'title' and e['title'] == title)
                 def set_login(password, title):
                     script("document.getElementById('tilo-login-username').value=" + json.dumps(username) + ";document.getElementById('tilo-login-password').value=" + json.dumps(password), title)
-                report['stage'] = 'synthetic_keychain_initial_list'
-                listed = credential(10, 'list', document)
-                assert listed['success'] and listed['accounts'] == []
                 set_login('tilo-synthetic-password-one', 'tilo-login-prepared')
                 forms = credential(11, 'discover', document)
                 assert forms['success'] and len(forms['forms']) == 1
@@ -170,55 +160,37 @@ def main():
                 captured = credential(12, 'capture', document, form=login)
                 assert captured['success'] and 'password' not in captured
                 report['stage'] = 'hidden_capture_invalidation'
-                cleanup_account = account  # Preserve cleanup if a regression wrongly stores it.
                 send(op='visibility', visible=False)
-                refused = credential(15, 'save', document, capture=captured['capture'])
-                assert not refused['success']
+                refused = credential(15, 'take', document, capture=captured['capture'])
+                assert not refused['success'] and 'password' not in refused
                 send(op='visibility', visible=True)
-                refused = credential(16, 'save', document, capture=captured['capture'])
-                assert not refused['success']
-                listed = credential(17, 'list', document)
-                assert listed['success'] and listed['accounts'] == []
-                cleanup_account = None
+                refused = credential(16, 'take', document, capture=captured['capture'])
+                assert not refused['success'] and 'password' not in refused
                 report['hidden_capture_cannot_be_revived'] = True
+                report['stage'] = 'synthetic_take'
                 captured = credential(18, 'capture', document, form=login)
                 assert captured['success']
-                report['stage'] = 'synthetic_keychain_save'
-                cleanup_account = account  # A timed-out save may still have reached Keychain.
-                saved = credential(13, 'save', document, capture=captured['capture'])
-                assert saved['success']
-                listed = credential(14, 'list', document)
-                assert listed['success'] and len(listed['accounts']) == 1
-                assert listed['accounts'][0]['id'] == account
+                taken = credential(13, 'take', document, capture=captured['capture'])
+                assert taken['success'] and taken['username'] == username
+                assert taken['password'] == 'tilo-synthetic-password-one'
+                again = credential(14, 'take', document, capture=captured['capture'])
+                assert not again['success'] and 'password' not in again
+                report['take_hands_over_once'] = True
                 for request, password in [(20, 'tilo-synthetic-password-one'), (30, 'tilo-synthetic-password-two')]:
-                    if request == 30:
-                        report['stage'] = 'synthetic_keychain_update'
-                        set_login(password, 'tilo-login-update-prepared')
-                        captured = credential(27, 'capture', document, form=login)
-                        assert captured['success']
-                        updated = credential(28, 'update', document, capture=captured['capture'], account=account)
-                        assert updated['success']
                     script("document.getElementById('tilo-login-username').value='';document.getElementById('tilo-login-password').value=''", 'tilo-login-cleared-' + str(request))
-                    report['stage'] = 'synthetic_keychain_fill_' + str(request)
-                    filled = credential(request, 'fill', document, form=login, account=account)
+                    report['stage'] = 'synthetic_fill_' + str(request)
+                    filled = credential(request, 'fill', document, form=login, username=username, password=password)
                     assert filled['success'] and 'password' not in filled
                     check = "const good=document.getElementById('tilo-login-username').value===" + json.dumps(username) + "&&document.getElementById('tilo-login-password').value===" + json.dumps(password) + "&&!document.getElementById('tilo-login').dataset.submitAttempted;document.title=good?'tilo-login-pass-" + str(request) + "':'tilo-login-fail'"
                     send(op='scripts', scripts=["if(window===top && location.origin==='https://example.com'){" + check + ";}"])
                     verified = until(lambda e: e['event'] == 'title' and e['title'].startswith(('tilo-login-pass-', 'tilo-login-fail')))
                     assert verified['title'] == 'tilo-login-pass-' + str(request)
                 report['stage'] = 'cross_origin_refusal'
-                send(op='credential_action', request_id=39, action='fill', origin='https://example.org', document=document, form=login, account=account)
-                report['password_store_commands_sent'] += 1
+                send(op='credential_action', request_id=39, action='fill', origin='https://example.org', document=document, form=login, username=username, password='tilo-synthetic-password-two')
                 refused = until(lambda e: e['event'] == 'credential_result' and e['request_id'] == 39)
                 assert not refused['success']
                 report['cross_origin_fill_refused'] = True
-                report['stage'] = 'synthetic_keychain_delete'
-                deleted = credential(40, 'delete', document, account=account)
-                assert deleted['success']
-                cleanup_account = None
-                listed = credential(41, 'list', document)
-                assert listed['success'] and listed['accounts'] == []
-                report['synthetic_save_update_fill_delete'] = True
+                report['synthetic_capture_take_fill'] = True
             send(op='visibility', visible=False)
             hidden = credential(5, 'fill_address', document, form=form, profile={'given_name': 'Forbidden'})
             assert not hidden['success']
@@ -240,14 +212,6 @@ def main():
             except (OSError, subprocess.TimeoutExpired):
                 report['timeout_sample_saved'] = False
     finally:
-        if cleanup_account is not None and process is not None and process.poll() is None:
-            try:
-                cleaned = credential(1000, 'delete', document, account=cleanup_account)
-                if cleaned['success']:
-                    cleanup_account = None
-            except Exception:
-                pass
-        report['synthetic_account_cleanup_pending'] = cleanup_account is not None
         if process is not None and process.poll() is None:
             os.killpg(process.pid, signal.SIGTERM)
             try:
@@ -259,8 +223,7 @@ def main():
         if process is not None:
             process.stdin.close()
             process.stdout.close()
-        if cleanup_account is None:
-            profile.cleanup()
+        profile.cleanup()
         report['profile_removed'] = not Path(profile.name).exists()
         (args.output / 'result.json').write_text(json.dumps(report, indent=2)+'\n')
         print(json.dumps(report))

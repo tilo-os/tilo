@@ -1,9 +1,31 @@
 #pragma once
-#include "credential_worker.h"
+#include "credential_document.h"
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 namespace tilo {
+// Move-only owned buffer. OS/CEF copies require their own lifetime management;
+// wiping this allocation is not a claim of perfect process-memory erasure.
+class CredentialSecret {
+ public:
+  CredentialSecret()=default;
+  explicit CredentialSecret(std::string_view value):bytes_(value.begin(),value.end()) {}
+  CredentialSecret(const CredentialSecret&)=delete;
+  CredentialSecret& operator=(const CredentialSecret&)=delete;
+  CredentialSecret(CredentialSecret&& other) noexcept:bytes_(std::move(other.bytes_)) {}
+  CredentialSecret& operator=(CredentialSecret&& other) noexcept {
+    if(this!=&other){Clear();bytes_=std::move(other.bytes_);}return *this;
+  }
+  ~CredentialSecret(){Clear();}
+  std::string_view View() const {return {bytes_.data(),bytes_.size()};}
+ private:
+  void Clear(){volatile char* data=bytes_.data();for(size_t i=0;i<bytes_.size();++i)data[i]=0;bytes_.clear();}
+  std::vector<char> bytes_;
+};
 struct CapturedCredential {std::string form, username;CredentialSecret secret;};
-// One pending Save/Update consent per tab. Values remain native, never in the
-// Rust metadata event. The owner must Clear on navigation/cancel and at expiry.
+// One pending capture per tab, until a take hands it to the vault. Values remain native until
+// that take. The owner must Clear on navigation/cancel and at expiry.
 class CredentialConsent {
  public:
   using Clock=CredentialDocument::Clock;

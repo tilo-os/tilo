@@ -27,9 +27,6 @@
 #include "page_clipboard.h"
 #include "http_auth.h"
 #include "text_composition_script.h"
-#if defined(OS_MAC)
-#include "credentials_mac.h"
-#endif
 #include "include/cef_audio_handler.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
@@ -342,11 +339,6 @@ std::string downloads_directory;
 std::string profile_directory;
 // Where extensions' context menu items are kept (extension_menus.h).
 std::string extension_menus_file;
-std::shared_ptr<tilo::CredentialWorker> credential_worker;
-struct CredentialDeliveryState {std::mutex mutex;bool active=false;};
-// A blocked worker retains this plain state through shutdown, without touching
-// destroyed globals or retaining CEF objects after CefShutdown.
-const auto credential_delivery=std::make_shared<CredentialDeliveryState>();
 CefRefPtr<tilo::RequestFilter> request_filter;
 // Tabs and windows for extensions (extension_tabs.h), and the page tab the
 // person used last: an extension's "current window" when it has none.
@@ -2119,114 +2111,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     int request=0;
     tilo::CredentialOperation operation;
     tilo::CredentialIdentity identity;
-    std::string action, form, account;
+    std::string action, form;
   };
-  struct CredentialStorePending {
-    CredentialPending pending;
-    std::shared_ptr<tilo::CredentialCancellation> cancellation;
-    bool timed_out=false;
-  };
-  static std::string CredentialStatusMessage(tilo::CredentialStatus status) {
-    switch(status) {
-      case tilo::CredentialStatus::Ok:return "Done";
-      case tilo::CredentialStatus::Cancelled:return "Cancelled";
-      case tilo::CredentialStatus::NotFound:return "Saved account no longer exists";
-      case tilo::CredentialStatus::Denied:return "Keychain access was denied or is locked";
-      case tilo::CredentialStatus::Capacity:return "This site has reached the 64-account capacity; new accounts cannot be saved";
-      case tilo::CredentialStatus::Exists:return "This account is already saved; choose Update";
-      case tilo::CredentialStatus::Invalid:return "Credential request or stored entry is invalid";
-      case tilo::CredentialStatus::Unavailable:return "Keychain is unavailable";
-    }
-    return "Keychain is unavailable";
-  }
-  void StartCredentialStore(int request,const std::string& action,tilo::CredentialRequest operation,const std::string& form={}) {
-    if(!credential_worker || private_mode || !credential_identity_ || !CredentialPageSecure(browser_->GetMainFrame())) {
-      CredentialEvent(request,action,false,"Credential storage is unavailable");return;
-    }
-    const auto kind=operation.operation;const auto account=operation.account;
-    auto id=credential_document_.Begin(kind,*credential_identity_,tilo::CredentialDocument::Clock::now());
-    if(!id || credential_store_pending_.size()>=16){
-      if(id)credential_document_.Take(*id,kind,*credential_identity_,tilo::CredentialDocument::Clock::now());
-      CredentialEvent(request,action,false,"Too many pending Keychain requests");return;
-    }
-    operation.origin=credential_identity_->origin;
-    const int tab=id_,browser_id=browser_->GetIdentifier();
-    auto cancellation=credential_worker->Submit(std::move(operation),[tab,browser_id,id=*id,delivery=credential_delivery](tilo::CredentialResult result,bool cancelled){
-      auto outcome=std::make_shared<tilo::CredentialResult>(std::move(result));
-      std::lock_guard lock(delivery->mutex);
-      if(!delivery->active)return;
-      // Only plain IDs and native result data cross threads. No Client/CEF
-      // object is retained by a blocked OS call after its browser closes.
-      CefPostTask(TID_UI,base::BindOnce([](int tab,int browser_id,uint64_t id,
-          std::shared_ptr<tilo::CredentialResult> result,bool cancelled){
-        auto client=clients.find(tab);
-        if(client==clients.end() || !client->second->browser_ ||
-           client->second->browser_->GetIdentifier()!=browser_id)return;
-        client->second->FinishCredentialStore(id,std::move(*result),cancelled);
-      },tab,browser_id,id,std::move(outcome),cancelled));
-    });
-    if(!cancellation) {
-      credential_document_.Take(*id,kind,*credential_identity_,tilo::CredentialDocument::Clock::now());
-      CredentialEvent(request,action,false,"Keychain queue is full or unavailable");return;
-    }
-    credential_store_pending_.emplace(*id,CredentialStorePending{
-      {request,kind,*credential_identity_,action,form,account},cancellation,false});
-    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,uint64_t id){
-      auto found=self->credential_store_pending_.find(id);if(found==self->credential_store_pending_.end())return;
-      found->second.timed_out=true;found->second.cancellation->Cancel();
-      const auto& pending=found->second.pending;
-      self->credential_document_.Take(id,pending.operation,pending.identity,tilo::CredentialDocument::Clock::now());
-      self->CredentialEvent(pending.request,pending.action,false,"Keychain timed out; an operation already started may still finish. Refresh saved accounts before retrying.");
-    },CefRefPtr<Client>(this),*id),30000);
-  }
-  void FinishCredentialStore(uint64_t id,tilo::CredentialResult result,bool cancelled) {
-    auto found=credential_store_pending_.find(id);if(found==credential_store_pending_.end())return;
-    auto state=std::move(found->second);credential_store_pending_.erase(found);
-    const auto& pending=state.pending;
-    if(!credential_identity_ || *credential_identity_!=pending.identity ||
-       !CredentialPageSecure(browser_->GetMainFrame()))return;
-    if(state.timed_out) {
-      auto fields=CefDictionaryValue::Create();fields->SetBool("late",true);
-      CredentialEvent(pending.request,pending.action,pending.action!="fill" && result.status==tilo::CredentialStatus::Ok,
-                      pending.action=="fill"?"Delayed read discarded; nothing was filled":"Delayed Keychain result: "+CredentialStatusMessage(result.status)+". Refresh saved accounts.",fields);
-      return;
-    }
-    if(!credential_document_.Take(id,pending.operation,*credential_identity_,tilo::CredentialDocument::Clock::now()) || cancelled) {
-      CredentialEvent(pending.request,pending.action,false,"Request no longer active; refresh saved accounts to see the final state");return;
-    }
-    if(result.status==tilo::CredentialStatus::Ok && pending.action=="fill") {
-      if(result.accounts.size()!=1 || result.accounts.front().id!=pending.account ||
-         result.accounts.front().username.size()>1024 || result.secret.View().empty() || result.secret.View().size()>4096) {
-        CredentialEvent(pending.request,pending.action,false,"Stored credential is invalid");return;
-      }
-      auto payload=CefDictionaryValue::Create();payload->SetString("action","fill");payload->SetString("form",pending.form);
-      payload->SetString("username",result.accounts.front().username);
-      std::string secret(result.secret.View());payload->SetString("password",secret);
-      volatile char* bytes=secret.data();for(size_t i=0;i<secret.size();++i)bytes[i]=0;
-      SendCredentialForm(pending.request,"fill",tilo::CredentialOperation::Fill,payload);return;
-    }
-    auto fields=CefDictionaryValue::Create();bool success=result.status==tilo::CredentialStatus::Ok;
-    if(success && pending.action=="list") {
-      auto accounts=CefListValue::Create();
-      if(result.accounts.size()>64)success=false;
-      if(success)for(const auto& account:result.accounts) {
-        if(account.id.empty() || account.id.size()>128 || account.username.size()>1024){success=false;break;}
-        auto item=CefDictionaryValue::Create();item->SetString("id",account.id);item->SetString("username",account.username);
-        accounts->SetDictionary(accounts->GetSize(),item);
-      }
-      if(success)fields->SetList("accounts",accounts);
-    }
-    CredentialEvent(pending.request,pending.action,success,success?"Done":CredentialStatusMessage(result.status),fields);
-  }
-  void CancelCredentialStoreRequests() {
-    for(const auto& [id,state]:credential_store_pending_) {
-      state.cancellation->Cancel();
-      credential_document_.Take(id,state.pending.operation,state.pending.identity,tilo::CredentialDocument::Clock::now());
-    }
-    credential_store_pending_.clear();
-  }
   void CancelCredentialRequests() {
-    CancelCredentialStoreRequests();credential_consent_.Clear();
+    credential_consent_.Clear();
     for(const auto& [id,pending]:credential_pending_)
       credential_document_.Take(id,pending.operation,pending.identity,tilo::CredentialDocument::Clock::now());
     credential_pending_.clear();credential_confirming_.clear();
@@ -2251,22 +2139,25 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       CredentialEvent(request,action,false,private_mode?"Unavailable in private windows":"Page changed or secure form access is unavailable");return;
     }
     if(action=="status"){CredentialEvent(request,action,true,"Ready");return;}
-    if(action=="list" || action=="delete") {
-      tilo::CredentialRequest operation;operation.operation=action=="list"?tilo::CredentialOperation::List:tilo::CredentialOperation::Delete;
-      if(action=="delete")operation.account=command->GetString("account").ToString();
-      StartCredentialStore(request,action,std::move(operation));return;
-    }
-    if(action=="save" || action=="update") {
+    // The logins themselves are the workspace's vault's: a take hands over what a capture read,
+    // once its form still reads as it did, and a fill brings the name and password the vault
+    // handed over for this site. Neither is kept here.
+    if(action=="take") {
       auto captured=credential_consent_.Take(command->GetString("capture").ToString(),*credential_identity_,tilo::CredentialDocument::Clock::now());
       if(!captured){CredentialEvent(request,action,false,"Capture expired or page changed; capture the login again");return;}
       auto payload=CefDictionaryValue::Create();payload->SetString("action","validate");payload->SetString("form",captured->form);
-      SendCredentialForm(request,action,action=="save"?tilo::CredentialOperation::Save:tilo::CredentialOperation::Update,
-                         payload,std::move(captured),command->GetString("account").ToString());return;
+      SendCredentialForm(request,action,tilo::CredentialOperation::Save,payload,std::move(captured));return;
     }
     if(action=="fill") {
-      tilo::CredentialRequest operation;operation.operation=tilo::CredentialOperation::Fill;
-      operation.account=command->GetString("account").ToString();
-      StartCredentialStore(request,action,std::move(operation),command->GetString("form").ToString());return;
+      auto username=command->GetString("username").ToString();auto password=command->GetString("password").ToString();
+      if(username.size()>1024 || password.empty() || password.size()>4096) {
+        volatile char* bytes=password.data();for(size_t i=0;i<password.size();++i)bytes[i]=0;
+        CredentialEvent(request,action,false,"The login to fill is invalid");return;
+      }
+      auto payload=CefDictionaryValue::Create();payload->SetString("action","fill");payload->SetString("form",command->GetString("form"));
+      payload->SetString("username",username);payload->SetString("password",password);
+      volatile char* bytes=password.data();for(size_t i=0;i<password.size();++i)bytes[i]=0;
+      SendCredentialForm(request,action,tilo::CredentialOperation::Fill,payload);return;
     }
     const auto operation=action=="capture"?tilo::CredentialOperation::Capture:tilo::CredentialOperation::List;
     auto payload=CefDictionaryValue::Create();payload->SetString("action",action);
@@ -2276,13 +2167,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void SendCredentialForm(int request,const std::string& action,tilo::CredentialOperation operation,
                           CefRefPtr<CefDictionaryValue> payload,
-                          std::optional<tilo::CapturedCredential> captured=std::nullopt,const std::string& account={}) {
+                          std::optional<tilo::CapturedCredential> captured=std::nullopt) {
     if(!credential_identity_ || !browser_ || !CredentialPageSecure(browser_->GetMainFrame())) {
       CredentialEvent(request,action,false,"Page changed; request cancelled");return;
     }
     auto id=credential_document_.Begin(operation,*credential_identity_,tilo::CredentialDocument::Clock::now());
     if(!id){CredentialEvent(request,action,false,"Too many pending requests");return;}
-    credential_pending_.emplace(*id,CredentialPending{request,operation,*credential_identity_,action,payload->GetString("form").ToString(),account});
+    credential_pending_.emplace(*id,CredentialPending{request,operation,*credential_identity_,action,payload->GetString("form").ToString()});
     if(captured)credential_confirming_.emplace(*id,std::move(*captured));
     auto message=CefProcessMessage::Create("tilo.credential_action");auto args=message->GetArgumentList();
     args->SetString(0,std::to_string(credential_identity_->generation));args->SetString(1,credential_identity_->context);
@@ -2312,17 +2203,15 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     auto value=args->GetDictionary(3);auto fields=CefDictionaryValue::Create();
     bool success=value->GetType("success")==VTYPE_BOOL && value->GetBool("success");
-    if(pending.action=="save" || pending.action=="update") {
+    if(pending.action=="take") {
       auto captured=credential_confirming_.extract(id);
       if(!success || captured.empty()){CredentialEvent(pending.request,pending.action,false,"Original form changed; capture the login again");return;}
-      tilo::CredentialRequest operation;operation.operation=pending.operation;
-      operation.username=std::move(captured.mapped().username);operation.secret=std::move(captured.mapped().secret);
-#if defined(OS_MAC)
-      operation.account=pending.action=="save"?tilo::CredentialAccountId(operation.username):pending.account;
-#else
-      operation.account=pending.account;
-#endif
-      StartCredentialStore(pending.request,pending.action,std::move(operation));return;
+      // The one place a password leaves the engine: for the vault to keep, on the window's
+      // own engine connection, wiped here once it is written.
+      std::string password(captured.mapped().secret.View());
+      fields->SetString("username",captured.mapped().username);fields->SetString("password",password);
+      volatile char* bytes=password.data();for(size_t i=0;i<password.size();++i)bytes[i]=0;
+      CredentialEvent(pending.request,pending.action,true,"Ready",fields);return;
     }
     if(pending.action=="fill" || pending.action=="fill_address") {
       CredentialEvent(pending.request,pending.action,success,success?"Filled":"Form changed or is unsupported");return;
@@ -2362,7 +2251,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     CredentialEvent(pending.request,pending.action,success,success?(pending.action=="capture"?"Choose Save or Update to store this login":"Ready"):"Form changed or is unsupported",fields);
   }
   void InvalidateCredentials() {
-    CancelCredentialStoreRequests();credential_document_.Invalidate();credential_handshake_.Invalidate();
+    credential_document_.Invalidate();credential_handshake_.Invalidate();
     credential_consent_.Clear();credential_pending_.clear();credential_confirming_.clear();
     credential_identity_.reset();credential_committed_origin_.clear();
     if(credential_generation_<9007199254740991ULL) ++credential_generation_;
@@ -2415,7 +2304,6 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   tilo::CredentialConsent credential_consent_;
   std::map<uint64_t,CredentialPending> credential_pending_;
   std::map<uint64_t,tilo::CapturedCredential> credential_confirming_;
-  std::map<uint64_t,CredentialStorePending> credential_store_pending_;
   std::optional<tilo::CredentialIdentity> credential_identity_;
   uint64_t credential_generation_=0;
   bool credential_generation_exhausted_=false;
@@ -2956,7 +2844,8 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     for(const auto& key:keys)fields.push_back(key.ToString());
     if(!tilo::CredentialFieldsValid(action,fields))return false;
     if(action!="status" && action!="cancel" && !tilo::ValidCredentialCounter(d->GetString("document").ToString()))return false;
-    if(d->HasKey("account") && (!type("account",VTYPE_STRING) || d->GetString("account").empty() || d->GetString("account").ToString().size()>128))return false;
+    if(action=="fill" && (!type("username",VTYPE_STRING) || d->GetString("username").ToString().size()>1024 ||
+       !type("password",VTYPE_STRING) || d->GetString("password").empty() || d->GetString("password").ToString().size()>4096))return false;
     for(const auto* key:{"capture","form"})if(d->HasKey(key) && (!type(key,VTYPE_STRING) || !tilo::ValidCredentialCounter(d->GetString(key).ToString())))return false;
     if(action=="fill_address") {
       if(!type("profile",VTYPE_DICTIONARY))return false;
@@ -3491,21 +3380,10 @@ int RunHost(int argc,char** argv) {
     std::cerr<<"Chromium would ask for sign-ins in a window of its own; the host does not run\n";
     CefShutdown();return 2;
   }
-#if defined(OS_MAC)
-  // Saved passwords live in the login keychain only for an engine with a team
-  // identity: an item one ad hoc build saved would make every rebuild ask the
-  // person for it again (as tilo-secrets never lets an unsigned build ask).
-  if(!private_mode && HostHasStableSigningIdentity()) {
-    auto store=tilo::MakeMacCredentialStore(tilo::CredentialServiceForProfile(profile));
-    if(store)credential_worker=std::make_shared<tilo::CredentialWorker>(false,std::move(store));
-  }
-#endif
-  {std::lock_guard lock(credential_delivery->mutex);credential_delivery->active=true;}
   std::atomic<bool> stop{false};std::thread reader([&]{ReadCommands(stop);});
   std::thread devtools_reader;if(devtools_read>=0) devtools_reader=std::thread([&]{ReadDevToolsReplies(stop);});
   CefRunMessageLoop();TraceGeometry("message-loop-return",0);stop=true;reader.join();if(devtools_reader.joinable())devtools_reader.join();TraceGeometry("reader-joined",0);
-  {std::lock_guard lock(credential_delivery->mutex);credential_delivery->active=false;}
-  if(credential_worker)credential_worker->Stop();credential_worker.reset();extension_tabs.reset();pipe_calls.clear();clients.clear();shared_context=nullptr;request_filter=nullptr;TraceGeometry("cef-shutdown-begin",0);CefShutdown();TraceGeometry("cef-shutdown-end",0);writer.Stop();output=nullptr;
+  extension_tabs.reset();pipe_calls.clear();clients.clear();shared_context=nullptr;request_filter=nullptr;TraceGeometry("cef-shutdown-begin",0);CefShutdown();TraceGeometry("cef-shutdown-end",0);writer.Stop();output=nullptr;
   if(clear_on_exit) { std::error_code ec;std::filesystem::remove_all(profile+"/default",ec);if(ec) {std::cerr<<"Could not clear Chromium profile: "<<ec.message()<<"\n";return 1;} }
   return writer.Failed()?1:0;
 }

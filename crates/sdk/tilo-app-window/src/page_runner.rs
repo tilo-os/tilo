@@ -24,7 +24,14 @@ pub fn engine_of(page: &Page) -> SharedEngine {
         session.engine().clone()
     } else {
         let engine = webview::new_page_engine();
-        held.replace(PageSession::new(engine.clone()));
+        #[cfg_attr(
+            target_arch = "wasm32",
+            expect(unused_mut, reason = "a web page has no vault")
+        )]
+        let mut session = PageSession::new(engine.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        session.set_vault(vault());
+        held.replace(session);
         engine
     }
 }
@@ -37,6 +44,14 @@ pub fn panel_engine(page: &Page) -> Option<SharedEngine> {
     page.borrow()
         .as_ref()
         .and_then(PageSession::panel_engine)
+}
+
+/// The workspace's vault, which keeps the page's logins, asked on this window's own connection
+/// and waking the window that runs now as it answers. A page in a web browser has none: its
+/// window has no daemon to ask.
+#[cfg(not(target_arch = "wasm32"))]
+fn vault() -> std::rc::Rc<dyn tilo_page_engine::LoginVault> {
+    std::rc::Rc::new(crate::page_vault::NativeVault::new(ui::WakeHandle::new()))
 }
 
 /// What asking the page left to do.
@@ -83,14 +98,15 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             });
             Ok(Asked::Answered(codec::accepted()))
         }
-        // A credential action names the page's document, which is the session's to know and the
-        // app's never to see: the session asks the page for it and sends the action after.
-        codec::Ask::Command(WebViewCommand::Credentials(credential)) => {
+        // A login action names the page's document and site, which are the session's to know
+        // and the app's never to see: the session asks the page for them and acts after, with
+        // the engine and the workspace's vault.
+        codec::Ask::Login { origin, ask } => {
             let mut held = page.borrow_mut();
             let session = held
                 .as_mut()
                 .ok_or_else(|| "this window has no page".to_owned())?;
-            session.credential(credential);
+            session.login(&origin, ask);
             Ok(Asked::Answered(codec::accepted()))
         }
         // What the person types in the address, presses Enter on or leaves, and the page an

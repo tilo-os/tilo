@@ -24,12 +24,14 @@ pub mod form;
 pub mod i18n;
 pub mod media_source;
 pub mod page_runner;
+#[cfg(not(target_arch = "wasm32"))]
+mod page_vault;
 pub mod pane;
 pub mod reconcile;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod terminal;
 pub mod rows;
 pub mod shell;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod terminal;
 pub mod window;
 
 pub use tilo_render_protocol::patch::{

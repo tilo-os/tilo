@@ -138,13 +138,13 @@ type Page (title: title) {
     fullscreen: Bool = false
     /// The site's connection, permissions and stored data, as its window last read them.
     site: Option<SiteInfo> = .none
-    /// The login forms the engine found on this page, as its credential store listed them.
+    /// The login forms the engine found on this page.
     login_forms: Collection<LoginForm>
-    /// The logins the engine keeps for this site.
+    /// The logins the workspace's vault keeps for this page's site, by name: never a password.
     login_accounts: Collection<LoginAccount>
     /// The capture the engine took of a login this page sent, until it is saved or dropped.
     capture: Text = ""
-    /// What the engine's credential store answered last, in its own words.
+    /// What the last login action came to, in the engine's or the vault's words.
     login_notice: Text = ""
     /// Why the page could not be printed, in the person's words; empty once one is on its way
     /// to Print Centre or was before.
@@ -412,11 +412,16 @@ type LoginForm (title: form) {
     }
 }
 
-/// One login the engine keeps for this site: its number for the account, and the name it signs
-/// in as. The password stays in the engine's credential store and never reaches the app.
+/// One login the workspace's vault keeps for this site: the vault item it is (`vault.item:<id>`),
+/// what it is called, and the name it signs in as. Its password stays in the vault, goes only to
+/// the page's engine when it fills a form, and never reaches the app.
 type LoginAccount (title: username) {
     account: Text
     username: Text
+    title: Text = ""
+    /// Whether the Browser saved it itself: filling it asks nobody. Any other login of the site
+    /// is filled once its person allowed the Browser that one login.
+    own: Bool = false
 
     search {
         hide account
@@ -472,12 +477,13 @@ type Ask {
     origins: Option<List<Text>> = .none
     /// The site a site action or a status reading is about.
     origin: Option<Text> = .none
-    /// The engine's credential store action: `status`, `cancel`, `discover`, `addresses`,
-    /// `list`, `capture`, `save`, `update`, `fill`, `delete` or `fill_address`.
+    /// The login action: the engine's own `status`, `cancel`, `discover`, `addresses`,
+    /// `capture` or `fill_address`, or `list`, `save`, `update`, `fill` or `delete`, which the
+    /// window does with the workspace's vault.
     credential: Option<Text> = .none
     /// The capture the engine took of a login form, which saving or updating names.
     capture: Option<Text> = .none
-    /// The engine's number for a saved account, which filling or deleting names.
+    /// The vault item of a saved login, which filling, updating or forgetting names.
     account: Option<Text> = .none
     /// The address a form is filled from, through the engine.
     address: Option<Address> = .none
@@ -1413,7 +1419,7 @@ action ask_site_permissions_again(p: Page) -> Answer uses page (
     Answer(message: "Read the site's information first")
 }
 
-/// Reads the login forms this page asks for, through the engine's own credential store.
+/// Reads the login forms this page asks for.
 action discover_logins(p: Page) -> Answer uses page (
     icon: .key,
     label: "Find this page’s logins",
@@ -1421,13 +1427,13 @@ action discover_logins(p: Page) -> Answer uses page (
     ask_page(p, credential_request(p, Ask(credential: .some("discover"))))
 }
 
-/// Lists the logins the engine keeps for this site.
+/// Lists the logins the workspace's vault keeps for this site, by name.
 action list_saved_logins(p: Page) -> Answer uses page (icon: .key, label: "Saved logins") {
     ask_page(p, credential_request(p, Ask(credential: .some("list"))))
 }
 
 /// Takes what the person typed into a login form, so it can be saved for this site. The password
-/// stays in the engine's credential store and never crosses to the app.
+/// stays in the engine until saving hands it to the vault, and never crosses to the app.
 action capture_login(p: Page, f: LoginForm) -> Answer uses page (
     icon: .key,
     label: "Save this login",
@@ -1435,13 +1441,15 @@ action capture_login(p: Page, f: LoginForm) -> Answer uses page (
     ask_page(p, credential_request(p, Ask(credential: .some("capture"), form: .some(f.form))))
 }
 
-/// Saves the capture the engine took for this site.
+/// Saves the capture the engine took in the workspace's vault, as a login of this site the Browser
+/// keeps.
 action save_login(p: Page) -> Answer uses page (icon: .check, label: "Save the login") {
     require p.capture != "" "Take the login first"
     ask_page(p, credential_request(p, Ask(credential: .some("save"), capture: .some(p.capture))))
 }
 
-/// Fills a form of this page with a login the engine keeps.
+/// Fills a form of this page with a login the vault keeps for this site. A login the Browser saved
+/// itself fills at once; any other is filled once its person allowed the Browser that one login.
 action fill_saved_login(p: Page, f: LoginForm, a: LoginAccount) -> Answer uses page (
     icon: .key,
     label: "Fill the saved login",
@@ -1455,7 +1463,7 @@ action fill_saved_login(p: Page, f: LoginForm, a: LoginAccount) -> Answer uses p
     )
 }
 
-/// Replaces a saved login with the capture the engine took.
+/// Replaces a login the vault keeps with the capture the engine took.
 action update_saved_login(p: Page, f: LoginForm, a: LoginAccount) -> Answer uses page (
     icon: .refresh,
     label: "Update the saved login",
@@ -1475,7 +1483,7 @@ action update_saved_login(p: Page, f: LoginForm, a: LoginAccount) -> Answer uses
     )
 }
 
-/// Forgets a login the engine keeps for this site.
+/// Forgets a login of this site from the vault: one the Browser saved, or one it may fill.
 destructive action delete_saved_login(p: Page, a: LoginAccount) -> Answer uses page (
     icon: .trash,
     label: "Forget the saved login",
@@ -1727,9 +1735,9 @@ action note_extension_updates(p: Page, checked: Int, updated: Text, failed: Text
     }
 }
 
-/// Writes what the engine's credential store answered into the page's record: the forms and
-/// accounts it listed, the capture it took, and its own words. The window raises it; a person,
-/// agent or script never does.
+/// Writes what a login action came to into the page's record: the forms the engine found, the
+/// vault's logins for the site, the capture the engine took, and their own words. The window
+/// raises it; a person, agent or script never does.
 action remember_credential(
     p: Page,
     did: Text,
@@ -1751,7 +1759,7 @@ action remember_credential(
         for f in found {
             p.login_forms.insert(f)
         }
-    } else if did == "list" {
+    } else if did == "list" or did == "delete" {
         let found = login_accounts_of(accounts)
         p.login_accounts.remove_where(a -> true)
         for a in found {
@@ -1799,8 +1807,9 @@ fn protection_exceptions(b: Browser) -> List<Text> {
     b.sites_without_protection.filter(site -> true)
 }
 
-/// Asks the engine's credential store `doing` on this page's site. The window names the
-/// document the person is looking at, so an action never lands on a page that came after it.
+/// Asks for the login action `ask` on this page. The window names the document the person is
+/// looking at and the site its engine says the page is at, so an action never lands on a page
+/// that came after it, and the vault is asked only for that site.
 fn credential_request(p: Page, ask: Ask) -> Text {
     json.encode(
         Ask(
@@ -1843,7 +1852,7 @@ fn login_forms_of(forms: Text) -> List<LoginForm> {
     found
 }
 
-/// The logins a credential answer listed.
+/// The logins of the vault a login answer listed.
 fn login_accounts_of(accounts: Text) -> List<LoginAccount> {
     let value = match json.parse(accounts) {
         .ok(value) => value,
@@ -1855,8 +1864,13 @@ fn login_accounts_of(accounts: Text) -> List<LoginAccount> {
     for held in json_arrays(value) {
         let account = json_text(held, "account")
         if account != "" {
-            found = [found, [LoginAccount(account: account, username: json_text(held, "username"))]]
-                .flat_map(x -> x)
+            let login = LoginAccount(
+                account: account,
+                username: json_text(held, "username"),
+                title: json_text(held, "title"),
+                own: json_bool(held, "own"),
+            )
+            found = [found, [login]].flat_map(x -> x)
         }
     }
     found
@@ -2446,6 +2460,21 @@ fn json_text(value: json.Value, key: Text) -> Text {
             .null => "",
         },
         .none => "",
+    }
+}
+
+/// Whether `key` of a JSON object holds `true`.
+fn json_bool(value: json.Value, key: Text) -> Bool {
+    match json_field(value, key) {
+        .some(held) => match held {
+            .object(fields) => false,
+            .array(items) => false,
+            .string(text) => false,
+            .number(number) => false,
+            .bool(flag) => flag,
+            .null => false,
+        },
+        .none => false,
     }
 }
 
@@ -3368,7 +3397,9 @@ view page_view(p: Page) {
                                     stack(padding: .related) {
                                         ui.ListRow(
                                             title: a.username,
-                                            secondary: "Saved for this site",
+                                            secondary: if a.own {
+                                                "Saved by Browser in your vault"
+                                            } else { "In your vault: fills once you allow it" },
                                             mark: .key,
                                         )
                                         if let f = p.login_forms.find(x -> true) {

@@ -1472,7 +1472,8 @@ mod cases {
         b.page("remember_credential", &answered("save", "", "[]"));
         assert_eq!(b.text(&b.opened, "capture"), "", "the capture is spent");
 
-        // The logins the engine keeps for the site fill the page's form.
+        // The vault's logins for the site, by name alone: the Browser's own and one the person
+        // keeps, which fills only once they allow it.
         b.page("list_saved_logins", &[]);
         assert_eq!(b.page.last()["credential"].as_str(), Some("list"));
         b.page(
@@ -1480,22 +1481,51 @@ mod cases {
             &answered(
                 "list",
                 "",
-                r#"[{"account":"a","username":"ada@example.org"}]"#,
+                r#"[{"account":"vault.item:a","username":"ada@example.org","title":"example.org","own":true},
+                    {"account":"vault.item:b","username":"ada.home","title":"Shop","own":false}]"#,
             ),
         );
         let view = b.page_view();
         assert_eq!(
             row_secondary(&view, "ada@example.org"),
-            "Saved for this site"
+            "Saved by Browser in your vault"
+        );
+        assert_eq!(
+            row_secondary(&view, "ada.home"),
+            "In your vault: fills once you allow it"
         );
         view.fire(&button_key(&view, "Fill"), "press").unwrap();
         assert_eq!(b.page.last()["credential"].as_str(), Some("fill"));
         assert_eq!(b.page.last()["form"].as_str(), Some("1"));
-        assert_eq!(b.page.last()["account"].as_str(), Some("a"));
+        assert_eq!(b.page.last()["account"].as_str(), Some("vault.item:a"));
+
+        // A login the person has not allowed yet is asked for, and nothing is filled: the page's
+        // record says why and keeps no secret.
+        b.page(
+            "remember_credential",
+            &[
+                ("did", Value::text("fill")),
+                ("success", Value::Bool(false)),
+                (
+                    "message",
+                    Value::text("Browser asked you first to use this login"),
+                ),
+                ("forms", Value::text("[]")),
+                ("accounts", Value::text("[]")),
+                ("capture", Value::text("")),
+                ("username", Value::text("")),
+                ("late", Value::Bool(false)),
+            ],
+        );
+        assert_eq!(
+            b.text(&b.opened, "login_notice"),
+            "Browser asked you first to use this login",
+            "the person is told the login waits for them"
+        );
 
         view.fire(&button_key(&view, "Delete"), "press").unwrap();
         assert_eq!(b.page.last()["credential"].as_str(), Some("delete"));
-        assert_eq!(b.page.last()["account"].as_str(), Some("a"));
+        assert_eq!(b.page.last()["account"].as_str(), Some("vault.item:a"));
 
         // A login the engine could not save leaves the capture for another try and says why.
         b.page("remember_credential", &answered("capture", "9", "[]"));
