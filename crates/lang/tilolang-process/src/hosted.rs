@@ -630,7 +630,7 @@ struct StreamFrames {
 
 impl tilolang_tilo::runtime::host_work::Push for StreamFrames {
     fn frame(&self, frame: tilolang_tilo::runtime::host_work::Frame) {
-        ui::live_pictures::publish(
+        ui_core::live_pictures::publish(
             &frame.slot,
             frame.generation,
             frame.width,
@@ -835,7 +835,7 @@ impl Platform for HostPlatform {
         }
         // A stream's last frame goes with its job: the window shows the session closed, not a
         // frozen screen.
-        ui::live_pictures::forget(job);
+        ui_core::live_pictures::forget(job);
         crate::git_engine::cancel(job)
             || crate::containers_engine::cancel(job)
             || tilolang_tilo::engine::stop(job)
