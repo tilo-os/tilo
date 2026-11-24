@@ -501,17 +501,17 @@ tilo_test_env::scenario! {
 
     phase a_list_of_files_and_a_folder_are_filled_by_a_chooser;
     {
-        let many = "type N {\n    t: Text\n}\naction take(n: N, files: List<File>) {\n    n.t = \"{files.len()}\"\n}\nview look(n: N) {\n    stack {\n        button(file.choose(take(n)))\n    }\n}\n";
+        let many = "type N {\n    t: Text\n}\naction take(n: N, files: List<File>) {\n    n.t = \"{files.len()}\"\n}\nview look(n: N) {\n    stack {\n        ui.Button(\"Choose\") {\n            on press: file.choose(take(n))\n        }\n    }\n}\n";
         assert_eq!(codes(many), Vec::<String>::new());
-        let folder = "type N {\n    t: Text\n}\naction take(n: N, files: List<File>) {\n    n.t = \"{files.len()}\"\n}\nview look(n: N) {\n    stack {\n        button(file.choose_folder(take(n)))\n    }\n}\n";
+        let folder = "type N {\n    t: Text\n}\naction take(n: N, files: List<File>) {\n    n.t = \"{files.len()}\"\n}\nview look(n: N) {\n    stack {\n        ui.Button(\"Choose\") {\n            on press: file.choose_folder(take(n))\n        }\n    }\n}\n";
         assert_eq!(codes(folder), Vec::<String>::new());
-        let one = "type N {\n    t: Text\n}\naction take(n: N, f: File) {\n    n.t = f.name\n}\nview look(n: N) {\n    stack {\n        button(file.choose(take(n)))\n    }\n}\n";
+        let one = "type N {\n    t: Text\n}\naction take(n: N, f: File) {\n    n.t = f.name\n}\nview look(n: N) {\n    stack {\n        ui.Button(\"Choose\") {\n            on press: file.choose(take(n))\n        }\n    }\n}\n";
         assert_eq!(codes(one), Vec::<String>::new());
     }
 
     phase a_parameter_a_chooser_cannot_fill_says_so;
     {
-        let text = "type N {\n    t: Text\n}\naction take(n: N, words: List<Text>) {\n    n.t = \"{words.len()}\"\n}\nview look(n: N) {\n    stack {\n        button(file.choose(take(n)))\n    }\n}\n";
+        let text = "type N {\n    t: Text\n}\naction take(n: N, words: List<Text>) {\n    n.t = \"{words.len()}\"\n}\nview look(n: N) {\n    stack {\n        ui.Button(\"Choose\") {\n            on press: file.choose(take(n))\n        }\n    }\n}\n";
         let got = codes(text);
         assert!(
             got.iter().any(|code| code == "E022"),

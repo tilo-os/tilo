@@ -59,6 +59,7 @@ impl Asking {
 
 /// One view as its shell runs it: its app and, while a person works in it, its place in the
 /// shell's tree.
+#[crate::component::not_a_component(shell, "a view the shell runs at its window's place")]
 pub struct Shown {
     host: TileHost,
     /// What the embedding app calls what the view shows.
