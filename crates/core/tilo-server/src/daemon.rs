@@ -491,6 +491,9 @@ impl Server {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
         };
+        // A server's endpoint is its device: the node its people's devices dial is the key its
+        // certificate names, so what it signs and what it is reached at answer as one device.
+        endpoints_agree(&identity, &endpoint)?;
         reaching.awaited(&endpoint).await;
         relay.reached(&endpoint)?;
         let signer: Arc<dyn collab_types::signer::DeviceSigner> =
@@ -597,6 +600,7 @@ impl Server {
             app_serving,
             browser_sessions,
         } = parts;
+        endpoints_agree(&identity, &endpoint)?;
         if cfg.work.takes_nothing() {
             return Err(ServerError::Identity(
                 "a device that takes no work serves no workspace".into(),
@@ -723,11 +727,7 @@ impl Server {
         governed.branch_content(Arc::new(crate::content::branch::StoresBranches(
             Arc::clone(&content),
         )));
-        let kept = crate::kept_content::KeptContent::new(
-            governed.clone(),
-            identity.device_cert.device_public_key,
-            Arc::clone(&content),
-        );
+        let kept = crate::kept_content::KeptContent::new(governed.clone(), Arc::clone(&content));
         push_background_task(&background_tasks, tokio::spawn(kept.keep_content()));
         push_background_task(
             &background_tasks,
@@ -1426,6 +1426,21 @@ fn validate_server_identity(identity: &ServerIdentity) -> Result<(), ServerError
 /// The server frame codec, re-exported under the daemon path older callers use.
 pub use crate::frame::{read_frame, write_frame};
 
+/// Refuse a server whose `endpoint` is keyed by another device than `identity` is certified as:
+/// one device has one key, so the node its people's devices dial is the one its links and
+/// content asks name.
+fn endpoints_agree(identity: &ServerIdentity, endpoint: &Endpoint) -> Result<(), ServerError> {
+    let device = identity.device_cert.device_public_key;
+    if endpoint.id().as_bytes() != &device {
+        return Err(ServerError::Identity(format!(
+            "this server's endpoint is keyed by {}, its device is certified as {}",
+            hex::encode(endpoint.id().as_bytes()),
+            hex::encode(device),
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
@@ -1482,6 +1497,37 @@ mod tests {
             let error = validate_server_identity(&server).unwrap_err();
             assert!(error.to_string().contains("does not match"));
         }
+    }
+
+    /// A server's endpoint is the device its certificate names: handed an endpoint keyed by
+    /// another device, it starts not at all, so what it signs and what it is dialled at never
+    /// disagree.
+    #[tokio::test]
+    async fn an_endpoint_keyed_by_another_device_is_refused() {
+        let state = tempfile::tempdir().unwrap();
+        let elsewhere = ed25519_dalek::SigningKey::from_bytes(&[77; 32]);
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&elsewhere.to_bytes()))
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .expect("a loopback endpoint binds");
+        let refused = Server::start_on_endpoint_with_protocols(
+            ServerConfig {
+                identity_root: state.path().join("identity"),
+                ..ServerConfig::loopback(state.path().to_path_buf())
+            },
+            identity(DeviceCapabilities::member()),
+            endpoint.clone(),
+            Reaching::OnItsOwn,
+            Vec::new(),
+        )
+        .await;
+        let Err(error) = refused else {
+            panic!("a server whose endpoint is keyed by another device starts");
+        };
+        assert!(error.to_string().contains("keyed by"), "{error}");
+        endpoint.close().await;
     }
 
     /// The packet relay sits behind a front that pools its connections (a

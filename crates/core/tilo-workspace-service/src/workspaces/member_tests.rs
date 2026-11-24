@@ -10,13 +10,15 @@
 use std::sync::Arc;
 
 use super::super::PreAdmitRequest;
+use super::super::WorkspaceContent;
 use super::super::WorkspaceSummary;
 use super::super::fixtures::{
     TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host,
-    test_host_holding,
+    test_host_beside_device, test_host_holding,
 };
 use super::MemberDevice;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -258,6 +260,108 @@ async fn a_member_copy_reads_the_governance_the_serving_device_publishes() {
         }
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, (key, cert), created, invitation) =
+        shared(serving_state.path(), "Content", 21).await;
+
+    // The member's own service as production opens a device's: a key of its own beside the
+    // device's, with the endpoint its device dials and the link its member copy answers on.
+    let member = test_host_beside_device(member_state.path(), &key, &cert, group_keys()).await;
+    member
+        .workspaces()
+        .set_member_device(Arc::new(MemberDevice {
+            cert: cert.clone(),
+            signer: Arc::new(key.clone()),
+        }));
+    assert_ne!(
+        member.workspaces().serving_certificate().device_public_key,
+        cert.device_public_key,
+        "the service signs under a key of its own, as a device's service does"
+    );
+    let member_keeps = Kept(b"a picture the member keeps".to_vec());
+    member
+        .workspaces()
+        .serve_content(Arc::new(member_keeps.clone()));
+
+    let workspace = created.workspace.clone();
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+
+    // The serving device asks for the picture, naming itself as every ask does.
+    let serving_device = serving.workspaces().serving_certificate().device_public_key;
+    let ask = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
+        requester: tilo_peer_state::peer_handle(&serving_device),
+        app_id: "so.tilo.photos".to_owned(),
+        cluster_id: workspace.clone(),
+        hash: member_keeps.address(),
+        have: Vec::new(),
+    })
+    .unwrap();
+    // What the member answers names the device its link signs as, not the key its service runs
+    // under: the serving device admits the answer for its link's device alone.
+    let answered = copies.content_answer(&workspace, &serving_device, &ask);
+    assert!(!answered.is_empty(), "the member answers what it keeps");
+    for frame in answered {
+        let NeighbourMsg::DocumentContentPiece { responder, .. } =
+            postcard::from_bytes(&frame).unwrap()
+        else {
+            panic!("the member answers with a piece of what it keeps");
+        };
+        assert_eq!(
+            responder,
+            tilo_peer_state::peer_handle(&cert.device_public_key),
+            "the answer is addressed from the device key, not the service's"
+        );
+    }
+    let mut answers = serving.workspaces().content_answers();
+    serving
+        .workspaces()
+        .ask_members(&workspace, ask)
+        .await
+        .expect("the workspace's link carries the ask");
+    let answer = tilo_test_env::within("the member's answer reaches the serving device", async {
+        loop {
+            let heard = answers.recv().await.expect("the answers are told");
+            if heard.workspace == workspace && !heard.lacks {
+                return heard;
+            }
+        }
+    })
+    .await;
+    assert_eq!(
+        answer.from, cert.device_public_key,
+        "the answer names the device key the member signs its link as, not its service's"
+    );
+
+    drop(copies);
+    drop(answers);
+    member.shutdown().await;
+    serving.shutdown().await;
+}
+
+/// The bytes a member keeps, named by their address.
+#[derive(Clone)]
+struct Kept(Vec<u8>);
+
+impl Kept {
+    fn address(&self) -> String {
+        blake3::hash(&self.0).to_hex().to_string()
+    }
+}
+
+impl WorkspaceContent for Kept {
+    fn read(&self, _workspace: &str, _app: &str, hash: &str) -> Option<Vec<u8>> {
+        (hash == self.address()).then(|| self.0.clone())
+    }
 }
 
 #[tokio::test]

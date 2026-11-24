@@ -483,10 +483,9 @@ impl ActionService {
         self.0.held.lock_recover().get(&device).cloned()
     }
 
-    /// A device whose endpoint is keyed apart from its device key, as a Tilo
-    /// server's is, asks and answers at that endpoint as the device
-    /// ([`Self::device_of`]). Every other endpoint is the device it is keyed
-    /// by.
+    /// A device reached at an endpoint keyed apart from its device key asks and
+    /// answers at that endpoint as the device ([`Self::device_of`]). Every other
+    /// endpoint is the device it is keyed by.
     pub fn keyed_apart(&self, device: [u8; 32], endpoint: [u8; 32]) {
         if device != endpoint {
             self.0.endpoints.lock_recover().insert(endpoint, device);

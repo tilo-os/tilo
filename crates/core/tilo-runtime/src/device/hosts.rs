@@ -49,17 +49,12 @@ impl Hosts {
     }
 
     /// The device serving `workspace` when another device than this one does, and where it is
-    /// reached. It may key its endpoint apart from the device it signs as, which the action
-    /// service learns here before anything dials it.
+    /// reached.
     pub(crate) fn serving(&self, workspace: &str) -> Option<([u8; 32], EndpointAddr)> {
         let id = WorkspaceId::parse(workspace)?;
         let workspaces = self.workspaces.upgrade()?;
         let own = workspaces.device_cert().device_public_key;
         let host = standing::host_elsewhere(&workspaces.peer(id)?, &own)?;
-        workspaces
-            .copies()
-            .action_service()
-            .keyed_apart(host.device, *host.address.id.as_bytes());
         Some((host.device, host.address))
     }
 

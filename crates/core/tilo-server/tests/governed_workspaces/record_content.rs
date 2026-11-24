@@ -187,11 +187,17 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     // The host asks for the address the store keys the ciphertext under, and
     // Bob's page answers it as a page does.
     let ask = asked_for(&mut bob_link, &address).await;
+    let server_device = server
+        .workspaces()
+        .unwrap()
+        .serving_certificate()
+        .device_public_key;
     match postcard::from_bytes::<NeighbourMsg>(&ask).unwrap() {
         NeighbourMsg::DocumentContentWant {
             app_id,
             cluster_id,
             hash,
+            requester,
             ..
         } => {
             assert_eq!(
@@ -199,9 +205,24 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
                 (PHOTOS, workspace.workspace.as_str(), address.as_str()),
                 "the host asks the record's app for the ciphertext's address"
             );
+            assert_eq!(
+                requester,
+                tilo_peer_state::peer_handle(&server_device),
+                "the ask names the device the host's link signs as"
+            );
         }
         _ => panic!("a content request"),
     }
+    assert_eq!(
+        server.node_addr().id.as_bytes(),
+        &server_device,
+        "the host's endpoint is keyed by the device its certificate names"
+    );
+    assert_eq!(
+        server.device_signing_key().verifying_key().to_bytes(),
+        server_device,
+        "the key its link signs as is its certified device"
+    );
     // Until it is answered, the host says it lacks the picture: read from the one record that
     // names it, with no pass over the whole workspace since.
     says_it_lacks(
@@ -221,7 +242,7 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     );
     let pieces = neighbour_wire::content::answer(
         &phone.device_pubkey(),
-        &alice_home.device_pubkey(),
+        &server_device,
         &ask,
         |app, cluster, wanted| {
             (app == PHOTOS && cluster == workspace.workspace && wanted == address)

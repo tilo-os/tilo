@@ -112,11 +112,7 @@ async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leav
     workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(
         &content,
     ))));
-    let kept = KeptContent::new(
-        workspaces.clone(),
-        host_cert.device_public_key,
-        Arc::clone(&content),
-    );
+    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
     let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
 
     // The poster's and the reader's devices, by their keys as a link names a

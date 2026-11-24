@@ -264,8 +264,8 @@ impl Default for State {
 /// governs it.
 pub struct KeptContent {
     workspaces: Workspaces,
-    /// This server's device: what its requests name, and what the answers to
-    /// them are addressed to.
+    /// The device the workspaces keep as: the one their certificate names, whose
+    /// requests name it and whose answers are addressed to it.
     device: [u8; 32],
     store: Arc<WorkspaceStores>,
     state: Mutex<State>,
@@ -382,10 +382,11 @@ async fn counted(
 }
 
 impl KeptContent {
-    /// A host that keeps what the records of `workspaces` name, whose device is
-    /// `device`, in each workspace's store of `store`.
+    /// A host that keeps what the records of `workspaces` name in each workspace's
+    /// store of `store`, asking and answered as the device they are certified as.
     #[must_use]
-    pub fn new(workspaces: Workspaces, device: [u8; 32], store: Arc<WorkspaceStores>) -> Arc<Self> {
+    pub fn new(workspaces: Workspaces, store: Arc<WorkspaceStores>) -> Arc<Self> {
+        let device = workspaces.serving_certificate().device_public_key;
         Arc::new(Self {
             workspaces,
             device,

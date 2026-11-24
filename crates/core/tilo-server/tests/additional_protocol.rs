@@ -45,6 +45,7 @@ async fn extra_protocol_and_server_share_one_endpoint() {
     // Reached on its own network only, as the test dials it: the server is told
     // so, and does not wait for an address that nothing will name.
     let endpoint = iroh::Endpoint::builder(presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&host.sk.to_bytes()))
         .relay_mode(iroh::RelayMode::Disabled)
         .bind()
         .await
