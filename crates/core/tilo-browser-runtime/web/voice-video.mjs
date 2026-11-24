@@ -38,12 +38,15 @@ export function sourceOfCode(code) {
   return Object.keys(SOURCE_CODES).find(name => SOURCE_CODES[name] === code) ?? null;
 }
 
-/** Open this person's camera or a screen they choose: a stream with one video track. */
-export async function openSource(source, environment = globalThis) {
+/** Open this person's camera (the one `cameraId` names, or the browser's choice) or a screen
+ * they choose: a stream with one video track. */
+export async function openSource(source, environment = globalThis, cameraId = undefined) {
   const devices = environment.navigator?.mediaDevices;
   if (!devices) throw new Error('this browser has no camera or screen sharing');
   if (source === 'camera') {
-    return devices.getUserMedia({audio: false, video: {width: {ideal: 1280}, height: {ideal: 720}, frameRate: {ideal: FPS.camera}}});
+    const video = {width: {ideal: 1280}, height: {ideal: 720}, frameRate: {ideal: FPS.camera}};
+    if (cameraId) video.deviceId = {exact: cameraId};
+    return devices.getUserMedia({audio: false, video});
   }
   return devices.getDisplayMedia({audio: false, video: {frameRate: {ideal: FPS.screen}}});
 }
@@ -288,4 +291,11 @@ export function createPictureInbox({maxBytes = INBOX_BYTES} = {}) {
     },
     clear() { queue = []; bytes = 0; behind.clear(); },
   };
+}
+
+/** The cameras the page may choose, as `{deviceId, label}`. Labels appear once the page may use
+ * one; enumerating never asks. */
+export async function videoInputs(environment = globalThis) {
+  const devices = await environment.navigator?.mediaDevices?.enumerateDevices?.() ?? [];
+  return devices.filter(device => device.kind === 'videoinput').map(({deviceId, label}) => ({deviceId, label}));
 }

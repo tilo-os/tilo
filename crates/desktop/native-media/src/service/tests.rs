@@ -45,6 +45,8 @@ struct CallState {
     arrived: Arc<tokio::sync::Notify>,
     /// How loud the call is told to play each member.
     volumes: Mutex<Vec<(String, u16)>>,
+    /// The camera the call sends from, of `video0` and `video2`.
+    camera: Mutex<Option<String>>,
 }
 
 struct Call {
@@ -106,6 +108,25 @@ impl MediaSession for Call {
 
     fn volumes(&self) -> Vec<(String, u16)> {
         self.state.volumes.lock().expect("the volumes set").clone()
+    }
+
+    fn cameras(&self) -> (Vec<Input>, Option<String>) {
+        let offered = ["video0", "video2"]
+            .map(|id| Input {
+                id: id.to_owned(),
+                label: format!("Camera {id}"),
+            })
+            .to_vec();
+        let chosen = self.state.camera.lock().expect("the camera chosen").clone();
+        (offered, chosen.or_else(|| Some("video0".to_owned())))
+    }
+
+    fn select_camera(&mut self, camera: &str) -> Result<(), Issue> {
+        if camera != "video0" && camera != "video2" {
+            return Err(Issue::CameraLost);
+        }
+        *self.state.camera.lock().expect("the camera chosen") = Some(camera.to_owned());
+        Ok(())
     }
 }
 
@@ -557,5 +578,61 @@ async fn a_member_plays_at_the_volume_the_person_set_and_the_status_says_so() {
             percent: 40,
         }],
         "what the app's controls show"
+    );
+}
+
+/// The call offers the device's cameras, and one the person chooses is the one it sends from; one
+/// the device does not have is refused, and the camera stays as it was.
+#[tokio::test]
+async fn a_camera_chosen_is_the_one_the_call_sends_and_the_status_says_so() {
+    let (service, state) = service_with(vec![microphone()]);
+    let who = caller(Arc::new(AtomicBool::new(true)));
+    send(&service, &who, request(1, join("c_voice"))).expect("an app joins a voice channel");
+    let joined = settled(&service, &who).await;
+    assert_eq!(
+        joined
+            .cameras
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        ["video0", "video2"],
+        "the status offers every camera"
+    );
+    assert_eq!(joined.camera_id.as_deref(), Some("video0"));
+
+    let chosen = send(
+        &service,
+        &who,
+        request(
+            0,
+            Command::SelectCamera {
+                camera_id: "video2".to_owned(),
+            },
+        ),
+    )
+    .expect("a camera is chosen");
+    assert_eq!(chosen.camera_id.as_deref(), Some("video2"));
+    assert_eq!(
+        state.camera.lock().expect("the camera chosen").as_deref(),
+        Some("video2"),
+        "the carrier sends from it"
+    );
+
+    let refused = send(
+        &service,
+        &who,
+        request(
+            0,
+            Command::SelectCamera {
+                camera_id: "video7".to_owned(),
+            },
+        ),
+    )
+    .expect("the status after a refused camera");
+    assert_eq!(refused.issue, Some(Issue::CameraLost));
+    assert_eq!(
+        refused.camera_id.as_deref(),
+        Some("video2"),
+        "the camera stays"
     );
 }

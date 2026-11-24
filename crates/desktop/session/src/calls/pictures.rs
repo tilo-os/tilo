@@ -664,15 +664,45 @@ impl Camera {
         }
     }
 
-    /// What this camera captures from, or `None` when the device has none.
+    /// The cameras a call may send from, in the order offered: the device's own, each by its
+    /// node's name, or the one test picture. The first is the one a call starts from.
     #[must_use]
-    pub fn device(self) -> Option<media::realtime::capture::CaptureDevice> {
+    pub fn offered(self) -> Vec<Offered> {
         use media::realtime::capture::CaptureDevice;
         match self {
-            Self::Device => {
-                media::realtime::capture::camera_node().map(|node| CaptureDevice::Camera { node })
-            }
-            Self::TestPattern => Some(CaptureDevice::TestPattern),
+            Self::Device => media::realtime::capture::cameras()
+                .into_iter()
+                .filter_map(|camera| {
+                    let id = camera.node.file_name()?.to_str()?.to_owned();
+                    let label = if camera.name.is_empty() {
+                        id.clone()
+                    } else {
+                        camera.name
+                    };
+                    Some(Offered {
+                        id,
+                        label,
+                        device: CaptureDevice::Camera { node: camera.node },
+                    })
+                })
+                .collect(),
+            Self::TestPattern => vec![Offered {
+                id: TEST_PATTERN.to_owned(),
+                label: crate::i18n::t("call-camera-test-picture"),
+                device: CaptureDevice::TestPattern,
+            }],
         }
     }
+}
+
+/// The id the moving test picture is offered under.
+const TEST_PATTERN: &str = "test-pattern";
+
+/// One camera a call may send from: its id, what the person sees it called, and what it
+/// captures from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Offered {
+    pub id: String,
+    pub label: String,
+    pub device: media::realtime::capture::CaptureDevice,
 }

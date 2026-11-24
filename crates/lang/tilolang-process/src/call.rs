@@ -114,8 +114,18 @@ impl Calls {
             CallStep::Deafen(on) if self.in_call(&place) => Command::SetDeafened { deafened: on },
             CallStep::Camera(on) if self.in_call(&place) => Command::SetCamera { on },
             CallStep::Screen(on) if self.in_call(&place) => Command::SetScreen { on },
+            // One step chooses a microphone or a camera: the call said which its id is.
             CallStep::SelectInput(input_id) if self.in_call(&place) => {
-                Command::SelectInput { input_id }
+                let camera = self.snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.cameras.iter().any(|camera| camera.id == input_id)
+                });
+                if camera {
+                    Command::SelectCamera {
+                        camera_id: input_id,
+                    }
+                } else {
+                    Command::SelectInput { input_id }
+                }
             }
             // How loud a member plays here changes nothing of the call, so it carries no intent:
             // a newer one replaces the one before at the service.
@@ -324,15 +334,19 @@ impl Calls {
             .as_ref()
             .filter(|_| self.joined.is_some())
             .map(|snapshot| {
-                snapshot
-                    .inputs
-                    .iter()
-                    .map(|input| CallInput {
-                        id: input.id.clone(),
-                        label: input.label.clone(),
-                        current: snapshot.input_id.as_deref() == Some(input.id.as_str()),
-                    })
-                    .collect()
+                let microphones = snapshot.inputs.iter().map(|input| CallInput {
+                    id: input.id.clone(),
+                    label: input.label.clone(),
+                    current: snapshot.input_id.as_deref() == Some(input.id.as_str()),
+                    camera: false,
+                });
+                let cameras = snapshot.cameras.iter().map(|camera| CallInput {
+                    id: camera.id.clone(),
+                    label: camera.label.clone(),
+                    current: snapshot.camera_id.as_deref() == Some(camera.id.as_str()),
+                    camera: true,
+                });
+                microphones.chain(cameras).collect()
             })
             .unwrap_or_default();
         if now == self.inputs {
@@ -612,6 +626,8 @@ mod tests {
             pictures: Vec::new(),
             pictures_cursor: 0,
             volumes: Vec::new(),
+            cameras: Vec::new(),
+            camera_id: None,
         }
     }
 
@@ -761,6 +777,17 @@ mod tests {
                 },
             ];
             live.input_id = Some("mic-b".to_owned());
+            live.cameras = vec![
+                ui_core::native_media::Input {
+                    id: "video0".to_owned(),
+                    label: "Integrated Camera".to_owned(),
+                },
+                ui_core::native_media::Input {
+                    id: "video2".to_owned(),
+                    label: "Desk camera".to_owned(),
+                },
+            ];
+            live.camera_id = Some("video0".to_owned());
             answer(&mut calls, id, live);
             sent(&mut calls);
 
@@ -777,6 +804,17 @@ mod tests {
                 })
                 .expect("the call is told which microphone to send");
             assert!(chosen.intent > 0, "choosing a microphone changes the call");
+
+            // A camera is chosen the same way, and the call hears it as the camera's.
+            calls.step(&target, CallStep::SelectInput("video2".to_owned()));
+            let requests = sent(&mut calls);
+            assert!(
+                requests.iter().any(|request| matches!(
+                    &request.command,
+                    Command::SelectCamera { camera_id } if camera_id == "video2"
+                )),
+                "the call is told which camera to send: {requests:?}"
+            );
 
             calls.step(
                 &target,

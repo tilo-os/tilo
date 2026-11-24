@@ -106,6 +106,20 @@ pub trait MediaSession: Send {
     fn set_camera(&mut self, _on: bool) -> Result<(), Issue> {
         Err(Issue::CameraLost)
     }
+    /// The cameras this call could send, labelled as the person chooses between them, and the one
+    /// it sends from (or would, once the camera is on). Empty when the carrier sends no camera.
+    fn cameras(&self) -> (Vec<Input>, Option<String>) {
+        (Vec::new(), None)
+    }
+    /// Send this person's camera from `camera`, one of [`MediaSession::cameras`]: at once while
+    /// it is on, and from when it is turned on otherwise. It asks for nothing the camera's own
+    /// switch did not.
+    ///
+    /// # Errors
+    /// No such camera, or it could not start.
+    fn select_camera(&mut self, _camera: &str) -> Result<(), Issue> {
+        Err(Issue::CameraLost)
+    }
     /// Share this person's screen in the call, or stop. Started, the carrier
     /// asks through the session's normal prompt for the screen first.
     ///

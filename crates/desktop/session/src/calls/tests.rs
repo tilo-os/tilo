@@ -16,7 +16,7 @@ use collab_types::Ed25519PublicKey;
 use collab_types::presence::{Availability, Payload, Presence};
 use iroh::EndpointId;
 use key_group::{KeyGroup, MemberKey, VaultKey};
-use runtime_collab::native_media::{Command, Request, State};
+use runtime_collab::native_media::{Command, Issue, Request, State};
 use tilo_broker_core::collab_core::BrokerChannels;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
@@ -853,6 +853,21 @@ async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
         source: PictureSource::Camera,
         layer: PictureLayer::Low,
     }]);
+    // Ana's device offers the one camera it has, and the call sends from it.
+    let (cameras, chosen) = here.cameras();
+    assert_eq!(
+        cameras.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        ["test-pattern"],
+        "the device's cameras are offered by id"
+    );
+    assert_eq!(chosen.as_deref(), Some("test-pattern"));
+    assert_eq!(
+        here.select_camera("video9"),
+        Err(Issue::CameraLost),
+        "a camera the device does not have is refused"
+    );
+    here.select_camera("test-pattern")
+        .expect("the offered camera is chosen");
     here.set_camera(true).expect("Ana's camera");
 
     let mut cursor = 0;

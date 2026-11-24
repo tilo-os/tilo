@@ -959,9 +959,13 @@ view call<R>(of: R) {
     let people = call_members(of)
     let mine = people.filter(m -> m.mine)
     let pictured = people.filter(m -> m.camera or m.screen)
-    let microphones = call_inputs(of)
+    let inputs = call_inputs(of)
+    let microphones = inputs.filter(i -> not i.camera)
+    let cameras = inputs.filter(i -> i.camera)
     let chosen = microphones.find(i -> i.current)
+    let filming = cameras.find(i -> i.current)
     state microphone: Text = if let c = chosen { c.label } else { "" }
+    state camera: Text = if let c = filming { c.label } else { "" }
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         content: {
             ui.Docked {
@@ -978,7 +982,7 @@ view call<R>(of: R) {
                                 ) {
                                     on change(label): select_call_input(
                                         of,
-                                        microphone_id(microphones, label),
+                                        input_id(microphones, label),
                                     )
                                 }
                             }
@@ -1014,6 +1018,20 @@ view call<R>(of: R) {
                                 icon_only: true,
                             ) {
                                 on press: camera_call(of, not me.camera)
+                            }
+                            if cameras.len() > 1 {
+                                ui.Dropdown(
+                                    options: cameras.map(i -> i.label),
+                                    placeholder: phrase("tilolang-call-camera"),
+                                    icon: .video,
+                                    size: .small,
+                                    bind: camera,
+                                ) {
+                                    on change(label): select_call_input(
+                                        of,
+                                        input_id(cameras, label),
+                                    )
+                                }
                             }
                             ui.Button(
                                 phrase(
@@ -1154,10 +1172,10 @@ view call_member<R>(of: R, m: host.CallMember) {
     }
 }
 
-/// The id of the microphone a person chose by its label, when one of the call's inputs is
-/// called that: what `select_call_input` names.
-fn microphone_id(microphones: List<host.CallInput>, label: Text) -> Text {
-    if let found = microphones.find(i -> i.label == label) { found.id } else { "" }
+/// The id of the microphone or camera a person chose by its label, when one of the call's inputs
+/// is called that: what `select_call_input` names.
+fn input_id(inputs: List<host.CallInput>, label: Text) -> Text {
+    if let found = inputs.find(i -> i.label == label) { found.id } else { "" }
 }
 
 /// Under a message that started a thread: how many replies it has, opening the thread.

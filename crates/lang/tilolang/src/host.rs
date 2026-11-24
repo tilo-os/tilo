@@ -756,7 +756,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
         name: "CallInput",
         id: "host-call-input",
-        doc: "A microphone this device's call can send from, as `call_inputs(r)` answers them.",
+        doc: "A microphone or camera this device's call can send from, as `call_inputs(r)` answers them.",
         fields: &[
             ("id", "Text", "Its id, as `select_call_input` names it."),
             (
@@ -765,6 +765,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "What it is called where the person chooses between them.",
             ),
             ("current", "Bool", "Whether the call sends from it now."),
+            (
+                "camera",
+                "Bool",
+                "Whether it is a camera; it is a microphone otherwise.",
+            ),
         ],
     },
     ValueType {

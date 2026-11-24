@@ -57,26 +57,37 @@ impl CaptureConfig {
     }
 }
 
-/// The device's camera: the first V4L2 node that captures video and is not
-/// a camera this OS projects from another device ("Tilo Remote Camera").
+/// One camera of this device a call can send: its V4L2 node and what it calls itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CameraNode {
+    /// Its node, `/dev/videoN`.
+    pub node: std::path::PathBuf,
+    /// The name the driver gives it ("Integrated Camera").
+    pub name: String,
+}
+
+/// This device's cameras, in node order: each V4L2 node that captures video and is not a
+/// camera this OS projects from another device ("Tilo Remote Camera").
 #[must_use]
-pub fn camera_node() -> Option<std::path::PathBuf> {
-    let mut nodes: Vec<_> = std::fs::read_dir("/sys/class/video4linux")
-        .ok()?
+pub fn cameras() -> Vec<CameraNode> {
+    let Ok(entries) = std::fs::read_dir("/sys/class/video4linux") else {
+        return Vec::new();
+    };
+    let mut found: Vec<CameraNode> = entries
         .filter_map(Result::ok)
-        .filter(|entry| {
+        .filter_map(|entry| {
             let path = entry.path();
             let name = std::fs::read_to_string(path.join("name")).unwrap_or_default();
             let index = std::fs::read_to_string(path.join("index")).unwrap_or_default();
-            !name.trim().starts_with("Tilo Remote Camera") && index.trim() == "0"
+            let name = name.trim();
+            (!name.starts_with("Tilo Remote Camera") && index.trim() == "0").then(|| CameraNode {
+                node: std::path::Path::new("/dev").join(entry.file_name()),
+                name: name.to_owned(),
+            })
         })
-        .map(|entry| entry.file_name())
         .collect();
-    nodes.sort();
-    nodes
-        .into_iter()
-        .next()
-        .map(|name| std::path::Path::new("/dev").join(name))
+    found.sort_by(|a, b| a.node.cmp(&b.node));
+    found
 }
 
 #[cfg(gst_realtime)]

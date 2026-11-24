@@ -44,6 +44,12 @@ pub enum Command {
     SelectInput {
         input_id: String,
     },
+    /// Send this person's camera in the call from another of the device's cameras
+    /// ([`Snapshot::cameras`]). A camera that is on moves to it at once; one that is off starts
+    /// from it when it is turned on.
+    SelectCamera {
+        camera_id: String,
+    },
     Leave,
     Status,
     /// [`Command::Status`] once it differs from the status at `revision`
@@ -408,6 +414,13 @@ pub struct Snapshot {
     /// nobody else's call hears.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<Volume>,
+    /// The cameras this device's call can send from ([`Command::SelectCamera`]), labelled as the
+    /// person chooses between them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cameras: Vec<Input>,
+    /// The camera the call sends from, or would once the camera is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_id: Option<String>,
 }
 
 /// How loud this device plays one member of a call, in percent of as they arrive
@@ -554,6 +567,7 @@ impl Request {
             && match &self.command {
                 Command::Join { channel_id } => identifier(channel_id),
                 Command::SelectInput { input_id } => identifier(input_id),
+                Command::SelectCamera { camera_id } => identifier(camera_id),
                 Command::Show { pictures } => {
                     pictures.len() <= MAX_SHOWN
                         && pictures.iter().all(|shown| {
@@ -647,6 +661,8 @@ impl Snapshot {
             pictures: Vec::new(),
             pictures_cursor: 0,
             volumes: Vec::new(),
+            cameras: Vec::new(),
+            camera_id: None,
         }
     }
 
@@ -689,6 +705,14 @@ impl Snapshot {
             && self.inputs.iter().all(|input| {
                 identifier(&input.id) && identifier(&input.label) && ids.insert(&input.id)
             })
+            && self.cameras.len() <= MAX_INPUTS
+            && {
+                let mut cameras = std::collections::BTreeSet::new();
+                self.cameras.iter().all(|camera| {
+                    identifier(&camera.id) && identifier(&camera.label) && cameras.insert(&camera.id)
+                })
+            }
+            && self.camera_id.as_deref().is_none_or(identifier)
             && self.volumes.iter().all(|volume| {
                 person_valid(&volume.member) && volume.percent <= MAX_VOLUME_PERCENT
             })

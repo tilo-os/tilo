@@ -301,8 +301,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `call_inputs(r)`: the microphones this device's call held on `r` can send, each with
-    /// whether it is the one the call sends from now: what the person chooses between.
+    /// `call_inputs(r)`: the microphones and cameras this device's call held on `r` can send,
+    /// each with whether it is one the call sends from now: what the person chooses between.
     pub(super) fn builtin_call_inputs(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("call_inputs", args, span) else {
             return Ex::error();
@@ -314,8 +314,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `select_call_input(r, id)` and `set_call_volume(r, member, percent)`: which microphone this
-    /// device sends from in the system's call held on `r`, and how loud it plays one of the
+    /// `select_call_input(r, id)` and `set_call_volume(r, member, percent)`: which microphone or
+    /// camera this device sends from in the system's call held on `r`, and how loud it plays one of the
     /// call's members (a person, 0 to 200 percent of as they arrive, on this device only).
     pub(super) fn builtin_call(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Ex {
         let switch = name.strip_suffix("_call").unwrap_or(name);
@@ -382,7 +382,7 @@ impl Checker<'_> {
             }
         };
         if name == "select_call_input" {
-            let usage = "`select_call_input` takes the resource and the microphone's id: \
+            let usage = "`select_call_input` takes the resource and the microphone's or camera's id: \
                          `select_call_input(r, input.id)`";
             if args.len() != 2 {
                 self.err("E022", span, usage);

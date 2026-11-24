@@ -112,6 +112,27 @@ test('the switches and the camera and screen steps are the browser call input', 
   assert.equal(last.deafened, true);
 });
 
+test('the status offers the browser\'s microphones and cameras, and a camera chosen is sent from', async () => {
+  const {peerVoice, asked} = voiceOf();
+  peerVoice.call.inputs = async () => [{deviceId: 'mic-1', label: 'Headset'}, {deviceId: '', label: ''}];
+  peerVoice.call.cameras = async () => [{deviceId: 'cam-1', label: 'Built-in'}, {deviceId: 'cam-2', label: 'Desk camera'}];
+  peerVoice.call.selectCamera = id => { asked.push(['camera-from', id]); peerVoice.call.state.cameraId = id; };
+  const sent = [];
+  const calls = createPageCalls({peerVoice, send: answer => sent.push(answer)});
+  // A watch is answered once the browser has listed what it has.
+  calls.apply(step(1, 'watch', {revision: calls.status().revision}));
+  await new Promise(resolve => setImmediate(resolve));
+
+  const listed = sent.at(-1).answer.answered;
+  assert.deepEqual(listed.inputs, [{id: 'mic-1', label: 'Headset'}], 'a device without an id is not offered');
+  assert.deepEqual(listed.cameras, [{id: 'cam-1', label: 'Built-in'}, {id: 'cam-2', label: 'Desk camera'}]);
+  assert.equal(listed.camera_id, 'cam-1', 'until the person chooses, the browser sends from its first camera');
+
+  calls.apply(step(2, 'select_camera', {camera_id: 'cam-2'}));
+  assert.deepEqual(asked.at(-1), ['camera-from', 'cam-2']);
+  assert.equal(sent.at(-1).answer.answered.camera_id, 'cam-2');
+});
+
 test('a watch is held until who is in the call moves, then answered with the roster', () => {
   const {peerVoice, lists} = voiceOf();
   lists([{channel: 'standup', people: [ADA], cameras: [], screens: [], muted: [], deafened: [], bridges: [], bridged: []}]);

@@ -39,7 +39,7 @@
  */
 import {hex, unhex} from './hex.mjs';
 import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
-import {createPictureEncoder, createPictureInbox, openSource, pictureObject} from './voice-video.mjs';
+import {createPictureEncoder, createPictureInbox, openSource, pictureObject, videoInputs} from './voice-video.mjs';
 import {callIdOf} from './voice-controls.mjs';
 
 /** RMS above which a member counts as speaking, and how long it stays so. */
@@ -71,7 +71,7 @@ export function microphoneIssue(error) {
 
 /**
  * `state` is `{phase, call, app, record, muted, canPublish, members,
- * inputId, reason, micIssue, unsupported}` where `micIssue` is why the
+ * inputId, cameraId, reason, micIssue, unsupported}` where `micIssue` is why the
  * microphone could not start (`permission_denied`, `source_lost`,
  * `capture_failed`) or null, and `phase` is `idle`, `joining`,
  * `connecting`, `live`, `reconnecting` or `ended`; `admitted` says whether the
@@ -88,7 +88,7 @@ export function createVoiceCall({
   environment = globalThis,
   clock = {},
   onReport = () => {},
-  open = source => openSource(source, environment),
+  open = (source, cameraId) => openSource(source, environment, cameraId),
   encoder = createPictureEncoder,
 } = {}) {
   if (!signalling) throw new TypeError('voice signalling is required');
@@ -99,6 +99,8 @@ export function createVoiceCall({
   const listeners = new Set();
   let wantMuted = false;
   let inputId;
+  /** The camera the person chose, by the browser's device id; the browser's own until then. */
+  let cameraId;
   let state = idle();
   let grant;
   let audioSession;
@@ -148,7 +150,7 @@ export function createVoiceCall({
   const counters = {frames: 0, heard: 0, sent: 0, pictures: 0, showing: 0};
 
   function idle() {
-    return {phase: 'idle', call: null, app: '', record: '', admitted: false, muted: wantMuted, canPublish: false, members: [], inputId: inputId ?? null, reason: null, camera: false, screen: false, deafened: false, videoIssue: null, micIssue: null, unsupported: false, audioFailed: false};
+    return {phase: 'idle', call: null, app: '', record: '', admitted: false, muted: wantMuted, canPublish: false, members: [], inputId: inputId ?? null, cameraId: cameraId ?? null, reason: null, camera: false, screen: false, deafened: false, videoIssue: null, micIssue: null, unsupported: false, audioFailed: false};
   }
   const emit = () => { for (const listener of [...listeners]) { try { listener(state); } catch (error) { report({type: 'voice-listener-error', error}); } } };
   const update = change => {
@@ -423,7 +425,7 @@ export function createVoiceCall({
     const call = state.call;
     let stream;
     try {
-      stream = await open(source);
+      stream = await open(source, source === 'camera' ? cameraId : undefined);
     } catch (error) {
       report({type: 'video-source-error', error});
       update({videoIssue: source === 'camera' ? 'camera_denied' : 'screen_denied'});
@@ -687,6 +689,17 @@ export function createVoiceCall({
       inputId = deviceId || undefined;
       update({inputId: inputId ?? null});
       await (audioSession ?? await audioStarting)?.selectInput(inputId);
+    },
+    /** The cameras to choose from. Labels appear once the page may use one. */
+    cameras: () => videoInputs(environment),
+    /** Send the camera from `deviceId`: one that is on moves to it now. */
+    async selectCamera(deviceId) {
+      const before = cameraId;
+      cameraId = deviceId || undefined;
+      update({cameraId: cameraId ?? null});
+      if (cameraId === before || !streams.has('camera')) return;
+      await setVideo('camera', false);
+      await setVideo('camera', true);
     },
     async selectOutput(deviceId) {
       return (audioSession ?? await audioStarting)?.selectOutput(deviceId) ?? false;

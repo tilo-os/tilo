@@ -470,6 +470,7 @@ mention-notice-open = Open
 ## to allow its camera, microphone or screen.
 call-microphone-reason = to be heard in the call
 call-camera-reason = to be seen in the call
+call-camera-test-picture = Test picture
 call-screen-reason = to share this screen in the call
 
 ## What the window names

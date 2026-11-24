@@ -608,6 +608,7 @@ async fn open(
         person: sources.person.clone(),
         presence: Arc::clone(&sources.calls),
         camera: sources.camera,
+        camera_choice: Mutex::new(None),
         own,
         access,
         workspace_id,
@@ -758,6 +759,14 @@ impl MediaSession for Call {
         self.shared.set_camera(on)
     }
 
+    fn cameras(&self) -> (Vec<Input>, Option<String>) {
+        self.shared.cameras()
+    }
+
+    fn select_camera(&mut self, camera: &str) -> Result<(), Issue> {
+        self.shared.select_camera(camera)
+    }
+
     fn set_screen(&mut self, on: bool) -> Result<(), Issue> {
         self.shared.set_screen(on)
     }
@@ -853,6 +862,8 @@ struct Shared {
     presence: Arc<Calls>,
     /// What this device's camera captures from.
     camera: pictures::Camera,
+    /// The camera the person chose to send from, by its id; the first offered until they choose.
+    camera_choice: Mutex<Option<String>>,
     /// The timestamp each device's voice stream was last heard at, in this call: a stream that
     /// starts over is recognised by its own bytes.
     streams: Mutex<BTreeMap<[u8; 32], u64>>,
@@ -1011,7 +1022,62 @@ impl Shared {
         ) {
             return Err(Issue::PermissionDenied);
         }
-        let device = self.camera.device().ok_or(Issue::CameraLost)?;
+        let device = self.chosen_camera().ok_or(Issue::CameraLost)?.device;
+        self.start_camera(device)
+    }
+
+    /// The camera a call sends from: the one the person chose, or the first offered.
+    fn chosen_camera(&self) -> Option<pictures::Offered> {
+        let offered = self.camera.offered();
+        let chosen = self.camera_choice.lock_recover().clone();
+        chosen
+            .and_then(|id| offered.iter().find(|camera| camera.id == id).cloned())
+            .or_else(|| offered.into_iter().next())
+    }
+
+    /// The cameras the person may choose between, and the one the call sends from.
+    fn cameras(&self) -> (Vec<Input>, Option<String>) {
+        let chosen = self.chosen_camera().map(|camera| camera.id);
+        let offered = self
+            .camera
+            .offered()
+            .into_iter()
+            .map(|camera| Input {
+                id: camera.id,
+                label: camera.label,
+            })
+            .collect();
+        (offered, chosen)
+    }
+
+    /// Send the camera from `id`: a camera that is on moves to it now, without asking again,
+    /// since the person allowed the camera when they turned it on.
+    fn select_camera(self: &Arc<Self>, id: &str) -> Result<(), Issue> {
+        if self.closed() {
+            return Err(Issue::CameraLost);
+        }
+        let offered = self
+            .camera
+            .offered()
+            .into_iter()
+            .find(|camera| camera.id == id)
+            .ok_or(Issue::CameraLost)?;
+        let previous = self.camera_choice.lock_recover().replace(id.to_owned());
+        let on = self.side.lock_recover().camera.is_some();
+        if !on || previous.as_deref() == Some(id) {
+            return Ok(());
+        }
+        // A camera that would not start leaves the one that sends, and the choice, as they were.
+        self.start_camera(offered.device).inspect_err(|_| {
+            *self.camera_choice.lock_recover() = previous;
+        })
+    }
+
+    /// Capture from `device` and send it in the call, in place of whatever the camera sent before.
+    fn start_camera(
+        self: &Arc<Self>,
+        device: media::realtime::capture::CaptureDevice,
+    ) -> Result<(), Issue> {
         let sending = Arc::new(
             pictures::Sending::start(pictures::Source::Camera, pictures::CAMERA_FPS, &self.sink())
                 .map_err(|_| Issue::CameraLost)?,

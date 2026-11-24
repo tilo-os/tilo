@@ -374,6 +374,7 @@ impl NativeMediaService {
             Command::SetScreen { on } => self.set_source(&key, PictureSource::Screen, on),
             Command::Show { pictures } => self.show(&key, pictures),
             Command::SetVolume { member, percent } => self.set_volume(&key, &member, percent),
+            Command::SelectCamera { camera_id } => self.select_camera(&key, &camera_id),
             Command::SelectInput { input_id } => {
                 let mut calls = self
                     .0
@@ -584,6 +585,34 @@ impl NativeMediaService {
                     PictureSource::Camera => entry.snapshot.camera = on,
                     PictureSource::Screen => entry.snapshot.screen = on,
                 }
+                entry.snapshot.issue = None;
+            }
+            Err(issue) => entry.snapshot.issue = Some(issue),
+        }
+        let answer = Shared::snapshot(entry);
+        drop(calls);
+        self.0.changed.notify_waiters();
+        Ok(answer)
+    }
+
+    /// Send this person's camera from another of the device's cameras: the carrier moves a camera
+    /// that is on at once, and one that is off starts from it later.
+    fn select_camera(&self, key: &Key, camera: &str) -> Result<Snapshot, String> {
+        let mut calls = self
+            .0
+            .calls
+            .lock()
+            .map_err(|_| "native media unavailable")?;
+        let Some(entry) = calls.entries.get_mut(key) else {
+            return Ok(idle());
+        };
+        let Some(backend) = entry.backend.clone() else {
+            return Ok(Shared::snapshot(entry));
+        };
+        let result = backend.lock_recover().select_camera(camera);
+        match result {
+            Ok(()) => {
+                entry.snapshot.camera_id = Some(camera.to_owned());
                 entry.snapshot.issue = None;
             }
             Err(issue) => entry.snapshot.issue = Some(issue),
@@ -894,6 +923,7 @@ impl Shared {
             let inventory = {
                 let backend = backend.lock_recover();
                 snapshot.inputs = backend.inputs();
+                (snapshot.cameras, snapshot.camera_id) = backend.cameras();
                 snapshot.speaking = backend.speaking();
                 snapshot.volumes = backend
                     .volumes()

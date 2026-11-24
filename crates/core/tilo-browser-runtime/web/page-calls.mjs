@@ -98,6 +98,30 @@ export function createPageCalls({
   let heldPictures = null;
   let disposed = false;
 
+  /** The microphones and cameras the browser offers, as the status says them. They are listed
+   * again as the call moves, since a browser names its devices only once the page may use one. */
+  let devices = {inputs: [], cameras: []};
+  let listingDevices = false;
+  function listDevices() {
+    if (listingDevices || disposed) return;
+    listingDevices = true;
+    const named = list => {
+      const seen = new Set();
+      return (list ?? []).filter(device => device.deviceId && !seen.has(device.deviceId) && seen.add(device.deviceId))
+        .map(device => ({id: device.deviceId, label: device.label || device.deviceId}));
+    };
+    Promise.all([
+      typeof call.inputs === 'function' ? call.inputs() : [],
+      typeof call.cameras === 'function' ? call.cameras() : [],
+    ]).then(([microphones, cameras]) => {
+      const next = {inputs: named(microphones), cameras: named(cameras)};
+      if (JSON.stringify(next) === JSON.stringify(devices)) return;
+      devices = next;
+      status();
+      moved();
+    }).catch(() => {}).finally(() => { listingDevices = false; });
+  }
+
   const listing = () => {
     try { return peerVoice.calls ?? []; } catch { return []; }
   };
@@ -113,7 +137,7 @@ export function createPageCalls({
     const issue = issueOfState(state);
     const volumes = typeof call.volumes === 'function' ? call.volumes() : [];
     const now = JSON.stringify([stateOfPhase(state.phase), state.muted, state.camera, state.screen,
-      state.deafened, state.inputId, issue, rosters, speaking, volumes]);
+      state.deafened, state.inputId, state.cameraId, issue, rosters, speaking, volumes, devices]);
     if (now !== said) {
       said = now;
       revision += 1;
@@ -124,7 +148,7 @@ export function createPageCalls({
       muted: Boolean(state.muted),
       capture_active: !state.muted && state.phase === 'live',
       input_id: state.inputId ?? null,
-      inputs: [],
+      inputs: devices.inputs,
       issue,
       inventory_revision: null,
       publication: null,
@@ -135,6 +159,8 @@ export function createPageCalls({
       screen: Boolean(state.screen),
       deafened: Boolean(state.deafened),
       volumes,
+      cameras: devices.cameras,
+      camera_id: state.cameraId ?? devices.cameras[0]?.id ?? null,
       revision,
     };
     return answer;
@@ -226,11 +252,12 @@ export function createPageCalls({
   }
 
   const unsubscribe = typeof call.subscribe === 'function'
-    ? call.subscribe(() => { status(); moved(); arrived(); })
+    ? call.subscribe(() => { listDevices(); status(); moved(); arrived(); })
     : null;
   const unsubscribeCalls = typeof peerVoice.onCalls === 'function'
     ? peerVoice.onCalls(() => { status(); moved(); })
     : null;
+  listDevices();
 
   return {
     /** Carry out the step `step` (`{request_id, command}`, as the page's stream carries it). A
@@ -263,6 +290,13 @@ export function createPageCalls({
           break;
         case 'select_input':
           void call.selectInput(command.input_id);
+          break;
+        case 'select_camera':
+          if (typeof call.selectCamera !== 'function') {
+            send({request_id: requestId, answer: {refused: 'This browser cannot choose a camera'}});
+            return;
+          }
+          void call.selectCamera(command.camera_id);
           break;
         case 'set_volume':
           call.setVolume(command.member, Number(command.percent) / 100);

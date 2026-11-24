@@ -55,6 +55,8 @@ pub struct CallInput {
     pub label: String,
     /// Whether the call sends from it now.
     pub current: bool,
+    /// Whether it is a camera; it is a microphone otherwise.
+    pub camera: bool,
 }
 
 /// Someone in a call from another service, as the bridge that carries them in says.
@@ -1508,6 +1510,7 @@ impl Runtime {
                         Value::Text(input.id.clone()),
                         Value::Text(input.label.clone()),
                         Value::Bool(input.current),
+                        Value::Bool(input.camera),
                     ])
                 })
                 .collect(),

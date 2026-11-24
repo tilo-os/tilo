@@ -475,6 +475,7 @@ mention-notice-open = Öffnen
 ## to allow its camera, microphone or screen.
 call-microphone-reason = um im Anruf gehört zu werden
 call-camera-reason = um im Anruf gesehen zu werden
+call-camera-test-picture = Testbild
 call-screen-reason = um diesen Bildschirm im Anruf zu teilen
 
 ## What the window names
