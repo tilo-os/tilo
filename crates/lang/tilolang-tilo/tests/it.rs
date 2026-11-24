@@ -12,6 +12,7 @@
 )]
 
 mod action_ids;
+mod activity;
 mod agent_queries;
 mod asking_form;
 mod atomic;

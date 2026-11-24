@@ -25,25 +25,31 @@ use tilo_session_core::desktop::session::ActivityRequests;
 /// model publishes it under.
 pub(crate) const RESOURCE: &str = wire::RESOURCE;
 
-/// What a reading keyed by a range is published under: the range's first and last change,
-/// after this. A view that shows one change beside another reads its own, and no two windows
-/// share a detail.
-pub(crate) const RANGE_PREFIX: &str = "workspace.activity/range/";
+// The keys of the readings a view names are one path step after the root, their parts separated
+// by `~`: a view's reference is the document and the last step of the id it names, so a
+// `workspace.activity/range/<from>-<to>` would reach a service as `workspace.activity/<to>` and
+// name no range at all. One step keeps every part of the key the session reads.
+
+/// What a reading keyed by a range is published under: the range's first and last change, after
+/// this: `workspace.activity/range~<from>~<to>`. A view that shows one change beside another
+/// reads its own, and no two windows share a detail.
+pub(crate) const RANGE_PREFIX: &str = "workspace.activity/range~";
 
 /// What the workspace before and after a range of changes is published under, after this: the
 /// range's first and last change, as [`RANGE_PREFIX`]. A window that previews one change reads
 /// its own comparison.
-pub(crate) const COMPARE_PREFIX: &str = "workspace.activity/compare/";
+pub(crate) const COMPARE_PREFIX: &str = "workspace.activity/compare~";
 
 /// What a feed narrowed by the person's filters is published under: this workspace's changes or
-/// every workspace's, how far back, and the lens (a dash for none), after this. A window reads
-/// the page it shows, so two windows showing two periods each read their own.
-pub(crate) const FEED_PREFIX: &str = "workspace.activity/feed/";
+/// every workspace's, how far back, the lens (a dash for none) and how many of the newest
+/// changes it holds, after this: `workspace.activity/feed~<scope>~<period>~<lens>~<limit>`. A
+/// window reads the page it shows, so two windows showing two periods each read their own.
+pub(crate) const FEED_PREFIX: &str = "workspace.activity/feed~";
 
 /// What every agent session across the person's workspaces is published under, after this:
-/// `workspace.activity/sessions/all`. A window that lists them all reads its own page, while
+/// `workspace.activity/sessions~all`. A window that lists them all reads its own page, while
 /// the activity's own reading holds this workspace's.
-pub(crate) const SESSIONS_PREFIX: &str = "workspace.activity/sessions/";
+pub(crate) const SESSIONS_PREFIX: &str = "workspace.activity/sessions~";
 
 /// What a command's whole output is published under, after this: the workspace its shell's
 /// record is in (a dash for this one), the app and record that keep the shell session, and the
@@ -314,7 +320,7 @@ pub(crate) struct FieldChange {
 }
 
 /// What a range of changes did, as a view of that one range reads it: the reading a view names
-/// as `resource("workspace.activity/range/<from>-<to>", of: activity.Detail)`.
+/// as `resource("workspace.activity/range~<from>~<to>", of: activity.RangeDetail)`.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
@@ -1395,10 +1401,11 @@ fn empty_feed() -> Value {
 }
 
 /// The query a feed reading names: this workspace's changes or every workspace's, how far back,
-/// and the lens (a dash for none).
+/// the lens (a dash for none) and how many of the newest changes it holds (`0` for the first
+/// page).
 pub(crate) fn feed_query_of(resource: &str) -> Option<wire::FeedQuery> {
     let rest = resource.strip_prefix(FEED_PREFIX)?;
-    let mut parts = rest.splitn(3, '/');
+    let mut parts = rest.splitn(4, '~');
     let scope = match parts.next()? {
         "all" => wire::Scope::AllWorkspaces,
         "this" => wire::Scope::ThisWorkspace,
@@ -1412,19 +1419,24 @@ pub(crate) fn feed_query_of(resource: &str) -> Option<wire::FeedQuery> {
         _ => return None,
     };
     let lens = parts.next()?;
+    let limit = match parts.next() {
+        Some(limit) => limit.parse().ok()?,
+        None => 0,
+    };
     Some(wire::FeedQuery {
         scope,
         period,
         lens: (lens != "-").then(|| lens.to_owned()),
+        limit,
         ..wire::FeedQuery::default()
     })
 }
 
 /// The resource a page of the feed is published as.
 #[cfg(test)]
-pub(crate) fn feed_resource(scope: &str, period: &str, lens: &str) -> String {
+pub(crate) fn feed_resource(scope: &str, period: &str, lens: &str, limit: usize) -> String {
     let lens = if lens.is_empty() { "-" } else { lens };
-    format!("{FEED_PREFIX}{scope}/{period}/{lens}")
+    format!("{FEED_PREFIX}{scope}~{period}~{lens}~{limit}")
 }
 
 /// What a command's whole output is read with: the workspace its shell's record is in (a dash
@@ -1522,7 +1534,7 @@ fn sessions_json(value: &Value) -> Value {
 
 pub(crate) fn range_of(resource: &str) -> Option<wire::Range> {
     let rest = resource.strip_prefix(RANGE_PREFIX)?;
-    let (from, to) = rest.split_once('-')?;
+    let (from, to) = rest.split_once('~')?;
     Some(wire::Range {
         from: from.to_owned(),
         to: to.to_owned(),
@@ -1532,7 +1544,7 @@ pub(crate) fn range_of(resource: &str) -> Option<wire::Range> {
 /// The range a comparison reading names, after [`COMPARE_PREFIX`].
 pub(crate) fn compare_range_of(resource: &str) -> Option<wire::Range> {
     let rest = resource.strip_prefix(COMPARE_PREFIX)?;
-    let (from, to) = rest.split_once('-')?;
+    let (from, to) = rest.split_once('~')?;
     Some(wire::Range {
         from: from.to_owned(),
         to: to.to_owned(),
@@ -1542,13 +1554,13 @@ pub(crate) fn compare_range_of(resource: &str) -> Option<wire::Range> {
 /// The resource a range's comparison is published as.
 #[cfg(test)]
 pub(crate) fn compare_resource(range: &wire::Range) -> String {
-    format!("{COMPARE_PREFIX}{}-{}", range.from, range.to)
+    format!("{COMPARE_PREFIX}{}~{}", range.from, range.to)
 }
 
 /// The resource a range's detail is published as.
 #[cfg(test)]
 pub(crate) fn range_resource(range: &wire::Range) -> String {
-    format!("{RANGE_PREFIX}{}-{}", range.from, range.to)
+    format!("{RANGE_PREFIX}{}~{}", range.from, range.to)
 }
 
 /// A range's detail as an app reads it, from what the model read.
@@ -1619,6 +1631,8 @@ mod tests {
         revision: u64,
         /// The summary's first change, as the person reads it.
         summary: String,
+        /// How many changes the last feed read asked for.
+        limit: usize,
     }
 
     impl Model {
@@ -1626,6 +1640,7 @@ mod tests {
             Self {
                 revision: 1,
                 summary: "Renamed a note".to_owned(),
+                limit: 0,
             }
         }
     }
@@ -1663,6 +1678,7 @@ mod tests {
                     let query: wire::FeedQuery =
                         serde_json::from_value(Value::Object(arguments.clone()))
                             .map_err(|error| error.to_string())?;
+                    self.limit = query.page();
                     Ok(match query.scope {
                         wire::Scope::ThisWorkspace => feed("Home", &self.summary),
                         wire::Scope::AllWorkspaces => feed("Elsewhere", &self.summary),
@@ -1889,7 +1905,7 @@ mod tests {
 
         // A page of the feed is a reading too, keyed by the person's filters: a window asking
         // for a week of one workspace reads that page and no other.
-        let page = feed_resource("this", "week", "app:so.tilo.notes");
+        let page = feed_resource("this", "week", "app:so.tilo.notes", 400);
         let first = served.read(&page).expect("a page reads");
         assert!(
             first["feed"].is_null(),
@@ -1900,6 +1916,10 @@ mod tests {
         assert!(served.poll(), "the page's read arrives");
         let page_read = served.read(&page).expect("the page reads");
         assert_eq!(page_read["feed"]["workspace"], "Home");
+        assert_eq!(
+            model.limit, 400,
+            "a page asks the model for as many of the newest changes as it shows"
+        );
         assert!(
             served.moved().is_some_and(|moved| moved.contains(&page)),
             "the page's reading is named as the one that moved"
@@ -1908,7 +1928,7 @@ mod tests {
         // Every agent session across the person's workspaces is one more reading, keyed
         // `sessions/all`: what a window listing them all shows, while the activity's own
         // reading keeps this workspace's.
-        let all = "workspace.activity/sessions/all";
+        let all = "workspace.activity/sessions~all";
         let (action, arguments) = Key::Sessions
             .read(all)
             .expect("the keyed sessions read is asked");

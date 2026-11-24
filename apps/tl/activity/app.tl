@@ -25,6 +25,14 @@ default view activity for Window
 view activity(w: Window) {
     state place: Text = "whats-new"
     state found: Text = ""
+    state scope: Text = "this-workspace"
+    state period: Text = "all-time"
+    state writer: Text = ""
+    state lens: Text = ""
+    state first: Text = ""
+    state last: Text = ""
+    // The ask from outside this window this one has already shown.
+    state claimed: Int = 0
     let h = history.history
     ui.NavShell(content_kind: .page, title: "Activity", sidebar_title: "Activity") {
         // The window's search is the system's, narrowed to this app: what is typed reaches the
@@ -48,10 +56,27 @@ view activity(w: Window) {
         }
         content: {
             std.page(w) {
+                // A chrome verb outside the window — catch up, explore one person's doings, open
+                // a change — asks it to show a place, narrowed or selected. The window takes the
+                // ask into its own state and says it was shown, so the session stops asking.
+                if let f = h.focus {
+                    if f.serial > claimed {
+                        every 1s: set(claimed, f.serial)
+                            .then(set(place, place_of(f.view)))
+                            .then(set(scope, "this-workspace"))
+                            .then(set(writer, f.author ?? ""))
+                            .then(set(lens, f.lens ?? ""))
+                            .then(set(first, f.entry ?? ""))
+                            .then(set(last, f.entry ?? ""))
+                            .then(
+                                history.focused(history.history, serial: f.serial),
+                            )
+                    }
+                }
                 if place == "whats-new" {
-                    whats_new(h, on_see_history: .some(set(place, "history")))
+                    whats_new(h, place, first, last)
                 } else if place == "history" {
-                    changes(h, found)
+                    changes(h, found, scope, period, writer, lens, first, last)
                 } else {
                     replay(h)
                 }
@@ -63,7 +88,7 @@ view activity(w: Window) {
 /// What changed while the person was away: the work sessions told as outcomes, what a model on
 /// this device made of them, where they left off, and the sources this device hears about each
 /// morning.
-view whats_new(h: history.Activity, on_see_history: Option<Action> = .none) {
+view whats_new(h: history.Activity, place: State<Text>, first: State<Text>, last: State<Text>) {
     if let s = h.summary {
         if s.pending {
             ui.Text("Loading changes", role: .caption, secondary: true)
@@ -103,15 +128,13 @@ view whats_new(h: history.Activity, on_see_history: Option<Action> = .none) {
         if s.briefs.is_empty() {
             if not s.pending {
                 ui.Text("You're caught up", role: .body)
-                if let see = on_see_history {
-                    ui.Button("See history") {
-                        on press: see
-                    }
+                ui.Button("See history") {
+                    on press: set(place, "history")
                 }
             }
         }
         for brief in s.briefs {
-            brief_card(brief, on_see_history: on_see_history)
+            brief_card(brief, place, first, last)
         }
         if s.sources_available {
             ui.Section("Morning sources") {
@@ -152,8 +175,9 @@ view whats_new(h: history.Activity, on_see_history: Option<Action> = .none) {
     }
 }
 
-/// One work session: what it achieved, who did it, and the actions it took.
-view brief_card(brief: history.Brief, on_see_history: Option<Action> = .none) {
+/// One work session: what it achieved, who did it, and the actions it took. Opening it in
+/// History selects the changes it made, not only the place that lists them.
+view brief_card(brief: history.Brief, place: State<Text>, first: State<Text>, last: State<Text>) {
     ui.Card(title: brief.title) {
         ui.Text(brief.detail, role: .caption, secondary: true)
         for step in brief.actions {
@@ -162,10 +186,10 @@ view brief_card(brief: history.Brief, on_see_history: Option<Action> = .none) {
                 ui.Text(step.summary, role: .body)
             }
         }
-        if not brief.entries.is_empty() {
-            if let see = on_see_history {
+        if let from = brief.entries.first() {
+            if let to = brief.entries.last() {
                 ui.Button("Open in History") {
-                    on press: see
+                    on press: set(place, "history").then(set(first, from)).then(set(last, to))
                 }
             }
         }
@@ -175,19 +199,28 @@ view brief_card(brief: history.Brief, on_see_history: Option<Action> = .none) {
 /// Every change, narrowed by what the person chose, with the range they selected shown beside
 /// it: what it did, what can be done with it, and what changed either side. The filters and the
 /// presses that change them live here, in the view that declares what they change.
-view changes(h: history.Activity, found: Text) {
-    state scope: Text = "this-workspace"
-    state period: Text = "all-time"
-    state writer: Text = ""
-    state lens: Text = ""
-    state first: Text = ""
-    state last: Text = ""
+view changes(
+    h: history.Activity,
+    found: Text,
+    scope: State<Text>,
+    period: State<Text>,
+    writer: State<Text>,
+    lens: State<Text>,
+    first: State<Text>,
+    last: State<Text>,
+) {
+    // How many of the newest changes the page holds: one page, and two more at each "Show more".
+    state limit: Int = 0
+    let page_limit = if limit < 200 { 200 } else { limit }
+    // While the search is on the page reads further back: one page is not enough to search the
+    // history.
+    let asked = if found != "" { page_limit * 4 } else { limit }
     // The page is the session's reading of exactly the filters this window shows, keyed by
     // them: another window on another period reads its own page.
     let key_scope = if scope == "all-workspaces" { "all" } else { "this" }
     let key_lens = if lens == "" { "-" } else { lens }
     let page = resource(
-        "workspace.activity/feed/{key_scope}/{period}/{key_lens}",
+        "workspace.activity/feed~{key_scope}~{period}~{key_lens}~{asked}",
         of: history.FeedReading,
     )
     let feed = page.feed
@@ -238,12 +271,18 @@ view changes(h: history.Activity, found: Text) {
         if not f.mutations {
             ui.Text("This device cannot change the history here.", role: .caption, secondary: true)
         }
+        let changes = matched(f.entries, writer, found)
+        let kept = changes.count()
+        let held = f.entries.count()
+        // What the words and the person left of the changes the page holds.
+        if found != "" or writer != "" {
+            ui.Text("{kept} of {held} changes", role: .caption, secondary: true)
+        }
         row(gap: .section, align: .stretch) {
             stack(fill, gap: .related) {
                 if f.entries.is_empty() {
                     ui.Text("No changes here", role: .body)
                 }
-                let changes = matched(f.entries, writer, found)
                 if changes.is_empty() and not f.entries.is_empty() {
                     ui.Text("No changes match these filters", role: .body)
                 }
@@ -275,6 +314,13 @@ view changes(h: history.Activity, found: Text) {
                         }
                     }
                 }
+                // Older changes are reachable: the page grows a page at a time toward the
+                // oldest the history holds.
+                if f.total > f.entries.count() {
+                    ui.Button("Show more", icon: .chevron_down) {
+                        on press: set(limit, page_limit + 200)
+                    }
+                }
             }
             // The range the person selected, beside the list as the window's inspector: its
             // detail is the session's reading of that one range, so another window showing
@@ -288,11 +334,15 @@ view changes(h: history.Activity, found: Text) {
     }
 }
 
-/// The range the person selected: what it did, what can be done with it, and what changed either
-/// side of it. Its detail is the session's reading of that one range, so two windows showing two
-/// ranges each read their own.
-view detail_card(first: Text, last: Text) {
-    let shown = resource("workspace.activity/range/{first}-{last}", of: history.RangeDetail)
+/// The range the person selected: what it did, what can be done with it, what changed either
+/// side of it, and — when the changes are an agent's work — the session that asked for it and
+/// each record's own undo. Its detail is the session's reading of that one range, so two
+/// windows showing two ranges each read their own.
+view detail_card(first: State<Text>, last: State<Text>) {
+    // The comparison is read only while the person asks for it: what changed either side of the
+    // range, and the fields it changed.
+    state compare: Bool = false
+    let shown = resource("workspace.activity/range~{first}~{last}", of: history.RangeDetail)
     if let d = shown.detail {
         ui.Section("Details") {
             if d.gone {
@@ -362,16 +412,90 @@ view detail_card(first: Text, last: Text) {
                     on press: history.choose_source(history.history, from: first, to: last)
                 }
             }
-            if not d.changes.is_empty() {
-                ui.Section("What changed") {
-                    for change in d.changes {
-                        ui.Text("{change.field}: {change.before} → {change.after}", role: .body)
-                    }
+            // Comparing asks the session for the workspace either side of the range: the offer
+            // names that read, which the window takes when the person turns it on.
+            if let offer = d.offers.find(o -> o.verb == "detail") {
+                ui.Button(offer.label, toggled: compare) {
+                    on press: set(compare, not compare)
                 }
             }
-            if let comparison = d.comparison {
-                ui.Section("Compare") {
-                    ui.Text(comparison, role: .body)
+        }
+        if compare {
+            compare_card(first, last)
+        }
+        if let s = session_in(history.history.sessions, d.group, first, last) {
+            session_card(s)
+        }
+    }
+}
+
+/// The workspace before and after the selected range, as the session read it: each field that
+/// moved, or else how the content differs, line by line.
+view compare_card(first: State<Text>, last: State<Text>) {
+    let shown = resource("workspace.activity/compare~{first}~{last}", of: history.RangeDetail)
+    if let c = shown.detail {
+        if c.gone {
+            ui.Text("These changes are no longer in the history.", role: .caption, secondary: true)
+        } else if not c.changes.is_empty() {
+            ui.Section("What changed") {
+                for change in c.changes {
+                    ui.Text("{change.field}: {change.before} → {change.after}", role: .body)
+                }
+            }
+        } else if let comparison = c.comparison {
+            ui.Section("Compare") {
+                ui.Text(comparison, role: .body)
+            }
+        } else {
+            ui.Text("No content differences in this selection", role: .caption, secondary: true)
+        }
+    }
+}
+
+/// The agent session the selected changes are: why the work was asked for, how it was decided,
+/// whether it can be undone, and each record it changed with its own undo.
+view session_card(s: history.AgentSession) {
+    ui.Section("Agent task") {
+        ui.Text("Why this work", role: .caption, secondary: true)
+        ui.Text(s.instruction)
+        ui.Text(started_by(s.agent), role: .caption, secondary: true)
+        ui.Text("Decision", role: .caption, secondary: true)
+        if let decision = s.decision {
+            ui.Text(decision)
+        } else {
+            ui.Text("No reason was recorded.", role: .caption, secondary: true)
+        }
+        if let blocked = s.undo_blocked {
+            ui.Text(blocked, role: .caption, secondary: true)
+        }
+    }
+    if not s.actions.is_empty() {
+        ui.Section("Affected resources") {
+            for a in s.actions {
+                row(gap: .related, align: .center) {
+                    ui.Text(
+                        if a.target.label != "" { a.target.label } else { a.place },
+                        role: .body,
+                    )
+                    ui.Text(a.summary, role: .caption, secondary: true)
+                    if let label = a.undo_label {
+                        ui.Button(label, role: .plain) {
+                            on press: if a.undo_verb == .some("undo-entry") {
+                                history.undo_record(
+                                    history.history,
+                                    range: history.Span(from: a.range.from, to: a.range.to),
+                                    app_id: a.app_id,
+                                    id: a.record,
+                                )
+                            } else {
+                                history.undo_change(
+                                    history.history,
+                                    from: a.range.from,
+                                    to: a.range.to,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -439,6 +563,43 @@ fn period_of(label: Text) -> Text {
         return "month"
     }
     "all-time"
+}
+
+/// The place a chrome verb names, as this window's places are keyed.
+fn place_of(named: Text) -> Text {
+    if named == "history" {
+        return "history"
+    }
+    if named == "replay" {
+        return "replay"
+    }
+    "whats-new"
+}
+
+/// How the agent of a session is named: who it worked for, when it is not the reader.
+fn started_by(a: history.Author) -> Text {
+    if a.for_reader {
+        std.say("Started by you")
+    } else if let name = a.on_behalf_of {
+        if name.trim().is_empty() { a.name } else { std.say("Started by {name}") }
+    } else { a.name }
+}
+
+/// The agent session the selected changes are, when they are one: the session whose range they
+/// are, the work group the history named them, or one whose action they belong to.
+fn session_in(
+    sessions: Option<history.Sessions>,
+    group: Option<Text>,
+    first: Text,
+    last: Text,
+) -> Option<history.AgentSession> {
+    if let all = sessions {
+        all.sessions.find(
+            s -> s.range.from == first and s.range.to == last
+                or group == .some(s.id)
+                or s.actions.any(a -> a.range.from == first or a.range.to == last),
+        )
+    } else { .none }
 }
 
 /// The changes the page keeps of the person's filters: the scope, period and lens are the

@@ -32,8 +32,6 @@ d-k5cpej2o = Aktivität
     .w-choose-a-resource-to-hear-about = Wähle in den Details einer Änderung eine Ressource, über die du jeden Morgen hören möchtest.
     .w-refresh-source = Quelle aktualisieren
     .w-remove-morning-source = Morgenquelle entfernen
-
-d-irbp5hqf = Änderungen
     .w-this-workspace = Dieser Arbeitsbereich
     .w-all-workspaces = Alle Arbeitsbereiche
     .w-everyone = Alle
@@ -45,8 +43,8 @@ d-irbp5hqf = Änderungen
     .w-selected = Ausgewählt
     .w-not-on = Nicht auf { $label }: { $reason }
     .w-select-through-here = Bis hierher auswählen
-
-d-umnlvx2v = Detailkarte
+    .w-show-more = Mehr anzeigen
+    .w-of-changes = { $kept } von { $held } Änderungen
     .w-details = Details
     .w-these-changes-are-no-longer-in = Diese Änderungen sind nicht mehr im Verlauf.
     .w-by = Von { $join }
@@ -54,6 +52,18 @@ d-umnlvx2v = Detailkarte
     .w-changed = Geändert
     .w-what-changed = Was sich geändert hat
     .w-compare = Vergleichen
+    .w-no-content-differences-in-this-selection = Keine inhaltlichen Unterschiede in dieser Auswahl
+
+d-fc3c2i6x = Agent-Aufgabe
+    .w-agent-task = Agent-Aufgabe
+    .w-why-this-work = Warum diese Arbeit
+    .w-decision = Entscheidung
+    .w-no-reason-was-recorded = Es wurde kein Grund aufgezeichnet.
+    .w-affected-resources = Betroffene Einträge
+
+d-qlpt7vlt = Ausgeführt von
+    .w-started-by-you = Von dir gestartet
+    .w-started-by = Gestartet von { $name }
 
 d-peafm5lw = Wiedergabe
     .w-replay-is-waiting-for-current-edits = Die Wiedergabe wartet auf laufende Änderungen
