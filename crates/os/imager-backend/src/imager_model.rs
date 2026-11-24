@@ -865,6 +865,30 @@ pub fn fmt_rate(bps: u64) -> String {
     format!("{}/s", fmt_size(bps))
 }
 
+/// Decimal byte formatting shared by native descriptions and frontends.
+fn bytes_si(n: u64) -> String {
+    const UNITS: [&str; 7] = ["B", "kB", "MB", "GB", "TB", "PB", "EB"];
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "display value rounded to one decimal place"
+    )]
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len().saturating_sub(1) {
+        value /= 1000.0;
+        unit = unit.saturating_add(1);
+    }
+    let name = UNITS.get(unit).unwrap_or(&"");
+    if unit == 0 {
+        format!("{n} {name}")
+    } else {
+        // One decimal, left off when it is zero (`1 kB`, `1.5 MB`), as the
+        // toolkit's size style writes the sizes the app shows beside these.
+        let text = format!("{value:.1}");
+        format!("{} {name}", text.strip_suffix(".0").unwrap_or(&text))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// Source identity across handles, renames and equal bytes.
@@ -1064,29 +1088,5 @@ mod tests {
             };
             assert_eq!(done.overall(), 1.0);
         }
-    }
-}
-
-/// Decimal byte formatting shared by native descriptions and frontends.
-fn bytes_si(n: u64) -> String {
-    const UNITS: [&str; 7] = ["B", "kB", "MB", "GB", "TB", "PB", "EB"];
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "display value rounded to one decimal place"
-    )]
-    let mut value = n as f64;
-    let mut unit = 0;
-    while value >= 1000.0 && unit < UNITS.len().saturating_sub(1) {
-        value /= 1000.0;
-        unit = unit.saturating_add(1);
-    }
-    let name = UNITS.get(unit).unwrap_or(&"");
-    if unit == 0 {
-        format!("{n} {name}")
-    } else {
-        // One decimal, left off when it is zero (`1 kB`, `1.5 MB`), as the
-        // toolkit's size style writes the sizes the app shows beside these.
-        let text = format!("{value:.1}");
-        format!("{} {name}", text.strip_suffix(".0").unwrap_or(&text))
     }
 }

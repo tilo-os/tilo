@@ -35,6 +35,8 @@ account-credentials = { path = "../../integrations/account-credentials" }
 zeroize.workspace = true
 block-devices = { path = "../block-devices" }
 bounded-command = { path = "../../platform/bounded-command" }
+# The exclusive lock on a target disk or image while it is written.
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 crc32fast.workspace = true
 url.workspace = true
 tilo-dav = { path = "../../integrations/tilo-dav" }
