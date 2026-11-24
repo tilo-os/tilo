@@ -29,6 +29,8 @@ pub(super) fn owner_shown(who: Audience, dump: Json) -> Json {
     state.insert("sharing".into(), Json::Null);
     // What people and apps told the person is theirs: a locked session says none of it.
     state.insert("notifications".into(), Json::Null);
+    // Nor what they copied.
+    state.insert("clipboard".into(), Json::Null);
     if let Some(open) = state
         .get_mut("chrome")
         .and_then(|chrome| chrome.get_mut("overlays"))
@@ -76,6 +78,8 @@ fn only_workspace(mut dump: Json, scope: &Scope) -> Json {
     state.insert("sharing".into(), Json::Null);
     // What the person was told is the person's: an app reads none of it.
     state.insert("notifications".into(), Json::Null);
+    // What they copied is read through the clipboard's own service, which grants it: never here.
+    state.insert("clipboard".into(), Json::Null);
     dump
 }
 
@@ -218,6 +222,9 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
         ),
         // The text on the clipboard, as the history last read it.
         "clipboard": session.clipboard.text(),
+        // Whether that is a secret the person copied (a password from the vault), whose text is
+        // read by no one but the app it is pasted into.
+        "clipboard_secret": session.clipboard.holds_secret(),
     }})
 }
 

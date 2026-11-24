@@ -920,3 +920,59 @@ fn a_named_control_is_invoked_through_the_socket() {
         active_tab(&session, 100)
     );
 }
+
+/// What is on the clipboard, as the socket reads the session: the text of a copy a person may see
+/// again, and of a secret (a password from the vault) only that it is one, never its text.
+#[test]
+fn the_socket_says_a_secret_is_on_the_clipboard_and_never_its_text() {
+    use tilo_compositor::Selection;
+    use tilo_compositor::clipboard_history::SECRET_MIME;
+
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = session_showing(tabbed(&[(20, "Alpha")]), &socket);
+    let clipboard = |session: &mut Session| {
+        let mut state = ask(session, &socket, &json!({"op": "state_dump"}))["state"].take();
+        (state["clipboard"].take(), state["clipboard_secret"].take())
+    };
+    assert_eq!(
+        clipboard(&mut session),
+        (Value::Null, json!(false)),
+        "nothing is copied yet"
+    );
+
+    session
+        .compositor()
+        .set_selection(
+            Selection::Clipboard,
+            vec![
+                ("text/plain".to_owned(), b"kept-in-the-vault".to_vec()),
+                (SECRET_MIME.to_owned(), b"1".to_vec()),
+            ],
+        )
+        .expect("the vault copies");
+    assert!(
+        reached(&mut session, |session| clipboard(session).1 == json!(true)),
+        "a secret is on the clipboard: {:?}",
+        clipboard(&mut session)
+    );
+    assert_eq!(
+        clipboard(&mut session).0,
+        Value::Null,
+        "the secret's text is read by nobody but the app it is pasted into"
+    );
+
+    session
+        .compositor()
+        .set_selection(
+            Selection::Clipboard,
+            vec![("text/plain".to_owned(), b"a plain copy".to_vec())],
+        )
+        .expect("an app copies");
+    assert!(
+        reached(&mut session, |session| clipboard(session)
+            == (json!("a plain copy"), json!(false))),
+        "a copy after it is no secret: {:?}",
+        clipboard(&mut session)
+    );
+}
