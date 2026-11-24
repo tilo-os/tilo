@@ -59,6 +59,24 @@ action painted(p: Page, j: host.Job) {
     }
 }
 
+/// A job started, and then a call of the app's own: the run replays at the call, and reads the
+/// job it started the first time rather than starting another.
+action paint_and_note(p: Page) {
+    match engine.start("page.paint", "second", done: j -> painted(p, j)) {
+        .ok(job) => {
+            noted(p, job)
+        }
+        .err(why) => {
+            p.words = why
+        }
+    }
+}
+
+/// Keep the job's path.
+action noted(p: Page, job: Text) {
+    p.job = job
+}
+
 /// The job moved on.
 action moved(p: Page, j: host.Job) {
     p.steps = j.done
@@ -315,6 +333,32 @@ action refused(p: Page) {
             bench.text("painted"),
             "the printer is out of paper",
             "a job that failed says why in its error"
+        );
+    }
+
+    #[test]
+    fn a_replayed_run_reads_the_job_it_started_and_starts_no_other() {
+        let bench = Bench::new(true);
+        let outcome = bench.call("paint_and_note");
+        assert!(
+            matches!(outcome, InvokeOutcome::Done(_)),
+            "the run ends: {outcome:?}"
+        );
+        assert_eq!(
+            bench.device.0.borrow().len(),
+            1,
+            "the device starts the job once, not again when the run replays at its call: {:?}",
+            bench.device.0.borrow()
+        );
+        assert_eq!(
+            bench.device.1.borrow().len(),
+            1,
+            "one job keeps one set of handlers"
+        );
+        assert_eq!(
+            bench.text("job"),
+            JOB,
+            "the call reads the path the start answered the first time"
         );
     }
 
