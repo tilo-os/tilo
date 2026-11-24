@@ -525,6 +525,24 @@ fn the_page_moves_by_the_themes_motion() {
         "a menu arrives over `base`"
     );
     assert_eq!(prop(&css, "appear-props"), "opacity,transform");
+    // One curve per property: its surface is opaque a third of the way in, while it still grows.
+    let curves: Vec<Vec<f64>> = prop(&css, "appear-curve")
+        .split("linear(")
+        .skip(1)
+        .map(|curve| {
+            curve
+                .trim_end_matches([',', ')'])
+                .split(',')
+                .map(|point| point.parse().expect("a number"))
+                .collect()
+        })
+        .collect();
+    let [opacity, transform] = curves.as_slice() else {
+        panic!("an opacity and a transform curve: {curves:?}");
+    };
+    let third = opacity.len() / 3 + 1;
+    assert_eq!(opacity[third], 1.0, "opaque by a third: {opacity:?}");
+    assert!(transform[third] < 0.9, "still growing: {transform:?}");
     let settle = prop(&css, "settle");
     let points: Vec<f64> = settle
         .strip_prefix("linear(")

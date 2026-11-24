@@ -66,6 +66,11 @@ impl Appear {
     const EXIT_SCALE: f64 = 0.97;
     /// How far toward its anchor it starts arriving and ends leaving, in logical pixels.
     pub const REACH: f64 = 8.0;
+    /// The share of its progress by which an arriving surface is opaque: where the spring that settles
+    /// it stands a third of the way through its time (1 − (1 + k)·e^−k for k = ωT / 3, the same at any
+    /// pace). A surface that faded in with its scale let its labels read before it hid what lies behind
+    /// it, and the two sets of text read as one; the scale and reach carry the rest of the motion.
+    const OPAQUE_AT: f64 = 0.8;
 
     /// How `surface` is drawn `progress` of the way through arriving or leaving `direction`, its anchor
     /// the point nearest the summoning control.
@@ -89,21 +94,25 @@ impl Appear {
             Direction::Enter => Self::ENTER_SCALE,
             Direction::Exit => Self::EXIT_SCALE,
         };
-        let eased = Self::eased(p, direction);
+        let (opacity, eased) = match direction {
+            Direction::Enter => Self::arriving(p),
+            Direction::Exit => (p, p),
+        };
         Coming {
             scale: from + (1.0 - from) * eased,
-            opacity: unit_opacity(eased),
+            opacity: unit_opacity(opacity),
             offset: Self::toward(surface, anchor) * (1.0 - eased),
         }
     }
 
-    /// Arriving, it eases so the first frame after a press is its faintest and smallest, since a motion
-    /// linear in the clock would be a third of the way in by then.
-    fn eased(progress: f64, direction: Direction) -> f64 {
-        match direction {
-            Direction::Enter => progress * progress,
-            Direction::Exit => progress,
-        }
+    /// An arriving surface `progress` of the way in: how opaque it is, and how far its scale and reach
+    /// have come. Both start slow, so the first frame after a press is its faintest and smallest, since a
+    /// motion linear in the clock would be a third of the way in by then; it is opaque by
+    /// [`Self::OPAQUE_AT`], and its scale and reach ease on the square of its progress to the end.
+    #[must_use]
+    pub fn arriving(progress: f64) -> (f64, f64) {
+        let p = progress.clamp(0.0, 1.0);
+        (stage(p, 0.0, Self::OPAQUE_AT), p * p)
     }
 
     /// [`Self::coming`] as a [`Pose`], in the surface's own coordinates.

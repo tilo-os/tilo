@@ -1440,9 +1440,10 @@ pub fn theme_css(theme: &crate::Theme) -> String {
         fast,
         |p| p,
     );
-    // A popover, menu or dialog arriving: over `base`, its scale, reach and opacity drawn on the
-    // square of its progress, as `Appear` draws them; under reduced motion it only fades, over
-    // `fast`; a theme that holds still shows it at once.
+    // A popover, menu or dialog arriving: over `base`, its opacity and then its scale and reach
+    // each on the curve `Appear::arriving` draws them on natively (one `linear()` per property, in
+    // `--tilo-appear-props`' order); under reduced motion it only fades, over `fast`; a theme that
+    // holds still shows it at once.
     let (appear_time, appear_curve, appear_props) = if motion.still() {
         (std::time::Duration::ZERO, settle.clone(), "opacity")
     } else if motion.reduced() {
@@ -1452,7 +1453,11 @@ pub fn theme_css(theme: &crate::Theme) -> String {
         let spring = crate::motion::SpringSpec::settling_within(base);
         (
             base,
-            css_curve(spring, base, |p| p * p),
+            format!(
+                "{},{}",
+                css_curve(spring, base, |p| crate::motion::Appear::arriving(p).0),
+                css_curve(spring, base, |p| crate::motion::Appear::arriving(p).1),
+            ),
             "opacity,transform",
         )
     };

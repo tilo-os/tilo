@@ -342,19 +342,31 @@ tilo_test_env::scenario! {
         );
         let half = Appear::coming(0.5, Direction::Enter, surface, anchor, on());
         assert!(
-            (half.opacity - 0.25).abs() < 1e-6,
-            "the motion is eased: a quarter of the way in halfway through: {}",
+            half.opacity > 0.6 && half.opacity < 0.7,
+            "its surface comes ahead of its scale: {}",
             half.opacity
         );
-        assert!((half.scale - 0.94).abs() < 1e-9, "{}", half.scale);
+        assert!(
+            (half.scale - 0.94).abs() < 1e-9,
+            "the scale is eased, a quarter of the way in halfway through: {}",
+            half.scale
+        );
         assert!(
             (half.offset.hypot() - Appear::REACH * 0.75).abs() < 1e-9,
             "{:?}",
             half.offset
         );
         let early = Appear::coming(0.35, Direction::Enter, surface, anchor, on());
-        assert!(early.opacity < 0.15, "{}", early.opacity);
+        assert!(early.opacity < 0.5, "{}", early.opacity);
         assert!(early.scale < 0.94, "more than 6 % smaller: {}", early.scale);
+        // Its surface is opaque a third of the way through its time, before its labels have settled
+        // enough to read, so they never read over what lies behind it; it is still growing then.
+        let base = Duration::from_millis(210);
+        let spring = SpringSpec::settling_within(base);
+        let third = 1.0 - spring.state(1.0, 0.0, base.as_secs_f64() / 3.0).0;
+        let opaque = Appear::coming(third, Direction::Enter, surface, anchor, on());
+        assert_eq!(opaque.opacity, 1.0, "opaque at {third}");
+        assert!(opaque.scale < 0.99, "still growing: {}", opaque.scale);
         assert!(Appear::pose(1.0, Direction::Enter, surface, anchor, on()).is_rest());
 
         // The rest closes in on the origin, which itself leans the same way.
