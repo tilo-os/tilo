@@ -2997,13 +2997,7 @@ impl BlockEditor {
             let y0 = self.rect.y0 + f64::from(*start) - f64::from(grid.margin_top);
             let sheet_rect = Rect::new(x0, y0, x1, y0 + f64::from(grid.sheet));
             let paper = RoundedRect::from_rect(sheet_rect, 4.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surfaces.base,
-                None,
-                &paper,
-            );
+            scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &paper);
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -8390,8 +8384,11 @@ impl BlockEditor {
         let marker_width = list_marker::marker_width(&self.blocks);
         // The space each paragraph asks for below it, read before the blocks are borrowed to
         // prepare them: a block's top margin is the wider of its own ask and the one above.
-        let space_after_above: Vec<Option<f32>> =
-            self.blocks.iter().map(|block| block.style.space_after).collect();
+        let space_after_above: Vec<Option<f32>> = self
+            .blocks
+            .iter()
+            .map(|block| block.style.space_after)
+            .collect();
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
@@ -8417,8 +8414,8 @@ impl BlockEditor {
                 clippy::cast_possible_truncation,
                 reason = "bounded on-screen block inset"
             )]
-            let paragraph_indent = b.style.indent.unwrap_or(0.0)
-                + b.style.first_line_indent.unwrap_or(0.0).max(0.0);
+            let paragraph_indent =
+                b.style.indent.unwrap_or(0.0) + b.style.first_line_indent.unwrap_or(0.0).max(0.0);
             b.line.set_layout_inset(
                 (prefix_gutter_for(&b.kind) * self.text_scale) as f32
                     + LIST_INDENT_STEP_PX * f32::from(b.indent()) * theme.text_scale
@@ -8436,8 +8433,7 @@ impl BlockEditor {
             // text starts as far from the margin as its indent puts it. A first line's own
             // indent rides with the inset until a hanging one is asked for, which no codec
             // stores yet, so the first line shares the paragraph's.
-            b.line
-                .set_align(b.style.align.unwrap_or(self.text_align));
+            b.line.set_align(b.style.align.unwrap_or(self.text_align));
             // A document paragraph already receives spacing from the block stack, and TextInput's
             // normal multiline field padding would add another 8 px above and below every line,
             // making consecutive prose read like separate form fields: keep that padding for richer
@@ -8646,8 +8642,7 @@ impl BlockEditor {
             let scale = width / (writing * PIXELS_PER_POINT);
             let margin = spec.margin_top * PIXELS_PER_POINT * scale;
             let bottom = spec.margin_bottom * PIXELS_PER_POINT * scale;
-            let content = (paper_height - spec.margin_top - spec.margin_bottom)
-                .max(1.0)
+            let content = (paper_height - spec.margin_top - spec.margin_bottom).max(1.0)
                 * PIXELS_PER_POINT
                 * scale;
             let gap = PAGE_GAP_PX * scale;
