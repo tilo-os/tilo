@@ -132,11 +132,7 @@ impl PageSession {
                     total,
                     error,
                 } => {
-                    let step = if *total > 0 {
-                        received.saturating_mul(10) / total
-                    } else {
-                        0
-                    };
+                    let step = received.saturating_mul(10).checked_div(*total).unwrap_or(0);
                     let said = (state.clone(), step);
                     if self.download_steps.insert(*id, said.clone()) != Some(said) {
                         self.notes.push(codec::download_note(codec::DownloadNote {

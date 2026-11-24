@@ -292,7 +292,7 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         }),
         "history_entry" => Ask::Command(WebViewCommand::NavigateToHistoryEntry {
             request_id: 1,
-            id: u32::try_from(integer(&value, "entry").unwrap_or_default()).unwrap_or(u32::MAX),
+            id: integer(&value, "entry").unwrap_or_default(),
         }),
         // What a site's connection, permissions and stored data are, and what the person may do
         // about them: the engine answers the status through `asks` and the result as an answer.
@@ -303,8 +303,7 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "site_action" => Ask::Command(WebViewCommand::SiteAction {
             request_id: 1,
             origin: text(&value, "origin").unwrap_or_default(),
-            generation: u64::try_from(integer(&value, "generation").unwrap_or_default())
-                .unwrap_or_default(),
+            generation: u64::from(integer(&value, "generation").unwrap_or_default()),
             action: text(&value, "doing").unwrap_or_default(),
         }),
         "site_exceptions" => {
