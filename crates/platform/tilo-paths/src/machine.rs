@@ -69,6 +69,20 @@ pub fn daemon_sockets(uid: u32) -> Result<std::path::PathBuf, String> {
     if system_daemon() {
         return Ok(PathBuf::from(DAEMON_SOCKETS));
     }
+    account_sockets(uid)
+}
+
+/// Where the account `uid` runs its own programs' sockets: `$XDG_RUNTIME_DIR/tilo` (the one
+/// systemd names by the account when the variable is not said, over ssh or from cron) on Linux,
+/// and the account's temporary directory (`/var/folders/…/T/tilo`) on macOS. Never the system
+/// unit's directory, which every account reaches. Neither made nor checked: the daemon makes
+/// it, private to the account.
+///
+/// # Errors
+/// macOS names no temporary directory for this account.
+#[cfg(unix)]
+pub fn account_sockets(uid: u32) -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
     #[cfg(target_os = "macos")]
     {
         let _ = uid;

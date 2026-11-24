@@ -29,8 +29,10 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// The directory the daemon serving `profile` keeps its sockets in: this computer's own listens
 /// where every client finds it ([`tilo_api::daemon::this_computer`]), never inside a profile whose
-/// path the home folder lengthens; a profile named apart (a test's, a VM host's) keeps its sockets
-/// inside it. Either way a socket whose path its address cannot hold is refused, by name.
+/// path the home folder lengthens; a profile named apart (a test's, a VM host's, a stack's) keeps
+/// its own directory beside that one ([`tilo_api::daemon::profile_sockets`]), named by its path,
+/// so no profile's path ever becomes a socket's path. Either way a socket whose path its address
+/// cannot hold is refused, by name.
 pub(crate) fn sockets(profile: &Path) -> io::Result<PathBuf> {
     let dir = if crate::daemon_args::own_profile().is_ok_and(|own| own == profile) {
         tilo_api::daemon::this_computer()
@@ -38,7 +40,7 @@ pub(crate) fn sockets(profile: &Path) -> io::Result<PathBuf> {
             .sockets()
             .to_owned()
     } else {
-        profile.to_owned()
+        tilo_api::daemon::profile_sockets(profile).map_err(io::Error::other)?
     };
     for name in [
         tilo_paths::machine::DAEMON_NATIVE,

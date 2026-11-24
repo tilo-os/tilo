@@ -49,26 +49,25 @@ pub use tilo_paths::machine::system_daemon;
 /// Where this computer's daemon listens: the one place every client finds it, and the daemon
 /// binds. Under Tilo OS's system unit its sockets are in its runtime directory; a person's own
 /// service keeps them in `$XDG_RUNTIME_DIR/tilo` on Linux and in the account's temporary
-/// directory (`/var/folders/…/T/tilo`) on macOS. Its lock is in the login's directory, as the
-/// device's state is.
+/// directory (`/var/folders/…/T/tilo`) on macOS. A daemon serving a profile named apart keeps
+/// them in a directory of its own beside those ([`profile_sockets`]). Its lock is in the login's
+/// directory, as the device's state is.
 ///
 /// # Errors
 /// The login's directory or the sockets' directory cannot be made, the sockets' directory is not
 /// this account's own, or a socket's path in it is too long for a socket's address.
 pub fn this_computer() -> Result<DaemonPlace, String> {
-    let login = tilo_device_identity::login::Place::here(
-        tilo_identity::provisioning::collaboration_identity_paths(),
-    )
-    .map_err(|error| format!("{error:#}"))?;
+    let login = login_here()?;
     let system = system_daemon();
-    // A daemon serving a profile named apart (a VM host's member) listens in that profile, as it
-    // is started over it: a command run beside it with the same profile asks it there.
+    // A daemon serving a profile named apart (a VM host's, a stack's) listens in that profile's
+    // sockets, as it is started over it: a command run beside it with the same profile asks it
+    // there.
     let named = std::env::var_os(tilo_paths::machine::DAEMON_PROFILE_VAR)
         .filter(|profile| !profile.is_empty());
-    let sockets = if system {
+    let sockets = if let Some(profile) = named {
+        profile_sockets(Path::new(&profile))?
+    } else if system {
         PathBuf::from(SYSTEM_SOCKETS)
-    } else if let Some(profile) = named {
-        PathBuf::from(profile)
     } else {
         own_sockets(login.dir())?
     };
@@ -77,6 +76,59 @@ pub fn this_computer() -> Result<DaemonPlace, String> {
         system,
         ..DaemonPlace::at(&sockets, login.dir())
     })
+}
+
+/// This account's login, whose directory holds the device's state and lock.
+fn login_here() -> Result<tilo_device_identity::login::Place, String> {
+    tilo_device_identity::login::Place::here(
+        tilo_identity::provisioning::collaboration_identity_paths(),
+    )
+    .map_err(|error| format!("{error:#}"))
+}
+
+/// The sockets of the daemon serving a `profile` named apart (a test's, a VM host's, a stack's):
+/// a private directory of this account's own, named by the profile's path, beside the account's
+/// own service's sockets. It is the account's own runtime directory, never the system unit's,
+/// which every account reaches. A profile's path is the person's state, which may be as long as
+/// they keep it, so it never becomes a socket's path; two profiles never share a directory.
+///
+/// # Errors
+/// The sockets' directory cannot be made, or it is not this account's own private directory.
+pub fn profile_sockets(profile: &Path) -> Result<PathBuf, String> {
+    let base = account_sockets()?;
+    private_dir(&base)?;
+    let dir = base.join(profile_socket_name(profile));
+    private_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Where this account's own programs keep their sockets, on every host.
+#[cfg(unix)]
+fn account_sockets() -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let login = login_here()?;
+    let uid = std::fs::metadata(login.dir())
+        .map_err(|error| format!("{} is not readable: {error}", login.dir().display()))?
+        .uid();
+    tilo_paths::machine::account_sockets(uid)
+}
+
+/// Where this account's own programs keep their sockets, on every host.
+#[cfg(windows)]
+fn account_sockets() -> Result<PathBuf, String> {
+    tilo_paths::machine::daemon_sockets()
+}
+
+/// A profile's name among this account's sockets: a hash of its path, so the daemon serving it
+/// and every client that names it compute the same directory.
+fn profile_socket_name(profile: &Path) -> String {
+    // FNV-1a: stable across processes and builds, and no hashing dependency for it.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in profile.as_os_str().as_encoded_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("profile-{hash:016x}")
 }
 
 /// Whether every socket the daemon listens at in `sockets` has a path a socket's address holds:
@@ -104,17 +156,25 @@ pub fn socket_fits(path: &Path) -> Result<(), String> {
 /// The directory a person's own service keeps its sockets in, made private to this account.
 #[cfg(unix)]
 fn own_sockets(login: &Path) -> Result<PathBuf, String> {
-    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    use std::os::unix::fs::MetadataExt as _;
     let uid = std::fs::metadata(login)
         .map_err(|error| format!("{} is not readable: {error}", login.display()))?
         .uid();
     let dir = tilo_paths::machine::daemon_sockets(uid)?;
+    private_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Make `dir`, which holds this account's sockets, this account's own private directory.
+#[cfg(unix)]
+fn private_dir(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(&dir)
+        .create(dir)
         .map_err(|error| format!("{} could not be made: {error}", dir.display()))?;
-    let made = std::fs::symlink_metadata(&dir)
+    let made = std::fs::symlink_metadata(dir)
         .map_err(|error| format!("{} is not readable: {error}", dir.display()))?;
     let parent = dir
         .parent()
@@ -128,7 +188,7 @@ fn own_sockets(login: &Path) -> Result<PathBuf, String> {
             dir.display()
         ));
     }
-    Ok(dir)
+    Ok(())
 }
 
 /// The directory a person's own service names its pipes by, made private to this account: what
@@ -137,9 +197,15 @@ fn own_sockets(login: &Path) -> Result<PathBuf, String> {
 fn own_sockets(login: &Path) -> Result<PathBuf, String> {
     let _ = login;
     let dir = tilo_paths::machine::daemon_sockets()?;
-    tilo_files::native::private::directory(&dir)
-        .map_err(|error| format!("{} could not be made private: {error}", dir.display()))?;
+    private_dir(&dir)?;
     Ok(dir)
+}
+
+/// Make `dir`, which holds this account's sockets, this account's own private directory.
+#[cfg(windows)]
+fn private_dir(dir: &Path) -> Result<(), String> {
+    tilo_files::native::private::directory(dir)
+        .map_err(|error| format!("{} could not be made private: {error}", dir.display()))
 }
 
 /// Where one device's daemon listens, and the lock that keeps it one.
