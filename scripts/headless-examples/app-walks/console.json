@@ -1,0 +1,91 @@
+{
+  "app": "console",
+  "said": "Console",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.console",
+    "package": "console"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Console on what the agents did",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "Agents",
+            "Workspaces",
+            "Connect",
+            "Usage"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workspaces",
+      "said": "Read the workspaces the MCP server reaches",
+      "ops": [
+        {
+          "select_row": "Workspaces"
+        },
+        {
+          "wait_for": "actions"
+        }
+      ]
+    },
+    {
+      "id": "connect",
+      "said": "See how an agent connects as the person",
+      "ops": [
+        {
+          "select_row": "Connect"
+        },
+        {
+          "wait_for": "actions"
+        }
+      ]
+    },
+    {
+      "id": "usage",
+      "said": "Read what Linux machine time is counted",
+      "ops": [
+        {
+          "select_row": "Usage"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "No Linux machine time yet"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "agents",
+      "said": "Read the sessions the agents ran",
+      "ops": [
+        {
+          "select_row": "Agents"
+        },
+        {
+          "wait_for": "actions"
+        }
+      ]
+    }
+  ]
+}

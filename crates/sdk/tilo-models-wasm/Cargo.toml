@@ -18,7 +18,6 @@ path = "src/lib.rs"
 # tools/ci/app-models.sh fails when an app's guest crate is missing here.
 [dependencies]
 assistant-model-wasm = { path = "../../../apps/assistant-model-wasm" }
-console-model-wasm = { path = "../../../apps/console-model-wasm" }
 poker-model-wasm = { path = "../../../apps/poker-model-wasm" }
 remote-model-wasm = { path = "../../../apps/remote-model-wasm" }
 

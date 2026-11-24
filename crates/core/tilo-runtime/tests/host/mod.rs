@@ -54,7 +54,6 @@
 pub mod apps;
 
 mod app_actions;
-mod console_no_window;
 mod messages_for_agents;
 
 use std::future::Future;

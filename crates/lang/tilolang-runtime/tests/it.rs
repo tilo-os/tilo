@@ -48,6 +48,8 @@ mod e2e_cleanup;
 mod e2e_clocks;
 #[path = "e2e_code_editor.rs"]
 mod e2e_code_editor;
+#[path = "e2e_console.rs"]
+mod e2e_console;
 #[path = "e2e_counter.rs"]
 mod e2e_counter;
 #[path = "e2e_db_client.rs"]

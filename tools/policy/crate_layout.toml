@@ -64,7 +64,6 @@ core = [
     "tilo-agent-session -> terminal",
     "tilo-agent-session -> themes",
     "tilo-agent-session -> tilo-app",
-    "tilo-agent-session -> tilo-console",
     "tilo-agent-session -> tilo-desktop-model",
     "tilo-agent-session -> tilo-model-gateway",
     "tilo-agent-session -> tilolang-tilo",

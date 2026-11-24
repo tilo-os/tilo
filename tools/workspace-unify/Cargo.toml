@@ -175,8 +175,6 @@ doc = false
 "concurrent-queue-2_5_0" = { package = "concurrent-queue", version = "^2.5.0", default-features = false, features = ["default", "std"] }
 "console-0_16_6" = { package = "console", version = "^0.16.6", default-features = false, features = ["alloc", "std"] }
 "console-control" = { path = "../../crates/os/console-control", default-features = false, features = [] }
-"console-model" = { path = "../../apps/console-model", default-features = false, features = [] }
-"console-model-wasm" = { path = "../../apps/console-model-wasm", default-features = false, features = [] }
 "const-oid-0_10_2" = { package = "const-oid", version = "^0.10.2", default-features = false, features = ["db"] }
 "const-oid-0_9_6" = { package = "const-oid", version = "^0.9.6", default-features = false, features = ["db", "std"] }
 "constant_time_eq-0_4_2" = { package = "constant_time_eq", version = "^0.4.2", default-features = false, features = ["default", "std"] }
@@ -1084,7 +1082,6 @@ doc = false
 "tilo-compositor" = { path = "../../crates/desktop/compositor", default-features = false, features = ["test-support"] }
 "tilo-connectivity-service" = { path = "../../crates/os/connectivity-service", default-features = false, features = [] }
 "tilo-connector" = { path = "../../crates/integrations/connector", default-features = false, features = [] }
-"tilo-console" = { path = "../../apps/console", default-features = false, features = ["samples"] }
 "tilo-contact-directory" = { path = "../../crates/integrations/tilo-contact-directory", default-features = false, features = [] }
 "tilo-content" = { path = "../../crates/core/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-blocker" = { path = "../../crates/engines/content-blocker", default-features = false, features = [] }
@@ -2685,8 +2682,6 @@ doc = false
 "concurrent-queue-2_5_0" = { package = "concurrent-queue", version = "^2.5.0", default-features = false, features = ["default", "std"] }
 "console-0_16_6" = { package = "console", version = "^0.16.6", default-features = false, features = ["alloc", "std"] }
 "console-control" = { path = "../../crates/os/console-control", default-features = false, features = [] }
-"console-model" = { path = "../../apps/console-model", default-features = false, features = [] }
-"console-model-wasm" = { path = "../../apps/console-model-wasm", default-features = false, features = [] }
 "const-oid-0_10_2" = { package = "const-oid", version = "^0.10.2", default-features = false, features = ["db"] }
 "const-oid-0_9_6" = { package = "const-oid", version = "^0.9.6", default-features = false, features = ["db", "std"] }
 "constant_time_eq-0_4_2" = { package = "constant_time_eq", version = "^0.4.2", default-features = false, features = ["default", "std"] }
@@ -3585,7 +3580,6 @@ doc = false
 "tilo-compositor" = { path = "../../crates/desktop/compositor", default-features = false, features = ["test-support"] }
 "tilo-connectivity-service" = { path = "../../crates/os/connectivity-service", default-features = false, features = [] }
 "tilo-connector" = { path = "../../crates/integrations/connector", default-features = false, features = [] }
-"tilo-console" = { path = "../../apps/console", default-features = false, features = ["samples"] }
 "tilo-contact-directory" = { path = "../../crates/integrations/tilo-contact-directory", default-features = false, features = [] }
 "tilo-content" = { path = "../../crates/core/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-blocker" = { path = "../../crates/engines/content-blocker", default-features = false, features = [] }

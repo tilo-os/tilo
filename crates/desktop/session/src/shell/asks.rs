@@ -194,8 +194,6 @@ impl Shared {
         }
     }
 
-    /// Carry out `intent` where only the session can: who is here, a person's row, an invitation,
-    /// another device, History, and the workspace in front's name, leaving and deleting.
     /// Open what `link`, a `tilo://open#…` address, names: the app that keeps the resource shows
     /// it, started first when no window of it does. What could not be opened is said to the person
     /// in the shell, as a link that lands nowhere is.
@@ -222,6 +220,8 @@ impl Shared {
         }
     }
 
+    /// Carry out `intent` where only the session can: who is here, a person's row, an invitation,
+    /// another device, History, and the workspace in front's name, leaving and deleting.
     fn intent(&self, intent: ChromeIntent) {
         let refused = |done: Result<(), String>| {
             if let Err(refusal) = done {

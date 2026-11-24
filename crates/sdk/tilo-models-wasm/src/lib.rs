@@ -13,6 +13,5 @@
 //! names is not.
 
 extern crate assistant_model_wasm;
-extern crate console_model_wasm;
 extern crate poker_model_wasm;
 extern crate remote_model_wasm;

@@ -149,10 +149,6 @@
       "libraries": 2265143,
       "tests": 13174664
     },
-    "console-model": {
-      "libraries": 2023548,
-      "tests": 9793312
-    },
     "contacts": {
       "libraries": 27234196,
       "tests": 859621952
@@ -700,10 +696,6 @@
     "tilo-connector": {
       "libraries": 3013657,
       "tests": 16157328
-    },
-    "tilo-console": {
-      "libraries": 15639133,
-      "tests": 1331293688
     },
     "tilo-contact-directory": {
       "libraries": 5145522,

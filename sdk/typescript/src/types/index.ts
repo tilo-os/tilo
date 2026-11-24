@@ -15,7 +15,6 @@
  */
 
 export * as assistant from "./assistant.ts";
-export * as console from "./console.ts";
 export * as discord from "./discord.ts";
 export * as messages from "./messages.ts";
 export * as modelProviders from "./model_providers.ts";

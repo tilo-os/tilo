@@ -39,7 +39,7 @@
 //! directory under `apps/`) and its resources:
 //!
 //! ```text
-//! tilo_model_guest::model!("console", console_model::Console);
+//! tilo_model_guest::model!("assistant", assistant_model::Window);
 //! ```
 //!
 //! Built alone (`tilolang model`, an app outside this repository), that is a

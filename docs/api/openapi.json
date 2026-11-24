@@ -2586,12 +2586,6 @@
         ],
         "description": ""
       },
-      "console.view.show-everything.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "discord.guild.connect.Arguments": {
         "type": "object",
         "properties": {
@@ -79993,12 +79987,6 @@
       "resource": "tilo.workspace.agent",
       "action": "set-sub-agent-limits",
       "arguments": "#/components/schemas/tilo.workspace.agent.set-sub-agent-limits.Arguments"
-    },
-    {
-      "app": "so.tilo.console",
-      "resource": "console.view",
-      "action": "show-everything",
-      "arguments": "#/components/schemas/console.view.show-everything.Arguments"
     },
     {
       "app": "so.tilo.discord",

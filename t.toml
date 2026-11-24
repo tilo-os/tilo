@@ -151,7 +151,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-runtime:tilo-runtime@fast=test-support", "model-providers:model-providers@fast", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-runtime:bin:tilo-runtime=agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher", "tilolang-process:tilolang-process", "assistant:assistant", "tilo-console:console", "messages:messages", "model-providers:model-providers", "poker:poker", "shortcuts:shortcuts", "slides:slides", "terminal:terminal", "totp:totp"] }
+starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-runtime:tilo-runtime@fast=test-support", "model-providers:model-providers@fast", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-runtime:bin:tilo-runtime=agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher", "tilolang-process:tilolang-process", "assistant:assistant", "messages:messages", "model-providers:model-providers", "poker:poker", "shortcuts:shortcuts", "slides:slides", "terminal:terminal", "totp:totp"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -622,7 +622,7 @@ default = false
 # the `model.wasm` a package carries so every device holding a workspace's keys
 # applies the app's actions with no build of its own. One mechanism for every
 # app (tools/ci/app-models.sh): an app keeps its model as a guest crate beside
-# it (`apps/console` → `apps/console-model-wasm`), and the module is what that
+# it (`apps/poker` → `apps/poker-model-wasm`), and the module is what that
 # crate builds for wasm32. A run that asks for a package's output runs this
 # first.
 [[check]]
@@ -7175,7 +7175,7 @@ timeout_secs = 2400
 on = ["dispatch", "idle"]
 dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["activity", "api-tester", "apps", "backups", "camera", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "chip-design", "code-editor", "containers", "db-client", "devices", "diffmerge", "disk-usage", "disks", "displays-across-devices", "feeds", "file-explorer", "firewall", "git-client", "hex-editor", "logs", "maps", "monitor", "music", "notes", "passwords", "publisher", "print-centre", "scratchpad", "settings", "shell", "snippets", "speed-test", "store", "tube", "typst-editor", "video-player", "weather"]
+app = ["activity", "api-tester", "apps", "backups", "camera", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "chip-design", "code-editor", "console", "containers", "db-client", "devices", "diffmerge", "disk-usage", "disks", "displays-across-devices", "feeds", "file-explorer", "firewall", "git-client", "hex-editor", "logs", "maps", "monitor", "music", "notes", "passwords", "publisher", "print-centre", "scratchpad", "settings", "shell", "snippets", "speed-test", "store", "tube", "typst-editor", "video-player", "weather"]
 # Every app's open against the product's bar, 100 ms from asking for an app on the device to the
 # frame that shows its window: the cold open and each open after a quit, as the walks of the apps
 # recorded them from their sessions' launch timings, one row per app and open with how busy the

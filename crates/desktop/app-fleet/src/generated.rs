@@ -32,7 +32,7 @@ pub(super) const SURFACES: &[(&str, &str)] = &[
     ),
     (
         "so.tilo.console",
-        "# Written by `tilolang surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"console.view\"\nlabel = \"Agent sessions shown\"\nversion = 1\nshows = [\"view-agent\", \"view-connect\", \"view-session\"]\nfields = [\n  { path = \"agent\", type = \"text\" },\n  { path = \"workspace\", type = \"text\" },\n]\n\n[[resources.verbs]]\nid = \"show-everything\"\nkind = \"undoable\"\n\n",
+        "# Written by `tilolang surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"console.window\"\nlabel = \"Console\"\nversion = 1\n\n",
     ),
     (
         "so.tilo.discord",
@@ -450,7 +450,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "widerrufen",
         ],
         resource_types: &[],
-        offers: "console.view\t\tshow-everything\tShow all sessions\t\tundoable\tdocument\t0\t\t\t\n",
+        offers: "",
     },
     FleetApp {
         id: "so.tilo.discord",

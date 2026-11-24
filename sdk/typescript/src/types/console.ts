@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `View` is a `Resource` of the app's `console.view`, made by its factory with the
+ * `Window` is a `Resource` of the app's `console.window`, made by its factory with the
  * resource's path (`console/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,27 +22,18 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.console@2d09c6bc76c75d71";
+export const SURFACE = "so.tilo.console@9426103bef0dc48d";
 
-/** The arguments of `show-everything`. */
-export interface ShowEverythingArgs {
+/** Console — `console.window`. */
+export interface Window extends tilo.Resource {
 }
 
-/** Agent sessions shown — `console.view`. */
-export interface View extends tilo.Resource {
-  agent: string;
-  // the app's `workspace` field is the SDK's own `workspace`.
-  showEverything(): Promise<void>;
-  /** Runs `show-everything` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  showEverythingMany(items: ShowEverythingArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `View` reaches before it is read: `ws` calls them without a
+/** The actions `Window` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const VIEW_ACTIONS = ["showEverything", "showEverythingMany"] as const;
+export const WINDOW_ACTIONS = [] as const;
 
-/** The `console.view` kind at `path`. */
-export function view(ws: tilo.Workspace, path: string): View {
-  return resourceProxy(ws, path, SURFACE, VIEW_ACTIONS) as unknown as View;
+/** The `console.window` kind at `path`. */
+export function consoleWindow(ws: tilo.Workspace, path: string): Window {
+  return resourceProxy(ws, path, SURFACE, WINDOW_ACTIONS) as unknown as Window;
 }
 

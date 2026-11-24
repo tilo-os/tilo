@@ -32,7 +32,6 @@ exclude = [
     "shortcuts",
     "slides",
     "terminal",
-    "tilo-console",
 ]
 
 [advisories]

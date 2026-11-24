@@ -663,7 +663,7 @@ mod tests {
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: token.into(),
-                address: tilo_actions::ActionAddress::new("console.view", "field-edit"),
+                address: tilo_actions::ActionAddress::new("console.window", "field-edit"),
             },
             argument: InvokeArgument::default(),
             context: None,
@@ -701,7 +701,7 @@ mod tests {
         );
         assert!(providers.serves(&Providers::app_provider(WORKSPACE, APP)));
 
-        let target = application_action_target(WORKSPACE, APP, "console.view", "field-edit");
+        let target = application_action_target(WORKSPACE, APP, "console.window", "field-edit");
         let caller = Caller::local_person("ada").in_workspace(WORKSPACE);
         let mut answer = providers
             .invoke(&caller, request(&target.provider))
