@@ -1226,6 +1226,20 @@ impl TilolangProcess {
         }
     }
 
+    /// Show `anchor` in the window `instance`, as a search hit's `open` shows it: the place in
+    /// its document a hit inside it names.
+    pub fn reveal(&mut self, instance: u64, anchor: String) {
+        let Some(running) = self
+            .running
+            .iter_mut()
+            .find(|running| running.hosted.spec().instance == instance)
+        else {
+            tracing::warn!(instance, "a reveal reached no instance");
+            return;
+        };
+        running.hosted.reveal(anchor);
+    }
+
     /// Whether the host runs no instance and opens none.
     #[must_use]
     pub fn is_empty(&self) -> bool {

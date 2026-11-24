@@ -416,6 +416,9 @@ pub struct Instance {
     /// The paragraph a search hit asked the window to show, until an editor of the text that
     /// holds it is told to.
     revealing: Option<Revealing>,
+    /// The item a search hit named inside what the window shows (a page of a document, a mark on
+    /// it), until a list of the window that lists it, or what it refers to, selects its row.
+    selecting: Option<ResourceRef>,
     /// How many paragraphs were asked for: what tells an ask for the paragraph shown last apart
     /// from the one before, so it is shown again.
     reveals: u64,
@@ -545,6 +548,7 @@ impl Instance {
             pressed_opens: Vec::new(),
             pressed_shows: Vec::new(),
             revealing: None,
+            selecting: None,
             reveals: 0,
             settle_due: false,
             sink: Some(
@@ -1558,6 +1562,7 @@ impl Instance {
                 Ok(plan) => {
                     // The paragraph is shown by the editor of the text that holds it, wherever
                     // the window draws that, once the window shows the resource.
+                    let in_text = block.is_some();
                     self.revealing = block.map(|block| Revealing {
                         resource: crate::publish::resource_id(
                             &plan.app,
@@ -1565,6 +1570,14 @@ impl Instance {
                         ),
                         block,
                     });
+                    // A hit inside what the window shows (a page of the document, not the
+                    // document) selects its row there, once a list of the window lists it.
+                    self.selecting = plan
+                        .target
+                        .as_ref()
+                        .filter(|target| !in_text && target.id_string() != anchor)
+                        .and_then(|_| host.store().type_of_id(anchor))
+                        .and_then(|ty| ResourceRef::parse_id(anchor, ty));
                     // The app's own root in its default view is what the window shows already. A
                     // record of another app's reading (a Windows program) is no root of this app,
                     // though the window shows it.

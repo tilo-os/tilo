@@ -89,6 +89,17 @@ impl ListRows {
         &self.keys.shown
     }
 
+    /// Whether a row of the list shows the item whose id is `item`: a row's key is its loop's
+    /// key and the id of the item it shows.
+    #[must_use]
+    pub fn holds(&self, item: &str) -> bool {
+        let suffix = format!("/{item}");
+        if self.read {
+            return self.keys.order.iter().any(|key| key.ends_with(&suffix));
+        }
+        self.read_keys().iter().any(|key| key.ends_with(&suffix))
+    }
+
     fn read_keys(&self) -> Vec<Rc<str>> {
         let Ok(view) = self.view.try_borrow() else {
             return Vec::new();

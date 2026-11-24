@@ -70,6 +70,14 @@ pub enum ToDevice {
         request: Box<TaskRequest>,
         fds: TaskFds,
     },
+    /// Show `anchor` in the window `instance` of `app` in `workspace`, as a search hit's `open`
+    /// shows it: a place in the document the window shows.
+    Reveal {
+        workspace: String,
+        app: String,
+        instance: u64,
+        anchor: String,
+    },
 }
 
 impl Packet for ToDevice {}
@@ -84,7 +92,8 @@ pub enum FromDevice {
     Running(Vec<Running>),
     /// What changed was said to the processes it is about.
     Told,
-    /// A [`ToDevice::Media`]: whether a process here plays that Playback.
+    /// A [`ToDevice::Media`]: whether a process here plays that Playback. A
+    /// [`ToDevice::Reveal`]: whether a process here runs that window.
     Pressed(bool),
     /// A [`ToDevice::FollowMedia`]: what each app plays follows on this connection.
     Following,
@@ -247,6 +256,29 @@ impl Device {
             command,
         })? {
             FromDevice::Pressed(pressed) => Ok(pressed),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Show `anchor` in the window `instance` of `app` in `workspace`: whether a process here
+    /// runs that window.
+    ///
+    /// # Errors
+    /// The connection's error.
+    pub fn reveal(
+        &self,
+        workspace: &str,
+        app: &str,
+        instance: u64,
+        anchor: &str,
+    ) -> io::Result<bool> {
+        match self.ask(&ToDevice::Reveal {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+            instance,
+            anchor: anchor.to_owned(),
+        })? {
+            FromDevice::Pressed(shown) => Ok(shown),
             other => Err(unexpected(&other)),
         }
     }

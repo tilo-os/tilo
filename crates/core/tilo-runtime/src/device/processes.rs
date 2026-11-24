@@ -370,6 +370,28 @@ impl Processes {
         true
     }
 
+    /// Show `anchor` in the window `instance` of `app` in `workspace`, in the process that runs
+    /// it: whether one does.
+    pub fn reveal(&self, workspace: &str, app: &str, instance: u64, anchor: String) -> bool {
+        let socket = self
+            .running()
+            .iter()
+            .find(|(key, process)| {
+                key.workspace == workspace
+                    && key.app == app
+                    && process.instances.contains_key(&instance)
+            })
+            .map(|(_, process)| Arc::clone(&process.socket));
+        let Some(socket) = socket else {
+            return false;
+        };
+        if let Err(error) = (ToProcess::Reveal { instance, anchor }).send(&socket) {
+            tracing::warn!(%error, workspace, app, "a window was not told what to show");
+            return false;
+        }
+        true
+    }
+
     /// What the instance `instance` of `key` plays now, told to whoever serves the media
     /// controls: its Playback's view, or the id of the one it stopped playing.
     fn media(&self, key: &HostKey, instance: u64, view: Option<MediaView>) {
@@ -576,6 +598,14 @@ impl Processes {
             ToDevice::Media { id, command } => {
                 FromDevice::Pressed(self.media_command(&id, command))
             }
+            ToDevice::Reveal {
+                workspace,
+                app,
+                instance,
+                anchor,
+            } => FromDevice::Pressed(
+                has(&workspace) && self.reveal(&workspace, &app, instance, anchor),
+            ),
             ToDevice::FollowMedia => {
                 if let Err(error) = FromDevice::Following.send(connection) {
                     tracing::warn!(%error, "the desktop's media controls follow nothing");

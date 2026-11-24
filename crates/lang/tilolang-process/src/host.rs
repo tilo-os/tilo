@@ -259,6 +259,7 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
         ToProcess::MediaCommand { instance, command } => {
             host.media_command(instance, command);
         }
+        ToProcess::Reveal { instance, anchor } => host.reveal(instance, anchor),
         ToProcess::Task { request, fds } => {
             if let Err(error) = host.begin_task(&request, fds) {
                 tracing::error!(task = request.task, %error, "a task did not start");

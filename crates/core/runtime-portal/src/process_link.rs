@@ -112,6 +112,8 @@ pub enum ToProcess {
     /// Nothing more comes: the process lets its link go and ends once it runs nothing. This
     /// is the session's half of closing the link, which a Windows pipe cannot close one way.
     Finish,
+    /// Show `anchor` in the window `instance`, as a search hit's `open` shows it.
+    Reveal { instance: u64, anchor: String },
 }
 
 impl Packet for ToProcess {
@@ -125,6 +127,7 @@ impl Packet for ToProcess {
             | Self::Locale(_)
             | Self::Access(_)
             | Self::MediaCommand { .. }
+            | Self::Reveal { .. }
             | Self::Finish => false,
         };
         if over {

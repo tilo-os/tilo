@@ -57,6 +57,7 @@ mod layers;
 mod legibility;
 mod levels;
 mod library;
+mod library_hits;
 mod link_editor;
 mod links;
 mod logs;

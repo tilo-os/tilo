@@ -74,6 +74,10 @@ pub struct Hit {
     /// note of a notebook): what a search scoped to that resource narrows to. `None` for a
     /// resource that lives on its own.
     pub owner: Option<String>,
+    /// The published resource whose `open` shows it: the document of its app's library it is in
+    /// or is, for an app each of whose windows shows one (`document: library.documents`), so a
+    /// hit on a page or a mark opens that document's window at it; the record it is in otherwise.
+    pub opens_in: String,
 }
 
 /// One paragraph of a resource's rich text, found on its own.
@@ -437,7 +441,38 @@ fn hit_of(
             .ok()
             .flatten()
             .map(|(holder, _)| resource_id(&meta.app, &holder.id_string())),
+        opens_in: document_item_of(holdings, meta, at).map_or_else(
+            || document_of(&resource_id(&meta.app, &id)).to_owned(),
+            |item| resource_id(&meta.app, &item.id_string()),
+        ),
     })
+}
+
+/// The item of `meta`'s library that `at` is or is in, when each window of the app shows one
+/// item of a collection of its root (`document: library.documents`): `at` or the nearest
+/// resource holding it whose type is the collection's.
+fn document_item_of(holdings: &Holdings<'_>, meta: &Meta, at: &ResourceRef) -> Option<ResourceRef> {
+    if meta.document_items.is_empty() {
+        return None;
+    }
+    let mut on = Some(at.clone());
+    while let Some(item) = on.filter(|item| item.item.is_some()) {
+        let ty = holdings.store.type_of(&item).ok()?;
+        if meta
+            .document_items
+            .iter()
+            .any(|items| items.ty == ty.as_str())
+        {
+            return Some(item);
+        }
+        on = holdings
+            .store
+            .container(&item)
+            .ok()
+            .flatten()
+            .map(|(holder, _)| holder);
+    }
+    None
 }
 
 /// The paragraphs of `rich`, the rich text in the field `field` of the resource `id`, that are
@@ -674,7 +709,7 @@ fn entry(hit: &Hit) -> Option<IndexEntry> {
         key: hit.resource.clone(),
         resource: hit.resource.clone(),
         action: Some(IndexAction {
-            resource: document_of(&hit.resource).to_owned(),
+            resource: hit.opens_in.clone(),
             action: OPEN_ACTION.to_owned(),
         }),
         owner: hit.owner.clone(),
@@ -716,7 +751,7 @@ fn block_entries(hit: &Hit) -> impl Iterator<Item = IndexEntry> + '_ {
             key: anchor.clone(),
             resource: anchor,
             action: Some(IndexAction {
-                resource: document_of(&hit.resource).to_owned(),
+                resource: hit.opens_in.clone(),
                 action: OPEN_ACTION.to_owned(),
             }),
             owner: Some(hit.resource.clone()),

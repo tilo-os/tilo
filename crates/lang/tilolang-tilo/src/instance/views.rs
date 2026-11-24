@@ -602,7 +602,53 @@ impl Instance {
             self.send_bound(Level::Root);
             self.send_bound(Level::Detail);
         }
-        self.tell_reveal() || changed
+        let selected = self.select_revealed();
+        self.tell_reveal() || selected || changed
+    }
+
+    /// Select the row of the item a search hit named inside what the window shows
+    /// ([`super::Instance::selecting`]), as a person's press of that row does: the list that
+    /// lists it (a document's pages) is told its `select`, so the view turns to it as it does for
+    /// the person. An item no list lists (a mark) selects the row of an item it refers to (the
+    /// page it is on). The ask waits while the window draws no view, and goes once one is drawn
+    /// that lists neither. Whether a row was selected.
+    fn select_revealed(&mut self) -> bool {
+        let Some(item) = self.selecting.take() else {
+            return false;
+        };
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let mut wanted = vec![item.clone()];
+        wanted.extend(referred_items(&host, &item));
+        for want in &wanted {
+            let key = want.id_string();
+            for level in [Level::Root, Level::Detail] {
+                let list = self.level_mut(level).and_then(|view| {
+                    view.lists
+                        .iter()
+                        .find(|(_, rows)| rows.holds(&key))
+                        .map(|(list, _)| list.clone())
+                });
+                let Some(list) = list else {
+                    continue;
+                };
+                let value = ui::Value::Ref(wire::resource(want));
+                let mut ran = None;
+                if let Err(why) = self.fire(level, &list, "select", Some(&value), None, &mut ran) {
+                    tracing::debug!(?why, %key, "a search hit's row was not selected");
+                }
+                return true;
+            }
+        }
+        let drawn = [Level::Root, Level::Detail].into_iter().any(|level| {
+            self.level_mut(level)
+                .is_some_and(|view| view.sent.is_some())
+        });
+        if !drawn {
+            self.selecting = Some(item);
+        }
+        false
     }
 
     /// Tell the editors of the text that holds the place a search hit asked for to show it
@@ -910,6 +956,39 @@ fn in_place_of(node: &crate::runtime::UiNode) -> Option<ResourceRef> {
         ty: chosen.target.ty.clone(),
     };
     wire::runtime_resource(&resource)
+}
+
+/// The items `item`'s own fields refer to, as its package declares them: the page a mark is on.
+fn referred_items(host: &Host, item: &ResourceRef) -> Vec<ResourceRef> {
+    use crate::runtime::store::{FieldSpec, FieldValue, Scalar};
+    let Some(meta) = host.find_in_packages(|package| {
+        package
+            .meta
+            .types
+            .iter()
+            .any(|ty| ty.id == item.ty.as_str())
+            .then(|| package.meta.clone())
+    }) else {
+        return Vec::new();
+    };
+    let Some(declared) = meta.types.iter().find(|ty| ty.id == item.ty.as_str()) else {
+        return Vec::new();
+    };
+    let specs = host.runtime().field_specs(&declared.id).unwrap_or_default();
+    declared
+        .fields
+        .iter()
+        .filter_map(|field| {
+            let referred = meta.type_named(&field.ty)?;
+            let spec: &FieldSpec = specs.iter().find(|spec| spec.id == field.id)?;
+            match host.store().read(item, spec).ok()? {
+                FieldValue::Scalar(Scalar::Text(id)) => {
+                    ResourceRef::parse_id(&id, referred.id.clone())
+                }
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// The state or prop of an editor that names the place it shows.
