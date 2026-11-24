@@ -44,6 +44,26 @@ fn arrived_part(build: Box<ScopedPart>) -> Element {
     )
 }
 
+/// What a window's page waits for before its view: the workspace's holdings
+/// or the documents its app declared. Each implementation is a function that
+/// is not generic, so the page around the wait is compiled once, in the
+/// runtime, not in every app whose view instantiates [`ViewCx`].
+pub(crate) trait PageWait: std::fmt::Display + Sized + 'static {
+    fn page(holdings: &Arriving<(), Self>, part: Rc<ScopedPart>) -> Element;
+}
+
+impl PageWait for ui_core::workspace_sync::WorkspaceUnreachable {
+    fn page(holdings: &Arriving<(), Self>, part: Rc<ScopedPart>) -> Element {
+        workspace_arrival(holdings, part)
+    }
+}
+
+impl PageWait for ui_core::workspace_sync::RecordNotHere {
+    fn page(holdings: &Arriving<(), Self>, part: Rc<ScopedPart>) -> Element {
+        workspace_arrival(holdings, part)
+    }
+}
+
 /// The window's view once the workspace's holdings arrived, the page they
 /// reserve until then.
 fn workspace_arrival<E: std::fmt::Display + 'static>(
@@ -774,13 +794,13 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// declared that were on their way. Only `part`'s scope
     /// depends on the app; the arrival around it is built once, in the
     /// runtime.
-    pub(crate) fn arriving_workspace<E: std::fmt::Display + 'static>(
+    pub(crate) fn arriving_workspace<E: PageWait>(
         &self,
         holdings: &Arriving<(), E>,
         part: impl Fn(&mut ViewCx<R, T>) -> Element + 'static,
     ) -> Element {
         let scope = self.part_scope();
-        workspace_arrival(
+        E::page(
             holdings,
             Rc::new(move |alive: &Rc<()>| part(&mut scope(alive))),
         )
