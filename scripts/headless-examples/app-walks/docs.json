@@ -22,7 +22,7 @@
         {
           "must": [
             "Bold",
-            "Insert table",
+            "Italic",
             "Start writing"
           ]
         },
