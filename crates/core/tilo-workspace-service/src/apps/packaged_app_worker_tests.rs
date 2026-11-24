@@ -58,12 +58,28 @@ fn launched_app_connection(
     tokio::task::JoinHandle<Result<(), BrokerError>>,
     tokio::task::JoinHandle<()>,
 ) {
+    launched_member_connection(state, directories, peer, (app, workspace), None)
+}
+
+/// [`launched_app_connection`] for a launch naming the workspace agent `member` the app acts as.
+fn launched_member_connection(
+    state: &Arc<AppBrokerState>,
+    directories: &Rc<LocalActionDirectoryRegistry>,
+    peer: u64,
+    (app, workspace): (&str, &str),
+    member: Option<&str>,
+) -> (
+    runtime_collab::CollabClient,
+    tokio::task::JoinHandle<Result<(), BrokerError>>,
+    tokio::task::JoinHandle<()>,
+) {
     use std::io::Write as _;
     let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
     let handoff = serde_json::to_vec(&serde_json::json!({
         "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
         "app_id": app,
         "workspace_id": workspace,
+        "member": member,
     }))
     .unwrap();
     client
@@ -142,10 +158,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                 &env.route.app_id,
                 &env.route.cluster_id,
             );
-            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
-            let own = app
-                .join_channel(&env.route.channel_key(), &identity)
-                .await
+            let own = opened(&app, &env.route.channel_key()).await
                 .unwrap();
             let worker = rig
                 .state
@@ -216,9 +229,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
             // no read of: the connection may not join it, and no worker
             // speaks for it.
             let other = CrdtRoute::record("so.tilo.notes", env.route.cluster_id.clone(), "notes-1");
-            let refused = app
-                .join_channel(&other.channel_key(), &identity)
-                .await
+            let refused = opened(&app, &other.channel_key()).await
                 .err()
                 .expect("another app's route is not this app's to join");
             assert!(
@@ -277,7 +288,6 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                 person,
             );
             env.membership.write().workspaces[0].policy.grant(grant);
-            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
             let route = |window: u64, record: usize| {
                 CrdtRoute::record(
                     &env.route.app_id,
@@ -299,8 +309,7 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                 let mut channels = Vec::new();
                 for record in 0..RECORDS {
                     channels.push(
-                        app.join_channel(&route(window, record).channel_key(), &identity)
-                            .await
+                        opened(&app, &route(window, record).channel_key()).await
                             .expect("a window joins every record it opens"),
                     );
                 }
@@ -394,14 +403,11 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
                 &env.route.app_id,
                 &env.route.cluster_id,
             );
-            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
             let record =
                 |id: &str| CrdtRoute::record(&env.route.app_id, env.route.cluster_id.clone(), id);
             let mut pages = Vec::new();
             for id in ["page-a", "page-b", "page-c"] {
-                let channel = window
-                    .join_channel(&record(id).channel_key(), &identity)
-                    .await
+                let channel = opened(&window, &record(id).channel_key()).await
                     .unwrap();
                 channel
                     .publish_action_directory(super::signed_worker::directory_server(
@@ -545,10 +551,7 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
                 &env.route.app_id,
                 &env.route.cluster_id,
             );
-            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
-            let own = app
-                .join_channel(&env.route.channel_key(), &identity)
-                .await
+            let own = opened(&app, &env.route.channel_key()).await
                 .expect("the launched app joins its own route in a journaled session");
             assert!(
                 rig.state
@@ -572,17 +575,13 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
                 env.route.cluster_id.clone(),
                 collab_types::workspace_document_id(shared.kind),
             );
-            let kept = app
-                .join_channel(&workspace_resource.channel_key(), &identity)
-                .await
+            let kept = opened(&app, &workspace_resource.channel_key()).await
                 .expect("an app of the workspace joins its workspace's record");
 
             // Another app's route in the same workspace, which this app
             // declares no read of: the launch vouches for nothing there.
             let other = CrdtRoute::record("so.tilo.notes", env.route.cluster_id.clone(), "notes-1");
-            let refused = app
-                .join_channel(&other.channel_key(), &identity)
-                .await
+            let refused = opened(&app, &other.channel_key()).await
                 .err()
                 .expect("another app's route is not this app's to join");
             assert!(refused.to_string().contains("so.tilo.notes"), "{refused:?}");
@@ -615,7 +614,6 @@ async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
                 env.route.cluster_id.clone(),
                 "notes-1",
             );
-            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
             for (app, reads) in [("test.journal-today", true), ("test.journal-tasks", false)] {
                 let mut services = env.membership.services();
                 services.launcher = Some(Arc::new(LaunchedHere {
@@ -637,7 +635,7 @@ async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
                     app,
                     &env.route.cluster_id,
                 );
-                let joined = launched.join_channel(&notes.channel_key(), &identity).await;
+                let joined = opened(&launched, &notes.channel_key()).await;
                 if reads {
                     let reading = joined.expect("a declared read joins in a journaled session");
                     assert!(
@@ -691,7 +689,6 @@ async fn a_press_in_a_view_opened_for_a_caller_acts_as_that_caller() {
             let mut services = env.membership.services();
             services.launcher = Some(launcher.clone());
             let rig = Rig::with_services(&env, services).await;
-            let identity = presentation(&workspace, &env.cert, &env.key);
             let view_for = |peer: u64, person: &str| {
                 *launcher.opened_for.lock().unwrap() =
                     Some(Caller::local_person(person).in_workspace(workspace.clone()));
@@ -708,9 +705,7 @@ async fn a_press_in_a_view_opened_for_a_caller_acts_as_that_caller() {
             // refused as the workspace refuses them anything, without saying the action exists,
             // and nothing reaches the app.
             let (stranger_view, _server, _client) = view_for(906, &stranger);
-            let stranger_view = stranger_view
-                .join_channel(&env.route.channel_key(), &identity)
-                .await
+            let stranger_view = opened(&stranger_view, &env.route.channel_key()).await
                 .unwrap();
             let refused = invoke(&stranger_view, id(0xd001)).await.unwrap_err();
             assert!(refused.contains("UnknownAction"), "{refused}");
@@ -718,9 +713,7 @@ async fn a_press_in_a_view_opened_for_a_caller_acts_as_that_caller() {
 
             // A view opened for the editor: the press is admitted, as the editor.
             let (editor_view, _server, _client) = view_for(907, &editor);
-            let editor_view = editor_view
-                .join_channel(&env.route.channel_key(), &identity)
-                .await
+            let editor_view = opened(&editor_view, &env.route.channel_key()).await
                 .unwrap();
             invoke(&editor_view, id(0xd002)).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();

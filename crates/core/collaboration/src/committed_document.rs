@@ -1507,7 +1507,7 @@ impl From<&str> for CaptureFailure {
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn read_capture(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     first: Reply,
     wait: CaptureWait,
 ) -> Result<(CommittedDocument, [u8; 32]), CaptureFailure> {
@@ -1665,7 +1665,7 @@ async fn capture_using(
 /// there. Answered with nothing, the chain has no part at all, which the app is told
 /// ([`CollabEvent::ResourceUnavailable`]) so that it starts the first.
 pub(super) async fn ask_chain_head(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     spec: &RouteSpec,
     inbound: &InboundBridge,
 ) -> Result<(), String> {
@@ -1726,8 +1726,6 @@ fn set_read_ready(inbound: &InboundBridge, ready: &AtomicBool, value: bool) {
 /// reconnects a launcher, changes a route or acquires a different authority.
 pub(super) struct NativeReadJoin {
     pub(super) client: runtime_collab::CollabClient,
-    pub(super) presentation: Vec<u8>,
-    pub(super) member_handle: String,
     pub(super) member_kind: String,
     pub(super) resource_type: String,
 }
@@ -1736,21 +1734,11 @@ impl NativeReadJoin {
         &self,
         spec: &RouteSpec,
         reads: &Reads,
-    ) -> Result<runtime_collab::ChannelHandle, CaptureFailure> {
+    ) -> Result<runtime_collab::RecordHandle, CaptureFailure> {
         let key = spec.channel_id();
         let expected_instance = reads.private_window(&key);
         tokio::time::timeout(Duration::from_secs(2), async {
-            let channel = self
-                .client
-                .join_channel_as_kind(
-                    &key,
-                    &self.presentation,
-                    &self.member_handle,
-                    super::broker_member_kind(&self.member_kind),
-                    &self.resource_type,
-                )
-                .await
-                .map_err(|_| "original committed read renewal was not admitted")?;
+            let channel = self.client.record(&key, &self.resource_type);
             let binding = channel
                 .committed_document(&Request::PrivateWindowBinding)
                 .await
@@ -1803,7 +1791,7 @@ enum Woke {
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn until_changed(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     known: Option<[u8; 32]>,
     inbound: &InboundBridge,
     key: &str,
@@ -1871,7 +1859,7 @@ fn opens_committed_document(member_kind: &str) -> bool {
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn install(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     spec: &RouteSpec,
     inbound: &InboundBridge,
     join: NativeReadJoin,
@@ -2267,7 +2255,7 @@ enum Waiting {
 /// reads no more on it (it renewed onto another channel, or stopped), and
 /// reads behind it must not wait for a turn it would never take. The
 /// channel itself lives on with its route.
-fn leave_queue(channel: &runtime_collab::ChannelHandle) {
+fn leave_queue(channel: &runtime_collab::RecordHandle) {
     let channel = channel.clone();
     tokio::task::spawn_local(async move {
         let _ = channel.committed_document(&Request::Leave).await;

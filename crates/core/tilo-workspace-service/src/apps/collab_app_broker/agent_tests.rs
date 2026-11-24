@@ -477,7 +477,7 @@ fn notes_append() -> runtime_collab::ExportedAction {
 
 /// The Notes app as peer 200: its channel, and its invocation feed read on
 /// the broker's side so what it was not handed stays countable.
-async fn notes_target(f: &Fixture) -> (runtime_collab::ChannelHandle, InvocationStreamServer) {
+async fn notes_target(f: &Fixture) -> (runtime_collab::RecordHandle, InvocationStreamServer) {
     let handle = Rc::new(f.app_handle(200, "so.tilo.notes", false));
     let target = wire_channel_rc(Rc::clone(&handle));
     target.publish_actions(&[notes_append()]).await.unwrap();

@@ -32,8 +32,7 @@ use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
 
-use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, presentation};
-use tilo_user_identity::DeviceCert;
+use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, opened};
 
 /// The app whose capture this is.
 const TASKS: &str = "so.tilo.tasks";
@@ -123,8 +122,6 @@ fn surface() -> Vec<runtime_collab::ExportedAction> {
 /// invocation the session addresses to it.
 fn tasks(
     socket: &Path,
-    device: &ed25519_dalek::SigningKey,
-    cert: &DeviceCert,
     seen: &std::sync::mpsc::Sender<Invocation>,
 ) {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -133,9 +130,7 @@ fn tasks(
         .expect("a runtime for the app");
     runtime.block_on(async {
         let client = connect(socket);
-        let mine = client
-            .join_channel(&channel(), &presentation(device, cert))
-            .await
+        let mine = opened(&client, &channel()).await
             .expect("the app the session launched joins the workspace's channel");
         let invocations = mine
             .subscribe_stable_invocations()
@@ -189,7 +184,7 @@ fn a_line_typed_into_the_palette_runs_an_app_s_capture_with_no_window_open() {
     let (mut session, apps) = session(&socket, &fixture);
     let (seen, delivered) = std::sync::mpsc::channel();
     let app = std::thread::spawn(move || {
-        tasks(&socket, &fixture.device, &fixture.cert, &seen);
+        tasks(&socket, &seen);
     });
     // Tasks is up and has published its capture: the session's action host lists what the app
     // offers, read from the broker the app published on.

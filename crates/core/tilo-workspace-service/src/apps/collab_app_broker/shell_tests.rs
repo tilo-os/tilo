@@ -14,8 +14,8 @@ use crate::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use crate::apps::shell::{ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices};
 use ed25519_dalek::SigningKey;
 use runtime_collab::wire::{
-    Call, Event, FRAMING, HostFrame, InvocationCall, Join, Operation, Publication, Receipt, Reply,
-    Service, Topic,
+    Call, Event, FRAMING, HostFrame, InvocationCall, Operation, Publication, Receipt, Record,
+    Reply, Service, Topic,
 };
 use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
@@ -290,6 +290,18 @@ async fn device_with_shell() -> Device {
         Arc::new(FanoutState::new()),
     )
     .unwrap();
+    // The device's person, whom every app it launched acts as.
+    assert!(
+        daemon
+            .fanout
+            .app_broker()
+            .unwrap()
+            .certificate_authority
+            .set(Arc::new(super::tests::DeviceOf(
+                super::tests::device_certificate(&root(3), &device(3))
+            )))
+            .is_ok()
+    );
 
     // The link the daemon makes for the shell it starts.
     let secret = links.make(ShellCaller {
@@ -426,22 +438,25 @@ impl Endpoint {
         .expect("the host keeps the connection open")
     }
 
-    async fn join(&mut self, workspace: &str) -> Result<Reply, String> {
-        self.join_as(APP, workspace).await
+    /// The app's record in `workspace`, which its first call naming it opens.
+    async fn open(&mut self, workspace: &str) -> Result<Record, String> {
+        self.open_as(APP, workspace).await
     }
 
-    /// Join `app`'s record in `workspace`, as the app the endpoint's launch named.
-    async fn join_as(&mut self, app: &str, workspace: &str) -> Result<Reply, String> {
-        self.call(Operation::Join(Join {
-            channel: CrdtRoute::record(app, workspace, RECORD).channel_key(),
-            identity: super::tests::certified_join(workspace, &root(3), &device(3))
+    /// `app`'s record in `workspace`, as the app the endpoint's launch named: its first call
+    /// naming the record opens it.
+    async fn open_as(&mut self, app: &str, workspace: &str) -> Result<Record, String> {
+        let record = Record::new(CrdtRoute::record(app, workspace, RECORD).channel_key(), "");
+        self.call(Operation::Command {
+            record: record.clone(),
+            service: Service::CommittedDocument,
+            body: runtime_collab::committed_document::Request::Writes
                 .encode()
                 .unwrap(),
-            member: None,
-            handle: "Ada".into(),
-            resource_type: None,
-        }))
+            on_behalf_of: Vec::new(),
+        })
         .await
+        .map(|_| record)
     }
 }
 
@@ -473,9 +488,9 @@ async fn an_app_the_shell_launched_is_served_by_the_daemon() {
         .record(std::process::id(), APP, &device.workspace);
     let (mut app, taken) = device.app(&launch_opening(APP, &device.workspace)).await;
     taken.await;
-    let joined = app.join(&device.workspace).await;
-    let Ok(Reply::Opened(channel)) = joined else {
-        panic!("the app joins its record: {joined:?}");
+    let opened = app.open(&device.workspace).await;
+    let Ok(record) = opened else {
+        panic!("the app opens its record: {opened:?}");
     };
     let open = runtime_collab::committed_document::Request::Open {
         known_revision: None,
@@ -484,7 +499,7 @@ async fn an_app_the_shell_launched_is_served_by_the_daemon() {
     .unwrap();
     let Ok(Reply::Answer(answer)) = app
         .call(Operation::Command {
-            channel,
+            record,
             service: Service::CommittedDocument,
             body: open,
             on_behalf_of: Vec::new(),
@@ -523,7 +538,7 @@ async fn an_app_the_shell_launched_is_served_by_the_daemon() {
 async fn a_launch_the_shell_never_recorded_is_refused() {
     let device = device_with_shell().await;
     let (mut app, taken) = device.app(&launch_opening(APP, &device.workspace)).await;
-    let ((), joined) = tokio::join!(taken, app.join(&device.workspace));
+    let ((), joined) = tokio::join!(taken, app.open(&device.workspace));
     let refused = joined.unwrap_err();
     assert!(
         refused.contains("not an authenticated shell-managed process"),
@@ -549,6 +564,7 @@ async fn a_vouch_for_a_connection_never_handed_over_is_refused() {
                     ticket: None,
                     process: 41,
                     launcher: None,
+                    member: None,
                 }),
                 to: runtime_collab::wire::shell::HandedTo::Collaboration,
             },
@@ -722,16 +738,16 @@ fn allow_permission(page: &str) -> tilo_actions::published::PublishedAction {
     }
 }
 
-/// What the daemon answers `message`, sent on the Browser's connection to `channel`.
+/// What the daemon answers `message`, sent on the Browser's connection about `record`.
 async fn remote_action(
     browser: &mut Endpoint,
-    channel: runtime_collab::wire::Handle,
+    record: &Record,
     message: tilo_actions::remote::RemoteActionMessage,
 ) -> tilo_actions::remote::RemoteActionMessage {
     use tilo_actions::remote::RemoteActionFrame;
     let answered = browser
         .call(Operation::Command {
-            channel,
+            record: record.clone(),
             service: Service::RemoteAction,
             body: RemoteActionFrame::new(message).encode().unwrap(),
             on_behalf_of: Vec::new(),
@@ -863,14 +879,14 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
         .record(std::process::id(), BROWSER, &host.workspace);
     let (mut browser, taken) = host.app(&launch_opening(BROWSER, &host.workspace)).await;
     taken.await;
-    let joined = browser.join_as(BROWSER, &host.workspace).await;
-    let Ok(Reply::Opened(channel)) = joined else {
-        panic!("the Browser joins its record: {joined:?}");
-    };
+    let channel = browser
+        .open_as(BROWSER, &host.workspace)
+        .await
+        .expect("the Browser opens its record");
     assert_eq!(
         browser
             .call(Operation::Subscribe {
-                channel,
+                record: channel.clone(),
                 topic: Topic::Invocations { stable_ids: true },
             })
             .await,
@@ -883,7 +899,7 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
     assert_eq!(
         browser
             .call(Operation::Publish {
-                channel,
+                record: channel.clone(),
                 publication: Publication::Surface(serde_json::to_string(&surface).unwrap()),
             })
             .await,
@@ -903,7 +919,7 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
             let request = asking_for(&host.workspace, PAGE, $prompt);
             let invocation = request.invocation;
             assert_eq!(
-                remote_action(&mut browser, channel, RemoteActionMessage::Invoke(request)).await,
+                remote_action(&mut browser, &channel, RemoteActionMessage::Invoke(request)).await,
                 RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
                     invocation,
                     status: ReceiptStatus::Accepted,
@@ -944,7 +960,7 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
     );
     assert_eq!(asked.asked.facts.fact("wants"), Some("camera"));
     let (followed, declined) = tokio::join!(
-        remote_action(&mut browser, channel, following(invocation)),
+        remote_action(&mut browser, &channel, following(invocation)),
         workspaces.resolve_asked(&person, &resolving(&asked.asked.record, "decline")),
     );
     assert!(
@@ -972,7 +988,7 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
     assert_eq!(
         remote_action(
             &mut browser,
-            channel,
+            &channel,
             RemoteActionMessage::Cancel { invocation }
         )
         .await,
@@ -987,7 +1003,7 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
     );
     assert!(
         matches!(
-            stands(&remote_action(&mut browser, channel, following(invocation)).await),
+            stands(&remote_action(&mut browser, &channel, following(invocation)).await),
             ReceiptStatus::Cancelled { .. }
         ),
         "the withdrawn call ended unrun"
@@ -1041,7 +1057,7 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
     assert_eq!(
         browser
             .call(Operation::Invocation {
-                channel,
+                record: channel.clone(),
                 id: handed.id,
                 call: InvocationCall::Complete {
                     code: String::new(),

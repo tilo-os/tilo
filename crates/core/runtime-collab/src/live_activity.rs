@@ -4,7 +4,7 @@
 //! hands back.
 //!
 //! The app calls on its channel
-//! ([`crate::ChannelHandle::live_activity`]): it shows its activity with
+//! ([`crate::RecordHandle::live_activity`]): it shows its activity with
 //! [`LiveActivityHandle::show`] and follows the controls pressed on it with
 //! [`LiveActivityHandle::controls`]. The host answers it with
 //! [`LiveActivityServer`] over its [`LiveActivities`], the board it presents
@@ -26,10 +26,10 @@ pub const MAX_LIVE_ACTIVITY_BYTES: usize = 16 * 1024;
 /// The most controls kept for an app that does not take them.
 const MAX_PENDING_CONTROLS: usize = 32;
 
-/// What [`crate::ChannelHandle::live_activity`] answers.
+/// What [`crate::RecordHandle::live_activity`] answers.
 #[derive(Clone)]
 pub struct LiveActivityHandle {
-    pub(crate) channel: crate::ChannelHandle,
+    pub(crate) channel: crate::RecordHandle,
 }
 
 impl LiveActivityHandle {

@@ -174,7 +174,7 @@ mod route_keys;
 pub use broker::SessionServices;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
-    CertifiedEndpointIdentity, EndpointChannelKeys, SessionResource, display_control,
+    EndpointChannelKeys, SessionResource, display_control,
     speaker_command, wifi_continuity_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
@@ -442,11 +442,6 @@ pub enum CollabRequest {
         on_behalf_of: tilo_actions::InvocationId,
         reply: crate::invocation_scope::ExternalModerationReply,
     },
-    LocalFileClipboard {
-        request_id: u64,
-        command: runtime_collab::file_clipboard::Command,
-        on_behalf_of: Option<tilo_actions::InvocationId>,
-    },
     Hello {
         app_id: String,
         cluster_id: Uuid,
@@ -529,16 +524,6 @@ pub enum CollabRequest {
         request_id: u64,
         command: runtime_collab::native_media::Request,
     },
-    RealtimeCommand {
-        request_id: u64,
-        command: collab_types::realtime::RealtimeCommand,
-    },
-    /// One Files-owned picker/status/consent command. The broker authenticates
-    /// the app route and keeps payload bytes on the shell transfer transport.
-    NearbyTransferCommand {
-        request_id: u64,
-        command: runtime_collab::NearbyTransferCommand,
-    },
     OpenWorkspaceControl {
         session_id: u64,
         target_device: [u8; 32],
@@ -572,14 +557,6 @@ pub enum CollabRequest {
     RemoteAction {
         message: tilo_actions::remote::RemoteActionMessage,
     },
-    /// A Store launch, with a dedicated reply vocabulary so a widget's
-    /// correlation id cannot complete an unrelated SDK action invocation.
-    LaunchInstalledApplication {
-        request_id: u64,
-        app_id: String,
-        package_root: Option<String>,
-        on_behalf_of: Option<tilo_actions::InvocationId>,
-    },
     /// Write or read this app's resources in the device's one store, which answers with
     /// [`CollabEvent::ResourceCommandResult`]. The app holds no store of its own; the command is
     /// in the store's encoding (`tilo_resource_store::wire::Command`), which the connection
@@ -587,17 +564,6 @@ pub enum CollabRequest {
     ResourceCommand {
         request_id: u64,
         command: Vec<u8>,
-    },
-    /// Hold `query` open in the device's one store, in the store's encoding
-    /// (`tilo_resource_store::Query`): its pages arrive as [`CollabEvent::ResourcePage`] under
-    /// `query_id` until [`Self::CloseResources`] names it.
-    OpenResources {
-        query_id: u64,
-        query: Vec<u8>,
-    },
-    /// Let go of the query `query_id` holds open.
-    CloseResources {
-        query_id: u64,
     },
     /// Ask the host what it says of the actions the window shows, replacing what was asked
     /// before: answered with [`CollabEvent::ActionVerdicts`] now and again whenever grants change

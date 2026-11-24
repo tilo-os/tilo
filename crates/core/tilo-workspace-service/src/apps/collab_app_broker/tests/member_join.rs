@@ -1,12 +1,12 @@
-//! Joins that name a member: an Agent's exact identity, and a
-//! Person's presentation handle that never becomes their actor.
+//! Connections whose launch names a member: an Agent's exact identity, and a
+//! Person's connection, whose actor is always their certified one.
 use super::*;
 
 struct MemberJoinFixture {
     state: Arc<AppBrokerState>,
     fanout: Arc<FanoutState>,
-    client: runtime_collab::CollabClient,
-    presentation: Vec<u8>,
+    directories: Rc<LocalActionDirectoryRegistry>,
+    certificate: tilo_user_identity::DeviceCert,
     route: CrdtRoute,
     actor: String,
 }
@@ -36,33 +36,29 @@ impl MemberJoinFixture {
             Some(Arc::new(vec![device.verifying_key().to_bytes()])),
         );
         let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
-        let peer_id = fanout.next_peer_id();
-        let lease = Rc::new(ConnectionLease {
-            local_media: None,
-            state: Arc::clone(&state),
-            directories: Rc::clone(&directories),
-            peer_id,
-        });
-        let (connection, outgoing) = wire::WireConnection::new(Some(Rc::new(AppConnection {
-            worker: None,
-            app_worker: None,
-            state: Arc::clone(&state),
-            directories,
-            peer_id,
-            lease,
-            holds: route_holds::ConnectionHolds::default(),
-        })));
-        let presentation = certified_join(&route.cluster_id, &root, &device)
-            .encode()
-            .unwrap();
         Self {
             state,
             fanout,
-            client: wire_client(connection, outgoing),
-            presentation,
+            directories,
+            certificate: device_certificate(&root, &device),
             route,
             actor,
         }
+    }
+
+    /// The record of the fixture's route, on a connection whose launch names `member`.
+    async fn opened(
+        &self,
+        member: Option<&str>,
+    ) -> Result<runtime_collab::RecordHandle, runtime_portal::NotAvailable> {
+        let (client, _server, _client) = certified_rpc(
+            &self.state,
+            &self.directories,
+            self.fanout.next_peer_id(),
+            self.certificate.clone(),
+            member,
+        );
+        opened(&client, &self.route.channel_key()).await
     }
 }
 
@@ -96,14 +92,7 @@ async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
             for expected in [ascii, multibyte] {
                 let input = format!(" {} ", expected.to_uppercase());
                 let channel = fixture
-                    .client
-                    .join_channel_as_kind(
-                        &fixture.route.channel_key(),
-                        &fixture.presentation,
-                        &input,
-                        "agent",
-                        "",
-                    )
+                    .opened(Some(&input))
                     .await
                     .expect("certified join preserves the complete canonical Agent ID");
                 channel
@@ -137,34 +126,13 @@ async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback()
                 String::new(),
             ] {
                 assert!(
-                    fixture
-                        .client
-                        .join_channel_as_kind(
-                            &fixture.route.channel_key(),
-                            &fixture.presentation,
-                            &invalid,
-                            "agent",
-                            "",
-                        )
-                        .await
-                        .is_err(),
+                    fixture.opened(Some(&invalid)).await.is_err(),
                     "invalid Agent IDs must refuse instead of selecting an enrolled prefix"
                 );
                 assert!(fixture.state.channels.lock().unwrap().is_empty());
             }
-            // The same long string is still a Person's bounded presentation
-            // handle: it never becomes that Person's certified actor.
-            let person = fixture
-                .client
-                .join_channel_as_kind(
-                    &fixture.route.channel_key(),
-                    &fixture.presentation,
-                    &"a".repeat(129),
-                    "person",
-                    "",
-                )
-                .await
-                .unwrap();
+            // A connection naming no agent acts as the Person's certified actor.
+            let person = fixture.opened(None).await.unwrap();
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
             let _subscription = fixture.fanout.subscribe_workspaces(
                 vec![fixture.route.cluster_id.clone()],

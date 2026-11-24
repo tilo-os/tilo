@@ -1,16 +1,15 @@
 //! The typed endpoint of the collaboration wire: a connection to the host
-//! ([`CollabClient`]), the channels it joins ([`ChannelHandle`]) and what
+//! ([`CollabClient`]), the records its calls are about ([`RecordHandle`]) and what
 //! they deliver. Every call is one [`wire::Operation`] on the connection the
 //! launcher handed this process; nothing here keeps state the host does not
 //! name by a handle or a subscription.
 
 use std::sync::Arc;
 
-use collab_types::MemberId;
 use runtime_portal::NotAvailable;
 
 use crate::wire::{
-    Changes, ContextUpdate, Event, Handle, InvocationCall, Join, LiveActivityCall, Operation,
+    Changes, ContextUpdate, Event, Handle, InvocationCall, LiveActivityCall, Operation,
     Publication, Read, Receipt, Reply, Report, Service, SettingsCall, Topic,
     client::{Answerer, Client, Failure, Subscription},
 };
@@ -176,15 +175,17 @@ mod shared {
 pub struct CollabClient {
     client: Client,
     descriptors: Descriptors,
+    records: Arc<OpenRecords>,
 }
 
 impl CollabClient {
     /// A client over an already connected wire client.
     #[must_use]
-    pub const fn new(client: Client) -> Self {
+    pub fn new(client: Client) -> Self {
         Self {
             client,
             descriptors: None,
+            records: Arc::default(),
         }
     }
 
@@ -261,7 +262,7 @@ impl CollabClient {
 
     /// Hand the host descriptors over `sender`, the descriptor stream of the
     /// very connection `self` calls over; see
-    /// [`ChannelHandle::local_file_clipboard_command`].
+    /// [`RecordHandle::local_file_clipboard_command`].
     #[cfg(unix)]
     #[must_use]
     pub fn with_descriptors(
@@ -296,100 +297,46 @@ impl CollabClient {
         self.client.closed()
     }
 
-    /// Join a channel, presenting `identity` (an encoded
-    /// [`crate::CertifiedJoinIdentity`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the host refuses the join or the
-    /// connection fails.
-    pub async fn join_channel(
-        &self,
-        channel_id: &str,
-        identity: &[u8],
-    ) -> Result<ChannelHandle, NotAvailable> {
-        self.join_channel_as(channel_id, identity, "").await
-    }
-
-    /// Join a channel while announcing the member's display handle.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::join_channel`].
-    pub async fn join_channel_as(
-        &self,
-        channel_id: &str,
-        identity: &[u8],
-        member_handle: &str,
-    ) -> Result<ChannelHandle, NotAvailable> {
-        self.join_channel_as_kind(channel_id, identity, member_handle, "person", "")
-            .await
-    }
-
-    /// Join as an explicitly typed member (`person`, or `agent` with the
-    /// agent's id as the handle). `resource_type` names the resource kind of the
-    /// record the channel carries, or is empty.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::join_channel`].
-    pub async fn join_channel_as_kind(
-        &self,
-        channel_id: &str,
-        identity: &[u8],
-        member_handle: &str,
-        member_kind: &str,
-        resource_type: &str,
-    ) -> Result<ChannelHandle, NotAvailable> {
-        let handler = member_handle.to_owned();
-        let member = match member_kind {
-            "" | "person" => None,
-            "agent" => Some(MemberId::Agent(handler.clone())),
-            other => {
-                return Err(refused(format!(
-                    "unknown collaboration member kind `{other}`"
-                )));
+    /// The record `key` names, of the resource kind `kind` (none when empty), as this
+    /// connection's calls about it name it. Nothing goes to the host until a call does: the host
+    /// decides each call about the record for this connection, the app, workspace and person its
+    /// launch admitted. Handles of one record share what the host keeps for it, which it lets go
+    /// once the last of them is dropped.
+    #[must_use]
+    pub fn record(&self, key: &str, kind: &str) -> RecordHandle {
+        let record = crate::wire::Record::new(key, kind);
+        let channel = {
+            let mut open = self
+                .records
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            open.retain(|_, record| record.strong_count() > 0);
+            if let Some(channel) = open.get(key).and_then(std::sync::Weak::upgrade) {
+                channel
+            } else {
+                let channel = Arc::new(Channel {
+                    client: self.client.clone(),
+                    record,
+                });
+                open.insert(key.to_owned(), Arc::downgrade(&channel));
+                channel
             }
         };
-        let join = Join {
-            channel: channel_id.to_owned(),
-            identity: identity.to_vec(),
-            member,
-            handle: handler,
-            resource_type: Some(resource_type.to_owned()).filter(|kind| !kind.is_empty()),
-        };
-        match self
-            .client
-            .call(Operation::Join(join))
-            .await
-            .map_err(failure)?
-        {
-            Reply::Opened(handle) => Ok(self.channel(handle)),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// The channel `handle` this connection holds.
-    #[must_use]
-    pub fn channel(&self, handle: Handle) -> ChannelHandle {
         // Descriptors travel over the one connection, which each of its handles shares; a
         // page without descriptor streams has nothing to share, the empty value being `Copy`.
         #[cfg(unix)]
         let descriptors = self.descriptors.clone();
         #[cfg(not(unix))]
         let descriptors = self.descriptors;
-        ChannelHandle {
-            channel: Arc::new(Channel {
-                client: self.client.clone(),
-                handle,
-            }),
+        RecordHandle {
+            channel,
             descriptors,
         }
     }
 
     /// The session's published resources: what its services read and the
     /// actions that change them, opened on this connection the first time
-    /// one is used. No channel is joined for them — they are the device's,
+    /// one is used. No record is named for them — they are the device's,
     /// not a workspace's — so an app reads the sound, the displays or the
     /// settings whether or not it holds a workspace.
     #[must_use]
@@ -433,7 +380,7 @@ impl CollabClient {
         match self
             .client
             .call(Operation::Workspace {
-                channel: channel_id.to_owned(),
+                record: channel_id.to_owned(),
                 seen,
             })
             .await
@@ -445,25 +392,30 @@ impl CollabClient {
     }
 }
 
-/// A joined channel; the host closes it once the last clone of its handle,
-/// and every stream opened from it, is gone.
+/// A record this connection's calls name; the host lets go of what it kept for it once the
+/// last clone of its handle, and every stream opened from it, is gone.
 struct Channel {
     client: Client,
-    handle: Handle,
+    record: crate::wire::Record,
 }
 
 impl Drop for Channel {
     fn drop(&mut self) {
-        self.client.close(self.handle);
+        self.client.leave(self.record.key.clone());
     }
 }
 
-/// A channel this connection joined. Cheap to clone.
+/// A record this connection's calls are about. Cheap to clone.
 #[derive(Clone)]
-pub struct ChannelHandle {
+pub struct RecordHandle {
     channel: Arc<Channel>,
     descriptors: Descriptors,
 }
+
+/// The records a connection's calls name, by key: every handle of one shares it, the host
+/// keeping one thing per record whatever kind a handle names it as.
+type OpenRecords =
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<Channel>>>;
 
 /// The most a resource command or its reply takes on the wire, as the store bounds them.
 const MAX_RESOURCE_WIRE_BYTES: usize = 4 << 20;
@@ -506,11 +458,17 @@ fn decode_bounded_reply<R: serde::de::DeserializeOwned>(
     Ok(decoded)
 }
 
-impl ChannelHandle {
-    /// The handle the host names this channel by.
+impl RecordHandle {
+    /// The record this handle's calls name.
     #[must_use]
-    pub fn handle(&self) -> Handle {
-        self.channel.handle
+    pub fn record(&self) -> &crate::wire::Record {
+        &self.channel.record
+    }
+
+    /// The record's key: its app, workspace and record.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.channel.record.key
     }
 
     async fn call(&self, request: Operation) -> Result<Reply, NotAvailable> {
@@ -526,7 +484,7 @@ impl ChannelHandle {
 
     async fn publish(&self, publication: Publication) -> Result<(), NotAvailable> {
         self.done(Operation::Publish {
-            channel: self.channel.handle,
+            record: self.channel.record.clone(),
             publication,
         })
         .await
@@ -544,7 +502,7 @@ impl ChannelHandle {
     ) -> Result<Vec<u8>, NotAvailable> {
         match self
             .call(Operation::Command {
-                channel: self.channel.handle,
+                record: self.channel.record.clone(),
                 service,
                 body,
                 on_behalf_of: on_behalf_of.to_vec(),
@@ -566,7 +524,7 @@ impl ChannelHandle {
     pub async fn changed(&self, of: Changes, after: u64) -> Result<u64, NotAvailable> {
         match self
             .call(Operation::Changed {
-                channel: self.channel.handle,
+                record: self.channel.record.clone(),
                 of,
                 after,
             })
@@ -581,7 +539,7 @@ impl ChannelHandle {
         let subscription = self
             .channel
             .client
-            .subscribe(self.channel.handle, topic)
+            .subscribe(self.channel.record.clone(), topic)
             .await
             .map_err(failure)?;
         Ok(Feed(Arc::new(FeedInner {
@@ -607,6 +565,19 @@ impl ChannelHandle {
             return Err(refused("invalid audio output state"));
         }
         Ok(snapshot)
+    }
+
+    /// Whether the workspace seals what it keeps of this record. Asked first, it is where the
+    /// host admits this connection to the record, or refuses it with its reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the host refuses the record or the connection fails.
+    pub async fn sealed(&self) -> Result<bool, NotAvailable> {
+        match self.committed_document(&committed_document::Request::Writes).await? {
+            committed_document::Reply::Writes { sealed } => Ok(sealed),
+            _ => Err(refused("the host did not say how it keeps the record")),
+        }
     }
 
     /// Read this channel's current committed history.
@@ -895,7 +866,7 @@ impl ChannelHandle {
 
     pub(crate) async fn settings_call(&self, call: SettingsCall) -> Result<Reply, NotAvailable> {
         self.call(Operation::Settings {
-            channel: self.channel.handle,
+            record: self.channel.record.clone(),
             call,
         })
         .await
@@ -915,7 +886,7 @@ impl ChannelHandle {
         call: LiveActivityCall,
     ) -> Result<Reply, NotAvailable> {
         self.call(Operation::LiveActivity {
-            channel: self.channel.handle,
+            record: self.channel.record.clone(),
             call,
         })
         .await
@@ -1025,7 +996,7 @@ impl ChannelHandle {
     /// Returns [`NotAvailable`] if the host refuses it.
     pub async fn want_blob(&self, hash: &str) -> Result<(), NotAvailable> {
         self.done(Operation::Read {
-            channel: self.channel.handle,
+            record: self.channel.record.clone(),
             read: Read::Content {
                 hash: hash.to_owned(),
             },
@@ -1076,7 +1047,10 @@ impl ChannelHandle {
     ///
     /// Returns [`NotAvailable`] if the host refuses the directory.
     pub async fn publish_action_directory(&self, answerer: Answerer) -> Result<(), NotAvailable> {
-        self.channel.client.answer(self.channel.handle, answerer);
+        self.channel.client.answer(
+            crate::wire::client::Answering::Record(self.channel.record.key.clone()),
+            answerer,
+        );
         self.publish(Publication::Directory).await
     }
 
@@ -1095,7 +1069,7 @@ impl ChannelHandle {
 
     async fn invocation(&self, id: u64, call: InvocationCall) -> Result<Reply, NotAvailable> {
         self.call(Operation::Invocation {
-            channel: self.channel.handle,
+            record: self.channel.record.clone(),
             id,
             call,
         })
@@ -1209,7 +1183,7 @@ impl ChannelHandle {
     ) -> Result<(u64, String), NotAvailable> {
         match self
             .call(Operation::Launch {
-                channel: self.channel.handle,
+                record: self.channel.record.clone(),
                 app_id: app_id.to_owned(),
                 package_root: package_root.unwrap_or_default().to_owned(),
                 on_behalf_of: on_behalf_of.map(Vec::from).unwrap_or_default(),
@@ -1239,7 +1213,7 @@ impl ChannelHandle {
             .channel
             .client
             .call(Operation::Admit {
-                channel: self.channel.handle,
+                record: self.channel.record.clone(),
                 report: bytes,
             })
             .await
@@ -1388,7 +1362,7 @@ impl ResourcePages {
     }
 }
 
-/// What the host says of the actions a [`ChannelHandle::shown_actions`] names; dropping it ends
+/// What the host says of the actions a [`RecordHandle::shown_actions`] names; dropping it ends
 /// the subscription.
 pub struct ActionVerdictFeed(Feed);
 
@@ -1599,7 +1573,7 @@ fn json_text(bytes: Vec<u8>) -> Result<String, NotAvailable> {
 /// The channel's presence: what this endpoint shows, and everyone else's.
 #[derive(Clone)]
 pub struct PresenceHandle {
-    channel: ChannelHandle,
+    channel: RecordHandle,
 }
 impl PresenceHandle {
     async fn publish(

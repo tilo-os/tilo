@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use super::{Answer, Ask, Call, Event, FRAMING, Handle, HostFrame, Operation, Reply, Topic};
+use super::{
+    Answer, Ask, Call, Event, FRAMING, Handle, HostFrame, Operation, Record, Reply, Topic,
+};
 
 /// Why a call got no answer from the host.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,16 +51,24 @@ pub enum Delivery {
     Ended(Failure),
 }
 
-/// How an endpoint answers the host's asks of something it published on a
-/// channel, such as its action directory.
+/// How an endpoint answers the host's asks of something it published, such as its action
+/// directory.
 pub type Answerer =
     Arc<dyn Fn(Ask) -> Pin<Box<dyn Future<Output = Result<Answer, String>> + Send>> + Send + Sync>;
+
+/// What the host's asks are about: a record the endpoint published a directory about, or a
+/// provider it serves under a handle.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Answering {
+    Record(String),
+    Served(Handle),
+}
 
 #[derive(Default)]
 struct Routes {
     calls: HashMap<u64, oneshot::Sender<Result<Reply, String>>>,
     subscriptions: HashMap<u64, mpsc::UnboundedSender<Delivery>>,
-    answerers: HashMap<Handle, Answerer>,
+    answerers: HashMap<Answering, Answerer>,
     /// Why the connection ended, once it has.
     ended: Option<Failure>,
 }
@@ -203,9 +213,9 @@ impl Client {
         self.shared.notify(request);
     }
 
-    /// Subscribe to `channel`'s `topic`.
-    pub async fn subscribe(&self, channel: Handle, topic: Topic) -> Result<Subscription, Failure> {
-        self.subscription(|id| (id, Operation::Subscribe { channel, topic }))
+    /// Subscribe to `record`'s `topic`.
+    pub async fn subscribe(&self, record: Record, topic: Topic) -> Result<Subscription, Failure> {
+        self.subscription(|id| (id, Operation::Subscribe { record, topic }))
             .await
     }
 
@@ -256,16 +266,28 @@ impl Client {
         }
     }
 
-    /// Answer the host's asks about what this endpoint publishes on
-    /// `channel` with `answerer`, until the channel is closed.
-    pub fn answer(&self, channel: Handle, answerer: Answerer) {
-        self.shared.routes().answerers.insert(channel, answerer);
+    /// Answer the host's asks about what this endpoint publishes for `about` with `answerer`,
+    /// until it leaves the record or closes the handle.
+    pub fn answer(&self, about: Answering, answerer: Answerer) {
+        self.shared.routes().answerers.insert(about, answerer);
     }
 
-    /// Stop answering for `channel`, and close it on the host.
-    pub fn close(&self, channel: Handle) {
-        self.shared.routes().answerers.remove(&channel);
-        self.shared.notify(Operation::Close { handle: channel });
+    /// Stop answering for the handle `handle`, and close it on the host.
+    pub fn close(&self, handle: Handle) {
+        self.shared
+            .routes()
+            .answerers
+            .remove(&Answering::Served(handle));
+        self.shared.notify(Operation::Close { handle });
+    }
+
+    /// Stop answering for the record `record` (its key), and leave it on the host.
+    pub fn leave(&self, record: String) {
+        self.shared
+            .routes()
+            .answerers
+            .remove(&Answering::Record(record.clone()));
+        self.shared.notify(Operation::Leave { record });
     }
 
     /// Resolves once the connection has ended.
@@ -363,17 +385,18 @@ fn route(shared: &Arc<Shared>, frame: HostFrame) {
             }
         }
         HostFrame::Ask { id, ask } => {
-            let channel = match &ask {
-                Ask::Query { channel, .. }
-                | Ask::Resolve { channel, .. }
-                | Ask::Action { channel, .. } => *channel,
+            let about = match &ask {
+                Ask::Query { record, .. } | Ask::Resolve { record, .. } => {
+                    Answering::Record(record.clone())
+                }
+                Ask::Action { channel, .. } => Answering::Served(*channel),
             };
-            let answerer = routes.answerers.get(&channel).cloned();
+            let answerer = routes.answerers.get(&about).cloned();
             drop(routes);
             let Some(answerer) = answerer else {
                 shared.notify(Operation::Answer {
                     ask: id,
-                    answer: Err("nothing answers on this channel".into()),
+                    answer: Err("nothing answers for this here".into()),
                 });
                 return;
             };
@@ -407,7 +430,7 @@ mod tests {
             let client = client.clone();
             async move {
                 client
-                    .subscribe(Handle(1), Topic::Context)
+                    .subscribe(Record::new("app/workspace", ""), Topic::Context)
                     .await
                     .map(|_| ())
             }
@@ -430,7 +453,9 @@ mod tests {
         );
         carried.await.unwrap();
         assert!(matches!(
-            client.subscribe(Handle(1), Topic::Context).await,
+            client
+                .subscribe(Record::new("app/workspace", ""), Topic::Context)
+                .await,
             Err(Failure::Unreadable(_))
         ));
     }

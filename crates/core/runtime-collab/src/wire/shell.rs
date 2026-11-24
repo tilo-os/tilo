@@ -92,6 +92,8 @@ pub struct VouchedApp {
     /// when the launcher handed the app's process over.
     pub process: u32,
     pub launcher: Option<u32>,
+    /// The workspace agent the shell launched the app to act as; `None` for its person.
+    pub member: Option<String>,
 }
 
 /// Where on the shell's screen the person pressed an action: the window's tab key and the

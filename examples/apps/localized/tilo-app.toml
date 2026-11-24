@@ -28,8 +28,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@41"
-tilo-fs = "optional@41"
+collab = "optional@42"
+tilo-fs = "optional@42"
 
 [entrypoint]
 bin = "bin/example-localized"

@@ -99,6 +99,7 @@ roots = ["Manifest", "Header", "SignedRegistrySnapshot", "CompactRegistrySnapsho
 "Entrypoint" = "struct"
 "Entrypoint.bin" = "PathBuf optional"
 "Entrypoint.cli-bin" = "Option<PathBuf> optional"
+"Entrypoint.connection" = "bool optional"
 "Entrypoint.gui-bin" = "Option<PathBuf> optional"
 "Entrypoint.origins" = "Vec<String> optional"
 "Entrypoint.runtime" = "Option<String> optional"

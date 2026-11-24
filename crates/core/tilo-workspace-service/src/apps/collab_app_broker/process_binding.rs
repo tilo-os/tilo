@@ -161,6 +161,7 @@ mod tests {
             workspace_id: "workspace".into(),
             executing_peer: true,
             window_instance: None,
+            member: None,
         }
     }
 

@@ -7,7 +7,7 @@ use super::{CollabEvent, InboundBridge};
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn spawn_realtime_stream(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     inbound_tx: &InboundBridge,
 ) {
     let stream = match channel.subscribe_realtime().await {

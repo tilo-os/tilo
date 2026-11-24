@@ -54,7 +54,7 @@ pub fn enqueue_reported(route: &str, request: Request) -> Result<ReportedReply, 
 /// Duplicate live routes refuse ambiguity rather than selecting another instance.
 pub(super) fn register(
     route: String,
-    channel: runtime_collab::ChannelHandle,
+    channel: runtime_collab::RecordHandle,
 ) -> Result<Registration<Endpoint>, String> {
     let (send, mut receive) = mpsc::channel::<Job>(MAX_PENDING);
     let endpoint = Arc::new(Endpoint(send));

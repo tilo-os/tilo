@@ -112,7 +112,7 @@ pub fn validate_receipt(
 }
 
 #[cfg(feature = "client")]
-impl crate::ChannelHandle {
+impl crate::RecordHandle {
     /// Complete an exact moderation operation under its admitted invocation.
     /// No signature or key material is returned to the caller.
     pub async fn external_moderation(

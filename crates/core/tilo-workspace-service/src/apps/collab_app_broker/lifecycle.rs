@@ -501,8 +501,7 @@ impl AppBrokerState {
                     certificate: certificate.clone(),
                 }),
                 route,
-                root: certificate.user_public_key,
-                device: certificate.device_public_key,
+                certificate: certificate.clone(),
             },
         });
         drop(workers);

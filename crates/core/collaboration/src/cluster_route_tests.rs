@@ -38,7 +38,6 @@ fn a_cluster_route_asks_for_no_keys_follows_no_changes_and_polls_nothing() {
                 Ok(ready_channel_keys())
             })
         },
-        harness_presentation(),
         ("so.tilo.test", Uuid::new_v4()),
     );
     // The app's own route learns its keys at its join round and holds
@@ -86,77 +85,6 @@ fn a_cluster_route_asks_for_no_keys_follows_no_changes_and_polls_nothing() {
         !captures.lock().unwrap().record_reads.contains(&key),
         "a cluster route follows every app's changes, never one record's: {:?}",
         topics()
-    );
-    drop(manager);
-    thread.join().unwrap();
-}
-
-/// The identity service lends a join proof for the person's own workspace
-/// only to an app that keeps something of theirs there, so an app asks for it
-/// when a route there first joins, once, and an app that joins none never
-/// asks. Pre-fix every app asked at connect, and each one that keeps nothing
-/// of the person's was refused and logged it.
-#[test]
-#[cfg(unix)]
-fn the_persons_own_workspace_is_proved_when_a_route_there_joins() {
-    let (fd, captures, thread) = stand_up_fake_broker(FakeBroker::default());
-    let root = [1_u8; 32];
-    let launch = Uuid::new_v4();
-    let personal = collab_types::person_workspace(&root);
-    let joins = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut manager = certified_manager(
-        fd,
-        FixtureIdentity {
-            joins: Arc::clone(&joins),
-            ..FixtureIdentity::keyed()
-        },
-        runtime_collab::CertifiedJoinIdentity {
-            workspace_id: launch.to_string(),
-            device_certificate: serde_json::to_vec(&serde_json::json!({
-                "user_public_key": root,
-            }))
-            .unwrap(),
-            proof: vec![0; 64],
-        }
-        .encode()
-        .unwrap(),
-        ("so.tilo.test", launch),
-    );
-    assert_eq!(
-        joins.load(std::sync::atomic::Ordering::Acquire),
-        0,
-        "an app that joined nothing of the person's asked for their workspace's proof"
-    );
-    let presented = |route: &RouteSpec| {
-        let key = route.channel_id();
-        let joined = || {
-            captures
-                .lock()
-                .unwrap()
-                .joined
-                .iter()
-                .find(|(joined, _)| *joined == key)
-                .map(|(_, identity)| identity.clone())
-        };
-        tilo_test_env::wait_until("the route in the person's workspace to join", || {
-            joined().is_some()
-        });
-        runtime_collab::CertifiedJoinIdentity::decode(&joined().unwrap())
-            .unwrap()
-            .unwrap()
-            .workspace_id
-    };
-    for route in [
-        RouteSpec::app("so.tilo.test", personal),
-        RouteSpec::document("so.tilo.test", personal, "derived:history"),
-    ] {
-        manager.join_route(route.clone(), collab_types::document::ResourceType::new(""));
-        assert_eq!(presented(&route), personal.to_string());
-    }
-    assert_eq!(
-        joins.load(std::sync::atomic::Ordering::Acquire),
-        1,
-        "the proof is asked once"
     );
     drop(manager);
     thread.join().unwrap();

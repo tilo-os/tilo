@@ -52,7 +52,7 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
             );
             let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge));
             let (worker, _authorizer) =
-                join_worker(&state, &directories, &env.route, &env.cert, &env.key, 401).await;
+                join_worker(&state, &directories, &env.route, &env.cert, 401).await;
             let settings = worker.handle.settings();
             assert_eq!(
                 settings
@@ -87,12 +87,7 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
                 Some(pending.binding),
                 directories.clone(),
             );
-            let ordinary = rpc
-                .join_channel(
-                    &env.route.channel_key(),
-                    &presentation(&env.route.cluster_id, &env.cert, &env.key),
-                )
-                .await
+            let ordinary = opened(&rpc, &env.route.channel_key()).await
                 .unwrap();
             assert!(
                 ordinary
@@ -102,21 +97,12 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
                     .is_err()
             );
             assert_eq!(delegate.calls.lock().unwrap().len(), 1);
-            let (_, evidence) = member_device_evidence(&env, 96, true);
-            for (peer, kind, agent) in [(404, "person", ""), (405, "agent", "foreign-agent")] {
-                let (host_socket, client_socket) = std::os::unix::net::UnixStream::pair().unwrap();
-                let (foreign_rpc, foreign_server, foreign_client) = rpc_pair(
-                    state.clone(),
-                    peer,
-                    host_socket,
-                    client_socket,
-                    None,
-                    directories.clone(),
-                );
-                let joined = foreign_rpc
-                    .join_channel_as_kind(&env.route.channel_key(), &evidence, agent, kind, "")
-                    .await;
-                if kind == "agent" {
+            let foreign_device = member_device_certificate(&env, 96, true);
+            for (peer, agent) in [(404, None), (405, Some("foreign-agent"))] {
+                let (foreign_rpc, _server, _client) =
+                    certified_rpc(&state, &directories, peer, foreign_device.clone(), agent);
+                let joined = opened(&foreign_rpc, &env.route.channel_key()).await;
+                if agent.is_some() {
                     assert!(
                         joined.is_err(),
                         "foreign devices cannot launch a delegated Agent channel"
@@ -135,10 +121,6 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
                         "foreign public channels cannot acquire private Settings mutation authority"
                     );
                 }
-                foreign_server.abort();
-                foreign_client.abort();
-                let _ = foreign_server.await;
-                let _ = foreign_client.await;
             }
             assert_eq!(delegate.calls.lock().unwrap().len(), 1);
             let identity = state
@@ -167,7 +149,7 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
             state.remove_connection(401);
             assert!(retained(b"{}", runtime_collab::settings::DisplayOrigin::LocalHost).is_err());
             let (replacement, _) =
-                join_worker(&state, &directories, &env.route, &env.cert, &env.key, 403).await;
+                join_worker(&state, &directories, &env.route, &env.cert, 403).await;
             assert!(
                 retained(b"{}", runtime_collab::settings::DisplayOrigin::LocalHost).is_err(),
                 "an equal certificate on a new connection cannot revive retired registration"
@@ -495,22 +477,14 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
             assert_eq!(delegate.calls.lock().unwrap().len(), 1);
             // A foreign member device of the same person has workspace Admin but
             // must not obtain the original worker's device certificate.
-            let (_, evidence) = member_device_evidence(&env, 97, false);
-            let (host, client) = std::os::unix::net::UnixStream::pair().unwrap();
-            let (rpc, foreign_server, foreign_client) = rpc_pair(
-                rig.state.clone(),
+            let (rpc, _server, _client) = certified_rpc(
+                &rig.state,
+                &rig.directories,
                 907,
-                host,
-                client,
+                member_device_certificate(&env, 97, false),
                 None,
-                rig.directories.clone(),
             );
-            let foreign = rpc
-                .join_channel(
-                    &CrdtRoute::cluster(env.route.cluster_id.clone()).channel_key(),
-                    &evidence,
-                )
-                .await
+            let foreign = opened(&rpc, &CrdtRoute::cluster(env.route.cluster_id.clone()).channel_key()).await
                 .unwrap();
             // Whether or not the other device's call is admitted, it never
             // carries this worker's device into the display transaction.
@@ -535,17 +509,12 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
                 "workspace Admin admission is not physical device ownership"
             );
             assert_eq!(delegate.calls.lock().unwrap().len(), 1);
-            foreign_server.abort();
-            foreign_client.abort();
-            let _ = foreign_server.await;
-            let _ = foreign_client.await;
             rig.state.remove_connection(903);
             let (mut replacement, _) = join_worker(
                 &rig.state,
                 &rig.directories,
                 &env.route,
                 &env.cert,
-                &env.key,
                 908,
             )
             .await;
@@ -575,7 +544,7 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
 /// Ask the Settings worker (peer 903) to identify its displays over
 /// `handle`'s channel, as an app reaches another's action.
 async fn identify_displays(
-    handle: &runtime_collab::ChannelHandle,
+    handle: &runtime_collab::RecordHandle,
 ) -> tilo_actions::remote::InvocationReceipt {
     super::signed_worker::receipt(
         super::signed_worker::ask(

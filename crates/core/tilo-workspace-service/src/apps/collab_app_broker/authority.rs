@@ -308,8 +308,6 @@ impl AppBrokerState {
                     admit_listed_agent(roster, &route.cluster_id, &mut current, agent_id).map_err(
                         |error| format!("certified agent session is no longer admitted: {error}"),
                     )?;
-                } else {
-                    current.display_handle.clone_from(&admitted.display_handle);
                 }
                 Ok::<_, String>(current)
             })

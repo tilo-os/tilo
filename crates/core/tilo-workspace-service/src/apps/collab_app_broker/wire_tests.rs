@@ -81,7 +81,7 @@ impl Workspace {
     ) -> (
         Rc<WireConnection>,
         mpsc::UnboundedReceiver<HostFrame>,
-        Handle,
+        Record,
     ) {
         let root = SigningKey::from_bytes(&[seed; 32]);
         let admitted = admit_verified_join(
@@ -96,7 +96,7 @@ impl Workspace {
         .unwrap();
         let (connection, outgoing) = WireConnection::new(None);
         let hold = self.state.next_peer_id();
-        let channel = connection.open(ChannelSession::new(Rc::new(JoinedChannel {
+        let key = connection.open(ChannelSession::new(Rc::new(JoinedChannel {
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: self.state.clone(),
             directories: self.directories.clone(),
@@ -109,16 +109,23 @@ impl Workspace {
             lease: None,
             _hold: None,
         })));
-        (connection, outgoing, channel)
+        (connection, outgoing, Record::new(key, ""))
     }
 
-    /// A connection that joins routes itself, served to an endpoint
-    /// holding none yet.
-    fn joining_endpoint(&self) -> Endpoint {
+    /// A connection of an app acting as `seed`'s person on `device`, served to an endpoint
+    /// naming the workspace's record, which the connection opens on its first call about it.
+    fn opening_endpoint(&self, seed: u8, device: &SigningKey) -> Endpoint {
         let peer_id = self.fanout.next_peer_id();
         let service = Rc::new(AppConnection {
             worker: None,
             app_worker: None,
+            identity: Some(session::ConnectionIdentity::certified(
+                crate::apps::collab_app_broker::tests::device_certificate(
+                    &SigningKey::from_bytes(&[seed; 32]),
+                    device,
+                ),
+                None,
+            )),
             state: self.state.clone(),
             directories: self.directories.clone(),
             peer_id,
@@ -131,7 +138,11 @@ impl Workspace {
             holds: route_holds::ConnectionHolds::default(),
         });
         let (connection, outgoing) = WireConnection::new(Some(service));
-        Endpoint::serve(connection, outgoing, Handle(0))
+        Endpoint::serve(
+            connection,
+            outgoing,
+            Record::new(self.route.channel_key(), ""),
+        )
     }
 }
 
@@ -148,7 +159,7 @@ fn actor(seed: u8) -> String {
 }
 
 struct Endpoint {
-    channel: Handle,
+    channel: Record,
     stream: tokio::net::UnixStream,
     next_id: u64,
     driver: tokio::task::JoinHandle<Result<(), wire_frame::FrameError>>,
@@ -164,7 +175,7 @@ impl Endpoint {
     fn serve(
         connection: Rc<WireConnection>,
         outgoing: mpsc::UnboundedReceiver<HostFrame>,
-        channel: Handle,
+        channel: Record,
     ) -> Self {
         let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
         let (reader, writer) = host.into_split();
@@ -214,9 +225,9 @@ impl Endpoint {
         key: &PresenceKey,
         payload: PeerPresencePayload,
     ) -> Result<Reply, String> {
-        let channel = self.channel;
+        let channel = self.channel.clone();
         self.call(Operation::Publish {
-            channel,
+            record: channel.clone(),
             publication: Publication::Presence(PeerPresence {
                 key: postcard::to_stdvec(key).unwrap(),
                 payload,
@@ -233,10 +244,10 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
             let workspace = Workspace::new(&[1, 2]);
             let mut watcher = workspace.endpoint(1);
             let mut author = workspace.endpoint(2);
-            let channel = watcher.channel;
+            let channel = watcher.channel.clone();
             let subscription = watcher
                 .send(Operation::Subscribe {
-                    channel,
+                    record: channel.clone(),
                     topic: Topic::Presence,
                 })
                 .await;
@@ -311,9 +322,9 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                 .publish(&key, PeerPresencePayload::Arrived)
                 .await
                 .unwrap();
-            let channel = watcher.channel;
+            let channel = watcher.channel.clone();
             assert_eq!(
-                watcher.call(Operation::Close { handle: channel }).await,
+                watcher.call(Operation::Leave { record: channel.key }).await,
                 Ok(Reply::Done),
                 "nothing more arrives on an ended subscription before the next reply"
             );
@@ -322,7 +333,7 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                     .publish(&key, PeerPresencePayload::Left)
                     .await
                     .is_err(),
-                "a closed handle names nothing"
+                "a record the connection left names nothing on it"
             );
         })
         .await;
@@ -466,10 +477,10 @@ impl Endpoint {
         &mut self,
         command: &tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
-        let channel = self.channel;
+        let channel = self.channel.clone();
         let reply = self
             .call(Operation::Command {
-                channel,
+                record: channel.clone(),
                 service: Service::Resources,
                 body: serde_json::to_vec(command).unwrap(),
                 on_behalf_of: Vec::new(),
@@ -483,10 +494,10 @@ impl Endpoint {
 
     /// Subscribe this endpoint to its channel's context.
     async fn follow_context(&mut self) -> u64 {
-        let channel = self.channel;
+        let channel = self.channel.clone();
         let subscription = self
             .send(Operation::Subscribe {
-                channel,
+                record: channel.clone(),
                 topic: Topic::Context,
             })
             .await;
@@ -684,60 +695,35 @@ async fn a_change_sent_in_runs_lands_as_one_write() {
         .await;
 }
 
+/// An app's connection opens a record on its first call naming it, as the person its launch
+/// admitted it as: a device the workspace never enrolled opens nothing, the member's own device
+/// works in it.
 #[tokio::test(flavor = "current_thread")]
-async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
+async fn a_record_opens_on_the_first_call_naming_it() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let workspace = Workspace::new(&[3]);
-            let mut endpoint = workspace.joining_endpoint();
-            let channel = workspace.route.channel_key();
+            let mut endpoint = workspace.opening_endpoint(3, &device(4));
             assert_eq!(
                 endpoint
                     .call(Operation::Workspace {
-                        channel: channel.clone(),
+                        record: workspace.route.channel_key(),
                         seen: None,
                     })
                     .await,
                 Ok(Reply::Workspace(runtime_collab::WorkspaceStatus::Ready))
             );
             let refused = endpoint
-                .call(Operation::Join(Join {
-                    channel: channel.clone(),
-                    identity: crate::apps::collab_app_broker::tests::certified_join(
-                        &workspace.route.cluster_id,
-                        &SigningKey::from_bytes(&[3; 32]),
-                        &device(4),
-                    )
-                    .encode()
-                    .unwrap(),
-                    member: None,
-                    handle: String::new(),
-                    resource_type: None,
-                }))
+                .publish(
+                    &PresenceKey::surface_pointer("editor"),
+                    PeerPresencePayload::Arrived,
+                )
                 .await;
             assert!(
                 refused.is_err(),
-                "a device the workspace never enrolled joins nothing"
+                "a device the workspace never enrolled opens nothing"
             );
-            let Ok(Reply::Opened(handle)) = endpoint
-                .call(Operation::Join(Join {
-                    channel,
-                    identity: crate::apps::collab_app_broker::tests::certified_join(
-                        &workspace.route.cluster_id,
-                        &SigningKey::from_bytes(&[3; 32]),
-                        &device(3),
-                    )
-                    .encode()
-                    .unwrap(),
-                    member: None,
-                    handle: "Ada".into(),
-                    resource_type: None,
-                }))
-                .await
-            else {
-                panic!("the member's enrolled device joins");
-            };
-            endpoint.channel = handle;
+            let mut endpoint = workspace.opening_endpoint(3, &device(3));
             assert_eq!(
                 endpoint
                     .publish(
@@ -807,12 +793,12 @@ async fn an_apps_open_query_sends_its_pages_over_its_route() {
                 ..services
             });
             let mut app = workspace.endpoint(9);
-            let channel = app.channel;
+            let channel = app.channel.clone();
             let query =
                 serde_json::to_vec(&tilo_resource_store::Query::of("tasks.issue", 10)).unwrap();
             let subscription = app
                 .send(Operation::Subscribe {
-                    channel,
+                    record: channel.clone(),
                     topic: Topic::Resources(query),
                 })
                 .await;
@@ -859,9 +845,9 @@ async fn an_app_reads_through_its_certified_route_and_its_writes_are_decided_by_
             let reads: Arc<dyn tilo_actions::remote::ResourceReads> = decides.clone();
             workspace.state.serve_records(reads);
             let (connection, outgoing, handle) = workspace.connection(9, RouteAccess::ReadOnly);
-            let mut endpoint = Endpoint::serve(connection, outgoing, handle);
+            let mut endpoint = Endpoint::serve(connection, outgoing, handle.clone());
             let ask = |handle, command: &Command, on_behalf_of| Operation::Command {
-                channel: handle,
+                record: handle,
                 service: Service::Resources,
                 body: serde_json::to_vec(command).unwrap(),
                 on_behalf_of,
@@ -869,7 +855,7 @@ async fn an_app_reads_through_its_certified_route_and_its_writes_are_decided_by_
 
             let answer = endpoint
                 .call(ask(
-                    handle,
+                    handle.clone(),
                     &Command::Count {
                         kind: "tasks.issue".to_owned(),
                         filters: Vec::new(),
@@ -890,7 +876,7 @@ async fn an_app_reads_through_its_certified_route_and_its_writes_are_decided_by_
                 stamp: tilo_resource_store::Stamp::default(),
             };
             let denied = endpoint
-                .call(ask(handle, &write, Vec::new()))
+                .call(ask(handle.clone(), &write, Vec::new()))
                 .await
                 .unwrap_err();
             assert!(denied.contains("may not change the record"), "{denied}");
@@ -908,15 +894,15 @@ async fn an_app_reads_through_its_certified_route_and_its_writes_are_decided_by_
             // access says, which decides no resource write.
             decides.0.store(true, Ordering::Relaxed);
             endpoint
-                .call(ask(handle, &write, Vec::new()))
+                .call(ask(handle.clone(), &write, Vec::new()))
                 .await
                 .unwrap();
             assert_eq!(store.0.lock().unwrap().len(), 2);
 
             let (connection, outgoing, handle) = workspace.connection(9, RouteAccess::Own);
-            let mut endpoint = Endpoint::serve(connection, outgoing, handle);
+            let mut endpoint = Endpoint::serve(connection, outgoing, handle.clone());
             let denied = endpoint
-                .call(ask(handle, &write, vec![1; 16]))
+                .call(ask(handle.clone(), &write, vec![1; 16]))
                 .await
                 .unwrap_err();
             assert!(denied.contains("no caller-scoped signer"));
@@ -931,7 +917,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
         .run_until(async {
             let workspace = Workspace::new(&[9]);
             let mut endpoint = workspace.endpoint(9);
-            let channel = endpoint.channel;
+            let channel = endpoint.channel.clone();
             for service in [
                 Service::AudioOutput,
                 Service::NativeMedia,
@@ -948,7 +934,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             ] {
                 let refused = endpoint
                     .call(Operation::Command {
-                        channel,
+                        record: channel.clone(),
                         service,
                         body: b"not a command".to_vec(),
                         on_behalf_of: Vec::new(),
@@ -959,14 +945,14 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             assert!(
                 endpoint
                     .call(Operation::Command {
-                        channel: Handle(77),
+                        record: Record::new("so.tilo.notes/elsewhere", ""),
                         service: Service::RemoteAction,
                         body: Vec::new(),
                         on_behalf_of: Vec::new(),
                     })
                     .await
                     .is_err(),
-                "a command names a channel the connection holds"
+                "a command names a record the connection holds"
             );
             for report in [
                 Report::Continuation {
@@ -980,7 +966,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 assert!(
                     endpoint
                         .call(Operation::Publish {
-                            channel,
+                            record: channel.clone(),
                             publication: Publication::Report(report.clone()),
                         })
                         .await
@@ -991,7 +977,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             assert!(
                 endpoint
                     .call(Operation::Publish {
-                        channel,
+                        record: channel.clone(),
                         publication: Publication::Effect {
                             resource: "note:1".into(),
                             action: "archive".into(),
@@ -1012,7 +998,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 assert!(
                     endpoint
                         .call(Operation::Changed {
-                            channel,
+                            record: channel.clone(),
                             of,
                             after: 0,
                         })
@@ -1031,11 +1017,11 @@ async fn an_app_takes_its_invocations_and_answers_only_its_own() {
         .run_until(async {
             let workspace = Workspace::new(&[13]);
             let mut endpoint = workspace.endpoint(13);
-            let channel = endpoint.channel;
+            let channel = endpoint.channel.clone();
             assert_eq!(
                 endpoint
                     .call(Operation::Subscribe {
-                        channel,
+                        record: channel.clone(),
                         topic: Topic::Invocations { stable_ids: true },
                     })
                     .await,
@@ -1052,7 +1038,7 @@ async fn an_app_takes_its_invocations_and_answers_only_its_own() {
                 assert!(
                     endpoint
                         .call(Operation::Invocation {
-                            channel,
+                            record: channel.clone(),
                             id: 404,
                             call: call.clone(),
                         })
@@ -1064,7 +1050,7 @@ async fn an_app_takes_its_invocations_and_answers_only_its_own() {
             assert!(
                 endpoint
                     .call(Operation::Launch {
-                        channel,
+                        record: channel.clone(),
                         app_id: "so.tilo.notes".into(),
                         package_root: String::new(),
                         on_behalf_of: Vec::new(),
@@ -1083,7 +1069,7 @@ async fn an_app_publishes_its_action_surface_as_a_change() {
         .run_until(async {
             let workspace = Workspace::new(&[14]);
             let mut endpoint = workspace.endpoint(14);
-            let channel = endpoint.channel;
+            let channel = endpoint.channel.clone();
             let reset = serde_json::to_string(&runtime_collab::SurfaceDelta {
                 reset: true,
                 ..runtime_collab::SurfaceDelta::default()
@@ -1092,7 +1078,7 @@ async fn an_app_publishes_its_action_surface_as_a_change() {
             assert_eq!(
                 endpoint
                     .call(Operation::Publish {
-                        channel,
+                        record: channel.clone(),
                         publication: Publication::Surface(reset),
                     })
                     .await,
@@ -1101,7 +1087,7 @@ async fn an_app_publishes_its_action_surface_as_a_change() {
             assert!(
                 endpoint
                     .call(Operation::Publish {
-                        channel,
+                        record: channel.clone(),
                         publication: Publication::Surface("{}".into()),
                     })
                     .await
@@ -1138,7 +1124,7 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
             assert_eq!(
                 author
                     .call(Operation::Publish {
-                        channel: authored,
+                        record: authored,
                         publication: Publication::Presence(PeerPresence {
                             key: postcard::to_stdvec(&key).unwrap(),
                             payload: PeerPresencePayload::Arrived,
@@ -1190,11 +1176,11 @@ async fn a_shown_action_is_decided_by_the_workspace_holding_it_and_again_when_it
                 .add_member(actor(21), crate::apps::test_support::Role::Viewer);
             workspace.membership.write().workspaces.push(held);
             let mut endpoint = workspace.endpoint(21);
-            let channel = endpoint.channel;
+            let channel = endpoint.channel.clone();
             let actions = vec![shown(Some(10)), shown(Some(11)), shown(None)];
             let subscription = endpoint
                 .send(Operation::Subscribe {
-                    channel,
+                    record: channel.clone(),
                     topic: Topic::ShownActions(actions.clone()),
                 })
                 .await;
@@ -1331,7 +1317,7 @@ async fn an_apps_own_connection_is_never_answered_as_another_app() {
                 }
             });
             let mut endpoint = workspace.endpoint(9);
-            let channel = endpoint.channel;
+            let channel = endpoint.channel.clone();
 
             let read = RemoteActionMessage::ResourceRead {
                 correlation: 1,
@@ -1348,7 +1334,7 @@ async fn an_apps_own_connection_is_never_answered_as_another_app() {
             };
             let answered = endpoint
                 .call(Operation::Command {
-                    channel,
+                    record: channel.clone(),
                     service: Service::RemoteAction,
                     body: RemoteActionFrame::new(read).encode().unwrap(),
                     on_behalf_of: Vec::new(),
@@ -1391,7 +1377,7 @@ async fn an_apps_own_connection_is_never_answered_as_another_app() {
             });
             let answered = endpoint
                 .call(Operation::Command {
-                    channel,
+                    record: channel.clone(),
                     service: Service::RemoteAction,
                     body: RemoteActionFrame::new(invoke).encode().unwrap(),
                     on_behalf_of: Vec::new(),

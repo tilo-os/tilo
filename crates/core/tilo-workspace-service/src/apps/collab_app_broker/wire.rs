@@ -1,6 +1,6 @@
 //! The host side of the collaboration wire (`runtime_collab::wire`): one
-//! dispatcher over its requests, with the channels a connection opened kept
-//! here under their handles and its subscriptions pumped onto the one
+//! dispatcher over its requests, with what a connection holds on each record its
+//! calls named kept here by record and its subscriptions pumped onto the one
 //! outgoing frame queue.
 
 #![allow(
@@ -18,17 +18,15 @@ use std::rc::Weak;
 
 use runtime_collab::wire::{
     Answer as Answered, Ask, Call, Changes, CheckProgress, ContextUpdate, Event, FRAMING, Handle,
-    HostFrame, InvocationCall, Join, LiveActivityCall, Operation, Publication, Read, Reply, Report,
-    Service, SettingsCall, Topic,
+    HostFrame, InvocationCall, LiveActivityCall, Operation, Publication, Read, Record, Reply,
+    Report, Service, SettingsCall, Topic,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use collab_types::MemberId;
-
 use super::*;
 
-mod join;
 mod presence;
+mod record;
 pub(super) use presence::PresenceSession;
 use presence::presence_event;
 
@@ -69,15 +67,14 @@ impl<T> Feed<T> {
     }
 }
 
-/// What a connection opened under one handle: one admitted endpoint's hold
-/// on a channel, and its presence there.
+/// What a connection holds on one record its calls named, and its presence there.
 pub(super) struct ChannelSession {
     channel: Rc<JoinedChannel>,
     presence: PresenceSession,
     /// The app's settings, opened on its first call.
     settings: RefCell<Option<Rc<super::session::AppSettings>>>,
     /// The app's live activity, opened on its first call; it ends when the
-    /// app closes the channel.
+    /// app leaves the record.
     live_activity: RefCell<Option<Rc<super::session::AppLiveActivity>>>,
     /// The runs of a change of the channel's record that came before its last.
     record_runs: RefCell<Vec<u8>>,
@@ -1427,11 +1424,11 @@ pub(super) trait DirectorySource {
     ) -> Asked<runtime_collab::ActionDirectoryResolution>;
 }
 
-/// The directory an endpoint published on one of its channels, asked over
+/// The directory an endpoint published about one of its records, asked over
 /// its connection.
 pub(super) struct WireDirectory {
     connection: Weak<WireConnection>,
-    channel: Handle,
+    record: String,
 }
 
 impl WireDirectory {
@@ -1456,7 +1453,7 @@ impl DirectorySource for WireDirectory {
         max_bytes: u32,
     ) -> Asked<runtime_collab::ActionDirectoryPage> {
         let asked = self.ask(Ask::Query {
-            channel: self.channel,
+            record: self.record.clone(),
             query,
         });
         Box::pin(async move {
@@ -1478,7 +1475,7 @@ impl DirectorySource for WireDirectory {
         max_bytes: u32,
     ) -> Asked<runtime_collab::ActionDirectoryResolution> {
         let asked = self.ask(Ask::Resolve {
-            channel: self.channel,
+            record: self.record.clone(),
             revision: revision.to_owned(),
             resource: resource.to_owned(),
             action: action.to_owned(),
@@ -1502,20 +1499,31 @@ impl DirectorySource for WireDirectory {
     }
 }
 
-/// One endpoint's connection: the handles it holds, its live subscriptions,
+/// What a connection holds on a record, once the first call naming it decided it.
+type Opened = Rc<tokio::sync::OnceCell<Rc<ChannelSession>>>;
+
+/// What a subscription is about: a record, or a handle this connection holds.
+#[derive(Clone, PartialEq, Eq)]
+enum About {
+    Record(String),
+    Handle(Handle),
+}
+
+/// One endpoint's connection: what it holds on the records it named, its live subscriptions,
 /// and the queue every outgoing frame takes.
 pub(super) struct WireConnection {
-    /// What joins channels for this connection. A connection without one
-    /// only holds the channels opened for it.
+    /// The app this connection was admitted as, which opens the records it names. A connection
+    /// without one holds only the records opened for it.
     service: Option<Rc<AppConnection>>,
     /// The person this connection is the shell of, when the daemon's dispatch admitted it as one.
     shell: Option<super::shell::Shell>,
-    channels: RefCell<HashMap<Handle, Rc<ChannelSession>>>,
+    /// What the connection holds on each record its calls named, by the record's key.
+    records: RefCell<HashMap<String, Opened>>,
     /// The handle this connection opened on the session's published
     /// resources, once it asked for them.
     published: Cell<Option<Handle>>,
     next_handle: Cell<u64>,
-    subscriptions: RefCell<HashMap<u64, (Handle, tokio::task::AbortHandle)>>,
+    subscriptions: RefCell<HashMap<u64, (About, tokio::task::AbortHandle)>>,
     /// The workspace control sessions subscriptions hold, for their input.
     controls: RefCell<HashMap<u64, Rc<dyn crate::apps::services::WorkspaceControlSession>>>,
     /// What ends each invocation subscription once its app asks for no more.
@@ -1583,7 +1591,7 @@ impl WireConnection {
         let connection = Rc::new(Self {
             service,
             shell,
-            channels: RefCell::default(),
+            records: RefCell::default(),
             published: Cell::default(),
             next_handle: Cell::new(1),
             subscriptions: RefCell::default(),
@@ -1655,20 +1663,83 @@ impl WireConnection {
         answered
     }
 
-    /// Hold `session` for this connection under a fresh handle.
-    pub(super) fn open(&self, session: ChannelSession) -> Handle {
-        let handle = Handle(self.next_handle.get());
-        self.next_handle.set(handle.0.wrapping_add(1));
-        self.channels.borrow_mut().insert(handle, Rc::new(session));
-        handle
+    /// Hold `session` for this connection: the record it is about, which this connection's calls
+    /// name from now on.
+    pub(super) fn open(&self, session: ChannelSession) -> String {
+        let key = session.channel_id.clone();
+        let opened = Rc::new(tokio::sync::OnceCell::new_with(Some(Rc::new(session))));
+        self.records.borrow_mut().insert(key.clone(), opened);
+        key
     }
 
-    fn channel(&self, handle: Handle) -> Result<Rc<ChannelSession>, String> {
-        self.channels
+    /// What this connection holds on `record`, once a call opened it.
+    fn channel(&self, record: &Record) -> Result<Rc<ChannelSession>, String> {
+        self.records
             .borrow()
-            .get(&handle)
-            .cloned()
-            .ok_or_else(|| format!("no channel {} on this connection", handle.0))
+            .get(&record.key)
+            .and_then(|opened| opened.get().cloned())
+            .ok_or_else(|| "this connection left the record its call names".to_owned())
+    }
+
+    /// The record the call `request` is about and this connection has yet to open: where its
+    /// first call is decided before it is answered.
+    fn unopened(&self, request: &Operation) -> Option<(Record, Opened)> {
+        let record = match request {
+            Operation::Publish { record, .. }
+            | Operation::Subscribe { record, .. }
+            | Operation::Read { record, .. }
+            | Operation::Command { record, .. }
+            | Operation::Changed { record, .. }
+            | Operation::Launch { record, .. }
+            | Operation::Invocation { record, .. }
+            | Operation::Settings { record, .. }
+            | Operation::LiveActivity { record, .. }
+            | Operation::Admit { record, .. } => record,
+            _ => return None,
+        };
+        let opened = Rc::clone(
+            self.records
+                .borrow_mut()
+                .entry(record.key.clone())
+                .or_default(),
+        );
+        (!opened.initialized()).then(|| (record.clone(), opened))
+    }
+
+    /// What this connection holds on `record`, decided for the app it was admitted as.
+    async fn open_record(&self, record: Record) -> Result<Rc<ChannelSession>, String> {
+        let service = self
+            .service
+            .clone()
+            .ok_or("this connection names no record")?;
+        let channel = service
+            .open_record(record)
+            .await
+            .map_err(Refusal::refusal)?;
+        Ok(Rc::new(ChannelSession::new(Rc::new(channel))))
+    }
+
+    /// Let go of what this connection holds on the record `key`, and of the subscriptions about it.
+    fn leave(&self, key: &str) {
+        let left = self.records.borrow_mut().remove(key);
+        let about = About::Record(key.to_owned());
+        let mut controls = self.controls.borrow_mut();
+        let mut ends = self.invocation_ends.borrow_mut();
+        self.subscriptions
+            .borrow_mut()
+            .retain(|subscription, (of, task)| {
+                let keep = *of != about;
+                if !keep {
+                    task.abort();
+                    ends.remove(subscription);
+                    if let Some(control) = controls.remove(subscription) {
+                        close_control(control);
+                    }
+                }
+                keep
+            });
+        drop((controls, ends));
+        drop(left);
     }
 
     /// What this connection reaches of the session's published resources,
@@ -1731,7 +1802,7 @@ impl WireConnection {
             return;
         };
         self.subscriptions.borrow_mut().retain(|_, (of, task)| {
-            let held = *of == handle;
+            let held = *of == About::Handle(handle);
             if held {
                 task.abort();
             }
@@ -1739,32 +1810,44 @@ impl WireConnection {
         });
     }
 
-    /// Answer one call. A reply, and the events a subscription it starts
-    /// delivers, take the outgoing queue in that order; a call that waits (a
-    /// join, a workspace's change) answers when done.
+    /// Answer one call. The first call naming a record waits while this connection's hold on
+    /// it is decided, and is refused with why if it is not; then it is answered as any other.
+    pub(super) fn call(self: &Rc<Self>, call: Call) {
+        let Some((record, opened)) = self.unopened(&call.request) else {
+            return self.answer(call);
+        };
+        let connection = Rc::clone(self);
+        tokio::task::spawn_local(async move {
+            match opened
+                .get_or_try_init(|| connection.open_record(record))
+                .await
+            {
+                Ok(_) => connection.answer(call),
+                Err(error) => {
+                    let _ = connection.frames.send(HostFrame::Reply {
+                        id: call.id,
+                        result: Err(error),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Answer one call on what this connection holds. A reply, and the events a subscription it
+    /// starts delivers, take the outgoing queue in that order; a call that waits (a workspace's
+    /// change) answers when done.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per request answered once its work is done"
     )]
-    pub(super) fn call(self: &Rc<Self>, Call { id, request }: Call) {
+    fn answer(self: &Rc<Self>, Call { id, request }: Call) {
         let answer: std::pin::Pin<Box<dyn Future<Output = Result<Reply, String>>>> = match request {
-            Operation::Join(join) => {
-                let (service, connection) = (self.service.clone(), Rc::downgrade(self));
-                Box::pin(async move {
-                    let service = service.ok_or("this connection joins no channels")?;
-                    let channel = service.join(join).await.map_err(Refusal::refusal)?;
-                    let connection = connection.upgrade().ok_or("the connection closed")?;
-                    Ok(Reply::Opened(
-                        connection.open(ChannelSession::new(Rc::new(channel))),
-                    ))
-                })
-            }
-            Operation::Workspace { channel, seen } => {
+            Operation::Workspace { record, seen } => {
                 let memberships = self
                     .service
                     .as_ref()
                     .and_then(|service| service.state.services.workspace_memberships.clone());
-                let workspace = CrdtRoute::from_channel_key(&channel).cluster_id;
+                let workspace = CrdtRoute::from_channel_key(&record).cluster_id;
                 Box::pin(async move {
                     Ok(Reply::Workspace(match (memberships, seen) {
                         (Some(memberships), Some(seen)) => {
@@ -1776,7 +1859,7 @@ impl WireConnection {
                 })
             }
             Operation::Publish {
-                channel,
+                record,
                 publication:
                     Publication::Effect {
                         resource,
@@ -1784,7 +1867,7 @@ impl WireConnection {
                         update,
                     },
             } => {
-                let recorded = self.channel(channel).and_then(|session| {
+                let recorded = self.channel(&record).and_then(|session| {
                     let update = serde_json::from_str(&update).map_err(|e| e.to_string())?;
                     session
                         .record_local_effect_dispatch(&resource, &action, &update)
@@ -1795,28 +1878,28 @@ impl WireConnection {
                     Ok(Reply::Done)
                 })
             }
-            Operation::Changed { channel, of, after } => {
+            Operation::Changed { record, of, after } => {
                 let change = self
-                    .channel(channel)
+                    .channel(&record)
                     .and_then(|session| session.change(of, after).map_err(|e| e.to_string()));
                 Box::pin(async move { Ok(Reply::Changed(change?.await)) })
             }
             Operation::Command {
-                channel,
+                record,
                 service,
                 body,
                 on_behalf_of,
-            } => match self.channel(channel) {
+            } => match self.channel(&record) {
                 Ok(session) => session.command(service, &body, &on_behalf_of),
                 Err(error) => Box::pin(std::future::ready(Err(error))),
             },
             Operation::Launch {
-                channel,
+                record,
                 app_id,
                 package_root,
                 on_behalf_of,
             } => {
-                let answer = self.channel(channel).map(|session| {
+                let answer = self.channel(&record).map(|session| {
                     session
                         .channel
                         .launch(&app_id, &package_root, &on_behalf_of)
@@ -1824,12 +1907,12 @@ impl WireConnection {
                 Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
             }
             Operation::Invocation {
-                channel,
+                record,
                 id: invocation,
                 call,
             } => {
                 let answer = self
-                    .channel(channel)
+                    .channel(&record)
                     .map(|session| session.invocation_call(invocation, call));
                 Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
             }
@@ -1848,20 +1931,20 @@ impl WireConnection {
                     Ok(Reply::Done)
                 })
             }
-            Operation::Settings { channel, call } => {
+            Operation::Settings { record, call } => {
                 let answer = self
-                    .channel(channel)
+                    .channel(&record)
                     .map(|session| session.settings_call(call));
                 Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
             }
-            Operation::LiveActivity { channel, call } => {
+            Operation::LiveActivity { record, call } => {
                 let answer = self
-                    .channel(channel)
+                    .channel(&record)
                     .map(|session| session.live_activity_call(call));
                 Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
             }
-            Operation::Admit { channel, report } => {
-                let answer = self.channel(channel).map(|session| {
+            Operation::Admit { record, report } => {
+                let answer = self.channel(&record).map(|session| {
                     super::local_document_action::admit(Rc::clone(&session.channel), report)
                 });
                 Box::pin(
@@ -1928,19 +2011,18 @@ impl WireConnection {
     fn dispatch(self: &Rc<Self>, id: u64, request: Operation) -> Result<Reply, String> {
         match request {
             Operation::Publish {
-                channel,
+                record,
                 publication: Publication::Presence(presence),
             } => {
                 let (key, payload) = crate::apps::collab_presence::from_peer(presence)
                     .ok_or_else(|| "presence does not decode".to_owned())?;
-                self.channel(channel)?.presence.publish(key, payload)?;
+                self.channel(&record)?.presence.publish(key, payload)?;
                 Ok(Reply::Done)
             }
             Operation::Publish {
                 publication: Publication::Effect { .. },
                 ..
             }
-            | Operation::Join(_)
             | Operation::Workspace { .. }
             | Operation::Command { .. }
             | Operation::Changed { .. }
@@ -1956,50 +2038,50 @@ impl WireConnection {
                 Err("answered when done".into())
             }
             Operation::Publish {
-                channel,
+                record,
                 publication: Publication::Report(report),
             } => {
-                let session = self.channel(channel)?;
+                let session = self.channel(&record)?;
                 let reported = session.report(&session.route().app_id, report);
                 drop(session);
                 reported.map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
             Operation::Publish {
-                channel,
+                record,
                 publication: Publication::Surface(delta),
             } => {
                 let delta = serde_json::from_str(&delta)
                     .map_err(|error| format!("invalid surface change: {error}"))?;
-                let session = self.channel(channel)?;
+                let session = self.channel(&record)?;
                 let published = session.publish_surface(&session.route().app_id, &delta);
                 drop(session);
                 published.map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
             Operation::Publish {
-                channel,
+                record,
                 publication: Publication::Content { hash, bytes },
             } => {
-                self.channel(channel)?
+                self.channel(&record)?
                     .offer_content(&hash, &bytes)
                     .map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
             Operation::Read {
-                channel,
+                record,
                 read: Read::Content { hash },
             } => {
-                self.channel(channel)?
+                self.channel(&record)?
                     .want_content(&hash)
                     .map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
-            Operation::Subscribe { channel, topic } => {
+            Operation::Subscribe { record, topic } => {
                 if self.subscriptions.borrow().contains_key(&id) {
                     return Err(format!("subscription {id} is already live"));
                 }
-                let session = self.channel(channel)?;
+                let session = self.channel(&record)?;
                 let frames = self.frames.clone();
                 let failed = Refusal::refusal;
                 let task = match topic {
@@ -2125,7 +2207,7 @@ impl WireConnection {
                 };
                 self.subscriptions
                     .borrow_mut()
-                    .insert(id, (channel, task.abort_handle()));
+                    .insert(id, (About::Record(record.key), task.abort_handle()));
                 Ok(Reply::Subscribed)
             }
             Operation::Answer { ask, answer } => {
@@ -2138,13 +2220,13 @@ impl WireConnection {
                 Ok(Reply::Done)
             }
             Operation::Publish {
-                channel,
+                record,
                 publication: Publication::Directory,
             } => {
-                self.channel(channel)?
+                self.channel(&record)?
                     .publish_directory(Rc::new(WireDirectory {
                         connection: Rc::downgrade(self),
-                        channel,
+                        record: record.key,
                     }))
                     .map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
@@ -2190,7 +2272,9 @@ impl WireConnection {
                     self.frames.clone(),
                     id,
                 );
-                self.subscriptions.borrow_mut().insert(id, (services, task));
+                self.subscriptions
+                    .borrow_mut()
+                    .insert(id, (About::Handle(services), task));
                 Ok(Reply::Subscribed)
             }
             Operation::Close { handle } => {
@@ -2198,27 +2282,16 @@ impl WireConnection {
                     self.close_published();
                     return Ok(Reply::Done);
                 }
-                if let Some(served) = self.served.borrow_mut().remove(&handle) {
-                    served.close();
-                    return Ok(Reply::Done);
-                }
-                self.channels
+                let served = self
+                    .served
                     .borrow_mut()
                     .remove(&handle)
-                    .ok_or_else(|| format!("no channel {} on this connection", handle.0))?;
-                let mut controls = self.controls.borrow_mut();
-                self.subscriptions
-                    .borrow_mut()
-                    .retain(|subscription, (channel, task)| {
-                        let keep = *channel != handle;
-                        if !keep {
-                            task.abort();
-                            if let Some(control) = controls.remove(subscription) {
-                                close_control(control);
-                            }
-                        }
-                        keep
-                    });
+                    .ok_or_else(|| format!("no handle {} on this connection", handle.0))?;
+                served.close();
+                Ok(Reply::Done)
+            }
+            Operation::Leave { record } => {
+                self.leave(&record);
                 Ok(Reply::Done)
             }
         }

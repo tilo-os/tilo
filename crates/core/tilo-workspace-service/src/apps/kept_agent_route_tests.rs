@@ -32,16 +32,14 @@ async fn a_kept_agent_joins_its_own_route_in_a_journaled_session() {
             };
             let rig = Rig::with_own_journal(&env, services, &config).await;
             assert!(rig.state.durable_owner_required);
-            let (agent, _server, _client) = launched_app_connection(
+            let (agent, _server, _client) = launched_member_connection(
                 &rig.state,
                 &rig.directories,
                 AGENT_PEER,
-                &env.route.app_id,
-                &env.route.cluster_id,
+                (&env.route.app_id, &env.route.cluster_id),
+                Some(AGENT),
             );
-            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
-            let joined = agent
-                .join_channel_as_kind(&env.route.channel_key(), &identity, AGENT, "agent", "")
+            let joined = opened(&agent, &env.route.channel_key())
                 .await
                 .expect("the workspace's kept agent joins its package's own route");
             // The route is held for the agent's connection, admitted as the

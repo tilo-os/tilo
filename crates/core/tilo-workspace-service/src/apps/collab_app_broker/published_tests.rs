@@ -136,6 +136,7 @@ fn app_in(
     let (connection, outgoing) = wire::WireConnection::new(Some(Rc::new(AppConnection {
         worker: None,
         app_worker: None,
+        identity: None,
         state: state.clone(),
         directories: directories.clone(),
         peer_id,

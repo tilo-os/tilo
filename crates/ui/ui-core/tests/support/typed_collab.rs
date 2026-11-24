@@ -7,7 +7,7 @@
 //! routes presence to them, and lets integration tests exercise the real UI
 //! SDK shovel without a shell process or process-global service-fd variables.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::fd::{IntoRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,7 +16,7 @@ use std::thread;
 
 use collab_types::PeerPresence;
 use runtime_collab::wire::{
-    Call, ContextUpdate, Event, FRAMING, Handle, HostFrame, Operation, Publication, Reply, Service,
+    Call, ContextUpdate, Event, FRAMING, HostFrame, Operation, Publication, Reply, Service,
     Topic,
 };
 use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply as Store};
@@ -153,9 +153,7 @@ impl TypedBroker {
             hub: self.hub.clone(),
             peer,
             user_id: user_id.to_owned(),
-            channels: RefCell::default(),
             subscriptions: RefCell::default(),
-            next_handle: Cell::new(1),
         };
         let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
         server.set_nonblocking(true).unwrap();
@@ -242,10 +240,7 @@ struct Connection {
     hub: Arc<Hub>,
     peer: u64,
     user_id: String,
-    /// The channel key each handle this connection opened names.
-    channels: RefCell<HashMap<Handle, String>>,
     subscriptions: RefCell<HashMap<u64, tokio::task::AbortHandle>>,
-    next_handle: Cell<u64>,
 }
 
 impl Connection {
@@ -285,21 +280,10 @@ impl Connection {
         }
     }
 
-    fn channel(&self, handle: Handle) -> Result<String, String> {
-        self.channels
-            .borrow()
-            .get(&handle)
-            .cloned()
-            .ok_or_else(|| format!("no channel {handle:?} on this connection"))
-    }
-
     fn accept(&self, id: u64, request: Operation, frames: &mpsc::UnboundedSender<HostFrame>) {
         let result = match request {
-            Operation::Subscribe { channel, topic } => {
-                match self
-                    .channel(channel)
-                    .and_then(|channel| self.subscribe(id, &channel, topic, frames))
-                {
+            Operation::Subscribe { record, topic } => {
+                match self.subscribe(id, &record.key, topic, frames) {
                     Ok(task) => {
                         self.subscriptions.borrow_mut().insert(id, task);
                         Ok(Reply::Subscribed)
@@ -313,11 +297,7 @@ impl Connection {
                 }
                 return;
             }
-            Operation::Close { handle } => {
-                self.channels.borrow_mut().remove(&handle);
-                return;
-            }
-            Operation::Answer { .. } => return,
+            Operation::Close { .. } | Operation::Leave { .. } | Operation::Answer { .. } => return,
             request => self.answer(request),
         };
         let _ = frames.send(HostFrame::Reply { id, result });
@@ -325,19 +305,12 @@ impl Connection {
 
     fn answer(&self, request: Operation) -> Result<Reply, String> {
         match request {
-            Operation::Join(join) => {
-                let handle = Handle(self.next_handle.get());
-                self.next_handle.set(handle.0.wrapping_add(1));
-                self.channels.borrow_mut().insert(handle, join.channel);
-                Ok(Reply::Opened(handle))
-            }
             Operation::Publish {
-                channel,
+                record,
                 publication: Publication::Presence(presence),
             } => {
-                let channel = self.channel(channel)?;
                 self.hub.fanout_presence(
-                    &channel,
+                    &record.key,
                     self.peer,
                     &Presence {
                         author: self.user_id.clone(),
@@ -347,12 +320,12 @@ impl Connection {
                 Ok(Reply::Done)
             }
             Operation::Command {
-                channel,
+                record,
                 service: Service::Resources,
                 body,
                 ..
             } => {
-                let channel = self.channel(channel)?;
+                let channel = record.key;
                 let reply = match serde_json::from_slice(&body).map_err(|e| e.to_string())? {
                     Command::RecordChanges { after, from } => {
                         self.hub.changes(&channel, &after, from)?
@@ -368,15 +341,22 @@ impl Connection {
                     .map(Reply::Answer)
                     .map_err(|error| error.to_string())
             }
-            // This harness stores no committed history: answer every open
+            // This harness stores no committed history and seals nothing: answer every open
             // with the explicit legacy mode so the route follows its record.
             Operation::Command {
                 service: Service::CommittedDocument,
+                body,
                 ..
-            } => runtime_collab::committed_document::Reply::Legacy
+            } => {
+                use runtime_collab::committed_document::{Reply as Read, Request as Ask};
+                match Ask::decode(&body).map_err(std::string::ToString::to_string)? {
+                    Ask::Writes => Read::Writes { sealed: false },
+                    _ => Read::Legacy,
+                }
                 .encode()
                 .map(Reply::Answer)
-                .map_err(Into::into),
+                .map_err(Into::into)
+            }
             other => Err(format!("the typed test host does not answer {other:?}")),
         }
     }

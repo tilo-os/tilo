@@ -30,7 +30,7 @@ use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Lists, Options, Session};
 use tilo_user_identity::DeviceCert;
 
-use crate::common::held::{WORKSPACE, actor, presentation};
+use crate::common::held::{WORKSPACE, actor, opened};
 
 /// The app that fills its pages from vault items.
 const BROWSER: &str = "so.tilo.browser";
@@ -197,7 +197,6 @@ fn app_asks(
     socket: &Path,
     app: &str,
     commands: Vec<Command>,
-    keys: &Keys,
     seen: &std::sync::mpsc::Sender<Vec<Result<Reply, String>>>,
 ) {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -206,9 +205,7 @@ fn app_asks(
         .expect("a runtime for the app");
     runtime.block_on(async {
         let client = connect(socket, app);
-        let handle = client
-            .join_channel(&channel(app), &presentation(&keys.device, &keys.cert))
-            .await
+        let handle = opened(&client, &channel(app)).await
             .expect("the app the session launched joins its workspace's channel");
         let mut replies = Vec::new();
         for command in commands {
@@ -234,8 +231,7 @@ fn asked_of_the_session(
     let mut session = session(&socket, fixture, app);
 
     let (seen, received) = std::sync::mpsc::channel();
-    let keys = fixture.keys.clone();
-    let asking = std::thread::spawn(move || app_asks(&socket, app, commands, &keys, &seen));
+    let asking = std::thread::spawn(move || app_asks(&socket, app, commands, &seen));
     let replies = until_the_app_is_done(&mut session, &received);
     asking.join().expect("the app's thread");
     replies

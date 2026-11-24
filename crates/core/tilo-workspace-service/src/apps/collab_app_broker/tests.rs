@@ -480,7 +480,7 @@ impl LocalDirectoryFixture {
         self.directory_state.borrow_mut().confirmation_required = required;
     }
 
-    fn invocation_channel(&self) -> runtime_collab::ChannelHandle {
+    fn invocation_channel(&self) -> runtime_collab::RecordHandle {
         self.invocation_channel_for(self.peer_id, &self.route)
     }
 
@@ -488,7 +488,7 @@ impl LocalDirectoryFixture {
         &self,
         peer_id: u64,
         route: &CrdtRoute,
-    ) -> runtime_collab::ChannelHandle {
+    ) -> runtime_collab::RecordHandle {
         wire_channel(JoinedChannel {
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: Arc::clone(&self.state),
@@ -506,7 +506,6 @@ impl LocalDirectoryFixture {
                         capped: false,
                     },
                     actor_key: "fixture-application".into(),
-                    display_handle: None,
                     role: CapRole::Editor,
                     agent_id: None,
                     session_delegated: false,
@@ -758,12 +757,95 @@ impl wire::DirectorySource for UndecodableVisibilityDirectory {
     }
 }
 
+/// The client of an app's connection to `state` that acts as the holder of `certificate`, and as
+/// the workspace agent `member` names: what the launch of an app naming them admits. With it, the
+/// tasks serving the connection's two ends.
 #[cfg(test)]
-pub(super) fn certified_join(
-    workspace: &str,
+#[allow(
+    clippy::unwrap_used,
+    reason = "test support: a host without socket pairs cannot run the test at all"
+)]
+pub(super) fn certified_rpc(
+    state: &Arc<AppBrokerState>,
+    directories: &Rc<LocalActionDirectoryRegistry>,
+    peer_id: u64,
+    certificate: tilo_user_identity::DeviceCert,
+    member: Option<&str>,
+) -> (
+    runtime_collab::CollabClient,
+    tokio::task::JoinHandle<Result<(), BrokerError>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (connection, outgoing) = wire::WireConnection::new(Some(Rc::new(AppConnection {
+        worker: None,
+        app_worker: None,
+        identity: Some(session::ConnectionIdentity::certified(
+            certificate,
+            member.map(str::to_owned),
+        )),
+        state: Arc::clone(state),
+        directories: Rc::clone(directories),
+        peer_id,
+        lease: Rc::new(ConnectionLease {
+            local_media: None,
+            state: Arc::clone(state),
+            directories: Rc::clone(directories),
+            peer_id,
+        }),
+        holds: route_holds::ConnectionHolds::default(),
+    })));
+    let (host, app) = tokio::net::UnixStream::pair().unwrap();
+    let (reader, writer) = host.into_split();
+    let server = tokio::task::spawn_local(async move {
+        wire::serve(connection, outgoing, reader, writer)
+            .await
+            .map_err(|error| BrokerError::failed(error.to_string()))
+    });
+    let (reader, writer) = app.into_split();
+    let (client, carry) = runtime_collab::CollabClient::over(reader, writer);
+    (client, server, tokio::task::spawn_local(carry))
+}
+
+/// A host whose device is the holder of its certificate: every app it launched acts under it,
+/// which it authorizes in every workspace.
+#[cfg(test)]
+pub(super) struct DeviceOf(pub(super) tilo_user_identity::DeviceCert);
+
+#[cfg(test)]
+impl crate::apps::certificate_authority::CertificateAuthority for DeviceOf {
+    fn authorize(
+        &self,
+        _: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        if certificate == &self.0 {
+            Ok(())
+        } else {
+            Err("not this device's certificate".into())
+        }
+    }
+    fn app_certificate(&self, _: &str) -> Result<tilo_user_identity::DeviceCert, String> {
+        Ok(self.0.clone())
+    }
+}
+
+/// What `client`'s connection holds on the record `key` names, once the host admitted it there.
+#[cfg(test)]
+pub(super) async fn opened(
+    client: &runtime_collab::CollabClient,
+    key: &str,
+) -> Result<runtime_collab::RecordHandle, runtime_portal::NotAvailable> {
+    let record = client.record(key, "");
+    record.sealed().await?;
+    Ok(record)
+}
+
+/// The certificate `root` signs for `device`.
+#[cfg(test)]
+pub(super) fn device_certificate(
     root: &SigningKey,
     device: &SigningKey,
-) -> runtime_collab::CertifiedJoinIdentity {
+) -> tilo_user_identity::DeviceCert {
     let mut cert = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -775,6 +857,16 @@ pub(super) fn certified_join(
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, root).expect("root signs device cert");
+    cert
+}
+
+#[cfg(test)]
+pub(super) fn certified_join(
+    workspace: &str,
+    root: &SigningKey,
+    device: &SigningKey,
+) -> runtime_collab::CertifiedJoinIdentity {
+    let cert = device_certificate(root, device);
     runtime_collab::CertifiedJoinIdentity {
         workspace_id: workspace.into(),
         device_certificate: serde_json::to_vec(&cert).expect("certificate JSON"),

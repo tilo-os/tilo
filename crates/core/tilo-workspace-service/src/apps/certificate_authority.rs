@@ -40,6 +40,17 @@ pub trait CertificateAuthority: Send + Sync {
     fn own_device(&self) -> Option<tilo_user_identity::DeviceCert> {
         None
     }
+    /// The certificate this device's own person holds in `workspace`: what an app this device
+    /// launched acts under there, as the identity this device keeps selects it.
+    ///
+    /// # Errors
+    ///
+    /// The device holds no identity in `workspace`.
+    fn app_certificate(&self, workspace: &str) -> Result<tilo_user_identity::DeviceCert, String> {
+        tilo_identity::trusted_device::current(workspace)
+            .map(|(_, certificate)| certificate)
+            .map_err(|error| error.to_string())
+    }
     /// Local SDK admission may additionally require a current enrollment record.
     ///
     /// # Errors

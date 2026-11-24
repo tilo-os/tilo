@@ -152,17 +152,14 @@ pub fn pump(relay: &mut MemoryRelay) {
             CollabRequest::OpenWorkspaceControl { session_id, .. } => {
                 refuse_workspace_control(&mut inboxes, &from, session_id);
             }
-            request @ (CollabRequest::ReportLocalDocumentAction { .. }
-            | CollabRequest::LocalFileClipboard { .. }) => {
-                refuse_local_request(&mut inboxes, &from, &request);
+            CollabRequest::ReportLocalDocumentAction { request_id, .. } => {
+                refuse_local_document_action(&mut inboxes, &from, request_id);
             }
             CollabRequest::WorkspaceControlInput { .. }
             | CollabRequest::OfferContent { .. }
             | CollabRequest::WantContent { .. }
             | CollabRequest::CloseWorkspaceControl { .. }
-            | CollabRequest::NearbyTransferCommand { .. }
             | CollabRequest::NativeMediaCommand { .. }
-            | CollabRequest::RealtimeCommand { .. }
             | CollabRequest::Hello { .. }
             | CollabRequest::PublishActionSurface { .. }
             | CollabRequest::ReportContinuation { .. }
@@ -172,10 +169,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::UpdateInvocation { .. }
             | CollabRequest::ResourceLocalEffect { .. }
             | CollabRequest::RemoteAction { .. }
-            | CollabRequest::LaunchInstalledApplication { .. }
             | CollabRequest::ResourceCommand { .. }
-            | CollabRequest::OpenResources { .. }
-            | CollabRequest::CloseResources { .. }
             | CollabRequest::DecideShownActions { .. } => {
                 // Session-local and shell-owned control-plane commands never
                 // fan out through another application's document channel.
@@ -199,32 +193,15 @@ fn refuse_workspace_control(inboxes: &mut PeerInboxes, from: &str, session_id: u
     }
 }
 
-/// Answer a request this relay has no authority for with its refusal, to
-/// the requesting peer alone.
-fn refuse_local_request(inboxes: &mut PeerInboxes, from: &str, request: &CollabRequest) {
-    match request {
-        CollabRequest::ReportLocalDocumentAction { request_id, .. } => {
-            if let Some(inbox) = inboxes.get_mut(from) {
-                inbox.push_back(CollabEvent::LocalDocumentActionReported {
-                    request_id: *request_id,
-                    result: Err(runtime_collab::LocalDocumentActionError::Rejected(
-                        "memory relay has no authenticated admission authority".into(),
-                    )),
-                });
-            }
-        }
-        CollabRequest::LocalFileClipboard { request_id, .. } => {
-            refuse_file_clipboard(inboxes, from, *request_id);
-        }
-        _ => {}
-    }
-}
-
-fn refuse_file_clipboard(inboxes: &mut PeerInboxes, from: &str, request_id: u64) {
+/// Answer a local document action this relay has no authority for with its refusal, to the
+/// requesting peer alone.
+fn refuse_local_document_action(inboxes: &mut PeerInboxes, from: &str, request_id: u64) {
     if let Some(inbox) = inboxes.get_mut(from) {
-        inbox.push_back(CollabEvent::LocalFileClipboardResult {
+        inbox.push_back(CollabEvent::LocalDocumentActionReported {
             request_id,
-            result: Err("memory relay has no launcher-attested Files service".into()),
+            result: Err(runtime_collab::LocalDocumentActionError::Rejected(
+                "memory relay has no authenticated admission authority".into(),
+            )),
         });
     }
 }

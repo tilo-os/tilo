@@ -1793,34 +1793,18 @@ impl SdkConnectSource {
     }
 }
 
-/// Build the identity presentation for a launcher-bound collaboration join.
-///
-/// Build the certified device presentation used for a launcher-bound join.
-/// A launcher identity without a device certificate cannot enter the
-/// collaboration session.
 /// The member kind of a headless service that holds no document of its
 /// own ([`CollaborationManager::for_service`]). It stays on this side: the
 /// broker admits the service as the person whose launch it is.
 const SERVICE_MEMBER: &str = "service";
 
-/// The kind the broker is asked to admit a member of `kind` as.
-fn broker_member_kind(kind: &str) -> &str {
-    if kind == SERVICE_MEMBER {
-        "person"
-    } else {
-        kind
-    }
-}
-
 struct SdkJoinIdentity {
-    presentation: Vec<u8>,
-    /// Requested broker actor kind. The broker only accepts `agent`
-    /// when the named agent is admitted and this certified user may operate
-    /// it; ordinary applications always leave this as `person`.
+    /// What this side holds the connection as: a `person`'s app, the
+    /// workspace agent its launch named, or a headless service. The host
+    /// decides who the connection acts for from its launch alone.
     member_kind: &'static str,
     /// Retained on the shovel thread so the identity service is asked off the
-    /// UI thread: for a join proof in the person's own workspace, and for the
-    /// channel keys the record's content is sealed under.
+    /// UI thread for the channel keys the record's content is sealed under.
     signer: SdkDocumentSigner,
 }
 
@@ -1838,32 +1822,6 @@ pub type EndpointChannelKeys = std::sync::Arc<
         + Send
         + Sync,
 >;
-
-/// Certified identity for a client connecting to an explicit collaboration
-/// endpoint rather than through a launcher-inherited identity service. It
-/// holds the presentation only: the device's store signs what the app writes.
-#[derive(Clone)]
-pub struct CertifiedEndpointIdentity {
-    presentation: Vec<u8>,
-}
-
-impl CertifiedEndpointIdentity {
-    #[must_use]
-    pub const fn new(presentation: Vec<u8>) -> Self {
-        Self { presentation }
-    }
-}
-
-impl std::fmt::Debug for CertifiedEndpointIdentity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CertifiedEndpointIdentity")
-            .field(
-                "presentation",
-                &format_args!("{} bytes", self.presentation.len()),
-            )
-            .finish_non_exhaustive()
-    }
-}
 
 // One signing boundary for inherited Unix services and supplied host services.
 // This trait is private: platform bootstrap supplies the concrete broker client,
@@ -1883,11 +1841,6 @@ trait SdkCertifiedIdentity: Send + Sync {
         document_id: &str,
         known_generation: u64,
     ) -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable>;
-    fn device_certificate(&self) -> Option<&[u8]>;
-    fn sign_collaboration_join(
-        &self,
-        workspace_id: &str,
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable>;
 }
 
 impl SdkCertifiedIdentity for std::sync::Arc<tilo_identity_client::BrokerSigningIdentity> {
@@ -1906,18 +1859,6 @@ impl SdkCertifiedIdentity for std::sync::Arc<tilo_identity_client::BrokerSigning
             known_generation,
         )
     }
-    fn device_certificate(&self) -> Option<&[u8]> {
-        self.metadata().device_certificate()
-    }
-    fn sign_collaboration_join(
-        &self,
-        workspace_id: &str,
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        tilo_identity_client::BrokerSigningIdentity::sign_collaboration_join(
-            self.as_ref(),
-            workspace_id,
-        )
-    }
 }
 
 #[cfg_attr(
@@ -1930,8 +1871,7 @@ impl SdkCertifiedIdentity for std::sync::Arc<tilo_identity_client::BrokerSigning
 enum SdkDocumentSigner {
     /// Shared so the identity service can be asked off the shovel thread.
     Certified(std::sync::Arc<dyn SdkCertifiedIdentity>),
-    /// Explicit-FD harnesses have no launcher identity service; a production
-    /// broker rejects their uncertified join. With channel keys to ask, their
+    /// Explicit-FD harnesses have no launcher identity service. With channel keys to ask, their
     /// routes seal content as a certified one's do.
     Harness(Option<EndpointChannelKeys>),
 }
@@ -1940,7 +1880,6 @@ enum SdkDocumentSigner {
 /// signer may be !Send because it is constructed there and never crosses the
 /// thread boundary; inherited Unix and harness identities remain Send.
 struct LocalSdkJoinIdentity {
-    presentation: Vec<u8>,
     member_kind: &'static str,
     signer: LocalSdkDocumentSigner,
 }
@@ -1952,7 +1891,6 @@ enum LocalSdkDocumentSigner {
 impl From<SdkJoinIdentity> for LocalSdkJoinIdentity {
     fn from(identity: SdkJoinIdentity) -> Self {
         Self {
-            presentation: identity.presentation,
             member_kind: identity.member_kind,
             signer: LocalSdkDocumentSigner::Inherited(identity.signer),
         }
@@ -1963,23 +1901,15 @@ const fn harness_document_signer() -> SdkDocumentSigner {
     SdkDocumentSigner::Harness(None)
 }
 
-/// What a harness joins with: a certified presentation in form, so a host
-/// reads it, that proves nothing.
-fn harness_presentation() -> Vec<u8> {
-    runtime_collab::CertifiedJoinIdentity {
-        workspace_id: "harness".into(),
-        device_certificate: b"harness certificate".to_vec(),
-        proof: vec![0; 64],
-    }
-    .encode()
-    .unwrap_or_default()
-}
-
 #[cfg(unix)]
-fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
-    sdk_join_identity_from(tilo_identity_client::load()?, cluster_id)
+fn sdk_join_identity(_cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
+    Ok(sdk_join_identity_from(tilo_identity_client::load()?))
 }
 
+
+/// The identity a launched app's connection holds on this side: the identity
+/// service that seals its content. The host knows who the app acts for from
+/// its launch.
 #[cfg_attr(
     not(unix),
     allow(
@@ -1987,52 +1917,11 @@ fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal
         reason = "certified inherited identities are supplied by Unix launch services"
     )
 )]
-/// Why a join cannot be certified: the identity service has no device
-/// certificate for this workspace.
-fn uncertified_device() -> runtime_portal::NotAvailable {
-    runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
-        std::io::ErrorKind::PermissionDenied,
-        "workspace identity has no certified device",
-    ))
-}
-
-/// The presentation a certified identity joins with: its device certificate
-/// and the proof it signed for the workspace named by `workspace_id`.
-fn certified_presentation(
-    workspace_id: String,
-    device_certificate: Vec<u8>,
-    proof: &[u8],
-) -> Result<Vec<u8>, runtime_portal::NotAvailable> {
-    runtime_collab::CertifiedJoinIdentity {
-        workspace_id,
-        device_certificate,
-        proof: proof.to_vec(),
-    }
-    .encode()
-    .map_err(|error| {
-        runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("encoding certified collaboration join failed: {error}"),
-        ))
-    })
-}
-
-fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
-    identity: I,
-    cluster_id: Uuid,
-) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
-    let device_certificate = identity
-        .device_certificate()
-        .ok_or_else(uncertified_device)?;
-
-    let workspace_id = cluster_id.to_string();
-    let proof = identity.sign_collaboration_join(&workspace_id)?;
-    let presentation = certified_presentation(workspace_id, device_certificate.to_vec(), &proof)?;
-    Ok(SdkJoinIdentity {
-        presentation,
+fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(identity: I) -> SdkJoinIdentity {
+    SdkJoinIdentity {
         member_kind: "person",
         signer: SdkDocumentSigner::Certified(std::sync::Arc::new(identity)),
-    })
+    }
 }
 
 #[cfg(not(unix))]
@@ -2222,36 +2111,6 @@ impl CollaborationManager {
         )
     }
 
-    /// Connect to an explicit endpoint with a certified device presentation.
-    /// This is the headless equivalent of the launcher-provided identity path.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`runtime_portal::NotAvailable`] when `fd` cannot bootstrap a
-    /// collaboration service connection.
-    pub fn for_route_fd_with_identity(
-        fd: RawFd,
-        app_id: impl Into<String>,
-        cluster_id: Uuid,
-        record: Option<String>,
-        handle: Option<String>,
-        identity: CertifiedEndpointIdentity,
-    ) -> Result<Self, runtime_portal::NotAvailable> {
-        Self::for_route_from(
-            SdkConnectSource::Fd(fd),
-            app_id.into(),
-            cluster_id,
-            record,
-            handle,
-            Some(SdkJoinIdentity {
-                presentation: identity.presentation.clone(),
-                member_kind: "person",
-                signer: harness_document_signer(),
-            }),
-            "person",
-        )
-    }
-
     pub fn switch_native_resource(
         &mut self,
         checkout: &collab_types::document::DocumentCheckout,
@@ -2406,8 +2265,7 @@ impl CollaborationManager {
             .and_then(tilo_identity_client::BrokerSigningIdentity::from_connected_io)
             .map(Arc::new);
         let signing = signing.map_err(|error| native_launch_refusal(&error))?;
-        let identity = sdk_join_identity_from(signing, route.cluster_id)
-            .map_err(|error| native_launch_refusal(&error))?;
+        let identity = sdk_join_identity_from(signing);
         #[cfg(unix)]
         let connection = SdkConnectSource::Fd(runtime_portal::process_link::into_raw(connection));
         #[cfg(windows)]
@@ -2549,7 +2407,6 @@ impl CollaborationManager {
                 Some(sdk_join_identity(cluster_id)?)
             }
             None => Some(SdkJoinIdentity {
-                presentation: harness_presentation(),
                 member_kind: "person",
                 signer: harness_document_signer(),
             }),
@@ -2591,31 +2448,6 @@ impl CollaborationManager {
             return Err(runtime_portal::NotAvailable::ServiceFdMissing);
         };
         await_primary_route_on(transport.as_mut(), &mut self.primary_route)
-    }
-
-    /// Connect a headless member as a first-class workspace agent.
-    /// Its friendly id is both the visible handle and the actor whose
-    /// scoped capabilities the broker evaluates.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`runtime_portal::NotAvailable`] when the collaboration
-    /// service or certified join identity is unavailable.
-    pub fn for_agent_route(
-        app_id: impl Into<String>,
-        cluster_id: Uuid,
-        record: Option<String>,
-        agent_id: impl Into<String>,
-    ) -> Result<Self, runtime_portal::NotAvailable> {
-        Self::for_route_from(
-            SdkConnectSource::Env,
-            app_id.into(),
-            cluster_id,
-            record,
-            Some(agent_id.into()),
-            None,
-            "agent",
-        )
     }
 
     pub(super) fn new_scoped(record: Option<String>, resource_type: Option<String>) -> Self {
@@ -2813,29 +2645,9 @@ impl CollaborationManager {
         reason = "a fixture for the toolkit's tests"
     )]
     pub fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
-        Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, harness_presentation())
-    }
-
-    /// Like [`Self::from_sdk_fd_for_test`] but stamps the `join_channel`
-    /// call with a caller-supplied identity blob.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn from_sdk_fd_for_test_with_identity(
-        fd: RawFd,
-        app_id: &str,
-        cluster_id: Uuid,
-        identity_bytes: Vec<u8>,
-    ) -> Self {
         let sdk = Self::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
-                presentation: identity_bytes,
                 member_kind: "person",
                 signer: harness_document_signer(),
             }),
@@ -2988,9 +2800,7 @@ impl SessionServices {
             let transport = CollaborationManager::spawn_sdk(
                 SdkConnectSource::Fd(fd),
                 Some(SdkJoinIdentity {
-                    // A surface joins no workspace: it presents no identity, and the
-                    // broker admits it for the launch alone.
-                    presentation: Vec::new(),
+                    // A surface opens no record: the broker admits it for the launch alone.
                     member_kind: "person",
                     signer: harness_document_signer(),
                 }),
@@ -3218,7 +3028,7 @@ fn any_route_asking_on_timer(routes: &std::collections::HashMap<String, SdkRoute
 /// the shovel to ask for `route`'s keys after each. The call is pending
 /// without traffic while nothing changes.
 fn follow_channel_keys(
-    channel: runtime_collab::ChannelHandle,
+    channel: runtime_collab::RecordHandle,
     route: String,
     signals: tokio_mpsc::UnboundedSender<KeySignal>,
 ) {
@@ -3251,7 +3061,7 @@ fn follow_channel_keys(
 }
 
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
-/// spawns one subscription task per stream on the first `join_channel`.
+/// spawns one subscription task per stream on the first call naming a record.
 // Not `Send`: the route state it holds stays on `run_shovel`'s `LocalSet`.
 #[allow(
     clippy::future_not_send,
@@ -3272,7 +3082,6 @@ async fn drive_shovel(
     }
     let _private_person_snapshot_lifetime = PrivatePersonSnapshotLifetime;
     let LocalSdkJoinIdentity {
-        presentation,
         member_kind,
         signer,
     } = identity;
@@ -3297,7 +3106,6 @@ async fn drive_shovel(
     #[cfg(test)]
     let mut key_timer_rounds = 0_usize;
     let signer: SharedSigner = std::rc::Rc::new(tokio::sync::Mutex::new(signer));
-    let person = PersonWorkspace::of(&presentation, &signer).map(std::rc::Rc::new);
     let queue = DocumentQueue::start(inbound_tx.clone());
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
@@ -3342,8 +3150,6 @@ async fn drive_shovel(
                 asks_channel_keys,
                 key_signals: key_signals.clone(),
                 client: client.clone(),
-                presentation: presentation.clone(),
-                person: person.clone(),
                 member_handle: member_handle.clone(),
                 member_kind,
                 inbound_tx: inbound_tx.clone(),
@@ -3360,8 +3166,6 @@ async fn drive_shovel(
                 asks_channel_keys,
                 key_signals: &key_signals,
                 client: &client,
-                presentation: &presentation,
-                person: person.as_deref(),
                 member_handle: member_handle.as_deref(),
                 member_kind,
                 inbound_tx: &inbound_tx,
@@ -3960,93 +3764,6 @@ async fn install_sdk_encryption(
     Ok(())
 }
 
-/// The person's own workspace, when it is not the launch's, and this
-/// device's join proof for it: what a route there presents instead of the
-/// launch workspace's. The identity service lends the proof only to an app
-/// that keeps something of the person's there, so it is asked when a route
-/// there first joins, and never by an app that joins none.
-struct PersonWorkspace {
-    workspace: String,
-    device_certificate: Vec<u8>,
-    signer: SharedSigner,
-    proof: tokio::sync::OnceCell<Option<Vec<u8>>>,
-}
-
-#[allow(
-    clippy::future_not_send,
-    reason = "the cluster's signer is constructed and retained only on the shovel LocalSet"
-)]
-impl PersonWorkspace {
-    /// The person's own workspace as `presentation`'s certified identity
-    /// names it, signed for by `signer`; `None` for a connection without a
-    /// certified identity, or one launched into that workspace.
-    fn of(presentation: &[u8], signer: &SharedSigner) -> Option<Self> {
-        #[derive(serde::Deserialize)]
-        struct Root {
-            user_public_key: [u8; 32],
-        }
-        // What the person keeps there then cannot be reached; the log says why.
-        let launch = match runtime_collab::CertifiedJoinIdentity::decode(presentation) {
-            Ok(Some(launch)) => launch,
-            Ok(None) => return None,
-            Err(error) => {
-                tracing::warn!(%error, "no join proof for the person's own workspace: the launch identity does not decode");
-                return None;
-            }
-        };
-        let root: Root = match serde_json::from_slice(&launch.device_certificate) {
-            Ok(root) => root,
-            Err(error) => {
-                tracing::warn!(%error, "no join proof for the person's own workspace: the device certificate does not decode");
-                return None;
-            }
-        };
-        let workspace = collab_types::person_workspace(&root.user_public_key).to_string();
-        (workspace != launch.workspace_id).then(|| Self {
-            workspace,
-            device_certificate: launch.device_certificate,
-            signer: std::rc::Rc::clone(signer),
-            proof: tokio::sync::OnceCell::new(),
-        })
-    }
-
-    /// What a route of `spec`'s workspace presents to join, when it is the
-    /// person's own: the proof, asked of the identity service once.
-    async fn presentation(&self, spec: &RouteSpec) -> Option<&[u8]> {
-        if spec.cluster_id.to_string() != self.workspace {
-            return None;
-        }
-        self.proof.get_or_init(|| self.sign()).await.as_deref()
-    }
-
-    async fn sign(&self) -> Option<Vec<u8>> {
-        let signed = match &mut *self.signer.lock().await {
-            LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
-                let (identity, asked) = (std::sync::Arc::clone(identity), self.workspace.clone());
-                tokio::task::spawn_blocking(move || identity.sign_collaboration_join(&asked))
-                    .await
-                    .map_err(|error| error.to_string())
-                    .and_then(|signed| signed.map_err(|error| error.to_string()))
-            }
-            LocalSdkDocumentSigner::Inherited(_) => return None,
-        };
-        let proof = match signed {
-            Ok(proof) => proof,
-            Err(reason) => {
-                tracing::warn!(%reason, "no join proof for the person's own workspace: signing the join failed");
-                return None;
-            }
-        };
-        runtime_collab::CertifiedJoinIdentity {
-            workspace_id: self.workspace.clone(),
-            device_certificate: self.device_certificate.clone(),
-            proof: proof.to_vec(),
-        }
-        .encode()
-        .ok()
-    }
-}
-
 /// The announcements of `key`'s route held while it was joining, as commands
 /// to replay once it has joined (or to refuse, when it did not), in the order
 /// they came. Announcements of other routes stay held.
@@ -4103,9 +3820,8 @@ struct SdkJoinContext<'a> {
     /// Where each route's endpoint says its keys may have changed.
     key_signals: &'a tokio_mpsc::UnboundedSender<KeySignal>,
     client: &'a runtime_collab::CollabClient,
-    presentation: &'a [u8],
-    /// The person's own workspace, when it is not the launch's.
-    person: Option<&'a PersonWorkspace>,
+    /// The name the app's session gives its person, which the app's own row of each record's
+    /// members shows.
     member_handle: Option<&'a str>,
     member_kind: &'a str,
     inbound_tx: &'a InboundBridge,
@@ -4118,8 +3834,6 @@ struct SdkRoute {
     document: DocumentRoute,
     presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
-    /// The queries the app holds open in the device's store: each one's task carrying its pages.
-    resource_queries: std::collections::HashMap<u64, tokio::task::AbortHandle>,
     /// The task carrying what the host says of the actions the window last named.
     shown_actions: Option<tokio::task::AbortHandle>,
     /// Reads the record's changes as it opens and each time it changed elsewhere, while the
@@ -4134,7 +3848,7 @@ struct SdkRoute {
 #[derive(Clone)]
 struct DocumentRoute {
     spec: RouteSpec,
-    channel: runtime_collab::ChannelHandle,
+    channel: runtime_collab::RecordHandle,
     frontier: record_sync::Frontier,
     encryption: SharedRouteKeys,
 }
@@ -4350,7 +4064,7 @@ async fn ensure_sdk_route(
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_content_stream(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     route: RouteSpec,
     inbound_tx: &InboundBridge,
 ) {
@@ -4391,10 +4105,16 @@ async fn spawn_content_stream(
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_context_stream(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     record_changed: Option<std::rc::Rc<tokio::sync::Notify>>,
+    own_name: Option<&str>,
     inbound_tx: &InboundBridge,
 ) {
+    // A person's own name is how their session calls them, not their certified identity: their
+    // row says it where the workspace's member list would call them otherwise.
+    let own_name = own_name
+        .map(|name| name.trim().chars().take(64).collect::<String>())
+        .filter(|name| !name.is_empty());
     if let Ok(stream) = channel.subscribe_context().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
@@ -4404,7 +4124,7 @@ async fn spawn_context_stream(
             }
             let _private_context_lifetime = PrivateContextLifetime;
             let mut private_person_basis = None;
-            while let Ok(context) = stream.read().await {
+            while let Ok(mut context) = stream.read().await {
                 if context.record_changed {
                     // Notices that come while a read is out are one more read.
                     if let Some(changed) = record_changed.as_ref() {
@@ -4456,6 +4176,12 @@ async fn spawn_context_stream(
                 // Membership/permission replacement fences cached private bodies
                 // before delivering the new public context. Presentation changes
                 // alone must not cause a private contacts refresh.
+                if let (Some(name), Some(me)) = (
+                    own_name.as_ref(),
+                    context.members.iter_mut().find(|member| member.is_self),
+                ) {
+                    me.name.clone_from(name);
+                }
                 let mut people: Vec<_> = context
                     .members
                     .iter()
@@ -4561,7 +4287,7 @@ async fn native_invocation_delivery_turn(
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn recheck_native_invocation(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     invocation: &runtime_collab::Invocation,
 ) -> Result<bool, String> {
     if !channel
@@ -4603,7 +4329,7 @@ pub(crate) const UNDELIVERED_INVOCATION: &str = "action_not_delivered";
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn fail_undelivered_invocation(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     invocation: &runtime_collab::Invocation,
     why: &str,
 ) -> Result<(), String> {
@@ -4716,7 +4442,7 @@ impl Drop for OpenInvocationFeed {
 /// once it is current, rather than handing it to one that cannot. A route
 /// that will not become current takes none, and says why.
 fn take_invocations_once_current(
-    channel: runtime_collab::ChannelHandle,
+    channel: runtime_collab::RecordHandle,
     spec: RouteSpec,
     inbound_tx: InboundBridge,
 ) {
@@ -4743,7 +4469,7 @@ fn take_invocations_once_current(
 }
 
 async fn spawn_invocation_stream(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     spec: &RouteSpec,
     inbound_tx: &InboundBridge,
 ) {
@@ -4882,7 +4608,7 @@ impl LiveActivityLink {
 /// Open the primary route's live activity and follow the controls pressed
 /// on it, waking the owner on each.
 fn link_live_activity(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     inbound_tx: &InboundBridge,
 ) -> Option<LiveActivityLink> {
     let handle = channel.live_activity();
@@ -5023,7 +4749,7 @@ async fn publish_directory(
 /// Open the primary route's settings for the installed channel settings
 /// and follow the shell's view of them, waking the owner on each change.
 fn link_settings(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     inbound_tx: &InboundBridge,
 ) -> Option<SettingsLink> {
     let settings = super::channel_settings::installed()?;
@@ -5100,7 +4826,7 @@ fn parse_invocation_context(id: u64, json: &str) -> Option<tilo_actions::ActionC
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_presence_stream(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     inbound_tx: &InboundBridge,
 ) -> Option<runtime_collab::PresenceHandle> {
     let handle = channel.presence();
@@ -5625,33 +5351,6 @@ async fn dispatch_sdk_request(
                 result: Err("native media requires the bounded control queue".into()),
             });
         }
-        CollabRequest::RealtimeCommand {
-            request_id,
-            command,
-        } => {
-            let result = serde_json::to_vec(&command)
-                .map_err(|error| error.to_string())
-                .and_then(|bytes| {
-                    if bytes.len() > collab_types::realtime::MAX_REALTIME_WIRE_BYTES {
-                        return Err("realtime command exceeds local protocol bound".into());
-                    }
-                    Ok(bytes)
-                });
-            let result = match result {
-                Ok(bytes) => route
-                    .channel
-                    .realtime_command(&bytes)
-                    .await
-                    .map_err(|error| error.to_string())
-                    .and_then(|reply| {
-                        serde_json::from_slice::<collab_types::realtime::RealtimeReply>(&reply)
-                            .map_err(|error| error.to_string())
-                    }),
-                Err(error) => Err(error),
-            };
-            let _ =
-                inbound_tx.send_reply(CollabEvent::RealtimeCommandResult { request_id, result });
-        }
         CollabRequest::ResourceCommand {
             request_id,
             command,
@@ -5663,31 +5362,6 @@ async fn dispatch_sdk_request(
                 .map_err(|error| error.to_string());
             let _ =
                 inbound_tx.send_reply(CollabEvent::ResourceCommandResult { request_id, result });
-        }
-        CollabRequest::NearbyTransferCommand {
-            request_id,
-            command,
-        } => {
-            let result = route
-                .channel
-                .nearby_transfer_command(&command)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = inbound_tx
-                .send_reply(CollabEvent::NearbyTransferCommandResult { request_id, result });
-        }
-        CollabRequest::LocalFileClipboard {
-            request_id,
-            command,
-            on_behalf_of,
-        } => {
-            let result = route
-                .channel
-                .local_file_clipboard_command(&command, on_behalf_of.map(|id| *id.0.as_bytes()))
-                .await
-                .map_err(|error| error.to_string());
-            let _ =
-                inbound_tx.send_reply(CollabEvent::LocalFileClipboardResult { request_id, result });
         }
         CollabRequest::OpenWorkspaceControl {
             session_id,
@@ -5732,37 +5406,6 @@ async fn dispatch_sdk_request(
                 });
             }
         }
-        CollabRequest::OpenResources { query_id, query } => {
-            match route.channel.open_resources(&query).await {
-                Ok(pages) => {
-                    let tx = inbound_tx.clone();
-                    let task = tokio::task::spawn_local(async move {
-                        loop {
-                            let page = pages.read().await.map_err(|error| error.to_string());
-                            let ended = page.is_err();
-                            if !tx
-                                .send_durable(CollabEvent::ResourcePage { query_id, page })
-                                .await
-                                || ended
-                            {
-                                break;
-                            }
-                        }
-                    });
-                    if let Some(earlier) =
-                        route.resource_queries.insert(query_id, task.abort_handle())
-                    {
-                        earlier.abort();
-                    }
-                }
-                Err(error) => {
-                    let _ = inbound_tx.send_reply(CollabEvent::ResourcePage {
-                        query_id,
-                        page: Err(error.to_string()),
-                    });
-                }
-            }
-        }
         CollabRequest::DecideShownActions { actions } => {
             if let Some(earlier) = route.shown_actions.take() {
                 earlier.abort();
@@ -5798,12 +5441,6 @@ async fn dispatch_sdk_request(
                         .collect();
                     let _ = inbound_tx.send_reply(CollabEvent::ActionVerdicts { verdicts });
                 }
-            }
-        }
-        CollabRequest::CloseResources { query_id } => {
-            // Its task holds the query's stream; ending it lets the store's query go.
-            if let Some(task) = route.resource_queries.remove(&query_id) {
-                task.abort();
             }
         }
         CollabRequest::CloseWorkspaceControl { session_id } => {
@@ -5899,29 +5536,6 @@ async fn dispatch_sdk_request(
                 move |result| CollabEvent::LocalDocumentActionReported { request_id, result },
             )
             .await;
-        }
-        CollabRequest::LaunchInstalledApplication {
-            request_id,
-            app_id,
-            package_root,
-            on_behalf_of,
-        } => {
-            let result = route
-                .channel
-                .launch_installed_application_for(
-                    &app_id,
-                    package_root.as_deref(),
-                    on_behalf_of.map(|id| *id.0.as_bytes()),
-                )
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|(id, update)| {
-                    serde_json::from_str(&update)
-                        .map(|update| (id, update))
-                        .map_err(|error| error.to_string())
-                });
-            let _ = inbound_tx
-                .send_reply(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
         }
     }
     true
@@ -6072,7 +5686,6 @@ pub mod test_support {
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(super::SdkJoinIdentity {
-                presentation: super::harness_presentation(),
                 member_kind: "person",
                 signer: super::harness_document_signer(),
             }),

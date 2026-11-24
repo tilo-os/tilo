@@ -12,6 +12,22 @@ fn member_device_evidence(
     foreign: bool,
 ) -> (tilo_actions::remote::Caller, Vec<u8>) {
     let key = SigningKey::from_bytes(&[seed; 32]);
+    let cert = member_device_certificate(env, seed, foreign);
+    let caller =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(&env.route.cluster_id)
+            .in_new_execution();
+    (caller, presentation(&env.route.cluster_id, &cert, &key))
+}
+
+/// The certificate of another device of `env`'s person, made from `seed` (a foreign one when
+/// `foreign`), which `env`'s host admits.
+fn member_device_certificate(
+    env: &Environment,
+    seed: u8,
+    foreign: bool,
+) -> tilo_user_identity::DeviceCert {
+    let key = SigningKey::from_bytes(&[seed; 32]);
     let mut cert = env.cert.clone();
     cert.device_public_key = key.verifying_key().to_bytes();
     cert.capabilities = tilo_user_identity::DeviceCapabilities::member();
@@ -23,11 +39,7 @@ fn member_device_evidence(
         .lock()
         .unwrap()
         .push(cert.clone());
-    let caller =
-        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_workspace(&env.route.cluster_id)
-            .in_new_execution();
-    (caller, presentation(&env.route.cluster_id, &cert, &key))
+    cert
 }
 
 fn local_host_request(directory: bool) -> tilo_actions::remote::InvokeRequest {

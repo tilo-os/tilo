@@ -87,6 +87,7 @@ pub async fn attest(
             ticket: handoff.launch.map(|launch| launch.ticket),
             process: 0,
             launcher: None,
+            member: app.member.clone(),
         },
         process,
         launcher,

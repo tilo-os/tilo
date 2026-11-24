@@ -7,7 +7,7 @@ use super::super::invocation_journal::BarrierFailure;
 use super::*;
 
 async fn update_app(
-    client: &runtime_collab::ChannelHandle,
+    client: &runtime_collab::RecordHandle,
     id: u64,
     update: &tilo_actions::InvocationUpdate,
 ) -> Result<(), runtime_portal::NotAvailable> {

@@ -91,14 +91,14 @@ include!("committed_changes_tests.rs");
 use crate::CollaborationState;
 
 use crate::time::{Duration, Instant};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::fd::IntoRawFd;
 use std::rc::Rc;
 
 use runtime_collab::wire::{
-    self, Call, ContextUpdate, Event, Handle, HostFrame, InvocationCall, LiveActivityCall,
+    self, Call, ContextUpdate, Event, HostFrame, InvocationCall, LiveActivityCall,
     Operation, Publication, Reply, Service, SettingsCall, Topic,
 };
 use tokio::io::AsyncWriteExt as _;
@@ -216,7 +216,8 @@ pub struct Captures {
     pub refuse_terminals: usize,
     pub terminal_updates: usize,
     pub invocation_updates: Vec<(u64, tilo_actions::InvocationUpdate)>,
-    pub joined: Vec<(String, Vec<u8>)>,
+    /// Each record the connection's calls named, in the order first named.
+    pub joined: Vec<String>,
     /// Each stream subscribed to, by its route, in the order asked.
     pub subscribed: Vec<(String, Topic)>,
     pub joined_resource_types: Vec<String>,
@@ -337,6 +338,10 @@ fn committed_answer(
     let encode = |reply: Read| reply.encode().map(Reply::Answer).map_err(str::to_owned);
     let result = (|| {
         let request = decoded?;
+        // How the record is kept, which every route asks as it opens: never sealed here.
+        if request == Ask::Writes {
+            return Ok((encode(Read::Writes { sealed: false })?, None));
+        }
         let mut captures = captures.lock().unwrap();
         captures.committed_reads.push(request.clone());
         let changes = captures.committed_changes.clone();
@@ -456,7 +461,7 @@ impl FakeRecord {
     }
 }
 
-/// One channel a fake host's connection joined.
+/// One record a fake host's connection named.
 struct FakeChannel {
     channel_id: String,
     record: Rc<RefCell<FakeRecord>>,
@@ -493,12 +498,12 @@ impl Feed {
 struct FakeHost {
     broker: FakeBroker,
     frames: tokio_mpsc::UnboundedSender<HostFrame>,
-    channels: RefCell<HashMap<Handle, Rc<FakeChannel>>>,
+    /// What the connection holds on each record it named, by record, made when first named.
+    channels: RefCell<HashMap<String, Rc<tokio::sync::OnceCell<Rc<FakeChannel>>>>>,
     /// Each channel's record, by channel, and the changes a new one starts with.
     records: RefCell<HashMap<String, Rc<RefCell<FakeRecord>>>>,
     seed: RefCell<Vec<Vec<u8>>>,
-    subscriptions: RefCell<HashMap<u64, (Handle, tokio::task::AbortHandle)>>,
-    next_handle: Cell<u64>,
+    subscriptions: RefCell<HashMap<u64, (String, tokio::task::AbortHandle)>>,
     /// Ends the connection unanswered: a call whose outcome is unknown.
     hang_up: Rc<tokio::sync::Notify>,
 }
@@ -524,7 +529,6 @@ where
         records: RefCell::default(),
         seed,
         subscriptions: RefCell::default(),
-        next_handle: Cell::new(1),
         hang_up: Rc::new(tokio::sync::Notify::new()),
     });
     let write = async {
@@ -570,12 +574,35 @@ impl FakeHost {
         self.broker.captures.lock().unwrap()
     }
 
-    fn channel(&self, handle: Handle) -> Result<Rc<FakeChannel>, String> {
-        self.channels
-            .borrow()
-            .get(&handle)
-            .cloned()
-            .ok_or_else(|| format!("no channel {handle:?} on this connection"))
+    /// What the connection holds on `record`, opened as the first call naming it opens it.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the fake host keeps its channels in `Rc`s on the `LocalSet` it serves on"
+    )]
+    async fn channel(self: &Rc<Self>, record: wire::Record) -> Result<Rc<FakeChannel>, String> {
+        let opened = Rc::clone(
+            self.channels
+                .borrow_mut()
+                .entry(record.key.clone())
+                .or_default(),
+        );
+        opened
+            .get_or_try_init(|| self.open(record))
+            .await
+            .map(Rc::clone)
+    }
+
+    /// `answer` about the record `record` names, once the connection holds it.
+    fn on(
+        self: &Rc<Self>,
+        record: wire::Record,
+        answer: impl FnOnce(&Rc<Self>, &FakeChannel) -> FakeAnswer + 'static,
+    ) -> FakeAnswer {
+        let host = Rc::clone(self);
+        Box::pin(async move {
+            let channel = host.channel(record).await?;
+            answer(&host, &channel).await
+        })
     }
 
     /// The record of `channel_id`, made from the seed when first asked.
@@ -611,18 +638,21 @@ impl FakeHost {
 
     fn accept(self: &Rc<Self>, Call { id, request }: Call) {
         match request {
-            Operation::Subscribe { channel, topic } => self.subscribe(id, channel, topic),
+            Operation::Subscribe { record, topic } => {
+                let host = Rc::clone(self);
+                tokio::task::spawn_local(async move { host.subscribe(id, record, topic).await });
+            }
             Operation::Unsubscribe { subscription } => {
                 if let Some((_, task)) = self.subscriptions.borrow_mut().remove(&subscription) {
                     task.abort();
                 }
             }
-            Operation::Close { handle } => {
-                self.channels.borrow_mut().remove(&handle);
+            Operation::Leave { record } => {
+                self.channels.borrow_mut().remove(&record);
                 self.subscriptions
                     .borrow_mut()
                     .retain(|_, (channel, task)| {
-                        let open = *channel != handle;
+                        let open = *channel != record;
                         if !open {
                             task.abort();
                         }
@@ -642,13 +672,19 @@ impl FakeHost {
         }
     }
 
-    fn subscribe(self: &Rc<Self>, id: u64, handle: Handle, topic: Topic) {
+    #[expect(
+        clippy::future_not_send,
+        reason = "the fake host keeps its channels in `Rc`s on the `LocalSet` it serves on"
+    )]
+    async fn subscribe(self: Rc<Self>, id: u64, record: wire::Record, topic: Topic) {
         let feed = Feed {
             frames: self.frames.clone(),
             subscription: id,
         };
+        let key = record.key.clone();
         let delivery = self
-            .channel(handle)
+            .channel(record)
+            .await
             .and_then(|channel| self.topic(&channel, topic, feed.clone()));
         let delivery = match delivery {
             Ok(delivery) => delivery,
@@ -673,7 +709,7 @@ impl FakeHost {
         });
         self.subscriptions
             .borrow_mut()
-            .insert(id, (handle, task.abort_handle()));
+            .insert(id, (key, task.abort_handle()));
     }
 
     /// What `topic` delivers on `channel`, ending with why it ended.
@@ -767,7 +803,6 @@ impl FakeHost {
     )]
     fn answer(self: &Rc<Self>, request: Operation) -> FakeAnswer {
         match request {
-            Operation::Join(join) => self.join(join),
             Operation::Workspace { seen, .. } => {
                 let Some(mut status) = self.captures().workspace_status.clone() else {
                     return answered(Err("the fixture reports no workspace status".into()));
@@ -791,28 +826,22 @@ impl FakeHost {
                 })
             }
             Operation::Publish {
-                channel,
+                record,
                 publication,
-            } => match self.channel(channel) {
-                Ok(channel) => self.publish(&channel, publication),
-                Err(error) => answered(Err(error)),
-            },
+            } => self.on(record, move |host, channel| host.publish(channel, publication)),
             Operation::Command {
-                channel,
+                record,
                 service,
                 body,
                 ..
-            } => match self.channel(channel) {
-                Ok(channel) => match service {
-                    Service::CommittedDocument => self.committed_document(&channel, &body),
-                    Service::NativeMedia => self.native_media(&body),
-                    Service::RemoteAction => answered(self.remote_action(&body)),
-                    Service::BrowserServiceSession => answered(self.browser_service_session(&body)),
-                    Service::Resources => self.resource_command(&channel, &body),
-                    other => answered(Err(format!("the fixture serves no {other:?}"))),
-                },
-                Err(error) => answered(Err(error)),
-            },
+            } => self.on(record, move |host, channel| match service {
+                Service::CommittedDocument => host.committed_document(channel, &body),
+                Service::NativeMedia => host.native_media(&body),
+                Service::RemoteAction => answered(host.remote_action(&body)),
+                Service::BrowserServiceSession => answered(host.browser_service_session(&body)),
+                Service::Resources => host.resource_command(channel, &body),
+                other => answered(Err(format!("the fixture serves no {other:?}"))),
+            }),
             Operation::Changed {
                 of: wire::Changes::GroupKeys,
                 after,
@@ -843,11 +872,8 @@ impl FakeHost {
                     answered(Err("the fixture completes no invocations".into()))
                 }
             },
-            Operation::Settings { channel, call } => {
-                let settings = self
-                    .channel(channel)
-                    .and_then(|channel| self.settings(&channel));
-                let settings = match settings {
+            Operation::Settings { record, call } => self.on(record, move |host, channel| {
+                let settings = match host.settings(channel) {
                     Ok(settings) => settings,
                     Err(error) => return answered(Err(error)),
                 };
@@ -869,12 +895,9 @@ impl FakeHost {
                         answered(settings.display(&command, origin).map(Reply::Answer))
                     }
                 }
-            }
-            Operation::LiveActivity { channel, call } => {
-                let activity = self
-                    .channel(channel)
-                    .and_then(|channel| self.live_activity(&channel));
-                let activity = match activity {
+            }),
+            Operation::LiveActivity { record, call } => self.on(record, move |host, channel| {
+                let activity = match host.live_activity(channel) {
                     Ok(activity) => activity,
                     Err(error) => return answered(Err(error)),
                 };
@@ -889,7 +912,7 @@ impl FakeHost {
                             .map(|(serial, controls)| Reply::Controls { serial, controls })
                     }),
                 }
-            }
+            }),
             Operation::Admit { .. } => {
                 let hold = {
                     let mut captures = self.captures();
@@ -907,44 +930,40 @@ impl FakeHost {
         }
     }
 
-    fn join(self: &Rc<Self>, join: wire::Join) -> FakeAnswer {
-        let mut captures = self.captures();
-        captures
-            .joined
-            .push((join.channel.clone(), join.identity.clone()));
-        captures
-            .joined_resource_types
-            .push(join.resource_type.clone().unwrap_or_default());
-        let held = captures.join_holds.pop_front();
-        if held.is_none()
-            && let Some(error) = captures.join_refusal.clone()
-        {
-            return answered(Err(error));
-        }
-        drop(captures);
-        let host = Rc::clone(self);
-        Box::pin(async move {
-            if let Some(held) = held {
-                // `JoiningProbe::REFUSAL`, word for word; the probe is not built on every target.
-                held.await
-                    .map_err(|_| "fixture join hold dropped".to_owned())?;
+    /// What the connection holds on `record`, as the first call naming it opens it: the open is
+    /// recorded, and held or refused as the test asks.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the fake host keeps its channels in `Rc`s on the `LocalSet` it serves on"
+    )]
+    async fn open(&self, record: wire::Record) -> Result<Rc<FakeChannel>, String> {
+        let held = {
+            let mut captures = self.captures();
+            captures.joined.push(record.key.clone());
+            captures
+                .joined_resource_types
+                .push(record.kind.clone().unwrap_or_default());
+            let held = captures.join_holds.pop_front();
+            if held.is_none()
+                && let Some(error) = captures.join_refusal.clone()
+            {
+                return Err(error);
             }
-            let handle = Handle(host.next_handle.get());
-            host.next_handle.set(handle.0 + 1);
-            let record = host.record(&join.channel);
-            host.channels.borrow_mut().insert(
-                handle,
-                Rc::new(FakeChannel {
-                    channel_id: join.channel,
-                    record,
-                    presence_backlog: Rc::new(RefCell::new(host.broker.presence_backlog.clone())),
-                    context_backlog: Rc::new(RefCell::new(host.broker.context_backlog.clone())),
-                    settings: RefCell::default(),
-                    live_activity: RefCell::default(),
-                }),
-            );
-            Ok(Reply::Opened(handle))
-        })
+            held
+        };
+        if let Some(held) = held {
+            // `JoiningProbe::REFUSAL`, word for word; the probe is not built on every target.
+            held.await
+                .map_err(|_| "fixture join hold dropped".to_owned())?;
+        }
+        Ok(Rc::new(FakeChannel {
+            record: self.record(&record.key),
+            channel_id: record.key,
+            presence_backlog: Rc::new(RefCell::new(self.broker.presence_backlog.clone())),
+            context_backlog: Rc::new(RefCell::new(self.broker.context_backlog.clone())),
+            settings: RefCell::default(),
+            live_activity: RefCell::default(),
+        }))
     }
 
     fn settings(
@@ -1368,7 +1387,7 @@ pub(super) fn fake_client(broker: FakeBroker) -> (runtime_collab::CollabClient, 
 
 #[test]
 #[cfg(unix)]
-fn inherited_broker_identity_delegates_join_and_keys() {
+fn inherited_broker_identity_delegates_keys() {
     use std::os::fd::AsFd as _;
     use tilo_identity_client::wire::{FRAMING, Request, Response};
 
@@ -1398,13 +1417,6 @@ fn inherited_broker_identity_delegates_join_and_keys() {
             .unwrap();
         assert!(matches!(
             FRAMING.read_value::<_, Request>(&mut host).unwrap(),
-            Some(Request::CollaborationJoin { workspace_id }) if workspace_id == expected_workspace
-        ));
-        FRAMING
-            .write_value(&mut host, &Response::Signature(vec![7; 64]))
-            .unwrap();
-        assert!(matches!(
-            FRAMING.read_value::<_, Request>(&mut host).unwrap(),
             Some(Request::GroupKeys { workspace_id, app_id, document_id, known_generation })
                 if workspace_id == expected_workspace && app_id == "notes"
                     && document_id == "page" && known_generation == 3
@@ -1421,18 +1433,11 @@ fn inherited_broker_identity_delegates_join_and_keys() {
             .unwrap();
     });
     let identity = tilo_identity_client::inherited::connect_service(app.as_fd()).unwrap();
-    let joined = sdk_join_identity_from(identity, cluster_id).unwrap();
+    let joined = sdk_join_identity_from(identity);
     assert_eq!(joined.member_kind, "person");
-    let presentation = runtime_collab::CertifiedJoinIdentity::decode(&joined.presentation)
-        .unwrap()
-        .unwrap();
-    assert_eq!(presentation.workspace_id, workspace);
-    assert_eq!(presentation.device_certificate, b"fixture");
-    assert_eq!(presentation.proof, [7; 64]);
     let SdkDocumentSigner::Certified(signer) = joined.signer else {
         panic!("an inherited identity must retain its broker signer");
     };
-    assert_eq!(signer.device_certificate(), Some(b"fixture".as_slice()));
     let keys = signer.group_keys(&workspace, "notes", "page", 3).unwrap();
     assert_eq!(keys.access, tilo_identity_client::wire::KeyAccess::Removed);
     assert_eq!(keys.generation, 4);
@@ -1480,7 +1485,6 @@ fn committed_route_over_fake_broker(
         Some("tab:0000000000000003".into()),
         crate::local_identity::own_name(),
         Some(SdkJoinIdentity {
-            presentation: harness_presentation(),
             member_kind: "person",
             signer: harness_document_signer(),
         }),
@@ -2138,7 +2142,6 @@ struct FixtureIdentity {
             + Sync,
     >,
     asked: Arc<std::sync::atomic::AtomicUsize>,
-    joins: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(unix)]
@@ -2157,7 +2160,6 @@ impl FixtureIdentity {
         Self {
             keys: Box::new(keys),
             asked: Arc::default(),
-            joins: Arc::default(),
         }
     }
 
@@ -2167,19 +2169,17 @@ impl FixtureIdentity {
     }
 }
 
-/// A manager on the fake broker at `fd`, admitted as `identity` presenting `presentation`, its
-/// own route for `app_id` in `workspace` joined.
+/// A manager on the fake broker at `fd`, its content sealed through `identity`, its own route
+/// for `app_id` in `workspace` open.
 #[cfg(unix)]
 fn certified_manager(
     fd: RawFd,
     identity: impl SdkCertifiedIdentity + 'static,
-    presentation: Vec<u8>,
     (app_id, workspace): (&str, Uuid),
 ) -> CollaborationManager {
     let sdk = CollaborationManager::spawn_sdk(
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
-            presentation,
             member_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::new(identity)),
         }),
@@ -2209,13 +2209,6 @@ impl SdkCertifiedIdentity for FixtureIdentity {
     ) -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         (self.keys)(app_id, generation)
-    }
-    fn device_certificate(&self) -> Option<&[u8]> {
-        Some(b"fixture")
-    }
-    fn sign_collaboration_join(&self, _: &str) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        self.joins.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        Ok([7; 64])
     }
 }
 
@@ -2250,7 +2243,6 @@ fn asks_while_waiting(access: Option<tilo_identity_client::wire::KeyAccess>, on_
                     .ok_or(runtime_portal::NotAvailable::ServiceFdMissing)
             })
         },
-        harness_presentation(),
         ("so.tilo.test", Uuid::new_v4()),
     );
     tilo_test_env::wait_until("the route's endpoint to ask for its channel keys", || {
@@ -2329,7 +2321,6 @@ fn channel_key_requests_on_route(committed: bool) -> usize {
             asked: Arc::clone(&asked),
             ..FixtureIdentity::keyed()
         },
-        harness_presentation(),
         ("so.tilo.test", Uuid::new_v4()),
     );
     if committed {
@@ -2405,7 +2396,6 @@ fn a_slow_identity_service_never_holds_up_incoming_changes() {
                 })
             }
         }),
-        harness_presentation(),
         (app_id, cluster),
     );
     thread::sleep(ARRIVES);
@@ -2463,7 +2453,6 @@ fn keyed_endpoint(
             asked: Arc::clone(&asked),
             ..FixtureIdentity::keyed()
         },
-        harness_presentation(),
         ("so.tilo.test", Uuid::new_v4()),
     );
     tilo_test_env::wait_until("the route's endpoint to ask for its channel keys", || {
@@ -3527,13 +3516,7 @@ tilo_test_env::scenario! {
             Some(&route)
         );
         assert_eq!(mgr.take_state_change(), Some(CollaborationState::Ready));
-        let joined: Vec<String> = captures
-            .lock()
-            .unwrap()
-            .joined
-            .iter()
-            .map(|(channel, _)| channel.clone())
-            .collect();
+        let joined = captures.lock().unwrap().joined.clone();
         assert_eq!(
             joined,
             vec![route.channel_id()],
@@ -3541,32 +3524,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase explicit_test_join_forwards_its_identity_presentation;
-    {
-        let broker = FakeBroker::default();
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let cluster = Uuid::new_v4();
-        let presentation = runtime_collab::CertifiedJoinIdentity {
-            workspace_id: cluster.to_string(),
-            device_certificate: b"certified test certificate".to_vec(),
-            proof: vec![5; 64],
-        }
-        .encode()
-        .unwrap();
-        let _mgr = CollaborationManager::from_sdk_fd_for_test_with_identity(
-            fd,
-            "alice",
-            cluster,
-            presentation.clone(),
-        );
-
-        tilo_test_env::wait_until("join_channel must be observed", || {
-            !captures.lock().unwrap().joined.is_empty()
-        });
-        let joined = captures.lock().unwrap().joined.clone();
-        assert_eq!(joined.len(), 1);
-        assert_eq!(joined[0].1, presentation);
-    }
 }
 
 #[cfg(unix)]
@@ -4046,7 +4003,6 @@ fn background_manager(fd: RawFd, route: RouteSpec) -> CollaborationManager {
     CollaborationManager::connect_in_background(
         SdkConnectSource::Fd(fd),
         SdkIdentitySource::Ready(Some(SdkJoinIdentity {
-            presentation: harness_presentation(),
             member_kind: "person",
             signer: harness_document_signer(),
         })),
@@ -4067,14 +4023,14 @@ tilo_test_env::scenario! {
         let cluster = Uuid::new_v4();
         let mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
 
-        tilo_test_env::wait_until("join_channel must be observed", || {
+        tilo_test_env::wait_until("the record must be opened", || {
             !captures.lock().unwrap().joined.is_empty()
         });
         let joined = captures.lock().unwrap().joined.clone();
         assert_eq!(joined.len(), 1);
         // The channel id carries the whole address, app id included.
         assert_eq!(
-            joined[0].0,
+            joined[0],
             channel_key::format("alice", &cluster.to_string(), ""),
         );
 
@@ -4121,7 +4077,7 @@ tilo_test_env::scenario! {
             captures.lock().unwrap().record_writes.len() == 2
         });
         let captured = captures.lock().unwrap();
-        assert!(captured.joined.iter().any(|(channel, _)| channel
+        assert!(captured.joined.iter().any(|channel| channel
             == &channel_key::format("actual-owner", &workspace.to_string(), "tab:qualified")));
         assert_eq!(
             captured.record_writes,
@@ -4210,7 +4166,7 @@ tilo_test_env::scenario! {
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        tilo_test_env::wait_until("join_channel must be observed", || {
+        tilo_test_env::wait_until("the record must be opened", || {
             !captures.lock().unwrap().joined.is_empty()
         });
 

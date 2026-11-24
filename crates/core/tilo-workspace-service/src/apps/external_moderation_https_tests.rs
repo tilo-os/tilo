@@ -45,16 +45,7 @@ mod https_completion {
             None,
             workspace.directories.clone(),
         );
-        let handle = rpc
-            .join_channel(
-                &workspace.route.channel_key(),
-                &signed_worker::presentation(
-                    &workspace.route.cluster_id,
-                    &workspace.original.cert,
-                    &workspace.original.key,
-                ),
-            )
-            .await
+        let handle = opened(&rpc, &workspace.route.channel_key()).await
             .unwrap();
         signed_worker::Connection {
             handle,
@@ -116,7 +107,7 @@ mod https_completion {
 
     /// The app sends `request` over `handle`, and it waits for the person: what they are shown.
     async fn store_waits(
-        handle: &runtime_collab::ChannelHandle,
+        handle: &runtime_collab::RecordHandle,
         request: tilo_actions::remote::InvokeRequest,
     ) -> AskedFacts {
         let receipt = signed_worker::receipt(
@@ -186,7 +177,7 @@ mod https_completion {
     /// The app sends `request` over `handle`: its receipt, or why it was
     /// refused.
     async fn store_invoke(
-        handle: runtime_collab::ChannelHandle,
+        handle: runtime_collab::RecordHandle,
         request: tilo_actions::remote::InvokeRequest,
     ) -> Result<tilo_actions::remote::InvocationReceipt, String> {
         let receipt = signed_worker::receipt(

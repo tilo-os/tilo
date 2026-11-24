@@ -3,20 +3,22 @@
 //!
 //! An endpoint sends [`Call`]s; the host answers each with a
 //! [`HostFrame::Reply`] carrying the call's id, so calls run concurrently on
-//! one connection. There are no capability objects: what a call opens (a
-//! channel) is named by a [`Handle`] the host allocates and keeps for the
-//! connection's lifetime or until it is closed, and a [`Operation::Subscribe`]
+//! one connection. The connection itself is what the host admitted: the app,
+//! workspace and person its launch named. A call about one of the app's
+//! records names it ([`Record`]) and is decided for that connection as it
+//! comes; what the host keeps for a record lasts until the endpoint leaves it
+//! ([`Operation::Leave`]) or the connection ends. A [`Operation::Subscribe`]
 //! call's id names the subscription its [`HostFrame::Event`]s carry until
 //! [`HostFrame::Ended`] or [`Operation::Unsubscribe`].
 //!
-//! The verbs are few: join a channel, publish into it, subscribe to one of
-//! its topics, read from it, command one of the host's services on it, and
+//! The verbs are few: publish about a record, subscribe to one of its
+//! topics, read from it, command one of the host's services about it, and
 //! wait for a change. What travels in them are the domain payloads the host
 //! and its peers already exchange, such as [`PeerPresence`], which
 //! broker-to-broker replication carries unchanged.
 
 use collab_types::presence::Member;
-use collab_types::{MemberId, PeerPresence};
+use collab_types::PeerPresence;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -31,10 +33,30 @@ pub mod shell;
 /// Both directions' framing.
 pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(64 << 20);
 
-/// Something the host opened for this connection, such as a joined channel.
-/// Valid on the connection that opened it until it is closed.
+/// Something the host opened for this connection: the session's published resources, or a
+/// provider the person's shell serves. Valid on the connection that opened it until it is closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Handle(pub u64);
+
+/// A record a call is about: its key (the app, workspace and, for a record, the record, as
+/// [`crate::route`] writes them), and the kind of resource it is, when the app names one. The host
+/// decides each call about it for the connection that makes it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Record {
+    pub key: String,
+    pub kind: Option<String>,
+}
+
+impl Record {
+    /// The record `key` names, of the kind `kind` (none when empty).
+    #[must_use]
+    pub fn new(key: impl Into<String>, kind: &str) -> Self {
+        Self {
+            key: key.into(),
+            kind: Some(kind.to_owned()).filter(|kind| !kind.is_empty()),
+        }
+    }
+}
 
 /// One call: the endpoint's id for it, and what it asks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -46,30 +68,27 @@ pub struct Call {
 /// What an endpoint asks the host.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operation {
-    /// Join a channel, answered with [`Reply::Opened`] once the workspace is
-    /// ready for apps to open documents in.
-    Join(Join),
-    /// Where the workspace a channel key names stands, answered
+    /// Where the workspace a record's key names stands, answered
     /// as [`Reply::Workspace`]: now, or once it is no longer `seen`.
     Workspace {
-        channel: String,
+        record: String,
         seen: Option<WorkspaceStatus>,
     },
-    /// Publish into a channel this connection holds.
+    /// Publish about a record.
     Publish {
-        channel: Handle,
+        record: Record,
         publication: Publication,
     },
-    /// Start receiving one of a channel's topics. The call's id names the
+    /// Start receiving one of a record's topics. The call's id names the
     /// subscription in every event it delivers.
-    Subscribe { channel: Handle, topic: Topic },
-    /// Ask for something a channel holds; it arrives on its topic.
-    Read { channel: Handle, read: Read },
-    /// Ask one of the host's services something about this channel,
+    Subscribe { record: Record, topic: Topic },
+    /// Ask for something a record holds; it arrives on its topic.
+    Read { record: Record, read: Read },
+    /// Ask one of the host's services something about a record,
     /// answered as [`Reply::Answer`]. The body and answer are the service's
     /// own encoding.
     Command {
-        channel: Handle,
+        record: Record,
         service: Service,
         body: Vec<u8>,
         /// The original invocation this command serves, when an action
@@ -79,7 +98,7 @@ pub enum Operation {
     /// Wait for `of`'s next change past the revision `after`, answered as
     /// [`Reply::Changed`] with the revision to wait from next.
     Changed {
-        channel: Handle,
+        record: Record,
         of: Changes,
         after: u64,
     },
@@ -88,30 +107,30 @@ pub enum Operation {
     /// for the person's press); answered as [`Reply::Invoked`] once it
     /// started or failed to.
     Launch {
-        channel: Handle,
+        record: Record,
         app_id: String,
         package_root: String,
         on_behalf_of: Vec<u8>,
     },
     /// What the app says, or asks, of an invocation it was handed.
     Invocation {
-        channel: Handle,
+        record: Record,
         id: u64,
         call: InvocationCall,
     },
     /// A call on the app's own settings.
-    Settings { channel: Handle, call: SettingsCall },
+    Settings { record: Record, call: SettingsCall },
     /// A call on the app's live activity: what it shows outside its
     /// windows, and the controls pressed on it.
     LiveActivity {
-        channel: Handle,
+        record: Record,
         call: LiveActivityCall,
     },
     /// Admit a local document action the app already performed, as an
     /// encoded `LocalDocumentActionReport`, answered as [`Reply::Admitted`].
     /// A refusal starting with `LOCAL_DOCUMENT_REJECTED` proves it was not
     /// admitted; any other failure leaves it uncertain.
-    Admit { channel: Handle, report: Vec<u8> },
+    Admit { record: Record, report: Vec<u8> },
     /// Input for the workspace control session the subscription
     /// `subscription` ([`Topic::WorkspaceControl`]) holds.
     ControlInput {
@@ -127,10 +146,13 @@ pub enum Operation {
     Unsubscribe { subscription: u64 },
     /// Close a handle, ending its subscriptions.
     Close { handle: Handle },
+    /// The endpoint is done with the record `record` (its key): what the host kept for it on this
+    /// connection, and the subscriptions about it, end.
+    Leave { record: String },
     /// The session's published resources: what its services read and the
     /// actions that change them, answered as [`Reply::Opened`] with the
     /// handle the other session calls name. The session is the device's,
-    /// not a workspace's, so no channel is joined for it.
+    /// not a workspace's, so no record is named for it.
     Services,
     /// `resource`'s reading now, answered as [`Reply::Snapshot`].
     Snapshot { services: Handle, resource: String },
@@ -149,23 +171,6 @@ pub enum Operation {
     /// What the person's shell asks of the device, on a connection the host admitted as that
     /// shell by its account ([`shell`]), answered as [`Reply::Shell`].
     Shell(shell::ShellCall),
-}
-
-/// Who joins which channel.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Join {
-    /// The channel key: the app, workspace and, for a record, the record.
-    pub channel: String,
-    /// The join presentation as the endpoint encoded it: a device's
-    /// certified presentation ([`CertifiedJoinIdentity`]).
-    pub identity: Vec<u8>,
-    /// The workspace agent the person delegated to this device; `None` for the
-    /// person's own device.
-    pub member: Option<MemberId>,
-    /// The handle the endpoint announces for the person, when it announces one.
-    pub handle: String,
-    /// The resource kind of the record the channel names, if the app has one.
-    pub resource_type: Option<String>,
 }
 
 /// What an app says, or asks, of an invocation it was handed.
@@ -247,17 +252,17 @@ pub enum LiveActivityCall {
 /// What the host asks an endpoint that published something it answers for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ask {
-    /// A page of the action directory the endpoint published on `channel`,
+    /// A page of the action directory the endpoint published about `record` (its key),
     /// answered as [`Answer::Page`].
     Query {
-        channel: Handle,
+        record: String,
         query: ActionDirectoryQuery,
     },
     /// One action of that directory, current now, answered as
     /// [`Answer::Resolution`]; `local_document` asks only for the retained
     /// snapshot a local document action was captured from.
     Resolve {
-        channel: Handle,
+        record: String,
         revision: String,
         resource: String,
         action: String,
@@ -306,7 +311,7 @@ pub enum CheckProgress {
 pub enum Changes {
     /// The person's speaker groups (the Settings app's).
     Speakers,
-    /// The channel's encryption keys.
+    /// The record's encryption keys.
     GroupKeys,
     /// Nearby transfers this app sees.
     NearbyTransfers,
@@ -353,13 +358,13 @@ pub enum Service {
     Resources,
 }
 
-/// What an endpoint publishes into a channel.
+/// What an endpoint publishes about a record.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Publication {
     /// A keyed presence update, fanned out to the workspace's other
     /// endpoints and replicated to its peers.
     Presence(PeerPresence),
-    /// Content the channel's record references, which the endpoint stored:
+    /// Content the record references, which the endpoint stored:
     /// the host keeps it where the record's readers are served from.
     Content { hash: String, bytes: Vec<u8> },
     /// What the app reports about its own instance or record.
@@ -373,7 +378,7 @@ pub enum Publication {
         update: String,
     },
     /// The app answers for its own action directory from now on: the host
-    /// asks it with [`HostFrame::Ask`] for as long as the channel is held.
+    /// asks it with [`HostFrame::Ask`] until it leaves the record.
     Directory,
     /// A change to the app's action surface, as `SurfaceDelta` JSON.
     Surface(String),
@@ -397,10 +402,10 @@ pub enum Report {
     SearchIndex(Vec<u8>),
 }
 
-/// What an endpoint reads from a channel.
+/// What an endpoint reads of a record.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Read {
-    /// Content the channel's record references and the endpoint lacks. It
+    /// Content the record references and the endpoint lacks. It
     /// arrives on [`Topic::Content`], from this device or the workspace's
     /// others.
     Content { hash: String },
@@ -411,11 +416,11 @@ pub enum Read {
 pub enum Topic {
     /// The workspace's other members' presence.
     Presence,
-    /// Content of the channel's record that arrived, or where a read of it
+    /// Content of the record that arrived, or where a read of it
     /// has got to.
     Content,
-    /// Who is in the channel and what this endpoint may do there, and the
-    /// session's directed asks of it.
+    /// Who is in the record's workspace and what this endpoint may do there,
+    /// and the session's directed asks of it.
     Context,
     /// The invocations of the app's published actions, replacing any
     /// stream it held; `stable_ids` asks for stable invocation ids.
@@ -503,7 +508,7 @@ pub enum Event {
         member: collab_types::MemberId,
         presence: PeerPresence,
     },
-    /// Content of the channel's record: its bytes once `state` is
+    /// Content of the record: its bytes once `state` is
     /// resolved, else where it has got to.
     Content {
         hash: String,
@@ -531,7 +536,7 @@ pub enum Event {
     ShownActions(Vec<crate::shown_actions::ActionDecision>),
 }
 
-/// One change of a channel's context.
+/// One change of a record's context.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextUpdate {
     /// The roster, this endpoint's permissions, and the apps installed on
@@ -556,8 +561,8 @@ pub enum ContextUpdate {
     /// Records another device wrote into this workspace's store: what a window that reads the
     /// store read of them is read again.
     RecordsMoved(Vec<String>),
-    /// The record this channel opened changed past what the endpoint was sent: it asks the
-    /// changes from its own heads (the store command `RecordChanges`).
+    /// The record changed past what the endpoint was sent: it asks the changes from its own
+    /// heads (the store command `RecordChanges`).
     RecordChanged,
 }
 
@@ -571,7 +576,7 @@ pub enum HostFrame {
     },
     /// One event of the subscription started by the call `subscription`.
     Event { subscription: u64, event: Event },
-    /// The host ended the subscription: its channel closed or the endpoint
+    /// The host ended the subscription: the endpoint left its record or
     /// lost the right to it. No further events follow.
     Ended { subscription: u64, reason: String },
     /// The host asks the endpoint something it answers for; the endpoint
@@ -592,7 +597,7 @@ mod tests {
             let call = Call {
                 id: 7,
                 request: Operation::Publish {
-                    channel: Handle(3),
+                    record: Record::new("app/workspace", ""),
                     publication: Publication::Presence(PeerPresence {
                         key: vec![1, 2],
                         payload: PeerPresencePayload::Caret { pos: 9 },

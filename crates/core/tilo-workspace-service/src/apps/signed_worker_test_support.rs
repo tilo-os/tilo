@@ -64,7 +64,18 @@ impl crate::apps::certificate_authority::CertificateAuthority for CurrentHost {
         self.checks.fetch_add(1, Ordering::SeqCst);
         self.authorize(workspace, cert)
     }
+    fn app_certificate(&self, workspace: &str) -> Result<DeviceCert, String> {
+        if workspace != self.route.cluster_id {
+            return Err("this host holds no identity in that workspace".into());
+        }
+        self.certificate
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "host certificate revoked".into())
+    }
 }
+
 
 /// A directory that reports each query/resolve entry and then waits for release.
 pub struct HeldHostDirectory {
@@ -236,7 +247,7 @@ pub fn rpc_pair(
 
 /// A joined channel whose connection tasks stop when it is dropped.
 pub struct Connection {
-    pub handle: runtime_collab::ChannelHandle,
+    pub handle: runtime_collab::RecordHandle,
     pub server: tokio::task::JoinHandle<Result<(), BrokerError>>,
     pub client: tokio::task::JoinHandle<()>,
 }
@@ -248,14 +259,13 @@ impl Drop for Connection {
     }
 }
 
-/// Register a private host worker for `route`, connect it as `peer` and join
-/// with the signed presentation. Returns the connection and the lookup of the originals delivered on it.
+/// Register a private host worker for `route`, connect it as `peer` and open its record. Returns
+/// the connection and the lookup of the originals delivered on it.
 pub async fn join_worker(
     state: &Arc<AppBrokerState>,
     directories: &Rc<LocalActionDirectoryRegistry>,
     route: &CrdtRoute,
     cert: &DeviceCert,
-    key: &SigningKey,
     peer: u64,
 ) -> (Connection, crate::apps::collab_app_broker::OriginalLookup) {
     let (socket, originals) = state
@@ -270,13 +280,7 @@ pub async fn join_worker(
         Some(pending.binding),
         directories.clone(),
     );
-    let handle = rpc
-        .join_channel(
-            &route.channel_key(),
-            &presentation(&route.cluster_id, cert, key),
-        )
-        .await
-        .unwrap();
+    let handle = opened(&rpc, &route.channel_key()).await.unwrap();
     (
         Connection {
             handle,
@@ -476,7 +480,6 @@ impl OriginalWorkspace {
             &self.directories,
             &self.route,
             &self.cert,
-            &self.key,
             peer,
         )
         .await
@@ -519,7 +522,7 @@ pub fn invoke_request(
 /// Send `message` over `handle`'s channel the way an app reaches actions,
 /// and the message that answers it.
 pub async fn ask(
-    handle: &runtime_collab::ChannelHandle,
+    handle: &runtime_collab::RecordHandle,
     message: tilo_actions::remote::RemoteActionMessage,
 ) -> Result<tilo_actions::remote::RemoteActionMessage, runtime_portal::NotAvailable> {
     use tilo_actions::remote::RemoteActionFrame;
@@ -544,7 +547,7 @@ pub fn receipt(
 
 /// Cancel `invocation` over `handle`'s channel; the host's answer.
 pub async fn cancel(
-    handle: &runtime_collab::ChannelHandle,
+    handle: &runtime_collab::RecordHandle,
     invocation: tilo_actions::InvocationId,
 ) -> Result<(), String> {
     match ask(

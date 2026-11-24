@@ -98,6 +98,8 @@ pub(super) struct LocalAppConnection {
     /// The caller the host opened this instance's view for
     /// ([`crate::apps::services::AuthenticatedApplicationLaunch::opened_for`]).
     pub(super) opened_for: Option<tilo_actions::remote::Caller>,
+    /// The workspace agent the launch named, which the app acts as; `None` for the person.
+    pub(super) member: Option<String>,
     process: PeerProcess,
     /// What Files hands over on its connection's descriptor stream: the only
     /// app whose selected objects this broker takes. Other apps' descriptors
@@ -281,12 +283,12 @@ impl LocalAppConnection {
         process: PeerProcess,
         launch: crate::apps::services::AuthenticatedApplicationLaunch,
     ) -> Option<Arc<Self>> {
-        Self::attested_keeping(app_id, workspace_id, process, launch)
+        Self::attested_keeping((app_id, workspace_id, None), process, launch)
     }
-    /// The attested launch of `app_id`.
+    /// The attested launch of `app_id` in `workspace_id`, acting as `member` (an agent of the
+    /// workspace) when the launch named one.
     pub(super) fn attested_keeping(
-        app_id: String,
-        workspace_id: String,
+        (app_id, workspace_id, member): (String, String, Option<String>),
         process: PeerProcess,
         launch: crate::apps::services::AuthenticatedApplicationLaunch,
     ) -> Option<Arc<Self>> {
@@ -300,6 +302,7 @@ impl LocalAppConnection {
                 continuation_instance: launch.continuation_instance,
                 windowless: launch.windowless,
                 opened_for: launch.opened_for,
+                member,
                 process,
                 connected: AtomicBool::new(true),
             })
@@ -311,7 +314,11 @@ impl LocalAppConnection {
         launch: crate::apps::services::AuthenticatedApplicationLaunch,
     ) -> Option<Arc<Self>> {
         process.and_then(|process| {
-            Self::attested_keeping(handoff.app_id, handoff.workspace_id, process, launch)
+            Self::attested_keeping(
+                (handoff.app_id, handoff.workspace_id, handoff.member),
+                process,
+                launch,
+            )
         })
     }
     /// Copies of the pidfds pinning the app's process, and its launcher's when the launcher

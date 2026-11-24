@@ -37,7 +37,7 @@ pub(super) struct NativeContext {
     pub(super) roster: Vec<collaboration::Member>,
 }
 
-/// Per-channel subscriber registry, keyed by `join_channel(id)`. A
+/// Per-channel subscriber registry, keyed by the record's channel key. A
 /// `channelId` carries the whole address ([`runtime_collab::route::channel_key`]
 /// encodes `(app, cluster, record)`), decoded via
 /// [`CrdtRoute::from_channel_key`]; delivery is [`CrdtRoute::delivers_to`].
@@ -200,19 +200,14 @@ impl AppBrokerState {
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::LocalDocumentActionReported { .. }
-            | CollabEvent::InstalledApplicationLaunchResult { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
-            | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::ResourceCommandResult { .. }
-            | CollabEvent::ResourcePage { .. }
             | CollabEvent::ActionVerdicts { .. }
-            | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
             | CollabEvent::DrivesChanged
             | CollabEvent::ApplicationsChanged
-            | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::DocumentContent { .. }
             | CollabEvent::DocumentContentState { .. }
@@ -664,17 +659,14 @@ impl AppBrokerState {
                 members.push(row);
             }
         }
-        // The person is called what the workspace's member list calls them, as everyone else is,
-        // unless their session announced a name of its own; never by their key.
-        let mut me = mine.unwrap_or_else(|| {
+        // The person is called what the workspace's member list calls them, as everyone else is;
+        // never by their key. Their own app may show the name their session gives them.
+        let me = mine.unwrap_or_else(|| {
             collab_types::Member::of_person(
                 &collab_types::Person::new(admitted.actor_key.clone(), String::new()),
                 None,
             )
         });
-        if let Some(handle) = &admitted.display_handle {
-            me.name.clone_from(handle);
-        }
         members.push(me.claiming_self());
         if members.iter().filter(|row| row.is_self).count() != 1 {
             return Err("native context has no exact authenticated self member".into());

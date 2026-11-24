@@ -351,18 +351,13 @@ tilo_test_env::scenario! {
         fixture.assert_idle();
     }
 
-    phase idle_nearby_snapshot_reply_does_not_request_a_hosted_pump;
+    phase idle_nearby_change_does_not_request_a_hosted_pump;
     {
         let mut fixture = HostedPumpFixture::new(1);
         fixture
             .events
             .borrow_mut()
-            .push(CollabEvent::NearbyTransferCommandResult {
-                request_id: 1,
-                result: Ok(crate::collaboration::NearbyTransferReply::Snapshot {
-                    snapshot: crate::collaboration::NearbyTransferSnapshot::default(),
-                }),
-            });
+            .push(CollabEvent::NearbyTransferChanged);
         assert!(
             !fixture.app.pump_collab_presence(),
             "an unchanged Nearby snapshot must not keep requesting frames"

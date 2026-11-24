@@ -63,12 +63,12 @@ impl Drop for Live {
     }
 }
 
-pub(super) fn install(channel: runtime_collab::ChannelHandle) {
+pub(super) fn install(channel: runtime_collab::RecordHandle) {
     media::audio_output::install(Arc::new(HostFactory(serve(channel))));
 }
 
 /// Start the queue's worker on the current `LocalSet`.
-fn serve(channel: runtime_collab::ChannelHandle) -> Arc<Connection> {
+fn serve(channel: runtime_collab::RecordHandle) -> Arc<Connection> {
     let (normal, mut receive) = async_mpsc::channel::<Job>(16);
     let (stops, mut stop_receive) = async_mpsc::channel::<Job>(8);
     let connection = Arc::new(Connection {
@@ -166,7 +166,7 @@ fn serve(channel: runtime_collab::ChannelHandle) -> Arc<Connection> {
 
 // Runs on the SDK's LocalSet; this future never crosses threads.
 fn dispatch<'a>(
-    channel: &'a runtime_collab::ChannelHandle,
+    channel: &'a runtime_collab::RecordHandle,
     command: &'a Command,
     urgent: &'a mut async_mpsc::Receiver<Job>,
     progress: &'a mut DispatchProgress,
@@ -371,12 +371,8 @@ mod tests {
 
     /// A channel on a collaboration host whose audio output answers with
     /// `answer`, served on this `LocalSet`.
-    #[expect(
-        clippy::future_not_send,
-        reason = "the fixture host runs on the test's `LocalSet`"
-    )]
-    async fn host_channel(answer: Answering) -> runtime_collab::ChannelHandle {
-        use runtime_collab::wire::{Call, FRAMING, Handle, HostFrame, Operation, Reply, Service};
+    fn host_channel(answer: Answering) -> runtime_collab::RecordHandle {
+        use runtime_collab::wire::{Call, FRAMING, HostFrame, Operation, Reply, Service};
         use tokio::io::AsyncWriteExt as _;
         let (client, host) = tokio::io::duplex(1 << 20);
         tokio::task::spawn_local(async move {
@@ -386,9 +382,6 @@ mod tests {
                 FRAMING.read_value_async::<_, Call>(&mut reader).await
             {
                 let result: Pin<Box<dyn Future<Output = Result<Reply, String>>>> = match request {
-                    Operation::Join(_) => {
-                        Box::pin(std::future::ready(Ok(Reply::Opened(Handle(1)))))
-                    }
                     Operation::Command {
                         service: Service::AudioOutput,
                         body,
@@ -414,10 +407,7 @@ mod tests {
             }
         });
         let (client, _) = runtime_collab::CollabClient::connected_local(client);
-        client
-            .join_channel("fixture", &super::super::harness_presentation())
-            .await
-            .unwrap()
+        client.record("fixture", "")
     }
 
     #[derive(Clone, Default)]
@@ -545,7 +535,7 @@ mod tests {
                 generation: Rc::new(Cell::new(6)),
                 fail_progress: false,
             };
-            let channel = host_channel(peer.answering()).await;
+            let channel = host_channel(peer.answering());
             let connection = serve(channel);
             let output = open(&connection).await;
             tokio::time::timeout(Duration::from_secs(1), peer.status_started.notified())
@@ -577,7 +567,7 @@ mod tests {
                         generation: Rc::new(Cell::new(6)),
                         fail_progress: true,
                     };
-                    let channel = host_channel(peer.answering()).await;
+                    let channel = host_channel(peer.answering());
                     let connection = serve(channel);
                     let first = open(&connection).await;
                     tokio::time::timeout(Duration::from_secs(1), peer.status_started.notified())
@@ -624,7 +614,7 @@ mod tests {
                     } else {
                         Peer::default().answering()
                     };
-                    let channel = host_channel(answering).await;
+                    let channel = host_channel(answering);
                     let (_urgent, mut receive) = async_mpsc::channel(8);
                     let write = Command::Write {
                         generation: 7,
@@ -662,7 +652,7 @@ mod tests {
                     Command::Close { generation: 7 },
                 ] {
                     let peer = Peer::default();
-                    let channel = host_channel(peer.answering()).await;
+                    let channel = host_channel(peer.answering());
                     let (urgent, mut receive) = async_mpsc::channel(8);
                     let (reply, received) = mpsc::sync_channel(1);
                     urgent

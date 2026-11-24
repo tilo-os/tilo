@@ -19,7 +19,7 @@ use tilo_app_id::apps::FILE_EXPLORER as DRIVES_APP_ID;
 /// and the drive list are followed only by the one app the broker answers.
 pub(super) fn follow(
     app_id: &str,
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     inbound_tx: &InboundBridge,
 ) {
     let follow_one = |of, event, what| {
@@ -56,7 +56,7 @@ pub(super) fn follow(
 /// changes. A route the broker does not answer for `of` stops after its first
 /// refusal.
 fn follow_changes(
-    channel: runtime_collab::ChannelHandle,
+    channel: runtime_collab::RecordHandle,
     inbound_tx: InboundBridge,
     of: Changes,
     event: CollabEvent,

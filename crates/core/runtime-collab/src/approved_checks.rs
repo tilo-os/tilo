@@ -244,7 +244,7 @@ impl Receipt {
 }
 
 #[cfg(feature = "client")]
-impl crate::ChannelHandle {
+impl crate::RecordHandle {
     /// Execute one host-approved ID for this target's actual accepted action.
     pub async fn approved_check(&self, request: &Request) -> Result<Receipt, crate::NotAvailable> {
         let encoded = request.encode().map_err(crate::NotAvailable::Refused)?;

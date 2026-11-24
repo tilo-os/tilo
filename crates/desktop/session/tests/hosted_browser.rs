@@ -28,7 +28,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use runtime_collab::{CollabClient, ExportedAction, ExportedInput};
 use tilo_actions::remote::browser::READY;
 use tilo_actions::remote::{CatalogueQuery, RemoteActionFrame, RemoteActionMessage};
@@ -182,7 +182,6 @@ fn page_action() -> ExportedAction {
 fn browser(
     app_wire: &Path,
     (workspace, document): (&str, &str),
-    (key, cert): (&SigningKey, &DeviceCert),
     named: &Named,
 ) {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -201,27 +200,12 @@ fn browser(
         let (reader, writer) = stream.into_split();
         let (client, carrying) = CollabClient::over(reader, writer);
         tokio::spawn(carrying);
-        let presentation = runtime_collab::CertifiedJoinIdentity {
-            workspace_id: workspace.to_owned(),
-            device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
-            proof: key
-                .sign(
-                    &tilo_identity_client::collaboration_join_digest(workspace)
-                        .expect("a workspace's join digest"),
-                )
-                .to_bytes()
-                .to_vec(),
-        }
-        .encode()
-        .expect("a presentation encodes");
         let route = tilo_workspace_service::apps::route::CrdtRoute {
             app_id: BROWSER.into(),
             cluster_id: workspace.into(),
             document_id: document.into(),
         };
-        let window = client
-            .join_channel(&route.channel_key(), &presentation)
-            .await
+        let window = crate::common::held::opened(&client, &route.channel_key()).await
             .expect("the Browser the session started joins where its window opens");
         window
             .publish_actions(&[page_action()])
@@ -360,15 +344,10 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
     // session's broker lists the window, and the workspace's dispatch lists its provider.
     let named = Named::default();
     {
-        let (workspace, document, key, cert, named) = (
-            site.workspace.clone(),
-            device.opens,
-            device.key,
-            device.cert,
-            Arc::clone(&named),
-        );
+        let (workspace, document, named) =
+            (site.workspace.clone(), device.opens, Arc::clone(&named));
         std::thread::spawn(move || {
-            browser(&app_wire, (&workspace, &document), (&key, &cert), &named);
+            browser(&app_wire, (&workspace, &document), &named);
         });
     }
     let provider = crate::common::wait_for(

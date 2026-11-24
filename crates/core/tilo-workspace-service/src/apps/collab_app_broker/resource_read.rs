@@ -27,6 +27,21 @@ impl AppBrokerState {
         self.certificate_authority.get()?.own_device()
     }
 
+    /// The certificate an app this device launched acts under in `workspace`: its own person's,
+    /// as this host's certificate authority answers, or as the identity this device keeps
+    /// selects it where the host has no authority.
+    pub(super) fn app_certificate(
+        &self,
+        workspace: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        match self.certificate_authority.get() {
+            Some(authority) => authority.app_certificate(workspace),
+            None => tilo_identity::trusted_device::current(workspace)
+                .map(|(_, certificate)| certificate)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
     /// Who `caller`, a caller inside this device, reads `workspace`'s records as: the caller as
     /// the read is decided in that workspace, for the person it names. Its execution must still
     /// run. With nobody signed in here, a caller that names nobody (an app on this device) reads

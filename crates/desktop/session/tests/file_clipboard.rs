@@ -22,7 +22,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use runtime_collab::ChannelHandle;
+use runtime_collab::RecordHandle;
 use runtime_collab::CollabClient;
 use runtime_collab::file_clipboard::{
     Command, Conflict, ObjectIdentity, Offer, Reply, SelectedDescriptor,
@@ -31,9 +31,8 @@ use runtime_portal::DescriptorStreamSource as _;
 use tilo_compositor::Selection;
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Lists, Options, Session};
-use tilo_user_identity::DeviceCert;
 
-use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, presentation};
+use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, opened};
 use ui::dnd::COPIED_FILES_MIME;
 
 /// The app whose clipboard this is.
@@ -111,16 +110,14 @@ fn selected(path: &Path) -> (SelectedDescriptor, std::fs::File) {
 /// The app as the session knows it: its channel into the workspace, and the invocations the session
 /// addresses back to it.
 struct Files {
-    mine: ChannelHandle,
+    mine: RecordHandle,
     invocations: runtime_collab::InvocationStream,
 }
 
 impl Files {
-    async fn join(socket: &Path, device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Self {
+    async fn join(socket: &Path) -> Self {
         let client = connect(socket);
-        let mine = client
-            .join_channel(&channel(), &presentation(device, cert))
-            .await
+        let mine = opened(&client, &channel()).await
             .expect("the app the session launched joins the workspace's channel");
         let invocations = mine
             .subscribe_stable_invocations()
@@ -406,8 +403,6 @@ enum Note {
 /// a third.
 fn files_calls(
     socket: &Path,
-    device: &ed25519_dalek::SigningKey,
-    cert: &DeviceCert,
     folders: &(PathBuf, PathBuf, PathBuf),
     notes: &std::sync::mpsc::Sender<Note>,
     checked: &std::sync::mpsc::Receiver<()>,
@@ -419,7 +414,7 @@ fn files_calls(
         .build()
         .expect("a runtime for the app");
     let proof = runtime.block_on(async {
-        let files = Files::join(socket, device, cert).await;
+        let files = Files::join(socket).await;
         let offer = publish(&files, &source, false).await;
         assert_eq!(offer.count, 1, "the copy holds the one file");
         assert!(!offer.cut, "a copy is not a cut");
@@ -552,8 +547,6 @@ fn files_copies_and_cuts_through_the_session_and_pastes_into_another_folder() {
     let app = std::thread::spawn(move || {
         files_calls(
             &socket,
-            &fixture.device,
-            &fixture.cert,
             &folders,
             &notes,
             &check,

@@ -207,7 +207,7 @@ mod durable_local_matrix {
                 .expect("actual broker journal available after normal stop/open");
             let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
             let (worker, originals) =
-                join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
+                join_worker(&state, &directories, &env.route, &env.cert, 903).await;
             let handle = &worker.handle;
             publish_directory(handle).await;
             let stream = handle.subscribe_stable_invocations().await.unwrap();
@@ -243,26 +243,10 @@ mod durable_local_matrix {
             app_id: &str,
             agent: Option<&str>,
         ) -> Connection {
-            let (server, socket) = std::os::unix::net::UnixStream::pair().unwrap();
-            let (rpc, server, client) = rpc_pair(
-                self.state.clone(),
-                peer,
-                server,
-                socket,
-                None,
-                self.directories.clone(),
-            );
+            let (rpc, server, client) =
+                certified_rpc(&self.state, &self.directories, peer, env.cert.clone(), agent);
             let route = CrdtRoute::app(app_id, env.route.cluster_id.clone());
-            let handle = rpc
-                .join_channel_as_kind(
-                    &route.channel_key(),
-                    &presentation(&route.cluster_id, &env.cert, &env.key),
-                    agent.unwrap_or(""),
-                    if agent.is_some() { "agent" } else { "person" },
-                    "",
-                )
-                .await
-                .unwrap();
+            let handle = opened(&rpc, &route.channel_key()).await.unwrap();
             Connection {
                 handle,
                 server,
@@ -270,26 +254,10 @@ mod durable_local_matrix {
             }
         }
         async fn caller(&self, env: &Environment, peer: u64, agent: Option<&str>) -> Connection {
-            let (server, socket) = std::os::unix::net::UnixStream::pair().unwrap();
-            let (rpc, server, client) = rpc_pair(
-                self.state.clone(),
-                peer,
-                server,
-                socket,
-                None,
-                self.directories.clone(),
-            );
+            let (rpc, server, client) =
+                certified_rpc(&self.state, &self.directories, peer, env.cert.clone(), agent);
             let route = CrdtRoute::cluster(env.route.cluster_id.clone());
-            let handle = rpc
-                .join_channel_as_kind(
-                    &route.channel_key(),
-                    &presentation(&route.cluster_id, &env.cert, &env.key),
-                    agent.unwrap_or(""),
-                    if agent.is_some() { "agent" } else { "person" },
-                    "",
-                )
-                .await
-                .unwrap();
+            let handle = opened(&rpc, &route.channel_key()).await.unwrap();
             Connection {
                 handle,
                 server,
@@ -335,7 +303,7 @@ mod durable_local_matrix {
         }
     }
     async fn publish_directory(
-        handle: &runtime_collab::ChannelHandle,
+        handle: &runtime_collab::RecordHandle,
     ) -> Rc<RefCell<TestActionDirectory>> {
         let state = directory_state("original-r1");
         handle
@@ -369,14 +337,14 @@ mod durable_local_matrix {
     /// Ask the rig's application (peer 903) for its action as `handle`'s
     /// caller, the way a person's or agent's press reaches it.
     async fn invoke(
-        handle: &runtime_collab::ChannelHandle,
+        handle: &runtime_collab::RecordHandle,
         id: tilo_actions::InvocationId,
     ) -> Result<tilo_actions::remote::InvocationReceipt, String> {
         invoke_with(handle, durable_request(id)).await
     }
     /// Send `request` as `handle`'s caller: the receipt, or why it was refused.
     async fn invoke_with(
-        handle: &runtime_collab::ChannelHandle,
+        handle: &runtime_collab::RecordHandle,
         request: tilo_actions::remote::InvokeRequest,
     ) -> Result<tilo_actions::remote::InvocationReceipt, String> {
         use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};

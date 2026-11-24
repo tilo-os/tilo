@@ -866,16 +866,13 @@ impl App {
     fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
         !matches!(
             event,
-            CollabEvent::NearbyTransferCommandResult { .. }
-                | CollabEvent::NearbyTransferChanged
+            CollabEvent::NearbyTransferChanged
                 | CollabEvent::SpeakersChanged
                 | CollabEvent::DrivesChanged
                 | CollabEvent::ApplicationsChanged
                 | CollabEvent::NativeMediaCommandResult { .. }
                 | CollabEvent::WorkspaceControl { .. }
-                | CollabEvent::RealtimeCommandResult { .. }
                 | CollabEvent::ResourceCommandResult { .. }
-                | CollabEvent::ResourcePage { .. }
                 | CollabEvent::RecordsMoved { .. }
                 | CollabEvent::Realtime(_)
         )
@@ -959,19 +956,14 @@ impl App {
             // The generic client responses are consumed by widgets such as
             // Agent through their collaboration event hook; an ordinary
             // application has no local state to apply.
-            CollabEvent::InstalledApplicationLaunchResult { .. }
-            | CollabEvent::NativeMediaCommandResult { .. }
+            CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::WorkspaceControl { .. }
-            | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::ResourceCommandResult { .. }
-            | CollabEvent::ResourcePage { .. }
             | CollabEvent::ActionVerdicts { .. }
-            | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
             | CollabEvent::DrivesChanged
             | CollabEvent::ApplicationsChanged
-            | CollabEvent::LocalFileClipboardResult { .. }
             // A window that holds the workspace's documents applies each as it arrives from
             // the broker; only a window that reads the store, as a tilolang app's window does,
             // re-reads the records named.

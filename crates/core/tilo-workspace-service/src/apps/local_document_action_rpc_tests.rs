@@ -1,6 +1,6 @@
 /// What the app reports, as its SDK sends it on its channel.
 async fn admit(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     report: &runtime_collab::LocalDocumentActionReport,
 ) -> Result<runtime_collab::PublishedInvocationObservation, runtime_collab::LocalDocumentActionError>
 {

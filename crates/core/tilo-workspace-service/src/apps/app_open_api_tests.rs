@@ -102,7 +102,7 @@ fn open_app_request(
 }
 
 async fn app_asks(
-    handle: &runtime_collab::ChannelHandle,
+    handle: &runtime_collab::RecordHandle,
     request: tilo_actions::remote::InvokeRequest,
 ) -> tilo_actions::remote::RemoteActionMessage {
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};

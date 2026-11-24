@@ -5,7 +5,7 @@ async fn checkout_channel(
     peer: u64,
     attested: bool,
 ) -> (
-    runtime_collab::ChannelHandle,
+    runtime_collab::RecordHandle,
     Option<Arc<native_media::LocalAppConnection>>,
     signed_worker::Connection,
 ) {

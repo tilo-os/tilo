@@ -4,7 +4,7 @@
 
 use super::{
     BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteSpec, SdkCommand, SdkJoinContext,
-    SdkRoute, broker_member_kind, change_waits, committed_document, follow_channel_keys,
+    SdkRoute, change_waits, committed_document, follow_channel_keys,
     native_media, record_sync, spawn_content_stream,
     spawn_context_stream, spawn_presence_stream, spawn_realtime_stream,
     take_invocations_once_current, tokio_mpsc,
@@ -27,8 +27,6 @@ pub(super) struct JoinInputs {
     pub(super) asks_channel_keys: bool,
     pub(super) key_signals: tokio_mpsc::UnboundedSender<KeySignal>,
     pub(super) client: runtime_collab::CollabClient,
-    pub(super) presentation: Vec<u8>,
-    pub(super) person: Option<std::rc::Rc<super::PersonWorkspace>>,
     pub(super) member_handle: Option<String>,
     pub(super) member_kind: &'static str,
     pub(super) inbound_tx: InboundBridge,
@@ -53,8 +51,6 @@ pub(super) fn start_route_join(
             asks_channel_keys: inputs.asks_channel_keys,
             key_signals: &inputs.key_signals,
             client: &inputs.client,
-            presentation: &inputs.presentation,
-            person: inputs.person.as_deref(),
             member_handle: inputs.member_handle.as_deref(),
             member_kind: inputs.member_kind,
             inbound_tx: &inputs.inbound_tx,
@@ -118,8 +114,6 @@ pub(super) async fn join_route(
         asks_channel_keys,
         key_signals,
         client,
-        presentation,
-        person,
         member_handle,
         member_kind,
         inbound_tx,
@@ -131,28 +125,16 @@ pub(super) async fn join_route(
         .connection_snapshots
         .lock_recover()
         .remove(&channel_id);
-    let identity_bytes = match person {
-        Some(person) => person.presentation(spec).await.unwrap_or(presentation),
-        None => presentation,
-    };
     // Each round trip of the join is marked, so a launch's startup line says which one
     // its wait for the route went to (the route's join has been most of a cold start).
     tilo_startup_metrics::startup_mark("collab-join-start");
-    let channel = match client
-        .join_channel_as_kind(
-            &channel_id,
-            identity_bytes,
-            member_handle.unwrap_or(""),
-            broker_member_kind(member_kind),
-            resource_type,
-        )
-        .await
-    {
-        Ok(channel) => channel,
+    let channel = client.record(&channel_id, resource_type);
+    // The first call naming the record is where the host admits the connection to it, so a
+    // record the app may not open ends its route here, with the host's reason.
+    let sealed = match channel.sealed().await {
+        Ok(sealed) => sealed,
         Err(error) => {
-            tracing::warn!(
-                "collab: joining channel {channel_id} failed ({error}); route unavailable"
-            );
+            tracing::warn!("collab: opening record {channel_id} failed ({error}); route unavailable");
             return Err(format!("{}: {error}", crate::ROUTE_JOIN_FAILED));
         }
     };
@@ -183,7 +165,6 @@ pub(super) async fn join_route(
             },
             presence: None,
             workspace_controls: std::collections::HashMap::new(),
-            resource_queries: std::collections::HashMap::new(),
             shown_actions: None,
             _record: None,
         });
@@ -194,8 +175,6 @@ pub(super) async fn join_route(
         inbound_tx,
         committed_document::NativeReadJoin {
             client: client.clone(),
-            presentation: identity_bytes.to_vec(),
-            member_handle: member_handle.unwrap_or("").into(),
             member_kind: member_kind.into(),
             resource_type: resource_type.into(),
         },
@@ -249,13 +228,7 @@ pub(super) async fn join_route(
     // no keys and its timer is never armed for it. Nor does it follow the
     // workspace's changes: each app's own routes carry them.
     let cluster_route = spec.app_id.is_empty();
-    let sealed = !cluster_route
-        && matches!(
-            channel
-                .committed_document(&runtime_collab::committed_document::Request::Writes)
-                .await,
-            Ok(runtime_collab::committed_document::Reply::Writes { sealed: true })
-        );
+    let sealed = !cluster_route && sealed;
     // A committed route's content stays as its committing host keeps it,
     // unless the workspace seals what it keeps.
     let encrypted = asks_channel_keys && !cluster_route && (sealed || !committed);
@@ -287,6 +260,7 @@ pub(super) async fn join_route(
         spawn_context_stream(
             &channel,
             record.as_ref().map(record_sync::Follower::changed),
+            member_handle,
             inbound_tx
         ),
         spawn_realtime_stream(&channel, inbound_tx),
@@ -332,7 +306,6 @@ pub(super) async fn join_route(
         },
         presence,
         workspace_controls: std::collections::HashMap::new(),
-        resource_queries: std::collections::HashMap::new(),
         shown_actions: None,
         _record: record,
     })

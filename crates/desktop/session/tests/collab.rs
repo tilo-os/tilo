@@ -1085,8 +1085,6 @@ fn notes_route() -> String {
 /// names once it is on it.
 fn the_notes_app(
     socket: &Path,
-    device: &ed25519_dalek::SigningKey,
-    cert: &tilo_user_identity::DeviceCert,
     joined: std::sync::mpsc::Sender<()>,
     told: std::sync::mpsc::Sender<Option<tilo_actions::MemberId>>,
 ) {
@@ -1106,12 +1104,7 @@ fn the_notes_app(
         let (reader, writer) = stream.into_split();
         let (client, carrying) = CollabClient::over(reader, writer);
         tokio::spawn(carrying);
-        let handle = client
-            .join_channel(
-                &notes_route(),
-                &crate::common::held::presentation(device, cert),
-            )
-            .await
+        let handle = crate::common::held::opened(&client, &notes_route()).await
             .expect("the app the session launched joins the workspace's route");
         let context = handle
             .subscribe_context()
@@ -1176,7 +1169,7 @@ fn following_someone_tells_the_window_app_whose_view_is_theirs() {
     let (joined, app_joined) = std::sync::mpsc::channel();
     let (told, hears) = std::sync::mpsc::channel();
     let app =
-        std::thread::spawn(move || the_notes_app(&socket, &held.device, &held.cert, joined, told));
+        std::thread::spawn(move || the_notes_app(&socket, joined, told));
     until(&mut session, "the app joins the workspace's route", |_| {
         app_joined.try_recv().is_ok()
     });

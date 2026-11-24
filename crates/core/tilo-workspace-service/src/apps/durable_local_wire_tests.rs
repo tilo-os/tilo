@@ -1,7 +1,7 @@
 /// `invocation`'s latest state as `handle`'s caller sees it: `None` for an
 /// invocation that is not theirs.
 async fn observe(
-    handle: &runtime_collab::ChannelHandle,
+    handle: &runtime_collab::RecordHandle,
     invocation: tilo_actions::InvocationId,
 ) -> Result<Option<tilo_actions::remote::InvocationState>, String> {
     use tilo_actions::remote::RemoteActionMessage;
@@ -35,29 +35,17 @@ async fn device_caller(
     env: &Environment,
     peer: u64,
     cert: &tilo_user_identity::DeviceCert,
-    key: &SigningKey,
     agent: &str,
 ) -> Connection {
-    let (server, socket) = std::os::unix::net::UnixStream::pair().unwrap();
-    let (rpc, server, client) = rpc_pair(
-        rig.state.clone(),
+    let (rpc, server, client) = certified_rpc(
+        &rig.state,
+        &rig.directories,
         peer,
-        server,
-        socket,
-        None,
-        rig.directories.clone(),
+        cert.clone(),
+        Some(agent),
     );
     let route = CrdtRoute::app("so.tilo.files", env.route.cluster_id.clone());
-    let handle = rpc
-        .join_channel_as_kind(
-            &route.channel_key(),
-            &presentation(&route.cluster_id, cert, key),
-            agent,
-            "agent",
-            "",
-        )
-        .await
-        .unwrap();
+    let handle = opened(&rpc, &route.channel_key()).await.unwrap();
     Connection {
         handle,
         server,
@@ -696,7 +684,6 @@ async fn durable_admission_rechecks_original_ownership_after_the_directory_answe
                             &rig.directories,
                             &env.route,
                             &env.cert,
-                            &env.key,
                             903,
                         )
                         .await
@@ -769,7 +756,7 @@ async fn an_agent_on_another_device_neither_sees_the_persons_invocation_nor_outl
                 .unwrap()
                 .push(certificate.clone());
             admit_scribe(&env);
-            let second = device_caller(&rig, &env, 918, &certificate, &device, "scribe").await;
+            let second = device_caller(&rig, &env, 918, &certificate, "scribe").await;
             assert!(observe(&second.handle, original).await.unwrap().is_none());
             assert!(
                 super::signed_worker::cancel(&second.handle, original)

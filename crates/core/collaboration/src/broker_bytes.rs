@@ -114,20 +114,8 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         }
         CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
-        | CollabRequest::CloseResources { .. }
         | CollabRequest::ClearContinuation => {}
-        CollabRequest::LaunchInstalledApplication {
-            app_id,
-            package_root,
-            ..
-        } => {
-            meter.string_capacity(app_id);
-            if let Some(root) = package_root {
-                meter.string_capacity(root);
-            }
-        }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
-        CollabRequest::LocalFileClipboard { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::ExternalModeration { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
@@ -142,14 +130,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.bytes(delta_json);
         }
         CollabRequest::NativeMediaCommand { command, .. } => serialized_bytes(command, &mut meter),
-        CollabRequest::RealtimeCommand { command, .. } => {
-            serialized_bytes(command, &mut meter);
-        }
-        CollabRequest::NearbyTransferCommand { command, .. } => {
-            serialized_bytes(command, &mut meter);
-        }
         CollabRequest::ResourceCommand { command, .. } => meter.bytes(command),
-        CollabRequest::OpenResources { query, .. } => meter.bytes(query),
         CollabRequest::DecideShownActions { actions } => serialized_bytes(actions, &mut meter),
         CollabRequest::ReportHandoff { message } => {
             meter.bytes(message);
@@ -359,7 +340,7 @@ fn context_event_bytes(
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn remote_action_round_trip(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     message: tilo_actions::remote::RemoteActionMessage,
 ) -> tilo_actions::remote::RemoteActionMessage {
     use tilo_actions::remote::RemoteActionFrame;
@@ -533,13 +514,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             "LocalDocumentActionReported"
         }
-        CollabEvent::InstalledApplicationLaunchResult { result, .. } => {
-            match result {
-                Ok((_, update)) => serialized_bytes(update, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "InstalledApplicationLaunchResult"
-        }
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);
             "WorkspaceControl"
@@ -575,37 +549,9 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             "ResourceCommandResult"
         }
-        CollabEvent::ResourcePage { page, .. } => {
-            match page {
-                Ok(page) => meter.bytes(page),
-                Err(error) => meter.string_capacity(error),
-            }
-            "ResourcePage"
-        }
         CollabEvent::ActionVerdicts { verdicts } => {
             serialized_bytes(verdicts, &mut meter);
             "ActionVerdicts"
-        }
-        CollabEvent::RealtimeCommandResult { result, .. } => {
-            match result {
-                Ok(reply) => serialized_bytes(reply, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "RealtimeCommandResult"
-        }
-        CollabEvent::LocalFileClipboardResult { result, .. } => {
-            match result {
-                Ok(reply) => serialized_bytes(reply, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "LocalFileClipboardResult"
-        }
-        CollabEvent::NearbyTransferCommandResult { result, .. } => {
-            match result {
-                Ok(reply) => serialized_bytes(reply, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "NearbyTransferCommandResult"
         }
         CollabEvent::NearbyTransferChanged => "NearbyTransferChanged",
         CollabEvent::SpeakersChanged => "SpeakersChanged",

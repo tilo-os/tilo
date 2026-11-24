@@ -14,14 +14,18 @@ pub(super) fn default_pointer_key_bytes() -> Vec<u8> {
 
 // Server implementations
 
-/// Root capability server. One instance per connected RPC session.
+/// What one app's connection is: the app, workspace and person it was admitted as, and the
+/// records its calls named. One per connection.
 pub(super) struct AppConnection {
     pub(super) worker: Option<WorkerBinding>,
     /// The worker registration of a connection its launcher authenticated,
     /// minted at connect for the app the shell launched: each route of
-    /// that app the connection joins as its person is one of its worker
+    /// that app the connection names as its person is one of its worker
     /// routes ([`host_workers`]).
     pub(super) app_worker: Option<(uuid::Uuid, String)>,
+    /// Who the connection's calls are made by, as its launch, its shell's vouch or the host
+    /// that made it named it; a connection naming nobody makes no call about a record.
+    pub(super) identity: Option<ConnectionIdentity>,
     pub(super) state: Arc<AppBrokerState>,
     pub(super) directories: Rc<LocalActionDirectoryRegistry>,
     /// Peer id assigned at accept time. Fanout uses it to skip the
@@ -30,6 +34,40 @@ pub(super) struct AppConnection {
     pub(super) lease: Rc<ConnectionLease>,
     /// The routes this connection holds ([`route_holds`]).
     pub(super) holds: route_holds::ConnectionHolds,
+}
+
+/// Who an app's connection acts as: the person whose device it runs on, in whichever workspace
+/// a record it names is in, and the workspace agent its launch named, if any.
+#[derive(Clone)]
+pub(super) struct ConnectionIdentity {
+    /// The certificate the connection acts under in a workspace.
+    pub(super) certificate: Rc<dyn Fn(&str) -> Result<tilo_user_identity::DeviceCert, String>>,
+    /// The workspace agent the launch named; `None` for the person.
+    pub(super) member: Option<String>,
+}
+
+impl ConnectionIdentity {
+    /// The device's own person, as `state`'s certificate authority answers for each workspace
+    /// ([`crate::apps::certificate_authority::CertificateAuthority::app_certificate`]).
+    pub(super) fn device(state: &Arc<AppBrokerState>, member: Option<String>) -> Self {
+        let state = Arc::clone(state);
+        Self {
+            certificate: Rc::new(move |workspace| state.app_certificate(workspace)),
+            member,
+        }
+    }
+
+    /// The holder of `certificate`, in every workspace: a host-mounted worker the host admitted
+    /// under it.
+    pub(super) fn certified(
+        certificate: tilo_user_identity::DeviceCert,
+        member: Option<String>,
+    ) -> Self {
+        Self {
+            certificate: Rc::new(move |_| Ok(certificate.clone())),
+            member,
+        }
+    }
 }
 
 pub(super) struct ConnectionLease {
@@ -69,8 +107,8 @@ impl Drop for ConnectionLease {
 }
 
 /// The resource kind of the record `route` names: a workspace record's own
-/// kind, which the route's id already derives from and every window joining
-/// it holds whether or not it says so, else what the join `named`. A join
+/// kind, which the route's id already derives from and every window naming
+/// it holds whether or not it says so, else what the call `named`. A call
 /// naming a workspace record as another kind is refused.
 pub(super) fn route_resource_type(
     route: &CrdtRoute,
@@ -81,24 +119,24 @@ pub(super) fn route_resource_type(
     };
     match named {
         Some(kind) if kind != record.kind => Err(BrokerError::failed(format!(
-            "the workspace record of kind {} was joined as {kind}",
+            "the workspace record of kind {} was named as {kind}",
             record.kind
         ))),
         _ => Ok(Some(record.kind.to_owned())),
     }
 }
 
-/// Where one join's time went, logged with every join (`COLLAB-JOIN`): an app's
-/// cold start waits for its route's join, and its own startup line only sees the
-/// round trip. The time before `verify` is the request's decoding; a join slower on
-/// the app's side than here waited for the broker's thread.
-pub(super) struct JoinPhases {
+/// Where the time went when a connection first named a record, logged each time
+/// (`COLLAB-OPEN`): an app's cold start waits for its first call about its record, and its own
+/// startup line only sees the round trip. Slower on the app's side than here, the call waited
+/// for the broker's thread.
+pub(super) struct OpenPhases {
     pub(super) started: std::time::Instant,
     pub(super) last: std::time::Instant,
     pub(super) spans: Vec<(&'static str, std::time::Duration)>,
 }
 
-impl JoinPhases {
+impl OpenPhases {
     pub(super) fn start() -> Self {
         let now = tilo_clock::now();
         Self {
@@ -122,13 +160,13 @@ impl JoinPhases {
             .collect::<Vec<_>>()
             .join(" ");
         eprintln!(
-            "COLLAB-JOIN channel={channel} total={}us {split}",
+            "COLLAB-OPEN record={channel} total={}us {split}",
             self.started.elapsed().as_micros()
         );
     }
 }
 
-/// The resource kind a join names for its record: none when empty, and
+/// The resource kind a call names for its record: none when empty, and
 /// refused unless it is a record kind the toolkit accepts.
 pub(super) fn joined_resource_type(kind: &str) -> Result<Option<String>, BrokerError> {
     if kind.is_empty() {
@@ -140,8 +178,8 @@ pub(super) fn joined_resource_type(kind: &str) -> Result<Option<String>, BrokerE
     Ok(Some(kind.to_owned()))
 }
 
-/// Per-channel handle established by `join_channel`; every subsequent
-/// method call inherits its (`channel_id`, `peer_id`, identity) context.
+/// What a connection holds on one record it named; every call about the record
+/// inherits its (`channel_id`, `peer_id`, identity) context.
 pub(super) struct JoinedChannel {
     pub(super) committed_read: Rc<RefCell<committed_document::Slot>>,
     pub(super) state: Arc<AppBrokerState>,
@@ -1149,9 +1187,20 @@ pub(super) async fn drive_connection(
     let app_worker = local_media
         .as_ref()
         .map(|app| (uuid::Uuid::new_v4(), app.app_id.clone()));
+    // A launched app acts as the device's own person, and as the agent its launch named; a
+    // host-mounted worker as the certificate the host admitted it under; anything else as nobody.
+    let identity = match (&worker, &local_media) {
+        (Some(worker), _) => Some(ConnectionIdentity::certified(
+            worker.certificate.clone(),
+            None,
+        )),
+        (None, Some(app)) => Some(ConnectionIdentity::device(&state, app.member.clone())),
+        (None, None) => None,
+    };
     let (connection, outgoing) = wire::WireConnection::new(Some(Rc::new(AppConnection {
         worker,
         app_worker,
+        identity,
         lease: Rc::new(ConnectionLease {
             local_media,
             state: Arc::clone(&state),

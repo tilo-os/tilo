@@ -528,7 +528,7 @@ impl BrowserServiceSessionReply {
     }
 }
 #[cfg(feature = "client")]
-impl crate::ChannelHandle {
+impl crate::RecordHandle {
     /// Resolve only this admitted Browser channel's own selected credentials.
     pub async fn browser_service_session_command(
         &self,

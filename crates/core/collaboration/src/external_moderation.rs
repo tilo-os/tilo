@@ -46,7 +46,7 @@ pub fn enqueue(
 
 pub(super) fn register(
     route: String,
-    channel: runtime_collab::ChannelHandle,
+    channel: runtime_collab::RecordHandle,
 ) -> Result<Registration<Endpoint>, String> {
     let (send, mut receive) = mpsc::channel(MAX_PENDING);
     let endpoint = Arc::new(Endpoint(send));
@@ -71,7 +71,7 @@ pub(super) fn register(
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn execute(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     command: &runtime_collab::external_moderation::Request,
     on_behalf_of: tilo_actions::InvocationId,
     reply: &ExternalModerationReply,

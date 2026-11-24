@@ -315,8 +315,8 @@ struct PrivateWorkerRegistration {
 struct WorkerBinding {
     registration: Option<PrivateWorkerRegistration>,
     route: CrdtRoute,
-    root: [u8; 32],
-    device: [u8; 32],
+    /// The certificate the host admitted the worker under: what its calls act as.
+    certificate: tilo_user_identity::DeviceCert,
 }
 struct PendingWorker {
     stream: std::os::unix::net::UnixStream,
@@ -373,7 +373,7 @@ pub struct AppBrokerState {
     lifecycle: RwLock<()>,
     accepting: AtomicBool,
     stopped: AtomicBool,
-    /// Keyed by `join_channel`'s `channel_id`; lazily inserted on first join.
+    /// Keyed by the record's channel key; inserted when a connection first names the record.
     channels: Mutex<HashMap<String, ChannelSubscribers>>,
     /// The held committed-read waits (`Await`) of each channel, by
     /// `channel_id`: a write fanned out on a channel's route changes what
@@ -724,7 +724,7 @@ pub mod tests;
 /// `handle` held by an app on its own wire connection to the broker.
 /// Spawns on the current `LocalSet`.
 #[cfg(any(test, feature = "test-support"))]
-fn wire_channel(handle: JoinedChannel) -> runtime_collab::ChannelHandle {
+fn wire_channel(handle: JoinedChannel) -> runtime_collab::RecordHandle {
     wire_channel_rc(Rc::new(handle))
 }
 
@@ -732,10 +732,11 @@ fn wire_channel(handle: JoinedChannel) -> runtime_collab::ChannelHandle {
 /// as its invocation feed: pulled, so whatever the broker dispatched and the
 /// test did not take stays countable ([`unread_invocations`]).
 #[cfg(any(test, feature = "test-support"))]
-fn wire_channel_rc(handle: Rc<JoinedChannel>) -> runtime_collab::ChannelHandle {
+fn wire_channel_rc(handle: Rc<JoinedChannel>) -> runtime_collab::RecordHandle {
     let (connection, outgoing) = wire::WireConnection::new(None);
-    let channel = connection.open(wire::ChannelSession::new(handle));
-    wire_client(connection, outgoing).channel(channel)
+    let kind = handle.resource_type.clone().unwrap_or_default();
+    let record = connection.open(wire::ChannelSession::new(handle));
+    wire_client(connection, outgoing).record(&record, &kind)
 }
 
 /// An app's wire client served by `connection`. Spawns on the current

@@ -2,7 +2,7 @@
 //!
 //! A sandboxed app cannot read the session's settings document. Its channel
 //! answers its settings calls instead
-//! ([`crate::ChannelHandle::settings`]): the app reads its view and follows
+//! ([`crate::RecordHandle::settings`]): the app reads its view and follows
 //! its changes with [`AppSettingsHandle::read`], and writes its own entries
 //! with [`AppSettingsHandle::update`]. With the `settings-host` feature,
 //! [`host::AppSettingsServer`] answers them from a
@@ -22,10 +22,10 @@ const MAX_DISPLAY_WIRE_BYTES: usize = 64 * 1024;
 
 pub use crate::DisplayOrigin;
 
-/// What [`crate::ChannelHandle::settings`] answers.
+/// What [`crate::RecordHandle::settings`] answers.
 #[derive(Clone)]
 pub struct AppSettingsHandle {
-    pub(crate) channel: crate::ChannelHandle,
+    pub(crate) channel: crate::RecordHandle,
 }
 
 /// One version of an app's settings view: its revision and the JSON

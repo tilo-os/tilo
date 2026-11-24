@@ -16,6 +16,9 @@ pub(super) struct CollabLaunchHandoff {
     /// is for (the launcher's `services::write_collab_window_handoff`).
     #[serde(default)]
     pub(super) window_instance: Option<u64>,
+    /// The workspace agent the app is launched to act as; `None` for the device's person.
+    #[serde(default)]
+    pub(super) member: Option<String>,
 }
 
 impl CollabLaunchHandoff {
@@ -94,9 +97,6 @@ pub(crate) struct AdmittedJoinIdentity {
     pub(super) certificate: Option<tilo_user_identity::DeviceCert>,
     pub(super) verified: VerifiedJoinIdentity,
     pub(super) actor_key: String,
-    /// Informational display label announced by this authenticated session.
-    /// Authorization always uses `actor_key`, never this handle.
-    pub(super) display_handle: Option<String>,
     /// Workspace admission role from the live owner/capability roster.
     /// Certified document operations use this directly instead of requiring
     /// a second, channel-local role attestation for the same person. For a
@@ -279,7 +279,6 @@ pub(super) fn admit_verified_join_at(
             verified,
             actor_key,
             role,
-            display_handle: None,
             agent_id: None,
             session_delegated: false,
         });
@@ -301,7 +300,6 @@ pub(super) fn admit_verified_join_at(
         verified,
         actor_key,
         role,
-        display_handle: None,
         agent_id: None,
         session_delegated: false,
     })
@@ -351,17 +349,7 @@ pub(super) fn verify_join_presentation(
     let cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
-    tilo_user_identity::verify_device_cert_at(&cert, now_ns)
-        .map_err(|error| format!("device certificate was rejected: {error}"))?;
-    if &cert.user_public_key != expected_user_public_key {
-        return Err("device certificate belongs to another workspace identity".into());
-    }
-    if revoked {
-        return Err("certified collaboration device has been revoked".into());
-    }
-    if !enrolled {
-        return Err("certified collaboration device is not enrolled".into());
-    }
+    verify_certificate(&cert, expected_user_public_key, now_ns, revoked, enrolled)?;
     let proof = <[u8; 64]>::try_from(presentation.proof.as_slice())
         .map_err(|_| "collaboration join proof must be 64 bytes".to_string())?;
     let workspace = presentation.workspace_id.as_str();
@@ -376,6 +364,29 @@ pub(super) fn verify_join_presentation(
     // Without an authority to ask who governs the workspace, every foreign device
     // is held to the cap; the caller refines this where it has one.
     Ok(VerifiedJoinIdentity::of(&cert, cert.capabilities.foreign))
+}
+
+/// Whether `cert` is in force at `now_ns`, certified by `expected_user_public_key`, and neither
+/// revoked nor unenrolled.
+fn verify_certificate(
+    cert: &tilo_user_identity::DeviceCert,
+    expected_user_public_key: &[u8; 32],
+    now_ns: u64,
+    revoked: bool,
+    enrolled: bool,
+) -> Result<(), String> {
+    tilo_user_identity::verify_device_cert_at(cert, now_ns)
+        .map_err(|error| format!("device certificate was rejected: {error}"))?;
+    if &cert.user_public_key != expected_user_public_key {
+        return Err("device certificate belongs to another workspace identity".into());
+    }
+    if revoked {
+        return Err("certified collaboration device has been revoked".into());
+    }
+    if !enrolled {
+        return Err("certified collaboration device is not enrolled".into());
+    }
+    Ok(())
 }
 
 pub(super) fn verify_join_identity(
@@ -413,6 +424,38 @@ pub(super) fn admit_join_presentation(
     let cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
+    admit_device(route, cert, membership, trusted_devices, authority, |expected, now, revoked, enrolled| {
+        verify_join_presentation(route, presentation, expected, now, revoked, enrolled)
+    })
+}
+
+/// Admit `cert`, the certificate of this device's own person in `route`'s workspace, which an
+/// app's connection acts under: the device itself vouches for it, so there is no proof to check,
+/// only that the workspace admits the certificate now.
+pub(super) fn admit_device_certificate(
+    route: &CrdtRoute,
+    cert: tilo_user_identity::DeviceCert,
+    membership: Option<&WorkspaceTreeHandle>,
+    trusted_devices: Option<&[[u8; 32]]>,
+    authority: Option<&dyn crate::apps::certificate_authority::CertificateAuthority>,
+) -> Result<AdmittedJoinIdentity, String> {
+    let checked = cert.clone();
+    admit_device(route, cert, membership, trusted_devices, authority, |expected, now, revoked, enrolled| {
+        verify_certificate(&checked, expected, now, revoked, enrolled)?;
+        Ok(VerifiedJoinIdentity::of(&checked, checked.capabilities.foreign))
+    })
+}
+
+/// Admit `cert` into `route`'s workspace once `verify` accepts it, given the root expected to
+/// certify it, the policy time, and whether it is revoked or enrolled.
+fn admit_device(
+    route: &CrdtRoute,
+    cert: tilo_user_identity::DeviceCert,
+    membership: Option<&WorkspaceTreeHandle>,
+    trusted_devices: Option<&[[u8; 32]]>,
+    authority: Option<&dyn crate::apps::certificate_authority::CertificateAuthority>,
+    verify: impl FnOnce(&[u8; 32], u64, bool, bool) -> Result<VerifiedJoinIdentity, String>,
+) -> Result<AdmittedJoinIdentity, String> {
     let (expected_root, revoked, enrolled) =
         authorize_join_certificate(route, &cert, trusted_devices, authority)?;
     let registered = authority.map_or(
@@ -422,14 +465,7 @@ pub(super) fn admit_join_presentation(
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     let verified = VerifiedJoinIdentity {
         capped: cert_capped_in(authority, &route.cluster_id, &cert),
-        ..verify_join_presentation(
-            route,
-            presentation,
-            &expected_root,
-            now_ns,
-            revoked,
-            enrolled,
-        )?
+        ..verify(&expected_root, now_ns, revoked, enrolled)?
     };
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;

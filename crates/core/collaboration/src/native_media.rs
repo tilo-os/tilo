@@ -43,9 +43,9 @@ struct Shared {
 pub(super) struct Sender(Arc<Shared>);
 pub(super) struct Receiver(Arc<Shared>);
 #[derive(Clone, Default)]
-pub(super) struct Routes(Rc<RefCell<BTreeMap<String, runtime_collab::ChannelHandle>>>);
+pub(super) struct Routes(Rc<RefCell<BTreeMap<String, runtime_collab::RecordHandle>>>);
 impl Routes {
-    pub(super) fn insert(&self, key: String, channel: runtime_collab::ChannelHandle) {
+    pub(super) fn insert(&self, key: String, channel: runtime_collab::RecordHandle) {
         let mut routes = self.0.borrow_mut();
         if routes.len() < MAX_ROUTES || routes.contains_key(&key) {
             routes.insert(key, channel);

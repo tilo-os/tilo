@@ -107,15 +107,7 @@ impl MediaQueue {
             let route = binding.broker_route()?;
             for request in crate::widget::take_collab_requests(widget) {
                 took = true;
-                if let CollabRequest::RealtimeCommand { request_id, .. } = request {
-                    crate::widget::handle_collab_event(
-                        widget,
-                        &CollabEvent::RealtimeCommandResult {
-                            request_id,
-                            result: Err("Continuing on another device isn't available here".into()),
-                        },
-                    );
-                } else if let CollabRequest::NativeMediaCommand {
+                if let CollabRequest::NativeMediaCommand {
                     request_id,
                     command,
                 } = request

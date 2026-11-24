@@ -120,24 +120,9 @@ fn channel_key(workspace_id: &str) -> String {
     format!("{workspace_id}#app:{APP_ID}")
 }
 
-fn certified_join(workspace_id: &str) -> Result<(Vec<u8>, Arc<BrokerSigningIdentity>), String> {
-    let identity = tilo_identity_client::load()
-        .map_err(|error| format!("could not reach the workspace identity service: {error}"))?;
-    let certificate = identity
-        .metadata()
-        .device_certificate()
-        .ok_or_else(|| "workspace identity has no certified device".to_string())?;
-    let proof = identity
-        .sign_collaboration_join(workspace_id)
-        .map_err(|error| format!("collaboration join was denied: {error}"))?;
-    let presentation = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: workspace_id.to_string(),
-        device_certificate: certificate.to_vec(),
-        proof: proof.to_vec(),
-    }
-    .encode()
-    .map_err(|error| format!("could not encode the certified join: {error}"))?;
-    Ok((presentation, identity))
+fn workspace_identity() -> Result<Arc<BrokerSigningIdentity>, String> {
+    tilo_identity_client::load()
+        .map_err(|error| format!("could not reach the workspace identity service: {error}"))
 }
 
 /// Dial the broker over the launcher-supplied descriptor and join the probe's
@@ -149,16 +134,17 @@ fn certified_join(workspace_id: &str) -> Result<(Vec<u8>, Arc<BrokerSigningIdent
 )]
 async fn join(
     workspace_id: &str,
-) -> Result<(runtime_collab::ChannelHandle, Arc<BrokerSigningIdentity>), String> {
-    let (presentation, identity) = certified_join(workspace_id)?;
+) -> Result<(runtime_collab::RecordHandle, Arc<BrokerSigningIdentity>), String> {
+    let identity = workspace_identity()?;
     let broker = runtime_collab::try_connect()
         .map_err(|error| format!("could not reach the broker over the service fd: {error}"))?;
     println!("probe: connected to the broker");
     let channel = channel_key(workspace_id);
-    let handle = broker
-        .join_channel(&channel, &presentation)
+    let handle = broker.record(&channel, "");
+    handle
+        .sealed()
         .await
-        .map_err(|error| format!("join_channel({channel}) failed: {error}"))?;
+        .map_err(|error| format!("opening {channel} failed: {error}"))?;
     println!("probe: joined channel {channel}");
     Ok((handle, identity))
 }
@@ -169,7 +155,7 @@ async fn join(
     reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
               never spawned across threads"
 )]
-async fn ask(handle: &runtime_collab::ChannelHandle, command: &Command) -> Result<Reply, String> {
+async fn ask(handle: &runtime_collab::RecordHandle, command: &Command) -> Result<Reply, String> {
     let bytes = serde_json::to_vec(command).map_err(|error| error.to_string())?;
     let reply = handle
         .resource_command(&bytes)
@@ -187,7 +173,7 @@ async fn ask(handle: &runtime_collab::ChannelHandle, command: &Command) -> Resul
               never spawned across threads"
 )]
 async fn changes_after(
-    handle: &runtime_collab::ChannelHandle,
+    handle: &runtime_collab::RecordHandle,
     after: &[String],
 ) -> Result<(Vec<u8>, Vec<String>), String> {
     'answer: loop {
@@ -306,7 +292,7 @@ async fn read(workspace_id: &str, timeout_secs: u64) -> ExitCode {
                         Ok(Some(text)) => return Some(text),
                         Ok(None) => {}
                         Err(error) => {
-                            eprintln!("probe: the record's changes did not apply: {error}")
+                            eprintln!("probe: the record's changes did not apply: {error}");
                         }
                     }
                 }
@@ -352,13 +338,6 @@ async fn read(workspace_id: &str, timeout_secs: u64) -> ExitCode {
 async fn routes<'a>(workspace_id: &str, apps: impl Iterator<Item = &'a str>) -> ExitCode {
     let launched_as = std::env::var("TILO_PACKAGE_ID").unwrap_or_default();
     println!("probe: launched as {launched_as:?}");
-    let (presentation, _identity) = match certified_join(workspace_id) {
-        Ok(joined) => joined,
-        Err(error) => {
-            eprintln!("probe: FAIL {error}");
-            return ExitCode::from(5);
-        }
-    };
     let broker = match runtime_collab::try_connect() {
         Ok(broker) => broker,
         Err(error) => {
@@ -368,13 +347,11 @@ async fn routes<'a>(workspace_id: &str, apps: impl Iterator<Item = &'a str>) -> 
     };
     for app in apps {
         let channel = format!("{workspace_id}#app:{app}");
-        let handle = match broker.join_channel(&channel, &presentation).await {
-            Ok(handle) => handle,
-            Err(error) => {
-                println!("probe: ROUTE {app} JOIN-REFUSED {error}");
-                continue;
-            }
-        };
+        let handle = broker.record(&channel, "");
+        if let Err(error) = handle.sealed().await {
+            println!("probe: ROUTE {app} JOIN-REFUSED {error}");
+            continue;
+        }
         // Bytes that are no change: what the store answers is whether this launch may change
         // that route's record at all, and it never takes them.
         let command = Command::RecordChange {

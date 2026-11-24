@@ -8,7 +8,7 @@ use super::tests::{self, Captures, FakeBroker};
 use super::{
     CollabRequest, CollaborationManager, JoiningProbe, NativeHistoryInvocationFixture,
     NativeRefreshProbe, RouteSpec, SdkConnectSource, SdkIdentitySource, SdkJoinIdentity, Uuid,
-    harness_document_signer, harness_presentation,
+    harness_document_signer,
 };
 
 impl CollaborationManager {
@@ -315,7 +315,6 @@ impl CollaborationManager {
         let manager = Self::connect_in_background(
             SdkConnectSource::Fd(fd),
             SdkIdentitySource::Ready(Some(SdkJoinIdentity {
-                presentation: harness_presentation(),
                 member_kind: "person",
                 signer: harness_document_signer(),
             })),

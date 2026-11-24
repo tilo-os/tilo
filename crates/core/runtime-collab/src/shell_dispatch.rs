@@ -577,7 +577,7 @@ impl ShellClient {
     ) -> Result<Provided, NotAvailable> {
         let handle = self.offer(provider, catalogue).await?;
         self.client.client.answer(
-            handle,
+            crate::wire::client::Answering::Served(handle),
             Arc::new(move |ask| {
                 let answers = Arc::clone(&answers);
                 Box::pin(async move { serve(&answers, ask).await })

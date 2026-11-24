@@ -5,10 +5,9 @@
 //!
 //! ```ignore
 //! let broker = runtime_collab::try_connect()?;
-//! let channel = broker.join_channel("channel-id", identity_bytes).await?;
-//! channel.send(op_bytes).await?;
-//! let ops = channel.subscribe().await?;
-//! while let Ok(next) = ops.read().await {
+//! let record = broker.record("app/workspace/record", "");
+//! let context = record.subscribe_context().await?;
+//! while let Ok(next) = context.read().await {
 //!     handle(next);
 //! }
 //! ```
@@ -624,7 +623,7 @@ impl NearbyTransferReply {
 pub struct Invocation {
     /// Full logical identity.
     pub invocation_uuid: [u8; 16],
-    /// Echoed back on [`ChannelHandle::complete_invocation`], so the
+    /// Echoed back on [`RecordHandle::complete_invocation`], so the
     /// session can match an answer to the question it asked.
     pub id: u64,
     pub resource: String,

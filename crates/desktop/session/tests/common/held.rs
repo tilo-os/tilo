@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_device_identity::IdentityPaths;
@@ -219,19 +219,15 @@ pub fn workspace_founded_on_this_device_then(
     });
 }
 
-/// What an app presents to join the workspace's channel: the certificate, and the device's proof
-/// that it is the certificate's.
-pub fn presentation(device: &SigningKey, cert: &DeviceCert) -> Vec<u8> {
-    runtime_collab::CertifiedJoinIdentity {
-        workspace_id: WORKSPACE.to_owned(),
-        device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
-        proof: device
-            .sign(&tilo_identity_client::collaboration_join_digest(WORKSPACE).unwrap())
-            .to_bytes()
-            .to_vec(),
-    }
-    .encode()
-    .expect("a presentation encodes")
+/// The record `key` names on `client`'s connection, once the session admitted the app there: as
+/// the device's person, whom every app the session launched acts as.
+pub async fn opened(
+    client: &runtime_collab::CollabClient,
+    key: &str,
+) -> Result<runtime_collab::RecordHandle, runtime_portal::NotAvailable> {
+    let record = client.record(key, "");
+    record.sealed().await?;
+    Ok(record)
 }
 
 /// The person `root` certifies, as a workspace names its owner.

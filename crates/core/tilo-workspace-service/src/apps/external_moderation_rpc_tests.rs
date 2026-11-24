@@ -185,7 +185,6 @@ mod external_moderation_rpc_tests {
                 &self.directories,
                 &self.route,
                 &self.original.cert,
-                &self.original.key,
                 peer,
             )
             .await
@@ -195,11 +194,7 @@ mod external_moderation_rpc_tests {
         async fn launched(
             &self,
             peer: u64,
-        ) -> (
-            runtime_collab::CollabClient,
-            Vec<u8>,
-            signed_worker::Connection,
-        ) {
+        ) -> (runtime_collab::CollabClient, signed_worker::Connection) {
             let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
             std::io::Write::write_all(&mut client, &launcher::services::COLLAB_LAUNCH_MAGIC)
                 .unwrap();
@@ -224,18 +219,10 @@ mod external_moderation_rpc_tests {
                 None,
                 self.directories.clone(),
             );
-            let presentation = signed_worker::presentation(
-                &self.route.cluster_id,
-                &self.original.cert,
-                &self.original.key,
-            );
-            let handle = rpc
-                .join_channel(&self.route.channel_key(), &presentation)
-                .await
+            let handle = opened(&rpc, &self.route.channel_key()).await
                 .unwrap();
             (
                 rpc,
-                presentation,
                 signed_worker::Connection {
                     handle,
                     server,
@@ -303,7 +290,7 @@ mod external_moderation_rpc_tests {
     }
 
     async fn refused(
-        handle: &runtime_collab::ChannelHandle,
+        handle: &runtime_collab::RecordHandle,
         request: &Request,
         on_behalf_of: [u8; 16],
         expected: &str,
@@ -325,7 +312,7 @@ mod external_moderation_rpc_tests {
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
                     let workspace = Workspace::new();
-                    let (_target_rpc, _, target) = workspace.launched(980).await;
+                    let (_target_rpc, target) = workspace.launched(980).await;
                     let descriptor = descriptor(action);
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -436,7 +423,7 @@ mod external_moderation_rpc_tests {
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
                     let workspace = Workspace::new();
-                    let (_target_rpc, _, target) = workspace.launched(980).await;
+                    let (_target_rpc, target) = workspace.launched(980).await;
                     let mut descriptor = descriptor(action);
                     descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
@@ -559,7 +546,7 @@ mod external_moderation_rpc_tests {
                 for altered in ["digest", "summary", "package", "category", "none"] {
                     let note = "The package description is misleading";
                     let workspace = Workspace::with_document(Some(committed_report(note, None)));
-                    let (_target_rpc, _, target) = workspace.launched(977).await;
+                    let (_target_rpc, target) = workspace.launched(977).await;
                     let descriptor = descriptor("submit-report");
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -640,7 +627,7 @@ mod external_moderation_rpc_tests {
                     let note = "The reported problem has been addressed";
                     let workspace =
                         Workspace::with_document(Some(committed_report(note, Some("case-one"))));
-                    let (_target_rpc, _, target) = workspace.launched(978).await;
+                    let (_target_rpc, target) = workspace.launched(978).await;
                     let descriptor = descriptor("appeal");
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -702,7 +689,7 @@ mod external_moderation_rpc_tests {
                         format!("[[registry]]\nname = 'Custom'\nbase_url = '{base}'\nowner_pubkey_hex = '{owner}'\nenabled = {enabled}\n"),
                     ).unwrap();
                     let workspace = Workspace::new();
-                    let (_target_rpc, _, target) = workspace.launched(976).await;
+                    let (_target_rpc, target) = workspace.launched(976).await;
                     let descriptor = descriptor("submit-report");
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -727,7 +714,7 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let workspace = Workspace::new();
-                let (_target_rpc, _, target) = workspace.launched(975).await;
+                let (_target_rpc, target) = workspace.launched(975).await;
                 let descriptor = descriptor("submit-report");
                 target.handle.publish_actions(&[descriptor]).await.unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -757,7 +744,7 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let workspace = Workspace::new();
-                let (rpc, presentation, target) = workspace.launched(973).await;
+                let (rpc, target) = workspace.launched(973).await;
                 let descriptor = descriptor("submit-report");
                 target
                     .handle
@@ -786,9 +773,7 @@ mod external_moderation_rpc_tests {
                     &workspace.route.cluster_id,
                     "foreign-store",
                 );
-                let foreign = rpc
-                    .join_channel(&foreign_route.channel_key(), &presentation)
-                    .await
+                let foreign = opened(&rpc, &foreign_route.channel_key()).await
                     .unwrap();
                 // The foreign record is its own route hold, never handed this invocation.
                 refused(&foreign, &request, id, "no retained target invocation").await;
@@ -813,7 +798,7 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let workspace = Workspace::new();
-                let (_target_rpc, _, target) = workspace.launched(974).await;
+                let (_target_rpc, target) = workspace.launched(974).await;
                 let descriptor = descriptor("submit-report");
                 target
                     .handle
@@ -887,8 +872,8 @@ mod external_moderation_rpc_tests {
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
                     let workspace = Workspace::new();
-                    let (_target_rpc, _, target) = workspace.launched(971).await;
-                    let (_other_rpc, _, other) = workspace.launched(972).await;
+                    let (_target_rpc, target) = workspace.launched(971).await;
+                    let (_other_rpc, other) = workspace.launched(972).await;
                     let descriptor = descriptor(action);
                     target
                         .handle
@@ -978,7 +963,7 @@ mod external_moderation_rpc_tests {
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
                     let workspace = Workspace::new();
-                    let (_target_rpc, _, target) = workspace.launched(979).await;
+                    let (_target_rpc, target) = workspace.launched(979).await;
                     let mut descriptor = descriptor(action);
                     descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
                     let resource = descriptor.resource.clone();
@@ -1029,7 +1014,7 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let workspace = Workspace::new();
-                let (_rpc, _presentation, target) = workspace.launched(974).await;
+                let (_rpc, target) = workspace.launched(974).await;
                 assert!(
                     workspace
                         .state

@@ -75,7 +75,7 @@ impl Drop for Follower {
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) fn follow(
-    channel: runtime_collab::ChannelHandle,
+    channel: runtime_collab::RecordHandle,
     spec: RouteSpec,
     frontier: Frontier,
     inbound_tx: InboundBridge,
@@ -117,7 +117,7 @@ pub(super) fn follow(
 /// frontier to where they bring it; `None` when there are none. A page naming other heads than
 /// the first belongs to a newer answer, which is read again from its start.
 async fn read(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     frontier: &Frontier,
 ) -> Result<Option<DocumentMutation>, String> {
     let after = frontier.heads();
@@ -172,7 +172,7 @@ async fn read(
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn write(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     route: &RouteSpec,
     frontier: &Frontier,
     mutation: &DocumentMutation,
@@ -232,7 +232,7 @@ impl std::fmt::Display for Asked {
     }
 }
 
-async fn ask(channel: &runtime_collab::ChannelHandle, command: &Command) -> Result<Reply, Asked> {
+async fn ask(channel: &runtime_collab::RecordHandle, command: &Command) -> Result<Reply, Asked> {
     let bytes = serde_json::to_vec(command).map_err(|error| Asked::Lost(error.to_string()))?;
     let reply = channel
         .resource_command(&bytes)

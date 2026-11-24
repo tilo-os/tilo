@@ -99,16 +99,7 @@ async fn progress_native_connection(
         None,
         directories.clone(),
     );
-    let handle = rpc
-        .join_channel(
-            &workspace.route.channel_key(),
-            &signed_worker::presentation(
-                &workspace.route.cluster_id,
-                &workspace.cert,
-                &workspace.key,
-            ),
-        )
-        .await
+    let handle = opened(&rpc, &workspace.route.channel_key()).await
         .map_err(|error| error.to_string())?;
     Ok((
         state,
@@ -810,7 +801,7 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
         let handoff = serde_json::to_vec(&serde_json::json!({"protocol":launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,"app_id":workspace.route.app_id,"workspace_id":workspace.route.cluster_id})).unwrap();
         std::io::Write::write_all(&mut client, &launcher::services::COLLAB_LAUNCH_FRAMING.encode(&handoff).unwrap()).unwrap();
         let (rpc, server, client) = signed_worker::rpc_pair(state.clone(), 991, server, client, None, directories.clone());
-        let handle = rpc.join_channel(&workspace.route.channel_key(), &signed_worker::presentation(&workspace.route.cluster_id, &workspace.cert, &workspace.key)).await.unwrap();
+        let handle = opened(&rpc, &workspace.route.channel_key()).await.unwrap();
         let connection = signed_worker::Connection { handle, server, client };
         let directory = signed_worker::directory_state("native-check-r1");
         let mut descriptor = directory.borrow().row().descriptor.unwrap();
@@ -844,7 +835,7 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
         assert!(connection.handle.approved_check(&new_request).await.unwrap_err().to_string().contains("unsupported by this host"),
             "fresh opaque address retains authenticated stable identity and reaches the real host service hold");
         let foreign_route = CrdtRoute::record(&workspace.route.app_id, &workspace.route.cluster_id, "foreign-record");
-        let foreign = rpc.join_channel(&foreign_route.channel_key(), &signed_worker::presentation(&workspace.route.cluster_id, &workspace.cert, &workspace.key)).await.unwrap();
+        let foreign = opened(&rpc, &foreign_route.channel_key()).await.unwrap();
         assert!(foreign.approved_check(&request).await.unwrap_err().to_string().contains("no retained target invocation"), "same process and app cannot send an accepted invocation over a foreign record channel: that record's own hold was never handed it");
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_bytes(delivered.invocation_uuid));
             assert!(

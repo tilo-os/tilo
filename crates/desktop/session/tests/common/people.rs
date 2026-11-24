@@ -2399,14 +2399,9 @@ fn shared_checklist_install() -> &'static (PathBuf, String) {
 /// beside them, and each of `programs` the run built, hardlinked under `bin/` so a device pays for
 /// no copy of a debug binary. The session reads a package's surface, and with it the records and
 /// person records the app keeps, only from a payload whose signature covers it: a payload staged
-/// without one is no install of the app at all.
-fn stage(app: &str, programs: &[(PathBuf, &str)]) -> (PathBuf, String) {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../apps/{app}"));
-    stage_app(app, &directory, programs)
-}
-
-/// [`stage`] from `directory`: the app's own directory, holding the manifest it is installed from
-/// and the surface its package ships (an example app's `examples/apps/<name>` is one).
+/// without one is no install of the app at all. `directory` is the app's own directory, holding
+/// the manifest it is installed from and the surface its package ships (an example app's
+/// `examples/apps/<name>` is one).
 fn stage_app(app: &str, directory: &Path, programs: &[(PathBuf, &str)]) -> (PathBuf, String) {
     use ed25519_dalek::Signer as _;
     use tilo_app_package::blobs::{BlobHash, Collection};

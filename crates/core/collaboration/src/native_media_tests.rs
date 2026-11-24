@@ -218,10 +218,7 @@ async fn native_media_newer_effect_cannot_skip_a_queued_stop_obligation() {
                     captures: captures.clone(),
                     ..FakeBroker::default()
                 });
-                let channel = client
-                    .join_channel("fixture-admitted-route", &harness_presentation())
-                    .await
-                    .unwrap();
+                let channel = client.record("fixture-admitted-route", "");
                 let (tx, _events) = tokio_mpsc::channel(32);
                 let (sender, receiver) =
                     native_media::channel(InboundBridge::new(tx, BridgeState::new()));
@@ -300,10 +297,7 @@ async fn native_media_pending_or_uncertain_stop_blocks_later_effects() {
                     captures: captures.clone(),
                     ..FakeBroker::default()
                 });
-                let channel = client
-                    .join_channel("fixture-admitted-route", &harness_presentation())
-                    .await
-                    .unwrap();
+                let channel = client.record("fixture-admitted-route", "");
                 let (tx, mut events) = tokio_mpsc::channel(32);
                 let (sender, receiver) =
                     native_media::channel(InboundBridge::new(tx, BridgeState::new()));

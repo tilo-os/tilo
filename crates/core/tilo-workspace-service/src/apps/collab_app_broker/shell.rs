@@ -166,8 +166,7 @@ impl Handed {
                 workspace: vouch.workspace.clone(),
             });
         let local_media = super::native_media::LocalAppConnection::attested_keeping(
-            vouch.app,
-            vouch.workspace,
+            (vouch.app, vouch.workspace, vouch.member),
             process,
             launch,
         )

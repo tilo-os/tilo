@@ -37,10 +37,6 @@ impl EndpointOwnership for NoOwner {
     reason = "the layout every app matches on; boxing a payload would change each of those matches"
 )]
 pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
-    LocalFileClipboardResult {
-        request_id: u64,
-        result: Result<crate::file_clipboard::Reply, String>,
-    },
     /// Original committed history from this SDK channel, applied by its document owner.
     CommittedDocument {
         route: RouteSpec,
@@ -141,10 +137,6 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         request_id: u64,
         result: Result<crate::PublishedInvocationObservation, crate::LocalDocumentActionError>,
     },
-    InstalledApplicationLaunchResult {
-        request_id: u64,
-        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
-    },
     WorkspaceControl {
         session_id: u64,
         event: crate::WorkspaceControlEvent,
@@ -170,14 +162,6 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         route: RouteSpec,
         hash: String,
         state: tilo_content::ContentState,
-    },
-    RealtimeCommandResult {
-        request_id: u64,
-        result: Result<collab_types::realtime::RealtimeReply, String>,
-    },
-    NearbyTransferCommandResult {
-        request_id: u64,
-        result: Result<crate::NearbyTransferReply, String>,
     },
     /// What a Nearby Send snapshot would show this app may have changed: a
     /// device came or went, an offer arrived, a transfer moved on. It names
@@ -215,12 +199,6 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     ResourceCommandResult {
         request_id: u64,
         result: Result<Vec<u8>, String>,
-    },
-    /// A page of the query `query_id` holds open, in the store's encoding
-    /// (`tilo_resource_store::Page`); an error ends the query.
-    ResourcePage {
-        query_id: u64,
-        page: Result<Vec<u8>, String>,
     },
     /// What the host says of the actions the window last named
     /// (`CollabRequest::DecideShownActions`) now, replacing what it said before. Sent again

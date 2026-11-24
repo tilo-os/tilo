@@ -40,7 +40,6 @@ fn host_worker(record: usize) -> AdmittedJoinIdentity {
             capped: false,
         },
         actor_key: "host".into(),
-        display_handle: None,
         role: CapRole::Owner,
         agent_id: None,
         session_delegated: false,

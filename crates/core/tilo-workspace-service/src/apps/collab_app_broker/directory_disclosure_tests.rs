@@ -3,12 +3,11 @@
     reason = "real wire connections and the broker registry run on the test LocalSet"
 )]
 use super::*;
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 use tilo_actions::{ActionContract, OperationKind};
 
 struct Person {
     root: SigningKey,
-    device: SigningKey,
     certificate: tilo_user_identity::DeviceCert,
 }
 impl Person {
@@ -26,27 +25,10 @@ impl Person {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-        Self {
-            root,
-            device,
-            certificate,
-        }
+        Self { root, certificate }
     }
     fn id(&self) -> String {
         person_id_for_root(self.root.verifying_key().to_bytes())
-    }
-    fn presentation(&self, workspace: &str) -> Vec<u8> {
-        runtime_collab::CertifiedJoinIdentity {
-            workspace_id: workspace.into(),
-            device_certificate: serde_json::to_vec(&self.certificate).unwrap(),
-            proof: self
-                .device
-                .sign(&tilo_identity_client::collaboration_join_digest(workspace).unwrap())
-                .to_bytes()
-                .to_vec(),
-        }
-        .encode()
-        .unwrap()
     }
 }
 
@@ -56,7 +38,7 @@ type Directory<'a> = (
 );
 
 struct Connection {
-    channel: runtime_collab::ChannelHandle,
+    channel: runtime_collab::RecordHandle,
     cluster: String,
     actor: BrokerActor,
 }
@@ -66,32 +48,15 @@ impl Connection {
         directories: &Rc<LocalActionDirectoryRegistry>,
         route: &CrdtRoute,
         person: &Person,
-        claimed_presence: &str,
     ) -> Self {
-        let peer = state.next_peer_id();
-        let service = Rc::new(AppConnection {
-            worker: None,
-            app_worker: None,
-            state: state.clone(),
-            directories: directories.clone(),
-            peer_id: peer,
-            lease: Rc::new(ConnectionLease {
-                local_media: None,
-                state: state.clone(),
-                directories: directories.clone(),
-                peer_id: peer,
-            }),
-            holds: route_holds::ConnectionHolds::default(),
-        });
-        let (connection, outgoing) = wire::WireConnection::new(Some(service));
-        let channel = wire_client(connection, outgoing)
-            .join_channel_as(
-                &route.channel_key(),
-                &person.presentation(&route.cluster_id),
-                claimed_presence,
-            )
-            .await
-            .unwrap();
+        let (client, _server, _client) = tests::certified_rpc(
+            state,
+            directories,
+            state.next_peer_id(),
+            person.certificate.clone(),
+            None,
+        );
+        let channel = tests::opened(&client, &route.channel_key()).await.unwrap();
         Self {
             channel,
             cluster: route.cluster_id.clone(),
@@ -381,7 +346,7 @@ impl Fixture {
         );
         let directories = Rc::new(LocalActionDirectoryRegistry::new(rx));
         let publisher =
-            Connection::join(&state, &directories, &route, &owner, "display-owner").await;
+            Connection::join(&state, &directories, &route, &owner).await;
         publisher.publish(rows()).await;
         let peer = *directories.directories.borrow().keys().next().unwrap();
         assert_eq!(
@@ -431,7 +396,7 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
                 // Every foreign person claims the owner's presence name. The
                 // certified root, not this wire label, must decide disclosure.
                 let client =
-                    Connection::join(&state, &directories, &route, person, &owner.id()).await;
+                    Connection::join(&state, &directories, &route, person).await;
                 for needle in ["", "Secret"] {
                     let page = client.query((&state, &directories), peer, needle).await;
                     assert_disclosure(&page.rows, private, needle);
@@ -454,7 +419,7 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
             }
             // Even the workspace's Owner cannot inspect another person's private view.
             let foreign_publisher =
-                Connection::join(&state, &directories, &route, &editor, &owner.id()).await;
+                Connection::join(&state, &directories, &route, &editor).await;
             foreign_publisher.publish(rows()).await;
             let foreign_peer = *directories
                 .directories
@@ -603,7 +568,6 @@ async fn framework_projection_keeps_private_child_metadata_off_signed_wire_and_b
                 &fixture.directories,
                 &fixture.route,
                 &fixture.viewer,
-                &fixture.owner.id(),
             )
             .await;
             let wire = reader
@@ -696,7 +660,6 @@ async fn document_read_views_are_disclosed_without_exposing_the_publishers_priva
                 &fixture.directories,
                 &fixture.route,
                 &fixture.viewer,
-                &fixture.owner.id(),
             )
             .await;
             for authenticated_publisher in [true, false] {
@@ -765,7 +728,6 @@ async fn private_directory_continuations_hide_source_metadata_and_bind_the_query
                 &fixture.directories,
                 &fixture.route,
                 &fixture.editor,
-                &fixture.owner.id(),
             )
             .await;
             let page = editor

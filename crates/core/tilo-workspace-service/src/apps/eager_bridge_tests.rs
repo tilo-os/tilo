@@ -53,7 +53,6 @@ mod eager_bridge_tests {
                     capped: false,
                 },
                 actor_key: "fixture-owner".into(),
-                display_handle: None,
                 role: CapRole::Editor,
                 agent_id: None,
                 session_delegated: false,

@@ -204,10 +204,7 @@ async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let route = CrdtRoute::record("so.tilo.chat", &workspace_id, "main");
-    // A connection that announced no name of its own, as an app's window or a tilolang
-    // host's instance connects.
     let admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
-    assert_eq!(admitted.display_handle, None);
     let fanout = Arc::new(FanoutState::new());
     let (state, _bridge_rx) = AppBrokerState::new_configured(
         &fanout,
@@ -286,8 +283,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace.clone());
     let route = CrdtRoute::record("so.tilo.chat", &workspace_id, "main");
-    let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
-    admitted.display_handle = Some(tide.into());
+    let admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
     assert_eq!(
         AppBrokerState::member_id(&admitted),
         MemberId::person(person.clone())

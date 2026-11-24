@@ -1,7 +1,5 @@
-//! An app of a headless session joins its workspace's channel with the device's certified
-//! presentation, as the person's own device does, and another of their devices is in the same
-//! channel: each reads, from the device's store, the change the other wrote. A presentation this device's identity does not
-//! certify, and one of another person, are refused.
+//! The apps a headless session launched open their workspace's record as the device's person,
+//! each on its own connection: each reads, from the device's store, the change the other wrote.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -23,25 +21,19 @@ use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
 use tilo_session::{AppLists, AppSocket, Launches, Lists, Options, Session};
-use tilo_user_identity::DeviceCert;
 
-use crate::common::held::{WORKSPACE, actor, presentation};
+use crate::common::held::{WORKSPACE, actor, opened};
 
 /// The app whose record the channel carries.
 const APP: &str = "so.tilo.notes";
 /// The record of `APP` the apps change.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";
 
-/// The person's keys: the identity store's device, and a second device of theirs the store enrolled
-/// when it was paired.
+/// The person's keys, as the identity store holds them for this device.
 #[derive(Clone)]
 struct Keys {
     /// The public root of the person's identity, as the workspace's owner.
     root: [u8; 32],
-    device: ed25519_dalek::SigningKey,
-    cert: DeviceCert,
-    other_device: ed25519_dalek::SigningKey,
-    other_cert: DeviceCert,
 }
 
 /// The person's keys, and the identity they were provisioned in.
@@ -73,28 +65,10 @@ fn person() -> Person {
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let profile = tilo_identity::store::identity_for_workspace(WORKSPACE)
-        .expect("the identity registry")
-        .expect("the workspace is answered by this device's person");
-    let device = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");
-    // The other of the person's devices: this device holds their root, so it certifies the key
-    // that device keeps.
-    let now = tilo_clock::unix_now_ns();
-    let other_device = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
-    let other_cert = other_device_cert(
-        &profile,
-        "The phone",
-        other_device.verifying_key().to_bytes(),
-        now,
-    );
     let keys = Keys {
         root: cert.user_public_key,
-        device,
-        cert,
-        other_device,
-        other_cert,
     };
     Person {
         keys,
@@ -194,7 +168,7 @@ fn change(key: &str, value: &str) -> Vec<u8> {
 
 /// The device's store's answer to `command` about the channel's record.
 async fn ask(
-    channel: &runtime_collab::ChannelHandle,
+    channel: &runtime_collab::RecordHandle,
     command: &tilo_resource_store::wire::Command,
 ) -> tilo_resource_store::wire::Reply {
     let command = serde_json::to_vec(command).expect("a store command encodes");
@@ -206,7 +180,7 @@ async fn ask(
 }
 
 /// Hand the store the app's own change writing `value` under `key` .
-async fn write(channel: &runtime_collab::ChannelHandle, key: &str, value: &str) {
+async fn write(channel: &runtime_collab::RecordHandle, key: &str, value: &str) {
     let reply = ask(
         channel,
         &tilo_resource_store::wire::Command::RecordChange {
@@ -223,7 +197,7 @@ async fn write(channel: &runtime_collab::ChannelHandle, key: &str, value: &str) 
 }
 
 /// The record as the store holds it, every change of it read.
-async fn record(channel: &runtime_collab::ChannelHandle) -> automerge::AutoCommit {
+async fn record(channel: &runtime_collab::RecordHandle) -> automerge::AutoCommit {
     let tilo_resource_store::wire::Reply::RecordChanges {
         changes,
         next: None,
@@ -285,7 +259,7 @@ fn connect(socket: &PathBuf, app: &str) -> CollabClient {
 
 /// What the session answers to `message` on `handle` , as the status it leaves the invocation in.
 async fn answered(
-    handle: &runtime_collab::ChannelHandle,
+    handle: &runtime_collab::RecordHandle,
     message: tilo_actions::remote::RemoteActionMessage,
 ) -> tilo_actions::remote::ReceiptStatus {
     use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
@@ -315,10 +289,7 @@ async fn answered(
 
 /// Settings, the app the session launched, joins its workspace's channel and lists the desktop's
 /// shortcuts through the session's services: the answer it gets back from the settings it holds.
-fn settings_lists_shortcuts(
-    socket: &PathBuf,
-    person: &Keys,
-) -> tilo_actions::remote::ReceiptStatus {
+fn settings_lists_shortcuts(socket: &PathBuf) -> tilo_actions::remote::ReceiptStatus {
     use tilo_actions::remote::{
         InvokeArgument, InvokeRequest, RemoteActionMessage, RemoteActionTarget,
     };
@@ -328,11 +299,7 @@ fn settings_lists_shortcuts(
         .expect("a runtime for the app");
     runtime.block_on(async {
         let settings = connect(socket, SETTINGS);
-        let handle = settings
-            .join_channel(
-                &settings_channel(),
-                &presentation(&person.device, &person.cert),
-            )
+        let handle = opened(&settings, &settings_channel())
             .await
             .expect("the app the session launched joins its workspace's channel");
         let invocation = tilo_actions::InvocationId::new();
@@ -376,18 +343,14 @@ fn settings_lists_shortcuts(
 
 /// The settings `app` reads over the session's API, as the JSON document the session answered:
 /// joined as the launch the session recorded for it.
-fn settings_read(socket: &PathBuf, person: &Keys, app: &str) -> serde_json::Value {
+fn settings_read(socket: &PathBuf, app: &str) -> serde_json::Value {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime for the app");
     runtime.block_on(async {
         let client = connect(socket, app);
-        let handle = client
-            .join_channel(
-                &document_channel(app),
-                &presentation(&person.device, &person.cert),
-            )
+        let handle = opened(&client, &document_channel(app))
             .await
             .expect("the app the session launched joins its workspace's channel");
         let view = handle
@@ -399,88 +362,42 @@ fn settings_read(socket: &PathBuf, person: &Keys, app: &str) -> serde_json::Valu
     })
 }
 
-/// What the apps found: the changes each read from the other, and how the identity store's refusals
-/// read.
+/// What the apps found: the changes each read from the other.
 struct Joined {
     first_reads: automerge::AutoCommit,
     second_reads: automerge::AutoCommit,
-    uncertified: String,
-    wrong_person: String,
 }
 
-/// An app on this device and one on the other of the person's devices, both joining the workspace's
-/// channel with their own certificate, each writing a change and reading the other's; then the
-/// presentations this device's identity refuses.
-fn apps(socket: &PathBuf, person: &Keys) -> Joined {
+/// Two apps of this device, each on its own connection, both opening the workspace's record as
+/// the device's person, each writing a change and reading the other's.
+fn apps(socket: &PathBuf) -> Joined {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime for the apps");
-    let (first, second) = (
-        presentation(&person.device, &person.cert),
-        presentation(&person.other_device, &person.other_cert),
-    );
     runtime.block_on(async {
-        let this_device = connect(socket, APP);
-        let other_device = connect(socket, APP);
-        let this_channel = this_device
-            .join_channel(&channel(), &first)
+        let first = connect(socket, APP);
+        let second = connect(socket, APP);
+        let first_record = opened(&first, &channel())
             .await
-            .expect("this device joins its workspace's channel");
-        let other_channel = other_device
-            .join_channel(&channel(), &second)
+            .expect("an app the session launched opens its workspace's record");
+        let second_record = opened(&second, &channel())
             .await
-            .expect("the other device joins it too");
-        write(&this_channel, "from-this-device", "hello").await;
-        let heard = record(&other_channel).await;
-        write(&other_channel, "from-the-phone", "there").await;
-        let answered = record(&this_channel).await;
+            .expect("so does another");
+        write(&first_record, "from-the-first", "hello").await;
+        let heard = record(&second_record).await;
+        write(&second_record, "from-the-second", "there").await;
+        let answered = record(&first_record).await;
 
-        // A presentation this device's identity never certified: the certificate is real, the proof
-        // is another key's.
-        let uncertified = this_device
-            .join_channel(
-                &channel(),
-                &presentation(
-                    &ed25519_dalek::SigningKey::from_bytes(&[0x63; 32]),
-                    &person.cert,
-                ),
-            )
-            .await
-            .err()
-            .expect("a proof the certificate does not hold is refused");
-        // A presentation of another person: their own root certified it, and it is nobody this
-        // workspace's identity has heard of.
-        let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0x64; 32]);
-        let stranger_device = ed25519_dalek::SigningKey::from_bytes(&[0x65; 32]);
-        let mut stranger = DeviceCert {
-            user_public_key: stranger_root.verifying_key().to_bytes(),
-            device_public_key: stranger_device.verifying_key().to_bytes(),
-            device_label: "Someone else's laptop".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: tilo_clock::unix_now_ns(),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut stranger, &stranger_root)
-            .expect("their device is certified by their own root");
-        let wrong_person = this_device
-            .join_channel(&channel(), &presentation(&stranger_device, &stranger))
-            .await
-            .err()
-            .expect("another person's device does not join this workspace");
         Joined {
             first_reads: answered,
             second_reads: heard,
-            uncertified: uncertified.to_string(),
-            wrong_person: wrong_person.to_string(),
         }
     })
 }
 
 #[test]
-fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer() {
+fn two_apps_of_the_device_read_each_others_changes_of_its_workspaces_record() {
     let home = crate::common::private_home();
     let socket = home.path().join("collab.sock");
     let person = person();
@@ -488,9 +405,8 @@ fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer(
 
     let (done, received) = std::sync::mpsc::channel();
     let app_wire = socket;
-    let keys = person.keys.clone();
     let apps = std::thread::spawn(move || {
-        let joined = apps(&app_wire, &keys);
+        let joined = apps(&app_wire);
         let _ = done.send(joined);
     });
     let joined = until_the_apps_are_done(&mut session, &received);
@@ -498,25 +414,15 @@ fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer(
 
     let heard = joined.first_reads;
     assert_eq!(
-        written(&heard, "from-the-phone").as_deref(),
+        written(&heard, "from-the-second").as_deref(),
         Some("there"),
-        "this device reads the change the other wrote"
+        "the first app reads the change the second wrote"
     );
     let answered = joined.second_reads;
     assert_eq!(
-        written(&answered, "from-this-device").as_deref(),
+        written(&answered, "from-the-first").as_deref(),
         Some("hello"),
-        "and the other device reads this one's"
-    );
-    assert!(
-        joined.uncertified.contains("proof"),
-        "a proof its certificate does not hold is refused: {}",
-        joined.uncertified
-    );
-    assert!(
-        joined.wrong_person.contains("identity") || joined.wrong_person.contains("enrolled"),
-        "another person's device is refused: {}",
-        joined.wrong_person
+        "and the second reads the first's"
     );
 }
 
@@ -535,9 +441,8 @@ fn settings_lists_the_desktop_shortcuts_over_the_sessions_api() {
 
     let (done, received) = std::sync::mpsc::channel();
     let app_wire = socket;
-    let keys = person.keys;
     std::thread::spawn(move || {
-        let _ = done.send(settings_lists_shortcuts(&app_wire, &keys));
+        let _ = done.send(settings_lists_shortcuts(&app_wire));
     });
     let status = until_the_apps_are_done(&mut session, &received);
 
@@ -610,36 +515,9 @@ fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_jso
     let mut session = serving(&socket, person, &[app], None, Lists::fixed(lists));
     let (done, received) = std::sync::mpsc::channel();
     let app_wire = socket;
-    let keys = person.clone();
     let called = app.to_owned();
     std::thread::spawn(move || {
-        let _ = done.send(settings_read(&app_wire, &keys, &called));
+        let _ = done.send(settings_read(&app_wire, &called));
     });
     until_the_apps_are_done(&mut session, &received)
-}
-
-/// The certificate the person's root gives another of their devices.
-fn other_device_cert(
-    profile: &tilo_identity::store::IdentityProfile,
-    label: &str,
-    key: [u8; 32],
-    now: u64,
-) -> tilo_user_identity::DeviceCert {
-    let record = tilo_identity::store::resolve_active_identity(
-        &tilo_identity::store::identity_dir_from_env().expect("this account's identity"),
-    )
-    .expect("the person's record");
-    let root = tilo_identity::store::load_from_path(record).expect("the person's root");
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: profile.user_public_key,
-        device_public_key: key,
-        device_label: label.to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: now,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).expect("the person's root signs");
-    cert
 }

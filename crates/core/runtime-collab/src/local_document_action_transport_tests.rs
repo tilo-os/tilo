@@ -1,5 +1,5 @@
 use super::*;
-use crate::wire::{Handle, HostFrame, Operation, Reply};
+use crate::wire::{HostFrame, Operation, Reply};
 use tilo_sort::CompactSort as _;
 
 const HOST: [u8; 16] = [2; 16];
@@ -47,7 +47,7 @@ async fn admit(
     Vec<Vec<u8>>,
 ) {
     let (client, mut far) = crate::client::testing::connected();
-    let channel = client.channel(Handle(1));
+    let channel = client.record("app/workspace/record", "");
     let served = async {
         let mut received = Vec::new();
         loop {
@@ -61,7 +61,7 @@ async fn admit(
                     })
                     .await;
                 }
-                Operation::Close { .. } => return received,
+                Operation::Leave { .. } => return received,
                 other => unreachable!("unexpected {other:?}"),
             }
         }
