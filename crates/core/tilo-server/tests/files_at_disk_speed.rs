@@ -178,7 +178,6 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
         Arc::new(tilo_workspace_service::files::StoreShelf(Arc::clone(
             &store,
         ))),
-        laptop.device_pubkey(),
     );
     let tree = tilo_workspace_service::files::start(
         &copies,
