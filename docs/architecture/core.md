@@ -1292,7 +1292,7 @@ Measured on main at 0503c21f750; lines are Rust left in what goes.
 | Hosting | `tilo-server` as a second host (47k) | 47k | `tilo-server` onto the one daemon, one push | tilo-server onto the one daemon (Core: hosting) |
 | Actions | `tilo-mcp` (27k), `tilo-api` (21k), `action-policy` (14k); prompts not yet asked records; the session's confirmation copy (97c9e4d5765) | 62k | asks become asked records, the session's confirmation onto them | Core: actions everywhere, UX regressions |
 | Agents | the other agent engines, the governor | | one runtime | Agent engines |
-| UX regressions | untested: app joins and onboarding in the session, Terminal approvals, the web desktop's style menu; to do: the theme page's Import button | | each tested once main builds | UX regressions |
+| UX regressions | untested: app joins and onboarding in the session, Terminal approvals, the web desktop's style menu; to do: the theme page's Import button; the Discord bridge, which runs in neither form since its host side went in e8f0b4880d4 (Chat's origin runs the worker, access control, the token in the vault, the old record carried over, then linking and voice) | | each tested once main builds | UX regressions |
 
 Tests prove seams between systems at the depth of an end-to-end test and the
 speed of a unit test, through production interfaces. A test that restates
