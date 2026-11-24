@@ -1130,20 +1130,16 @@ mod session_tests {
 
         /// The task `id` as the device holds it, its work read where Tasks keeps it.
         async fn task(&self, id: &str) -> Task {
+            // Its number and title as the store's row holds them, its work as its content
+            // keeps it.
+            let held = super::task(&self.workspaces, &self.workspace, id)
+                .await
+                .unwrap_or_else(|| panic!("the task {id} is held"));
             let content = self.content(id).await;
-            let number = content
-                .get("number")
-                .and_then(Value::as_u64)
-                .unwrap_or_default();
-            let title = content
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
             Task {
                 id: id.to_owned(),
-                number,
-                title,
+                number: held.number,
+                title: held.title,
                 work: Work::where_kept(&self.workspaces, &self.workspace, content.get("work"))
                     .await,
             }
