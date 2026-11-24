@@ -221,6 +221,38 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         !names.contains(&lounge.name),
         "a workspace he was let into at someone's site is not on his list: {names:?}"
     );
+    // An invitation his own computer redeems itself is his join, the one he asked for: the
+    // workspace joins him as an editor and lands on his list, as the workspace of anyone who
+    // takes up an invitation they were sent.
+    let shared = workspaces.create("Shared").await.unwrap();
+    let invitation = workspaces
+        .issue(
+            &shared.workspace,
+            &host_device.cert,
+            tilo_server::workspaces::IssueInvitationRequest {
+                request_id: [7; 32],
+                role: tilo_server_protocol::workspaces::Role::Editor,
+                recipient_user_public_key: Some(bob_person),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                inviter_name: Some("Alice".into()),
+            },
+        )
+        .await
+        .expect("the site invites the person into its workspace");
+    let link = tilo_peer_state::join::encode_invitation_text(&invitation.signed_invitation);
+    assert_eq!(
+        bob_workspaces
+            .join_member_as(&link, Some("Bob"))
+            .await
+            .expect("the person's own computer redeems the invitation"),
+        tilo_server_protocol::WorkspaceId::parse(&shared.workspace).unwrap()
+    );
+    let names = listed_names(bob_workspaces).await;
+    assert!(
+        names.contains(&shared.name),
+        "a workspace the person redeemed an invitation to is on their list: {names:?}"
+    );
 
     // A page opening that workspace through its own entry, as the workspace switcher does for one
     // this browser never entered: a device of Bob's the host has not seen enters as his, with no

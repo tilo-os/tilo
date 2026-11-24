@@ -641,7 +641,9 @@ impl Workspaces {
         if bootstrap.workspace_id != workspace {
             return Err("the device admitted this to another workspace".into());
         }
-        let joined = self.hold_member(&device, &bootstrap, &hint).await?;
+        // The person's own computer asked for this join when it redeemed the invitation: theirs
+        // to write into their list.
+        let joined = self.hold_member(&device, &bootstrap, &hint, true).await?;
         let name = name
             .or_else(|| join.grant().invitee_name.as_deref())
             .map(str::trim)
@@ -712,7 +714,7 @@ impl Workspaces {
         hint: &TransportHint,
     ) -> Result<WorkspaceId, String> {
         let device = self.member_identity()?;
-        self.hold_member(&device, bootstrap, hint).await
+        self.hold_member(&device, bootstrap, hint, false).await
     }
 
     /// Hold `workspace`, which this device is a member of, as a member copy synced with the
@@ -742,7 +744,7 @@ impl Workspaces {
             device.signer.as_ref(),
         )
         .await?;
-        self.hold_member(&device, &bootstrap, hint).await
+        self.hold_member(&device, &bootstrap, hint, false).await
     }
 
     /// Hold each of `held`, a workspace and where the device hosting it serves it, as a member
@@ -789,6 +791,7 @@ impl Workspaces {
         device: &MemberDevice,
         bootstrap: &JoinBootstrap,
         hint: &TransportHint,
+        asked: bool,
     ) -> Result<WorkspaceId, String> {
         let (address, _) =
             WorkspaceDeviceHintV1::authenticate_transport_hint(hint).map_err(|e| e.to_string())?;
@@ -910,15 +913,14 @@ impl Workspaces {
         self.inner.executions.fence(workspace);
         self.inner.member.held.notify_waiters();
         tracing::info!(%name, workspace_id = %workspace, "holding a workspace this device joined as a member");
-        // The person's list names the workspaces that are theirs: the admission says which, as
-        // the part they take in it. A workspace of their own — one a site made for them handed
-        // to them as its owner — is listed in the record of their own workspace, written where
-        // that is governed. One they were let into at someone's site, or that another person's
-        // agent or API put them in, is someone else's and is not listed: their own devices add
-        // to their list only what is theirs. A site that made a workspace writes nothing of
-        // theirs.
+        // Their list names what they asked to be in and what is theirs: a join their own device
+        // redeemed an invitation for (`asked`), or a workspace a site made for them and handed
+        // to them as its owner. Any other join — one another person's agent or API made for them,
+        // or a workspace their session entered without their asking — is not listed. The record
+        // is written where their own workspace is governed; a site that made a workspace writes
+        // nothing of theirs.
         if taken_in
-            && bootstrap.role == Role::Owner
+            && (asked || bootstrap.role == Role::Owner)
             && let Ok(summary) = self.summary(&name).await
         {
             self.list_for(
