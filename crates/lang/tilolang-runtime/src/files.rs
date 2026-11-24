@@ -340,21 +340,7 @@ impl Core {
     pub(crate) fn file_device_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let host = self.files.borrow();
         let Some(host) = host.as_ref() else {
-            return match imp {
-                Imp::FileList
-                | Imp::FileStat
-                | Imp::FileReadPath
-                | Imp::FileWatch
-                | Imp::FileOpenPath
-                | Imp::FileOpen => self.result(Err(NO_FILES.to_owned())),
-                Imp::ToolDocumentApps
-                | Imp::ToolOpenWith
-                | Imp::ToolTerminal
-                | Imp::ToolOpenLink
-                | Imp::ToolContext
-                | Imp::ToolContainerShell => self.result(Err(NO_LINKS.to_owned())),
-                _ => trap("not a file import"),
-            };
+            return self.no_file_host(imp);
         };
         if imp == Imp::FileTrashEntries {
             return self.result(
@@ -438,6 +424,26 @@ impl Core {
                 };
                 self.result(host.open(target).map(|()| Value::Unit))
             }
+            _ => trap("not a file import"),
+        }
+    }
+
+    /// What a file import answers on a device that serves no files: the files it asks for are
+    /// not here, and the tools its links open have no links to them.
+    fn no_file_host(&self, imp: Imp) -> HResult<Option<Wasm>> {
+        match imp {
+            Imp::FileList
+            | Imp::FileStat
+            | Imp::FileReadPath
+            | Imp::FileWatch
+            | Imp::FileOpenPath
+            | Imp::FileOpen => self.result(Err(NO_FILES.to_owned())),
+            Imp::ToolDocumentApps
+            | Imp::ToolOpenWith
+            | Imp::ToolTerminal
+            | Imp::ToolOpenLink
+            | Imp::ToolContext
+            | Imp::ToolContainerShell => self.result(Err(NO_LINKS.to_owned())),
             _ => trap("not a file import"),
         }
     }

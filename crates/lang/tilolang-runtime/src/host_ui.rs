@@ -71,7 +71,12 @@ pub(crate) fn call_volume_percent(percent: f64) -> Result<u16, &'static str> {
     if !percent.is_finite() || !(0.0..=f64::from(CALL_MAX_VOLUME)).contains(&percent) {
         return Err("a call's volume is between 0 and 200 percent of as they arrive");
     }
-    Ok(percent.round().clamp(0.0, f64::from(CALL_MAX_VOLUME)) as u16)
+    // Rounded to whole percent, which the range check above keeps within the call service's own
+    // bound: the whole number is read without a float cast, and refused rather than wrapped.
+    u16::try_from(crate::num::round_whole(percent))
+        .ok()
+        .filter(|whole| *whole <= CALL_MAX_VOLUME)
+        .ok_or("a call's volume is between 0 and 200 percent of as they arrive")
 }
 
 /// The action of `run_line(r, line)`: run a tilolang line as the person's own step, from the

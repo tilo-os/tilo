@@ -238,7 +238,7 @@ pub fn call_key(id: &str) -> StateKey {
 /// its call service: what `call_inputs(r)` reads.
 #[must_use]
 pub fn call_inputs_key(id: &str) -> StateKey {
-    StateKey::runtime(CALL_WINDOW, None, &format!("{id}\u{1}inputs"))
+    StateKey::runtime(CALL_WINDOW, None, format!("{id}\u{1}inputs"))
 }
 
 /// The key of how the invocation `id` stands, as the host last read its record.

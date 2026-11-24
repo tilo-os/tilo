@@ -3133,7 +3133,7 @@ impl Core {
             ));
         }
         let who = self.looking()?;
-        let key = crate::view_state::StateKey::view(context.window.clone(), who, state_id);
+        let key = crate::view_state::StateKey::view(context.window, who, state_id);
         self.view_states.borrow_mut().write(key, value);
         Ok(None)
     }

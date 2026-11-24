@@ -91,15 +91,7 @@ impl Core {
             }
             // `text` is the receiver, `what` the text the method was given.
             Imp::StrStartsWith | Imp::StrEndsWith | Imp::StrContains | Imp::StrMatches => {
-                let text = self.text(a.h(0)?)?;
-                let what = self.text(a.h(1)?)?;
-                let yes = match imp {
-                    Imp::StrStartsWith => tilolang::text::starts_with(&text, &what),
-                    Imp::StrEndsWith => tilolang::text::ends_with(&text, &what),
-                    Imp::StrContains => tilolang::text::contains(&text, &what),
-                    _ => tilolang::text::matches(&what, &text),
-                };
-                ret_i32(i32::from(yes))
+                self.text_predicate(imp, a)
             }
             Imp::StrMisspelled | Imp::StrSuggestions => self.spelling_import(imp, a),
             // A digest of the text, in lowercase hex: a program keeps it in a record and
@@ -146,6 +138,20 @@ impl Core {
             }
             _ => trap("not a text import"),
         }
+    }
+
+    /// Whether `text` starts with, ends with, holds or matches `what`: the receiver is
+    /// `a.h(0)` and the text the method was given `a.h(1)`.
+    fn text_predicate(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let text = self.text(a.h(0)?)?;
+        let what = self.text(a.h(1)?)?;
+        let yes = match imp {
+            Imp::StrStartsWith => tilolang::text::starts_with(&text, &what),
+            Imp::StrEndsWith => tilolang::text::ends_with(&text, &what),
+            Imp::StrContains => tilolang::text::contains(&text, &what),
+            _ => tilolang::text::matches(&what, &text),
+        };
+        ret_i32(i32::from(yes))
     }
 
     /// A string literal of the module, read from guest memory.
