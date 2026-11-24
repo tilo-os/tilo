@@ -109,21 +109,6 @@ mod cases {
         fn changes(&self) -> Vec<tilolang_runtime::ChangeNote> {
             self.rt.history(&self.deck.doc).unwrap()
         }
-
-        /// Why the app refused `action` with `given`, as its `require` says it.
-        fn refused(&self, action: &str, given: &[(&str, Value)]) -> String {
-            let args = self.app.args(&self.rt, action, given);
-            let id = self.app.action(action);
-            match self.rt.invoke_action(&me(), (id.as_str(), args)) {
-                Ok(other) => panic!("{action} was expected to be refused, and answered {other:?}"),
-                Err(error) => format!("{error:?}"),
-            }
-        }
-
-        /// Every change the deck's document holds, oldest first.
-        fn changes(&self) -> Vec<tilolang_runtime::ChangeNote> {
-            self.rt.history(&self.deck.doc).unwrap()
-        }
     }
 
     /// The resources a collection read holds, in their order.
@@ -783,21 +768,8 @@ mod cases {
     fn a_new_text_box_is_the_one_that_takes_the_keyboard() {
         let s = Slides::new();
         let mut view = s.window();
-        // The insert tool is the control the window draws: a view's frame holds the nodes of
-        // the views it calls, and the deck calls its tools row inside the shell's content part,
-        // which the test harness's anchor walk does not reach yet (`ViewMeta.calls` records the
-        // call under the part, not under the deck). The control is pressed where it stands.
-        let insert = {
-            let mut buttons = Vec::new();
-            of_kind(view.tree(), "ui.Button", &mut buttons);
-            buttons
-                .iter()
-                .find(|node| node.props.get("label") == Some(&Value::text("Text")))
-                .map_or_else(
-                    || panic!("the insert tool: {}", dump(view.tree())),
-                    |node| node.key.clone(),
-                )
-        };
+        // The insert tool the deck's window draws, found through the views the deck calls.
+        let insert = s.app.anchor("deck", "insert_text");
         assert!(matches!(
             view.press(&insert).unwrap(),
             InvokeOutcome::Done(_)
