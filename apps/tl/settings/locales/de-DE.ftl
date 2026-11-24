@@ -433,6 +433,22 @@ d-5sy7gs76 = Compatibility pane
     .w-try-again = Erneut versuchen
     .w-installing-it-downloads = Die Installation lädt { $size } herunter.
 
+d-e2bkffks = Inhaltsgrenzen
+    .w-what-the-host-keeps = Was der Host behält
+    .w-the-limits-every-host-of-this = Die Grenzen, an die sich jeder Host dieses Arbeitsbereichs hält. Eine größere Datei bleibt bei der Person, die sie gepostet hat, und öffnet sich weiterhin von ihrem Gerät.
+    .w-largest-file = Größte Datei
+    .w-a-bigger-file-is-not-kept = Eine größere Datei behält der Host nicht
+    .w-change = Ändern
+    .w-one-member-s-files = Dateien einer Person
+    .w-what-one-member-s-files-may = Was die Dateien einer Person zusammen einnehmen dürfen
+    .w-one-member-an-hour = Eine Person je Stunde
+    .w-what-one-member-may-post-in = Was eine Person in einer Stunde posten darf
+    .w-only-the-workspace-s-owners-can = Nur die Eigentümer des Arbeitsbereichs können diese ändern.
+    .w-new-limits = Neue Grenzen
+    .w-mib = MiB
+    .w-save-limits = Grenzen speichern
+    .w-cancel = Abbrechen
+
 d-xa522ebd = Disk unlock pane
     .w-encrypted-volumes = Verschlüsselte Volumes
     .w-looking-for-encrypted-volumes-asks-this = Die Suche nach verschlüsselten Volumes fragt diesen Rechner nach seiner Entsperrung, die er für die Administration bereithält.

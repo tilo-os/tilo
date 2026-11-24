@@ -8,6 +8,7 @@ app so.tilo.settings "Settings" (
 use so.tilo.settings.sections as settings
 use so.tilo.device as device
 use tilo.models as models
+use tilo.workspace as workspace
 
 /// The window's root. Settings keeps nothing of its own here: every row below changes a
 /// resource the session publishes — the person's appearance, notification, accessibility and
@@ -94,6 +95,11 @@ view settings_window(s: Settings) {
                         on select: open_pane("time")
                     }
                 }
+                ui.NavSection("Workspace") {
+                    ui.NavItem("content", "Content limits", icon: .database) {
+                        on select: open_pane("content")
+                    }
+                }
                 ui.NavSection("Accounts and access") {
                     ui.NavItem("accounts", "Accounts", icon: .mail) {
                         on select: open_pane("accounts")
@@ -172,6 +178,8 @@ view settings_window(s: Settings) {
                         default_apps_pane()
                     } else if s.pane == "time" {
                         date_time_pane()
+                    } else if s.pane == "content" {
+                        content_pane()
                     } else if s.pane == "accounts" {
                         accounts_pane()
                     } else if s.pane == "agent_models" {
@@ -244,6 +252,8 @@ fn pane_title(pane: Text) -> Text {
         "Default apps"
     } else if pane == "time" {
         "Date and time"
+    } else if pane == "content" {
+        "Content limits"
     } else if pane == "accounts" {
         "Accounts"
     } else if pane == "agent_models" {
