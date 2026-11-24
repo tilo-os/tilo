@@ -69,7 +69,6 @@ core = [
     "tilo-agent-session -> tilo-model-gateway",
     "tilo-agent-session -> tilolang-tilo",
     "tilo-agent-session -> tilolang-web",
-    "tilo-agent-session -> totp",
     "tilo-agent-session -> weather",
     "tilo-broker-core -> settings-store",
     "tilo-broker-core -> tilo-desktop-model",

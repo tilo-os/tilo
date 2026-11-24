@@ -1368,7 +1368,6 @@ doc = false
 "toml_parser-1_0_9_spec-1_1_0" = { package = "toml_parser", version = "^1.0.9+spec-1.1.0", default-features = false, features = ["alloc", "default", "std"] }
 "toml_write-0_1_2" = { package = "toml_write", version = "^0.1.2", default-features = false, features = ["alloc", "default", "std"] }
 "toml_writer-1_1_1_spec-1_1_0" = { package = "toml_writer", version = "^1.1.1+spec-1.1.0", default-features = false, features = ["alloc", "std"] }
-"totp" = { path = "../../apps/totp", default-features = false, features = [] }
 "tower-0_5_3" = { package = "tower", version = "^0.5.3", default-features = false, features = ["futures-core", "futures-util", "pin-project-lite", "retry", "sync_wrapper", "timeout", "tokio", "util"] }
 "tower-http-0_6_8" = { package = "tower-http", version = "^0.6.8", default-features = false, features = ["async-compression", "decompression-br", "decompression-gzip", "follow-redirect", "futures-core", "futures-util", "iri-string", "tokio", "tokio-util", "tower"] }
 "tower-layer-0_3_3" = { package = "tower-layer", version = "^0.3.3", default-features = false, features = [] }
@@ -3852,7 +3851,6 @@ doc = false
 "toml_parser-1_0_9_spec-1_1_0" = { package = "toml_parser", version = "^1.0.9+spec-1.1.0", default-features = false, features = ["alloc", "default", "std"] }
 "toml_write-0_1_2" = { package = "toml_write", version = "^0.1.2", default-features = false, features = ["alloc", "default", "std"] }
 "toml_writer-1_1_1_spec-1_1_0" = { package = "toml_writer", version = "^1.1.1+spec-1.1.0", default-features = false, features = ["alloc", "std"] }
-"totp" = { path = "../../apps/totp", default-features = false, features = [] }
 "tower-0_5_3" = { package = "tower", version = "^0.5.3", default-features = false, features = ["futures-core", "futures-util", "pin-project-lite", "retry", "sync_wrapper", "timeout", "tokio", "util"] }
 "tower-http-0_6_8" = { package = "tower-http", version = "^0.6.8", default-features = false, features = ["async-compression", "decompression-br", "decompression-gzip", "follow-redirect", "futures-core", "futures-util", "iri-string", "tokio", "tokio-util", "tower"] }
 "tower-layer-0_3_3" = { package = "tower-layer", version = "^0.3.3", default-features = false, features = [] }

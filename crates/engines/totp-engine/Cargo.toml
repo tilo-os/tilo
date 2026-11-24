@@ -1,0 +1,39 @@
+[package]
+name = "totp-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Authenticator's device work: a one-time code from a secret and the clock, a setup link read, and the QR code of a picture decoded"
+
+[dependencies]
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+# A picture a chooser hands over is kept where every device reads it, by address.
+tilo-resource = { path = "../../core/tilo-resource" }
+# Each account's seed stays in this device's secret store, under the app's own name, and never
+# in a document.
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+# The picture's bytes as its pixels: the QR detector reads a still image.
+tilo-image-codec = { path = "../tilo-image-codec" }
+serde.workspace = true
+serde_json.workspace = true
+# RFC 6238 on the RustCrypto primitives, and RFC 4648 base32.
+hmac.workspace = true
+sha1 = "0.11"
+sha2.workspace = true
+data-encoding.workspace = true
+data-encoding-macro.workspace = true
+zeroize.workspace = true
+# The first QR code in an image, detected offline.
+rqrr.workspace = true
+# When a code changes, from the instant the window names.
+jiff.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+qrcode.workspace = true
+image = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

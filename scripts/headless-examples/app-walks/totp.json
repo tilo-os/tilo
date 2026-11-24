@@ -1,0 +1,57 @@
+{
+  "app": "totp",
+  "said": "Authenticator",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.totp",
+    "package": "totp"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Authenticator with no accounts: it asks for the first",
+      "ops": [
+        { "theme": false },
+        { "launch": true },
+        { "wait_for": "actions" },
+        { "wait_for": "No accounts yet" },
+        { "targets": true }
+      ]
+    },
+    {
+      "id": "link",
+      "said": "Paste a setup link and the account appears with its code and a countdown",
+      "ops": {
+        "tl": [
+          { "press_any": ["Add account"] },
+          { "wait_for": "Setup link" },
+          { "click_any": [{ "prefix": "Setup link" }] },
+          { "type": "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&issuer=Acme" },
+          { "press_any": ["Add from the link"] },
+          { "press_any": ["Back"] },
+          { "wait_for": "Acme" },
+          { "offered": ["Copy", "Edit", "More"] }
+        ]
+      }
+    },
+    {
+      "id": "details",
+      "said": "The form takes the details and the advanced options",
+      "ops": {
+        "tl": [
+          { "press_any": ["Add account"] },
+          { "offered": ["Advanced options", "Scan a QR image"] },
+          { "press_any": ["Advanced options"] },
+          { "offered": ["SHA1", "SHA256", "SHA512"] }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [{ "theme": true }],
+      "dark": true
+    }
+  ]
+}

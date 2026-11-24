@@ -77,6 +77,8 @@ fn main() -> std::process::ExitCode {
     // Diff & Merge's device work: two texts aligned, three merged and composed, two folders
     // compared, and the files it opens and writes.
     diffmerge_engine::register();
+    // Authenticator's device work: one-time codes, a setup link read and a picture's QR code.
+    totp_engine::register();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it opens no display and

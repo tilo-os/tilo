@@ -98,6 +98,8 @@ mod e2e_stream;
 mod e2e_todo;
 #[path = "e2e_tool_context.rs"]
 mod e2e_tool_context;
+#[path = "e2e_totp.rs"]
+mod e2e_totp;
 #[path = "e2e_video_editor.rs"]
 mod e2e_video_editor;
 #[path = "e2e_weather.rs"]

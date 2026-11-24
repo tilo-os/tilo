@@ -118,6 +118,9 @@ hex-engine = { path = "../../engines/hex-engine" }
 diffmerge-engine = { path = "../../engines/diffmerge-engine" }
 # The chip design app's device work, answered by the crate a session registers.
 tilo-chip-design-engine = { path = "../../engines/tilo-chip-design-engine" }
+totp-engine = { path = "../../engines/totp-engine" }
+# The secret store the Authenticator test keeps its seeds in, rather than the machine's.
+tilo-secrets = { path = "../../platform/tilo-secrets" }
 tilo-content = { path = "../../core/content" }
 tilo-wake = { path = "../../platform/tilo-wake" }
 

@@ -31,6 +31,8 @@ pub(super) fn main() -> std::process::ExitCode {
     speed_engine::register();
     // Diff & Merge's device work, for the calls that reach this host with no window.
     diffmerge_engine::register();
+    // Authenticator's device work, for the calls that reach this host with no window.
+    totp_engine::register();
     tracing_subscriber::fmt()
         // RUST_LOG, with the launch timing lines kept, as the session's own log keeps them.
         .with_env_filter(tracing_subscriber::EnvFilter::new(

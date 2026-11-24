@@ -2,7 +2,7 @@
 # beside it: `*` is every native app, and a package joins the collection in the
 # change that retires the native app it replaces.
 [collections.default]
-include = ["*", "tl-activity", "tl-api-tester", "tl-backups", "tl-browser", "tl-calculator", "tl-calendar", "tl-canvas", "tl-camera", "tl-chat", "tl-chip-design", "tl-clocks", "tl-code-editor", "tl-contacts", "tl-containers", "tl-db-client", "tl-diffmerge", "tl-disk-usage", "tl-disks", "tl-ebook", "tl-feeds", "tl-firewall", "tl-files", "tl-git-client", "tl-hex-editor", "tl-mail", "tl-logs", "tl-maps", "tl-monitor", "tl-music", "tl-notes", "tl-passwords", "tl-pdf", "tl-photos", "tl-print-centre", "tl-settings", "tl-scratchpad", "tl-sheets", "tl-snippets", "tl-speed-test", "tl-store", "tl-tasks", "tl-tube", "tl-typst-editor", "tl-video", "tl-video-editor", "tl-weather", "tl-word-processor"]
+include = ["*", "tl-activity", "tl-api-tester", "tl-backups", "tl-browser", "tl-calculator", "tl-calendar", "tl-canvas", "tl-camera", "tl-chat", "tl-chip-design", "tl-clocks", "tl-code-editor", "tl-contacts", "tl-containers", "tl-db-client", "tl-diffmerge", "tl-disk-usage", "tl-disks", "tl-ebook", "tl-feeds", "tl-firewall", "tl-files", "tl-git-client", "tl-hex-editor", "tl-mail", "tl-logs", "tl-maps", "tl-monitor", "tl-music", "tl-notes", "tl-passwords", "tl-pdf", "tl-photos", "tl-print-centre", "tl-settings", "tl-scratchpad", "tl-sheets", "tl-snippets", "tl-speed-test", "tl-store", "tl-tasks", "tl-totp", "tl-tube", "tl-typst-editor", "tl-video", "tl-video-editor", "tl-weather", "tl-word-processor"]
 
 [collections.desktop]
 extends = ["default"]
