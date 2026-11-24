@@ -922,7 +922,7 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_column_where_it_was_dropped()
             (Some("Written down, not planned yet".to_owned()), Some(1), ids(&[&bedworkspace])),
             (Some("Planned: the next thing to pick up".to_owned()), Some(0), vec![]),
             (
-                Some("In progress".to_owned()),
+                Some("Someone is working on it".to_owned()),
                 Some(3),
                 ids(&[&van, &books, &boxes])
             ),
