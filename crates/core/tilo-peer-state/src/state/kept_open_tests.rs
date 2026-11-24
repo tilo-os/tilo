@@ -234,7 +234,19 @@ tilo_test_env::scenario! {
         );
         admit(&mut f.replica, &f.owner, message, f.now);
         let (mut document, opened) = read_kept(&f.replica, reader, &[&keys], &mut kept).unwrap();
-        assert_eq!(opened, 2, "the compaction and the write after it, whole");
+        // Not every device with the record's keys checked the checkpoint yet: it is read against
+        // the two writes it stands in for, once.
+        assert_eq!(
+            opened, 4,
+            "the compaction, the writes it stands in for, and the write after it"
+        );
+        let (_, again) = read_kept(&f.replica, reader, &[&keys], &mut KeptDocument::default())
+            .unwrap();
+        assert_eq!(
+            again, 2,
+            "read whole again: the compaction and the write after it, the checkpoint's writes \
+             known to merge to it"
+        );
         same(&mut document, &mut read_whole(&f.replica, reader, &[&keys]));
         assert_eq!(
             document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
