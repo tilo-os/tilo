@@ -33,7 +33,6 @@ hex-editor-model-wasm = { path = "../../../apps/hex-editor-model-wasm" }
 logs-model-wasm = { path = "../../../apps/logs-model-wasm" }
 maps-model-wasm = { path = "../../../apps/maps-model-wasm" }
 poker-model-wasm = { path = "../../../apps/poker-model-wasm" }
-print-centre-model-wasm = { path = "../../../apps/print-centre-model-wasm" }
 publisher-model-wasm = { path = "../../../apps/publisher-model-wasm" }
 remote-model-wasm = { path = "../../../apps/remote-model-wasm" }
 scratchpad-model-wasm = { path = "../../../apps/scratchpad-model-wasm" }

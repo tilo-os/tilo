@@ -1,0 +1,46 @@
+{
+  "app": "print-centre",
+  "said": "Print Centre",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.print-centre",
+    "package": "print-centre"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Print Centre on a fresh desktop",
+      "ops": [
+        {"theme": false},
+        {"launch": true},
+        {"wait_for": "actions"},
+        {"targets": true}
+      ]
+    },
+    {
+      "id": "places",
+      "said": "The sidebar names the printers, their jobs and the scanner",
+      "ops": {"tl": [
+        {"press_any": ["Queue"]},
+        {"press_any": ["History"]},
+        {"press_any": ["Diagnostics"]},
+        {"press_any": ["Scan"]}
+      ]}
+    },
+    {
+      "id": "print",
+      "said": "The print form asks for a document and a printer",
+      "ops": {"tl": [
+        {"press_any": ["Print a document"]},
+        {"offered": ["Choose a document", "Printer"]}
+      ]}
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [{"theme": true}],
+      "dark": true
+    }
+  ]
+}

@@ -12254,49 +12254,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "print-centre"
-version = "0.1.0"
-dependencies = [
- "hex",
- "image",
- "os-actions",
- "print-centre-model",
- "runtime-dylib",
- "tempfile",
- "tilo-app",
- "tilo-capture",
- "tilo-doc-pdf",
- "tilo-files",
- "tilo-history",
- "tilo-ocr",
- "tilo-pdf",
- "tilo-pdf-engine",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-thumbnail",
- "tilo-vello",
- "workspace-hack",
-]
-
-[[package]]
-name = "print-centre-model"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "print-centre-model-wasm"
-version = "0.1.0"
-dependencies = [
- "print-centre-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "priority-queue"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19195,7 +19152,6 @@ dependencies = [
  "logs-model-wasm",
  "maps-model-wasm",
  "poker-model-wasm",
- "print-centre-model-wasm",
  "publisher-model-wasm",
  "remote-model-wasm",
  "scratchpad-model-wasm",
@@ -22706,10 +22662,12 @@ dependencies = [
  "collab-types",
  "collaboration",
  "durable-store",
+ "image",
  "jiff",
  "libc",
  "mail-engine",
  "notify",
+ "os-actions",
  "passwords-engine",
  "runtime-dylib",
  "runtime-portal",
@@ -22727,12 +22685,14 @@ dependencies = [
  "tilo-archive",
  "tilo-automerge-fork",
  "tilo-canvas-engine",
+ "tilo-capture",
  "tilo-clipboard",
  "tilo-clock",
  "tilo-content",
  "tilo-content-device",
  "tilo-desktop-search",
  "tilo-dialogs",
+ "tilo-doc-pdf",
  "tilo-failure",
  "tilo-feeds",
  "tilo-files",
@@ -22740,6 +22700,7 @@ dependencies = [
  "tilo-history",
  "tilo-media",
  "tilo-net",
+ "tilo-ocr",
  "tilo-paths",
  "tilo-pdf-reader",
  "tilo-recurrence",
@@ -27618,9 +27579,6 @@ dependencies = [
  "primefield",
  "primeorder 0.13.6",
  "primeorder 0.14.0",
- "print-centre",
- "print-centre-model",
- "print-centre-model-wasm",
  "priority-queue",
  "proc-macro-crate",
  "proc-macro-error-attr2",

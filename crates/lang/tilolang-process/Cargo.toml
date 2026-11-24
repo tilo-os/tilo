@@ -99,6 +99,11 @@ tilo-content = { version = "0.1.0", path = "../../core/content" }
 tilo-canvas-engine = { version = "0.1.0", path = "../../engines/canvas-engine" }
 # The one PDF reader: what the device's PDF engine answers a package's `pdf.*` with.
 tilo-pdf-reader = { version = "0.1.0", path = "../../engines/pdf" }
+tilo-capture = { path = "../../engines/tilo-capture", features = ["scanner"] }
+tilo-ocr = { path = "../../engines/ocr" }
+tilo-doc-pdf = { path = "../../engines/tilo-doc-pdf" }
+os-actions = { path = "../../os/os-actions" }
+image = { workspace = true, features = ["png"] }
 # The archives a package makes of its folder's entries and unpacks again, in pure Rust.
 tilo-archive = { version = "0.1.0", path = "../../engines/tilo-archive" }
 tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }

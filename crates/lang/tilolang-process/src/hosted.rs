@@ -690,6 +690,9 @@ impl Platform for HostPlatform {
         if app == crate::containers_engine::APP {
             return crate::containers_engine::call(self, app, op, input);
         }
+        if app == crate::print_centre_engine::APP {
+            return crate::print_centre_engine::call(self, app, op, input);
+        }
         crate::feed_engine::register();
         tilolang_tilo::engine::answer(app, op, input)
     }
@@ -702,6 +705,9 @@ impl Platform for HostPlatform {
         if app == crate::containers_engine::APP {
             return crate::containers_engine::start(self, app, op, input);
         }
+        if app == crate::print_centre_engine::APP {
+            return crate::print_centre_engine::start(self, app, op, input);
+        }
         crate::feed_engine::register();
         tilolang_tilo::engine::begin(app, op, input)
     }
@@ -710,8 +716,10 @@ impl Platform for HostPlatform {
     fn engine_status(&self, job: &str) -> Result<String, String> {
         crate::video_engine::status(self, job).or_else(|unknown| {
             crate::containers_engine::status(job).or_else(|_| {
-                crate::feed_engine::register();
-                tilolang_tilo::engine::progress(job).map_err(|_| unknown)
+                crate::print_centre_engine::status(self, job).or_else(|_| {
+                    crate::feed_engine::register();
+                    tilolang_tilo::engine::progress(job).map_err(|_| unknown)
+                })
             })
         })
     }
@@ -721,6 +729,7 @@ impl Platform for HostPlatform {
         crate::feed_engine::register();
         crate::video_engine::cancel(job)
             || crate::containers_engine::cancel(job)
+            || crate::print_centre_engine::cancel(job)
             || tilolang_tilo::engine::stop(job)
     }
 

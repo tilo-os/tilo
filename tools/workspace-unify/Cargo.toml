@@ -811,9 +811,6 @@ doc = false
 "primefield-0_14_0" = { package = "primefield", version = "^0.14.0", default-features = false, features = [] }
 "primeorder-0_13_6" = { package = "primeorder", version = "^0.13.6", default-features = false, features = [] }
 "primeorder-0_14_0" = { package = "primeorder", version = "^0.14.0", default-features = false, features = ["alloc", "basepoint-table", "std"] }
-"print-centre" = { path = "../../apps/print-centre", default-features = false, features = [] }
-"print-centre-model" = { path = "../../apps/print-centre-model", default-features = false, features = [] }
-"print-centre-model-wasm" = { path = "../../apps/print-centre-model-wasm", default-features = false, features = [] }
 "priority-queue-2_7_0" = { package = "priority-queue", version = "^2.7.0", default-features = false, features = ["default", "std"] }
 "proc-macro2-1_0_106" = { package = "proc-macro2", version = "^1.0.106", default-features = false, features = ["default", "proc-macro", "span-locations"] }
 "profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = ["default", "procmacros", "profiling-procmacros"] }
@@ -3620,9 +3617,6 @@ doc = false
 "primefield-0_14_0" = { package = "primefield", version = "^0.14.0", default-features = false, features = [] }
 "primeorder-0_13_6" = { package = "primeorder", version = "^0.13.6", default-features = false, features = [] }
 "primeorder-0_14_0" = { package = "primeorder", version = "^0.14.0", default-features = false, features = ["alloc", "basepoint-table", "std"] }
-"print-centre" = { path = "../../apps/print-centre", default-features = false, features = [] }
-"print-centre-model" = { path = "../../apps/print-centre-model", default-features = false, features = [] }
-"print-centre-model-wasm" = { path = "../../apps/print-centre-model-wasm", default-features = false, features = [] }
 "priority-queue-2_7_0" = { package = "priority-queue", version = "^2.7.0", default-features = false, features = ["default", "std"] }
 "proc-macro2-1_0_106" = { package = "proc-macro2", version = "^1.0.106", default-features = false, features = ["default", "proc-macro", "span-locations"] }
 "profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = ["default", "procmacros", "profiling-procmacros"] }
