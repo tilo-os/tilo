@@ -221,6 +221,10 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
                 Some(&origin(original.clone(), false))
             ));
             assert!(
+                !is_local_host_caller(&signed, None),
+                "a device's key with no admission behind it is not this machine's caller"
+            );
+            assert!(
                 !is_local_host_caller(&projected, Some(&origin(original.clone(), false))),
                 "keyless Certified is not itself evidence of native device identity"
             );

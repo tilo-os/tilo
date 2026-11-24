@@ -1157,9 +1157,65 @@ impl ActionProvider for Nearby {
     fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
+
+    /// An accept the person has not said yes to yet waits for it, before the dispatch takes it.
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        let address = &request.target.address;
+        if address.resource != RESOURCE
+            || address.action != ACCEPT
+            || request.approval().is_some()
+            || !self.is_our_person(caller)
+        {
+            return None;
+        }
+        Some(Pending::ready(
+            argument(request).and_then(|accept| self.asks_to_keep(request, &accept)),
+        ))
+    }
+}
+
+/// What the person accepts a transfer with: where its file goes, when not to their default.
+#[derive(Deserialize)]
+struct Accept {
+    transfer: String,
+    #[serde(default)]
+    destination: Option<String>,
 }
 
 impl Nearby {
+    /// The person's yes to keeping the transfer `accept` names, which is kept as an asked
+    /// record: the dispatch sends the call here again, with their approve, once they answer.
+    fn asks_to_keep(
+        &self,
+        request: &InvokeRequest,
+        accept: &Accept,
+    ) -> Result<(), ActionCallError> {
+        let (name, peer) = {
+            let state = self.inner.state.lock_recover();
+            bytes_of(&accept.transfer)
+                .and_then(|id| state.transfers.get(&id))
+                .map_or_else(
+                    || (String::new(), String::new()),
+                    |found| (found.name.clone(), found.peer.clone()),
+                )
+        };
+        asked::approved_or_asks(request, || asked::AskedFacts {
+            words: crate::i18n::t_args(
+                "nearby-send-keep-question",
+                &[
+                    ("name", name.as_str().into()),
+                    ("device", peer.as_str().into()),
+                ],
+            ),
+            ..asked::AskedFacts::default()
+        })
+    }
+
     /// Run one call of the resource: what the person's own dispatch hands here, and what
     /// another of their devices asks over the action service.
     fn start(
@@ -1228,34 +1284,8 @@ impl Nearby {
                 Ok(None)
             }
             ACCEPT => {
-                #[derive(Deserialize)]
-                struct Accept {
-                    transfer: String,
-                    #[serde(default)]
-                    destination: Option<String>,
-                }
                 let accept: Accept = argument(request)?;
-                // The person's own yes is kept as an asked record: the dispatch sends the call
-                // here again, with their approve, once they answer.
-                let (name, peer) = {
-                    let state = self.inner.state.lock_recover();
-                    bytes_of(&accept.transfer)
-                        .and_then(|id| state.transfers.get(&id))
-                        .map_or_else(
-                            || (String::new(), String::new()),
-                            |found| (found.name.clone(), found.peer.clone()),
-                        )
-                };
-                asked::approved_or_asks(request, || asked::AskedFacts {
-                    words: crate::i18n::t_args(
-                        "nearby-send-keep-question",
-                        &[
-                            ("name", name.as_str().into()),
-                            ("device", peer.as_str().into()),
-                        ],
-                    ),
-                    ..asked::AskedFacts::default()
-                })?;
+                self.asks_to_keep(request, &accept)?;
                 self.accept(&workspace, &accept.transfer, accept.destination.as_deref())
                     .map_err(refused)?;
                 Ok(None)
