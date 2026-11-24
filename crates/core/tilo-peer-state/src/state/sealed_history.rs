@@ -186,5 +186,31 @@ fn split_beside(
         .chain((0..originals).rev())
         .find(|at| beside.get(*at..).is_some_and(&names_exactly))
         .unwrap_or(originals);
+    // Every write kept beside the checkpoint is one it stands in for: covered by it, or by a
+    // checkpoint kept beside it that it stands in for in turn. A write after it in the record's
+    // history is never one of them.
+    let writes = beside.get(at..).unwrap_or_default();
+    let mut standing: Vec<collab_types::SealedCompaction> = wrapper.into_iter().collect();
+    let mut taken = std::collections::HashSet::new();
+    loop {
+        let more: Vec<&collab_types::SignedOp> = writes
+            .iter()
+            .filter(|op| super::checkpoints::is_checkpoint(op) && !taken.contains(&op.signature.0))
+            .filter(|op| standing.iter().any(|wrapper| wrapper.covers(op)))
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        for op in more {
+            taken.insert(op.signature.0);
+            standing.push(collab_types::SealedCompaction::parse(op).map_err(err)?);
+        }
+    }
+    if writes
+        .iter()
+        .any(|op| !standing.iter().any(|wrapper| wrapper.covers(op)))
+    {
+        return Err("a write kept beside the record's checkpoint is none it stands in for".into());
+    }
     Ok((originals, at))
 }

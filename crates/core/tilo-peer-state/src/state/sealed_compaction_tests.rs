@@ -1571,6 +1571,15 @@ tilo_test_env::scenario! {
                 "an altered compaction",
                 "signature did not verify",
             ),
+            (
+                rewrite(&|history| {
+                    let compaction = compaction_in(history);
+                    let later = history.remove(compaction.checked_add(1).unwrap());
+                    history.insert(compaction, later);
+                }),
+                "a later write placed ahead of the compaction",
+                "none it stands in for",
+            ),
         ] {
             assert_set_aside(&tampered, f.restore(&tampered), why, reason);
         }
