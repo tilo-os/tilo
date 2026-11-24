@@ -288,65 +288,10 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
         })
         .unwrap();
         assert_eq!(input.first(), Some(&2));
-        let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
-            id: crate::fabric::notification::ContinuityNotificationId {
-                epoch: [1; 16],
-                token: [2; 16],
-            },
-        })
-        .unwrap();
-        assert_eq!(notification.first(), Some(&4));
-    }
-
-    fn notification_actions_are_source_bound_bounded_and_fresh() {
-        let source = id("source");
-        let target = id("target");
-        let notification = crate::fabric::notification::ContinuityNotificationProjection {
-            id: crate::fabric::notification::ContinuityNotificationId {
-                epoch: [1; 16],
-                token: [2; 16],
-            },
-            app_id: "so.tilo.mail".into(),
-            app_name: "Mail".into(),
-            title: "New message".into(),
-            body: "Preview".into(),
-            body_redacted: false,
-            actions: vec![("reply".into(), "Reply".into())],
-            urgency: 1,
-            expires_unix_ms: 20_000,
-        };
-        let envelope = PersonalFabricActionEnvelope {
-            request_id: [3; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action: PersonalFabricAction::NotificationProject { notification },
-        };
-        assert!(envelope.validate_at(&source, &target, 10_000).is_ok());
-        assert_eq!(
-            envelope.validate_at(&id("spoof"), &target, 10_000),
-            Err(FabricError::InvalidAction)
-        );
-
-        let invalid = PersonalFabricActionEnvelope {
-            action: PersonalFabricAction::NotificationInvoke {
-                id: crate::fabric::notification::ContinuityNotificationId {
-                    epoch: [1; 16],
-                    token: [2; 16],
-                },
-                action_key: "bad\naction".into(),
-            },
-            ..envelope
-        };
-        assert_eq!(
-            invalid.validate_at(&source, &target, 10_000),
-            Err(FabricError::InvalidAction)
-        );
     }
 
     ephemeral_actions_are_transport_bound_and_fresh();
     new_action_variants_do_not_renumber_existing_wire_actions();
-    notification_actions_are_source_bound_bounded_and_fresh();
 }
 
 #[test]

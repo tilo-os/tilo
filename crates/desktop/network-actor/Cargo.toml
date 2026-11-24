@@ -32,7 +32,6 @@ settings-store = { package = "tilo-settings-store", path = "../../desktop/settin
 thiserror.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-delivery-protocol = { path = "../../core/tilo-delivery-protocol" }
-tilo-session-core = { path = "../session-core" }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-endpoint-reachability = { path = "../../core/endpoint-reachability" }
 # Who a device is and the revision a fact carries, as every host reads them.

@@ -38,6 +38,12 @@
 //! device drives which is read there by every device of theirs; the input itself travels between
 //! the two.
 //!
+//! A notification an app sent on one of their devices is shown on the others from the record
+//! ([`SharedNotice`]): the device it was sent on keeps it there while it is shown
+//! ([`Devices::show_notice`]), a device the person dismissed it or chose one of its actions on
+//! says so ([`Devices::answer_notice`]), and the device it was sent on carries that out and takes
+//! it away ([`Devices::retire_notice`]), which takes it off every other device.
+//!
 //! What the person's root signs lives in their record: the mark of the device
 //! that keeps it ([`Devices::mark_root_holder`]) and the revocation of one it
 //! takes back ([`Devices::revoke_device`]), each a signature a reader checks
@@ -89,6 +95,67 @@ pub struct Devices {
     pub moves: Collection<AccessoryMove>,
     /// Who drives each device's keyboard and pointer, or asked to, by the key of the device driven.
     pub inputs: Collection<InputHand>,
+    /// The notifications shown on each of the person's devices, by [`SharedNotice`] id.
+    pub notices: Collection<SharedNotice>,
+}
+
+/// The longest a notification is shown on the person's other devices, ms.
+pub const MAX_NOTICE_SHOWN_MS: i64 = 15 * 60 * 1_000;
+/// The most notifications the record keeps shown at once.
+const MAX_NOTICES: usize = 256;
+/// The most actions a notification shown elsewhere offers.
+const MAX_NOTICE_ACTIONS: usize = 16;
+
+/// A notification an app sent on one of the person's devices, as their other devices show it: the
+/// app, what it says (its text only when the person lets previews leave the device), the actions
+/// it offers, and until when. Once the person dismissed it, or chose one of its actions, on another
+/// device, the device they answered it on and what they chose. Kept by an id of 32 bytes in hex
+/// the device it was sent on draws; times are ms since the epoch.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
+pub struct SharedNotice {
+    /// The device it was sent on, by key (lowercase hex).
+    pub from: String,
+    pub app_id: String,
+    pub app_name: String,
+    pub title: String,
+    /// What it says; empty when its text stays on the device it was sent on.
+    pub body: String,
+    /// Its text stays on the device it was sent on.
+    pub redacted: bool,
+    pub actions: Vec<NoticeAction>,
+    /// How much it matters: 0 says something, 1 warns, 2 tells of an error.
+    pub urgency: i64,
+    pub shown_ms: i64,
+    pub until_ms: i64,
+    /// The device the person answered it on, by key; empty while nobody did.
+    pub answered_on: String,
+    /// The key of the action they chose there; empty when they dismissed it.
+    pub chosen: String,
+}
+
+/// One action a notification offers: its key, and what it says.
+#[derive(
+    Model,
+    Default,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct NoticeAction {
+    pub key: String,
+    pub label: String,
+}
+
+impl SharedNotice {
+    /// Whether it is shown at `now_ms`: nobody answered it and its time has not run out.
+    #[must_use]
+    pub fn shown_at(&self, now_ms: i64) -> bool {
+        self.answered_on.is_empty() && now_ms < self.until_ms
+    }
 }
 
 /// One move of a Bluetooth accessory from one of the person's devices to another, and how far it
@@ -397,6 +464,41 @@ impl Devices {
         nonce: &str,
     ) -> tilo_resource::Invoke<Self> {
         Self::END_INPUT.with((hex::encode(driven), hex::encode(driver), nonce.to_owned()))
+    }
+
+    /// The action that shows `notice` on the person's other devices under `id`.
+    #[must_use]
+    pub fn showing_notice(id: &str, notice: &SharedNotice) -> tilo_resource::Invoke<Self> {
+        Self::SHOW_NOTICE.with((
+            id.to_owned(),
+            notice.from.clone(),
+            notice.app_id.clone(),
+            notice.app_name.clone(),
+            notice.title.clone(),
+            notice.body.clone(),
+            notice.redacted,
+            notice.actions.clone(),
+            notice.urgency,
+            notice.shown_ms,
+            notice.until_ms,
+        ))
+    }
+
+    /// The action that says the person answered the notification `id` on `device`: `chosen` the
+    /// action they chose, empty for dismissing it.
+    #[must_use]
+    pub fn answering_notice(
+        id: &str,
+        device: &[u8; 32],
+        chosen: &str,
+    ) -> tilo_resource::Invoke<Self> {
+        Self::ANSWER_NOTICE.with((id.to_owned(), hex::encode(device), chosen.to_owned()))
+    }
+
+    /// The action that takes the notification `id` off the person's devices.
+    #[must_use]
+    pub fn retiring_notice(id: &str) -> tilo_resource::Invoke<Self> {
+        Self::RETIRE_NOTICE.with(id.to_owned())
     }
 
     /// The action that keeps `answer` as what the person answered a boot.
@@ -1094,6 +1196,138 @@ impl Devices {
         Ok(())
     }
 
+    /// Show the notification the app `app_id` (`app_name`) sent on the device `from` on the
+    /// person's other devices under `id`, from `shown_ms` until `until_ms`: what it says, its text
+    /// only when `redacted` is false, the `actions` it offers and its `urgency`. Replaces what
+    /// was kept under `id`; what ran out by `shown_ms` leaves the record.
+    #[action(housekeeping)]
+    #[allow(clippy::too_many_arguments, reason = "each is one fact of the notification, by name")]
+    pub fn show_notice(
+        &mut self,
+        id: String,
+        from: String,
+        app_id: String,
+        app_name: String,
+        title: String,
+        body: String,
+        redacted: bool,
+        actions: Vec<NoticeAction>,
+        urgency: i64,
+        shown_ms: i64,
+        until_ms: i64,
+    ) -> Result<(), Refusal> {
+        validate_key(&id)?;
+        validate_key(&from)?;
+        if app_id.is_empty()
+            || app_id.len() > 160
+            || !app_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err(Refusal::new(
+                "an app is named by up to 160 letters, digits, dots, dashes and underscores",
+            ));
+        }
+        if app_name.is_empty()
+            || app_name.len() > 160
+            || title.len() > 512
+            || body.len() > 4_096
+            || [&app_name, &title]
+                .into_iter()
+                .any(|value| value.chars().any(char::is_control))
+            || body
+                .chars()
+                .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+            || (redacted && !body.is_empty())
+        {
+            return Err(Refusal::new(
+                "a notification says its app's name, a title of up to 512 bytes and a text of up to 4096",
+            ));
+        }
+        if actions.len() > MAX_NOTICE_ACTIONS
+            || actions.iter().any(|action| {
+                action.key.is_empty()
+                    || action.key.len() > 128
+                    || action.label.len() > 256
+                    || action.key.chars().any(char::is_control)
+                    || action.label.chars().any(char::is_control)
+            })
+        {
+            return Err(Refusal::new(
+                "a notification offers up to 16 actions, each a key and a label",
+            ));
+        }
+        if !(0..=2).contains(&urgency) {
+            return Err(Refusal::new(
+                "a notification says something, warns or tells of an error",
+            ));
+        }
+        if shown_ms <= 0 || until_ms <= shown_ms || until_ms - shown_ms > MAX_NOTICE_SHOWN_MS {
+            return Err(Refusal::new(
+                "a notification is shown elsewhere for up to 15 minutes",
+            ));
+        }
+        self.notices.retain(|_, kept| kept.until_ms > shown_ms);
+        let id = Id::from_raw(id);
+        let notice = SharedNotice {
+            from,
+            app_id,
+            app_name,
+            title,
+            body,
+            redacted,
+            actions,
+            urgency,
+            shown_ms,
+            until_ms,
+            ..SharedNotice::default()
+        };
+        let held = self.notices.len();
+        match self.notices.get_mut(&id) {
+            Some(kept) => *kept = notice,
+            None if held >= MAX_NOTICES => {
+                return Err(Refusal::new(
+                    "the person's devices show 256 notifications at most",
+                ));
+            }
+            None => {
+                self.notices.push(id, notice);
+            }
+        }
+        Ok(())
+    }
+
+    /// Say the person answered the notification `id` on the device `device`: `chosen` the key of
+    /// the action they chose, empty when they dismissed it. The first answer stands.
+    #[action]
+    pub fn answer_notice(
+        &mut self,
+        id: String,
+        device: String,
+        chosen: String,
+    ) -> Result<(), Refusal> {
+        validate_key(&device)?;
+        let Some(kept) = self.notices.get_mut(&Id::from_raw(id)) else {
+            return Err(Refusal::new("that notification is no longer shown"));
+        };
+        if !chosen.is_empty() && !kept.actions.iter().any(|action| action.key == chosen) {
+            return Err(Refusal::new("that notification offers no such action"));
+        }
+        if kept.answered_on.is_empty() {
+            kept.answered_on = device;
+            kept.chosen = chosen;
+        }
+        Ok(())
+    }
+
+    /// Take the notification `id` off the person's devices.
+    #[action(housekeeping)]
+    pub fn retire_notice(&mut self, id: String) -> Result<(), Refusal> {
+        let id = Id::from_raw(id);
+        self.notices.retain(|kept, _| *kept != id);
+        Ok(())
+    }
+
     /// Keep `credential` as the passphrase of the network `network`, replacing
     /// what was kept for it.
     #[action(housekeeping)]
@@ -1412,5 +1646,90 @@ mod tests {
             .apply(Devices::ending_input(&phone, &laptop, &granted.nonce))
             .expect("the hand-over ends");
         assert_eq!(hand(&devices.state().unwrap()), None, "the phone's input is its own again");
+    }
+
+    #[test]
+    fn a_notification_is_answered_once_and_runs_out_of_the_record() {
+        let (desktop, laptop, phone) = ([1; 32], [2; 32], [3; 32]);
+        let (mail, later) = (hex::encode([7; 32]), hex::encode([8; 32]));
+        let notice = SharedNotice {
+            from: hex::encode(desktop),
+            app_id: "so.tilo.mail".into(),
+            app_name: "Mail".into(),
+            title: "New mail".into(),
+            body: "From Ada".into(),
+            actions: vec![NoticeAction {
+                key: "archive".into(),
+                label: "Archive".into(),
+            }],
+            shown_ms: 1_000,
+            until_ms: 61_000,
+            ..SharedNotice::default()
+        };
+        let mut devices = tilo_resource::Replica::<Devices>::new();
+        for refused in [
+            SharedNotice {
+                body: "From Ada".into(),
+                redacted: true,
+                ..notice.clone()
+            },
+            SharedNotice {
+                until_ms: 1_000 + MAX_NOTICE_SHOWN_MS + 1,
+                ..notice.clone()
+            },
+            SharedNotice {
+                title: "New\u{7}mail".into(),
+                ..notice.clone()
+            },
+        ] {
+            assert!(
+                devices.apply(Devices::showing_notice(&mail, &refused)).is_err(),
+                "{refused:?} is no notification the record shows"
+            );
+        }
+        devices
+            .apply(Devices::showing_notice(&mail, &notice))
+            .expect("the desktop shows its mail on the person's other devices");
+        let kept = |devices: &tilo_resource::Replica<Devices>, id: &str| {
+            devices.state().unwrap().notices.get(&Id::from_raw(id)).cloned()
+        };
+        assert!(kept(&devices, &mail).unwrap().shown_at(2_000));
+
+        assert!(
+            devices
+                .apply(Devices::answering_notice(&mail, &laptop, "wipe"))
+                .is_err(),
+            "an action the app never offered is not chosen"
+        );
+        devices
+            .apply(Devices::answering_notice(&mail, &laptop, "archive"))
+            .expect("the person archives it on the laptop");
+        devices
+            .apply(Devices::answering_notice(&mail, &phone, ""))
+            .expect("a later answer is heard");
+        let answered = kept(&devices, &mail).unwrap();
+        assert_eq!(
+            (answered.answered_on.as_str(), answered.chosen.as_str()),
+            (hex::encode(laptop).as_str(), "archive"),
+            "the first answer stands"
+        );
+        assert!(!answered.shown_at(2_000), "an answered notification is shown nowhere");
+
+        // What ran out leaves the record as the next one is shown.
+        devices
+            .apply(Devices::showing_notice(
+                &later,
+                &SharedNotice {
+                    shown_ms: 61_000,
+                    until_ms: 70_000,
+                    ..notice.clone()
+                },
+            ))
+            .expect("a later mail is shown");
+        assert_eq!(kept(&devices, &mail), None, "the first ran out");
+        devices
+            .apply(Devices::retiring_notice(&later))
+            .expect("the desktop takes it away");
+        assert!(devices.state().unwrap().notices.is_empty());
     }
 }

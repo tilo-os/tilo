@@ -18344,7 +18344,6 @@ dependencies = [
  "tilo-seal",
  "tilo-server-protocol",
  "tilo-session-client",
- "tilo-session-core",
  "tilo-settings-store",
  "tilo-test-env",
  "tilo-ui",

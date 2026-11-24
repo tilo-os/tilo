@@ -6,7 +6,6 @@ pub mod clock;
 pub mod devices;
 pub mod link;
 mod model;
-pub mod notification;
 pub mod speaker_group;
 pub mod unlock;
 

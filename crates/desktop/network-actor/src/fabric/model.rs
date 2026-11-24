@@ -148,21 +148,6 @@ pub enum PersonalFabricAction {
         lease_nonce: [u8; 16],
         event: FabricInputEvent,
     },
-    /// Ephemeral, policy-redacted notification state. Authorship comes only
-    /// from the authenticated envelope source; the payload names no device.
-    NotificationProject {
-        notification: crate::fabric::notification::ContinuityNotificationProjection,
-    },
-    NotificationRetire {
-        id: crate::fabric::notification::ContinuityNotificationId,
-    },
-    NotificationDismiss {
-        id: crate::fabric::notification::ContinuityNotificationId,
-    },
-    NotificationInvoke {
-        id: crate::fabric::notification::ContinuityNotificationId,
-        action_key: String,
-    },
     /// Request a shell-owned, live audio route. Local `PipeWire` node identities
     /// never cross the certified-device boundary. Appending wire variants is
     /// intentional: postcard encodes enum discriminants by declaration order.
@@ -567,27 +552,6 @@ impl PersonalFabricActionEnvelope {
             }
             PersonalFabricAction::FabricClockReport { report } => {
                 if !report.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::NotificationProject { notification } => {
-                if !notification.validate_at(now_unix_ms) {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::NotificationRetire { id }
-            | PersonalFabricAction::NotificationDismiss { id } => {
-                if id.epoch == [0; 16] || id.token == [0; 16] {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::NotificationInvoke { id, action_key } => {
-                if id.epoch == [0; 16]
-                    || id.token == [0; 16]
-                    || action_key.is_empty()
-                    || action_key.len() > 128
-                    || action_key.chars().any(char::is_control)
-                {
                     return Err(FabricError::InvalidAction);
                 }
             }

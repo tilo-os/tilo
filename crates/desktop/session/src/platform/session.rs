@@ -792,9 +792,13 @@ impl Session {
                 (None, Some(own)) => Some(own),
                 (None, None) => None,
             };
-        if let Some(link) = &fabric {
-            // Notifications continue on the person's other devices.
-            notifications.borrow().attach_fabric(Arc::clone(link));
+        if let Some(resources) = sync.as_ref().and_then(|sync| sync.person_resources()) {
+            // Notifications continue on the person's other devices, through the record of them.
+            notifications.borrow().attach_record(
+                resources,
+                continuity.clone(),
+                options.wake.handle(),
+            );
         }
         // The person's one keyboard and pointer, across the screens of their devices.
         let shared_input = fabric.as_ref().map(|link| {

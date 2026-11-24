@@ -62,10 +62,6 @@ pub trait FabricLink {
     /// # Errors
     /// Why media continuity is off.
     fn require_media(&self) -> Result<(), String>;
-    /// Whether the person lets notifications continue between their devices.
-    fn notifications_permitted(&self) -> bool {
-        false
-    }
     /// Offer what this device copies to the person's other devices that are there now. A
     /// link whose transport does not carry the clipboard ignores the offer; what their
     /// devices offer is in [`Self::devices`].
@@ -108,10 +104,6 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn require_media(&self) -> Result<(), String> {
         (**self).require_media()
-    }
-
-    fn notifications_permitted(&self) -> bool {
-        (**self).notifications_permitted()
     }
 
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {

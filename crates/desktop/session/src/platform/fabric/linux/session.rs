@@ -18,7 +18,7 @@ use tilo_network_actor::PersonalFabricPayload;
 use super::live::Live;
 use super::store;
 use super::{
-    ClipboardEntry, ContinuityNotificationProjection, DeviceAbout, DeviceKind, FabricCapabilities,
+    ClipboardEntry, DeviceAbout, DeviceKind, FabricCapabilities,
     FabricLink, MediaSourceLocator, PersonDevices, PersonalFabricAction,
     PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, clock,
 };
@@ -73,7 +73,8 @@ impl Continuity {
         self.media.load(Ordering::Relaxed)
     }
 
-    fn notifications_permitted(&self) -> bool {
+    /// Whether the person lets notifications continue on their other devices.
+    pub(crate) fn notifications_permitted(&self) -> bool {
         self.notifications.load(Ordering::Relaxed)
     }
 
@@ -447,10 +448,6 @@ impl FabricLink for SessionFabric {
             .ok_or_else(|| "media continuity is turned off in this device's settings".to_owned())
     }
 
-    fn notifications_permitted(&self) -> bool {
-        self.continuity.notifications_permitted()
-    }
-
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let offered = self.live.lock_recover().offer(entries);
         match offered {
@@ -477,24 +474,6 @@ impl crate::Session {
         }
         match &envelope.action {
             PersonalFabricAction::ResumeMedia { .. } => self.offer_media(fabric, envelope),
-            // A notification an app sent on another of the person's devices is shown here named
-            // after that device; what the person does with one shown here goes back to where it
-            // came from.
-            PersonalFabricAction::NotificationProject { notification } => {
-                self.show_remote_notification(fabric, envelope, notification);
-            }
-            PersonalFabricAction::NotificationRetire { id } => {
-                self.shared
-                    .notifications
-                    .borrow()
-                    .remote_retire(&envelope.source, *id);
-            }
-            // A choice on one this device projected: the app's notification closes here, and every
-            // copy goes with it.
-            PersonalFabricAction::NotificationDismiss { .. }
-            | PersonalFabricAction::NotificationInvoke { .. } => {
-                self.shared.notifications.borrow_mut().answered(&envelope.action);
-            }
             // Nothing on this session holds a media offer, and what the person's devices send each
             // other that no service here carries — accessories, calls, wake — is dropped rather
             // than half-acted on. The speaker services answer for theirs; the rest reach here only
@@ -541,24 +520,6 @@ impl crate::Session {
                 .keyboard_and_pointer
                 .as_ref()
                 .is_some_and(|shared_input| shared_input.route(envelope))
-    }
-
-    /// Show the notification another of the person's devices projected,
-    /// named after that device.
-    fn show_remote_notification(
-        &self,
-        fabric: &SharedLink,
-        envelope: &PersonalFabricActionEnvelope,
-        notification: &ContinuityNotificationProjection,
-    ) {
-        let label = fabric.devices().get(&envelope.source).map_or_else(
-            || envelope.source.as_str().to_owned(),
-            |device| device.about.label.clone(),
-        );
-        self.shared
-            .notifications
-            .borrow()
-            .remote_project(&envelope.source, &label, notification);
     }
 
     /// Offer what another device was playing as the now-playing card, so the person can pick it up

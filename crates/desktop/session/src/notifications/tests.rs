@@ -11,6 +11,7 @@ use tilo_session_core::desktop::notifications::{
 use tilo_session_power::PowerLink;
 
 use super::*;
+use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 use crate::platform::notice::OPEN_ACTION;
 
 /// What an app with a launcher-verified identity sent.
@@ -1099,438 +1100,406 @@ tilo_test_env::scenario! {
 
 // ---- Notifications that continue on the person's other devices ----
 
-/// What this session asked the person's other devices to show, and what it told them.
-struct FakeFabric {
-    local: DeviceId,
-    online: BTreeSet<DeviceId>,
-    permitted: std::sync::atomic::AtomicBool,
-    sent: Mutex<Vec<(DeviceId, PersonalFabricAction)>>,
+/// The person's own workspace as their devices reach it: one store each of them writes to as
+/// itself, which tells every one of them what moved.
+#[derive(Default)]
+struct OwnWorkspace {
+    docs: Mutex<BTreeMap<(String, String), automerge::AutoCommit>>,
+    told: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<tilo_workspace_service::workspaces::Moved>>>,
 }
 
-impl FakeFabric {
-    /// This desktop, with `laptop` as the person's other device online.
-    fn new(permitted: bool) -> Arc<Self> {
-        let Ok(local) = DeviceId::new("session".to_owned()) else {
-            panic!("session is a device id");
-        };
-        let Ok(laptop) = DeviceId::new("laptop".to_owned()) else {
-            panic!("laptop is a device id");
-        };
-        Arc::new(Self {
-            online: BTreeSet::from([local.clone(), laptop]),
-            local,
-            permitted: std::sync::atomic::AtomicBool::new(permitted),
-            sent: Mutex::default(),
-        })
-    }
-
-    /// The actions it was asked to send since the last look.
-    fn sent(&self) -> Vec<(DeviceId, PersonalFabricAction)> {
-        std::mem::take(&mut *self.sent.lock().unwrap())
-    }
-
-    /// What it projected since the last look.
-    fn projected(&self) -> Vec<ContinuityNotificationProjection> {
-        self.sent()
-            .into_iter()
-            .filter_map(|(_, action)| match action {
-                PersonalFabricAction::NotificationProject {
-                    notification: projection,
-                } => Some(projection),
-                _ => None,
-            })
-            .collect()
-    }
+/// One device of the person, reaching their own workspace as itself.
+struct AsDevice {
+    workspace: Arc<OwnWorkspace>,
+    cert: tilo_user_identity::DeviceCert,
 }
 
-impl crate::platform::fabric::FabricLink for FakeFabric {
-    fn devices(&self) -> crate::platform::fabric::PersonDevices {
-        crate::platform::fabric::PersonDevices::default()
+impl tilo_workspace_service::workspaces::PersonStore for AsDevice {
+    fn certificate(&self) -> tilo_user_identity::DeviceCert {
+        self.cert.clone()
     }
 
-    fn online_device_ids(&self) -> BTreeSet<DeviceId> {
-        self.online.clone()
+    fn held(&self) -> tilo_workspace_service::workspaces::Answer<'_, bool> {
+        Box::pin(async { true })
     }
 
-    fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
-        Some((self.local.clone(), "Session".to_owned()))
-    }
-
-    fn try_send_personal_fabric_action(
+    fn routes(
         &self,
-        target: &DeviceId,
-        action: PersonalFabricAction,
-    ) -> Result<[u8; 16], crate::platform::fabric::PersonalFabricSendError> {
-        self.sent.lock().unwrap().push((target.clone(), action));
-        Ok([7; 16])
+    ) -> tilo_workspace_service::workspaces::Answer<'_, Result<Vec<(String, String)>, String>> {
+        let routes = self.workspace.docs.lock().unwrap().keys().cloned().collect();
+        Box::pin(async move { Ok(routes) })
     }
 
-    fn require_media(&self) -> Result<(), String> {
-        Ok(())
+    fn document<'a>(
+        &'a self,
+        app: &'a str,
+        name: &'a str,
+    ) -> tilo_workspace_service::workspaces::Answer<'a, Result<Option<Vec<u8>>, String>> {
+        let saved = self
+            .workspace
+            .docs
+            .lock()
+            .unwrap()
+            .get_mut(&(app.to_owned(), name.to_owned()))
+            .map(automerge::AutoCommit::save);
+        Box::pin(async move { Ok(saved) })
     }
 
-    fn notifications_permitted(&self) -> bool {
-        self.permitted.load(std::sync::atomic::Ordering::Relaxed)
+    fn author(
+        &self,
+        app: String,
+        name: String,
+        authoring: tilo_workspace_service::workspaces::Authoring,
+    ) -> tilo_workspace_service::workspaces::Answer<'_, Result<(), String>> {
+        let made = {
+            let mut docs = self.workspace.docs.lock().unwrap();
+            let key = (app.clone(), name.clone());
+            if !docs.contains_key(&key) {
+                let genesis = authoring
+                    .genesis
+                    .ok_or_else(|| "a first write founds the resource".to_owned());
+                match genesis {
+                    Ok(genesis) => {
+                        docs.insert(key.clone(), *genesis);
+                    }
+                    Err(error) => return Box::pin(async move { Err(error) }),
+                }
+            }
+            let doc = docs.get_mut(&key).expect("founded above");
+            (authoring.edit)(doc)
+        };
+        if made.is_ok() {
+            self.workspace.told.lock().unwrap().retain(|told| {
+                told.send(tilo_workspace_service::workspaces::Moved::Resource(
+                    app.clone(),
+                    name.clone(),
+                ))
+                .is_ok()
+            });
+        }
+        Box::pin(async move { made })
+    }
+
+    fn moves(
+        &self,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<tilo_workspace_service::workspaces::Moved> {
+        let (tell, told) = tokio::sync::mpsc::unbounded_channel();
+        self.workspace.told.lock().unwrap().push(tell);
+        told
     }
 }
 
-/// A rig on the person's fabric, with `laptop` as the other device online.
-fn rig_on_fabric(permitted: bool) -> (Rig, Arc<FakeFabric>) {
-    let rig = rig();
-    let fabric = FakeFabric::new(permitted);
-    let link: crate::platform::fabric::SharedLink = fabric.clone();
-    rig.bridge.borrow().attach_fabric(link);
-    (rig, fabric)
+/// Where the person's workspace writes run: one thread, so each device's writes land in the order
+/// it made them.
+fn workspace_runtime() -> tokio::runtime::Handle {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime");
+            let handle = runtime.handle().clone();
+            std::thread::spawn(move || runtime.block_on(std::future::pending::<()>()));
+            handle
+        })
+        .clone()
 }
 
-/// What another of the person's devices projected: a mail to Ada, with its archive action.
-fn projection() -> ContinuityNotificationProjection {
-    ContinuityNotificationProjection {
-        id: ContinuityNotificationId {
-            epoch: [1; 16],
-            token: [2; 16],
-        },
-        app_id: "so.tilo.mail".into(),
-        app_name: "Mail".into(),
-        title: "New mail".into(),
-        body: "From Ada".into(),
-        body_redacted: false,
-        actions: vec![("archive".into(), "Archive".into())],
-        urgency: 0,
-        expires_unix_ms: tilo_clock::unix_now_ms().saturating_add(60_000),
-    }
-}
-
-fn laptop() -> DeviceId {
-    let Ok(laptop) = DeviceId::new("laptop".to_owned()) else {
-        panic!("laptop is a device id");
+/// A device of the person whose root is `root`, called `label`, its key drawn from `seed`.
+fn device_of(
+    root: &ed25519_dalek::SigningKey,
+    label: &str,
+    seed: u8,
+) -> tilo_user_identity::DeviceCert {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
     };
-    laptop
+    tilo_user_identity::sign_device_cert(&mut cert, root).expect("the root signs");
+    cert
+}
+
+/// Continuity as the person set it: on, or `off` in Settings.
+fn continuity(on: bool) -> crate::platform::fabric::Continuity {
+    let continuity = crate::platform::fabric::Continuity::default();
+    let document = if on {
+        Map::new()
+    } else {
+        serde_json::json!({ "continuity": { "enabled": false } })
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+    };
+    continuity.read(&document);
+    continuity
+}
+
+/// Two devices of one person, a desktop and a laptop, each a session over the one record of their
+/// devices.
+struct TwoDevices {
+    desktop: Rig,
+    laptop: Rig,
+    desktop_cert: tilo_user_identity::DeviceCert,
+    /// The desktop's switch for notifications continuing.
+    desktop_continuity: crate::platform::fabric::Continuity,
+    workspace: Arc<OwnWorkspace>,
+}
+
+fn two_devices() -> TwoDevices {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    let workspace = Arc::new(OwnWorkspace::default());
+    let desktop_cert = device_of(&root, "Desktop", 2);
+    let laptop_cert = device_of(&root, "Laptop", 3);
+    let desktop_continuity = continuity(true);
+    let attached = |cert: &tilo_user_identity::DeviceCert,
+                    continuity: crate::platform::fabric::Continuity| {
+        let resources = crate::PersonResources::default();
+        resources.attach(
+            Arc::new(AsDevice {
+                workspace: Arc::clone(&workspace),
+                cert: cert.clone(),
+            }),
+            &workspace_runtime(),
+        );
+        let kept = cert.clone();
+        resources.apply(DEVICES, move || {
+            Devices::keeping(&kept).expect("a certificate the record keeps")
+        });
+        let rig = rig();
+        rig.bridge
+            .borrow()
+            .attach_record(resources, continuity, Arc::new(|| {}));
+        rig
+    };
+    let desktop = attached(&desktop_cert, desktop_continuity.clone());
+    let laptop = attached(&laptop_cert, continuity(true));
+    TwoDevices {
+        desktop,
+        laptop,
+        desktop_cert,
+        desktop_continuity,
+        workspace,
+    }
+}
+
+impl TwoDevices {
+    /// Run both devices' passes until `done` holds.
+    fn until(&self, what: &str, mut done: impl FnMut(&Self) -> bool) {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            self.desktop.step();
+            self.laptop.step();
+            if done(self) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} never happened: the desktop shows {:?}, the laptop {:?}",
+                titles(&self.desktop),
+                titles(&self.laptop),
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The notifications the record of the person's devices shows now.
+    fn in_record(&self) -> usize {
+        let docs = self.workspace.docs.lock().unwrap();
+        let Some(doc) = docs.get(&(DEVICES.0.to_owned(), DEVICES.1.to_owned())) else {
+            return 0;
+        };
+        tilo_resource::Replica::<Devices>::from_doc(doc.clone())
+            .state()
+            .map_or(0, |devices| devices.notices.len())
+    }
+}
+
+/// What `rig` shows: its live banners' and its centre's titles.
+fn titles(rig: &Rig) -> Vec<String> {
+    let log = rig.desktop.log();
+    log.active()
+        .iter()
+        .chain(log.history().iter())
+        .map(|notification| notification.title.clone())
+        .collect()
+}
+
+/// What an app sent on a device: a mail under `id`, titled `title`.
+fn mail(rig: &Rig, title: &str) -> u32 {
+    let id = rig.daemon.alloc_id();
+    let mut notification = from_app(sent(id), "so.tilo.mail");
+    notification.summary = title.into();
+    notification.actions = vec![("archive".into(), "Archive".into())];
+    rig.daemon.push(notification);
+    id
 }
 
 tilo_test_env::scenario! {
-    fn what_is_told_here_is_projected_to_the_persons_other_devices;
+    fn what_is_told_here_is_shown_on_the_persons_other_devices;
 
-    phase the_desktops_own_notice_stays_on_this_machine;
-    // The desktop's own notice is about the machine that raises it: it is not an app's message to
-    // continue on the person's other devices.
+    phase an_apps_notification_is_shown_on_the_laptop_named_after_this_device;
     {
-        let (rig, fabric) = rig_on_fabric(true);
-        let mismatch = crate::network::VersionMismatch {
-            endpoint: "zpeerexample".into(),
-            theirs: 91,
-            ours: 90,
-        };
-        rig.bridge
-            .borrow_mut()
-            .tell(&crate::notices::version_mismatch_notice(
-                &mismatch,
-                Some("Framework 16"),
-            ));
-        rig.step();
+        let devices = two_devices();
+        mail(&devices.desktop, "New mail");
+        devices.until("the laptop showing the desktop's mail", |devices| {
+            !devices.laptop.desktop.log().active().is_empty()
+        });
+        let shown = devices.laptop.banner();
+        assert_eq!(shown.title, "New mail");
+        assert_eq!(shown.body, "From Ada");
+        assert_eq!(shown.app_name.as_deref(), Some("Mail from Desktop"));
+        assert_eq!(shown.app_id.as_deref(), Some("so.tilo.mail"));
+        assert_eq!(shown.actions, [("archive".to_owned(), "Archive".to_owned())]);
+        let route = shown.remote_route.clone().expect("a way back to the desktop");
+        assert_eq!(route.source_device, hex::encode(devices.desktop_cert.device_public_key));
+        assert_eq!(route.source_label, "Desktop");
+        assert!(!shown.show_on_lock_screen, "the desktop's text stays off this lock screen");
+        // The banner leads with the app's own mark, whichever device told it.
+        assert_eq!(shown.mark().icon, devices.desktop.banner().mark().icon);
+        assert_eq!(shown.mark().icon, Some(ui::icons::Icon::Mail));
+        assert!(shown.mark().image.is_none(), "the other device's banner carries no artwork");
         assert!(
-            fabric.projected().is_empty(),
-            "this machine's own news is no other device's notification"
-        );
-    }
-
-    phase an_apps_notification_continues_on_the_persons_other_devices;
-    {
-        let (rig, fabric) = rig_on_fabric(true);
-        let id = rig.daemon.alloc_id();
-        rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
-        rig.step();
-
-        let projections = fabric.projected();
-        assert_eq!(projections.len(), 1, "sent to the laptop alone");
-        let projected = &projections[0];
-        assert_eq!(projected.title, "New mail");
-        assert_eq!(projected.body, "From Ada");
-        assert_eq!(projected.app_id, "so.tilo.mail");
-        assert_eq!(projected.app_name, "Mail");
-        assert_eq!(projected.urgency, 0, "nothing asks for alarm treatment");
-        assert!(projected.actions.is_empty(), "the app offered none");
-        assert!(
-            projected.expires_unix_ms > tilo_clock::unix_now_ms(),
-            "it has a window to be shown in"
+            devices.desktop.desktop.log().active()[0].remote_route.is_none(),
+            "the desktop shows its own mail as its own"
         );
     }
 
     phase with_previews_off_the_text_stays_on_the_device_it_was_told;
     {
-        let (rig, fabric) = rig_on_fabric(true);
-        rig.policy.lock().unwrap().show_previews = false;
-        let id = rig.daemon.alloc_id();
-        rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
-        rig.step();
-
-        let projected = fabric.projected();
-        assert_eq!(projected.len(), 1);
-        assert!(projected[0].body_redacted);
-        assert!(projected[0].body.is_empty(), "the text never leaves here");
+        let devices = two_devices();
+        devices.desktop.policy.lock().unwrap().show_previews = false;
+        mail(&devices.desktop, "New mail");
+        devices.until("the laptop showing the mail", |devices| {
+            !devices.laptop.desktop.log().active().is_empty()
+        });
+        assert!(devices.laptop.banner().body.is_empty(), "the text never leaves the desktop");
+        assert!(!devices.laptop.banner().show_preview);
     }
 
-    phase notifications_stay_where_they_are_when_the_person_turns_this_off;
+    phase the_desktops_own_notice_and_what_the_person_holds_back_stay_here;
+    // The desktop's own notice is about the machine that raises it; with continuity off, or the
+    // person's own switch off, an app's notification stays where it was sent too. Each comes
+    // before a mail that does cross, which the laptop then shows alone.
     {
-        let (rig, fabric) = rig_on_fabric(false);
-        let id = rig.daemon.alloc_id();
-        rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
-        rig.step();
-        assert!(fabric.projected().is_empty());
-
-        let (rig, fabric) = rig_on_fabric(true);
-        rig.policy.lock().unwrap().cross_device = false;
-        let id = rig.daemon.alloc_id();
-        rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
-        rig.step();
-        assert!(
-            fabric.projected().is_empty(),
-            "the person's own switch holds them here"
-        );
-    }
-
-    phase a_choice_made_elsewhere_closes_the_apps_notification_here;
-    {
-        let (rig, fabric) = rig_on_fabric(true);
-        let id = rig.daemon.alloc_id();
-        let mut notification = from_app(sent(id), "so.tilo.mail");
-        notification.actions = vec![("archive".into(), "Archive".into())];
-        rig.daemon.push(notification);
-        rig.step();
-        let projected = fabric.projected();
-        assert_eq!(projected.len(), 1);
-        assert!(!rig.feed().banners.is_empty());
-
-        let chosen = PersonalFabricAction::NotificationInvoke {
-            id: projected[0].id,
-            action_key: "archive".into(),
+        let devices = two_devices();
+        let mismatch = crate::network::VersionMismatch {
+            endpoint: "zpeerexample".into(),
+            theirs: 91,
+            ours: 90,
         };
-        assert!(rig.bridge.borrow_mut().answered(&chosen));
-        assert_eq!(rig.heard(), [(id, "action archive".into())]);
-        assert!(!rig.live(id), "the app is told it was dismissed");
-        assert!(rig.desktop.log().active().is_empty());
-        rig.step();
-        assert!(rig.feed().banners.is_empty());
-        assert_eq!(
-            fabric.sent(),
-            [(
-                laptop(),
-                PersonalFabricAction::NotificationRetire {
-                    id: projected[0].id
-                }
-            )],
-            "every other copy goes with it"
+        devices
+            .desktop
+            .bridge
+            .borrow_mut()
+            .tell(&crate::notices::version_mismatch_notice(
+                &mismatch,
+                Some("Framework 16"),
+            ));
+        devices.desktop.step();
+        devices.desktop_continuity.read(
+            serde_json::json!({ "continuity": { "enabled": false } })
+                .as_object()
+                .expect("a document"),
         );
+        mail(&devices.desktop, "With continuity off");
+        devices.desktop.step();
+        devices.desktop_continuity.read(&Map::new());
+        devices.desktop.policy.lock().unwrap().cross_device = false;
+        mail(&devices.desktop, "With the switch off");
+        devices.desktop.step();
+        devices.desktop.policy.lock().unwrap().cross_device = true;
+        mail(&devices.desktop, "Crosses");
+        devices.until("the laptop showing the mail that crosses", |devices| {
+            !devices.laptop.desktop.log().active().is_empty()
+        });
+        assert_eq!(titles(&devices.laptop), ["Crosses"]);
+        assert_eq!(devices.in_record(), 1, "the record keeps only the mail that crosses");
     }
 
-    phase dismissing_it_here_takes_it_away_on_the_other_devices;
+    phase a_notification_replaced_on_the_desktop_updates_the_laptops_row;
     {
-        let (rig, fabric) = rig_on_fabric(true);
-        let id = rig.daemon.alloc_id();
-        rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
-        rig.step();
-        let projected = fabric.projected();
-        assert_eq!(projected.len(), 1);
-
-        // The person here is done with it: it leaves the centre.
-        let shown = rig.banner().id;
-        rig.ask(Ask::Banner(BannerAsk::Dismiss(shown)));
-        rig.step();
-        rig.desktop.dismiss_history(shown);
-        rig.step();
-        assert_eq!(
-            fabric.sent(),
-            [(
-                laptop(),
-                PersonalFabricAction::NotificationRetire {
-                    id: projected[0].id
-                }
-            )]
-        );
+        let devices = two_devices();
+        let id = mail(&devices.desktop, "New mail");
+        devices.until("the laptop showing the mail", |devices| {
+            !devices.laptop.desktop.log().active().is_empty()
+        });
+        let first = devices.laptop.banner().id;
+        let mut again = from_app(sent(id), "so.tilo.mail");
+        again.summary = "Two new mails".into();
+        devices.desktop.daemon.push(again);
+        devices.until("the laptop showing the update", |devices| {
+            devices.laptop.banner().title == "Two new mails"
+        });
+        assert_eq!(devices.laptop.desktop.log().active().len(), 1, "one row, not two");
+        assert_eq!(devices.laptop.banner().id, first, "the same row shows the update");
     }
 }
 
 tilo_test_env::scenario! {
-    fn another_devices_notification_is_shown_here_and_answered_there;
+    fn what_the_person_does_with_it_on_one_device_holds_on_every_one;
 
-    phase a_notification_from_the_persons_other_device_is_named_after_it;
+    phase dismissed_on_the_laptop_it_is_gone_on_the_desktop;
     {
-        let rig = rig();
-        rig.bridge
-            .borrow()
-            .remote_project(&laptop(), "Laptop", &projection());
+        let devices = two_devices();
+        let id = mail(&devices.desktop, "New mail");
+        devices.until("the laptop showing the mail", |devices| {
+            !devices.laptop.desktop.log().active().is_empty()
+        });
+        let shown = devices.laptop.banner().id;
+        devices.laptop.desktop.dismiss_history(shown);
+        devices.until("the desktop's mail closing", |devices| !devices.desktop.live(id));
+        assert!(devices.desktop.heard().is_empty(), "dismissing it runs none of its actions");
+        devices.until("every copy going", |devices| {
+            titles(&devices.desktop).is_empty()
+                && titles(&devices.laptop).is_empty()
+                && devices.in_record() == 0
+        });
+    }
 
-        let shown = rig.banner();
-        assert_eq!(shown.title, "New mail");
-        assert_eq!(shown.body, "From Ada");
-        assert_eq!(shown.app_name.as_deref(), Some("Mail from Laptop"));
-        assert_eq!(shown.app_id.as_deref(), Some("so.tilo.mail"));
-        assert_eq!(
-            shown.actions,
-            [("archive".to_owned(), "Archive".to_owned())]
-        );
-        assert_eq!(
-            shown.remote_route,
-            Some(RemoteNotificationRoute {
-                source_device: "laptop".into(),
-                source_label: "Laptop".into(),
-                notification_id: projection().id,
-            })
-        );
+    phase choosing_an_action_on_the_laptop_runs_it_on_the_desktop;
+    {
+        let devices = two_devices();
+        let id = mail(&devices.desktop, "New mail");
+        devices.until("the laptop showing the mail", |devices| {
+            !devices.laptop.desktop.log().active().is_empty()
+        });
+        let shown = devices.laptop.banner().id;
+        devices.laptop.desktop.invoke_action(shown, "archive");
+        devices.until("the desktop's mail closing", |devices| !devices.desktop.live(id));
+        assert_eq!(devices.desktop.heard(), [(id, "action archive".into())]);
+        devices.until("every copy going", |devices| {
+            titles(&devices.desktop).is_empty()
+                && titles(&devices.laptop).is_empty()
+                && devices.in_record() == 0
+        });
+    }
+
+    phase dismissed_on_the_desktop_it_leaves_the_laptop;
+    {
+        let devices = two_devices();
+        mail(&devices.desktop, "New mail");
+        devices.until("the laptop showing the mail", |devices| {
+            !devices.laptop.desktop.log().active().is_empty()
+        });
+        let shown = devices.desktop.banner().id;
+        devices.desktop.ask(Ask::Banner(BannerAsk::Dismiss(shown)));
+        devices.desktop.step();
+        devices.desktop.desktop.dismiss_history(shown);
+        devices.until("the laptop's copy going", |devices| {
+            titles(&devices.laptop).is_empty() && devices.in_record() == 0
+        });
         assert!(
-            !shown.show_on_lock_screen,
-            "the laptop's text stays off this lock screen"
+            devices.laptop.desktop.log().history().is_empty(),
+            "the laptop's centre keeps no copy either"
         );
-    }
-
-    phase another_devices_notification_leads_with_the_same_mark_as_here;
-    // The banner a person meets leads with the app's own mark, whichever device told it: the
-    // projection carries the app's id, so the other device's Mail draws Mail's mark here rather than a
-    // generic window.
-    {
-        let here = {
-            let rig = rig();
-            let id = rig.daemon.alloc_id();
-            rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
-            rig.step();
-            rig.banner()
-        };
-        let there = {
-            let rig = rig();
-            rig.bridge
-                .borrow()
-                .remote_project(&laptop(), "Laptop", &projection());
-            rig.banner()
-        };
-        assert_eq!(
-            there.mark().icon,
-            here.mark().icon,
-            "the same app leads with the same mark on both devices"
-        );
-        assert_eq!(
-            there.mark().icon,
-            Some(ui::icons::Icon::Mail),
-            "Mail's own mark, not a generic window"
-        );
-        assert!(
-            there.mark().image.is_none(),
-            "the other device's banner carries no artwork"
-        );
-    }
-
-    phase without_previews_the_other_devices_text_arrives_redacted;
-    {
-        let rig = rig();
-        let mut redacted = projection();
-        redacted.body_redacted = true;
-        redacted.body = String::new();
-        rig.bridge
-            .borrow()
-            .remote_project(&laptop(), "Laptop", &redacted);
-        assert!(rig.banner().body.is_empty());
-        assert!(!rig.banner().show_preview);
-    }
-
-    phase the_same_projection_updates_its_row_in_place;
-    {
-        let rig = rig();
-        rig.bridge
-            .borrow()
-            .remote_project(&laptop(), "Laptop", &projection());
-        let first = rig.banner().id;
-        let mut update = projection();
-        update.title = "Two new mails".into();
-        rig.bridge
-            .borrow()
-            .remote_project(&laptop(), "Laptop", &update);
-        assert_eq!(rig.desktop.log().active().len(), 1, "one row, not two");
-        assert_eq!(rig.banner().id, first, "the same row shows the update");
-        assert_eq!(rig.banner().title, "Two new mails");
-    }
-
-    phase dismissing_the_other_devices_notification_answers_it_there;
-    {
-        let (rig, fabric) = rig_on_fabric(true);
-        rig.bridge
-            .borrow()
-            .remote_project(&laptop(), "Laptop", &projection());
-        let id = rig.banner().id;
-        rig.desktop.dismiss_history(id);
-        assert_eq!(
-            fabric.sent(),
-            [(
-                laptop(),
-                PersonalFabricAction::NotificationDismiss {
-                    id: projection().id
-                }
-            )]
-        );
-    }
-
-    phase choosing_an_action_answers_the_device_it_came_from;
-    {
-        let (rig, fabric) = rig_on_fabric(true);
-        rig.bridge
-            .borrow()
-            .remote_project(&laptop(), "Laptop", &projection());
-        let id = rig.banner().id;
-        rig.desktop.invoke_action(id, "archive");
-        assert_eq!(
-            fabric.sent(),
-            [(
-                laptop(),
-                PersonalFabricAction::NotificationInvoke {
-                    id: projection().id,
-                    action_key: "archive".into(),
-                }
-            )]
-        );
-    }
-
-    phase an_action_the_app_never_offered_is_not_run;
-    {
-        let (rig, fabric) = rig_on_fabric(true);
-        let id = rig.daemon.alloc_id();
-        rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
-        rig.step();
-        let projected = fabric.projected();
-        assert_eq!(projected.len(), 1);
-        // An action it never offered, under the id it did project: refused.
-        let asked = PersonalFabricAction::NotificationInvoke {
-            id: projected[0].id,
-            action_key: "wipe".into(),
-        };
-        assert!(!rig.bridge.borrow_mut().answered(&asked));
-        assert!(rig.live(id), "the app's notification is untouched");
-        assert!(fabric.sent().is_empty());
-    }
-
-    phase a_retire_from_the_other_device_takes_its_copy_away;
-    {
-        let rig = rig();
-        rig.bridge
-            .borrow()
-            .remote_project(&laptop(), "Laptop", &projection());
-        assert_eq!(rig.desktop.log().active().len(), 1);
-        rig.bridge
-            .borrow()
-            .remote_retire(&laptop(), projection().id);
-        assert!(rig.desktop.log().active().is_empty());
-        assert!(
-            rig.desktop.log().history().is_empty(),
-            "the centre keeps no copy either"
-        );
-    }
-
-    phase an_expired_projection_is_never_shown;
-    {
-        let rig = rig();
-        let mut stale = projection();
-        stale.expires_unix_ms = tilo_clock::unix_now_ms().saturating_sub(1);
-        rig.bridge
-            .borrow()
-            .remote_project(&laptop(), "Laptop", &stale);
-        assert!(rig.desktop.log().active().is_empty());
     }
 }
 

@@ -12,9 +12,6 @@ pub(crate) use store::{ABOUT, decoded, keep_own};
 
 pub use tilo_network_actor::fabric::clock;
 pub use tilo_network_actor::fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
-pub use tilo_network_actor::fabric::notification::{
-    ContinuityNotificationProjection, MAX_CONTINUITY_NOTIFICATION_TTL_MS,
-};
 pub use tilo_network_actor::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
 };
