@@ -2045,3 +2045,198 @@ async fn a_code_generator_that_names_no_hash_makes_its_codes_with_sha1() {
     assert_eq!(kept["period"], json!(30), "{kept}");
     server.shutdown().await;
 }
+
+/// What the workspace's host writes in its vault for an agent's call is a step that call
+/// declares, made under its person's yes, named as the agent's for her, and keeping the call
+/// with her yes. A step the call does not declare is refused, and the vault keeps it nowhere.
+#[tokio::test]
+async fn an_agents_vault_write_is_the_allowed_calls_declared_step_alone() {
+    use accounts::vault_items::{UseRecord, VaultChange};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let kept = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::ADD,
+        a_login("https://example.com"),
+    )
+    .await
+    .expect("Ada keeps a login");
+    let hers = hex::encode(ada.user_public_key);
+    let agent = tilo_action_policy::Acting::agent("assistant")
+        .acting_for(tilo_action_policy::Acting::person(hers.clone()));
+    let fill = request_of(
+        person_vault::page_target(),
+        json!({"item": kept["reference"], "site": "https://example.com"}),
+    );
+    let allowed = super::super::tests::approved(&fill, &workspace);
+    // A use of the vault's one entry, or an edit of it, written as the host writes for the
+    // agent's call `call`.
+    let write = |editing: bool, call| {
+        let agent = &agent;
+        async move {
+            let opened = workspaces
+                .open_vault(&workspace_id.to_string())
+                .await
+                .unwrap();
+            let (entry, mut uses) = opened.entries()[0].clone();
+            let change = if editing {
+                let mut edited = entry;
+                edited.password = "planted".to_owned();
+                VaultChange::Keep(edited)
+            } else {
+                uses.push(UseRecord {
+                    at_unix: 7,
+                    places: Vec::new(),
+                    by: "Assistant".to_owned(),
+                    using: "tilo.vault/fill-page".to_owned(),
+                    what: String::new(),
+                    allowed: None,
+                });
+                VaultChange::Uses(entry.id, uses)
+            };
+            workspaces
+                .write_vault(&opened, vec![change], Some(agent), Some(call))
+                .await
+        }
+    };
+
+    write(false, &allowed)
+        .await
+        .expect("the use a fill declares is written down under her yes");
+    let refused = write(true, &allowed).await;
+    assert!(refused.is_err(), "a fill keeps no item: {refused:?}");
+
+    let opened = workspaces
+        .open_vault(&workspace_id.to_string())
+        .await
+        .unwrap();
+    let (entry, uses) = &opened.entries()[0];
+    assert_eq!(entry.password, PASSWORD, "the item is as she kept it");
+    assert_eq!(uses.len(), 1, "one use: {uses:?}");
+    // The use is the agent's, for her, and keeps the call it was made for with her yes.
+    let history = vault_history(workspaces, workspace_id).await;
+    assert_eq!(history.last(), Some(&(vec![hers], true)), "{history:?}");
+    assert_eq!(
+        last_allowed(workspaces, workspace_id).await,
+        tilo_actions::remote::CallAllowed::asked(&allowed)
+    );
+    server.shutdown().await;
+}
+
+/// A person's yes admits the one call it answered: answering it again admits nothing more, the
+/// same use of another item asks her again, and a yes the agent's device sends of its own is
+/// none. Nothing the second item keeps is used.
+#[tokio::test]
+async fn a_yes_admits_the_one_call_it_answered() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let provider = a_provider(&service, workspace_id, (&ada, &as_ada)).await;
+    let first = kept_item(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        ("key", "https://models.example/v1/chat"),
+    )
+    .await;
+    let second = kept_item(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        ("key", "https://models.example/v1/chat"),
+    )
+    .await;
+    let helper = Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key)
+        .in_workspace(workspace_id.to_string())
+        .named("Helper");
+    let keeping = |item: &Value| {
+        request_of(
+            model_providers::target(model_providers::SET_KEY_FROM_ITEM),
+            json!({"provider": provider, "key": item}),
+        )
+    };
+
+    // She allows the first.
+    let wanted = keeping(&first);
+    asks(asked(&service, workspace_id, (&ada, &helper), &wanted).await);
+    let page = service.device_page(workspace_id, &ada);
+    super::waiting::answered_by(
+        &page,
+        &as_ada,
+        (&helper, &wanted),
+        tilo_actions::remote::asked::Offer::Approve,
+    )
+    .await
+    .expect("allowed, the key is kept");
+    let uses = uses_of(&service, workspace_id, (&ada, &as_ada), &first).await;
+    assert_eq!(uses.as_array().map(Vec::len), Some(1), "{uses}");
+
+    // Answered again, her yes admits nothing more.
+    let again = super::waiting::answered_by(
+        &page,
+        &as_ada,
+        (&helper, &wanted),
+        tilo_actions::remote::asked::Offer::Approve,
+    )
+    .await;
+    assert!(again.is_err(), "{again:?}");
+    let uses = uses_of(&service, workspace_id, (&ada, &as_ada), &first).await;
+    assert_eq!(uses.as_array().map(Vec::len), Some(1), "{uses}");
+
+    // The same use of another item asks her again, and a yes its device sends of its own
+    // is none.
+    asks(
+        ask_at(
+            &service,
+            workspace_id,
+            (&ada, &helper),
+            model_providers::target(model_providers::SET_KEY_FROM_ITEM),
+            json!({"provider": provider, "key": second}),
+        )
+        .await,
+    );
+    let forged = super::super::tests::approved(&keeping(&second), &workspace);
+    let sent = asked(&service, workspace_id, (&ada, &helper), &forged).await;
+    assert!(sent.is_err(), "{sent:?}");
+    let uses = uses_of(&service, workspace_id, (&ada, &as_ada), &second).await;
+    assert_eq!(uses, json!([]), "the second item is used nowhere");
+    server.shutdown().await;
+}
+
+/// How the call the last change of `workspace_id`'s vault keeps was allowed.
+async fn last_allowed(
+    workspaces: &Workspaces,
+    workspace_id: WorkspaceId,
+) -> Option<tilo_actions::remote::CallAllowed> {
+    let bytes = workspaces
+        .resource_document(
+            &workspace_id.to_string(),
+            tilo_app_id::apps::PASSWORDS,
+            tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+        )
+        .await
+        .unwrap()
+        .expect("the workspace keeps its vault");
+    let doc = automerge::Automerge::load(&bytes).unwrap();
+    doc.get_changes(&[])
+        .into_iter()
+        .filter_map(|change| {
+            change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message)
+        })
+        .last()
+        .and_then(|context| context.signed)
+        .and_then(|call| call.allowed)
+}

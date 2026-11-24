@@ -265,6 +265,33 @@ pub struct SignedCall {
     /// which action, not with what.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub argument: Option<InvokeArgument>,
+    /// How the host that carried the call out found it allowed for an agent: the person's yes,
+    /// or the lasting grant that let the agent make it unasked. Not under the signature: it is
+    /// the host's own word, kept beside the call in a record that host keeps, where the step it
+    /// took is one the called action declares. `None` for a call a person made themselves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<CallAllowed>,
+}
+
+/// How a call an agent made was allowed, as the host that carried it out kept it beside the
+/// call ([`SignedCall::allowed`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CallAllowed {
+    /// Its person approved this very call: the asked record it was kept as.
+    Asked(super::asked::RecordRef),
+    /// A lasting grant of the workspace's let the agent make it unasked: the grant, by its id.
+    Granted(String),
+}
+
+impl CallAllowed {
+    /// How `request` was allowed, where its person approved it: the asked record it was kept as.
+    #[must_use]
+    pub fn asked(request: &InvokeRequest) -> Option<Self> {
+        request
+            .approval()
+            .map(|approval| Self::Asked(approval.record.clone()))
+    }
 }
 
 impl SignedCall {
@@ -272,11 +299,22 @@ impl SignedCall {
     /// nobody signed.
     #[must_use]
     pub fn of(request: &InvokeRequest) -> Option<Self> {
-        let signed = request.signed.as_deref()?.clone();
+        Some(Self::with(request, request.signed.as_deref()?.clone()))
+    }
+
+    /// What a change made for `request` keeps of it, as `signed` signed it: what [`Self::of`]
+    /// keeps of a request that carries its signature, and what a host keeps of a call it signed
+    /// itself as the device that carried it out.
+    #[must_use]
+    pub fn with(request: &InvokeRequest, signed: SignedInvocation) -> Self {
         let argument = serde_json::to_vec(&request.argument)
             .is_ok_and(|encoded| encoded.len() <= MAX_RECORDED_ARGUMENT_BYTES)
             .then(|| request.argument.clone());
-        Some(Self { signed, argument })
+        Self {
+            signed,
+            argument,
+            allowed: None,
+        }
     }
 
     /// Whether the kept argument is the one signed: `None` when the change

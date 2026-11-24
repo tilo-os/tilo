@@ -544,6 +544,10 @@ impl Workspaces {
     ) -> Result<T, String> {
         let bytes = self.accounts_document(workspace).await?;
         let founding = bytes.is_none();
+        let carried = match call {
+            Some(request) => self.carried_call(workspace, request, Some(by), &[]).await?,
+            None => None,
+        };
         let (changes, answer) = {
             let replica = match &bytes {
                 Some(bytes) => {
@@ -554,7 +558,7 @@ impl Workspaces {
             .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
             // A write for a member's call keeps the call it serves, which names who asked;
             // any other names the caller as the device's own writes do.
-            let mut replica = match call.and_then(super::vault::served_call) {
+            let mut replica = match carried {
                 Some((invocation, signed)) => replica
                     .as_invoker_acting(by.clone())
                     .serving(invocation, signed),

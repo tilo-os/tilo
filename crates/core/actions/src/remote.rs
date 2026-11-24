@@ -51,7 +51,7 @@ pub mod linux_apps;
 pub mod mcp_server;
 pub use caller::{Caller, Invited, KeptCaller, device_agent_id};
 pub mod signed_invocation;
-pub use signed_invocation::{SignedCall, SignedInvocation};
+pub use signed_invocation::{CallAllowed, SignedCall, SignedInvocation};
 mod catalogue;
 mod changes;
 mod confirmation;
@@ -446,7 +446,23 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
         }
     }
     let address = &target.address;
+    // The workspace's mail accounts in its tree (`workspace/mail-accounts`) take the steps their
+    // `tilo.accounts` action takes; adding one there is `add`.
+    let in_mail_accounts = target.provider == WORKSPACE_GOVERNANCE_PROVIDER
+        && address
+            .resource
+            .strip_prefix(workspace_governance_resource("").as_str())
+            .and_then(|rest| rest.strip_suffix(WORKSPACE_MAIL_ACCOUNTS))
+            .and_then(|workspace| workspace.strip_suffix('/'))
+            .is_some_and(|workspace| !workspace.is_empty() && !workspace.contains('/'));
     let mut effects = match target.provider.as_str() {
+        _ if in_mail_accounts => person_accounts::effects(
+            person_accounts::RESOURCE,
+            match address.action.as_str() {
+                "add" => person_accounts::ADD_MAIL,
+                action => action,
+            },
+        ),
         person_accounts::PROVIDER => person_accounts::effects(&address.resource, &address.action),
         model_providers::PROVIDER => model_providers::effects(&address.action),
         person_connections::PROVIDER => person_connections::effects(&address.action),

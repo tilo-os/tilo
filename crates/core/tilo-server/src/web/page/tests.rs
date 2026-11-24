@@ -129,6 +129,7 @@ fn signing() -> serde_json::Value {
     let call = SignedCall {
         signed: SignedInvocation::new(statement, [4; 64], postcard::to_allocvec(&signer).unwrap()),
         argument: Some(argument),
+        allowed: None,
     };
     serde_json::json!({
         "hashes": hashes,

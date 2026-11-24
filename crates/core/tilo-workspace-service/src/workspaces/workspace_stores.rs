@@ -208,13 +208,13 @@ impl Workspaces {
         } else if acting.is_agent() && effect != ActionKind::Read {
             // An agent reads freely. A change it makes is put to its person
             // first, unless they answered that very action in advance.
-            verdict.parts.last().map_or(verdict.answer, |agent| {
-                verdict
-                    .answer
-                    .min(tilo_action_policy::agent_answers::held_to_contract(
-                        agent, true,
-                    ))
-            })
+            let narrowed = self.agent_narrowed(&workspace.to_string(), acting).await;
+            agent_change(&verdict, narrowed)
+        } else if acting.is_agent() {
+            // An agent reads with its person's access: what they read, unless something denies
+            // it the read or its person's answers narrow it.
+            let narrowed = self.agent_narrowed(&workspace.to_string(), acting).await;
+            agent_read(&verdict, narrowed)
         } else {
             verdict.answer
         };
@@ -359,6 +359,86 @@ impl Workspaces {
         };
         let access = access.granted(turn.caller.granted());
         let node = store.node(access.workspace(), action);
-        access.answer(&node, effect, &Context::at_time(tilo_clock::wall())) != Answer::Deny
+        let verdict = access.verdict(&node, effect, &Context::at_time(tilo_clock::wall()));
+        let narrowed = policy_narrows(access.policy.as_ref(), agent);
+        let answer = if effect == ActionKind::Read {
+            verdict.answer
+        } else {
+            agent_change(&verdict, narrowed)
+        };
+        answer != Answer::Deny
+    }
+}
+
+/// What `verdict` answers a change an agent makes: what the people it acts for answer, and its
+/// own part held to the change's contract, so a change it makes is put to its person unless
+/// they answered that very action in advance
+/// ([`tilo_action_policy::agent_answers::held_to_contract`]). A part of the agent's that no grant
+/// covers is its person's to answer too: their yes admits it for that call, and their "Always"
+/// for its scope, which is then the grant that covers it. A part that something denies (its
+/// person's answer, a workspace's grant naming it, what the workspace keeps from agents) stays
+/// refused, and so does every part no grant covers of an agent its person's answers narrow
+/// (`narrowed`): it takes only what those answers name.
+pub(super) fn agent_change(verdict: &tilo_action_policy::Verdict<'_>, narrowed: bool) -> Answer {
+    let Some((agent, people)) = verdict.parts.split_last() else {
+        return verdict.answer;
+    };
+    let theirs = people
+        .iter()
+        .map(|part| part.answer)
+        .min()
+        .unwrap_or(verdict.answer);
+    let own = if !narrowed
+        && agent.answer == Answer::Deny
+        && matches!(agent.basis, tilo_action_policy::Basis::NoGrant)
+    {
+        Answer::Ask
+    } else {
+        tilo_action_policy::agent_answers::held_to_contract(agent, true)
+    };
+    theirs.min(own)
+}
+
+/// What `verdict` answers a read an agent makes: what the people it acts for answer, where its
+/// own part allows it or no grant covers it and its person's answers do not narrow it
+/// (`narrowed`). A part that something denies stays refused.
+fn agent_read(verdict: &tilo_action_policy::Verdict<'_>, narrowed: bool) -> Answer {
+    let Some((agent, people)) = verdict.parts.split_last() else {
+        return verdict.answer;
+    };
+    let theirs = people
+        .iter()
+        .map(|part| part.answer)
+        .min()
+        .unwrap_or(verdict.answer);
+    let own = if !narrowed && matches!(agent.basis, tilo_action_policy::Basis::NoGrant) {
+        Answer::Allow
+    } else {
+        agent.answer
+    };
+    theirs.min(own)
+}
+
+/// Whether `policy` bounds the agent `agent`: a grant names it, other than a leave its person
+/// gave for one use of a vault item ([`super::hosted_use::is_use_leave`]). It then takes only
+/// what those grants name.
+fn policy_narrows(policy: &tilo_action_policy::WorkspacePolicy, agent: &str) -> bool {
+    let named = tilo_action_policy::Grantee::agent(agent.to_owned());
+    let now = Context::at_time(tilo_clock::wall());
+    policy.grants.iter().any(|grant| {
+        grant.grantee == named && grant.is_live(&now) && !super::hosted_use::is_use_leave(grant)
+    })
+}
+
+impl Workspaces {
+    /// Whether the agent `acting` names is narrowed by its person's answers in `workspace`
+    /// ([`policy_narrows`]).
+    async fn agent_narrowed(&self, workspace: &str, acting: &Acting) -> bool {
+        let Some(agent) = acting.agent_id() else {
+            return false;
+        };
+        self.policy_of(workspace)
+            .await
+            .is_some_and(|policy| policy_narrows(&policy, agent))
     }
 }

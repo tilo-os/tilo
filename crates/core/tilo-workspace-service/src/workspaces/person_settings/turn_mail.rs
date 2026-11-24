@@ -247,7 +247,7 @@ impl Workspaces {
             return self
                 .mail_read_or_draft(
                     Signing {
-                        vault: self.vault_for(&workspace, &asker),
+                        vault: self.vault_for(&workspace, &asker).serving(request),
                         root: &root,
                         by: &using.agent,
                     },
@@ -260,7 +260,11 @@ impl Workspaces {
         let sending: SendId = argument(request, "a message to send")?;
         if request.approval().is_some() {
             let sent = self
-                .send_approved(&root, &workspace, &using.person, &sending.send)
+                .send_approved(
+                    (&root, &workspace),
+                    (&using.person, &using.acting(), request),
+                    &sending.send,
+                )
                 .await
                 .map_err(ActionCallError::refused)?;
             return serde_json::to_value(sent)
@@ -302,9 +306,8 @@ impl Workspaces {
     /// were shown, or the mail server refused.
     async fn send_approved(
         &self,
-        root: &Path,
-        workspace: &str,
-        person: &[u8; 32],
+        (root, workspace): (&Path, &str),
+        (person, acting, call): (&[u8; 32], &tilo_action_policy::Acting, &InvokeRequest),
         send: &str,
     ) -> Result<SentMail, String> {
         let gone = |_| NO_LONGER_WAITS.to_owned();
@@ -324,7 +327,7 @@ impl Workspaces {
             .and_then(|()| std::fs::remove_file(taken.join(ASKED_FILE)))
             .map_err(gone)?;
         let left = self
-            .leave_as_shown(root, &taken, &asked, (id, person))
+            .leave_as_shown(root, &taken, &asked, (id, person), (acting, call))
             .await;
         match std::fs::remove_dir_all(&taken) {
             Ok(()) => {}
@@ -346,6 +349,7 @@ impl Workspaces {
         taken: &Path,
         asked: &AskedSend,
         (workspace, person): (WorkspaceId, &[u8; 32]),
+        (acting, call): (&tilo_action_policy::Acting, &InvokeRequest),
     ) -> Result<SentMail, String> {
         let gone = |_| NO_LONGER_WAITS.to_owned();
         let meta = std::fs::read(taken.join("meta.json")).map_err(gone)?;
@@ -369,10 +373,9 @@ impl Workspaces {
         if staged.shown()?.rows() != asked.rows.as_slice() {
             return Err("What waited is not what you were shown, so nothing was sent.".into());
         }
-        // Their allowing it is their sending it.
-        let acting = tilo_action_policy::Acting::person(hex::encode(person));
+        // Their agent sends it on their yes: the call they allowed is what its sign-in keeps.
         let signing = Signing {
-            vault: self.vault_for(&asked.workspace, &acting),
+            vault: self.vault_for(&asked.workspace, acting).serving(call),
             root,
             by: "",
         };
