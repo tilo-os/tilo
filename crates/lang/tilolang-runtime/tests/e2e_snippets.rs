@@ -258,7 +258,7 @@ mod cases {
         // The window says the copy went through, and that it does not stay.
         let said = snippets.rt.take_said();
         assert_eq!(said.len(), 1, "{said:?}");
-        assert_eq!(said[0].text, "Copied; it leaves the clipboard in a minute");
+        assert_eq!(said[0].text, "Copied");
         assert_eq!(said[0].kind, tilolang_runtime::notice::Kind::Success);
         let page = snippets.window("snippet_page", vec![Value::resource(&restart)]);
         assert!(
@@ -336,6 +336,9 @@ mod cases {
             Some(tilolang_runtime::clipboard::SECRET_CLEARS_AFTER),
             "the key is a secret copy, taken off the clipboard again"
         );
+        let said = snippets.rt.take_said();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].text, "Copied; it leaves the clipboard in a minute");
 
         // A plain snippet is an ordinary copy, kept as any other.
         let note = snippets.add("Greeting", "Writing");
@@ -352,6 +355,9 @@ mod cases {
             .unwrap_or_else(|error| panic!("copy: {error:?}"));
         assert_eq!(snippets.copied(), "Thanks for the quick review!");
         assert_eq!(*snippets.selection.clears_after.borrow(), None);
+        let said = snippets.rt.take_said();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].text, "Copied", "a body that stays says so");
         let page = snippets.window("snippet_page", vec![Value::resource(&note)]);
         assert!(
             !drawn(&page)

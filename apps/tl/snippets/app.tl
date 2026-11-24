@@ -203,7 +203,9 @@ destructive action remove_tag(lib: Library, tag: Text) (
 action copy(snippet: Snippet) uses clipboard (icon: .copy, label: "Copy", did: "copied a snippet") {
     if copy_text(snippet.body) {
         snippet.uses += 1
-        notice("Copied; it leaves the clipboard in a minute", kind: .success)
+        if carries_a_credential(snippet.body) {
+            notice("Copied; it leaves the clipboard in a minute", kind: .success)
+        } else { notice("Copied", kind: .success) }
     } else {
         notice("Could not copy to the clipboard", kind: .error)
     }
@@ -264,10 +266,13 @@ action copy_filled(lib: Library, fill: Fill) uses clipboard (
     did: "copied a snippet",
 ) {
     let snippet = fill.snippet ?? Snippet(title: "")
-    if copy_text(expanded(snippet.body, fill)) {
+    let body = expanded(snippet.body, fill)
+    if copy_text(body) {
         snippet.uses += 1
         clear_fill(fill)
-        notice("Copied; it leaves the clipboard in a minute", kind: .success)
+        if carries_a_credential(body) {
+            notice("Copied; it leaves the clipboard in a minute", kind: .success)
+        } else { notice("Copied", kind: .success) }
     } else {
         notice("Could not copy to the clipboard", kind: .error)
     }
