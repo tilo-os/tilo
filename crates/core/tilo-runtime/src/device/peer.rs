@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ed25519_dalek::SigningKey;
 use serde::Serialize;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
@@ -184,7 +185,13 @@ impl Peer {
     /// as it comes and the folders follow it at once, and `tilo folders` within [`PEER_LOOK`]. A
     /// server not reached is asked again then, and the folders of what this device keeps stay
     /// shown meanwhile.
-    pub(crate) async fn keep(self: Arc<Self>, own: Arc<ServiceWorkspaces>, account: Arc<Account>) {
+    pub(crate) async fn keep(
+        self: Arc<Self>,
+        own: Arc<ServiceWorkspaces>,
+        account: Arc<Account>,
+        login: Arc<super::home::Home>,
+        key: SigningKey,
+    ) {
         let person = own.device_cert().user_public_key;
         loop {
             match account
@@ -208,7 +215,7 @@ impl Peer {
                     *super::serve::NOT_IN.lock_recover() = Some(why);
                 }
             }
-            self.reconcile(&own).await;
+            self.reconcile(&own, &login, &key).await;
             tokio::time::sleep(PEER_LOOK).await;
         }
     }
@@ -235,7 +242,12 @@ impl Peer {
     /// the person set them. Each folder's tree is held in `own`, this device's
     /// own workspace service; a workspace it does not keep yet is entered
     /// where the list, or `account`, names.
-    pub(crate) async fn reconcile(&self, own: &ServiceWorkspaces) {
+    pub(crate) async fn reconcile(
+        &self,
+        own: &ServiceWorkspaces,
+        login: &super::home::Home,
+        key: &SigningKey,
+    ) {
         let (listed, complete) = self.listed(own).await;
         let mut wanted = match folders::Folders::load(&self.device_dir) {
             Ok(wanted) => wanted,
@@ -324,7 +336,7 @@ impl Peer {
             if shown {
                 continue;
             }
-            if let Err(why) = self.enter(own, entry).await {
+            if let Err(why) = self.enter(own, entry, login, key).await {
                 self.not_shown(entry.workspace, &why);
                 continue;
             }
@@ -351,10 +363,17 @@ impl Peer {
     }
 
     /// Have `own` keep `entry`'s workspace, entering it as a member copy where the person's list
-    /// says it is kept, waiting at most [`ENTERING_ONE`]; why not, when it was not entered. A
-    /// workspace that could not be entered is tried again only once its wait is over, and until
-    /// then answers why it was not.
-    async fn enter(&self, own: &ServiceWorkspaces, entry: &Listed) -> Result<(), String> {
+    /// says it is kept, else through the server this computer's login names: the login entry
+    /// alone is enough to enter, before any listing names where a workspace is kept. Waiting at
+    /// most [`ENTERING_ONE`]; why not, when it was not entered. A workspace that could not be
+    /// entered is tried again only once its wait is over, and until then answers why it was not.
+    async fn enter(
+        &self,
+        own: &ServiceWorkspaces,
+        entry: &Listed,
+        login: &super::home::Home,
+        key: &SigningKey,
+    ) -> Result<(), String> {
         let workspace = entry.workspace;
         if own.keeps(workspace).await {
             return Ok(());
@@ -377,11 +396,19 @@ impl Peer {
             ));
         }
         let entering = async {
-            let hint = entry
-                .entered_at
-                .clone()
-                .ok_or("no device of yours says where it is kept yet")?;
-            own.copies().hold_as_member(workspace, &hint).await
+            let Some(hint) = entry.entered_at.clone() else {
+                // The login entry alone says where the person's workspaces are entered: with no
+                // hint from the person's list yet, this computer enters from it, as a member
+                // that takes work does.
+                let login = login.get().ok_or(
+                    "this computer's login names nowhere to enter your workspaces from yet",
+                )?;
+                return super::take_work::enter_from_login(own, key, &login).await;
+            };
+            own.copies()
+                .hold_as_member(workspace, &hint)
+                .await
+                .map(drop)
         };
         let why = match tokio::time::timeout(ENTERING_ONE, entering).await {
             Ok(Ok(_)) => {

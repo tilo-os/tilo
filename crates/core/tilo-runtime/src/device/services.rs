@@ -1046,13 +1046,56 @@ impl Daemon {
     /// on a computer that has none yet, so a command run right after the daemon starts is
     /// answered.
     ///
+    /// A connection that names none reaches the account's own tree when this device cannot admit
+    /// it anywhere yet: the person's list answers from their login entry and the copies held so
+    /// far, so a device logged in by ticket lists its workspaces before it holds one.
+    ///
     /// # Errors
     /// The person's workspace cannot be opened, or the workspace cannot be admitted to now.
     pub(crate) fn connection_tree_in(
         self: &Arc<Self>,
         workspace: Option<&str>,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        let workspace = workspace.unwrap_or(&self.workspace);
+        match workspace {
+            Some(workspace) => self.admitted_connection_tree(workspace),
+            None => self.person_connection_tree(),
+        }
+    }
+
+    /// The tree a connection that names no workspace reaches: this daemon's own workspace as the
+    /// person, or, while this device holds none of theirs yet (it logged in with a ticket and
+    /// entered none), the person's own list, answered from what this device knows: their login
+    /// entry and the copies held so far.
+    fn person_connection_tree(
+        self: &Arc<Self>,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        match self.admitted_connection_tree(&self.workspace) {
+            Ok(tree) => Ok(tree),
+            Err(why) => {
+                tracing::debug!(
+                    %why,
+                    "your own workspace is not here yet: your account's list answers"
+                );
+                self.account_tree()
+            }
+        }
+    }
+
+    /// The tree `account` reaches alone: the person's own list, and nothing of a workspace. It is
+    /// never admitted into one: a device that holds none yet still lists them.
+    fn account_tree(self: &Arc<Self>) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let api = self.api()?;
+        let tree =
+            block_on_owned(async move { api.account_tree().await }).map_err(io::Error::other)?;
+        Ok((tree, Caller::local_person(&self.actor)))
+    }
+
+    /// The tree a connection reaches in the workspace it names: the person, admitted from who is
+    /// on the other end of this daemon's own socket.
+    fn admitted_connection_tree(
+        self: &Arc<Self>,
+        workspace: &str,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
         if workspace == self.workspace {
             crate::RuntimeServices::workspace(self.as_ref()).map_err(|why| {
                 io::Error::other(format!(

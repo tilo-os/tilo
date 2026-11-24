@@ -451,13 +451,28 @@ impl Member {
         key: &SigningKey,
         login: &tilo_device_identity::login::Device,
     ) -> Result<(), String> {
-        let lent = Some(self.workspaces.lent());
-        let entered = tilo_api::daemon::enter::connect(key, login, lent).await;
-        self.workspaces
-            .hold(&entered.map_err(|error| format!("{error:#}"))?)
-            .await;
-        Ok(())
+        enter_from_login(&self.workspaces, key, login).await
     }
+}
+
+/// Enter the person's workspaces as `login` says, as the device `key`, at `workspaces`: the login
+/// entry alone is what this needs, before any listing of the person's says where each workspace
+/// is kept. The member is then one of its person's servers, found there for their Linux turns.
+///
+/// # Errors
+///
+/// The server the login names did not let it in.
+pub(crate) async fn enter_from_login(
+    workspaces: &ServiceWorkspaces,
+    key: &SigningKey,
+    login: &tilo_device_identity::login::Device,
+) -> Result<(), String> {
+    let lent = Some(workspaces.lent());
+    let entered = tilo_api::daemon::enter::connect(key, login, lent).await;
+    workspaces
+        .hold(&entered.map_err(|error| format!("{error:#}"))?)
+        .await;
+    Ok(())
 }
 
 /// Open a workspace service of `profile` alone, holding the member copies it

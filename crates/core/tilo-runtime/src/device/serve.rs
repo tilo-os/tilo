@@ -735,8 +735,10 @@ async fn keep_peer(daemon: Arc<Daemon>, home: PathBuf, state: PathBuf) {
         return;
     };
     let own = Arc::clone(daemon.serving());
+    let login = daemon.home_source();
+    let key = daemon.key().clone();
     drop(daemon);
-    peer.keep(own, account).await;
+    peer.keep(own, account, login, key).await;
 }
 
 #[cfg(test)]

@@ -391,6 +391,21 @@ impl Direct {
         ))
     }
 
+    /// `account`, the person's own list alone: the tree a connection walks while the device holds
+    /// no workspace of theirs yet, answered from what it knows (the login entry and the copies
+    /// held so far), with nothing of a workspace and no admission into one.
+    ///
+    /// # Errors
+    /// The key cannot act now.
+    pub async fn account_tree(&self) -> Result<crate::session::Provider, String> {
+        let account = self.session().await?.account().clone();
+        Ok(crate::account::Joined::provider(
+            crate::account::ROOT_TREE,
+            None,
+            account,
+        ))
+    }
+
     /// Answer `method` on `target` (a path with its query) with `headers` and
     /// `body`, as the API server answers it.
     pub async fn request(
