@@ -1573,7 +1573,7 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
             .await;
         assert!(
             matches!(
-                receipt_of(answer).status,
+                receipt_of(answer.flatten()).status,
                 ReceiptStatus::Rejected {
                     error: ActionCallError::NotPermitted
                 }
@@ -1595,7 +1595,7 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
         .await;
     assert!(
         matches!(
-            receipt_of(elsewhere).status,
+            receipt_of(elsewhere.flatten()).status,
             ReceiptStatus::Rejected { .. }
         ),
         "the host's word for another workspace is no answer at this window"
@@ -1608,7 +1608,7 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
         .ask_message(confirmed())
         .await;
     assert!(
-        matches!(receipt_of(ran).status, ReceiptStatus::Completed { .. }),
+        matches!(receipt_of(ran.flatten()).status, ReceiptStatus::Completed { .. }),
         "the placing host's word runs it"
     );
     let seen = seen.lock().unwrap();
