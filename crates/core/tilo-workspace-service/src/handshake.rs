@@ -962,19 +962,6 @@ mod tests {
             drop((recv, send));
             (error, heard(client).await)
         }
-
-        /// An entry that lets nobody in: a refused hello never reaches it.
-        pub(super) struct NobodyEnters;
-
-        impl Admit for NobodyEnters {
-            fn enter<'a>(
-                &'a self,
-                _cert: &'a DeviceCert,
-                _entry: Entry,
-            ) -> EntryFuture<'a, Entered> {
-                panic!("a refused device reached the workspace's entry")
-            }
-        }
     }
 
     use removed::{answered, device_of, refusal_in, removal, server_and_removed_device};

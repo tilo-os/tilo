@@ -177,7 +177,7 @@ async fn what_they_tell_is_asked_for_and_their_typing_connects_it_for_reading_on
     );
     assert_eq!(fact(&facts, "kind"), "login");
     assert_eq!(
-        facts.takes.as_deref(),
+        facts.answered_by.as_deref(),
         Some(
             format!(
                 "{}/{}#{}",

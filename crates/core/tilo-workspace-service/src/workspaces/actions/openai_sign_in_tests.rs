@@ -11,8 +11,6 @@
     reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the server it drives"
 )]
 
-use std::sync::Arc;
-
 use agent_provider_config::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, ToolChoice,
 };
@@ -149,7 +147,7 @@ async fn a_sign_in_asked_by(
 /// No agent signs in on its own: beginning or stopping a sign-in is put to its member first, and
 /// one no device of theirs stands behind is answered nothing.
 async fn no_agent_signs_in_on_its_own(
-    workspaces: &crate::workspaces::Workspaces,
+    _workspaces: &crate::workspaces::Workspaces,
     actions: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     ada: &DeviceCert,

@@ -19,10 +19,8 @@ use tilo_actions::InvocationId;
 #[cfg(feature = "agents")]
 use tilo_actions::remote::ActionCallError::NotPermitted;
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, Refused, UnknownAction};
-use tilo_actions::remote::asked::{Approval, AskedBy, AskedFacts, Named, RecordRef};
-use tilo_actions::remote::{
-    Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
-};
+use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
+use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_actions::remote::{person_accounts, person_models, person_vault};
 use tilo_user_identity::DeviceCert;
 
@@ -145,11 +143,11 @@ pub(super) async fn listed(
                 agents
                     .apply(
                         WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                            avatar: None,
                             name: NonBlank::parse("Scout").unwrap(),
                             id: Some(agent.into()),
                             model: None,
                             mcp_client: None,
-                            avatar: None,
                         }),
                     )
                     .map_err(|error| error.to_string())?;

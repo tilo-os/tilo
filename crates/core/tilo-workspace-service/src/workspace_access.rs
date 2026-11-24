@@ -426,16 +426,6 @@ pub(crate) struct LinkFacts<'a> {
 }
 
 impl<'a> WorkspaceFacts<'a> {
-    /// The workspace with member devices read from disk by a caller that may not
-    /// reload the runtime's set.
-    #[cfg(test)]
-    pub(crate) const fn with_listed(runtime: &'a WorkspaceRuntime, listed: &'a [[u8; 32]]) -> Self {
-        Self::Runtime(RuntimeFacts {
-            runtime,
-            listed: Some(listed),
-        })
-    }
-
     pub(crate) const fn current(runtime: &'a WorkspaceRuntime) -> Self {
         Self::Runtime(RuntimeFacts {
             runtime,

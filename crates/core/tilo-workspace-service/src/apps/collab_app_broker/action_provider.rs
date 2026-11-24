@@ -223,19 +223,6 @@ impl BrokerApi {
     }
 }
 
-#[cfg(test)]
-impl BrokerApi {
-    /// Ask the session's person about `request` on the broker's own sheet: the app's ask,
-    /// driven directly by the tests that walk the sheet's answers.
-    pub(super) fn ask_on_sheet(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionCallError>> {
-        self.state.request_approval(caller, None, request)
-    }
-}
-
 impl tilo_actions::remote::ActionProvider for BrokerApi {
     fn query(
         &self,

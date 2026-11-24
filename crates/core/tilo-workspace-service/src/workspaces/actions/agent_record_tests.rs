@@ -284,6 +284,13 @@ impl AgentKeys for Keyed {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    fn made(
+        &self,
+        _key: &[u8; 32],
+    ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
+        None
+    }
 }
 
 /// An agent made from the catalogue's create row comes with its triggers; pause holds back the

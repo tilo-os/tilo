@@ -431,8 +431,8 @@ fn default_group(caller: ProgramCaller<'_>) -> WorkGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::remote::{CatalogueQuery, InvokeArgument, PendingPoll, RemoteActionTarget};
     use tilo_actions::ActionAddress;
+    use tilo_actions::remote::{CatalogueQuery, InvokeArgument, PendingPoll, RemoteActionTarget};
 
     /// A host no step reaches: every case below is refused before a program runs.
     struct NoPrograms;
@@ -525,8 +525,8 @@ mod tests {
             let registered = providers
                 .get(task_wire::PROVIDER)
                 .expect("the programs are registered under their provider");
-            assert_eq!(registered.provider, task_wire::PROVIDER);
-            assert_eq!(registered.app, task_wire::APP);
+            assert_eq!(registered.provider.as_ref(), task_wire::PROVIDER);
+            assert_eq!(registered.app.as_ref(), task_wire::APP);
             assert_eq!(
                 registered.reach,
                 Reach::AgentSessions { listed: true },

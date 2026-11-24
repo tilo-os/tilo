@@ -268,7 +268,7 @@ async fn what_a_member_forgets_is_gone_and_what_is_no_change_is_refused() {
 /// unanswered they change nothing, her no refuses them, and her yes makes the change as the
 /// agent's, about her, which `bo`, another member, does not read. `hers` is her list before.
 async fn her_agent_asks_her_first(
-    workspaces: &crate::workspaces::Workspaces,
+    _workspaces: &crate::workspaces::Workspaces,
     provider: &Asking<'_>,
     ada: &DeviceCert,
     bo: &DeviceCert,

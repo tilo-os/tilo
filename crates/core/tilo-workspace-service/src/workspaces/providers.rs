@@ -577,6 +577,14 @@ mod tests {
         fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
             None
         }
+
+        fn cancel(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownInvocation))
+        }
     }
 
     fn request(token: &str) -> InvokeRequest {

@@ -323,7 +323,7 @@ pub(super) struct Session {
     pub(super) link: tilo_peer_state::direct::DirectSync,
     /// Every frame the link brings this device, missing none of the workspace's frames.
     pub(super) heard: tilo_peer_state::direct::Reader,
-    pairing: tokio::task::JoinHandle<Result<(), String>>,
+    pairing: tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
 }
 
 impl Session {

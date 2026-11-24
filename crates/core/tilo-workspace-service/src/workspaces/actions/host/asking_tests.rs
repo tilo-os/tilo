@@ -120,7 +120,6 @@ async fn ended(
         }
     })
     .await
-    .unwrap()
 }
 
 /// What `caller`'s vault lists.

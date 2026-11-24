@@ -277,7 +277,8 @@ mod tests {
             SystemTime::now(),
         )
         .unwrap();
-        let governance = workspace.peer().governance();
+        let peer = workspace.peer();
+        let governance = peer.governance();
         assert_eq!(
             governance
                 .app_version("so.tilo.files")

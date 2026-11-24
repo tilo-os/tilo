@@ -237,7 +237,7 @@ async fn a_members_compaction_of_the_nodes_fold_is_taken() {
         &mut folded,
         (APP, DOCUMENT),
         None,
-        &lounge.governor_key,
+        (&lounge.governor, &lounge.governor_key),
         now,
     )
     .unwrap();
