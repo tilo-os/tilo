@@ -713,14 +713,17 @@ impl RecordReads {
         else {
             return Ok(ResourceCopy::Absent);
         };
-        let membership = workspaces.state(&address.workspace).await.and_then(|state| {
-            let governance = state.governance();
-            let role = governance.governed_policy().ok()?.active_role(person)?;
-            Some(serde_json::json!({
-                "role": role.key(),
-                "made_at_ms": governance.made_at_ms(),
-            }))
-        });
+        let membership = workspaces
+            .state(&address.workspace)
+            .await
+            .and_then(|state| {
+                let governance = state.governance();
+                let role = governance.governed_policy().ok()?.active_role(person)?;
+                Some(serde_json::json!({
+                    "role": role.key(),
+                    "made_at_ms": governance.made_at_ms(),
+                }))
+            });
         Ok(membership.map_or(ResourceCopy::Absent, |membership| {
             ResourceCopy::reading(membership, None)
         }))

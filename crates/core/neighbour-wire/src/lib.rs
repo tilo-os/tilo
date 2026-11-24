@@ -740,6 +740,16 @@ pub enum NeighbourMsg {
 }
 
 impl NeighbourMsg {
+    /// The frame `bytes` [`Self::decode`] reads back: what a peer sends or a store keeps of a
+    /// message.
+    ///
+    /// # Errors
+    ///
+    /// The message carries more than a frame holds.
+    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
+        postcard::to_stdvec(self)
+    }
+
     /// The message a frame `bytes` holds, whole: the one reader of a message that came from
     /// a peer, a server or a store.
     ///

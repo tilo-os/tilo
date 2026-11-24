@@ -1034,6 +1034,132 @@ impl Workspaces {
     }
 }
 
+/// What a test reads of a workspace's store and the replica beside it: the documents the store
+/// placed, what its index holds of them, and the writes the replica keeps of them.
+///
+/// A test outside this package reads a member's write back through these, as it reads any other
+/// answer of the service: the store's own lock and projection stay here.
+#[cfg(all(feature = "test-support", feature = "apps"))]
+impl Workspaces {
+    /// How many of `workspace`'s documents the store read into memory: what a start that read
+    /// the index's snapshots leaves at none.
+    pub async fn store_in_memory(&self, workspace: &str) -> usize {
+        let Ok(state) = self.workspace(workspace).await else {
+            return 0;
+        };
+        let mut governed = state.lock().await;
+        governed
+            .store_with_surfaces(&self.inner.host.surfaces)
+            .in_memory()
+    }
+
+    /// How many queries an app holds open on `workspace`'s store.
+    pub async fn store_queries_opened(&self, workspace: &str) -> usize {
+        let Ok(state) = self.workspace(workspace).await else {
+            return 0;
+        };
+        let governed = state.lock().await;
+        governed.resources.opened.len()
+    }
+
+    /// Hold `query` open for the app `context` names, in its workspace, as
+    /// [`Self::open_resources`] does: what a test of the pages a write sends reads.
+    ///
+    /// # Errors
+    /// As [`Self::open_resources`].
+    pub async fn open_resource_query(
+        &self,
+        context: &crate::apps::services::ResourceRequestContext,
+        query: tilo_resource_store::Query,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page>, String> {
+        self.open_resources(context, query).await
+    }
+
+    /// Whether `workspace`'s replica holds document `doc` of `app`: what the store placed and
+    /// what the member's device wrote there.
+    pub async fn peer_holds(&self, workspace: &str, app: &str, doc: &str) -> bool {
+        let Ok(state) = self.workspace(workspace).await else {
+            return false;
+        };
+        let governed = state.lock().await;
+        governed.peer().holds_document(app, doc)
+    }
+
+    /// The kinds the replica's sealed writes of `doc`, `app`'s, claim, each write's as one set:
+    /// what a member without the document's key decides the edit after the first write by.
+    pub async fn sealed_claims(
+        &self,
+        workspace: &str,
+        app: &str,
+        doc: &str,
+    ) -> Vec<std::collections::BTreeSet<String>> {
+        let Ok(state) = self.workspace(workspace).await else {
+            return Vec::new();
+        };
+        let governed = state.lock().await;
+        governed
+            .peer()
+            .publication()
+            .sealed_history(app, doc)
+            .iter()
+            .flat_map(|op| op.claims.iter())
+            .filter_map(|claim| collab_types::claim::whole_edit_kinds(&claim.action))
+            .collect()
+    }
+
+    /// Take the member's write `envelope` of `doc`, `app`'s, into `workspace`'s store, `author`
+    /// the device that wrote it: whether any change of it took effect, as
+    /// [`Self::absorb_member_write`] takes a whole body.
+    ///
+    /// # Errors
+    /// The write does not open or decode, or the store cannot keep it.
+    pub async fn take_member_write(
+        &self,
+        workspace: &str,
+        (app, doc): (&str, &str),
+        author: [u8; 32],
+        envelope: &collab_types::SignedOp,
+    ) -> Result<bool, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        drop(governed.store_with_surfaces(&self.inner.host.surfaces));
+        governed
+            .take_resources(author, (app, doc), envelope, None)
+            .await
+    }
+
+    /// Hold `workspace` as a write holds it from the moment it is drafted until its change is
+    /// kept, until the answer is dropped: what a test that reads a page while a write holds the
+    /// workspace holds.
+    ///
+    /// # Errors
+    /// This device holds no such workspace.
+    pub async fn hold_workspace(&self, workspace: &str) -> Result<impl Send, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(state.lock_owned().await)
+    }
+
+    /// Keep `commit`, a signed body this device's own roles wrote, and carry it, answering from
+    /// where the frames of `workspace_id` stand.
+    ///
+    /// # Errors
+    /// The body does not decode, or the document could not be kept.
+    pub fn carry_document(
+        &self,
+        workspace_id: tilo_server_protocol::WorkspaceId,
+        author: [u8; 32],
+        commit: &crate::workspace_documents::HostCommit,
+    ) -> Result<u64, String> {
+        self.inner.records.carry(workspace_id, author, commit)
+    }
+}
+
 impl Workspaces {
     /// Restore the store projection of a sealed frame that passed peer admission.
     pub(super) async fn replay_resource_write(

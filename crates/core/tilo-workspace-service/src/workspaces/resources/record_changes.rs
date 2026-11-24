@@ -268,8 +268,9 @@ impl Workspaces {
                     },
                     stamp,
                 };
-                let writes = tilo_resource_store::wire::draft(&mut self.store_of(&mut governed), founding)
-                    .map_err(|refused| refused.error.to_string())?;
+                let writes =
+                    tilo_resource_store::wire::draft(&mut self.store_of(&mut governed), founding)
+                        .map_err(|refused| refused.error.to_string())?;
                 self.keep_writes(governed, std::sync::Arc::clone(&device), app, writes, None)
                     .await?;
                 governed = std::sync::Arc::clone(&state).lock_owned().await;
@@ -350,7 +351,10 @@ impl Workspaces {
         );
         let content: Vec<AmChange> = moved.get_changes(&[]).into_iter().collect();
 
-        let destination = self.workspace(to).await.map_err(|error| error.to_string())?;
+        let destination = self
+            .workspace(to)
+            .await
+            .map_err(|error| error.to_string())?;
         let mut governed = std::sync::Arc::clone(&destination).lock_owned().await;
         let founding = Command::Put {
             kind: kind.clone(),
@@ -363,14 +367,21 @@ impl Workspaces {
             },
             stamp,
         };
-        let founding = tilo_resource_store::wire::draft(&mut self.store_of(&mut governed), founding)
-            .map_err(|refused| refused.error.to_string())?;
+        let founding =
+            tilo_resource_store::wire::draft(&mut self.store_of(&mut governed), founding)
+                .map_err(|refused| refused.error.to_string())?;
         self.would_keep(&mut governed, (caller, author), (app, &kind), &founding)
             .map_err(|refused| format!("{to} refuses the record arriving: {refused}"))?;
 
         // Both sides admit their change: keep the arrival, then the departure.
-        self.keep_writes(governed, std::sync::Arc::clone(&device), app, founding, None)
-            .await?;
+        self.keep_writes(
+            governed,
+            std::sync::Arc::clone(&device),
+            app,
+            founding,
+            None,
+        )
+        .await?;
         let mut governed = std::sync::Arc::clone(&destination).lock_owned().await;
         let filled = self
             .store_of(&mut governed)
@@ -428,9 +439,7 @@ mod tests {
     use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
 
     use crate::apps::services::ResourceRequestContext;
-    use crate::workspaces::fixtures::{
-        TestHost, governor_with, test_host_holding,
-    };
+    use crate::workspaces::fixtures::{TestHost, governor_with, test_host_holding};
     use crate::workspaces::{OwnWorkspaceOffer, Workspaces};
 
     const NOTES: &str = "tilo.notes";
@@ -474,11 +483,7 @@ kind = "undoable"
         let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
         let host = test_host_holding(dir, &key, &cert, std::sync::Arc::default()).await;
         let workspaces = host.workspaces();
-        crate::workspaces::keep_surface(
-            &workspaces.inner.host.surfaces,
-            NOTES,
-            SURFACE.as_bytes(),
-        );
+        crate::workspaces::keep_surface(&workspaces.inner.host.surfaces, NOTES, SURFACE.as_bytes());
         workspaces.set_member_device(std::sync::Arc::new(crate::workspaces::MemberDevice {
             cert,
             signer: std::sync::Arc::new(key),
@@ -947,8 +952,8 @@ kind = "undoable"
     /// A device's first item of `record`, written on the derived founding as `writer` types it.
     fn first_item(record: &str, writer: &str, item: &str, by: &Actor) -> Vec<u8> {
         use automerge::ReadDoc as _;
-        let mut note = automerge::AutoCommit::new()
-            .with_actor(automerge::ActorId::from(writer.as_bytes()));
+        let mut note =
+            automerge::AutoCommit::new().with_actor(automerge::ActorId::from(writer.as_bytes()));
         note.apply_changes([derived(record)]).unwrap();
         let (_, items) = note.get(automerge::ROOT, "items").unwrap().unwrap();
         note.insert(&items, 0, item).unwrap();
@@ -1000,7 +1005,9 @@ kind = "undoable"
         );
         // The window's own typing follows it, as a real founding's does.
         let me = caller_of(workspaces, &workspace).acting().by.clone();
-        let mut typed = forged.fork().with_actor(automerge::ActorId::from(b"window".as_slice()));
+        let mut typed = forged
+            .fork()
+            .with_actor(automerge::ActorId::from(b"window".as_slice()));
         typed.put(automerge::ROOT, "title", "Mine").unwrap();
         commit(&mut typed, &typed_by(&me));
         let refused = write(workspaces, &workspace, "forged", typed.save()).await;
@@ -1024,9 +1031,8 @@ kind = "undoable"
         ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, crate::search::records::Unread>
         {
             use automerge::ReadDoc as _;
-            let doc = automerge::AutoCommit::load(doc).map_err(|error| {
-                crate::search::records::Unread::Refused(error.to_string())
-            })?;
+            let doc = automerge::AutoCommit::load(doc)
+                .map_err(|error| crate::search::records::Unread::Refused(error.to_string()))?;
             let title = doc
                 .get(automerge::ROOT, "title")
                 .ok()

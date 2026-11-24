@@ -2673,6 +2673,21 @@ impl Workspaces {
             .await
     }
 
+    /// [`Self::absorb`] for a test that hands a member's device's write to the host as the
+    /// workspace's link does.
+    ///
+    /// # Errors
+    /// As [`Self::absorb`].
+    #[cfg(feature = "test-support")]
+    pub async fn absorb_member_write(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        body: &[u8],
+    ) -> Result<(), String> {
+        self.absorb(workspace, author, body).await
+    }
+
     /// Take in the record write `body` of `author`. A record the workspace lacks
     /// is created from it, if `author` is a device of an editor: records are
     /// born only from a governor checkpoint. A write to a record the workspace has

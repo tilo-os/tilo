@@ -13,7 +13,11 @@ use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
-use key_group::{ContentKeys, KeyGroup, MemberKey};
+use key_group::{KeyGroup, MemberKey};
+
+/// The content keys a fixture's device seals its records under
+/// ([`GroupKeys`]): what a test that builds its own documents hands the service.
+pub use key_group::ContentKeys;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::{
@@ -179,6 +183,15 @@ pub fn governor() -> (SigningKey, DeviceCert) {
 #[must_use]
 pub fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
     device_cert(&SigningKey::from_bytes(&[1; 32]), "home", capabilities)
+}
+
+/// A person's device certificate, as a guest's browser makes one.
+pub fn guest_device() -> (SigningKey, DeviceCert) {
+    device_cert(
+        &SigningKey::from_bytes(&rand::random()),
+        "guest",
+        DeviceCapabilities::member(),
+    )
 }
 
 /// A new device of `root`'s person, labelled `label` and certified with
@@ -537,6 +550,8 @@ pub async fn test_host_with_grants(
             sink: None,
         },
         grants,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
     )
     .await
 }
@@ -553,7 +568,16 @@ pub async fn test_host_in_the_clear(
     key: &SigningKey,
     cert: &DeviceCert,
 ) -> TestHost {
-    host_on(state_root, key, cert, None, None).await
+    host_on(
+        state_root,
+        key,
+        cert,
+        None,
+        None,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )
+    .await
 }
 
 /// [`test_host`] whose device holds `keys`: the same keys open
@@ -575,6 +599,34 @@ pub async fn test_host_holding(
         cert,
         DeviceKeyGroups { keys, sink: None },
         None,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )
+    .await
+}
+
+/// [`test_host_holding`] whose service opens with the language runtime `tilolang` mounted, as
+/// the daemon's program opens the one it links: the types and verbs of the tilolang apps the
+/// build carries are declared on it, so a member's write of one of their records is judged.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn test_host_holding_mounting(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    keys: Arc<TestGroupKeys>,
+    tilolang: crate::tl_records::Tilolang,
+) -> TestHost {
+    host_on(
+        state_root,
+        key,
+        cert,
+        DeviceKeyGroups { keys, sink: None },
+        None,
+        Some(tilolang),
     )
     .await
 }
@@ -602,7 +654,16 @@ pub async fn test_host_keyed(
         Arc::new(tilo_workspace_keys::NoSealChecks),
     )
     .expect("the device's key service opens");
-    let host = host_on(state_root, key, cert, keys.groups(), None).await;
+    let host = host_on(
+        state_root,
+        key,
+        cert,
+        keys.groups(),
+        None,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )
+    .await;
     (host, keys)
 }
 
@@ -614,6 +675,7 @@ async fn host_on(
     cert: &DeviceCert,
     channels: impl Into<Option<DeviceKeyGroups>>,
     grants: Option<usize>,
+    #[cfg(not(target_arch = "wasm32"))] tilolang: Option<crate::tl_records::Tilolang>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
@@ -628,6 +690,8 @@ async fn host_on(
         WorkspaceService::open(
             ServiceConfig {
                 max_workspace_grants: grants,
+                #[cfg(not(target_arch = "wasm32"))]
+                tilolang,
                 // Each device knows only the app surfaces named to it: tests run side by side in one
                 // process, and a surface one of them names must not change what another's stores
                 // admit.

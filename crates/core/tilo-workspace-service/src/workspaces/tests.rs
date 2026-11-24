@@ -51,14 +51,7 @@ async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redee
     server.shutdown().await;
 }
 
-/// A person's device certificate, as a guest's browser makes one.
-pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
-    device_cert(
-        &SigningKey::from_bytes(&rand::random()),
-        "guest",
-        DeviceCapabilities::member(),
-    )
-}
+pub(crate) use super::fixtures::guest_device;
 
 #[tokio::test]
 async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_refused_alone() {

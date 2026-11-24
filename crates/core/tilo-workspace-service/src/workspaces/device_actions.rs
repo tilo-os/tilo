@@ -546,7 +546,6 @@ fn settled_update(
     }
 }
 
-
 /// The turn `request`, asked by `requester`, asks this device to take.
 fn turn_of(request: &InvokeRequest, requester: [u8; 32]) -> Result<Turn, ActionCallError> {
     tilo_actions::appearance::refuse_here(request)?;

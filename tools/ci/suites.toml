@@ -1587,6 +1587,7 @@ inputs = [
   "apps/tl/tasks/",
 ]
 readers = [
+  "crates/os/daemon/tests/language/resource_writes_tests.rs",
   "crates/os/daemon/tests/language/task_work_tests.rs",
   "crates/os/daemon/tests/language/triggers_tests.rs",
 ]
