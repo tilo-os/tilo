@@ -207,6 +207,12 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          the person's sign-in, reads their library and the devices Spotify plays on, and moves \
          playback between them; the catalogue pages it finds are written as any catalogue's.",
     ),
+    (
+        "discord.perform",
+        "Carries a call to Discord as the account a person linked there: (the bridged account's \
+         key, the call, as JSON). What Discord answers is written through the account's own \
+         actions, and a message someone wrote there comes in as the message it is.",
+    ),
 ];
 
 pub const KINDS: &[OriginKind] = &[
@@ -1262,6 +1268,71 @@ pub const KINDS: &[OriginKind] = &[
                 "cover",
                 "Text",
                 "The address of its picture, empty for none.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "discord.account",
+        doc: "One of the workspace's connected Discord accounts: the server it bridges and what \
+              the bridge knows of both sides. Chat holds it; the server's channels and direct \
+              messages are Chat's conversations, and the account holds what joins the two sides.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The account's id."),
+            people("name", "Text", "What the account is called on Discord."),
+            people(
+                "guild_id",
+                "Text",
+                "The server bridged, by its Discord id; empty until one is connected.",
+            ),
+            people("server", "Text", "The server's name, as Discord shows it."),
+            people(
+                "only_channel",
+                "Text",
+                "The one channel bridged, by its Discord id; empty for the whole server.",
+            ),
+            people(
+                "mirror_channels",
+                "Bool",
+                "Whether channels made here are made in Discord too.",
+            ),
+            people(
+                "map_roles",
+                "Bool",
+                "Whether the workspace's roles are kept as the bridge's roles in Discord.",
+            ),
+            people(
+                "token_item",
+                "Text",
+                "The secret item holding the bot token on this device; the token never enters the \
+                 resource.",
+            ),
+            people(
+                "bot_user",
+                "Text",
+                "The bot user's Discord id: its own messages and reactions are echoes.",
+            ),
+            people(
+                "sign_in_page",
+                "Text",
+                "Discord's consent page for signing in through this device, without its state; \
+                 empty when the device offers none.",
+            ),
+            people(
+                "voice_problem",
+                "Text",
+                "Why the bridge cannot carry a voice channel's call now; empty while it can.",
+            ),
+            people(
+                "emoji_problem",
+                "Text",
+                "Why the workspace's emoji do not reach the server now; empty while they do.",
+            ),
+            people("setup_open", "Bool", "Whether the setup dialog is open."),
+            people(
+                "setup_problem",
+                "Text",
+                "Why finding the bot's servers did not work, in words the person reads.",
             ),
         ],
     },
