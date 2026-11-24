@@ -118,8 +118,7 @@ impl Host {
             open: Some("open".into()),
             arguments: serde_json::Map::new(),
             app: Some("so.tilo.notes".into()),
-            provider: None,
-            when: None,
+            ..tilo_actions::remote::Found::default()
         }]));
     }
 }

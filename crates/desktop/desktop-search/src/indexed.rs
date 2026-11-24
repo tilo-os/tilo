@@ -147,7 +147,7 @@ impl IndexedContent {
             .clone()
             .or_else(|| self.caller.workspace().map(str::to_owned))?;
         let subtitle = found.subtitle.clone().or_else(|| match found.about {
-            Some(_) => self.under_name(found),
+            Some(_) => Self::under_name(found),
             None => Some((self.app_name)(app)),
         });
         let (avatar, faces) = shown(found);
@@ -196,7 +196,7 @@ impl IndexedContent {
 
     /// What the entry says under its name when its app left it unsaid: who is in a conversation,
     /// and who a message is from, where, and how long ago.
-    fn under_name(&self, found: &Found) -> Option<String> {
+    fn under_name(found: &Found) -> Option<String> {
         match found.about {
             Some(IndexKind::Conversation) => {
                 let names: Vec<&str> = named(&found.people).map(|(name, _)| name).collect();
