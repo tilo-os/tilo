@@ -188,6 +188,8 @@ root deck: Deck
 
 default view deck for Deck
 
+default view slide_page for Slide
+
 /// A deck starts with one title slide holding an empty title and subtitle, so a live launch opens
 /// on nothing that pretends to be content.
 initial action start(d: Deck) {
@@ -479,6 +481,11 @@ destructive action delete_element(s: Slide, e: Element) (icon: .trash, label: "D
     s.elements.remove(e)
 }
 
+/// Deletes the element of `s` whose id is `target`, as the stage's delete names it.
+destructive action delete_element_at(s: Slide, target: Text) {
+    if let e = s.elements.find(x -> x.id() == target) { s.elements.remove(e) }
+}
+
 /// Brings an element to the front.
 action bring_to_front(s: Slide, e: Element) (icon: .bring_to_front, label: "Bring to front") {
     s.elements.move(e, to: s.elements.len())
@@ -761,11 +768,10 @@ action resume_clock(d: Deck) uses time (label: "Start the clock again") {
 }
 
 /// The boxes a layout starts with, in reading order (the first is the title, the second the body).
-// ---------------------------------------------------------------------------------------------
-// Templates and small readings.
-
 /// The untouched starter `after` lets give way: the deck opens on one empty title slide, and the
 /// first slide anyone adds takes its place. A slide added after another keeps it.
+// ---------------------------------------------------------------------------------------------
+// Templates and small readings.
 fn starter_gives_way(d: Deck, after: Option<Slide>) -> Option<Slide> {
     let starter = untouched_starter(d)
     if let at = after {
@@ -793,7 +799,7 @@ fn untouched_starter(d: Deck) -> Option<Slide> {
                     let same = true
                     let at = 0
                     for held in s.elements {
-                        if held != (starters.at(at) ?? held) {
+                        if element_signature(held) != element_signature(starters.at(at) ?? held) {
                             same = false
                         }
                         at += 1
@@ -806,6 +812,13 @@ fn untouched_starter(d: Deck) -> Option<Slide> {
         }
     }
     .none
+}
+
+/// What an element is and how it is placed, as one text: a slide's element is a resource and a
+/// template box a record, so the two compare by what they say and not by what they are.
+fn element_signature(e: Element) -> Text {
+    let body = e.body.markdown(links: Map<Text>(), from: "").trim()
+    "{e.kind.label()}|{e.x}|{e.y}|{e.w}|{e.h}|{e.fill}|{e.stroke}|{e.stroke_width}|{e.font_size}|{e.align.label()}|{e.bold}|{e.italic}|{e.radius}|{e.src}|{body}"
 }
 
 fn template_boxes(layout: Layout) -> List<Element> {
@@ -1331,6 +1344,9 @@ view deck(d: Deck) {
     state pan: List<Float> = [0.0, 0.0]
     // The person opened the chosen box for typing (Enter on it): the box takes the keyboard.
     state editing: Bool = false
+    // A slide opened from search or from another app lands here, in the deck's own window: the
+    // rail, the stage and the properties follow it, and the notes editor binds its notes.
+    on show(s: Slide): set(current, s.id()).then(set(properties, true))
     let shown = current_slide(d, current)
     ui.Fullscreen(
         showing: presenting,
@@ -1346,6 +1362,9 @@ view deck(d: Deck) {
                 ui.NavShell(content_kind: .page, title: deck_name(d), sidebar_title: "Slides") {
                     on drop(files: List<File>): import_files(d, files)
                     actions: {
+                        // Search inside this deck: the same search, narrowed to its slides and
+                        // their words, so a hit opens the slide it found here.
+                        ui.SearchButton(item: d, label: deck_name(d))
                         ui.Button("Open", icon: .folder_open, key: "Ctrl+O") {
                             on press: file.choose(
                                 import_file(d),
@@ -1466,6 +1485,24 @@ fn deck_name(d: Deck) -> Text {
     if d.title.trim() == "" { "Untitled deck" } else { d.title }
 }
 
+/// A slide on its own, for a search that found its words: the slide as it is drawn, and what the
+/// speaker says over it. Its type's default view, so a hit and an agent's `open` land in a
+/// window that shows the slide when the deck's own window is not the one taking it.
+view slide_page(s: Slide) {
+    let d = root Deck
+    ui.NavShell(content_kind: .page, title: slide_title(s, d.slides.index_of(s) ?? 0)) {
+        content: {
+            ui.Scroll {
+                stack(gap: .group, padding: .related) {
+                    slide_picture(d, s, "Slide", .none)
+                    ui.Text("Speaker notes", role: .caption, secondary: true)
+                    ui.BlockEditor(bind: s.notes, placeholder: "What you say over this slide")
+                }
+            }
+        }
+    }
+}
+
 /// The rail: the slides as small live pictures of themselves, a press opening one, and its place
 /// among the others changed by the buttons beside it.
 view slide_rail(d: Deck, current: State<Text>, chosen: State<Text>) {
@@ -1561,7 +1598,7 @@ view slide_stage(
         on panned(at: List<Float>): set(pan, at)
         on select(target: Text): set(chosen, target).then(set(editing, false))
         on open(target: Text): set(chosen, target).then(set(editing, true))
-        on delete(target: Text): delete_element(s, target).then(set(chosen, "none"))
+        on delete(target: Text): delete_element_at(s, target).then(set(chosen, "none"))
         on moved(target: Text, at: List<Int>): move_element_to(s, target, at)
         on resized(target: Text, at: List<Int>): resize_element_to(s, target, at)
         on context(target: Text): set(chosen, target)

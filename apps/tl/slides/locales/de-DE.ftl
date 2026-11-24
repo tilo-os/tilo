@@ -754,3 +754,8 @@ d-jnyka7fe = Element view
     .w-choose-a-picture = Choose a picture
 
 d-bljokktq = Slide picture
+
+d-eshxh4fk = Folienseite
+    .w-slide = Folie
+    .w-speaker-notes = Notizen für die Sprecherin
+    .w-what-you-say-over-this-slide = Was du über dieser Folie sagst

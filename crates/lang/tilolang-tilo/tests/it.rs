@@ -113,6 +113,7 @@ mod settings_storage;
 mod settings_windows;
 mod shell_compiles;
 mod shell_media;
+mod slides_search;
 mod spaces;
 mod suggest;
 mod surface;

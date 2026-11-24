@@ -755,3 +755,8 @@ d-jnyka7fe = Element view
     .w-choose-a-picture = Choose a picture
 
 d-bljokktq = Slide picture
+
+d-eshxh4fk = Slide page
+    .w-slide = Slide
+    .w-speaker-notes = Speaker notes
+    .w-what-you-say-over-this-slide = What you say over this slide
