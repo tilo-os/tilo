@@ -15,15 +15,20 @@
 //! draft's sender, its account and address) reads as that record's fields too, each under the
 //! field's name and its own (`sender.email`); one at a document's root (the draft a composer
 //! writes, beside the collection of the others) is besides an item of its own, `of` the field.
-//! A field that keeps records of its own in a collection (a skill's examples) reads in
+//! A field that keeps records of its own, in a collection or a list (a skill's examples), reads in
 //! `records`, the records in the order they stood, each record's fields by their names.
 //! A document that is no record of that layout (one written before it, which carries neither
-//! `tilo:version` nor `tilo:record` nor any collection of the layout) yields nothing: it is left
-//! where it is, unread.
+//! `tilo:version` nor `tilo:record` nor any field kept by key, only bare words) yields nothing:
+//! it is left where it is, unread.
+//!
+//! Who wrote an item there is read from the document's own history: each change names the
+//! action that made it and who invoked it, so an item is the person whose change last wrote it,
+//! or the person an agent wrote it for (`by`). A carry that makes a record under the id the item
+//! had makes it as theirs ([`EarlierItem::by`]).
 
 use std::collections::BTreeMap;
 
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value as AmValue};
+use automerge::{ActorId, AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value as AmValue};
 
 use crate::rich::RichValue;
 use crate::value::Value;
@@ -63,9 +68,13 @@ pub struct EarlierItem {
     /// Each field that maps keys to words (a native app's watch times, by video): what each key
     /// holds, as words. Its keys are in [`Self::lists`] too.
     pub entries: BTreeMap<String, BTreeMap<String, String>>,
-    /// Each field that keeps records of its own in a collection (a skill's examples): the
-    /// records in the order they stood, each record's fields as words.
+    /// Each field that keeps records of its own, in a collection or a list (a skill's examples):
+    /// the records in the order they stood, each record's fields as words.
     pub records: BTreeMap<String, Vec<BTreeMap<String, String>>>,
+    /// Who wrote it there, as the document's history names them: the person whose change last
+    /// wrote the item, or the person an agent wrote it for. `None` where no person did (the
+    /// platform's own writes), and for a document's own fields.
+    pub by: Option<crate::ids::MemberId>,
 }
 
 impl EarlierItem {
@@ -163,8 +172,80 @@ impl EarlierItem {
                     })
                     .collect(),
             ),
+            Value::Opt(
+                self.by
+                    .clone()
+                    .map(|by| Box::new(Value::Actor(crate::ids::Actor::Member(by)))),
+            ),
         ])
     }
+}
+
+/// Who wrote each change of a document: the ops of each change, by the actor that wrote them,
+/// and the person the change was made by or for.
+struct Writers(BTreeMap<ActorId, Vec<(u64, u64, Option<crate::ids::MemberId>)>>);
+
+impl Writers {
+    /// The changes of `doc` and who made each.
+    fn of(doc: &AutoCommit) -> Self {
+        let mut doc = doc.clone();
+        let mut by: BTreeMap<ActorId, Vec<(u64, u64, Option<crate::ids::MemberId>)>> =
+            BTreeMap::new();
+        for change in doc.get_changes_meta(&[]) {
+            let person = change.message.as_deref().and_then(person_of);
+            by.entry(change.actor.into_owned()).or_default().push((
+                change.start_op,
+                change.max_op,
+                person,
+            ));
+        }
+        Self(by)
+    }
+
+    /// The person whose change wrote the newest of the ops `ops` that a person wrote: who last
+    /// wrote what they are.
+    fn last_of(&self, ops: &[automerge::ObjId]) -> Option<crate::ids::MemberId> {
+        let mut written: Vec<(u64, &ActorId)> = ops
+            .iter()
+            .filter_map(|op| match op {
+                automerge::ObjId::Id(counter, actor, _) => Some((*counter, actor)),
+                automerge::ObjId::Root => None,
+            })
+            .collect();
+        written.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(a.1)));
+        written.into_iter().find_map(|(counter, actor)| {
+            self.0
+                .get(actor)?
+                .iter()
+                .find(|(start, max, _)| (*start..=*max).contains(&counter))?
+                .2
+                .clone()
+        })
+    }
+}
+
+/// The person a change's message says it was made by, or made for when an agent made it; `None`
+/// for a change no person made or that names nobody.
+fn person_of(message: &str) -> Option<crate::ids::MemberId> {
+    let context = tilo_actions::ActionContext::from_change_message(message)?;
+    let invoker = context.invoker?;
+    let person = invoker
+        .acting
+        .person_id()
+        .or_else(|| invoker.acting.acted_for_person())?;
+    Some(crate::ids::MemberId::person(person))
+}
+
+/// The ops that wrote the record `obj` and its fields: the record's making, and each field's
+/// last write.
+fn ops_of(doc: &AutoCommit, obj: &ObjId) -> Vec<ObjId> {
+    let mut ops = vec![obj.clone()];
+    ops.extend(
+        doc.keys(obj)
+            .filter_map(|key| doc.get(obj, key.as_str()).ok().flatten())
+            .map(|(_, op)| op),
+    );
+    ops
 }
 
 /// The members the words `said` name, as a native app kept them: one member (`{"person":"<id>"}`),
@@ -188,6 +269,7 @@ pub fn items(id: &str, doc: &AutoCommit) -> Vec<EarlierItem> {
     let Some(version) = version(doc) else {
         return Vec::new();
     };
+    let writers = Writers::of(doc);
     let mut own = EarlierItem {
         id: id.to_owned(),
         version,
@@ -201,7 +283,7 @@ pub fn items(id: &str, doc: &AutoCommit) -> Vec<EarlierItem> {
         let Ok(Some((value, obj))) = doc.get(&automerge::ROOT, key.as_str()) else {
             continue;
         };
-        if let Some(mut items) = collection(doc, &key, &value, &obj, version) {
+        if let Some(mut items) = collection(doc, &key, &value, &obj, version, Some(&writers)) {
             held.append(&mut items);
         } else {
             if record(doc, &value, &obj) {
@@ -209,6 +291,7 @@ pub fn items(id: &str, doc: &AutoCommit) -> Vec<EarlierItem> {
                     id: key.clone(),
                     of: key.clone(),
                     version,
+                    by: writers.last_of(&ops_of(doc, &obj)),
                     ..EarlierItem::default()
                 };
                 read_fields(doc, &mut item, "", &obj, 0);
@@ -277,20 +360,22 @@ fn version(doc: &AutoCommit) -> Option<i64> {
         Ok(Some((AmValue::Object(ObjType::Map), _)))
     );
     // A record at the layout's first version says none, and an app's own record (its package's
-    // primary document) is not stamped with what names it: it is one by holding a collection of
-    // the layout.
+    // primary document) is not stamped with what names it: it is one by holding a field of the
+    // layout's own shapes, a collection or a map by key (a record kept as keyed values alone, as
+    // a native watch history keeps when each video was watched).
     stated
         .or_else(|| record.then_some(0))
-        .or_else(|| holds_collection(doc).then_some(1))
+        .or_else(|| holds_layout_field(doc).then_some(1))
 }
 
-/// Whether `doc` holds, at its root, a collection of the resource layout.
-fn holds_collection(doc: &AutoCommit) -> bool {
+/// Whether `doc` holds, at its root, a field the resource layout keeps by key: a collection, a
+/// set, or a map of values. A document from before the layout keeps its fields as bare words.
+fn holds_layout_field(doc: &AutoCommit) -> bool {
     doc.keys(&automerge::ROOT).any(|key| {
         !internal(&key)
             && matches!(
                 doc.get(&automerge::ROOT, key.as_str()),
-                Ok(Some((value, obj))) if collection(doc, &key, &value, &obj, 1).is_some()
+                Ok(Some((AmValue::Object(ObjType::Map), _)))
             )
     })
 }
@@ -302,13 +387,15 @@ fn internal(key: &str) -> bool {
 }
 
 /// The items of the collection `key` holds, when it is one: a map whose every entry is an order
-/// key and the item's fields. `None` for any other field.
+/// key and the item's fields, each by who wrote it where `writers` says. `None` for any other
+/// field.
 fn collection(
     doc: &AutoCommit,
     key: &str,
     value: &AmValue<'_>,
     obj: &ObjId,
     version: i64,
+    writers: Option<&Writers>,
 ) -> Option<Vec<EarlierItem>> {
     if !matches!(value, AmValue::Object(ObjType::Map)) {
         return None;
@@ -326,11 +413,17 @@ fn collection(
         let (AmValue::Object(ObjType::Map), fields) = doc.get(&entry, "v").ok()?? else {
             return None;
         };
+        let by = writers.and_then(|writers| {
+            let mut ops = vec![entry.clone()];
+            ops.extend(ops_of(doc, &fields));
+            writers.last_of(&ops)
+        });
         let mut item = EarlierItem {
             id,
             of: key.to_owned(),
             order,
             version,
+            by,
             ..EarlierItem::default()
         };
         for name in doc.keys(&fields) {
@@ -403,7 +496,7 @@ fn read_field_at(
                     item.entries.insert(name.to_owned(), said);
                 }
                 item.lists.insert(name.to_owned(), doc.keys(obj).collect());
-                if let Some(records) = collection(doc, name, value, obj, 0) {
+                if let Some(records) = collection(doc, name, value, obj, 0, None) {
                     // A collection kept in a field (a skill's examples): its records, in the
                     // order they stood, each record's words by its field's name.
                     item.records.insert(
@@ -417,28 +510,36 @@ fn read_field_at(
         }
         AmValue::Object(ObjType::List) => {
             let mut held = Vec::new();
+            let mut records = Vec::new();
             for at in 0..doc.length(obj) {
                 match doc.get(obj, at).ok().flatten() {
                     Some((AmValue::Scalar(s), _)) => held.extend(scalar_words(&s)),
                     Some((AmValue::Object(ObjType::Text), text)) => {
                         held.extend(doc.text(&text).ok());
                     }
-                    // A list of records reads as a list of each of their fields
+                    // A list of records (a skill's examples, a draft's attachments) reads as its
+                    // records, in the order they stand, and as a list of each of their fields
                     // (`attachments.filename`), an entry for each record that has it.
                     Some((AmValue::Object(ObjType::Map), record)) => {
+                        let mut fields = BTreeMap::new();
                         for key in doc.keys(&record) {
                             if let Some(said) = words(doc, &record, &key) {
                                 item.lists
                                     .entry(format!("{name}.{key}"))
                                     .or_default()
-                                    .push(said);
+                                    .push(said.clone());
+                                fields.insert(key, said);
                             }
                         }
+                        records.push(fields);
                     }
                     _ => {}
                 }
             }
             item.lists.insert(name.to_owned(), held);
+            if !records.is_empty() {
+                item.records.insert(name.to_owned(), records);
+            }
         }
     }
 }

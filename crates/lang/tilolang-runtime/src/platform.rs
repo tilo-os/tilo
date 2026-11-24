@@ -2046,6 +2046,24 @@ impl Core {
         })))
     }
 
+    /// The person who wrote the item `id` where the native app of the package declaring the type
+    /// `ty` kept it, as that app's document says: `None` where this device holds nothing that app
+    /// kept, no item of that id, or one no person wrote.
+    pub(crate) fn earlier_writer(&self, ty: &str, id: &str) -> Option<String> {
+        let app = {
+            let registry = self.registry.borrow();
+            registry
+                .type_owner(ty)
+                .and_then(|owner| registry.package(owner))
+                .map(|pkg| pkg.meta.app.clone())?
+        };
+        let items = self.earlier.borrow().get(&app).cloned()?;
+        items
+            .iter()
+            .filter(|item| item.id == id)
+            .find_map(|item| item.by.as_ref()?.person_id().map(str::to_owned))
+    }
+
     /// `linked(r)`: the resources made from `r`, mentioning it in their rich text or naming it
     /// in a reference field, as a `host.Link` each: the resource and how it is linked.
     fn links_import(&self, a: &Args<'_>) -> HResult<Value> {

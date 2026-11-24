@@ -1500,6 +1500,19 @@ pub trait Store {
         Ok(())
     }
 
+    /// Note in the open transaction `txn` that the resource `at`, made in it, is made for the
+    /// person `person`: a migration carrying an item a native app kept makes its record as the
+    /// person who wrote that item there, so a type read by its author only is read by them. A
+    /// store that keeps no authors has nothing to note.
+    ///
+    /// # Errors
+    ///
+    /// A [`StoreError`] when it cannot be noted.
+    fn made_for(&mut self, txn: Txn, at: &ResourceRef, person: &str) -> Result<(), StoreError> {
+        let _ = (txn, at, person);
+        Ok(())
+    }
+
     /// The type id stored at this resource.
     ///
     /// # Errors

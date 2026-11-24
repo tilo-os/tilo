@@ -184,6 +184,9 @@ struct Dirty {
     /// nothing to the store.
     remove: Option<String>,
     edits: Vec<Edit>,
+    /// The person it is made for, when a migration made it as the person who wrote the item it
+    /// carries ([`Store::made_for`]): its change names them as the one it acted for.
+    made_for: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -3648,6 +3651,11 @@ impl ResourceStore {
                 continue;
             };
             let held = local.get(id).cloned().flatten();
+            let made_for = dirty.made_for.as_ref().map(|person| Stamp {
+                acted_for: Some(person.clone()),
+                ..stamp.clone()
+            });
+            let stamp = made_for.as_ref().unwrap_or(stamp);
             if dirty.removed {
                 if let Some(kind) = &dirty.remove {
                     removes.push(Command::Remove {
@@ -4425,6 +4433,15 @@ impl Store for ResourceStore {
 
     fn mark_migrated_in(&mut self, txn: Txn, doc: &str, migration: &str) -> Result<(), StoreError> {
         self.mark_in(txn, doc, MIGRATED, migration, Json::Bool(true))
+    }
+
+    fn made_for(&mut self, txn: Txn, at: &ResourceRef, person: &str) -> Result<(), StoreError> {
+        let id = id_of(at);
+        self.txn_mut(txn, |state| {
+            if let Some(dirty) = state.dirty.get_mut(&id) {
+                dirty.made_for = Some(person.to_owned());
+            }
+        })
     }
 
     /// The store holds only what its reader may read: a resource of a package here reads by

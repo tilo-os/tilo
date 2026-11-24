@@ -985,6 +985,17 @@ impl Core {
             return trap("the run diverged from its journal: the insert names no item");
         };
         let target = ctx.target.item(&id, item_ty.id.clone());
+        // A migration keeping the id a native app gave an item makes its record as whoever wrote
+        // that item there, as that app's own document says.
+        if imp == Imp::CollInsertAs
+            && made.is_some()
+            && let Some(person) = self.earlier_writer(&item_ty.id, &id)
+        {
+            self.store
+                .borrow_mut()
+                .made_for(ctx.txn, &target, &person)
+                .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        }
         let author = Some(self.module_of_frame()?);
         if made.is_none() {
             // A keyed item that already stood is that item, unchanged.

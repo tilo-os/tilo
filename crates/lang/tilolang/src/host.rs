@@ -319,7 +319,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "records",
                 "Map<List<Map<Text>>>",
-                "Each field that keeps records of its own in a collection, by its name: the records in the order they stood, each record's fields as words.",
+                "Each field that keeps records of its own, in a collection or a list, by its name: the records in the order they stood, each record's fields as words.",
+            ),
+            (
+                "by",
+                "Option<Actor>",
+                "Who wrote it there, as that document's history names them: the person whose change last wrote it, or the person an agent wrote it for; none where no person did. A record a migration makes under the id the item had (`insert(x, id: e.id)`) is made as theirs: a type read by its author only is read by them.",
             ),
         ],
     },
