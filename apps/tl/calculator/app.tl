@@ -134,6 +134,9 @@ view calculator(c: Calculator) {
     state to: Text = "ft"
     state width: Float = 10.0
     state centre: Float = 0.0
+    state height: Float = 10.0
+    state up: Float = 0.0
+    state held_up: Float = 0.0
     state yaw: Float = 0.6
     state pitch: Float = 0.5
     state zoom: Float = 1.0
@@ -157,6 +160,9 @@ view calculator(c: Calculator) {
         to,
         width,
         centre,
+        height,
+        up,
+        held_up,
         yaw,
         pitch,
         zoom,
@@ -183,6 +189,9 @@ view calculation(x: Calculation) {
     state to: Text = "ft"
     state width: Float = 10.0
     state centre: Float = 0.0
+    state height: Float = 10.0
+    state up: Float = 0.0
+    state held_up: Float = 0.0
     state yaw: Float = 0.6
     state pitch: Float = 0.5
     state zoom: Float = 1.0
@@ -206,6 +215,9 @@ view calculation(x: Calculation) {
         to,
         width,
         centre,
+        height,
+        up,
+        held_up,
         yaw,
         pitch,
         zoom,
@@ -234,6 +246,9 @@ view window(
     to: State<Text>,
     width: State<Float>,
     centre: State<Float>,
+    height: State<Float>,
+    up: State<Float>,
+    held_up: State<Float>,
     yaw: State<Float>,
     pitch: State<Float>,
     zoom: State<Float>,
@@ -260,7 +275,21 @@ view window(
         } else if mode == 1 {
             convert_face(amount, quantity, from, to)
         } else if mode == 2 {
-            graph2d_face(c, deg, answer, memory, width, centre, traced, grabbed, held_centre)
+            graph2d_face(
+                c,
+                deg,
+                answer,
+                memory,
+                width,
+                centre,
+                height,
+                up,
+                traced,
+                grabbed,
+                grabbed_y,
+                held_centre,
+                held_up,
+            )
         } else {
             graph3d_face(
                 c,
@@ -300,6 +329,12 @@ view calculator_face(
     let value = eval(typed, deg, answer, memory)
     let out = said(value)
     let valid = not value.is_nan()
+    // Why what is typed is no calculation yet, in the parser's own words; empty while it is one.
+    let why = if valid {
+        ""
+    } else {
+        trouble_words(typed, deg, answer, memory)
+    }
     let commit = if valid {
         calculate(c, typed, in_degrees: deg, answer: answer, memory: memory)
             .then(set(expr, out))
@@ -309,7 +344,7 @@ view calculator_face(
     split(side: .trailing, collapse: .stack) {
         primary(min: 18rem) {
             stack(gap: .section) {
-                display(expr, out, typed, valid, commit, answer)
+                display(expr, out, typed, valid, why, commit, answer)
                 keys(expr, memory, fresh, value, valid, commit)
             }
         }
@@ -328,13 +363,16 @@ view display(
     out: Text,
     typed: Text,
     valid: Bool,
+    why: Text,
     commit: Action,
     answer: Float,
 ) {
     ui.TextInput(bind: expr, placeholder: "Type a calculation", autofocus: true, lines: 2) {
         on submit: commit
     }
-    ui.TextInput(text: if valid { out } else { "" }, read_only: true, placeholder: "Result")
+    // The result, or why there is none: what is typed that is no calculation says what the reader
+    // of it met, as the calculator that read it does.
+    ui.TextInput(text: if valid { out } else { why }, read_only: true, placeholder: "Result")
     row(gap: .tight) {
         ui.Button("Copy expression", icon: .copy, icon_only: true, role: .secondary, size: .small) {
             on press: copy_text(typed)
@@ -347,9 +385,6 @@ view display(
         ui.Button("Copy answer", icon: .history, icon_only: true, role: .secondary, size: .small) {
             on press: copy_text(said(answer))
         }
-    }
-    if not valid and typed != "" {
-        ui.Text("Not a complete expression yet", role: .caption, secondary: true)
     }
 }
 
@@ -560,6 +595,13 @@ view past(c: Calculator, expr: State<Text>, fresh: State<Bool>) {
             on activate(x: Calculation): set(expr, x.expr).then(set(fresh, false))
             for x in c.calculations.sort_by(x -> created(x)?.at, desc) {
                 ui.ListItem(item: x) {
+                    // The row's own way out of the record, beside the one its menu offers for
+                    // every action of the calculation.
+                    menu: {
+                        ui.MenuItem("Delete", icon: .trash, destructive: true) {
+                            on choose: forget(x)
+                        }
+                    }
                     ui.ListRow(x.expr, value: x.result)
                 }
             }
@@ -632,15 +674,19 @@ view graph2d_face(
     memory: State<Float>,
     width: State<Float>,
     centre: State<Float>,
+    height: State<Float>,
+    up: State<Float>,
     traced: State<Option<Int>>,
     grabbed: State<Option<Float>>,
+    grabbed_y: State<Float>,
     held_centre: State<Float>,
+    held_up: State<Float>,
 ) {
     let shown = c.curves.filter(x -> x.visible)
     let xmin = centre - width
     let xmax = centre + width
-    let ymin = 0.0 - width
-    let ymax = 0.0 + width
+    let ymin = up - height
+    let ymax = up + height
     split(side: .trailing, collapse: .stack) {
         primary(min: 18rem) {
             stack(gap: .related) {
@@ -654,22 +700,47 @@ view graph2d_face(
                     // The pointer reads the curve where it stands, a drag pans what is shown, the
                     // wheel and a pinch zoom it.
                     on pointer(x): set(traced, sample_near(x))
-                    on drag_start(x): set(grabbed, x).then(set(held_centre, centre))
-                    on drag(x): set(centre, panned(held_centre, grabbed ?? x, x, width))
+                    on drag_start(x, y): set(grabbed, x)
+                        .then(set(grabbed_y, y))
+                        .then(set(held_centre, centre))
+                        .then(set(held_up, up))
+                    on drag(x, y): set(centre, panned(held_centre, grabbed ?? x, x, width))
+                        .then(
+                            set(up, held_up + (y - grabbed_y) * 2.0 * height),
+                        )
                     on drag_end: set(grabbed, .none)
+                    // The wheel zooms both axes by the same step, so the graph keeps its shape;
+                    // the buttons under it take one axis at a time.
                     on wheel(dx, dy): set(width, zoomed_by(width, dy))
+                        .then(
+                            set(height, height * zoomed_by(width, dy) / width),
+                        )
                         .then(set(centre, centre + dx / 200.0 * width))
                     on pinch(scale): set(width, scaled_by(width, scale))
+                        .then(
+                            set(height, height * scaled_by(width, scale) / width),
+                        )
                 }
                 row(gap: .tight) {
                     ui.Button("Zoom out", icon: .minus, icon_only: true) {
                         on press: set(width, zoomed_out(width))
+                            .then(set(height, zoomed_out(height)))
                     }
                     ui.Button("Zoom in", icon: .plus, icon_only: true) {
-                        on press: set(width, zoomed_in(width))
+                        on press: set(width, zoomed_in(width)).then(set(height, zoomed_in(height)))
+                    }
+                    ui.Button("Taller", icon: .chevron_up, icon_only: true) {
+                        on press: set(height, zoomed_out(height))
+                    }
+                    ui.Button("Shorter", icon: .chevron_down, icon_only: true) {
+                        on press: set(height, zoomed_in(height))
                     }
                     ui.Button("Reset", icon: .rotate_ccw, icon_only: true) {
-                        on press: set(width, 10.0).then(set(centre, 0.0)).then(set(traced, .none))
+                        on press: set(width, 10.0)
+                            .then(set(centre, 0.0))
+                            .then(set(height, 10.0))
+                            .then(set(up, 0.0))
+                            .then(set(traced, .none))
                     }
                     ui.Button("Left", icon: .chevron_left, icon_only: true) {
                         on press: set(centre, centre - width / 2.0)
@@ -974,6 +1045,23 @@ fn eval_with(
     var: Text,
 ) -> Float {
     let cs = normalize(text).split("")
+    let st = fresh_state(answer, memory, degrees, x, y, var)
+    let value = sum(cs, st)
+    if peek(cs, st) != "" {
+        return fail(st, 8.0)
+    }
+    value
+}
+
+/// What the parse of `text` stands in, before it reads a character.
+fn fresh_state(
+    answer: Float,
+    memory: Float,
+    degrees: Bool,
+    x: Float,
+    y: Float,
+    var: Text,
+) -> Map<Float> {
     let st = Map<Float>()
     st.put("i", 0.0)
     st.put("ans", answer)
@@ -982,11 +1070,53 @@ fn eval_with(
     st.put("x", x)
     st.put("y", y)
     st.put(var, x)
-    let value = sum(cs, st)
-    if peek(cs, st) != "" {
-        return bad()
+    st
+}
+
+/// Why `text` is no calculation, in words: the first thing the parse could not read. Empty for
+/// a text that works out, and for an empty one.
+fn trouble_words(text: Text, degrees: Bool, answer: Float, memory: Float) -> Text {
+    if text.trim() == "" {
+        return ""
     }
-    value
+    let cs = normalize(text).split("")
+    let st = fresh_state(answer, memory, degrees, 0.0, 0.0, "x")
+    let value = sum(cs, st)
+    let recorded = st.get("why") ?? 0.0
+    let code = if recorded != 0.0 {
+        recorded
+    } else if peek(cs, st) != "" { 8.0 } else if value.is_nan() { 9.0 } else { 0.0 }
+    if code == 0.0 {
+        return ""
+    }
+    fail_words(code)
+}
+
+/// What a parse that failed at `code` says happened.
+fn fail_words(code: Float) -> Text {
+    if code == 1.0 {
+        "The expression ends where a value belongs"
+    } else if code == 2.0 {
+        "A bracket is not closed"
+    } else if code == 3.0 {
+        "There is a character a calculation does not use"
+    } else if code == 4.0 {
+        "There is nothing by that name here"
+    } else if code == 5.0 {
+        "There is no function by that name"
+    } else if code == 6.0 {
+        "That function is given the wrong number of values"
+    } else if code == 7.0 {
+        "The integral is written in a way this calculator cannot read"
+    } else if code == 8.0 {
+        "There is more after the calculation"
+    } else { "That is not a calculation" }
+}
+
+/// Ends a parse that failed at `why`, keeping the first reason it met.
+fn fail(st: Map<Float>, why: Float) -> Float {
+    if (st.get("why") ?? 0.0) == 0.0 { st.put("why", why) }
+    bad()
 }
 
 /// What a person can type of the operators the parser knows, as the parser reads it.
@@ -1134,7 +1264,7 @@ fn postfix_rest(cs: List<Text>, st: Map<Float>, v: Float) -> Float {
 fn atom(cs: List<Text>, st: Map<Float>) -> Float {
     let c = peek(cs, st)
     if c == "" {
-        return bad()
+        return fail(st, 1.0)
     }
     if digit(c) >= 0.0 or c == "." {
         return number(cs, st)
@@ -1143,14 +1273,14 @@ fn atom(cs: List<Text>, st: Map<Float>) -> Float {
         take(cs, st)
         let inner = sum(cs, st)
         if take(cs, st) != ")" {
-            return bad()
+            return fail(st, 2.0)
         }
         return inner
     }
     if is_letter(c) {
         return named(cs, st)
     }
-    bad()
+    fail(st, 3.0)
 }
 
 fn named(cs: List<Text>, st: Map<Float>) -> Float {
@@ -1169,7 +1299,7 @@ fn named(cs: List<Text>, st: Map<Float>) -> Float {
             .map((c, i) -> if i >= from.to_int() and i < to.to_int() { c } else { "" })
             .join("")
         if peek(cs, st) != "," {
-            return bad()
+            return fail(st, 7.0)
         }
         take(cs, st)
         // `int(f, x, a, b)` names the variable it binds; `int(f, a, b)` binds `x`.
@@ -1180,11 +1310,11 @@ fn named(cs: List<Text>, st: Map<Float>) -> Float {
         let var = if named { maybe } else { "x" }
         let first = sum(cs, st)
         if take(cs, st) != "," {
-            return bad()
+            return fail(st, 7.0)
         }
         let second = sum(cs, st)
         if take(cs, st) != ")" {
-            return bad()
+            return fail(st, 7.0)
         }
         return integrate(integrand, first, second, var, st)
     }
@@ -1192,7 +1322,7 @@ fn named(cs: List<Text>, st: Map<Float>) -> Float {
     if name == "min" or name == "max" {
         let values = arguments(cs, st)
         if values.is_empty() or take(cs, st) != ")" {
-            return bad()
+            return fail(st, 6.0)
         }
         return if name == "min" {
             least(values, 1, values.first() ?? 0.0)
@@ -1205,7 +1335,7 @@ fn named(cs: List<Text>, st: Map<Float>) -> Float {
     if second_given { take(cs, st) }
     let second = if second_given { sum(cs, st) } else { 0.0 }
     if take(cs, st) != ")" {
-        return bad()
+        return fail(st, 2.0)
     }
     apply(name, first, second, second_given, st)
 }
@@ -1336,7 +1466,53 @@ fn constant(name: Text, st: Map<Float>) -> Float {
     if name == "y" {
         return st.get("y") ?? 0.0
     }
-    bad()
+    fail(st, 4.0)
+}
+
+/// Whether `name` is one of the functions this calculator knows.
+fn is_function(name: Text) -> Bool {
+    [
+        "sin",
+        "cos",
+        "tan",
+        "asin",
+        "acos",
+        "atan",
+        "sinh",
+        "cosh",
+        "tanh",
+        "asinh",
+        "acosh",
+        "atanh",
+        "rad",
+        "deg",
+        "atan2",
+        "ln",
+        "log10",
+        "log",
+        "log2",
+        "exp",
+        "sqrt",
+        "cbrt",
+        "abs",
+        "sign",
+        "sgn",
+        "floor",
+        "ceil",
+        "round",
+        "trunc",
+        "fract",
+        "gamma",
+        "fact",
+        "pow",
+        "root",
+        "mod",
+        "hypot",
+        "min",
+        "max",
+        "int",
+    ]
+        .contains(name)
 }
 
 /// A function of one value, or of two where `second_given`.
@@ -1462,7 +1638,10 @@ fn apply(name: Text, a: Float, b: Float, second_given: Bool, st: Map<Float>) -> 
     if name == "max" and second_given {
         return a.max(b)
     }
-    bad()
+    if is_function(name) {
+        return fail(st, 6.0)
+    }
+    fail(st, 5.0)
 }
 
 /// The `degree`-th root of `x`, which has a real answer below zero when the degree is odd.
@@ -2093,11 +2272,9 @@ fn plot3d(
 ) -> List<ui.Shape> {
     let floor = lines3d(yaw, pitch, zoom)
     let plots = if starter {
-        surface_faces(starter_surface(), deg, answer, memory, yaw, pitch, zoom, .accent)
+        [surface_mesh(starter_surface(), deg, answer, memory, yaw, pitch, zoom, .accent)]
     } else {
-        shown.flat_map(
-            (x, i) -> surface_faces(x.expr, deg, answer, memory, yaw, pitch, zoom, ink_at(i)),
-        )
+        shown.map((x, i) -> surface_mesh(x.expr, deg, answer, memory, yaw, pitch, zoom, ink_at(i)))
     }
     [floor, plots].flat_map(s -> s)
 }
@@ -2107,13 +2284,23 @@ fn starter_surface() -> Text {
     "sin(sqrt(x^2 + y^2))"
 }
 
-/// How many cells across a surface is drawn: fine enough that its folds read as a body rather
-/// than as a net of lines.
-/// One surface as bands that run along its rows, each filled in `ink` and lit by the angle it
-/// turns to the light, the ones farthest from the eye first so a nearer fold is drawn over the
-/// one behind it. A band is one shape: a cell per band would be a thousand values a frame, more
-/// than a view may hand the window between two draws.
-fn surface_faces(
+/// How many cells a surface is drawn across: fine enough that its folds read as a body. Each
+/// cell's corners are read from the expression, so this is also the cost of a frame.
+fn surface_steps() -> Int {
+    12
+}
+
+/// The steps across a surface: where a cell's edges stand along one axis, from 0 to the far
+/// edge.
+fn surface_lattice() -> List<Int> {
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+}
+
+/// One surface as cells, each a quad filled in `ink` and lit by the angle it turns to the light,
+/// the ones farthest from the eye first so a nearer fold is drawn over the one behind it. The
+/// cells are one shape and one flat buffer: a surface of hundreds of cells is one value a frame,
+/// not hundreds.
+fn surface_mesh(
     expr: Text,
     deg: Bool,
     answer: Float,
@@ -2122,134 +2309,25 @@ fn surface_faces(
     pitch: Float,
     zoom: Float,
     ink: ui.Ink,
-) -> List<ui.Shape> {
-    // A height field read from outside: along each axis its bands go away from the eye in the
+) -> ui.Shape {
+    // A height field read from outside: along each axis its cells go away from the eye in the
     // order its turned coordinate grows, so painting them in that order stacks them right.
     let far_y = yaw.cos() < 0.0
     let far_x = yaw.sin() < 0.0
-    surface_lattice()
-        .map(
-            (row, j) -> surface_band(
-                expr,
-                deg,
-                answer,
-                memory,
-                yaw,
-                pitch,
-                zoom,
-                ink,
-                if far_y { 10.0 - row } else { row },
-                far_x,
-            ),
-        )
-}
-
-/// The steps across a surface, one per band's edge: where a corner stands along one axis.
-fn surface_lattice() -> List<Float> {
-    [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
-}
-
-/// One band of a surface: the strip between two rows, filled in the surface's ink at the light
-/// its face turns to. A corner that is no number leaves the band out.
-fn surface_band(
-    expr: Text,
-    deg: Bool,
-    answer: Float,
-    memory: Float,
-    yaw: Float,
-    pitch: Float,
-    zoom: Float,
-    ink: ui.Ink,
-    row: Float,
-    far_x: Bool,
-) -> ui.Shape {
-    let step = 14.0 / 10.0
-    let y = -7.0 + step * row
-    // The near edge runs across, the far edge comes back, so the strip is one closed ring.
-    // The near edge runs across, the far edge comes back, so the strip is one closed ring.
-    let near = surface_lattice()
-        .flat_map(
-            (column, i) -> band_corner(
-                expr,
-                deg,
-                answer,
-                memory,
-                yaw,
-                pitch,
-                zoom,
-                y,
-                step,
-                if far_x { 10.0 - column } else { column },
-                0.0,
-            ),
-        )
-    let far = surface_lattice()
-        .flat_map(
-            (column, i) -> band_corner(
-                expr,
-                deg,
-                answer,
-                memory,
-                yaw,
-                pitch,
-                zoom,
-                y,
-                step,
-                if far_x { column } else { 10.0 - column },
-                1.0,
-            ),
-        )
-    let outline = [near, far].flat_map(s -> s)
-    ui.Shape.path(
-        points: outline,
-        closed: true,
-        fill: .some(ink),
-        shade: .some(band_light(expr, deg, answer, memory, y, step)),
+    let last = surface_steps()
+    let rows = surface_lattice().map((v, i) -> if far_y { last - 1 - i } else { i })
+    let columns = surface_lattice().map((v, i) -> if far_x { last - 1 - i } else { i })
+    // A cell with no number at one of its corners is a hole: it adds nothing, and the cells
+    // around it stand as they are.
+    let cells = rows.flat_map(
+        j -> columns.flat_map(i -> cell_numbers(expr, deg, answer, memory, yaw, pitch, zoom, i, j)),
     )
+    ui.Shape.mesh(cells: cells, fill: ink)
 }
 
-/// One corner of a band, at `along` across it and `at_the_back` of it, as the drawing shows it.
-fn band_corner(
-    expr: Text,
-    deg: Bool,
-    answer: Float,
-    memory: Float,
-    yaw: Float,
-    pitch: Float,
-    zoom: Float,
-    y: Float,
-    step: Float,
-    along: Float,
-    across: Float,
-) -> List<Float> {
-    let cx = -7.0 + step * along
-    let cy = y + step * across
-    let z = eval_at(expr, deg, answer, memory, cx, cy)
-    if z.is_nan() {
-        return []
-    }
-    projected(cx, cy, z, yaw, pitch, zoom)
-}
-
-/// How much light reaches the band between the rows at `y`, `step` apart: its face's tilt
-/// against a light above and to one side, never so dark a fold disappears.
-fn band_light(expr: Text, deg: Bool, answer: Float, memory: Float, y: Float, step: Float) -> Float {
-    let h = 0.35
-    let x = 0.0
-    let middle = y + step / 2.0
-    let dx = (eval_at(expr, deg, answer, memory, x + h, middle) - eval_at(expr, deg, answer, memory, x - h, middle)) / (2.0 * h)
-    let dy = (eval_at(expr, deg, answer, memory, x, middle + h) - eval_at(expr, deg, answer, memory, x, middle - h)) / (2.0 * h)
-    if dx.is_nan() or dy.is_nan() {
-        return 1.0
-    }
-    // The face's normal (-dx, -dy, 1), against a light from above, ahead and one side.
-    let reach = (dx * dx + dy * dy + 1.0).sqrt()
-    let lit = (-0.42 * dx - 0.5 * dy + 0.76) / reach
-    (0.45 + 0.55 * lit.max(0.0)).clamp(0.35, 1.0)
-}
-
-/// One point of a surface, turned by the orbit and tilted, as a place in the drawing.
-fn project_point(
+/// One cell of a surface as nine numbers: its four corners in ring order, x and y in turn, then
+/// how much of the ink's light reaches it. Empty where a corner is no number.
+fn cell_numbers(
     expr: Text,
     deg: Bool,
     answer: Float,
@@ -2260,22 +2338,64 @@ fn project_point(
     i: Int,
     j: Int,
 ) -> List<Float> {
-    let x = -7.0 + 14.0 * i.to_float() / 12.0
-    let y = -7.0 + 14.0 * j.to_float() / 12.0
-    let z = eval_at(expr, deg, answer, memory, x, y)
-    if z.is_nan() {
+    let x0 = surface_across(i)
+    let y0 = surface_across(j)
+    let x1 = surface_across(i + 1)
+    let y1 = surface_across(j + 1)
+    let za = eval_at(expr, deg, answer, memory, x0, y0)
+    let zb = eval_at(expr, deg, answer, memory, x1, y0)
+    let zc = eval_at(expr, deg, answer, memory, x1, y1)
+    let zd = eval_at(expr, deg, answer, memory, x0, y1)
+    if za.is_nan() or zb.is_nan() or zc.is_nan() or zd.is_nan() {
         return []
     }
-    projected(x, y, z, yaw, pitch, zoom)
+    // The cell's own four heights are the light it turns to: no more of the expression is read.
+    let light = cell_light(za, zb, zc, zd)
+    [
+        surface_x(x0, y0, za, yaw, pitch, zoom),
+        surface_y(x0, y0, za, yaw, pitch, zoom),
+        surface_x(x1, y0, zb, yaw, pitch, zoom),
+        surface_y(x1, y0, zb, yaw, pitch, zoom),
+        surface_x(x1, y1, zc, yaw, pitch, zoom),
+        surface_y(x1, y1, zc, yaw, pitch, zoom),
+        surface_x(x0, y1, zd, yaw, pitch, zoom),
+        surface_y(x0, y1, zd, yaw, pitch, zoom),
+        light,
+    ]
 }
 
-/// A world point as the drawing's fractions: turned about the vertical, then tilted toward the
-/// person, its height scaled so a surface has some to show.
-fn projected(x: Float, y: Float, z: Float, yaw: Float, pitch: Float, zoom: Float) -> List<Float> {
+/// Where a step stands in the surface's plane, from 7 to the left to 7 to the right.
+fn surface_across(step: Int) -> Float {
+    -7.0 + 14.0 * step.to_float() / surface_steps().to_float()
+}
+
+/// A world point's place across the drawing: turned about the vertical.
+fn surface_x(x: Float, y: Float, z: Float, yaw: Float, pitch: Float, zoom: Float) -> Float {
     let turned_x = x * yaw.cos() - y * yaw.sin()
+    0.5 + turned_x / 20.0 * zoom
+}
+
+/// A world point's place down the drawing: tilted toward the person, its height scaled so a
+/// surface has some to show.
+fn surface_y(x: Float, y: Float, z: Float, yaw: Float, pitch: Float, zoom: Float) -> Float {
     let turned_y = x * yaw.sin() + y * yaw.cos()
     let rise = turned_y * pitch.sin() + z * pitch.cos() * 3.0
-    [0.5 + turned_x / 20.0 * zoom, 0.58 - rise / 20.0 * zoom]
+    0.58 - rise / 20.0 * zoom
+}
+
+/// How much light reaches a cell whose corners stand at `za`, `zb`, `zc` and `zd`: its face's
+/// tilt against a light above and to one side, never so dark a fold disappears.
+fn cell_light(za: Float, zb: Float, zc: Float, zd: Float) -> Float {
+    let step = 14.0 / surface_steps().to_float()
+    let dx = (zb + zc - (za + zd)) / (2.0 * step)
+    let dy = (zd + zc - (za + zb)) / (2.0 * step)
+    if dx.is_nan() or dy.is_nan() {
+        return 1.0
+    }
+    // The face's normal (-dx, -dy, 1), against a light from above, ahead and one side.
+    let reach = (dx * dx + dy * dy + 1.0).sqrt()
+    let lit = (-0.42 * dx - 0.5 * dy + 0.76) / reach
+    (0.45 + 0.55 * lit.max(0.0)).clamp(0.35, 1.0)
 }
 
 /// The floor a surface is read against: a grid at zero height.
@@ -2290,13 +2410,11 @@ fn floor_line(yaw: Float, pitch: Float, zoom: Float, along: Int, at: Int) -> ui.
     let y1 = -7.0 + 14.0 * at.to_float() / 6.0
     let x2 = -7.0 + 14.0 * at.to_float() / 6.0
     let y2 = -7.0 + 14.0 * along.to_float() / 6.0
-    let start = projected(x1, y1, 0.0, yaw, pitch, zoom)
-    let end = projected(x2, y2, 0.0, yaw, pitch, zoom)
     ui.Shape.line(
-        x1: start.at(0) ?? 0.0,
-        y1: start.at(1) ?? 0.0,
-        x2: end.at(0) ?? 0.0,
-        y2: end.at(1) ?? 0.0,
+        x1: surface_x(x1, y1, 0.0, yaw, pitch, zoom),
+        y1: surface_y(x1, y1, 0.0, yaw, pitch, zoom),
+        x2: surface_x(x2, y2, 0.0, yaw, pitch, zoom),
+        y2: surface_y(x2, y2, 0.0, yaw, pitch, zoom),
         stroke: .track,
         weight: .hairline,
     )
