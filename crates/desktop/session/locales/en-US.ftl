@@ -607,6 +607,8 @@ so-tilo-desktop-overlays-open-surface = Open a surface
 so-tilo-desktop-window-menu-choose = Choose a row
 so-tilo-desktop-window-menu-close = Close the window menu
 so-tilo-desktop-window-menu-open = Open the window menu
+so-tilo-desktop-power-menu-close = Close the power menu
+so-tilo-desktop-power-menu-open = Open the power menu
 
 ## A declared action's parameter description is read as `<label>-<argument>`.
 

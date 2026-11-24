@@ -19,7 +19,6 @@ use tilo_sheets::delete_workspace::DeleteWorkspaceState;
 use tilo_sheets::directory::DirectoryState;
 use tilo_sheets::display_confirm::ConfirmState;
 use tilo_sheets::invite::InviteState;
-use tilo_sheets::portal::PortalState;
 use tilo_sheets::shortcut_guide::GuideState;
 use tilo_sheets::uninstall::UninstallState;
 use tilo_sheets::workspace_settings::WorkspaceSettingsState;
@@ -159,23 +158,14 @@ impl<S: SheetState> Sheet<S> {
         &self.state
     }
 
-    /// Up and taking input: as its presentation says, or while its window asks the person about
-    /// an action one of its controls ran. The question outlives the card that asked it: the power
-    /// menu closes as its row is chosen, and Shut down is asked about after.
+    /// Up and taking input, as its presentation says. An action one of its controls ran that asks
+    /// the person first is asked on the device, not on the sheet's window.
     fn open(&self) -> bool {
-        self.state.presentation().is_open() || self.asking()
+        self.state.presentation().is_open()
     }
 
     fn drawn(&self) -> bool {
-        self.state.presentation().is_drawn() || self.asking()
-    }
-
-    /// Whether the sheet's window is asking the person something.
-    fn asking(&self) -> bool {
-        self.host
-            .app()
-            .action_palette()
-            .is_some_and(|palette| palette.asking().is_some())
+        self.state.presentation().is_drawn()
     }
 
     /// The sheet covers the display the session placed it on, or the first one while it named none;

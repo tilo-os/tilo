@@ -2189,20 +2189,17 @@ impl Layouts {
         person: &str,
         edit: impl FnOnce(&mut automerge::AutoCommit) -> bool,
     ) -> bool {
-        let Some(engine) = self.engine() else {
+        let Some(certificate) = self.certificate() else {
             return false;
         };
         let key = (workspace_id, Route::view(person));
         if !self.settle_one(&key) || self.waits(&key) {
             return false;
         }
-        let Some(sealed) = self.sealed(&engine, &key) else {
-            return false;
-        };
         let Some((mut doc, revision)) = self.copy(&key) else {
             return false;
         };
-        doc.set_actor(actor(&engine, person));
+        doc.set_actor(actor(&certificate, person));
         let before = doc.get_heads();
         if !edit(&mut doc) || doc.pending_ops() == 0 {
             doc.rollback();
@@ -2217,7 +2214,6 @@ impl Layouts {
             Some(Written::View(written)),
             &before,
             revision,
-            sealed,
         );
         true
     }

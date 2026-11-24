@@ -396,7 +396,7 @@ fn found(
 ) -> tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, ApiError>> {
     crate::landing::off_loop(async move {
         answered(
-            tilo_api::daemon::this_computer().and_then(|daemon| daemon.found()),
+            tilo_api::daemon::this_computer().and_then(|daemon| daemon.found(None)),
             &refused,
         )
     })

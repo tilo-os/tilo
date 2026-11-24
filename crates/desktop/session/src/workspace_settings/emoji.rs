@@ -195,7 +195,7 @@ impl Emoji {
         let Some(open) = held
             .as_ref()
             .filter(|open| open.workspace == workspace.id().to_string())
-            .filter(|open| open.person.person_id() == Some(person.as_str()))
+            .filter(|open| open.person.person_id() == Some(person))
         else {
             return false;
         };
@@ -231,7 +231,7 @@ impl Emoji {
         let record = FollowedResource::<Record>::follow(
             &self.daemon,
             (&workspace_id, OWNER, &id),
-            person.as_str(),
+            person,
             Some(workspace.policy.clone()),
             Arc::clone(&self.wake),
         );

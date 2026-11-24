@@ -20,6 +20,9 @@
 //! ([`Options::services`]): connectivity, audio and the rest publish their
 //! resources beside the desktop's, and [`Session::invoke`] reaches their
 //! actions as it reaches the desktop's, by address.
+// A login asked of the daemon through tilo-api reaches iroh's endpoint, which is deep enough that
+// the compiler's default recursion limit gives up when it proves the login's future is `Send`.
+#![recursion_limit = "256"]
 
 // The session's state between frames, as every host runs it, and the roles
 // that keep it: the shell, the chrome, the records, the people and the

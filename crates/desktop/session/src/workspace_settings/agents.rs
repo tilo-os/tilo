@@ -513,7 +513,7 @@ impl Agents {
         );
         *self.open.borrow_mut() = Some(Open {
             workspace: workspace_id,
-            person: person.clone(),
+            person: person.to_owned(),
             policy: workspace.policy.clone(),
             record: record.clone(),
         });

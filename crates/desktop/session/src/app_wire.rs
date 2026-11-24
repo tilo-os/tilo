@@ -742,10 +742,10 @@ fn claim_earlier_owners(tree: &mut tilo_desktop_model::Layout, names: &Names) {
     }
     for workspace in &mut tree.workspaces {
         if workspace
-            .owner()
+            .policy.owner()
             .is_some_and(|owner| names.earlier.iter().any(|earlier| earlier == owner))
         {
-            workspace.set_owner(names.person.clone());
+            workspace.policy.set_owner(names.person.clone());
         }
     }
 }
@@ -1050,6 +1050,7 @@ fn host_services_with_hosts(
         .and_then(|engine| {
             crate::hosted_workspaces::HostedWorkspaces::service(
                 Some(engine),
+                hosted.service.clone(),
                 hosted.endpoint.clone(),
                 runtime,
             )

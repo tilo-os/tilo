@@ -612,6 +612,8 @@ so-tilo-desktop-overlays-open-surface = Eine Oberfläche öffnen
 so-tilo-desktop-window-menu-choose = Eine Zeile wählen
 so-tilo-desktop-window-menu-close = Das Fenstermenü schließen
 so-tilo-desktop-window-menu-open = Das Fenstermenü öffnen
+so-tilo-desktop-power-menu-close = Das Ein/Aus-Menü schließen
+so-tilo-desktop-power-menu-open = Das Ein/Aus-Menü öffnen
 
 ## Die Beschreibung eines Parameters wird als `<Label>-<Argument>` gelesen.
 

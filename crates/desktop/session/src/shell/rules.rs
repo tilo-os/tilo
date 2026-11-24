@@ -98,7 +98,7 @@ impl DesktopRules for SessionRules {
                 tree.workspaces
                     .iter()
                     .find(|held| held.id() == workspace)
-                    .map(|held| (held.id(), held.owner().cloned()))
+                    .map(|held| (held.id(), held.policy.owner().map(str::to_owned)))
             })
             .ok_or_else(|| t("desktop-workspace-gone"))?;
         let reads = match &self.view {

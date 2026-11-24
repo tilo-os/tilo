@@ -1356,6 +1356,9 @@ fn search_options() -> tilo_session::SearchOptions {
         indexes: Some(std::sync::Arc::new(
             tilo_session::platform::indexes::SessionIndexes::new(files),
         )),
+        // The device's one search index is its daemon's, which the session reaches once it holds
+        // the daemon's link.
+        index: None,
         // A desktop's files are its disk's, which the indexes above read.
         workspace_files: None,
         // A desktop holds every record of the workspaces it is in: its own records answer.

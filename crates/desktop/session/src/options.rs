@@ -361,8 +361,6 @@ impl Default for Options {
             config: SessionConfig::default(),
             accelerometer: Accelerometer::default(),
             services: Vec::new(),
-            #[cfg(target_os = "linux")]
-            vision: None,
             backlights: None,
             search: SearchOptions::default(),
             lists: crate::lists::Lists::default(),

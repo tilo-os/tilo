@@ -1971,8 +1971,6 @@ fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
 
 #[path = "session/banners.rs"]
 mod banners;
-#[path = "session/bars.rs"]
-mod bars;
 #[path = "session/chrome.rs"]
 mod chrome;
 #[path = "session/closed_windows.rs"]

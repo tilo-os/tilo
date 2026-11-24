@@ -368,7 +368,7 @@ where
         (workspace, app): (&str, &'static str),
         wake: tilo_service::Wake,
     ) -> Self {
-        let latest = Arc::new(Mutex::new((0, T::default())));
+        let latest = Arc::new(Mutex::new((0_u64, T::default())));
         let follow = {
             let (daemon, latest) = (daemon.clone(), Arc::clone(&latest));
             let workspace = workspace.to_owned();

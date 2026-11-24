@@ -552,11 +552,12 @@ impl crate::Session {
             } => {
                 let address = ActionAddress::new(resource, action);
                 let mut look = crate::look::look(&mut self.compositor, Some(&self.content));
-                match self
+                let invoked = self
                     .shared
                     .published
-                    .invoke_confirmed(&address, &arguments, &mut look)
-                {
+                    .invoke_confirmed(&address, &arguments, &mut look);
+                drop(look);
+                match invoked {
                     Ok(_) => self
                         .settle()
                         .map_err(|error| Error::Io(std::io::Error::other(error.to_string()))),

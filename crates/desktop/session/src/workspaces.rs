@@ -982,13 +982,13 @@ impl crate::Shared {
                 }
             }
             if workspace
-                .owner()
-                .is_some_and(|owner| !self.earlier.contains(owner))
+                .policy.owner()
+                .is_some_and(|owner| !self.earlier.iter().any(|earlier| earlier == owner))
             {
                 continue;
             }
             if let Some(owner) = self.owner_of(workspace.id(), &borrowed) {
-                workspace.set_owner(owner);
+                workspace.policy.set_owner(owner);
                 changed = true;
             } else {
                 tracing::debug!(
@@ -1099,58 +1099,59 @@ impl crate::Shared {
             );
             return;
         };
-        let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
+        let Some(view) = &self.view else {
             tracing::info!(
                 target: JOIN_FLOW_TARGET,
                 workspace = %joined.granted.workspace,
                 held_locally = true,
-                "join: this session holds no workspaces or takes no part in the peer network, so the workspace stays as this computer keeps it"
+                "join: this session reaches no device daemon, so the workspace stays as this computer keeps it"
             );
             self.open_joined_workspace(&joined.granted.workspace, &joined.name, Arrival::Joined);
             return;
         };
-        let on_shell = self.holds(workspace);
-        engine.bind(workspace);
+        let invite = match &joined.granted.way {
+            tilo_workspace_directory::Way::Invitation(invitation) => Some(invitation.clone()),
+            tilo_workspace_directory::Way::Native(locator) => locator.to_link(),
+        };
+        let Some(invite) = invite else {
+            tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                workspace = %joined.granted.workspace,
+                outcome = "not joined",
+                "join: the native invitation link is malformed"
+            );
+            self.directory_store
+                .set_note(Some("the native invitation link is malformed".to_owned()));
+            return;
+        };
         tracing::info!(
             target: JOIN_FLOW_TARGET,
             workspace = %joined.granted.workspace,
-            on_shell,
-            "join: the workspace is made on the session"
+            "join: the invitation is presented to the device's daemon"
         );
-        let asked = sync.enroll(crate::sync::Enrolling {
-            workspace_id: workspace,
-            way: joined.granted.way.clone(),
-            // A API's workspace learns the person by the name the session knows them by.
-            name: crate::platform::directory::person()
-                .map(|person| person.name)
-                .unwrap_or_default(),
-        });
-        match asked {
-            Ok(()) => {
-                tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    workspace = %joined.granted.workspace,
-                    "join: the way in is presented to the workspace's host"
-                );
-                self.directory_store
-                    .expect_enrollment(&joined.granted.workspace);
-            }
-            Err(error) => {
-                tracing::warn!(%error, workspace = %joined.granted.workspace, "the workspace was not asked to take this device in");
-                tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    workspace = %joined.granted.workspace,
-                    %error,
-                    outcome = "removed",
-                    "join: the way in could not be presented, so the workspace is taken off the session"
-                );
-                engine.unbind(workspace);
-                if on_shell {
-                    self.release_workspace(workspace);
-                }
-                self.directory_store.set_note(Some(error));
-            }
-        }
+        let asked = view.ask_account(
+            tilo_peer_state::workspace_view::LIST,
+            tilo_peer_state::workspace_view::JOIN,
+            serde_json::Map::from_iter([("invite".to_owned(), invite.into())]),
+        );
+        self.directory_store
+            .expect_enrollment(&joined.granted.workspace);
+        let joins = Rc::clone(&self.joins);
+        self.landings
+            .then(crate::landing::off_loop(asked), move |outcome| {
+                let result = match outcome {
+                    Some(Ok(_)) => Ok(()),
+                    Some(Err(error)) => Err(tilo_session_client::EnrollFailure::Refused(error)),
+                    None => return,
+                };
+                joins.borrow_mut().push(tilo_session_client::Enrolled {
+                    workspace_id: workspace,
+                    member: false,
+                    name: None,
+                    result,
+                    held: false,
+                });
+            });
     }
 
     /// Tell the person, once, that `workspace` (`name` on their list) waits for its host to take

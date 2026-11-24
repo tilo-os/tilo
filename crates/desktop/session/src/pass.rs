@@ -886,7 +886,7 @@ fn session<'a>(
     crate::test_control::Session {
         published: &shared.published,
         shell,
-        apps_kept: shared.app_stores.get() == crate::engine_records::AppStores::Kept,
+        apps_kept: *shared.app_stores.borrow() == crate::app_stores::AppStores::Kept,
         handle: &shared.handle,
         overlays: &shared.overlays,
         overview: &shared.overview,

@@ -931,7 +931,7 @@ impl Service for ShellService {
                 let target = crate::shell::keyboard_target_in(
                     &self.handle,
                     &self.surfaces.overlays,
-                    self.surfaces.shell,
+                    true,
                 );
                 Some(reading(&Focus {
                     target: target.as_str(),

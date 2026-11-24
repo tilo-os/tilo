@@ -1030,7 +1030,7 @@ fn people(ws: &Workspace, names: &PeopleNames, person: &str, holders: &[Holder])
         ws,
         names,
         person,
-        ws.is_owner(person),
+        ws.policy.is_owner(person),
         &kept,
     ))
 }

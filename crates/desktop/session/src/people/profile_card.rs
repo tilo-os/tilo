@@ -390,16 +390,10 @@ impl Widget for PictureButton {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::kurbo::Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+        let (scene, transform, text, theme, env) = ctx.parts();
         self.face
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme, &env);
         if self.pressing == Pressing::Resting {
             return;
         }
@@ -582,7 +576,7 @@ impl ProfileCard {
                 .push(Box::new(
                     Button::icon_only("profile-copy-key", Icon::Copy, &t("profile-copy-id"))
                         .role(ButtonRole::Plain)
-                        .on_own_device_effect(move || {
+                        .on_click(move || {
                             ui::text_selection::clipboard_copy(&copy);
                         }),
                 )),
@@ -732,7 +726,7 @@ impl ProfileCard {
                 Button::new("profile-message", &t("profile-message"))
                     .with_icon(Icon::MessageCircle)
                     .role(ButtonRole::Primary)
-                    .on_own_device_effect(move || {
+                    .on_click(move || {
                         chosen
                             .borrow_mut()
                             .push(ProfileChoice::Message(key.clone()));
@@ -889,7 +883,7 @@ impl ProfileCard {
                                 &t("profile-copy-device-key"),
                             )
                             .role(ButtonRole::Plain)
-                            .on_own_device_effect(move || {
+                            .on_click(move || {
                                 ui::text_selection::clipboard_copy(&key);
                             }),
                         )),

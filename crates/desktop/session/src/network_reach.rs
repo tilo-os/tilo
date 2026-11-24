@@ -94,7 +94,7 @@ impl crate::Shared {
                     start();
                 }
             };
-            let edit = move |workspace: &mut tilo_desktop_model::Workspace, actor: &String| {
+            let edit = move |workspace: &mut tilo_desktop_model::Workspace, actor: &str| {
                 let now = tilo_clock::unix_now();
                 grants.iter().try_fold(
                     tilo_session_core::desktop::workspace_settings::PolicyEdit::default(),

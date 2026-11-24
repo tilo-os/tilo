@@ -29,11 +29,9 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::admitted::{offered, settled};
 use tilo_actions::remote::session_actions as wire;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, CatalogueQuery, InvocationReceipt,
-    InvokeRequest, Outcome, Pending, pending,
+    ActionProvider, Admitted, Caller, InvokeRequest, Outcome, Pending, pending,
 };
 use tilo_actions::{ActionDescriptor, ActionFailure, InvocationId};
 use tilo_broker_core::BrokerActor;
@@ -151,12 +149,12 @@ impl SessionActions {
 
     /// Every step the session offers now, as the daemon lists them.
     #[cfg(unix)]
-    fn page(&self) -> CataloguePage {
+    fn page(&self) -> tilo_actions::remote::CataloguePage {
         let revision = self
             .generation
             .load(std::sync::atomic::Ordering::Acquire)
             .to_string();
-        CataloguePage {
+        tilo_actions::remote::CataloguePage {
             revision,
             rows: self
                 .rows()
@@ -170,7 +168,7 @@ impl SessionActions {
                 })
                 .collect(),
             exhausted: true,
-            ..CataloguePage::default()
+            ..tilo_actions::remote::CataloguePage::default()
         }
     }
 }
@@ -352,7 +350,8 @@ impl SessionActions {
                     session: None,
                 }),
             program,
-            confirm: false,
+            // The person's own line has its go-ahead: it is theirs.
+            go: tilo_actions::remote::task_programs::Go::Run,
             this: None,
             stop: Some(Arc::clone(&admitted.stop)),
             asked_in: None,

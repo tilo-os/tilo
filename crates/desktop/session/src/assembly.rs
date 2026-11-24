@@ -328,7 +328,7 @@ pub(crate) struct Shared {
     pub(crate) program_notices: crate::program_asks::ProgramNotices,
     /// Where programs ask the person: what the session lends its apps and asks itself on.
     #[cfg(target_os = "linux")]
-    pub(crate) asks: tilo_service::AskSender,
+    pub(crate) asker: tilo_service::AskSender,
     /// Who is here: this session's membership of each workspace, when it
     /// takes part in the peer network.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,

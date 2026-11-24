@@ -291,7 +291,7 @@ impl crate::Shared {
         if let Some(mut branch) = made
             && !tree.workspaces.iter().any(|held| held.id() == workspace)
         {
-            branch.set_owner(self.person.clone());
+            branch.policy.set_owner(self.person.clone());
             let first = branch.strips.first().map(|strip| strip.id);
             tree.workspaces.push(branch);
             if let Some(first) = first {

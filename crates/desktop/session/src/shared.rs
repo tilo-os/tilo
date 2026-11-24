@@ -501,7 +501,7 @@ impl Shared {
                 crate::mcp_server::awaited_reason(&view, &handle, workspace)
             }));
         }
-        launch.lend_questions(self.asks.clone());
+        launch.lend_questions(self.asker.clone());
         // Where a workspace's resources open on the web, as its directory entry says: what a
         // tilolang window's host mints its resources' links under. A workspace whose host serves
         // no page lends nothing, and a copy link there is refused with the system's words.

@@ -133,7 +133,7 @@ pub(super) fn workspace(
             tree.workspaces
                 .iter()
                 .find(|held| held.id().to_string() == asked)
-                .filter(|held| held.role_of(person).is_some() && !held.is_blocked(person))
+                .filter(|held| held.policy.role_of(person).is_some() && !held.policy.is_blocked(person))
                 .map(|held| {
                     (
                         held.id().to_string(),

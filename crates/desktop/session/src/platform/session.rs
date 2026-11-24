@@ -30,7 +30,6 @@ use ui::host_operation::ResourceOperationStart;
 
 use crate::assembly::{Session, Shared};
 
-pub use crate::bars::BarShown;
 pub use crate::clock_wait::ClockWait;
 pub use crate::config::SessionConfig;
 pub use crate::controls::{
@@ -983,7 +982,7 @@ impl Session {
             person: options.person.clone(),
             activities: Rc::clone(&activities),
             live: Rc::clone(&live),
-            surfaces,
+            surfaces: surfaces.clone(),
             tray: tray.clone(),
             view: view.clone(),
             // The invite sheet is the session's own surface: the shell asks for it here.
@@ -1143,8 +1142,8 @@ impl Session {
                     modal: modal_sheets,
                 },
                 overlays: overlays.clone(),
-                launcher: options.shell.then(|| handle.clone()),
-                surfaces: options.shell.then(|| surfaces.clone()),
+                launcher: Some(handle.clone()),
+                surfaces: Some(surfaces.clone()),
             },
         );
 
@@ -1261,7 +1260,7 @@ impl Session {
         // What a program outside Tilo asks the person (the portal, polkit, NetworkManager, a
         // pairing, and the session's own asks) is raised as an asked record they answer on the
         // asking view, by the record's `resolve` ([`crate::program_asks`]).
-        let (asks, received) = crate::program_asks::for_session(
+        let (asker, received) = crate::program_asks::for_session(
             options.asks.clone(),
             options.desktop.as_ref().map(|desktop| desktop.asks()),
         );
@@ -1274,7 +1273,7 @@ impl Session {
             )
         };
         program_asks.serve_on(&asks_link);
-        let questions = Some(asks.clone());
+        let questions = Some(asker.clone());
         // A file handed to a receiver that is not one of the person's devices waits on the same
         // asking for them to verify that receiver.
         if let (Some(questions), Some(nearby)) = (&questions, &nearby) {
@@ -1808,7 +1807,7 @@ impl Session {
             mentions,
             program_asks,
             program_notices,
-            asks,
+            asker,
             mcp_server: RefCell::new(mcp_server),
             session_services,
             sync,

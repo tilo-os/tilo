@@ -76,7 +76,7 @@ pub(crate) fn govern(
             .write(&writes)
             .await
     });
-    let (handle, person) = (at.handle.clone(), at.person.clone());
+    let (handle, person) = (at.handle.clone(), at.person.to_owned());
     at.landings.then(written, move |written| {
         let written = written
             .unwrap_or_else(|| Err("the change was given up before the workspace answered".into()));

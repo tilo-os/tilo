@@ -663,7 +663,7 @@ impl Shared {
             search: &self.search,
             fed: &self.ws_settings_fed,
             tabs: &self.workspace_tabs,
-            asks: Some(&self.asks),
+            asks: Some(&self.asker),
             personal: self.personal.as_ref(),
             engine: self.engine.as_ref(),
             view: self.view.as_ref(),
@@ -787,14 +787,12 @@ impl Shared {
             // here; a report points at what is wrong first and goes to the one place reports go.
             // The shell names that window on its next pass, and a shell with none in front leaves the
             // chord to Chat, which a send with nothing to be about has always opened.
-            // A shell that draws the screen draws the picker too: it is the shell's view, and its
+            // The shell draws the picker: it is the shell's view, and its
             // card takes the keys, so the chord opens and closes it there.
             ShortcutAction::EmojiPicker =>
             {
                 #[cfg(target_os = "linux")]
-                if self.surfaces.shell {
-                    self.surfaces.toggle(crate::device_lists::EMOJI);
-                }
+                self.surfaces.toggle(crate::device_lists::EMOJI);
             }
             ShortcutAction::AskAgent => self.box_ask.set(Some(BoxAsk::Agent)),
             ShortcutAction::SaySomething => self.box_ask.set(Some(BoxAsk::People)),

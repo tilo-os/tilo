@@ -123,15 +123,13 @@ pub fn launchpad_surface() -> tilo_resource::surface::Surface {
     )
 }
 
-/// The empty shell's welcome cards this device offers, as the launcher lists them.
 /// The passing notice as a view of another language reads it (`device.said`).
 #[must_use]
 pub fn notice_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Said, SaidEffect>("said", "Notice")
 }
 
-/// What the shell says in passing over the windows: a short-lived notice, never a notification.
-/// Empty while nothing just happened.
+/// The empty shell's welcome cards this device offers, as the launcher lists them.
 #[derive(
     Clone,
     Debug,
@@ -169,7 +167,7 @@ pub(crate) struct LaunchpadCard {
 
 /// The glyph a welcome card shows: the app's own glyph where it opens one, and the shell's own for
 /// inviting someone and catching up.
-fn card_icon(card: tilo_desktop::launchpad::LaunchpadAction) -> String {
+fn card_icon(card: tilo_session_core::desktop::launchpad::LaunchpadAction) -> String {
     match card.app_target() {
         Some((app, _)) => ui::icons::app_glyph(app, None).name().to_owned(),
         None if card.slug() == "invite" => ui::icons::Icon::UserPlus.name().to_owned(),
@@ -224,8 +222,18 @@ pub(crate) struct SearchGroup {
     pub rows: Vec<SearchResult>,
 }
 
-/// One row the open search found: what it is called, what says what it is, and where choosing it
-/// names it.
+/// What the shell says in passing over the windows: a short-lived notice, never a notification.
+/// Empty while nothing just happened.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
 pub(crate) struct Said {
     /// What happened, in a sentence.
     pub text: String,
@@ -235,7 +243,8 @@ pub(crate) struct Said {
     pub actions: Vec<SaidAction>,
 }
 
-/// One button a passing notice offers.
+/// One row the open search found: what it is called, what says what it is, and where choosing it
+/// names it.
 #[derive(
     Clone,
     Debug,
@@ -551,7 +560,7 @@ pub(crate) enum InviteEffect {
 /// The surfaces the shell shows over its windows: the shell's own views.
 /// What `show-surface` and `close-surface` open and close, whether the person asks on the
 /// shell's surface or on the chrome's above it, so both open the one surface.
-#[derive(Clone, Clone)]
+#[derive(Clone)]
 pub(crate) struct Surfaces {
     /// The stack the panel's own app is placed in, with the shell's surface up.
     pub(crate) overlays: Overlays,

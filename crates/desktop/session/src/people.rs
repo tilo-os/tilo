@@ -1333,7 +1333,7 @@ impl Panel {
                     &sync.here().borrow().faces(),
                     &tiles,
                     &mut self.chats.borrow_mut(),
-                    &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                    env.presence.unwrap_or(&ui::presence::PresenceCtx::default()),
                     ui::time::now(),
                     Self::presence_ms(),
                     theme.motion(),

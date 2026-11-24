@@ -251,10 +251,18 @@ impl ProgramAsks {
         let dispatch = dispatch.clone();
         self.runtime.spawn(async move {
             let admitted = dispatch.actions.invoke(&dispatch.caller, request).await;
-            if let Err(error) = &admitted {
-                tracing::warn!(%error, "a program's question could not be put to the person");
-                asks.ended(&handle, invocation);
-                return;
+            match &admitted {
+                Some(Ok(_)) => {}
+                Some(Err(error)) => {
+                    tracing::warn!(%error, "a program's question could not be put to the person");
+                    asks.ended(&handle, invocation);
+                    return;
+                }
+                None => {
+                    tracing::warn!("the dispatch did not answer a program's question");
+                    asks.ended(&handle, invocation);
+                    return;
+                }
             }
             asks.follow_call(&dispatch, &handle, invocation).await;
         });
@@ -284,7 +292,11 @@ impl ProgramAsks {
                 self.ended(handle, invocation);
                 return;
             };
-            let () = change.await;
+            if change.await.is_none() {
+                tracing::warn!("the dispatch stopped telling when a question is answered");
+                self.ended(handle, invocation);
+                return;
+            }
         }
     }
 

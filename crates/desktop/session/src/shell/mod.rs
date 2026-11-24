@@ -16,6 +16,7 @@ use tilo_compositor::Compositor;
 use tilo_session_core::desktop::overlays::{Overlays, Part, Target};
 
 use tilo_service::Services;
+use tilo_session_core::surface::ShellSurface as _;
 use tilo_session_core::shell::{Ask, LayoutReading};
 use tilo_session_core::surfaces::Surfaces;
 
@@ -340,7 +341,7 @@ impl Shell {
         &mut self,
         compositor: &mut Compositor,
         surfaces: &mut Surfaces,
-        identify: &[tilo_desktop::display_identify::Label],
+        identify: &[tilo_session_core::desktop::host::chrome::Label],
     ) {
         let info = compositor.outputs();
         reconcile_displays(
@@ -394,7 +395,7 @@ impl Shell {
     fn screens(
         &self,
         outputs: &[tilo_compositor::OutputInfo],
-        identify: &[tilo_desktop::display_identify::Label],
+        identify: &[tilo_session_core::desktop::host::chrome::Label],
     ) -> std::collections::BTreeMap<String, tilo_session_core::shell::LayoutDisplayReading> {
         let (ids, primary) = self.lists.handle.read(|tree| {
             let ids: std::collections::BTreeMap<String, u32> = tree
@@ -537,7 +538,7 @@ impl Shell {
         &mut self,
         compositor: &mut Compositor,
         surfaces: &mut Surfaces,
-        identify: &[tilo_desktop::display_identify::Label],
+        identify: &[tilo_session_core::desktop::host::chrome::Label],
     ) {
         self.follow_outputs(compositor, surfaces, identify);
     }

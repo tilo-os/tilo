@@ -139,8 +139,9 @@ async fn read_from_host(
     after: Option<String>,
 ) -> Result<Value, String> {
     let read = record_read(person, after);
+    let workspace = read.workspace.clone();
     let pending = hosted
-        .read_record(&read.workspace, workspace_id(person), read)
+        .read_record(&workspace, workspace_id(person), read)
         .ok_or("no host takes this device's work")?;
     let answered = pending.await.unwrap_or_else(|| {
         Err(tilo_actions::remote::ActionCallError::Unavailable {
