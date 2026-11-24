@@ -6,7 +6,9 @@ not have. `words_that_go.toml` lists, for each row, the identifiers and text
 that spell it, and `words_that_go_baseline.json` the names that hold them today.
 This check reads the code again (Rust, tilolang, TypeScript, JavaScript and
 Python; never vendored code or docs, never comments, and inside a string only
-what is shaped like an identifier, `held_by` but not the prose word "held") and
+what is shaped like an identifier, `held_by` but not the prose word "held"; a
+row's exact text counts only as a whole name, so `tilo.member` is not found
+inside `tilo.membership`) and
 fails when a row's specific words appear in a name the baseline does not list:
 new code named a concept that goes. More calls to a name that already exists,
 or code moved from one file to another, are printed but never fail. A row that
@@ -78,6 +80,7 @@ LANGUAGES = {
 }
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 WORD = re.compile(r"[A-Z]?[a-z]+[0-9]*|[A-Z]+[0-9]*(?![a-z])|[0-9]+")
+NAME_CHAR = r"[A-Za-z0-9_]"
 
 
 def sources(root: Path) -> list[Path]:
@@ -136,6 +139,21 @@ def words(identifier: str) -> tuple[str, ...]:
     return tuple(word.lower() for word in WORD.findall(identifier))
 
 
+def name_uses(text: str, literal: str) -> int:
+    """How many whole names `literal` is in `text`.
+
+    A name is a run of identifier characters; a separator (`.`, `-`, `/`, a
+    quote) ends one. `tilo.member` inside `tilo.membership` begins `tilo`'s
+    name and then continues another segment, so it is that other name, not
+    this one. A boundary is required only on a side where `literal` itself
+    ends in an identifier character, so a literal ending in a separator
+    (`tilo-personal-store/`) still finds the path it begins.
+    """
+    left = rf"(?<!{NAME_CHAR})" if re.match(NAME_CHAR, literal) else ""
+    right = rf"(?!{NAME_CHAR})" if re.search(rf"{NAME_CHAR}$", literal) else ""
+    return len(re.findall(left + re.escape(literal) + right, text))
+
+
 def holds(identifier: tuple[str, ...], term: tuple[str, ...]) -> bool:
     """Whether `term` is a run of `identifier`'s words, its last word maybe plural."""
     *head, last = term
@@ -187,7 +205,7 @@ def count(root: Path, rows: list[dict]) -> dict[str, Row]:
         body, named = code(raw, LANGUAGES[path.suffix])
         identifiers.update(named)
         for literal in literals:
-            texts[literal] += body.count(literal)
+            texts[literal] += name_uses(body, literal)
         for prefix in prefixes:
             if path.as_posix().startswith(prefix):
                 lines[prefix] += sum(1 for line in body.splitlines() if line.strip())
@@ -310,7 +328,7 @@ def staged_problems(root: Path, rows: list[dict], held: set[str]) -> list[str]:
             before_body, before_named = "", []
         added.update(Counter(named) - Counter(before_named))
         for literal in literals:
-            newer = body.count(literal) - before_body.count(literal)
+            newer = name_uses(body, literal) - name_uses(before_body, literal)
             if newer > 0:
                 added_texts[literal] += newer
     split = {identifier: words(identifier) for identifier in added}
