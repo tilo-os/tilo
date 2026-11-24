@@ -112,6 +112,22 @@ impl Cards {
             .copied()
     }
 
+    /// The whole window size the app asked for the activity's card, while it presents one: what
+    /// the shell's card holds for it.
+    pub(crate) fn size(&self, app: &str, activity: &str) -> Option<Size> {
+        self.shared
+            .borrow()
+            .cards
+            .get(&(app.to_owned(), activity.to_owned()))
+            .map(Presented::window_size)
+    }
+
+    /// The places the shell's cards hold for the apps this pass, in shell pixels: a card the shell
+    /// does not show any more has none, and its app draws the activity inline.
+    pub(crate) fn place(&self, slots: BTreeMap<Key, Rect>) {
+        self.shared.borrow_mut().slots = slots;
+    }
+
     /// The card `token` draws, while the app still presents it.
     pub(crate) fn by_token(&self, token: &str) -> Option<Presented> {
         self.shared

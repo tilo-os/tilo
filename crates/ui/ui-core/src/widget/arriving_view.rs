@@ -545,7 +545,10 @@ fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) ->
     let compact = match shape {
         SkeletonShape::Row(_) | SkeletonShape::Chip => true,
         SkeletonShape::Text { lines } => lines <= 2,
-        SkeletonShape::Media(_) | SkeletonShape::Page | SkeletonShape::Ground => false,
+        SkeletonShape::Media(_)
+        | SkeletonShape::Page
+        | SkeletonShape::Block { .. }
+        | SkeletonShape::Ground => false,
     };
     if compact {
         let mut row = crate::widget::ListRow::new("arriving.failed", failed);

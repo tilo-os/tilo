@@ -103,6 +103,11 @@ pub(crate) struct LiveItem {
     /// docks it in the corner column.
     pub x: Option<i64>,
     pub y: Option<i64>,
+    /// Its app draws its card itself (a route, a call's video): the shell's card holds a block
+    /// `drawn_width` by `drawn_height` the app's own window stands over.
+    pub drawn: bool,
+    pub drawn_width: f64,
+    pub drawn_height: f64,
 }
 
 /// The most cards over the windows at once: the one touched longest ago folds into the bar's pill
@@ -332,6 +337,8 @@ pub(crate) struct Sources {
     pub(crate) pressed: std::cell::RefCell<Vec<(String, Map<String, Value>)>>,
     /// The cards this device stands over its windows.
     pub(crate) cards: std::cell::RefCell<Cards>,
+    /// The cards the apps draw themselves: a row whose app presented one holds its place.
+    pub(crate) drawn: crate::cards::Cards,
     /// The rows the person kept off this device's bar, by key.
     pub(crate) collapsed: std::cell::RefCell<std::collections::BTreeSet<String>>,
     /// Grows when the person keeps a row off the bar or brings it back.
@@ -343,6 +350,35 @@ pub(crate) struct Sources {
 }
 
 impl Sources {
+    /// Hold the place of every card its app draws itself where the shell's card keeps it, as
+    /// `at` finds that block (named "{what it is} in {its app}", as the shell's card
+    /// names it): the app is told to stand its card's window there.
+    pub(crate) fn place_drawn(&self, at: impl Fn(&str) -> Option<(f64, f64, f64, f64)>) {
+        let mut slots = std::collections::BTreeMap::new();
+        for (app, summary, _) in self.activities.summaries() {
+            if self.drawn.size(&app, &summary.id).is_none() {
+                continue;
+            }
+            let source = if summary.source.is_empty() {
+                crate::app_names::app_name(&app)
+            } else {
+                summary.source.clone()
+            };
+            let name = if summary.title.is_empty() {
+                &source
+            } else {
+                &summary.title
+            };
+            if let Some((x, y, width, height)) = at(&format!("{name} in {source}")) {
+                slots.insert(
+                    (app, summary.id),
+                    ui::vello::kurbo::Rect::new(x, y, x + width, y + height),
+                );
+            }
+        }
+        self.drawn.place(slots);
+    }
+
     /// What makes the rows: a row that came or went, an app's activity, or what plays.
     pub(crate) fn revision(&self) -> (u64, u64, u64) {
         let playing = self.readings.borrow().playing().map_or(0, |playing| {
@@ -357,9 +393,24 @@ impl Sources {
                 .hash(&mut hasher);
             hasher.finish().max(1)
         });
+        let drawn = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for card in self.drawn.presented() {
+                let size = card.window_size();
+                (
+                    &card.app,
+                    &card.activity,
+                    size.width.to_bits(),
+                    size.height.to_bits(),
+                )
+                    .hash(&mut hasher);
+            }
+            hasher.finish()
+        };
         (
             self.rows.revision().wrapping_add(self.revision.get()),
-            self.activities.board().revision(),
+            self.activities.board().revision().wrapping_add(drawn),
             playing,
         )
     }
@@ -438,7 +489,11 @@ impl Sources {
                 (Some(progress), None) => (Some(f64::from(progress)), String::new(), String::new()),
                 _ => (None, String::new(), String::new()),
             };
+            let drawn = self.drawn.size(&app, &summary.id);
             rows.push(LiveItem {
+                drawn: drawn.is_some(),
+                drawn_width: drawn.map_or(0.0, |size| size.width),
+                drawn_height: drawn.map_or(0.0, |size| size.height),
                 kind: kind_name(summary.kind).to_owned(),
                 progress,
                 elapsed,
@@ -572,7 +627,10 @@ impl Sources {
             )));
         };
         self.activities.close(app, activity);
-        self.cards.borrow_mut().touched.retain(|touched| touched != key);
+        self.cards
+            .borrow_mut()
+            .touched
+            .retain(|touched| touched != key);
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 
@@ -709,9 +767,9 @@ fn transport_resource(
         let declares = |name: &str| spec.actions.iter().any(|a| a.id == name);
         (declares("play_pause") || declares("toggle") || declares("pause") || declares("play"))
             .then(|| {
-            let reading = services.read(&address);
-            (address, spec.clone(), reading)
-        })
+                let reading = services.read(&address);
+                (address, spec.clone(), reading)
+            })
     })
 }
 
@@ -809,12 +867,13 @@ mod tests {
     fn sources(board: &Arc<runtime_collab::LiveActivities>) -> Sources {
         Sources {
             rows: tilo_workspace_service::live::LiveRows::default(),
-            activities: std::rc::Rc::new(crate::shell::activities::Activities::new(
-                Arc::clone(board),
-            )),
+            activities: std::rc::Rc::new(crate::shell::activities::Activities::new(Arc::clone(
+                board,
+            ))),
             readings: crate::status::Shared::default(),
             pressed: std::cell::RefCell::default(),
             cards: std::cell::RefCell::default(),
+            drawn: crate::cards::Cards::new(),
             collapsed: std::cell::RefCell::default(),
             revision: std::cell::Cell::default(),
             services: std::rc::Rc::default(),
@@ -934,10 +993,7 @@ mod tests {
             overlay: floats,
             announce: None,
         };
-        board.show(
-            app,
-            Some(serde_json::to_value(published).expect("JSON")),
-        );
+        board.show(app, Some(serde_json::to_value(published).expect("JSON")));
     }
 
     fn cards(live: &Sources) -> Vec<String> {
@@ -957,9 +1013,23 @@ mod tests {
         let board = Arc::new(runtime_collab::LiveActivities::default());
         let live = sources(&board);
         show(&board, "so.tilo.calls", Kind::Call, "Ada", true, None);
-        show(&board, "so.tilo.music", Kind::Music, "Song", false, Some(200));
+        show(
+            &board,
+            "so.tilo.music",
+            Kind::Music,
+            "Song",
+            false,
+            Some(200),
+        );
         show(&board, CLOCKS, Kind::Timer, "Tea", false, None);
-        show(&board, "so.tilo.maps", Kind::Navigation, "Route", false, None);
+        show(
+            &board,
+            "so.tilo.maps",
+            Kind::Navigation,
+            "Route",
+            false,
+            None,
+        );
         assert_eq!(cards(&live), ["Ada"], "only the call asks to float");
 
         let key = |title: &str| {
@@ -980,7 +1050,12 @@ mod tests {
             !standing.contains(&"Ada".to_owned()),
             "the card touched longest ago folds into the pill: {standing:?}"
         );
-        assert!(live.read().rows.iter().any(|row| row.title == "Route" && row.expanded));
+        assert!(
+            live.read()
+                .rows
+                .iter()
+                .any(|row| row.title == "Route" && row.expanded)
+        );
 
         // Pressing a control on the call touches it: it stands again, and the oldest goes.
         live.act(LiveEffect::PressLive {
@@ -996,7 +1071,13 @@ mod tests {
         live.act(LiveEffect::FoldLive { key: key("Route") })
             .expect("folded");
         assert!(!cards(&live).contains(&"Route".to_owned()));
-        assert!(!live.read().rows.iter().any(|row| row.title == "Route" && row.expanded));
+        assert!(
+            !live
+                .read()
+                .rows
+                .iter()
+                .any(|row| row.title == "Route" && row.expanded)
+        );
 
         // A moved card keeps its place; docked again, it has none.
         live.act(LiveEffect::MoveLive {
@@ -1017,21 +1098,32 @@ mod tests {
         assert_eq!(tea.map(|row| (row.x, row.y)), Some((None, None)));
 
         // The song has a length: the card says where it is, and a seek reaches its app.
-        let song = live.read().rows.into_iter().find(|row| row.title == "Song").expect("song");
-        assert_eq!((song.elapsed.as_str(), song.remaining.as_str()), ("0:50", "-2:30"));
+        let song = live
+            .read()
+            .rows
+            .into_iter()
+            .find(|row| row.title == "Song")
+            .expect("song");
+        assert_eq!(
+            (song.elapsed.as_str(), song.remaining.as_str()),
+            ("0:50", "-2:30")
+        );
         assert_eq!(song.progress, Some(0.25));
         live.act(LiveEffect::SeekLive {
             key: song.key.clone(),
             fraction: 0.5,
         })
         .expect("sought");
-        assert!(matches!(
-            live.act(LiveEffect::SeekLive {
-                key: key("Tea"),
-                fraction: 0.5
-            }),
-            Err(ApiError::InvalidArguments(_))
-        ), "a timer says no length to take it along");
+        assert!(
+            matches!(
+                live.act(LiveEffect::SeekLive {
+                    key: key("Tea"),
+                    fraction: 0.5
+                }),
+                Err(ApiError::InvalidArguments(_))
+            ),
+            "a timer says no length to take it along"
+        );
         assert!(matches!(
             live.act(LiveEffect::SeekLive {
                 key: song.key,
@@ -1039,7 +1131,6 @@ mod tests {
             }),
             Err(ApiError::InvalidArguments(_))
         ));
-
     }
 
     /// An activity its app cannot end from outside goes away when the person puts it away, until
@@ -1048,7 +1139,14 @@ mod tests {
     fn what_cannot_be_ended_is_put_away_until_it_changes() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
         let live = sources(&board);
-        show(&board, "so.tilo.maps", Kind::Navigation, "Route", true, None);
+        show(
+            &board,
+            "so.tilo.maps",
+            Kind::Navigation,
+            "Route",
+            true,
+            None,
+        );
         let key = live.read().rows[0].key.clone();
         live.act(LiveEffect::EndLive { key }).expect("put away");
         assert!(live.read().rows.is_empty());

@@ -18,6 +18,8 @@ pub enum SkeletonForm {
     Chip,
     /// A whole page, filling the space it is given.
     Page,
+    /// A block `height` tall that another program draws over.
+    Block,
 }
 
 crate::component::choice!(SkeletonForm, "SkeletonForm", {
@@ -26,6 +28,7 @@ crate::component::choice!(SkeletonForm, "SkeletonForm", {
     Media => "media",
     Chip => "chip",
     Page => "page",
+    Block => "block",
 });
 
 /// The shape of content still on its way, drawn where it will be and at its size so nothing
@@ -42,6 +45,8 @@ pub struct SkeletonProps {
     pub leading: Option<RowLeadingShape>,
     /// The shape of a media card's art: `square` unless said.
     pub aspect: Option<MediaAspect>,
+    /// A block's height in logical pixels.
+    pub height: Option<f64>,
 }
 
 impl SkeletonProps {
@@ -62,6 +67,9 @@ impl SkeletonProps {
             SkeletonForm::Media => SkeletonShape::Media(self.aspect.unwrap_or_default()),
             SkeletonForm::Chip => SkeletonShape::Chip,
             SkeletonForm::Page => SkeletonShape::Page,
+            SkeletonForm::Block => SkeletonShape::Block {
+                height: self.height.unwrap_or_default(),
+            },
         }
     }
 }

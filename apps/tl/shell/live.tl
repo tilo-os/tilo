@@ -316,6 +316,12 @@ view live_card(r: device.LiveItem) {
                 } else {
                     ui.Text(live_name(r), role: .heading, lines: 1, truncate)
                 }
+            } else if r.drawn {
+                // Its app draws this card itself (a route, a call's video): the card holds the
+                // block the app's own window stands over, and the session tells the app where.
+                ui.Labelled("{live_name(r)} in {r.source}") {
+                    ui.Skeleton(.block, height: r.drawn_height)
+                }
             } else {
                 card_body(r)
             }

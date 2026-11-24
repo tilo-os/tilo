@@ -304,6 +304,124 @@ fn a_hosted_windows_control_pressed_by_what_it_does_reaches_the_app() {
     );
 }
 
+/// A route an app draws itself stands in the shell's card: the card holds a block of the size the
+/// app asked for, and the app is told to stand its card's window exactly there, while its own
+/// window is not on screen.
+#[test]
+fn an_app_drawn_route_card_stands_where_the_shells_card_holds_it() {
+    use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
+    use ui::live_activity::{Control, ControlKind, Kind, Published, Summary};
+    use ui::vello::kurbo::{Rect, Size};
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_windowed(&mut home);
+    let handed = home.home().join("started");
+    let launcher = launcher_recording_pid(&home, &handed);
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let started: Arc<Launches> = Arc::new(Launches::default());
+    let mut session = session_on(apps.clone(), Arc::clone(&started));
+
+    apps.open(&Launch::Package {
+        app: APP.to_owned(),
+        open: None,
+    })
+    .expect("the app is opened");
+    let (pid, instance) = crate::common::wait_for(&mut session, "the app's process starts", |_| {
+        fs::read_to_string(&handed).ok().and_then(|text| {
+            let line = text.lines().find(|line| !line.trim().is_empty())?;
+            let (pid, instance) = line.trim().split_once(' ')?;
+            Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
+        })
+    });
+
+    // The route runs, and its app asks for it to float: the app draws the card itself, a body of
+    // 300 by 160 in a soft frame of 8 around it.
+    let mut published = Published::of(
+        Summary::new(Kind::Navigation, "Turn left onto Main Street", "200 m")
+            .with_id("route")
+            .with_source("Tasks")
+            .with_control(Control::new("end", "End route", ControlKind::Close)),
+    );
+    published.overlay = true;
+    session.live_activities().show(
+        APP,
+        Some(serde_json::to_value(published).expect("an activity is JSON")),
+    );
+    let body = Rect::new(0.0, 0.0, 300.0, 160.0);
+    let request = FloatingSurfaceRequest {
+        id: "route".into(),
+        title: "Turn left onto Main Street".into(),
+        role: FloatingRole::Navigation,
+        source: FloatingSource::AppElement {
+            app_id: APP.into(),
+            element_id: "route".into(),
+            region: body,
+        },
+        preferred_size: Size::new(300.0, 160.0),
+        aspect_ratio: None,
+        initial_rect: Some(body),
+        presentation_rect: Some(body.inflate(8.0, 8.0)),
+        tracking_source: None,
+    };
+    let mut connection: UnixStream = ServiceLinks::new(Arc::clone(&started))
+        .shell_ui(APP, instance, Some(pid))
+        .expect("the app's shell-ui connection")
+        .into();
+    for frame in [
+        FloatingSurfaceClientMessage::Hello {
+            version: FLOATING_SURFACE_PROTOCOL_VERSION,
+        },
+        FloatingSurfaceClientMessage::Present {
+            request: (&request).into(),
+        },
+    ] {
+        let mut bytes = serde_json::to_vec(&frame).unwrap();
+        bytes.push(b'\n');
+        connection.write_all(&bytes).unwrap();
+    }
+    connection.flush().unwrap();
+
+    // The shell's card holds the block for it, the size of the whole card the app draws.
+    let (x, y, width, height) = crate::common::wait_for(
+        &mut session,
+        "the shell's card holds the app's block",
+        |session| session.shell_control("Turn left onto Main Street in Tasks"),
+    );
+    assert!(
+        (height - 176.0).abs() < 0.5,
+        "the block is as tall as the card the app draws: {height}"
+    );
+
+    // The app is told to stand its card's window on that block, and to draw the body inside its
+    // frame.
+    let told = host_frames(&mut session, &mut connection, |told| {
+        told.iter().any(|message| {
+            matches!(message, FloatingSurfaceHostMessage::PrepareSurface { id, .. } if id == "route")
+        })
+    });
+    let Some(FloatingSurfaceHostMessage::PrepareSurface {
+        rect, content_rect, ..
+    }) = told.iter().rev().find(|message| {
+        matches!(message, FloatingSurfaceHostMessage::PrepareSurface { id, .. } if id == "route")
+    })
+    else {
+        panic!("the app is told where its card stands: {told:?}");
+    };
+    let held = [x, y, x + width, y + height];
+    for (told, held) in rect.iter().zip(held) {
+        assert!(
+            (told - held).abs() < 0.5,
+            "the card's window stands on the block the shell holds: {rect:?} against {held:?}"
+        );
+    }
+    assert!(
+        (content_rect[0] - rect[0] - 8.0).abs() < 0.5
+            && (content_rect[1] - rect[1] - 8.0).abs() < 0.5,
+        "the body stands inside the app's soft frame: {content_rect:?} in {rect:?}"
+    );
+}
+
 /// The tabs the shell keeps of `app` anywhere on it, whether a window stands in one or one waits for
 /// it: the tab a window of the app takes is the app's, as every window of it is.
 fn tabs_of(session: &Session, app: &str) -> Vec<u64> {

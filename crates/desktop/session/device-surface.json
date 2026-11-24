@@ -5575,6 +5575,18 @@
               "type": {
                 "option": "int"
               }
+            },
+            {
+              "name": "drawn",
+              "type": "bool"
+            },
+            {
+              "name": "drawn_width",
+              "type": "float"
+            },
+            {
+              "name": "drawn_height",
+              "type": "float"
             }
           ]
         },

@@ -33,6 +33,9 @@ pub enum SkeletonShape {
     /// A page: the whole space the region is given, its content filling it
     /// (and scrolling inside it). Lines of body text fill the skeleton.
     Page,
+    /// A picture of a known height another program draws over it (an app's own card): one
+    /// rounded block of the skeleton's tone, the width it is given.
+    Block { height: f64 },
     /// Content whose shape is not known (a window that declared none): its
     /// ground and nothing on it. The placeholder never guesses what will
     /// stand there.
@@ -95,6 +98,7 @@ impl SkeletonFace {
                     .height(text, theme, width)
             }
             SkeletonShape::Chip => crate::widget::ChipFace::height(theme),
+            SkeletonShape::Block { height } => height.max(0.0),
         }
     }
 
@@ -174,6 +178,13 @@ impl SkeletonFace {
                     caption_line,
                 );
             }
+            SkeletonShape::Block { .. } => ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                tone,
+                None,
+                &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
+            ),
             SkeletonShape::Chip => {
                 let h = rect.height().min(crate::widget::ChipFace::height(theme));
                 let w = rect.width().min(f64::from(CHIP_WIDTH_IN_LINES) * body);

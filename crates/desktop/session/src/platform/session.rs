@@ -861,6 +861,7 @@ impl Session {
             readings: Rc::clone(&readings),
             pressed: RefCell::default(),
             cards: RefCell::default(),
+            drawn: cards.clone(),
             collapsed: RefCell::default(),
             revision: std::cell::Cell::default(),
             services: Rc::clone(&origin_services),
