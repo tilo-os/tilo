@@ -470,7 +470,11 @@ fn a_waiting_question_reads_in_the_workspaces_invocations() {
         status: InvocationStatus::Running,
         ..Invocation::default()
     }];
-    super::super::services::with_questions(&mut recorded, waiting.clone(), None);
+    tilo_workspace_service::apps::collab_app_broker::with_questions(
+        &mut recorded,
+        waiting.clone(),
+        None,
+    );
     assert_eq!(recorded.len(), 1, "the record it has is the one read");
     let item = &recorded[0];
     assert_eq!(item.status, InvocationStatus::Waiting);
@@ -480,7 +484,11 @@ fn a_waiting_question_reads_in_the_workspaces_invocations() {
     assert!(asked.facts.facts.iter().any(|fact| fact.label == "To"));
 
     let mut after_restart = Vec::new();
-    super::super::services::with_questions(&mut after_restart, waiting.clone(), None);
+    tilo_workspace_service::apps::collab_app_broker::with_questions(
+        &mut after_restart,
+        waiting.clone(),
+        None,
+    );
     assert_eq!(
         after_restart.len(),
         1,
@@ -491,7 +499,11 @@ fn a_waiting_question_reads_in_the_workspaces_invocations() {
     assert_eq!(after_restart[0].status, InvocationStatus::Waiting);
 
     let mut another = Vec::new();
-    super::super::services::with_questions(&mut another, waiting, Some("another"));
+    tilo_workspace_service::apps::collab_app_broker::with_questions(
+        &mut another,
+        waiting,
+        Some("another"),
+    );
     assert!(
         another.is_empty(),
         "a reading of one invocation reads only that one"

@@ -140,7 +140,7 @@ pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{
     HeldCopies, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE,
     ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings,
-    ResourceReads, ResourceWake, answer_read, read_resources, readings_of,
+    ResourceReads, ResourceWake, answer_read, answered, read_resources, readings_of,
 };
 pub use search::{FOUND_FILE, Found, NOT_NARROWED, ResourceSearch, Within, stem_word};
 #[cfg(any(test, feature = "test-support"))]

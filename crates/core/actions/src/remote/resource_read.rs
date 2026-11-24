@@ -78,12 +78,18 @@ pub trait ResourceReads: Send + Sync {
     /// [`ActionCallError::NotPermitted`] for a caller that is not an agent task acting for its
     /// person, [`ActionCallError::Refused`] for a record the caller may not read,
     /// [`ActionCallError::Unavailable`] when the workspace's records cannot be read now (still
-    /// arriving, or held nowhere on this device).
+    /// arriving, or held nowhere on this device), or by a reader that answers only
+    /// [`Self::answer_read`], the device on the other end of a session.
     fn read(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError>;
+    ) -> Result<ResourceCopy, ActionCallError> {
+        let _ = (caller, address);
+        Err(ActionCallError::Unavailable {
+            reason: RESOURCE_READS_UNAVAILABLE.into(),
+        })
+    }
 
     /// Answer a read of one of this provider's records, asked as `correlation` over the API
     /// ([`super::RemoteActionMessage::ResourceRead`]), with what every reader of it is answered:
@@ -378,6 +384,28 @@ pub fn answer_read(
             result,
         }
     })
+}
+
+/// What `reads` answers `read` for `caller` through the record API's read message, as JSON
+/// ([`ResourceReadings::readable`], or a listing): wherever the record is, and with `after`
+/// once it moves past that revision or the wait went by.
+///
+/// # Errors
+///
+/// The reader's refusal, or an answer that is no reading.
+pub async fn answered(
+    reads: std::sync::Arc<dyn ResourceReads>,
+    caller: &Caller,
+    read: super::ResourceReadRequest,
+) -> Result<serde_json::Value, ActionCallError> {
+    match reads.answer_read(caller, 0, read).await {
+        Some(super::RemoteActionMessage::ResourceReading { result, .. }) => {
+            serde_json::from_str(&result?).map_err(|error| ActionCallError::Unavailable {
+                reason: format!("the reading does not read: {error}"),
+            })
+        }
+        _ => Err(ActionCallError::Unanswered),
+    }
 }
 
 /// What a provider that reads no records answers a read of one: the API posts every read through

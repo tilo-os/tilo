@@ -87,6 +87,42 @@ impl RecordReads {
         }
     }
 
+    /// The reader of a device's dispatch: the workspaces it holds, for a caller whose
+    /// certificate a workspace keeps, and the apps `broker` serves, for every caller inside it.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    pub fn with_apps(workspaces: &Workspaces, broker: &Arc<Broker>) -> Arc<Self> {
+        Arc::new(Self {
+            workspaces: Some(WeakWorkspaces(Arc::downgrade(&workspaces.inner))),
+            broker: Some(Arc::downgrade(broker)),
+            served: None,
+        })
+    }
+
+    /// The workspace's invocations ([`tilo_actions::remote::workspace_invocations::PROVIDER`]),
+    /// whole or one by its id: the calls the dispatch here keeps a record of, each as the
+    /// caller's grants let it read the call, with the calls that wait for a person's answer.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    fn invocations(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> Result<ResourceCopy, ActionCallError> {
+        let broker = self.broker().ok_or_else(refused)?;
+        let asked = self
+            .workspaces
+            .as_ref()
+            .and_then(WeakWorkspaces::upgrade)
+            .and_then(|workspaces| workspaces.asked_store())
+            .map(|store| store.waiting_in(&address.workspace))
+            .unwrap_or_default();
+        broker.read_invocations(caller, &address.workspace, &address.record, asked)
+    }
+
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    fn broker(&self) -> Option<Arc<Broker>> {
+        self.broker.as_ref().and_then(std::sync::Weak::upgrade)
+    }
+
     /// The certificate this device holds for `caller`'s device in `workspace`, when it holds
     /// one that is the caller's own: signed by its person, and no stand-in.
     fn certificate(
@@ -111,15 +147,26 @@ impl RecordReads {
             .then_some(certificate)
     }
 
-    /// Whether the device `certificate` names may read `address` now: an agent's in a workspace
-    /// its scope reaches, and every device's as the workspace's governance grants it the record.
-    /// Every member's device sees who else is there, and a key is read as [`Self::reads_key`]
-    /// decides.
+    /// Whether `caller`, for the device `certificate` names, may read `address` now: an agent's
+    /// in a workspace its scope reaches, and every device's as the workspace's governance grants
+    /// it the record. Every member's device sees who else is there, and a key is read as
+    /// [`Self::reads_key`] decides. A call an app makes is decided by the grants the apps here
+    /// give that app besides.
     fn may_read(
+        &self,
         workspaces: &Workspaces,
         certificate: &tilo_user_identity::DeviceCert,
+        caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<(), ActionCallError> {
+        #[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
+        let _ = caller;
+        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+        if caller.acting().app().is_some()
+            && let Some(broker) = self.broker()
+        {
+            broker.may_read_record(caller, address)?;
+        }
         if certificate
             .capabilities
             .agent
@@ -189,11 +236,11 @@ impl RecordReads {
         if let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade)
             && let Some(certificate) = Self::certificate(&workspaces, caller, &address.workspace)
         {
-            Self::may_read(&workspaces, &certificate, address)?;
+            self.may_read(&workspaces, &certificate, caller, address)?;
             return Ok(Route::Certified(workspaces));
         }
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        if let Some(broker) = self.broker.as_ref().and_then(std::sync::Weak::upgrade) {
+        if let Some(broker) = self.broker() {
             return Ok(Route::Inside(broker));
         }
         self.served.clone().map(Route::Served).ok_or_else(refused)
@@ -279,13 +326,12 @@ fn wake_at<T: Clone + Send + 'static>(
 
 impl Workspaces {
     /// This device's reader of the resources of the workspaces it keeps, for a caller this device
-    /// holds a certificate of there: what the person's shell and every key's run here read
-    /// through. Every other caller's read goes to `served`, the reader of the apps it serves.
+    /// holds a certificate of there: what the person's shell reads through.
     #[must_use]
-    pub fn resource_reads(&self, served: Option<Arc<dyn ResourceReads>>) -> Arc<RecordReads> {
+    pub fn resource_reads(&self) -> Arc<RecordReads> {
         Arc::new(RecordReads::of_device(
             Some(WeakWorkspaces(Arc::downgrade(&self.inner))),
-            served,
+            None,
         ))
     }
 }
@@ -296,6 +342,12 @@ impl ResourceReads for RecordReads {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
+        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
+            && self.broker.is_some()
+        {
+            return self.invocations(caller, address);
+        }
         let route = self.route(caller, address)?;
         if address.app == PRESENCE {
             return Self::presence(route, caller, address);
@@ -350,7 +402,10 @@ impl ResourceReads for RecordReads {
                 app,
                 record,
             })
-            .filter(|address| Self::may_read(&workspaces, &certificate, address).is_ok())
+            .filter(|address| {
+                self.may_read(&workspaces, &certificate, caller, address)
+                    .is_ok()
+            })
             .collect())
     }
 
@@ -394,6 +449,12 @@ impl ResourceReads for RecordReads {
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
+        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
+            && let Some(broker) = self.broker()
+        {
+            return broker.watch_invocations(caller, &address.workspace, wake);
+        }
         let route = self.route(caller, address)?;
         if address.app == PRESENCE && !matches!(route, Route::Served(_)) {
             // Nothing is written when someone comes or goes: presence says when it moves, and the

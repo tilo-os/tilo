@@ -29,8 +29,6 @@ use tilo_lock::MutexRecover as _;
 mod gets;
 #[cfg(not(target_arch = "wasm32"))]
 mod puts;
-#[cfg(not(target_arch = "wasm32"))]
-mod reads;
 pub mod replaced;
 pub mod upload;
 mod workspace;
@@ -1117,6 +1115,24 @@ impl Inner {
     }
 }
 
+/// The device's record API, asked through the session: each read goes to the device whole, which
+/// decides it as it decides every reader's.
+#[cfg(not(target_arch = "wasm32"))]
+impl tilo_actions::remote::ResourceReads for SessionActions {
+    fn answer_read(
+        self: Arc<Self>,
+        _caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage> {
+        self.read_record(read)
+            .map(move |result| RemoteActionMessage::ResourceReading {
+                correlation,
+                result,
+            })
+    }
+}
+
 impl ActionProvider for SessionActions {
     /// Where the workspace these actions are asked in stands on the session.
     fn session_state(&self, _caller: &Caller) -> Option<tilo_actions::remote::SessionState> {
@@ -1154,10 +1170,10 @@ impl ActionProvider for SessionActions {
     }
 
     /// The device's record API, asked over the session: a read, a listing and a held wait each
-    /// go to the device whole. A read waits for its answer, which a page's one thread cannot.
+    /// go to the device whole, as the record API's read message ([`Self::read_record`]).
     #[cfg(not(target_arch = "wasm32"))]
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
-        Some(Arc::new(reads::SessionReads(self.clone())))
+        Some(Arc::new(self.clone()))
     }
 
     /// The surface the workspace's package `app` publishes, asked of the

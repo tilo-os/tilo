@@ -89,13 +89,15 @@ impl AppBrokerState {
     /// `caller` may read each call there. What a program, an agent and a view read through the
     /// record API, never as an action.
     pub(crate) fn read_invocations(
-        self: &Arc<Self>,
+        &self,
         caller: &Caller,
         workspace: &str,
         record: &str,
+        asked: Vec<tilo_actions::remote::asked::Waiting>,
     ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+        super::action_provider::check_execution(caller)?;
         let one = (!record.is_empty()).then(|| record.to_owned());
-        let page = self.invocations_of(
+        let mut page = self.invocations_of(
             workspace,
             caller,
             &InvocationsQuery {
@@ -105,14 +107,21 @@ impl AppBrokerState {
             },
             None,
         )?;
+        let kept = page.items.len();
+        with_questions(
+            &mut page.items,
+            asked,
+            (!record.is_empty()).then_some(record),
+        );
         if record.is_empty() {
             let waiting = page
                 .items
                 .iter()
                 .filter(|invocation| invocation.status == InvocationStatus::Waiting)
                 .count();
+            let total = page.total + (page.items.len() - kept);
             return Ok(tilo_actions::remote::ResourceCopy::reading(
-                serde_json::json!({ "items": page.items, "total": page.total, "waiting": waiting }),
+                serde_json::json!({ "items": page.items, "total": total, "waiting": waiting }),
                 None,
             ));
         }
@@ -440,5 +449,72 @@ fn page(items: Vec<Invocation>, query: &InvocationsQuery) -> Listed {
         waiting,
         pending: false,
         next_cursor,
+    }
+}
+
+/// `items`, a reading of a workspace's invocations, with what each call that waits in
+/// `waiting` asks its person, and each such call the device keeps no record of (it waited across
+/// a restart, or another dispatch here keeps it) listed beside them: only `only`, when the
+/// reading names one.
+pub fn with_questions(
+    items: &mut Vec<Invocation>,
+    waiting: Vec<tilo_actions::remote::asked::Waiting>,
+    only: Option<&str>,
+) {
+    use tilo_actions::remote::asked::AskedBy;
+    for question in waiting {
+        let id = question.invocation.0.to_string();
+        if only.is_some_and(|only| only != id) {
+            continue;
+        }
+        if let Some(item) = items
+            .iter_mut()
+            .find(|item| item.id.as_deref() == Some(id.as_str()))
+        {
+            item.status = InvocationStatus::Waiting;
+            item.person = Some(question.person);
+            item.asked = Some(Box::new(question.asked));
+            continue;
+        }
+        let by = match &question.asked.facts.by {
+            AskedBy::Agent(agent) => InvocationBy {
+                name: agent.name.clone(),
+                kind: "agent".to_owned(),
+                id: Some(agent.id.clone()),
+            },
+            AskedBy::App { app, title, .. } => InvocationBy {
+                name: title.clone(),
+                kind: "app".to_owned(),
+                id: Some(app.clone()),
+            },
+            AskedBy::Device(device) => InvocationBy {
+                name: device.name.clone(),
+                kind: "device".to_owned(),
+                id: Some(device.id.clone()),
+            },
+            AskedBy::Program { name, app_id } => InvocationBy {
+                name: name.clone(),
+                kind: "program".to_owned(),
+                id: app_id.clone(),
+            },
+        };
+        let row = Invocation {
+            id: Some(id.clone()),
+            calls: vec![id],
+            by,
+            status: InvocationStatus::Waiting,
+            started_ms: i64::try_from(question.asked.asked_at_ms).unwrap_or(i64::MAX),
+            action: Some(question.asked.action.clone()),
+            remembered: true,
+            person: Some(question.person),
+            asked: Some(Box::new(question.asked)),
+            ..Invocation::default()
+        };
+        // Newest first, as the reading is.
+        let at = items
+            .iter()
+            .position(|item| item.started_ms <= row.started_ms)
+            .unwrap_or(items.len());
+        items.insert(at, row);
     }
 }

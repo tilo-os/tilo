@@ -4,29 +4,12 @@
 //! `record:<app>` lists the records of the app the agent may read, each by that path.
 
 use super::{ActionProvider, Failure, McpServer, Reply};
-use tilo_actions::remote::{Caller, RemoteActionMessage, ResourceReadRequest, ResourceReads};
+use tilo_actions::remote::{ResourceReadRequest, answered};
 
 /// How long a document read waits for a write past the revision it was given.
 const RECORD_WAIT_MS: u32 = 25_000;
 /// Longest answer, in characters, a record read gives: a longer chain is read a part at a time.
 const RECORD_CHARS: usize = 200_000;
-
-/// What the record API answers `read` for `caller`, as JSON: a read with `after` is held by the
-/// reader until the record moves past it or the wait went by.
-async fn answered(
-    reads: std::sync::Arc<dyn ResourceReads>,
-    caller: &Caller,
-    read: ResourceReadRequest,
-) -> Result<serde_json::Value, String> {
-    match reads.answer_read(caller, 0, read).await {
-        Some(RemoteActionMessage::ResourceReading { result, .. }) => {
-            let text = result.map_err(|error| error.to_string())?;
-            serde_json::from_str(&text)
-                .map_err(|error| format!("the reading does not read: {error}"))
-        }
-        _ => Err("the record read ended before it answered".to_owned()),
-    }
-}
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `tilo_ls` of `record:<app>` (`record:` for every app's): the records of the workspace the
@@ -52,7 +35,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             document: false,
             listing: true,
         };
-        let listing = answered(reads, &caller, read).await?;
+        let listing = answered(reads, &caller, read)
+            .await
+            .map_err(|error| error.to_string())?;
         let listed: Vec<(&str, &str)> = listing["records"]
             .as_array()
             .into_iter()
@@ -116,7 +101,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             document: false,
             listing: false,
         };
-        let mut answer = answered(reads, &caller, read).await?;
+        let mut answer = answered(reads, &caller, read)
+            .await
+            .map_err(|error| error.to_string())?;
         // A document the workspace holds none of is not an address to go on with: what the
         // app does hold is, and the answer names it.
         if let Some(document) = answer["records"]

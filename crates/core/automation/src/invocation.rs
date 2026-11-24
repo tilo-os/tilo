@@ -41,7 +41,7 @@ use tilo_actions::params::{
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, Confirmation,
     InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, RESOURCE_READS_UNAVAILABLE,
-    ReceiptStatus, ResourceAddress, ResourceAsk, read_resources,
+    ReceiptStatus, ResourceReadRequest, answered,
 };
 use uuid::Uuid;
 
@@ -1807,14 +1807,19 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
                 app,
                 record,
                 joined,
-            } => Ok(Done::local(self.read(app, record, *joined))),
+            } => Ok(Done::local(self.read(app, record, *joined).await)),
         }
     }
 
     /// Read `record` of `app` (joined, its chain of parts; named from the invocation,
     /// with placeholders) through the host's record API, as the invocation's caller
     /// reads it, inside the shortcut's grant.
-    fn read(&self, app: &str, record: &str, joined: bool) -> Result<Option<Value>, StepFailure> {
+    async fn read(
+        &self,
+        app: &str,
+        record: &str,
+        joined: bool,
+    ) -> Result<Option<Value>, StepFailure> {
         let record = match crate::shortcut::read_record_binding(record) {
             None => record.to_owned(),
             Some(named) => match self.evaluate(&named)? {
@@ -1849,26 +1854,20 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
             })
         })?;
         // The invocation's workspace is the one its read names: a caller in none reads nothing.
-        let ask = ResourceAsk {
-            address: ResourceAddress {
-                workspace: self.caller.workspace().unwrap_or_default().to_owned(),
-                app: app.to_owned(),
-                record: record.to_owned(),
-            },
+        let read = ResourceReadRequest {
+            workspace: self.caller.workspace().unwrap_or_default().to_owned(),
+            app: app.to_owned(),
+            record: record.to_owned(),
             joined,
+            after: None,
+            wait_ms: None,
+            document: false,
+            listing: false,
         };
-        let readings = read_resources(
-            reads.as_ref(),
-            &self.caller,
-            &[ask],
-            None,
-            tilo_clock::now(),
-        )
-        .map_err(host)?;
-        readings
-            .readable()
+        answered(reads, &self.caller, read)
+            .await
             .map(Some)
-            .map_err(|reason| StepFailure::Contract { reason })
+            .map_err(host)
     }
 
     /// A loop step: bind `item` to each element of `items` in turn and run

@@ -40,10 +40,10 @@ use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 use tilo_actions::ActionDescriptor;
-use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_actions::remote::workspace_invocations::{
     self, Invocation, InvocationStatus, Invocations, InvocationsQuery,
 };
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_lock::MutexRecover as _;
 
 use super::{ActionProvider, Addressed, Failure, McpServer, OneCall, Reply, app_names};
@@ -1546,7 +1546,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             } else if let Some(reads) = message.get("reads") {
                 Box::pin(self.task_reads(reads, &mut providers)).await
             } else if let Some(reading) = message.get("reading") {
-                self.task_reading(reading)
+                self.task_reading(reading).await
             } else if let Some(call) = message.get("invoke") {
                 Box::pin(self.task_invoke(call, &mut providers)).await
             } else {
@@ -1687,7 +1687,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// reading it goes on within the same call: `device.styles.offered`, `device.time.clock`, the
     /// session's windows and Settings' sections are read this way, and by the shell's parts too,
     /// so one reading serves every reader.
-    fn task_reading(&self, reading: &Value) -> Value {
+    async fn task_reading(&self, reading: &Value) -> Value {
         let (Some(app), Some(resource)) = (reading["app"].as_str(), reading["resource"].as_str())
         else {
             return json!({"err": "a reading names its app and resource"});
@@ -1696,22 +1696,24 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return json!({"none": true});
         };
         let caller = self.execution_caller();
-        let address = tilo_actions::remote::ResourceAddress {
+        let read = tilo_actions::remote::ResourceReadRequest {
             workspace: caller.workspace().unwrap_or_default().to_owned(),
             app: app.to_owned(),
             record: resource.to_owned(),
+            joined: false,
+            after: None,
+            wait_ms: None,
+            // A document is answered as one, so a reading tells itself apart.
+            document: true,
+            listing: false,
         };
-        match reads.read(&caller, &address) {
-            Ok(tilo_actions::remote::ResourceCopy::Reading { value, .. }) => {
-                json!({"ok": {"reading": value}})
-            }
+        match tilo_actions::remote::answered(reads, &caller, read).await {
             // An app's record is read through the record API, never as one of the session's
             // readings, as a resource no service publishes is none of its.
-            Ok(
-                tilo_actions::remote::ResourceCopy::Absent
-                | tilo_actions::remote::ResourceCopy::Document(_)
-                | tilo_actions::remote::ResourceCopy::Read(_),
-            ) => json!({"none": true}),
+            Ok(answer) => match answer["records"][0].get("value") {
+                Some(value) => json!({"ok": {"reading": value}}),
+                None => json!({"none": true}),
+            },
             Err(error) => {
                 let name = app_names(&[app.to_owned()]).join("");
                 json!({"err": format!("{name}: {error}")})
@@ -1894,19 +1896,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Err(tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.to_owned());
         };
         let caller = self.execution_caller();
-        let address = tilo_actions::remote::ResourceAddress {
+        let read = tilo_actions::remote::ResourceReadRequest {
             workspace: caller.workspace().unwrap_or_default().to_owned(),
             app: workspace_invocations::PROVIDER.to_owned(),
             record: String::new(),
+            joined: false,
+            after: None,
+            wait_ms: None,
+            document: false,
+            listing: false,
         };
-        let read = {
-            let caller = caller.clone();
-            tokio::task::spawn_blocking(move || reads.read(&caller, &address))
-                .await
-                .map_err(|error| format!("the record read ended: {error}"))?
-                .map_err(|error| error.to_string())?
-        };
-        let tilo_actions::remote::ResourceCopy::Reading { value, .. } = read else {
+        let answer = tilo_actions::remote::answered(reads, &caller, read)
+            .await
+            .map_err(|error| error.to_string())?;
+        let Some(value) = answer["records"][0].get("value") else {
             return Err("the workspace answered no list of runs".to_owned());
         };
         let items: Vec<Invocation> = serde_json::from_value(
