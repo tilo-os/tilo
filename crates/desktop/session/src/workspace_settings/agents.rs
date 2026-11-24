@@ -724,7 +724,7 @@ impl Agents {
     ) -> Result<(), String> {
         self.ask(
             workspace,
-            AgentsChange::Update(actions::SET_AGENT_AVATAR.with(actions::SetAgentAvatar {
+            AgentsChange::Update(Record::SET_AGENT_AVATAR.with(actions::SetAgentAvatar {
                 agent: Id::from_raw(agent.to_owned()),
                 avatar: avatar.map(str::to_owned),
             })),

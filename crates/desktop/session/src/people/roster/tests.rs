@@ -542,21 +542,11 @@ tilo_test_env::scenario! {
 
     phase a_workspaces_bot_is_tagged_as_a_bot_never_as_a_person;
     {
-        use tilo_desktop_model::{Workspace, WorkspaceBot, WorkspaceId};
+        use tilo_desktop_model::{Workspace, WorkspaceId};
 
         let device = "ab".repeat(32);
         let installation = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".to_owned();
         let mut workspace = Workspace::new(WorkspaceId::from_u128(72), "Lounge");
-        workspace.bots.push(WorkspaceBot {
-            name: "Standup".into(),
-            installation: Some(installation.clone()),
-            device: Some(device.clone()),
-            entry: Some("so.tilo.bots.standup".into()),
-            version: Some("1.2.0".into()),
-            added_by: "owner".into(),
-            requested: true,
-            paused: false,
-        });
         let bot = Member::of_software(collab_types::MemberId::bot(installation), "Standup");
         workspace.member_here(bot.clone());
         workspace.place_presence(Present {
@@ -583,9 +573,9 @@ tilo_test_env::scenario! {
         use tilo_desktop_model::{Workspace, WorkspaceId};
 
         let mut workspace = Workspace::new(WorkspaceId::from_u128(71), "Shared");
-        workspace.set_owner("owner");
-        let node = workspace.node();
-        workspace.grant(tilo_action_policy::Grant::new(
+        workspace.policy.set_owner("owner");
+        let node = workspace.policy.node();
+        workspace.policy.grant(tilo_action_policy::Grant::new(
             "agent-member:scribe",
             tilo_action_policy::Grantee::agent("scribe"),
             node,
@@ -621,9 +611,9 @@ tilo_test_env::scenario! {
         use tilo_desktop_model::{Workspace, WorkspaceId};
 
         let mut workspace = Workspace::new(WorkspaceId::from_u128(72), "Shared");
-        workspace.set_owner("owner");
-        let node = workspace.node();
-        workspace.grant(tilo_action_policy::Grant::new(
+        workspace.policy.set_owner("owner");
+        let node = workspace.policy.node();
+        workspace.policy.grant(tilo_action_policy::Grant::new(
             "agent-member:scribe",
             tilo_action_policy::Grantee::agent("scribe"),
             node,

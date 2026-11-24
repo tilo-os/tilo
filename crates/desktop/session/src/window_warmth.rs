@@ -251,9 +251,9 @@ mod tests {
     fn workspace(id: u64, name: &str, tab: TabId, role: Role) -> Workspace {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(u128::from(id)), name);
         if role == Role::Owner {
-            workspace.set_owner(PERSON);
+            workspace.policy.set_owner(PERSON);
         } else {
-            workspace.admit(PERSON, role);
+            workspace.policy.add_member(PERSON, role);
         }
         let mut strip = Strip::new(StripId::from(id), name);
         strip.window_groups.push(WindowGroup {

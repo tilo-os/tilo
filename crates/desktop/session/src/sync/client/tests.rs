@@ -3,6 +3,7 @@ use super::*;
 use collab_types::PeerPresencePayload;
 use collab_types::presence::{DESKTOP_APP, Payload, Presence, PresenceKey};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::{Tab, Workspace, WorkspaceId as ModelWorkspaceId};
 use tilo_network_actor::NetEvent;
 use tilo_session_client::{InCall, presence::now_ms, topic_of};
@@ -684,14 +685,13 @@ fn tile(tab: u64) -> tilo_live::presence::Tile {
 /// stands on the surface.
 fn drawn_on(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64, f64)> {
     let mut chats = ui::presence::CursorChats::default();
+    let members = sync.members(WORKSPACE);
     let pointers = tilo_session_core::presence::pointers(
-        &mut ui::DrawCtx::new(
-            &sync.members(WORKSPACE),
-            &std::collections::HashMap::new(),
-            tiles,
-            &mut chats,
-            ui::presence::PresenceCtx::empty().draw_env(),
-        ),
+        &members,
+        &std::collections::HashMap::new(),
+        tiles,
+        &mut chats,
+        &ui::presence::PresenceCtx::empty(),
         ui::time::Instant::now(),
         now_ms(),
         ui::tokens::EffectiveMotion::default(),

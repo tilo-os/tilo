@@ -101,7 +101,7 @@ fn person_id(root: &[u8; 32]) -> String {
 fn shell(fixture: &Fixture) -> Layout {
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let mut workspace = Workspace::new(workspace_id, "Shell");
-    workspace.set_owner(person_id(&fixture.cert.user_public_key));
+    workspace.policy.set_owner(person_id(&fixture.cert.user_public_key));
     Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),

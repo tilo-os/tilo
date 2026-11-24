@@ -1383,7 +1383,6 @@ mod tests {
             emoji: Rc::new(std::cell::Cell::new(false)),
             about: Rc::new(std::cell::Cell::new(false)),
             power: Rc::new(std::cell::Cell::new(false)),
-            strips: Rc::new(std::cell::Cell::new(false)),
         }
     }
 

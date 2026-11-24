@@ -639,7 +639,7 @@ mod tests {
         let elsewhere = Caller::local_person(person_id).in_workspace(ELSEWHERE);
         let dispatch = device.dispatch();
         let request = run_line("session.new_strip()");
-        match answered(&mut device, || dispatch.invoke(&elsewhere, &request)) {
+        match answered(&mut device, || dispatch.invoke(&elsewhere, request.clone())) {
             // Refused where it was asked: nothing ran.
             Err(refused) => assert!(
                 matches!(
@@ -677,7 +677,7 @@ mod tests {
         let request = run_line("session.new_strip(name: \"Never\")");
 
         // The line's calls are the session's own, which run on its pass: it has made none yet.
-        answered(&mut device, || dispatch.invoke(&person, &request))
+        answered(&mut device, || dispatch.invoke(&person, request.clone()))
             .expect("the daemon admits the person's line");
         answered(&mut device, || {
             dispatch.cancel(&person, &request.invocation)
@@ -1071,7 +1071,7 @@ mod tests {
     ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
         let dispatch = device.dispatch();
         answered(device, || {
-            dispatch.invoke(person, &session_step(resource, action, arguments))
+            dispatch.invoke(person, session_step(resource, action, arguments))
         })
     }
 

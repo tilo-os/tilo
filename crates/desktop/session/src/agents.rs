@@ -355,7 +355,7 @@ mod tests {
     /// workspace's list of its agents is read and changed there, as a desktop's is.
     fn session(state: &std::path::Path, daemon: &TestDaemon) -> crate::Session {
         let person = hex::encode(daemon.certificate().user_public_key);
-        let mut session = crate::Session::headless(
+        let session = crate::Session::headless(
             crate::Options {
                 person: person.clone(),
                 presentation: ui::headless::fixture_runner_inputs,
@@ -371,7 +371,7 @@ mod tests {
             WorkspaceId::parse(STUDIO).expect("a workspace id"),
             "Studio",
         );
-        studio.set_owner(person);
+        studio.policy.set_owner(person);
         session.handle().replace_tree(Layout {
             active: studio.id(),
             workspaces: vec![studio],
@@ -389,6 +389,7 @@ mod tests {
                     .workspaces()
                     .resource_document(workspace, OWNER, &record),
             )
+            .expect("the session's runtime runs the read")
             .expect("the daemon reads the workspace")
         else {
             return Vec::new();
@@ -496,39 +497,47 @@ mod tests {
         const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAAAXRSTlMAQObYZgAAAAxJREFUeNoBgAEAAP//AwABWgH+AAAAAElFTkSuQmCC";
 
         let _settled = ui::motion::testing::settled();
-        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let _home = tilo_test_env::TestHome::new().expect("a home");
         let state = tempfile::tempdir().expect("a state directory");
-        let shell = Shell::new(&mut home, state.path());
-        let session = &shell.session;
-        let person = shell.person.clone();
-        let studio = shell.workspace.clone();
+        let daemon = TestDaemon::start();
+        daemon.found(
+            WorkspaceId::parse(STUDIO).expect("a workspace id"),
+            "Studio",
+        );
+        let session = session(state.path(), &daemon);
+        let person = hex::encode(daemon.certificate().user_public_key);
         let workspace = session
             .handle()
             .read(Clone::clone)
             .workspaces
             .into_iter()
-            .find(|workspace| workspace.id().to_string() == studio)
+            .find(|workspace| workspace.id().to_string() == STUDIO)
             .expect("the workspace in front");
 
         let roster = session.shared.agents.roster();
+        // The Agents tab Settings shows: it makes an agent and pictures it through the
+        // workspace's own actions, as the sheet's Add and picture buttons ask.
+        let tab = crate::workspace_settings::AgentsTab::new(
+            daemon.shell(),
+            None,
+            std::sync::Arc::new(|| ()),
+        );
         let (agent, _) = {
-            let feed = session.shared.workspace_settings_feed();
-            feed.create(Some(&workspace), &person, ("Scout", None), "")
+            tab.create(Some(&workspace), &person, ("Scout", None), "")
                 .expect("the workspace makes the agent")
         };
         session.shared.feed_agents();
-        let listed = roster.listed(&studio);
+        let listed = roster.listed(STUDIO);
         assert_eq!(listed.len(), 1, "one agent: {listed:?}");
         assert_eq!(listed[0].name, "Scout");
         assert_eq!(listed[0].avatar, None, "she set no picture yet");
 
         {
-            let feed = session.shared.workspace_settings_feed();
-            feed.set_avatar(Some(&workspace), &agent, Some(PNG))
+            tab.set_avatar(Some(&workspace), &agent, Some(PNG))
                 .expect("the workspace pictures the agent");
         }
         session.shared.feed_agents();
-        let listed = roster.listed(&studio);
+        let listed = roster.listed(STUDIO);
         assert_eq!(listed[0].name, "Scout", "the persona keeps its name");
         assert_eq!(
             listed[0].avatar.as_deref(),
@@ -537,138 +546,97 @@ mod tests {
         );
     }
 
-    /// An agent turn this device's daemon takes is listed in `session:agents`, read from the
-    /// daemon over its dispatch, for as long as the turn runs, and leaves the list when its
-    /// claim is let go of.
+    /// A turn this device's daemon takes is held in the workspace's work, read through the
+    /// daemon's own workspaces, for as long as the turn runs, and is let go of when it ends.
     #[test]
-    fn session_agents_lists_a_turn_the_daemon_takes_until_it_ends() {
+    fn a_turn_the_daemon_takes_is_held_until_it_ends() {
         use tilo_workspace_service::work::{Actor, Turn, takes_turn};
 
         let _settled = ui::motion::testing::settled();
-        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let _home = tilo_test_env::TestHome::new().expect("a home");
         let state = tempfile::tempdir().expect("a state directory");
-        let mut shell = Shell::new(&mut home, state.path());
-        let workspaces = shell
-            .session
-            .shared
-            .workspace_service
-            .service()
-            .expect("this device's own workspace service is open")
-            .workspaces()
-            .clone();
-        tilo_workspace_service::workspaces::fixtures::act_as_every_agent(&workspaces);
+        let daemon = TestDaemon::start();
+        let workspace = WorkspaceId::parse(STUDIO).expect("a workspace id");
+        daemon.found(workspace, "Studio");
+        let _session = session(state.path(), &daemon);
+        // The person's own automation: the daemon runs the turn as the person whose workspace it
+        // governs, which the workspaces it holds admit without an agent engine of their own.
+        let person = hex::encode(daemon.certificate().user_public_key);
+        let device = daemon.certificate().device_public_key;
         let turn = Turn::once(
             "agents.agent:scout#answer",
             serde_json::json!({ "asked": "what changed" }),
         )
-        .acting_as(Actor::Agent("scout".to_owned()));
+        .acting_as(Actor::Person(person));
         let lease = turn.lease();
         let runtime = tilo_rt::try_app().expect("the session's runtime");
         let claim = runtime
-            .block_on(takes_turn(&workspaces, &shell.workspace, &turn))
+            .block_on(takes_turn(daemon.workspaces(), STUDIO, &turn))
             .expect("the session's runtime runs the claim")
-            .expect("this device takes the agent's turn");
-        let lists = move |session: &crate::Session, lease: &str| {
-            session
-                .shared
-                .agent_sessions
-                .readings()
-                .iter()
-                .any(|agent| agent.key == lease && agent.state == "running")
-        };
-        let taken = lease.clone();
-        shell.until(
-            "session:agents lists the turn the daemon took",
-            move |session| lists(session, &taken),
+            .expect("this device takes the turn");
+        assert_eq!(
+            runtime
+                .block_on(daemon.workspaces().lease_holder(STUDIO, &lease))
+                .expect("the session's runtime runs the read")
+                .expect("the workspace reads"),
+            Some(device),
+            "the daemon holds the turn it took, for as long as it runs"
         );
 
         runtime
             .block_on(claim.release())
             .expect("the session's runtime lets go of the claim");
-        shell.until(
-            "session:agents drops the turn once it ended",
-            move |session| !lists(session, &lease),
+        assert_eq!(
+            runtime
+                .block_on(daemon.workspaces().lease_holder(STUDIO, &lease))
+                .expect("the session's runtime runs the read")
+                .expect("the workspace reads"),
+            None,
+            "an ended turn is let go of"
         );
     }
 
-    /// A turn this device takes shows on the person's agent card, read from the device's runs
-    /// over its dispatch, and stopping it there ends the run and takes it off the card.
+    /// The agent card the shell draws lists the sessions `session:agents` publishes, and its Stop
+    /// ends one: a session the person admitted is on the card while it works, and the press takes
+    /// it off.
     #[test]
-    fn the_agents_card_shows_a_taken_run_and_stopping_it_removes_it() {
-        use tilo_workspace_service::work::{Actor, Turn, takes_turn};
+    fn the_agents_card_lists_a_session_and_stopping_it_ends_it() {
+        use tilo_mcp::session_api::Consent;
 
         let _settled = ui::motion::testing::settled();
-        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let _home = tilo_test_env::TestHome::new().expect("a home");
         let state = tempfile::tempdir().expect("a state directory");
-        let mut shell = Shell::new(&mut home, state.path());
-        let workspaces = shell
-            .session
-            .shared
-            .workspace_service
-            .service()
-            .expect("this device's own workspace service is open")
-            .workspaces()
-            .clone();
-        tilo_workspace_service::workspaces::fixtures::act_as_every_agent(&workspaces);
-        let turn = Turn::once(
-            "agents.agent:scout#answer",
-            serde_json::json!({ "asked": "what changed" }),
-        )
-        .acting_as(Actor::Agent("scout".to_owned()));
-        let lease = turn.lease();
-        let runtime = tilo_rt::try_app().expect("the session's runtime");
-        let claim = runtime
-            .block_on(takes_turn(&workspaces, &shell.workspace, &turn))
-            .expect("the session's runtime runs the claim")
-            .expect("this device takes the agent's turn");
-        // The card's rows, as the person's overview draws them from the runs the session read.
-        let on_card = |session: &crate::Session, lease: &str| {
-            let overview = tilo_desktop::overview_tilo::TiloOverview {
-                runs: session.shared.agent_sessions.runs(),
-                names: session.shared.agent_sessions.named_agents(),
-                ..tilo_desktop::overview_tilo::TiloOverview::default()
-            };
-            tilo_desktop::overview_tilo::rows(&overview)
-                .into_iter()
-                .any(|row| {
-                    matches!(
-                        row,
-                        tilo_desktop::overview_tilo::TiloRow::Item(item)
-                            if item.key == format!("overview-agent:{lease}")
-                    )
-                })
-        };
-        let taken = lease.clone();
-        shell.until(
-            "the person's agent card shows the turn the daemon took",
-            move |session| on_card(session, &taken),
+        let daemon = TestDaemon::start();
+        daemon.found(
+            WorkspaceId::parse(STUDIO).expect("a workspace id"),
+            "Studio",
         );
-        assert!(
-            workspaces
-                .agent_runs()
-                .follow()
-                .borrow()
-                .runs
-                .iter()
-                .any(|run| run.run == lease && run.agent == "scout"),
-            "the run reads as the agent's"
-        );
+        let session = session(state.path(), &daemon);
+        let person = hex::encode(daemon.certificate().user_public_key);
+        let agents = std::sync::Arc::clone(&session.shared.agent_sessions);
 
-        // Stop, as the card's Stop does: over the device's dispatch, which releases the claim and
-        // cancels the turn.
-        shell.session.shared.agent_sessions.stop_run(&lease);
-        let stopped = lease.clone();
-        shell.until("stopping it takes it off the card", move |session| {
-            !on_card(session, &stopped)
-        });
+        // A client connects at the session's MCP server, and the person admits it as the agent
+        // they keep for it: what `session:agents` then lists, and the card draws.
+        let agent_session = agents.joining(None);
+        let consent = Consent::Admit {
+            workspace: STUDIO.to_owned(),
+            agent: "agent-member:scout".to_owned(),
+            person,
+            name: "Claude Code".to_owned(),
+        };
+        agents.admit(&agent_session, &consent, CLIENT, "Studio");
+        let listed = agents.readings();
+        assert_eq!(listed.len(), 1, "the card shows it: {listed:?}");
+        assert_eq!(listed[0].key, agent_session.0);
+        assert_eq!(listed[0].name, "Claude Code");
+        assert_eq!(listed[0].state, "running");
+        assert_eq!(listed[0].doing, "Studio");
+
+        // The card's Stop, as `session:agents` publishes it: the session ends and leaves the list.
         assert!(
-            runtime
-                .block_on(workspaces.lease_holder(&shell.workspace, &lease))
-                .expect("the session's runtime runs the read")
-                .expect("the workspace reads")
-                .is_none(),
-            "a stopped turn's claim is let go of"
+            agents.stop(&agent_session),
+            "the person's Stop ends the session"
         );
-        drop(claim);
+        assert!(agents.readings().is_empty(), "and takes it off the card");
     }
 }

@@ -196,10 +196,11 @@ fn write(
     workspace_id: WorkspaceId,
     invocation: uuid::Uuid,
 ) {
-    let publisher = crate::app_wire::owner_publisher(
-        Some(std::sync::Arc::clone(&device.engine)),
-        tilo_workspace_service::service::ServiceSlot::default(),
-        None,
+    let publisher = tilo_workspace_service::apps::collab_outbound::PeerPublisher::with_commits(
+        std::sync::Arc::clone(&device.engine)
+            as std::sync::Arc<
+                dyn tilo_workspace_service::apps::workspace_commits::WorkspaceCommits,
+            >,
     );
     assert!(
         publisher.records_effects_for(&workspace_id.to_string()),
@@ -284,7 +285,7 @@ fn listed_ids(list: &WorkspaceList) -> Vec<String> {
 
 fn fresh_session() -> tilo_session_core::desktop::state::DesktopHandle {
     let mut minter = tilo_desktop_model::IdMinter::new(1);
-    let (policy, _surface) = tilo_desktop_policy::DesktopPolicy::with_tree(
+    let policy = tilo_desktop_policy::DesktopPolicy::with_tree(
         tilo_session_core::desktop::seed_tree(&mut minter, "Session", Vec::new()),
         1,
     );
@@ -470,6 +471,7 @@ impl crate::workspace_view::ShellAsks for Unasked {
 
     fn invoke(
         &self,
+        _: Option<String>,
         _: tilo_actions::remote::InvokeRequest,
     ) -> tilo_session_client::engine::ServiceAnswer {
         Box::pin(std::future::ready(Err("nothing is asked here".to_owned())))

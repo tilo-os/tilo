@@ -514,7 +514,7 @@ mod tests {
             let mut tree = tilo_desktop_model::Layout::default();
             let mut workspace =
                 tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Notes");
-            workspace.set_owner(person.to_owned());
+            workspace.policy.set_owner(person.to_owned());
             let workspace_id = workspace.id().to_string();
             tree.workspaces.push(workspace);
 
@@ -534,7 +534,7 @@ mod tests {
             );
 
             for workspace in &mut tree.workspaces {
-                workspace.admit("ada", tilo_action_policy::Role::Editor);
+                workspace.policy.add_member("ada", tilo_action_policy::Role::Editor);
             }
             assert_eq!(
                 render_key(&private_workspaces(&tree, person), Some(&workspace_id)),

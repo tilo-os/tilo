@@ -2079,7 +2079,10 @@ mod tests {
             .as_ref()
             .expect("this session registers its own providers")
             .all();
-        let providers: Vec<&str> = registered.iter().map(|entry| entry.provider).collect();
+        let providers: Vec<&str> = registered
+            .iter()
+            .map(|entry| entry.provider.as_ref())
+            .collect();
         assert_eq!(
             providers.len(),
             9,

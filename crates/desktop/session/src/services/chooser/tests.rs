@@ -467,7 +467,7 @@ fn a_folder_handle_reopens_a_file_inside_it_and_refuses_one_outside() {
         panic!("the folder was not handed over");
     };
     let reference = folder.reference().unwrap().to_path_buf();
-    assert!(folder.file().metadata().unwrap().is_dir());
+    assert!(folder.into_file().into_std().metadata().unwrap().is_dir());
 
     // A file inside the chosen folder reopens by its reference …
     let inside = reference.join("sub/kept.txt");

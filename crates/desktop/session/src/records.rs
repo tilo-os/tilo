@@ -538,7 +538,7 @@ pub(crate) mod testing {
             &self,
             workspace: &str,
             (app, record): (&str, &str),
-            doc: automerge::AutoCommit,
+            mut doc: automerge::AutoCommit,
             _initialize: &dyn Fn(&mut automerge::AutoCommit) -> Result<(), String>,
         ) {
             let bytes = doc.save();

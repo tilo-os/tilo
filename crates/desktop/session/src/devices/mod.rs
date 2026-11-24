@@ -537,7 +537,10 @@ mod surface_tests {
     /// device the person's.
     #[test]
     fn the_surface_publishes_the_login_and_the_workspaces() {
-        let published = surface();
+        let published = tilo_device_surfaces::device_surfaces()
+            .into_iter()
+            .find(|surface| surface.kind == "devices")
+            .expect("the device publishes the devices surface");
         let fields: Vec<&str> = published
             .fields
             .iter()

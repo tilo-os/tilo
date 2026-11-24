@@ -1173,9 +1173,9 @@ mod tests {
     /// A workspace owned by `owner` , with `members` in it.
     fn workspace(owner: &str, members: &[&str]) -> Workspace {
         let mut workspace = Workspace::new(WorkspaceId::new(), "Studio");
-        workspace.set_owner(owner.to_owned());
+        workspace.policy.set_owner(owner.to_owned());
         for member in members {
-            workspace.admit((*member).to_owned(), Role::Editor);
+            workspace.policy.add_member((*member).to_owned(), Role::Editor);
         }
         workspace
     }

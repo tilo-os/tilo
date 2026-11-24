@@ -131,7 +131,10 @@ impl Device {
 
     /// Ada answers `asked` as the asking view does: its record's own `resolve`.
     async fn resolve(&self, asked: &Asked, answer: Resolve) -> Result<(), ActionCallError> {
-        self.store.resolve(&asked.record, &ada(), &answer).await
+        self.store
+            .resolve(&asked.record, &ada(), &answer)
+            .await
+            .expect("the record's dispatch answers")
     }
 
     /// Everything the device keeps or shows of the records, as text: where a secret must never be.
@@ -259,10 +262,10 @@ impl AskedDispatch for Device {
                     invocation,
                     output: tilo_actions::ActionOutput::default(),
                 },
-                Some(Err(error)) => InvocationUpdate::Failed {
-                    invocation,
-                    error: error.to_string(),
-                },
+                Some(Err(error)) => {
+                    crate::surfaces::outcome(invocation, &ReceiptStatus::Rejected { error })
+                        .expect("a rejected receipt says what failed")
+                }
                 None => InvocationUpdate::Cancelled {
                     invocation,
                     message: None,

@@ -1835,7 +1835,7 @@ mod tests {
     /// The session a fresh device starts from.
     fn session() -> DesktopHandle {
         let mut minter = IdMinter::new(1);
-        let (policy, _surface) = tilo_desktop_policy::DesktopPolicy::with_tree(
+        let policy = tilo_desktop_policy::DesktopPolicy::with_tree(
             seed_tree(&mut minter, "Session", Vec::new()),
             1,
         );

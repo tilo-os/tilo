@@ -1879,6 +1879,7 @@ mod tests {
                 declared: std::collections::BTreeMap::new(),
                 resource_kinds: std::collections::BTreeMap::new(),
                 launchable: Vec::new(),
+                files_open: std::collections::BTreeSet::new(),
                 tools: Vec::new(),
             }
         }
