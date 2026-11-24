@@ -21,7 +21,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use runtime_collab::wire::shell::{ShellCall, ShellRead, ShellReply};
+use runtime_collab::wire::shell::{ShellCall, ShellReply};
 use serde_json::json;
 use tilo_actions::remote::{Caller, Pending};
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
@@ -232,22 +232,10 @@ impl Computer {
 
     /// The layout, as the computer reads it now.
     async fn layout(&self) -> Option<automerge::AutoCommit> {
-        let read = self
-            .shell
-            .call(ShellCall::Read {
-                workspace: self.workspace.clone(),
-                app: DESKTOP_APP.to_owned(),
-                resource: DESKTOP_DOCUMENT.to_owned(),
-                since: None,
-            })
-            .await
-            .unwrap();
-        match read {
-            ShellReply::Read(ShellRead::Whole { bytes, .. }) => {
-                Some(automerge::AutoCommit::load(&bytes).unwrap())
-            }
-            _ => None,
-        }
+        let bytes = self
+            .document(&self.workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
+            .await?;
+        Some(automerge::AutoCommit::load(&bytes).unwrap())
     }
 
     /// The styles the device offers as the computer's shell reads them in the person's own
@@ -317,20 +305,7 @@ impl Computer {
     /// `app`'s document `document` of `workspace`, whole, as the computer's shell reads it to
     /// merge it.
     async fn document(&self, workspace: &str, app: &str, document: &str) -> Option<Vec<u8>> {
-        match self
-            .shell
-            .call(ShellCall::Read {
-                workspace: workspace.to_owned(),
-                app: app.to_owned(),
-                resource: document.to_owned(),
-                since: None,
-            })
-            .await
-            .unwrap()
-        {
-            ShellReply::Read(ShellRead::Whole { bytes, .. }) => Some(bytes),
-            _ => None,
-        }
+        shell_document(&self.shell, workspace, app, document).await
     }
 
     /// Wait until a document of the shell the device wrote in `own` has `style` as the style
@@ -613,12 +588,15 @@ fn the_desktop_page_draws_the_canvas_a_person_picked() {
 
         let page = Page::of(&daemon, &workspace, &browser(&host)).await;
         let tasks_page = format!("href=\"/w/{workspace}/tasks");
-        page.until("the canvas, Tasks' window on it a link to its page", |html| {
-            labelled(html, "Canvas").is_some()
-                && windows(html)
-                    .iter()
-                    .any(|window| window.contains(&tasks_page))
-        })
+        page.until(
+            "the canvas, Tasks' window on it a link to its page",
+            |html| {
+                labelled(html, "Canvas").is_some()
+                    && windows(html)
+                        .iter()
+                        .any(|window| window.contains(&tasks_page))
+            },
+        )
         .await;
         page.close();
     });
@@ -666,7 +644,10 @@ fn a_style_installed_while_readers_follow_reaches_each_of_them() {
         })
         .await;
         assert!(timeline.loads, "the style loads: {timeline:?}");
-        assert_eq!(timeline.line, "Timeline of the layout", "named by its doc line");
+        assert_eq!(
+            timeline.line, "Timeline of the layout",
+            "named by its doc line"
+        );
 
         // The page's style menu lists it beside the shell's own.
         let whole = page.opened.body.clone();
@@ -674,7 +655,9 @@ fn a_style_installed_while_readers_follow_reaches_each_of_them() {
             .split("aria-label=\"")
             .skip(1)
             .filter_map(|rest| rest.split('"').next())
-            .find(|label| label.starts_with("Showing ") || label.ends_with(": style and workspaces"))
+            .find(|label| {
+                label.starts_with("Showing ") || label.ends_with(": style and workspaces")
+            })
             .map(str::to_owned)
             .unwrap_or_else(|| panic!("the page's style menu: {whole}"));
         let menu = labelled(&whole, &menu).unwrap();
@@ -725,7 +708,9 @@ fn an_agents_pick_and_a_press_change_the_shells_record_the_computer_merges() {
             .split("aria-label=\"")
             .skip(1)
             .filter_map(|rest| rest.split('"').next())
-            .find(|label| label.ends_with(": style and workspaces") || label.starts_with("Showing "))
+            .find(|label| {
+                label.ends_with(": style and workspaces") || label.starts_with("Showing ")
+            })
             .map(str::to_owned)
             .unwrap_or_else(|| panic!("the page's style menu: {whole}"));
         let menu = labelled(&whole, &menu).unwrap();
@@ -778,14 +763,18 @@ fn the_styles_are_read_by_the_person_workspaces_rules() {
         };
         let styles = tilo_workspace_service::styles::STYLES_APP;
         let person = Caller::local_person(host.person());
-        let theirs = read(&person, styles).expect("the person reads them by their workspace's rules");
+        let theirs =
+            read(&person, styles).expect("the person reads them by their workspace's rules");
         let ResourceCopy::Reading { value, .. } = theirs else {
             panic!("the styles read as a reading: {theirs:?}");
         };
         let offered: tilo_workspace_service::styles::StyleList =
             serde_json::from_value(value).unwrap();
         assert!(
-            offered.offered.iter().any(|offered| offered.style == FRAMES),
+            offered
+                .offered
+                .iter()
+                .any(|offered| offered.style == FRAMES),
             "{offered:?}"
         );
         let (_, stranger) = host::stranger("Someone else's laptop");
@@ -803,4 +792,51 @@ fn the_styles_are_read_by_the_person_workspaces_rules() {
             "where this device's folders stand is its own: {folders:?}"
         );
     });
+}
+
+/// `app`'s `document` of `workspace`, whole, as a shell reads it through the daemon's resource
+/// read: `None` while the workspace has none of it.
+async fn shell_document(
+    shell: &runtime_collab::ShellClient,
+    workspace: &str,
+    app: &str,
+    document: &str,
+) -> Option<Vec<u8>> {
+    use tilo_actions::remote::{
+        ReadAnswer, RemoteActionFrame, RemoteActionMessage, ResourceReadRequest,
+    };
+    let message = RemoteActionMessage::ResourceRead {
+        correlation: 0,
+        on_behalf_of: None,
+        read: ResourceReadRequest {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+            record: document.to_owned(),
+            joined: false,
+            after: None,
+            wait_ms: None,
+            answer: ReadAnswer::Document,
+        },
+    };
+    let reply = shell
+        .call(ShellCall::Action {
+            workspace: None,
+            frame: RemoteActionFrame::new(message).encode().unwrap(),
+            caller: None,
+        })
+        .await
+        .unwrap();
+    let ShellReply::Action(frame) = reply else {
+        panic!("the daemon answers the shell's read: {reply:?}");
+    };
+    let RemoteActionMessage::ResourceReading {
+        result: Ok(readings),
+        ..
+    } = RemoteActionFrame::decode(&frame).unwrap().message
+    else {
+        return None;
+    };
+    let readings: serde_json::Value = serde_json::from_str(&readings).unwrap();
+    let bytes = readings["records"][0]["document"].as_str()?;
+    Some(hex::decode(bytes).unwrap())
 }

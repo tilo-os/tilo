@@ -242,7 +242,10 @@ fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
 #[cfg(unix)]
 #[test]
 fn a_view_an_agent_opens_stands_on_the_layout_the_persons_shell_reads() {
-    use runtime_collab::wire::shell::{ShellCall, ShellRead, ShellReply};
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
+    use tilo_actions::remote::{
+        ReadAnswer, RemoteActionFrame, RemoteActionMessage, ResourceReadRequest,
+    };
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
     host::run(|host| async move {
         let agent = host.agent();
@@ -257,23 +260,45 @@ fn a_view_an_agent_opens_stands_on_the_layout_the_persons_shell_reads() {
             runtime_collab::ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap());
         let deadline = Instant::now() + READ_BOUND;
         let (apps, opened_by) = loop {
-            let read = shell
-                .call(ShellCall::Read {
+            let message = RemoteActionMessage::ResourceRead {
+                correlation: 0,
+                on_behalf_of: None,
+                read: ResourceReadRequest {
                     workspace: host.workspace().to_owned(),
                     app: DESKTOP_APP.to_owned(),
-                    resource: DESKTOP_DOCUMENT.to_owned(),
-                    since: None,
+                    record: DESKTOP_DOCUMENT.to_owned(),
+                    joined: false,
+                    after: None,
+                    wait_ms: None,
+                    answer: ReadAnswer::Document,
+                },
+            };
+            let read = shell
+                .call(ShellCall::Action {
+                    workspace: None,
+                    frame: RemoteActionFrame::new(message).encode().unwrap(),
+                    caller: None,
                 })
                 .await
                 .unwrap();
-            let layout = match read {
-                ShellReply::Read(ShellRead::Whole { bytes, .. }) => {
-                    automerge::AutoCommit::load(&bytes)
-                        .ok()
-                        .and_then(|layout| tilo_desktop_model::shared_resource::read(&layout, None))
-                }
-                _ => None,
+            let ShellReply::Action(frame) = read else {
+                panic!("the daemon answers the shell's read: {read:?}");
             };
+            let layout =
+                match RemoteActionFrame::decode(&frame).unwrap().message {
+                    RemoteActionMessage::ResourceReading {
+                        result: Ok(readings),
+                        ..
+                    } => serde_json::from_str::<serde_json::Value>(&readings).unwrap()["records"]
+                        [0]["document"]
+                        .as_str()
+                        .map(|document| hex::decode(document).unwrap())
+                        .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
+                        .and_then(|layout| {
+                            tilo_desktop_model::shared_resource::read(&layout, None)
+                        }),
+                    _ => None,
+                };
             let apps: Vec<String> = layout
                 .iter()
                 .flat_map(|layout| layout.tree.tabs())
