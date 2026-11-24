@@ -25,8 +25,8 @@ the system bus, systemd or logind. Close the window or press Ctrl-C to stop it.
 Usage: cargo desktop [OPTIONS] [-- SESSION ARGUMENTS]
 
 Options:
-  --apps \"NAME ...\"   apps to install, directory names under apps/ (default:
-                      every app the session builds; \"\" for none)
+  --apps \"NAME ...\"   apps to install, directory names under apps/ or apps/tl
+                      (default: every app the session builds; \"\" for none)
   --state DIR         state directory (default: $XDG_STATE_HOME/tilo-nested);
                       the desktop, identity and apps survive restarts there
   --fresh             forget workspaces and open windows; keep identity and apps
@@ -72,8 +72,8 @@ grant, which is listed and revoked with their devices.
 Usage: cargo headless [OPTIONS] [-- SESSION ARGUMENTS]
 
 Options:
-  --apps \"NAME ...\"   apps to install, directory names under apps/ (default:
-                      every app the session builds; \"\" for none)
+  --apps \"NAME ...\"   apps to install, directory names under apps/ or apps/tl
+                      (default: every app the session builds; \"\" for none)
   --state DIR         state directory (default: $XDG_STATE_HOME/tilo-headless)
   --fresh             forget workspaces and open windows; keep identity and apps
   --reset-identity    discard the throwaway identity and mint a new one
