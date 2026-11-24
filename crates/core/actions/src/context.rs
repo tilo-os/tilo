@@ -490,10 +490,16 @@ impl ActionContext {
     /// are ordinary app commits, never an error that hides their history. A
     /// continuation is no entry on its own: read it with
     /// [`continued`](Self::continued) from its writer's last whole entry.
+    ///
+    /// A store's change names its action in a [`Stamp`](crate::stamp::Stamp): its context, and
+    /// what the stamp itself says of who invoked it and for which step.
     pub fn from_change_message(message: &str) -> Option<Self> {
-        serde_json::from_value::<wire::Entry>(entry_value(message)?)
-            .ok()
-            .map(wire::Entry::into_context)
+        match entry_value(message) {
+            Some(entry) => serde_json::from_value::<wire::Entry>(entry)
+                .ok()
+                .map(wire::Entry::into_context),
+            None => crate::stamp::Stamp::of_message(message).map(|stamp| stamp.action_context()),
+        }
     }
 
     /// Read only what an entry says about who made its change, in which run
@@ -503,7 +509,10 @@ impl ActionContext {
     /// what the change did. `None` where [`from_change_message`](Self::from_change_message)
     /// reads no entry.
     pub fn head_of_change_message(message: &str) -> Option<Self> {
-        let entry = crate::compact::json_of(message.strip_prefix(CHANGE_MESSAGE_PREFIX)?)?;
+        let Some(compact) = message.strip_prefix(CHANGE_MESSAGE_PREFIX) else {
+            return crate::stamp::Stamp::of_message(message).map(|stamp| stamp.action_context());
+        };
+        let entry = crate::compact::json_of(compact)?;
         serde_json::from_slice::<wire::Head>(&entry)
             .ok()
             .map(wire::Head::into_context)

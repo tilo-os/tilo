@@ -76,7 +76,7 @@ pub mod redaction;
 pub mod role;
 pub mod scope;
 pub mod signer;
-pub mod stamp;
+pub use tilo_actions::stamp;
 pub mod surface;
 pub mod units;
 pub mod validator;

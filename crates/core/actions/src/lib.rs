@@ -334,6 +334,7 @@ pub mod schema;
 pub mod selection;
 pub mod selectors;
 pub mod send_to;
+pub mod stamp;
 pub mod step;
 pub mod surface;
 pub mod task_step;

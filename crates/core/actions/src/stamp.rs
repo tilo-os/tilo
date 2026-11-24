@@ -56,9 +56,9 @@ pub struct Stamp {
     /// The invocation as its caller signed it, when a host ran the action for someone who asked
     /// it under their own key: the device that wrote the change signs it as its own, and this
     /// says who asked, for what, with what arguments. A holder checks it against the person's
-    /// root ([`tilo_actions::remote::SignedCall`]); the host never makes one up.
+    /// root ([`crate::remote::SignedCall`]); the host never makes one up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signed: Option<Box<tilo_actions::remote::SignedCall>>,
+    pub signed: Option<Box<crate::remote::SignedCall>>,
     /// The device that wrote the change, its key in hex: where a resource the change made live
     /// is live (`tilo_resource_store::Store::live`). Empty where the writer named none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -71,7 +71,7 @@ pub struct Stamp {
     /// gesture it is one keystroke of, the purpose its invoker gave. `None` where the writer said
     /// no more than the verb.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<Box<tilo_actions::ActionContext>>,
+    pub context: Option<Box<crate::ActionContext>>,
 }
 
 #[allow(
@@ -103,6 +103,10 @@ impl Stamp {
     /// taken into the resources of the types it keeps. A store keeps no facets, so a change
     /// stamped with it is how a received message reaches a trigger.
     pub const ORIGIN_VERB: &str = "$origin";
+
+    /// The verb of a change that names the version it stands at, with the name as its one
+    /// argument: a change with no operations every schema declares.
+    pub const CHECKPOINT_VERB: &str = "checkpoint";
 
     /// The text a stamp names `actor` by as its invoker.
     #[must_use]
@@ -145,6 +149,69 @@ impl Stamp {
         .map(|person| {
             tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(person))
         })
+    }
+
+    /// What the change did, as history reads it: the context its writer gave, with who invoked
+    /// it, the work it is a step of, its invocation and, for a step through history itself (an
+    /// undo, a checkpoint), that step, from the stamp where the context left them out.
+    #[must_use]
+    pub fn action_context(&self) -> crate::ActionContext {
+        let mut context = self.context.as_deref().cloned().unwrap_or_default();
+        if context.invoker.is_none()
+            && let Some(by) = self.invoked_by()
+        {
+            let acting = tilo_action_policy::Acting {
+                by,
+                app: None,
+                agent_session: None,
+                cause: None,
+                foreign_device: false,
+                handed: false,
+                acted_for: self
+                    .acted_for
+                    .iter()
+                    .filter_map(|person| tilo_action_policy::PersonId::parse(person).ok())
+                    .map(tilo_action_policy::Acting::person)
+                    .collect(),
+            };
+            context.invoker = Some(crate::ActionInvoker::admitted(&acting));
+        }
+        if context.group.is_none()
+            && let Some(group) = &self.group
+        {
+            context.group = Some(crate::WorkGroup {
+                id: group.id.clone(),
+                label: (!group.label.is_empty()).then(|| group.label.clone()),
+                kind: crate::context::AGENT_SESSION_GROUP.to_owned(),
+                declared_id: None,
+                session: None,
+            });
+        }
+        if context.source_invocation.is_none() {
+            context.source_invocation = self.invocation.parse().ok();
+        }
+        if context.what.is_none() {
+            let op = match (self.verb.as_str(), &self.undoes) {
+                (Self::CHECKPOINT_VERB, _) => Some(crate::HistoryOp::Checkpoint {
+                    name: self
+                        .args
+                        .first()
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                }),
+                (_, Some(_)) => Some(crate::HistoryOp::Undo),
+                _ => None,
+            };
+            context.what = op.map(|op| {
+                crate::Did::History(crate::entry::HistoryStep {
+                    op,
+                    steps: 1,
+                    of: None,
+                })
+            });
+        }
+        context
     }
 
     /// The stamp `change` carries; `None` for a change that carries none.
