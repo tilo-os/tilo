@@ -165,11 +165,12 @@ def app_release(root: pathlib.Path = REPO) -> Any:
 
 
 def default_collection(root: pathlib.Path = REPO) -> set[str]:
-    """Package ids of the default collection: what the app release publishes as apps."""
+    """Package ids of the default collection: what the app release publishes as apps, with
+    the tilolang packages they use, which it publishes and measures as apps of their own."""
     module = app_release(root)
     catalog = module.app_catalog(root)
     names = module.resolve_collection("default", catalog, module.config(root / "dist/apps/app-collections.toml"))
-    return {catalog[name]["id"] for name in names}
+    return {catalog[name]["id"] for name in module.with_used_packages(names, catalog)}
 
 
 def budget_for(size: int, headroom: float) -> int:

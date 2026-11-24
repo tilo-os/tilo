@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 import json
 import os
 from pathlib import Path
@@ -267,6 +268,30 @@ def resolve_collection(name: str, catalog: dict[str, dict], cfg: dict) -> list[s
     return sorted(selected)
 
 
+def with_used_packages(selected: Iterable[str], catalog: dict[str, dict]) -> set[str]:
+    """`selected` and every tilolang package they use, transitively.
+
+    A tilolang package is built with every package it uses, and each one is a signed app of
+    its own, so a selection brings its packages along.
+    """
+    selected = set(selected)
+    tilolang_by_id = {
+        app["id"]: name for name, app in catalog.items() if kind_of(app) == "tilolang"
+    }
+    frontier = [
+        name
+        for name in selected
+        if kind_of(catalog[name]) == "tilolang" and catalog[name].get("uses")
+    ]
+    while frontier:
+        for used in catalog[frontier.pop()]["uses"]:
+            dependency = tilolang_by_id.get(used)
+            if dependency is not None and dependency not in selected:
+                selected.add(dependency)
+                frontier.append(dependency)
+    return selected
+
+
 def changed_paths(base: str, root: Path = ROOT) -> list[str]:
     # Share the NUL-delimited, rename-as-delete/add reader used by check CI.
     return ci_select.changed_files(root, base, "HEAD")
@@ -499,24 +524,7 @@ def plan(args: argparse.Namespace) -> dict:
     unknown = set(selected).difference(catalog)
     if unknown:
         raise ValueError(f"unknown apps: {', '.join(sorted(unknown))}")
-    # A tilolang package is built with every package it uses, and each one is a signed app of
-    # its own: a selection brings its packages along, transitively.
-    selected = set(selected)
-    tilolang_by_id = {
-        app["id"]: name for name, app in catalog.items() if kind_of(app) == "tilolang"
-    }
-    frontier = [
-        name
-        for name in selected
-        if kind_of(catalog[name]) == "tilolang" and catalog[name].get("uses")
-    ]
-    while frontier:
-        for used in catalog[frontier.pop()]["uses"]:
-            dependency = tilolang_by_id.get(used)
-            if dependency is not None and dependency not in selected:
-                selected.add(dependency)
-                frontier.append(dependency)
-    selected = sorted(selected)
+    selected = sorted(with_used_packages(selected, catalog))
     features = cfg.get("features", {})
     for name in selected:
         if kind_of(catalog[name]) != "native":
