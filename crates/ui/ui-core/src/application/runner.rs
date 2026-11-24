@@ -2165,6 +2165,10 @@ mod native_process_tests {
                 .starts_with("Your workspace didn't answer, so this window can't open"),
             "{error}"
         );
+        assert!(
+            error.to_string().ends_with("(the workspace service is gone)"),
+            "{error}"
+        );
     }
 
     /// A window that shows before the workspace's record (a tilolang app) reads the record off the
