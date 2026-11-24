@@ -15,14 +15,16 @@ use tilolang_tilo::meta::MetaExt as _;
 
 use crate::fixtures::Replica;
 
-const TASKS: &str = crate::fixtures::TASKS_SOURCE;
-const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
-const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-const CHAT: &str = concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl"));
-const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const TASKS_APP: &str = "so.tilo.tasks";
-const CHAT_APP: &str = "so.tilo.lang.chat";
+const CHAT_APP: &str = "so.tilo.chat";
+
+/// The packages a window of these tests loads: the chat a line is captured from, and Tasks with
+/// the apps it names.
+fn packages() -> Vec<(&'static str, &'static str)> {
+    let mut packages = crate::fixtures::TASKS_SET.to_vec();
+    packages.insert(0, crate::fixtures::CHAT);
+    packages
+}
 
 /// A Wednesday morning, so "fri" is a day still to come.
 const NOW: &str = "2026-11-04T09:00:00Z";
@@ -123,15 +125,7 @@ fn create(replica: &Replica) -> String {
 
 #[test]
 fn one_line_from_anywhere_makes_the_task_its_words_say() {
-    let (ada, _) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[
-            (DISCUSSION, DISCUSSION_IDS),
-            (CHAT, CHAT_IDS),
-            (TASKS, TASKS_IDS),
-        ],
-    );
+    let (ada, _) = Replica::new("ada", Workspace::new(), &packages());
     // Both roots exist, as they do once each app's window was opened in the workspace.
     let _ = ada.host.root_of(TASKS_APP).unwrap();
     ada.commit();
@@ -177,15 +171,7 @@ fn one_line_from_anywhere_makes_the_task_its_words_say() {
 
 #[test]
 fn a_task_captured_from_a_message_says_what_it_was_made_from() {
-    let (ada, _) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[
-            (DISCUSSION, DISCUSSION_IDS),
-            (CHAT, CHAT_IDS),
-            (TASKS, TASKS_IDS),
-        ],
-    );
+    let (ada, _) = Replica::new("ada", Workspace::new(), &packages());
     let _ = ada.host.root_of(TASKS_APP).unwrap();
     // Bo says something in the channel `design`, and the palette captures a task from it.
     let chat = ada.host.root_of(CHAT_APP).unwrap();

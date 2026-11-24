@@ -16,10 +16,6 @@ use tilolang_runtime::{ResourceRef, Value};
 use crate::fixtures::{Replica, target};
 
 const MAIL_APP: &str = "so.tilo.mail";
-const MAIL: (&str, &str) = (
-    include_str!("../../../../apps/tl/mail/app.tl"),
-    include_str!("../../../../apps/tl/mail/app.ids"),
-);
 
 fn put(doc: &mut AutoCommit, at: &ObjId, key: &str, value: &str) {
     doc.put(at, key, value).unwrap();
@@ -197,7 +193,11 @@ fn a_native_mailbox_is_carried_over_once() {
         .iter()
         .map(|(_, doc)| doc.clone().get_heads())
         .collect();
-    let (ada, _) = Replica::new("ada", crate::fixtures::Workspace::new(), &[MAIL]);
+    let (ada, _) = Replica::new(
+        "ada",
+        crate::fixtures::Workspace::new(),
+        crate::fixtures::MAIL_SET,
+    );
     ada.host.runtime().set_earlier(MAIL_APP, &documents);
     let mail = ada.host.root_of(MAIL_APP).expect("the mailbox");
     ada.commit();
@@ -212,7 +212,7 @@ fn a_native_mailbox_is_carried_over_once() {
 
     assert_eq!(ada.host.migrate(), 0, "it runs once");
     assert_eq!(ada.commit(), 0);
-    let grace = ada.fork("grace", &[MAIL]);
+    let grace = ada.fork("grace", crate::fixtures::MAIL_SET);
     grace.host.runtime().set_earlier(MAIL_APP, &documents);
     assert_eq!(
         grace.host.migrate(),
@@ -230,7 +230,11 @@ fn a_native_mailbox_is_carried_over_once() {
 
 #[test]
 fn a_mailbox_opened_before_the_native_documents_arrived_receives_them_once_they_do() {
-    let (ada, _) = Replica::new("ada", crate::fixtures::Workspace::new(), &[MAIL]);
+    let (ada, _) = Replica::new(
+        "ada",
+        crate::fixtures::Workspace::new(),
+        crate::fixtures::MAIL_SET,
+    );
     let mail = ada.host.root_of(MAIL_APP).expect("the mailbox");
     ada.commit();
     assert_eq!(ada.host.migrate(), 0, "nothing to carry has arrived");

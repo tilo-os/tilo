@@ -252,15 +252,11 @@ tilo_test_env::scenario! {
     }
 }
 
-const MAIL: (&str, &str) = (
-    include_str!("../../../../apps/tl/mail/app.tl"),
-    include_str!("../../../../apps/tl/mail/app.ids"),
-);
 const MAIL_APP: &str = "so.tilo.mail";
 
 /// A mail workspace staged from the scenario `name`, and the resource it made.
 fn mail_staged(name: &str) -> (Replica, Option<ResourceRef>) {
-    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[MAIL]);
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), crate::fixtures::MAIL_SET);
     let meta = loaded.last().unwrap().meta.clone();
     ada.host.root_of(MAIL_APP).unwrap();
     ada.commit();

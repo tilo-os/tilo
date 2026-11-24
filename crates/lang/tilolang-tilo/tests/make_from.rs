@@ -10,15 +10,9 @@ use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::view::BindTarget;
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
-use crate::fixtures::{Replica, target};
+use crate::fixtures::{Replica, TASKS_SET, target};
 
-const CHAT: &str = concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl"));
-const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
-const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
-const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-const TASKS: &str = crate::fixtures::TASKS_SOURCE;
-const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const CHAT_APP: &str = "so.tilo.lang.chat";
+const CHAT_APP: &str = "so.tilo.chat";
 const TASKS_APP: &str = "so.tilo.tasks";
 
 /// What Bo writes, and what the task made from it is called.
@@ -146,15 +140,9 @@ fn menu(row: &UiNode, group: &str, label: &str) -> String {
 
 /// Ada's workspace with Chat and Tasks, a channel `design`, and Bo's message in it.
 fn workspace() -> (Replica, ResourceRef, ResourceRef) {
-    let (ada, _) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[
-            (CHAT, CHAT_IDS),
-            (DISCUSSION, DISCUSSION_IDS),
-            (TASKS, TASKS_IDS),
-        ],
-    );
+    let mut packages = TASKS_SET.to_vec();
+    packages.insert(0, crate::fixtures::CHAT);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &packages);
     // Both roots exist, as they do once each app's window was opened in the workspace.
     let all = Value::resource(&ada.host.root_of(CHAT_APP).unwrap());
     let _ = ada.host.root_of(TASKS_APP).unwrap();

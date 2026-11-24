@@ -275,7 +275,11 @@ fn a_native_chat_is_carried_over_once_as_one_change() {
         listed(&ada, &all, "channels").is_empty(),
         "nothing is carried before the migration runs"
     );
-    assert_eq!(ada.host.migrate(), 1, "the conversations' migration runs");
+    assert_eq!(
+        ada.host.migrate(),
+        2,
+        "the conversations' carrying and the direct conversations' repair run"
+    );
     assert_eq!(ada.commit(), 1, "as one change");
     assert_carried(&ada, &all);
 
@@ -330,7 +334,11 @@ fn a_chat_whose_messages_are_still_arriving_is_carried_once_they_are_here() {
     let mut all_here = record;
     all_here.push(part.clone());
     ada.host.runtime().set_earlier(CHAT_APP, &all_here);
-    assert_eq!(ada.host.migrate(), 1, "every message is carried, once");
+    assert_eq!(
+        ada.host.migrate(),
+        2,
+        "every message is carried, once, and the direct conversations are repaired"
+    );
     assert_eq!(ada.commit(), 1);
     assert_carried(&ada, &all);
     assert_eq!(ada.host.migrate(), 0);
@@ -393,7 +401,7 @@ fn with_a_report(mut documents: Vec<(String, AutoCommit)>) -> Vec<(String, AutoC
 fn a_native_report_is_carried_into_the_channel_reports_are_filed_in_now() {
     let documents = with_a_report(native_documents());
     let (ada, all) = opened(&documents);
-    assert_eq!(ada.host.migrate(), 1);
+    assert_eq!(ada.host.migrate(), 2);
     ada.commit();
     let feedback = conversation(&ada, &all, "feedback");
     assert_eq!(

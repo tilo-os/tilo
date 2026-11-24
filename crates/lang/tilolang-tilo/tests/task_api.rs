@@ -56,7 +56,12 @@ impl Apps {
             .unwrap();
             for (source, ids) in *group {
                 let lock = tilolang::IdsLock::parse(ids).unwrap();
-                let compiled = tilolang::compile_package(source, &lock, &metas).unwrap();
+                // A package compiles against the platform packages its `use`s name, as the
+                // host's own built-ins do.
+                let mut imports = tilolang_tilo::platform_apps::named_platform_packages(source)
+                    .expect("the platform's packages read");
+                imports.extend(metas.iter().cloned());
+                let compiled = tilolang::compile_package(source, &lock, &imports).unwrap();
                 host.load_compiled(&compiled).unwrap();
                 host.root_of(&compiled.meta.app).unwrap();
                 by_app.insert(compiled.meta.app.clone(), replicas.len());

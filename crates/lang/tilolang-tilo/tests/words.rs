@@ -479,8 +479,8 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
     };
     let groups = rows("Gruppe");
     assert!(
-        groups.iter().any(|title| title == "Neue Gruppe"),
-        "the contacts app's action reads in German: {groups:?}"
+        groups.iter().any(|title| title == "Neue Gruppe…"),
+        "the contacts app's action reads in German, and says its form asks for the name: {groups:?}"
     );
     let notes = rows("Notiz");
     assert!(

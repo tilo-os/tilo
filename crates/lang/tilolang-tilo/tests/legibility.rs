@@ -11,14 +11,8 @@ use tilolang_runtime::{Actor, ResourceRef, Store as _, Value};
 
 use tilolang_tilo::host::Host;
 
-use crate::fixtures::{Replica, call, target};
+use crate::fixtures::{Replica, TASKS_SET, call, target};
 
-const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
-const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
-const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
-const TASKS: &str = crate::fixtures::TASKS_SOURCE;
-const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 pub(crate) const NOTES_APP: &str = "so.tilo.notes";
 pub(crate) const TASKS_APP: &str = "so.tilo.tasks";
 
@@ -103,26 +97,14 @@ pub(crate) fn built_over(ada: &Replica) -> Host {
         || None,
     )
     .expect("the workspace opens");
-    for (source, ids) in [
-        (DISCUSSION, DISCUSSION_IDS),
-        (NOTES, NOTES_IDS),
-        (TASKS, TASKS_IDS),
-    ] {
+    for (source, ids) in TASKS_SET {
         host.load_builtin(source, ids).expect("the package loads");
     }
     host
 }
 
 pub(crate) fn an_agent_tidies_notes_and_tasks() -> Tidied {
-    let (ada, _) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[
-            (DISCUSSION, DISCUSSION_IDS),
-            (NOTES, NOTES_IDS),
-            (TASKS, TASKS_IDS),
-        ],
-    );
+    let (ada, _) = Replica::new("ada", Workspace::new(), TASKS_SET);
     ada.host.set_clock(|| "2026-10-30T09:00:00Z".to_owned());
     let notes = Value::resource(&ada.host.root_of(NOTES_APP).unwrap());
     let tasks = Value::resource(&ada.host.root_of(TASKS_APP).unwrap());
@@ -204,7 +186,7 @@ pub(crate) fn an_agent_tidies_notes_and_tasks() -> Tidied {
         &helper(),
         TASKS_APP,
         "remove",
-        vec![tasks, Value::resource(&stale)],
+        vec![Value::resource(&stale)],
     );
     ada.host.store().set_run(None);
     ada.commit();
@@ -355,15 +337,7 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
     );
     // Another device of hers reads the same versions of the workspace and marks what she saw
     // there, as the runtime hands the host's marks to it.
-    let (other, _) = Replica::new(
-        "ada",
-        ada.doc.fork(),
-        &[
-            (DISCUSSION, DISCUSSION_IDS),
-            (NOTES, NOTES_IDS),
-            (TASKS, TASKS_IDS),
-        ],
-    );
+    let (other, _) = Replica::new("ada", ada.doc.fork(), TASKS_SET);
     let elsewhere = other.host.runtime();
     assert_eq!(elsewhere.unseen(&me, &made).unwrap().len(), 2);
     let mark = SeenMark::of(ada.host.store().versions(&made).unwrap().last().unwrap());

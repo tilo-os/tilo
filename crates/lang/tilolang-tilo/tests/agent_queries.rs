@@ -61,10 +61,15 @@ struct World {
 }
 
 fn world() -> World {
-    let apps = Apps::new(&[
-        &[app!("discussion"), app!("tasks"), (JOURNAL, "")],
-        &[app!("notes"), app!("chat"), app!("board")],
-    ]);
+    let mut with_tasks = crate::fixtures::TASKS_SET.to_vec();
+    with_tasks.push((JOURNAL, ""));
+    let with_tasks: &[(&str, &str)] = &with_tasks;
+    let with_notes_and_chat: &[(&str, &str)] = &[
+        crate::fixtures::NOTES,
+        crate::fixtures::CHAT,
+        app!("board"),
+    ];
+    let apps = Apps::new(&[with_tasks, with_notes_and_chat]);
     {
         let todo = apps.replica(TODO);
         todo.host.set_clock(tilolang_tilo::host::system_time);

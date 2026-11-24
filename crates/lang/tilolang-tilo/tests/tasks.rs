@@ -7,20 +7,10 @@ use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
 use crate::fixtures::{Replica, ShownPlace, Workspace};
 
-pub(crate) const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
-pub(crate) const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-pub(crate) const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
-pub(crate) const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
-pub(crate) const TASKS: &str = crate::fixtures::TASKS_SOURCE;
-pub(crate) const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-/// What a task's page is drawn from: the tasks, the discussion under them, and the agents it can
-/// be given to.
-pub(crate) const PACKAGES: &[(&str, &str)] = &[
-    (DISCUSSION, DISCUSSION_IDS),
-    (NOTES, NOTES_IDS),
-    (TASKS, TASKS_IDS),
-];
 pub(crate) const APP: &str = "so.tilo.tasks";
+/// What a task's page is drawn from: the tasks, the contacts it hands work to, the discussion
+/// under them, and the agents it can be given to.
+pub(crate) const PACKAGES: &[(&str, &str)] = crate::fixtures::TASKS_SET;
 
 pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;

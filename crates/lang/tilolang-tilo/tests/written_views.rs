@@ -17,15 +17,6 @@ use tilolang_runtime::{Actor, InvokeOutcome, ModuleHash, ResourceRef, UiNode, Va
 
 use crate::fixtures::{Replica, Workspace, action_id, target};
 
-/// Mail's package (`apps/tl/mail`): its app and the scenarios staged beside it.
-const MAIL: (&str, &str) = (
-    include_str!("../../../../apps/tl/mail/app.tl"),
-    include_str!("../../../../apps/tl/mail/app.ids"),
-);
-const CHAT: (&str, &str) = (
-    concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl")),
-    include_str!("../../../../apps/tl/chat/app.ids"),
-);
 const VIEWS: (&str, &str) = (
     include_str!("../../../../apps/tl/views/app.tl"),
     include_str!("../../../../apps/tl/views/app.ids"),
@@ -88,7 +79,10 @@ struct Person {
 
 impl Person {
     fn new(who: &str) -> Self {
-        let (replica, _) = Replica::new(who, Workspace::new(), &[MAIL, CHAT, VIEWS]);
+        let mut packages = crate::fixtures::MAIL_SET.to_vec();
+        packages.push(crate::fixtures::CHAT);
+        packages.push(VIEWS);
+        let (replica, _) = Replica::new(who, Workspace::new(), &packages);
         let dispatch = Recording::new();
         replica.host.runtime().set_foreign_invoker(dispatch.clone());
         let views = replica.host.root_of(VIEWS_APP).unwrap();

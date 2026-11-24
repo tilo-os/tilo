@@ -17,40 +17,28 @@ macro_rules! app {
     };
 }
 
-/// An app whose scenarios are a file of their own (`scenarios.tl`), as its package compiles them.
-macro_rules! app_and_scenarios {
-    ($name:literal) => {
-        (
-            concat!(
-                include_str!(concat!("../../../../apps/tl/", $name, "/app.tl")),
-                "\n",
-                include_str!(concat!("../../../../apps/tl/", $name, "/scenarios.tl")),
-            ),
-            include_str!(concat!("../../../../apps/tl/", $name, "/app.ids")),
-        )
-    };
-}
-
 /// Each app's package with the packages it imports before it, and the app it is.
 fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         ("so.tilo.lang.counter", vec![app!("counter")]),
         (
             "so.tilo.tasks",
-            vec![app!("discussion"), app_and_scenarios!("tasks")],
+            crate::fixtures::TASKS_SET.to_vec(),
         ),
-        ("so.tilo.notes", vec![app!("discussion"), app!("notes")]),
-        ("so.tilo.mail", vec![app!("mail")]),
-        ("so.tilo.chat", vec![app!("chat")]),
+        (
+            "so.tilo.notes",
+            vec![crate::fixtures::DISCUSSION, crate::fixtures::NOTES],
+        ),
+        ("so.tilo.mail", crate::fixtures::MAIL_SET.to_vec()),
+        ("so.tilo.chat", vec![crate::fixtures::CHAT]),
         (
             "so.tilo.lang.today",
-            vec![
-                app!("discussion"),
-                app!("notes"),
-                app_and_scenarios!("tasks"),
-                app!("chat"),
-                app!("today"),
-            ],
+            {
+                let mut packages = crate::fixtures::TASKS_SET.to_vec();
+                packages.push(crate::fixtures::CHAT);
+                packages.push(app!("today"));
+                packages
+            },
         ),
     ]
 }
@@ -103,7 +91,7 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
 /// members offers them too, by the name the scenario gave.
 #[test]
 fn a_scenarios_named_person_is_a_member_of_the_workspace() {
-    let packages = vec![app!("discussion"), app_and_scenarios!("tasks")];
+    let packages = crate::fixtures::TASKS_SET.to_vec();
     let (replica, loaded) = Replica::new("ada", Workspace::new(), &packages);
     replica.host.root_of("so.tilo.tasks").unwrap();
     replica.commit();
@@ -141,9 +129,9 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
     // it, and Today's place is what is due on the day it is read.
     let clock = || "2026-06-30T10:42:00Z".to_owned();
     let mut owners: Vec<(Replica, Vec<tilolang_tilo::host::Package>)> = [
-        vec![app!("discussion"), app!("notes")],
-        vec![app!("discussion"), app_and_scenarios!("tasks")],
-        vec![app!("chat")],
+        vec![crate::fixtures::DISCUSSION, crate::fixtures::NOTES],
+        crate::fixtures::TASKS_SET.to_vec(),
+        vec![crate::fixtures::CHAT],
     ]
     .iter()
     .map(|packages| {
@@ -152,7 +140,8 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
         (replica, loaded)
     })
     .collect();
-    let (today, discussion) = Replica::new("ada", Workspace::new(), &[app!("discussion")]);
+    let (today, discussion) =
+        Replica::new("ada", Workspace::new(), &[crate::fixtures::DISCUSSION]);
     today.host.set_clock(clock);
     let mut metas = vec![discussion[0].meta.clone()];
     for (_, loaded) in &owners {
@@ -241,7 +230,7 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
 /// no action, so none of them stages a workspace's data.
 #[test]
 fn only_a_seed_runs_a_scenario() {
-    let packages = vec![app!("discussion"), app!("notes")];
+    let packages = vec![crate::fixtures::DISCUSSION, crate::fixtures::NOTES];
     let (replica, loaded) = Replica::new("ada", Workspace::new(), &packages);
     let notebook = replica.host.root_of("so.tilo.notes").unwrap();
     replica.commit();

@@ -21,6 +21,57 @@ pub const TASKS_SOURCE: &str = concat!(
     include_str!("../../../../apps/tl/tasks/scenarios.tl")
 );
 
+/// The Discussion package (`apps/tl/discussion`): the threads under a task and a note.
+pub const DISCUSSION: (&str, &str) = (
+    include_str!("../../../../apps/tl/discussion/app.tl"),
+    include_str!("../../../../apps/tl/discussion/app.ids"),
+);
+
+/// The Contacts package (`apps/tl/contacts`): its book and the directory's account panel.
+pub const CONTACTS: (&str, &str) = (
+    concat!(
+        include_str!("../../../../apps/tl/contacts/app.tl"),
+        "\n",
+        include_str!("../../../../apps/tl/contacts/identities.tl")
+    ),
+    include_str!("../../../../apps/tl/contacts/app.ids"),
+);
+
+/// The Notes package (`apps/tl/notes`).
+pub const NOTES: (&str, &str) = (
+    include_str!("../../../../apps/tl/notes/app.tl"),
+    include_str!("../../../../apps/tl/notes/app.ids"),
+);
+
+/// The Tasks package, its scenarios included.
+pub const TASKS: (&str, &str) = (
+    TASKS_SOURCE,
+    include_str!("../../../../apps/tl/tasks/app.ids"),
+);
+
+/// The packages a host loads to run Tasks: the apps it names with `use`, each before it, as a
+/// package compiles against the ones loaded before it.
+pub const TASKS_SET: &[(&str, &str)] = &[CONTACTS, DISCUSSION, NOTES, TASKS];
+
+/// The Mail package (`apps/tl/mail`), and the Contacts package it reads an address as.
+pub const MAIL: (&str, &str) = (
+    include_str!("../../../../apps/tl/mail/app.tl"),
+    include_str!("../../../../apps/tl/mail/app.ids"),
+);
+
+/// The packages a host loads to run Mail.
+pub const MAIL_SET: &[(&str, &str)] = &[CONTACTS, MAIL];
+
+/// The Chat package (`apps/tl/chat`): its app and the Discord account it bridges.
+pub const CHAT: (&str, &str) = (
+    concat!(
+        include_str!("../../../../apps/tl/chat/app.tl"),
+        "\n",
+        include_str!("../../../../apps/tl/chat/discord.tl")
+    ),
+    include_str!("../../../../apps/tl/chat/app.ids"),
+);
+
 /// A list with text, a collection and a set, for the merge kinds the counter does not use.
 pub const TODO: &str = r#"app so.tilo.todo "Todo"
 
@@ -576,7 +627,7 @@ pub fn call(
         .host
         .runtime()
         .invoke_action(&who.actor(), (id.as_str(), args))
-        .unwrap()
+        .unwrap_or_else(|error| panic!("{app} {action}: {error}"))
     {
         tilolang_runtime::InvokeOutcome::Done(v) => v,
         other => panic!("{action}: {other:?}"),

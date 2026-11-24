@@ -20,10 +20,6 @@ use crate::fixtures::call;
 use crate::fixtures::{Replica, Workspace, action_id, target};
 
 const MAIL_APP: &str = "so.tilo.mail";
-const MAIL: (&str, &str) = (
-    include_str!("../../../../apps/tl/mail/app.tl"),
-    include_str!("../../../../apps/tl/mail/app.ids"),
-);
 const NOTES_APP: &str = "so.tilo.notes";
 const DISCUSSION: (&str, &str) = (
     include_str!("../../../../apps/tl/discussion/app.tl"),
@@ -175,7 +171,7 @@ struct Reply {
 }
 
 fn mail_with_a_draft(workspace: &Workspace, rootless: bool) -> Reply {
-    let (mut window, far) = window(MAIL_APP, &[MAIL], workspace, rootless);
+    let (mut window, far) = window(MAIL_APP, crate::fixtures::MAIL_SET, workspace, rootless);
     let host = window.host().expect("the window opened");
     let mail = host.root_of(MAIL_APP).expect("the mailbox");
     let meta = host.package(MAIL_APP).expect("mail is loaded").meta;

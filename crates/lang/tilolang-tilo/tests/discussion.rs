@@ -10,14 +10,8 @@ use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{ActionRef, Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
-use crate::fixtures::{Replica, field_id, target};
+use crate::fixtures::{Replica, TASKS_SET, field_id, target};
 
-const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
-const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
-const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
-const TASKS: &str = crate::fixtures::TASKS_SOURCE;
-const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const DISCUSSION_APP: &str = "so.tilo.lang.discussion";
 const NOTES_APP: &str = "so.tilo.notes";
 const TASKS_APP: &str = "so.tilo.tasks";
@@ -176,15 +170,7 @@ fn tasks_window(ada: &Replica) -> ViewInstance {
 
 /// Ada's replication of a workspace that has the discussion app, notes and tasks.
 fn workspace() -> Replica {
-    let (replica, _) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[
-            (DISCUSSION, DISCUSSION_IDS),
-            (NOTES, NOTES_IDS),
-            (TASKS, TASKS_IDS),
-        ],
-    );
+    let (replica, _) = Replica::new("ada", Workspace::new(), TASKS_SET);
     replica
 }
 
@@ -222,7 +208,7 @@ fn ada_and_bo_after_a_comment() -> (Replica, Replica, ResourceRef, ResourceRef, 
     let ada = workspace();
     let task = task_titled(&ada, "Pay rent");
     ada.commit();
-    let bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)]);
+    let bo = ada.fork("bo", TASKS_SET);
     let mut asked = RichValue::from_text("Is this the one that pays the whole quarter? ");
     asked.push_reference(
         "Ada",
@@ -434,7 +420,7 @@ tilo_test_env::scenario! {
         let ada = workspace();
         let plan = note_named(&ada, "Q3 plan");
         ada.commit();
-        let bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (NOTES, NOTES_IDS)]);
+        let bo = ada.fork("bo", &[crate::fixtures::DISCUSSION, crate::fixtures::NOTES]);
 
         let said = comment(
             &bo,
@@ -697,11 +683,7 @@ fn a_history_entry_says_what_was_done_in_the_apps_words_not_in_its_declaration()
 /// Ada's workspace with Tasks' discussion scenario run in it: the task it answers with, and what
 /// the two people it names said about it.
 fn a_task_discussed_by_a_scenario() -> (Replica, ResourceRef) {
-    let (ada, loaded) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
-    );
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), TASKS_SET);
     ada.host.root_of(DISCUSSION_APP).unwrap();
     ada.host.root_of(TASKS_APP).unwrap();
     ada.commit();
@@ -752,7 +734,7 @@ fn only_its_author_edits_or_deletes_a_comment() {
     let ada = workspace();
     let task = task_titled(&ada, "Pay rent");
     ada.commit();
-    let bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)]);
+    let bo = ada.fork("bo", TASKS_SET);
 
     let said = comment(&bo, "bo", &task, "Is this the one that pays the quarter?");
     bo.commit();

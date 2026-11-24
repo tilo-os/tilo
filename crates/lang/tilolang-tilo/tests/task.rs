@@ -7,22 +7,11 @@ use std::rc::Rc;
 use serde_json::{Value as Json, json};
 use tilolang_tilo::task::TaskSession;
 
+use crate::fixtures::TASKS_SET;
 use crate::task_api::Apps;
 
-const DISCUSSION: (&str, &str) = (
-    include_str!("../../../../apps/tl/discussion/app.tl"),
-    include_str!("../../../../apps/tl/discussion/app.ids"),
-);
-const NOTES: (&str, &str) = (
-    include_str!("../../../../apps/tl/notes/app.tl"),
-    include_str!("../../../../apps/tl/notes/app.ids"),
-);
-const TODO: (&str, &str) = (
-    crate::fixtures::TASKS_SOURCE,
-    include_str!("../../../../apps/tl/tasks/app.ids"),
-);
 const NOTES_APP: &str = "so.tilo.notes";
-const TODO_APP: &str = "so.tilo.lang.tasks";
+const TODO_APP: &str = "so.tilo.tasks";
 
 struct Task {
     session: TaskSession,
@@ -37,7 +26,8 @@ fn agent() -> tilolang_tilo::runtime::Actor {
 /// Notes and Todo, each in a host of its own, and a task of them; the policy refuses the
 /// actions `refused`.
 fn task(refused: Vec<&'static str>) -> Task {
-    let mut apps = Apps::new(&[&[DISCUSSION, NOTES], &[DISCUSSION, TODO]]);
+    let notes: &[(&str, &str)] = &[crate::fixtures::DISCUSSION, crate::fixtures::NOTES];
+    let mut apps = Apps::new(&[notes, TASKS_SET]);
     apps.refused = refused;
     let api = Rc::new(apps);
     Task {
@@ -279,7 +269,8 @@ tilo_test_env::scenario! {
 
     phase what_cannot_be_read_is_an_error_never_nothing;
     {
-        let mut apps = Apps::new(&[&[DISCUSSION, NOTES], &[DISCUSSION, TODO]]);
+        let notes: &[(&str, &str)] = &[crate::fixtures::DISCUSSION, crate::fixtures::NOTES];
+        let mut apps = Apps::new(&[notes, TASKS_SET]);
         apps.unreachable = vec![(TODO_APP, "todo is not open")];
         let api = Rc::new(apps);
         let session = api.task();
@@ -344,16 +335,11 @@ fn a_resource_argument_is_the_catalogues_reference() {
     let remove = task.api.invoked.borrow().last().cloned().unwrap();
     assert_eq!(
         remove["arguments"]["t"]["kind"],
-        json!("tl.so.tilo.lang.tasks.Task"),
+        json!("tl.so.tilo.tasks.Task"),
         "{remove:#}"
     );
     assert_eq!(task.said("tasks.tasks.items.len()"), "1");
 }
-
-const CHAT: (&str, &str) = (
-    concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl")),
-    include_str!("../../../../apps/tl/chat/app.ids"),
-);
 
 /// Every argument travels in the shape the action's published parameter declares, which the
 /// broker binds before it delivers, and arrives as the value the program gave: a resource of a
@@ -361,7 +347,8 @@ const CHAT: (&str, &str) = (
 /// text.
 #[test]
 fn each_argument_is_sent_as_its_published_parameter_takes_it() {
-    let api = Rc::new(Apps::new(&[&[CHAT], &[DISCUSSION, TODO]]));
+    let chat: &[(&str, &str)] = &[crate::fixtures::CHAT];
+    let api = Rc::new(Apps::new(&[chat, TASKS_SET]));
     let task = Task {
         session: api.task(),
         api,

@@ -9,21 +9,13 @@ use tilolang_runtime::{Meta, SourceWords, Value};
 use tilolang_tilo::DynAction;
 use tilolang_tilo::publish::{Caller, PlanRequest};
 
-use crate::fixtures::{Replica, field_id};
+use crate::fixtures::{Replica, TASKS_SET, field_id};
 
-const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
-const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-const TODO: &str = crate::fixtures::TASKS_SOURCE;
-const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const APP: &str = "so.tilo.tasks";
 
 /// Ada's replica holding a list with one item, Grace's fork of it, the package, and the item.
 fn workspace() -> (Replica, Replica, Meta, ResourceRef) {
-    let (ada, packages) = Replica::new(
-        "ada",
-        Workspace::new(),
-        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
-    );
+    let (ada, packages) = Replica::new("ada", Workspace::new(), TASKS_SET);
     let meta = packages.last().unwrap().meta.clone();
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
@@ -44,7 +36,7 @@ fn workspace() -> (Replica, Replica, Meta, ResourceRef) {
         },
         other => panic!("no items: {other:?}"),
     };
-    let grace = ada.fork("grace", &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)]);
+    let grace = ada.fork("grace", TASKS_SET);
     (ada, grace, meta, first)
 }
 
@@ -213,13 +205,13 @@ fn the_published_action_offers_done_as_optional_and_describes_its_default() {
     let done = check.params.iter().find(|p| p.name == "done").unwrap();
     assert_eq!(
         done.default.as_ref().map(|d| d.text.as_str()),
-        Some("not t.done")
+        Some("not closed(t.status)")
     );
     let planner: std::sync::Arc<dyn tilolang_tilo::publish::Planner> =
         std::sync::Arc::new(ada.host.handle());
     let ty = tilolang_tilo::publish::action_type(
         &meta,
-        &format!("tl.{APP}.Todo"),
+        &format!("tl.{APP}.Task"),
         check,
         &planner,
         &SourceWords,
@@ -232,7 +224,7 @@ fn the_published_action_offers_done_as_optional_and_describes_its_default() {
         .expect("published");
     assert!(!param.required, "an invocation may leave it out");
     assert!(
-        param.description.contains("not t.done"),
+        param.description.contains("not closed(t.status)"),
         "{}",
         param.description
     );

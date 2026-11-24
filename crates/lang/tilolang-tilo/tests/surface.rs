@@ -13,7 +13,7 @@ use tilolang_tilo::publish::{
 };
 use tilolang_tilo::surface::{HOST_KIND, host_surface, package_surfaces, surface_toml};
 
-use crate::fixtures::{COUNTER, Replica, TASKS_SOURCE, TODO, field_id};
+use crate::fixtures::{COUNTER, Replica, TODO, field_id};
 
 fn counter() -> Meta {
     let (_, packages) = Replica::new("ada", Workspace::new(), &[(COUNTER, "")]);
@@ -753,28 +753,9 @@ action attach(b: Board, list: todo.TodoList) {
     // The Tasks app's own clearing action over a task the entry made: a task typed with no day has
     // none to clear, so the app says the action cannot run.
     {
-        let (replica, mut packages) = Replica::new(
-            "ada",
-            Workspace::new(),
-            &[
-                (
-                    include_str!("../../../../apps/tl/discussion/app.tl"),
-                    include_str!("../../../../apps/tl/discussion/app.ids"),
-                ),
-                (
-                    concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl")),
-                    include_str!("../../../../apps/tl/chat/app.ids"),
-                ),
-                (
-                    include_str!("../../../../apps/tl/notes/app.tl"),
-                    include_str!("../../../../apps/tl/notes/app.ids"),
-                ),
-                (
-                    TASKS_SOURCE,
-                    include_str!("../../../../apps/tl/tasks/app.ids"),
-                ),
-            ],
-        );
+        let mut packages = crate::fixtures::TASKS_SET.to_vec();
+        packages.insert(0, crate::fixtures::CHAT);
+        let (replica, mut packages) = Replica::new("ada", Workspace::new(), &packages);
         let meta = packages.pop().unwrap().meta;
         let app = meta.app.clone();
         let root = replica.host.root_of(&app).unwrap();
