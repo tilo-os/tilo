@@ -1377,6 +1377,29 @@ pub trait PictureInPictureProvider {
     fn picture_in_picture_floating(&self) -> bool {
         false
     }
+
+    /// The picture stopped floating: the shell's window for it went away, or the person took it
+    /// back. What the picture kept of the float is done. A page's float is the app's own prop and
+    /// answers nothing.
+    fn picture_in_picture_returned(&mut self) {}
+
+    /// Where the picture stands in its window now, once it moved since the host last asked: the
+    /// floated surface mirrors that region, so a page that scrolls or a window that resizes
+    /// carries the picture with it.
+    fn floating_picture_in_picture_region(&self) -> Option<vello::kurbo::Rect> {
+        None
+    }
+
+    /// Draw the picture into the floating window: what stands at `source` in the window, drawn
+    /// over `target` on the shell. Whether it drew anything.
+    fn draw_picture_in_picture(
+        &mut self,
+        _source: vello::kurbo::Rect,
+        _target: vello::kurbo::Rect,
+        _ctx: &mut crate::draw::DrawCtx<'_>,
+    ) -> bool {
+        false
+    }
 }
 
 /// Optional sound capability for a player a view declares: the player decodes the sound but

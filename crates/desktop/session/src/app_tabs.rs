@@ -32,7 +32,7 @@ use ui::Theme;
 use ui::WindowAppearance;
 use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
-    HostNetworkStatus,
+    FloatingSurfaceProtocolRole, HostNetworkStatus, protocol_rect,
 };
 use ui::theme::ThemeDocument;
 use ui::workspace_sync::WorkspaceSync;
@@ -44,6 +44,11 @@ use crate::capture_studio::CaptureStudio;
 use crate::desktop_services::DesktopServices;
 use crate::host_shell::HostShellAsks;
 use crate::page_track::{PageTracks, Watch};
+use ui::vello::kurbo::Rect;
+
+/// How far a picture an app floats stands from the lower right corner of the window it floats
+/// over, and of the display when that window is not on the shell.
+const PICTURE_MARGIN: f64 = 16.0;
 
 /// The longest frame an app may send: a paint stream and a marker inventory both fit, and nothing
 /// else comes close.
@@ -586,20 +591,14 @@ impl AppTabs {
         // The windows on the shell this pass, and the launch each belongs to: what tells whether the
         // very window that draws an activity is on screen, rather than another window of the same
         // app.
-        let shown: BTreeSet<u64> = desktop.with_policy(|policy| {
-            policy
-                .placement()
-                .shown
-                .into_iter()
-                .map(|(window, _)| window)
-                .collect()
-        });
+        let shown: BTreeMap<u64, Rect> =
+            desktop.with_policy(|policy| policy.placement().shown.into_iter().collect());
         let windows = compositor.windows();
         let shown_launches: BTreeSet<u32> = windows
             .iter()
-            .filter(|(window, _)| shown.contains(&window.id))
+            .filter(|(window, _)| shown.contains_key(&window.id))
             .filter_map(|(window, _)| window.pid)
-            .filter_map(|pid| self.launches.launch_of(pid))
+            .map(|pid| self.launches.launch_of(pid).unwrap_or(pid))
             .collect();
         let mut moved = false;
         for card in self.cards.presented() {
@@ -611,12 +610,18 @@ impl AppTabs {
                 // the app's windows stand for it.
                 None => desktop.with_policy(|policy| policy.shows(&card.app)),
             };
-            let wanted = if in_view || card.stood_down {
+            // A picture floats above its app's window: the person keeps watching it while that
+            // window is where they work, so being shown does not stand it down.
+            let floats_above_its_window =
+                card.role == FloatingSurfaceProtocolRole::PictureInPicture;
+            let slot = self
+                .cards
+                .slot(&card.app, &card.activity)
+                .or_else(|| self.picture_place(&card, &shown, &windows, compositor));
+            let wanted = if (in_view && !floats_above_its_window) || card.stood_down {
                 None
             } else {
-                self.cards
-                    .slot(&card.app, &card.activity)
-                    .map(|window| (window, card.body(window)))
+                slot.map(|window| (window, card.body(window)))
             };
             let Some(link) = self.links.get(&card.connection) else {
                 continue;
@@ -678,6 +683,53 @@ impl AppTabs {
         if moved {
             compositor.rearrange();
         }
+    }
+
+    /// Where an app's picture floats when the shell's cards hold no block for it: over the lower
+    /// right corner of the window that presented it, or, while no window of that app is on the
+    /// shell, over the same corner of the display the person works on. The place is the picture's
+    /// for as long as it floats, so the window behind it moving never carries it away.
+    fn picture_place(
+        &self,
+        card: &crate::cards::Presented,
+        shown: &BTreeMap<u64, Rect>,
+        windows: &[(tilo_compositor::WindowInfo, (i32, i32, i32, i32))],
+        compositor: &Compositor,
+    ) -> Option<Rect> {
+        if card.role != FloatingSurfaceProtocolRole::PictureInPicture {
+            return None;
+        }
+        if let Some(seat) = self.cards.picture_seat(&card.app, &card.activity) {
+            return Some(seat);
+        }
+        let launch = self.links.get(&card.connection).map(|link| link.launch)?;
+        let over = windows.iter().find_map(|(window, _)| {
+            let at = shown.get(&window.id)?;
+            let own = window
+                .pid
+                .map(|pid| self.launches.launch_of(pid).unwrap_or(pid));
+            (own == Some(launch)).then_some(*at)
+        });
+        let outputs = compositor.outputs();
+        let area = over.or_else(|| {
+            outputs
+                .iter()
+                .find(|output| output.enabled && output.primary)
+                .or_else(|| outputs.iter().find(|output| output.enabled))
+                .and_then(|output| output.rect)
+                .map(|(x, y, width, height)| {
+                    Rect::from_origin_size(
+                        (f64::from(x), f64::from(y)),
+                        (f64::from(width), f64::from(height)),
+                    )
+                })
+        })?;
+        let size = card.window_size();
+        let x = (area.x1 - PICTURE_MARGIN - size.width).max(area.x0 + PICTURE_MARGIN);
+        let y = (area.y1 - PICTURE_MARGIN - size.height).max(area.y0 + PICTURE_MARGIN);
+        let seat = Rect::from_origin_size((x, y), (size.width, size.height));
+        self.cards.seat(&card.app, &card.activity, seat);
+        Some(seat)
     }
 
     /// A card's window that went away leaves the app drawing it on the shell with nothing to draw it
@@ -1175,10 +1227,15 @@ impl Answers<'_> {
                 }
                 tell(&reply, &FloatingSurfaceHostMessage::Closed { id }, &app);
             }
-            // A mirror of a window's pixels has no native card here: what floats is drawn by the
-            // app that owns it.
-            FloatingSurfaceClientMessage::UpdateRegion { .. } => {
-                refuse(&reply, &app, &name, NO_REGION);
+            // The picture an app floats moved in its own window — the page scrolled, the window
+            // resized — so the surface mirrors where it stands now. Only the app that presented
+            // it, on the window that presented it, may move it.
+            FloatingSurfaceClientMessage::UpdateRegion { id, region } => {
+                match protocol_rect(region) {
+                    Ok(region) if self.cards.update_region(&app, connection, &id, region) => {}
+                    Ok(_) => refuse(&reply, &app, &name, NO_REGION),
+                    Err(reason) => refuse(&reply, &app, &name, &reason),
+                }
             }
             // The record a window shows, as its app holds it. An app that keeps one document for
             // the whole workspace has no record id to name it by (its route is empty), so the

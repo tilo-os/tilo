@@ -15,7 +15,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilo_desktop_policy::cards::Placements;
-use ui::floating_surface::FloatingSurfaceProtocolRequest;
+use ui::floating_surface::{
+    FloatingSurfaceProtocolRequest, FloatingSurfaceProtocolRole, FloatingSurfaceProtocolSource,
+};
 use ui::vello::kurbo::{Point, Rect, Size};
 
 /// An activity: the app that runs it, and the activity's own id.
@@ -32,6 +34,8 @@ pub(crate) struct Presented {
     pub(crate) token: String,
     /// The connection that vouched for the app when it presented the card.
     pub(crate) connection: u64,
+    /// What the surface is: a card the app draws, or the app's picture floated above its window.
+    pub(crate) role: FloatingSurfaceProtocolRole,
     /// The card body's size, as the app asked for it.
     pub(crate) content: Size,
     /// The soft frame the app draws around the body: left, top, right and bottom, as its own
@@ -49,6 +53,10 @@ pub(crate) struct Presented {
     /// Whether the app was told its card's window is up: it stops painting the copy it keeps for
     /// the handoff, and the card alone draws it.
     pub(crate) adopted: bool,
+    /// The place the session gave the picture an app floats when the shell's cards held no block
+    /// for it: the picture keeps it, so the window that presented it moving does not carry it off
+    /// the screen.
+    pub(crate) seat: Option<Rect>,
 }
 
 impl Presented {
@@ -128,6 +136,29 @@ impl Cards {
         self.shared.borrow_mut().slots = slots;
     }
 
+    /// The place of its own the session gave an app's picture, when the shell's cards held no
+    /// block for it: the picture stands where it was first stood.
+    pub(crate) fn picture_seat(&self, app: &str, activity: &str) -> Option<Rect> {
+        self.shared
+            .borrow()
+            .cards
+            .get(&(app.to_owned(), activity.to_owned()))?
+            .seat
+    }
+
+    /// Stand an app's picture at a place of its own: the shell's cards hold no block it could
+    /// take, so the session gives it one.
+    pub(crate) fn seat(&self, app: &str, activity: &str, at: Rect) {
+        if let Some(card) = self
+            .shared
+            .borrow_mut()
+            .cards
+            .get_mut(&(app.to_owned(), activity.to_owned()))
+        {
+            card.seat = Some(at);
+        }
+    }
+
     /// The card `token` draws, while the app still presents it.
     pub(crate) fn by_token(&self, token: &str) -> Option<Presented> {
         self.shared
@@ -203,8 +234,18 @@ impl Cards {
         connection: u64,
         request: &FloatingSurfaceProtocolRequest,
     ) -> Result<(), String> {
-        if !request.role.uses_app_owned_host() {
-            return Err("this session draws no captured surface as an app's card".into());
+        match request.role {
+            // A picture floats above its app's own window while that window is on screen, so the
+            // app draws it: it may only float what its own window shows, never another app's.
+            FloatingSurfaceProtocolRole::PictureInPicture => {
+                if !floats_only(&request.source, app) {
+                    return Err(
+                        "a picture of another app's window is not this app's to float".into(),
+                    );
+                }
+            }
+            role if role.uses_app_owned_host() => {}
+            _ => return Err("this session draws no captured surface as an app's card".into()),
         }
         if request.id.is_empty() || request.id.len() > 128 {
             return Err("a card names the activity it shows".into());
@@ -244,12 +285,14 @@ impl Cards {
             activity: request.id.clone(),
             token: token.clone(),
             connection,
+            role: request.role,
             content,
             frame,
             local,
             told: None,
             stood_down: false,
             adopted: false,
+            seat: None,
         };
         let size = shown.window_size();
         self.shared.borrow_mut().cards.insert(key, shown);
@@ -294,6 +337,29 @@ impl Cards {
         true
     }
 
+    /// The picture an app floats moved in its window (the page scrolled, its window resized):
+    /// the source the floating surface mirrors stands elsewhere. Only the window that presented
+    /// it may move it. Whether the surface is one this app floats.
+    pub(crate) fn update_region(
+        &self,
+        app: &str,
+        connection: u64,
+        activity: &str,
+        region: Rect,
+    ) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let Some(card) = shared.cards.get_mut(&(app.to_owned(), activity.to_owned())) else {
+            return false;
+        };
+        if card.connection != connection
+            || card.role != FloatingSurfaceProtocolRole::PictureInPicture
+        {
+            return false;
+        }
+        card.local = region.origin();
+        true
+    }
+
     /// The app ended the card: nothing of it is placed again.
     pub(crate) fn dismissed(&self, connection: u64, activity: &str) -> Option<Presented> {
         let mut shared = self.shared.borrow_mut();
@@ -324,6 +390,19 @@ impl Cards {
                 card
             })
             .collect()
+    }
+}
+
+/// Whether every source `source` names is `app`'s own window: a picture the app floats shows what
+/// its own window draws, and a surface id names no window this session can check.
+fn floats_only(source: &FloatingSurfaceProtocolSource, app: &str) -> bool {
+    match source {
+        FloatingSurfaceProtocolSource::AppElement { app_id, .. }
+        | FloatingSurfaceProtocolSource::AppRegion { app_id, .. } => app_id == app,
+        FloatingSurfaceProtocolSource::Surface { .. } => false,
+        FloatingSurfaceProtocolSource::Composite { sources } => {
+            !sources.is_empty() && sources.iter().all(|source| floats_only(source, app))
+        }
     }
 }
 
@@ -551,11 +630,57 @@ mod tests {
             );
         }
 
-        phase a_picture_in_picture_mirror_is_not_a_card;
+        phase a_picture_in_picture_floats_what_its_own_app_draws;
+        {
+            let cards = Cards::new();
+            // The app's own picture: the window draws the video where the page shows it, and may
+            // float it above the window it stands in.
+            let mut request = call("pip:1");
+            request.role = FloatingSurfaceProtocolRole::PictureInPicture;
+            request.source = FloatingSurfaceProtocolSource::AppElement {
+                app_id: "so.tilo.chat".into(),
+                element_id: "video_surface".into(),
+                region: [20.0, 40.0, 420.0, 260.0],
+            };
+            cards.present("so.tilo.chat", 7, &request).unwrap();
+            assert_eq!(cards.presented().len(), 1, "the picture stands");
+            // The picture moved in its window: the surface mirrors where it stands now.
+            assert!(cards.update_region(
+                "so.tilo.chat",
+                7,
+                "pip:1",
+                Rect::new(20.0, 90.0, 420.0, 310.0),
+            ));
+            assert_eq!(cards.presented()[0].local, Point::new(20.0, 90.0));
+            // The shell's cards held no block for the picture: the session stood it somewhere,
+            // and that place is the picture's for as long as it floats.
+            assert!(cards.picture_seat("so.tilo.chat", "pip:1").is_none());
+            let seat = Rect::new(560.0, 120.0, 920.0, 322.5);
+            cards.seat("so.tilo.chat", "pip:1", seat);
+            assert_eq!(cards.picture_seat("so.tilo.chat", "pip:1"), Some(seat));
+            assert!(
+                !cards.update_region("so.tilo.chat", 7, "pip:2", Rect::ZERO),
+                "a surface it never presented moves nothing"
+            );
+            assert!(cards.dismissed(7, "pip:1").is_some(), "the picture returns");
+            assert!(cards.presented().is_empty());
+        }
+
+        phase a_picture_of_another_apps_window_is_refused;
         {
             let cards = Cards::new();
             let mut request = call("pip:1");
             request.role = FloatingSurfaceProtocolRole::PictureInPicture;
+            // Chat may not float what another app's window shows.
+            request.source = FloatingSurfaceProtocolSource::AppElement {
+                app_id: "so.tilo.video".into(),
+                element_id: "video_surface".into(),
+                region: [0.0, 0.0, 360.0, 240.0],
+            };
+            assert!(cards.present("so.tilo.chat", 7, &request).is_err());
+            assert!(cards.presented().is_empty());
+            // Nor a surface it cannot check whose window it is.
+            request.source = FloatingSurfaceProtocolSource::Surface { surface_id: 4 };
             assert!(cards.present("so.tilo.chat", 7, &request).is_err());
             assert!(cards.presented().is_empty());
         }

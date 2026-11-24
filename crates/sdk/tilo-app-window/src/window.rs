@@ -26,7 +26,10 @@ use std::rc::Rc;
 use page::{chosen_item, content_nodes, node_of_key};
 use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
 use tilo_render_protocol::patch::{self as wire, Answer, Level, ToApp, ToUi, Transport, Words};
-use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
+use ui::floating_surface::{
+    FloatingRole, FloatingSource, FloatingSurfaceHostMessage, FloatingSurfacePresentation,
+    FloatingSurfaceRequest, protocol_rect,
+};
 use ui::tokens::{MotionSource, Rhythm};
 use ui::widget::arrange::{Fit, Part, Stack};
 use ui::widget::toast::ToastKind;
@@ -253,6 +256,14 @@ enum Shape {
     Part,
 }
 
+/// The floating window the shell placed for the picture a window floats: its window and the
+/// content inside it, on the shell.
+#[derive(Clone, Copy, Debug)]
+struct PipWindow {
+    rect: ui::kurbo::Rect,
+    content_rect: ui::kurbo::Rect,
+}
+
 pub struct AppWindow {
     transport: Box<dyn Transport>,
     limits: PatchLimits,
@@ -364,6 +375,12 @@ pub struct AppWindow {
     /// The window owes its body built again for the `SidebarPlacement` it now stands at: what an
     /// empty state offers follows the width ([`Self::standing`]).
     compose_at: Option<SidebarPlacement>,
+    /// The floating window the shell stood for the picture this window floats, where it stands:
+    /// what the picture is drawn into while it floats, and what the surface is clipped to.
+    pip_window: Option<PipWindow>,
+    /// The source region the shell was last told the floating picture stands at: it moves one
+    /// message at a time, and a picture that did not move is not told again.
+    pip_region_told: Option<ui::kurbo::Rect>,
     /// A part of a shell rather than a window ([`Self::part`]): the root view as it is, with no
     /// window shell around it.
     shape: Shape,
@@ -471,6 +488,8 @@ impl AppWindow {
             detail: None,
             reconciler,
             page,
+            pip_window: None,
+            pip_region_told: None,
             page_asks: BTreeMap::new(),
             page_picker: None,
             events,
@@ -3370,6 +3389,81 @@ impl ui::widget::FloatingSurfaceProvider for AppWindow {
             .into_iter()
             .collect()
     }
+
+    fn on_floating_surface_host_message(&mut self, message: &FloatingSurfaceHostMessage) {
+        match message {
+            FloatingSurfaceHostMessage::PrepareSurface {
+                id,
+                rect,
+                content_rect,
+                ..
+            } if id == &self.pip_surface_id() => {
+                if let (Ok(rect), Ok(content)) =
+                    (protocol_rect(*rect), protocol_rect(*content_rect))
+                {
+                    self.pip_window = Some(PipWindow {
+                        rect,
+                        content_rect: content,
+                    });
+                }
+            }
+            FloatingSurfaceHostMessage::Closed { id }
+            | FloatingSurfaceHostMessage::Reattach { id }
+                if id == &self.pip_surface_id() =>
+            {
+                self.pip_window = None;
+                self.pip_region_told = None;
+                picture_in_picture_returned(self.body.as_mut());
+            }
+            _ => {}
+        }
+    }
+
+    /// The floating window the shell stands for this window's picture, at the place it was told.
+    fn floating_surface_presentations(&self) -> Vec<FloatingSurfacePresentation> {
+        let Some(window) = self.pip_window else {
+            return Vec::new();
+        };
+        if !picture_in_picture_floating(self.body.as_ref()) {
+            return Vec::new();
+        }
+        vec![FloatingSurfacePresentation {
+            id: self.pip_surface_id(),
+            content_rect: window.content_rect,
+            window_rect: window.rect,
+            input_rect: None,
+            returning_to_app: false,
+        }]
+    }
+
+    /// The picture, drawn into the floating window the shell stood for it.
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut ui::draw::DrawCtx<'_>) -> bool {
+        if id != self.pip_surface_id() {
+            return false;
+        }
+        let Some(window) = self.pip_window else {
+            return false;
+        };
+        picture_in_picture_drawn(self.body.as_mut(), window.content_rect, ctx)
+    }
+
+    /// Where the picture stands now, once it moved: a page that scrolled or a window that resized
+    /// carries the floated surface with it. A picture the shell stands nowhere has nothing to
+    /// move, and one that stands where it did is not told again.
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, ui::kurbo::Rect)> {
+        let region = self
+            .pip_window
+            .is_some()
+            .then(|| picture_in_picture_region(self.body.as_ref()))
+            .flatten();
+        if region == self.pip_region_told {
+            return Vec::new();
+        }
+        self.pip_region_told = region;
+        region
+            .map(|region| vec![(self.pip_surface_id(), region)])
+            .unwrap_or_default()
+    }
 }
 
 impl AppWindow {
@@ -3377,6 +3471,59 @@ impl AppWindow {
     fn pip_surface_id(&self) -> String {
         format!("{app}:picture-in-picture", app = self.app_id)
     }
+}
+
+/// The shell's window for the view's picture went away, at any depth: what kept the float is
+/// done, and the picture draws in its own window again.
+fn picture_in_picture_returned(root: &mut dyn Widget) {
+    if let Some(provider) =
+        ui::widget::capability::capability_mut::<dyn ui::widget::PictureInPictureProvider>(root)
+    {
+        provider.picture_in_picture_returned();
+    }
+    for child in root.children_mut() {
+        picture_in_picture_returned(child);
+    }
+}
+
+/// Where the picture the view floats stands in its window now, at any depth: the region the
+/// floated surface mirrors.
+fn picture_in_picture_region(root: &dyn Widget) -> Option<ui::kurbo::Rect> {
+    if let Some(provider) =
+        ui::widget::capability::capability::<dyn ui::widget::PictureInPictureProvider>(root)
+        && let Some(region) = provider.floating_picture_in_picture_region()
+    {
+        return Some(region);
+    }
+    let mut found = None;
+    root.for_each_child(&mut |child| {
+        if found.is_none() {
+            found = picture_in_picture_region(child);
+        }
+    });
+    found
+}
+
+/// Draw the picture the view floats into the floating window, at any depth: the provider that
+/// reports where the picture stands draws it.
+fn picture_in_picture_drawn(
+    root: &mut dyn Widget,
+    target: ui::kurbo::Rect,
+    ctx: &mut ui::draw::DrawCtx<'_>,
+) -> bool {
+    if let Some(provider) =
+        ui::widget::capability::capability_mut::<dyn ui::widget::PictureInPictureProvider>(root)
+        && let Some(source) = provider.floating_picture_in_picture_region()
+        && provider.draw_picture_in_picture(source, target, ctx)
+    {
+        return true;
+    }
+    for child in root.children_mut() {
+        if picture_in_picture_drawn(child, target, ctx) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether the view floats a picture now, at any depth: a page's video or a player's, which the

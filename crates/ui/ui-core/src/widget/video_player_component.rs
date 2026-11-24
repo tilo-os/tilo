@@ -150,6 +150,9 @@ pub struct DeclaredVideo {
     jump: Option<(f64, i64)>,
     /// Whether the person pressed Picture-in-picture since the host last asked.
     pip: std::cell::Cell<bool>,
+    /// Whether the player's picture floats above the window now: where it stands follows the
+    /// player, so a resize carries the surface with it.
+    floating: std::cell::Cell<bool>,
     /// The sound the player decoded since the host last took it, for the host to play in every
     /// place the session's outputs name.
     audio: std::cell::RefCell<Vec<i16>>,
@@ -319,6 +322,7 @@ impl DeclaredVideo {
             repeat,
             source,
             pip: std::cell::Cell::new(false),
+            floating: std::cell::Cell::new(false),
             audio: std::cell::RefCell::new(Vec::new()),
         };
         video.refresh_settings(
@@ -627,11 +631,62 @@ impl PictureInPictureProvider for DeclaredVideo {
             return None;
         }
         let aspect = (region.width() / region.height()).clamp(0.4, 2.8);
+        self.floating.set(true);
         Some(PictureInPictureAsk {
             region,
             aspect,
             title: self.player.now_playing().title.clone(),
         })
+    }
+
+    fn picture_in_picture_floating(&self) -> bool {
+        self.floating.get()
+    }
+
+    /// The shell's picture went away: the player draws in its own window again, and no surface
+    /// of it is coming back on its own.
+    fn picture_in_picture_returned(&mut self) {
+        self.floating.set(false);
+    }
+
+    /// Where the player stands now: a window that resized carries its picture with it.
+    fn floating_picture_in_picture_region(&self) -> Option<crate::kurbo::Rect> {
+        if !self.floating.get() {
+            return None;
+        }
+        let region = crate::widget::Widget::get_rect(&self.player);
+        (region.width() >= 1.0 && region.height() >= 1.0).then_some(region)
+    }
+
+    /// The player's picture and controls, drawn over the floating window's own overlay at the
+    /// place the shell stands it.
+    fn draw_picture_in_picture(
+        &mut self,
+        source: crate::kurbo::Rect,
+        target: crate::kurbo::Rect,
+        ctx: &mut crate::draw::DrawCtx<'_>,
+    ) -> bool {
+        if source.width() < 1.0
+            || source.height() < 1.0
+            || target.width() < 1.0
+            || target.height() < 1.0
+        {
+            return false;
+        }
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
+        let (scene, transform, text, theme, env) = ctx.parts();
+        let onto = crate::kurbo::Affine::translate(target.origin().to_vec2())
+            .pre_scale_non_uniform(
+                target.width() / source.width(),
+                target.height() / source.height(),
+            )
+            .pre_translate(-source.origin().to_vec2());
+        crate::widget::draw_child(&mut self.player, scene, transform * onto, text, theme, &env);
+        true
     }
 }
 

@@ -3667,3 +3667,61 @@ fn a_window_showing_a_protected_view_is_withheld_from_captures() {
         "one view of the window is enough"
     );
 }
+
+/// The shell stands a window for the picture a view floats, and the page's video moving in the
+/// app's own window is told once: the surface mirrors where the video stands, follows it when it
+/// scrolls, and stands still when nothing moved.
+#[test]
+fn a_floating_picture_is_drawn_where_the_shell_stands_it_and_follows_its_source() {
+    use ui::widget::FloatingSurfaceWidgetExt as _;
+    let rect = ui::kurbo::Rect::new(0.0, 100.0, 1_000.0, 600.0);
+    let (mut video, _session) = page_showing_a_video(rect);
+    video.set_pip(true);
+    let mut page = AppWindow::new(Box::new(local::pair().1), Vec::new());
+    page.set_app_id("so.tilo.browser");
+    page.body = Box::new(
+        Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_part(part(Box::new(video), Fit::fill(1.0))),
+    );
+    let _ = page.take_floating_surface_request();
+    let _ = page.take_floating_surface_request();
+
+    let id = "so.tilo.browser:picture-in-picture";
+    let window = ui::kurbo::Rect::new(600.0, 120.0, 960.0, 322.5);
+    let content = ui::kurbo::Rect::new(608.0, 128.0, 952.0, 314.5);
+    page.on_floating_surface_host_message(&FloatingSurfaceHostMessage::PrepareSurface {
+        id: id.to_owned(),
+        token: "t0k3n".to_owned(),
+        rect: ui::floating_surface::protocol_rect_array(window),
+        content_rect: ui::floating_surface::protocol_rect_array(content),
+        transfer_covered: false,
+        coordinate_offset: [0.0, 0.0],
+    });
+    let presentations = page.floating_surface_presentations();
+    assert_eq!(presentations.len(), 1, "the picture is the one surface");
+    assert_eq!(presentations[0].id, id);
+    assert_eq!(presentations[0].window_rect, window);
+    assert_eq!(presentations[0].content_rect, content);
+
+    // Where the video stands is told once, and again only when the page moved it.
+    assert_eq!(
+        page.take_floating_surface_source_updates(),
+        vec![(
+            id.to_owned(),
+            ui::kurbo::Rect::new(100.0, 200.0, 600.0, 350.0)
+        )]
+    );
+    assert!(
+        page.take_floating_surface_source_updates().is_empty(),
+        "a picture that stands where it did is not told again"
+    );
+
+    // The shell returns the picture: nothing of it is left to draw or to move.
+    page.on_floating_surface_host_message(&FloatingSurfaceHostMessage::Closed {
+        id: id.to_owned(),
+    });
+    assert!(page.floating_surface_presentations().is_empty());
+    assert!(page.take_floating_surface_source_updates().is_empty());
+}

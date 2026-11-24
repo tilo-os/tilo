@@ -554,3 +554,236 @@ fn a_window_on_a_record_opens_in_the_tab_the_shell_made() {
         "the window opens on the record, in the tab the shell made"
     );
 }
+
+/// An app floats a picture above its own window — the video its page shows, the player's film —
+/// while that window stays where the person works: the session stands a window for the picture,
+/// the app keeps it where its source stands as that moves, and the app's dismiss returns it.
+#[test]
+fn a_presented_picture_in_picture_stands_follows_and_returns() {
+    use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
+    use ui::vello::kurbo::{Rect, Size};
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_windowed(&mut home);
+    let handed = home.home().join("started");
+    let launcher = launcher_recording_pid(&home, &handed);
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let started: Arc<Launches> = Arc::new(Launches::default());
+    let mut session = session_on(apps.clone(), Arc::clone(&started));
+
+    apps.open(&Launch::Package {
+        app: APP.to_owned(),
+        open: None,
+    })
+    .expect("the app is opened");
+    let (pid, instance) = crate::common::wait_for(&mut session, "the app's process starts", |_| {
+        fs::read_to_string(&handed).ok().and_then(|text| {
+            let line = text.lines().find(|line| !line.trim().is_empty())?;
+            let (pid, instance) = line.trim().split_once(' ')?;
+            Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
+        })
+    });
+
+    // The display the picture stands on: a picture the shell's cards hold no block for is stood
+    // by the session itself.
+    let display = session
+        .compositor()
+        .outputs()
+        .into_iter()
+        .find_map(|output| output.rect)
+        .expect("the session's display");
+
+    // A page shows a video, and its window floats it: the picture mirrors the video where the
+    // page draws it, at the picture's shape.
+    let region = Rect::new(40.0, 200.0, 640.0, 540.0);
+    let request = FloatingSurfaceRequest {
+        id: "browser-video".into(),
+        title: "A talk on maps".into(),
+        role: FloatingRole::PictureInPicture,
+        source: FloatingSource::AppElement {
+            app_id: APP.into(),
+            element_id: "video_surface".into(),
+            region,
+        },
+        preferred_size: Size::new(360.0, 202.5),
+        aspect_ratio: Some(16.0 / 9.0),
+        initial_rect: None,
+        presentation_rect: None,
+        tracking_source: None,
+    };
+    let mut connection: UnixStream = ServiceLinks::new(Arc::clone(&started))
+        .shell_ui(APP, instance, Some(pid))
+        .expect("the app's shell-ui connection")
+        .into();
+    for frame in [
+        FloatingSurfaceClientMessage::Hello {
+            version: FLOATING_SURFACE_PROTOCOL_VERSION,
+        },
+        FloatingSurfaceClientMessage::Present {
+            request: (&request).into(),
+        },
+    ] {
+        let mut bytes = serde_json::to_vec(&frame).unwrap();
+        bytes.push(b'\n');
+        connection.write_all(&bytes).unwrap();
+    }
+    connection.flush().unwrap();
+
+    // The session stands the picture on the display, at the shape its app asked for.
+    let told = host_frames(&mut session, &mut connection, |told| {
+        told.iter().any(|message| {
+            matches!(message, FloatingSurfaceHostMessage::PrepareSurface { id, .. }
+                if id == "browser-video")
+        })
+    });
+    let Some(FloatingSurfaceHostMessage::PrepareSurface { rect, .. }) =
+        told.iter().rev().find(|message| {
+            matches!(message, FloatingSurfaceHostMessage::PrepareSurface { id, .. }
+                if id == "browser-video")
+        })
+    else {
+        panic!("the app is told where its picture stands: {told:?}");
+    };
+    assert!(
+        (rect[2] - rect[0] - 360.0).abs() < 0.5 && (rect[3] - rect[1] - 202.5).abs() < 0.5,
+        "the picture stands at the shape its app asked for: {rect:?}"
+    );
+    assert!(
+        rect[0] >= f64::from(display.0)
+            && rect[1] >= f64::from(display.1)
+            && rect[2] <= f64::from(display.0 + display.2)
+            && rect[3] <= f64::from(display.1 + display.3),
+        "the picture stands on the display the person works on: {rect:?} in {display:?}"
+    );
+
+    // The page scrolled: the video moved in the app's window and the surface follows it.
+    let mut bytes = serde_json::to_vec(&FloatingSurfaceClientMessage::UpdateRegion {
+        id: "browser-video".into(),
+        region: [60.0, 240.0, 660.0, 580.0],
+    })
+    .unwrap();
+    bytes.push(b'\n');
+    connection.write_all(&bytes).unwrap();
+    connection.flush().unwrap();
+
+    // The app takes its picture back: the surface goes and the shell hears it closed.
+    let mut bytes = serde_json::to_vec(&FloatingSurfaceClientMessage::Dismiss {
+        id: "browser-video".into(),
+    })
+    .unwrap();
+    bytes.push(b'\n');
+    connection.write_all(&bytes).unwrap();
+    connection.flush().unwrap();
+    let frames = host_frames(&mut session, &mut connection, |frames| {
+        frames.iter().any(|message| {
+            matches!(message, FloatingSurfaceHostMessage::Closed { id } if id == "browser-video")
+        })
+    });
+    assert!(
+        frames.iter().any(|message| {
+            matches!(message, FloatingSurfaceHostMessage::Closed { id } if id == "browser-video")
+        }),
+        "the app's picture is returned when it asks: {frames:?}"
+    );
+    for refused in ["present", "update_region"] {
+        assert!(
+            !frames.iter().any(|message| {
+                matches!(message, FloatingSurfaceHostMessage::Unanswered { message, .. }
+                    if message == refused)
+            }),
+            "the app's own picture is not refused as {refused}: {frames:?}"
+        );
+    }
+    assert!(
+        !frames.iter().any(|message| {
+            matches!(message, FloatingSurfaceHostMessage::PrepareSurface { id, .. }
+                if id == "browser-video")
+        }),
+        "the picture stands nowhere once its app takes it back: {frames:?}"
+    );
+}
+
+/// What one app's window presents is its own: a picture naming another app's window is refused,
+/// and nothing of it is stood on the shell.
+#[test]
+fn a_picture_of_another_apps_window_is_refused() {
+    use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
+    use ui::vello::kurbo::Size;
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_windowed(&mut home);
+    let handed = home.home().join("started");
+    let launcher = launcher_recording_pid(&home, &handed);
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let started: Arc<Launches> = Arc::new(Launches::default());
+    let mut session = session_on(apps.clone(), Arc::clone(&started));
+
+    apps.open(&Launch::Package {
+        app: APP.to_owned(),
+        open: None,
+    })
+    .expect("the app is opened");
+    let (pid, instance) = crate::common::wait_for(&mut session, "the app's process starts", |_| {
+        fs::read_to_string(&handed).ok().and_then(|text| {
+            let line = text.lines().find(|line| !line.trim().is_empty())?;
+            let (pid, instance) = line.trim().split_once(' ')?;
+            Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
+        })
+    });
+
+    let request = FloatingSurfaceRequest {
+        id: "not-mine".into(),
+        title: "Someone else's film".into(),
+        role: FloatingRole::PictureInPicture,
+        source: FloatingSource::AppElement {
+            app_id: "so.tilo.video".into(),
+            element_id: "video_surface".into(),
+            region: ui::vello::kurbo::Rect::new(0.0, 0.0, 360.0, 240.0),
+        },
+        preferred_size: Size::new(360.0, 240.0),
+        aspect_ratio: Some(1.5),
+        initial_rect: None,
+        presentation_rect: None,
+        tracking_source: None,
+    };
+    let mut connection: UnixStream = ServiceLinks::new(Arc::clone(&started))
+        .shell_ui(APP, instance, Some(pid))
+        .expect("the app's shell-ui connection")
+        .into();
+    for frame in [
+        FloatingSurfaceClientMessage::Hello {
+            version: FLOATING_SURFACE_PROTOCOL_VERSION,
+        },
+        FloatingSurfaceClientMessage::Present {
+            request: (&request).into(),
+        },
+    ] {
+        let mut bytes = serde_json::to_vec(&frame).unwrap();
+        bytes.push(b'\n');
+        connection.write_all(&bytes).unwrap();
+    }
+    connection.flush().unwrap();
+
+    let frames = host_frames(&mut session, &mut connection, |frames| {
+        frames.iter().any(|message| {
+            matches!(message, FloatingSurfaceHostMessage::Unanswered { message, .. }
+                if message == "present")
+        })
+    });
+    assert!(
+        frames.iter().any(|message| {
+            matches!(message, FloatingSurfaceHostMessage::Unanswered { message, .. }
+                if message == "present")
+        }),
+        "the app is told its picture is refused: {frames:?}"
+    );
+    assert!(
+        !frames.iter().any(|message| {
+            matches!(message, FloatingSurfaceHostMessage::PrepareSurface { id, .. }
+                if id == "not-mine")
+        }),
+        "nothing of another app's window is stood: {frames:?}"
+    );
+}
