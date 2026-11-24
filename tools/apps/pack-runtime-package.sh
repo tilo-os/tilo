@@ -5,7 +5,8 @@
 #       <publisher-identity.json> <bin-dir> <out-dir> [<platform>]
 #
 # <platform> is `macos` for a bundle of Mac binaries, which the package then
-# offers only to Macs; without it the package is a Linux runtime's. A bundle
+# offers only to Macs, and `windows` for one of Windows programs, offered only
+# to Windows; without it the package is a Linux runtime's. A bundle
 # of universal binaries names each architecture in its `arch` (`aarch64+x86_64`)
 # and the package declares a build for each.
 #
@@ -37,10 +38,11 @@ isa=
 IFS=+ read -r -a held <<<"$arch"
 for one in "${held[@]}"; do
     case "$one" in
-        # A Mac's Intel binaries run on every Intel Mac; Linux builds take x86-64-v3.
+        # Mac and Windows x86_64 programs run on every such machine; Linux builds take
+        # x86-64-v3.
         x86_64)
             level=v3
-            [[ $platform != macos ]] || level=baseline
+            [[ -z $platform ]] || level=baseline
             isa+="x86_64 = \"$level\""$'\n' ;;
         aarch64) isa+=$'aarch64 = "aarch64"\n' ;;
         *) printf 'pack-runtime-package: unsupported arch %s\n' "${arch:-none}" >&2; exit 1 ;;
@@ -49,6 +51,7 @@ done
 case "$platform" in
     '') platforms= ;;
     macos) platforms=$'platforms = ["macos"]\nplatform-reason = "Its binaries are Mac binaries."' ;;
+    windows) platforms=$'platforms = ["windows"]\nplatform-reason = "Its binaries are Windows programs."' ;;
     *) printf 'pack-runtime-package: unsupported platform %s\n' "$platform" >&2; exit 1 ;;
 esac
 [[ $bundle_version =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]] || {
@@ -101,12 +104,14 @@ TOML
 fi
 if [[ $package_id == so.tilo.runtime.tilolang ]]; then
     # The binary every tilolang app's entrypoint executes.
-    test -x "$bundle/bin/tilolang-process"
-    cat >> "$work/manifest.toml" <<'TOML'
+    bin=bin/tilolang-process
+    [[ $platform != windows ]] || bin=bin/tilolang-process.exe
+    test -f "$bundle/$bin"
+    cat >> "$work/manifest.toml" <<TOML
 
 [entrypoint]
 type = "cli"
-bin = "bin/tilolang-process"
+bin = "$bin"
 TOML
 fi
 if [[ $package_id == so.tilo.runtime.bun ]]; then
@@ -154,8 +159,9 @@ if [[ -n ${PACK_RUNTIME_KEEP_FULL:-} ]]; then
     cp "$work/$file" "$out/full-$file"
 fi
 test -f "$out/$file"
-if [[ $platform == macos ]]; then
-    # Tilo.app carries the whole package and installs it on first start.
+if [[ -n $platform ]]; then
+    # Tilo.app, and the Windows daemon's folder, carry the whole package and install it on first
+    # start.
     cp "$work/$file" "$out/whole-$file"
 fi
 printf '%s\n' "$out/$file"

@@ -49,6 +49,51 @@ SH
   export PATH="$wrappers:$PATH"
 fi
 
+# The tilolang runtime package a Windows daemon carries beside it and installs on its first start
+# (tilo-runtime's apps/carried.rs), as Tilo.app carries a Mac's: tilolang-process.exe with the
+# reviewed GStreamer closure beside it (its DLLs in bin/, its plugins in lib/gstreamer-1.0, the
+# plugin scanner and the notices), sealed, signed and packed as the registry package
+# so.tilo.runtime.tilolang for Windows. The key that signs it is made for the build unless
+# TILO_RUNTIME_PACKAGE_IDENTITY names one; its public key goes beside the package.
+runtime_package() {
+  local binary="$1" runtimes="$2" work closure tools identity version root
+  work="$(mktemp -d "${TMPDIR:-/tmp}/tilolang-runtime.XXXXXX")"
+  closure="$work/closure"
+  mkdir -p "$closure"
+  archive=/target/windows/x86_64/gstreamer/gstreamer-runtime-x86_64.tar.zst
+  (cd "$(dirname -- "$archive")" && sha256sum --check --strict --quiet "$(basename -- "$archive").sha256")
+  zstd -dc --quiet "$archive" | tar -xf - -C "$closure"
+  # The tools that seal and pack it, for this machine.
+  cargo build --locked --release -p tilo-runtime-bundle --bin tilo-runtime-bundle \
+    -p tilo-app-package-cli --bin tilo-app-package
+  tools="${CARGO_TARGET_DIR:-target}/release"
+  identity="${TILO_RUNTIME_PACKAGE_IDENTITY:-$work/runtime-identity.json}"
+  [ -f "$identity" ] || "$tools/tilo-runtime-bundle" key generate --out "$identity"
+  # shellcheck source=/dev/null
+  . tools/apps/tilolang_packages.sh
+  version="$(tilolang_runtime_version "$PWD")"
+  local binaries=(--include-bin "$binary")
+  for dll in "$closure"/bin/*.dll; do binaries+=(--include-bin "$dll"); done
+  "$tools/tilo-runtime-bundle" build --binaries-only --version "$version" --arch x86_64 \
+    --out "$work/bundle" --identity "$identity" "${binaries[@]}" \
+    --include "$closure/lib/gstreamer-1.0" --include "$closure/libexec" \
+    --include "$closure/licenses" >/dev/null
+  # What it carries of GStreamer is the reviewed closure, byte for byte: no GPL code, no encoder.
+  python3 -I "$here/gstreamer_runtime.py" audit "$work/bundle" \
+    /target/windows/x86_64/gstreamer/gstreamer-runtime-x86_64.json
+  tools/apps/pack-runtime-package.sh "$work/bundle" so.tilo.runtime.tilolang "tilolang runtime" \
+    "$version" "$identity" "$tools" "$work/package" windows >/dev/null
+  local whole=("$work"/package/whole-*.tapp)
+  [ "${#whole[@]}" = 1 ] && [ -f "${whole[0]}" ] || { printf 'no runtime package was packed\n' >&2; exit 1; }
+  root="$("$tools/tilo-app-package" inspect "${whole[0]}" | sed -n 's/^package-id: //p')"
+  [[ "$root" =~ ^[0-9a-f]{64}$ ]] || { printf 'unexpected runtime package id %s\n' "$root" >&2; exit 1; }
+  rm -rf -- "$runtimes" && mkdir -p "$runtimes"
+  install -m 0644 "${whole[0]}" "$runtimes/$root.tapp"
+  digest "$runtimes/$root.tapp"
+  "$tools/tilo-runtime-bundle" key pubkey --identity "$identity" >"$runtimes/trusted-publishers.txt"
+  rm -rf -- "$work"
+}
+
 case "$mode" in
   sdk)
     out="${3:?output directory}"
@@ -134,9 +179,13 @@ print(paths[0])' "${TMPDIR:-/tmp}/$crate-tests.json")"
     # x86_64 daemon can be run under Wine to prove it refuses legibly. The
     # daemon's Windows port is partial: it compiles, and its CLI answers the
     # refusal until its services have Windows bodies.
-    cargo xwin build --locked -p tilo-daemon -p tilolang-process --target "$target"
+    cargo xwin build --locked -p tilo-daemon -p tilolang-process \
+      --features tilolang-process/app-launch --target "$target"
     install -m 0644 "${CARGO_TARGET_DIR:-target}/$target/debug/tilo-runtime.exe" "$out/tilo-runtime.exe"
     digest "$out/tilo-runtime.exe"
+    if [ "$arch" = x86_64 ]; then
+      runtime_package "${CARGO_TARGET_DIR:-target}/$target/debug/tilolang-process.exe" "$out/runtimes"
+    fi
     ;;
   *) printf 'unknown mode: %s\n' "$mode" >&2; exit 2 ;;
 esac

@@ -74,6 +74,8 @@ pub enum Platform {
     Web,
     /// Linux, and only under Tilo OS host services.
     TiloOs,
+    /// Windows: a runtime whose binaries are Windows programs.
+    Windows,
 }
 
 impl Platform {
@@ -84,6 +86,7 @@ impl Platform {
             Self::Macos => "macos",
             Self::Web => "web",
             Self::TiloOs => "tilo-os",
+            Self::Windows => "windows",
         }
     }
 }
@@ -345,6 +348,7 @@ impl Package {
             "linux" => self.supports(Platform::Linux),
             "macos" => self.supports(Platform::Macos),
             "web" => self.supports(Platform::Web),
+            "windows" => self.supports(Platform::Windows),
             _ => false,
         }
     }
