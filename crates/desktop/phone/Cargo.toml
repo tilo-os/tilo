@@ -35,6 +35,9 @@ tilo-paths = { path = "../../../crates/platform/tilo-paths" }
 tilolang-window = { path = "../../../crates/lang/tilolang-window" }
 # An app the person opens runs in tilolang-process's in-process window.
 tilolang-process = { path = "../../../crates/lang/tilolang-process", features = ["app-launch"] }
+# The app's own signed package manifest, which the APK it runs from carries: what says which
+# runtime build it links.
+tilo-app-package = { path = "../../../crates/core/tilo-app-package" }
 anyhow.workspace = true
 uuid.workspace = true
 serde_json.workspace = true
@@ -61,7 +64,6 @@ iroh.workspace = true
 # Notes, built from the tree and installed into the workspace the phone joins.
 tilolang-cli = { path = "../../../crates/lang/tilolang-cli" }
 # A workspace that runs Notes: its package, installed through the workspace's published action.
-tilo-app-package = { path = "../../../crates/core/tilo-app-package" }
 tilo-actions = { path = "../../../crates/core/actions" }
 hex.workspace = true
 # The server's Automerge workers are this test binary, started again.

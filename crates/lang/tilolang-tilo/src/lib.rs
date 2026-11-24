@@ -12,6 +12,10 @@
 //! * [`instance`]: one window of an app as an app host runs it, without the toolkit, sending
 //!   its window component patches and taking what the person did;
 
+/// The tilolang runtime this build is, as a package's manifest names the runtime its code runs
+/// on: `tilolang/<version>+tilolang`, the build `tilolang-process/tilo-runtime.toml` provides.
+pub const RUNTIME: &str = concat!("tilolang/", env!("CARGO_PKG_VERSION"), "+tilolang");
+
 pub mod action;
 pub mod authority;
 pub mod background;

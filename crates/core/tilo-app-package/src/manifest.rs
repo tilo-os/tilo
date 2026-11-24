@@ -1381,6 +1381,67 @@ impl Manifest {
     pub fn to_toml_string(&self) -> Result<String, ManifestParseError> {
         toml::to_string_pretty(self).map_err(ManifestParseError::Encode)
     }
+
+    /// The bytes a manifest's `[publisher] signature` covers: the manifest as it reads with that
+    /// signature cleared. A package signs it as part of its signed root; a host packaged without
+    /// a payload (an APK) signs it alone, so what it says of itself — the runtime build it links —
+    /// is its build's own and nothing rewritten in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManifestParseError::Encode`] if serialisation fails.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, ManifestParseError> {
+        let mut unsigned = self.clone();
+        unsigned.publisher.signature.clear();
+        unsigned.to_toml_string().map(String::into_bytes)
+    }
+
+    /// Sign this manifest with `identity`'s key, which must be the publisher the manifest names,
+    /// over [`Self::signing_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// The manifest names another publisher, or cannot be serialised.
+    pub fn sign(&mut self, identity: &crate::pack::SigningIdentity) -> Result<(), String> {
+        let named = self
+            .publisher
+            .identity_bytes()
+            .map_err(|error| format!("this manifest names no publisher: {error}"))?;
+        if named != identity.public_key_bytes() {
+            return Err("this manifest names another publisher than the key signing it".to_owned());
+        }
+        let bytes = self
+            .signing_bytes()
+            .map_err(|error| format!("this manifest does not encode: {error}"))?;
+        self.publisher.signature = hex::encode(identity.sign_message(&bytes));
+        Ok(())
+    }
+
+    /// Whether `[publisher] signature` is the publisher's over the manifest as it reads: a host
+    /// trusts the runtime its own signed manifest names, and nothing else, for what it carries.
+    ///
+    /// # Errors
+    ///
+    /// The manifest is unsigned or names no usable publisher, or the signature is not its
+    /// publisher's over these bytes.
+    pub fn verify_signature(&self) -> Result<(), String> {
+        let publisher = self
+            .publisher
+            .identity_bytes()
+            .map_err(|error| format!("this manifest names no publisher: {error}"))?;
+        let signature = self
+            .publisher
+            .signature_bytes()
+            .map_err(|error| format!("this manifest's signature does not read: {error}"))?
+            .ok_or("this manifest is unsigned")?;
+        let bytes = self
+            .signing_bytes()
+            .map_err(|error| format!("this manifest does not encode: {error}"))?;
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&publisher)
+            .map_err(|error| format!("this manifest names no publisher key: {error}"))?;
+        key.verify_strict(&bytes, &ed25519_dalek::Signature::from_bytes(&signature))
+            .map_err(|error| format!("this manifest is not its publisher's: {error}"))
+    }
 }
 
 #[cfg(test)]

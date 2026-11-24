@@ -25,6 +25,9 @@ use crate::support;
 /// What the person calls the workspace the phone signs in to.
 pub const WORKSPACE_NAME: &str = "Studio";
 
+/// The app the workspace runs, by the id every device and view names it: Notes.
+pub const NOTES: &str = "so.tilo.notes";
+
 /// The person's server: a host on this machine's loopback keeping the person's workspace, which
 /// they own, and the runtime the laptop that prints the phone's ticket runs on.
 pub struct Server {

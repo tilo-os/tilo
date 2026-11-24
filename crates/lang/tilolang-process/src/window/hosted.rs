@@ -658,6 +658,11 @@ impl HostedWindow {
         let (host, channel) = start(spec, route, bundle, &phrases, storage, waker)?;
         let mut window = Self::unconnected();
         window.take_channel(channel, wake);
+        // The window names the app it runs: the process installs no package, so nothing else here
+        // would tell its actions and its surface which app they are.
+        if let Some(connected) = &mut window.connected {
+            connected.view.set_app_id(app.as_str());
+        }
         window.in_process = Some(InProcess {
             host,
             app,
@@ -700,6 +705,12 @@ impl HostedWindow {
         {
             hosted.add_origin(origin);
         }
+    }
+
+    /// The app the window runs, when it runs one in this process.
+    #[must_use]
+    pub fn app(&self) -> Option<&str> {
+        self.in_process.as_ref().map(|running| running.app.as_str())
     }
 
     /// The window's half of the app window, once its patch connection arrived.
