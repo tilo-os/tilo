@@ -1,9 +1,20 @@
 desktop:chrome desktop (Desktop)
   about About Tilo
   activity Workspace history
+  bar-action Press the window's own control
+  bar-back Back in the window
+  bar-commit Go to the location
+  bar-edit What the location holds
+  bar-forward Forward in the window
+  bar-search Search the window
+  bar-search-close Close the search
+  bar-search-step Step through the search
+  bar-sidebar Toggle the window's sidebar
   branch-workspace Branch the workspace
   close-activity Close the history
+  close-bar-field Close the window's bar field
   close-window Close a window
+  delete-strip Delete a strip
   delete-workspace Delete a workspace
   equalize Equal widths
   fixed-shortcut Run a fixed shortcut
@@ -15,6 +26,7 @@ desktop:chrome desktop (Desktop)
   maximize Maximize a window
   move-strip Move a strip
   move-tab Move a tab
+  move-to-new-strip Move a window to a strip of its own
   new-group New group
   new-strip New strip
   new-workspace New workspace
@@ -24,7 +36,9 @@ desktop:chrome desktop (Desktop)
   overview Overview
   pan Pan a strip
   quick-settings Quick Settings
+  recents Recently opened
   rename Rename
+  rename-in-bar Rename the window
   reopen-closed Reopen the closed window
   reveal-top-bar Show the top bar
   scroll Scroll a window

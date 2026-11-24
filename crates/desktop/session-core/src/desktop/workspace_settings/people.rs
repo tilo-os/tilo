@@ -274,7 +274,7 @@ mod tests {
                 cloud: false,
             },
         ];
-        let content = content_of(&members, &"owner".to_owned(), true, &holders);
+        let content = content_of(&members, "owner", true, &holders);
         assert_eq!(content.holders_header, "Where it is kept");
         let said: Vec<(&str, &str)> = content
             .holders
@@ -302,14 +302,14 @@ mod tests {
             member("eve", CapRole::Editor, false, false),
         ];
         // The owner governs everyone but themselves.
-        let owner = content_of(&members, &"owner".to_owned(), true, &[]);
+        let owner = content_of(&members, "owner", true, &[]);
         assert_eq!(
             manages(&owner),
             [("owner", false), ("admin", true), ("eve", true)]
         );
         assert_eq!(owner.note, None);
         // An administrator governs every member who is not one, never the owner.
-        let admin = content_of(&members, &"admin".to_owned(), false, &[]);
+        let admin = content_of(&members, "admin", false, &[]);
         assert_eq!(
             manages(&admin),
             [("owner", false), ("admin", false), ("eve", true)]
@@ -320,7 +320,7 @@ mod tests {
             crate::desktop::workspace_settings::administrator_label()
         );
         // Anyone else governs nobody, and is told who does.
-        let eve = content_of(&members, &"eve".to_owned(), false, &[]);
+        let eve = content_of(&members, "eve", false, &[]);
         assert!(manages(&eve).iter().all(|(_, may)| !may));
         assert!(eve.note.is_some());
         assert_eq!(eve.people[2].role_key, "editor");

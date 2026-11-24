@@ -1049,9 +1049,9 @@ fn a_member_wears_one_colour_on_the_bar_and_in_every_app() {
     let people = here.people(&Layout::default(), &[], &|_| None);
 
     let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Shell");
-    workspace.set_owner(&keeper);
-    let node = workspace.node();
-    workspace.grant(tilo_action_policy::Grant::new(
+    workspace.policy.set_owner(&keeper);
+    let node = workspace.policy.node();
+    workspace.policy.grant(tilo_action_policy::Grant::new(
         "agent-member:helper",
         tilo_action_policy::Grantee::agent("helper"),
         node,

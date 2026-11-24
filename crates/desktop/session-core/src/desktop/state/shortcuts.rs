@@ -498,6 +498,10 @@ mod tests {
     /// A shell every place a chord reaches exists on: nine strips, the shown one holding nine windows,
     /// so numbering a strip or a window lands somewhere and moving to the strip above or below does
     /// too.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a fixture's own ids, small whole numbers"
+    )]
     fn every_place() -> Layout {
         let groups: Vec<WindowGroup> = (0..9_u64)
             .map(|index| {

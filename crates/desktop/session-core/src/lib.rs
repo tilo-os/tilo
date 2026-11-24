@@ -3,6 +3,13 @@
 //! A host gives the core what it cannot do itself — where the layout's bytes are kept — and the core
 //! gives back what the layout is, how it changed and who changed it. Every role that moves here
 //! removes the copy the other host kept, so the two run the same rules.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::float_cmp,
+        reason = "in a test these are the assertion, not a hazard; layout tests pin exact computed positions"
+    )
+)]
 
 pub mod desktop;
 pub mod layout;

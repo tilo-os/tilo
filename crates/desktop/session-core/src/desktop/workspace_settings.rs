@@ -957,15 +957,10 @@ mod members_tests {
 
     fn ws_with_two_members() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from_u128(7), "members-test");
-        ws.set_owner(OWNER);
+        ws.policy.set_owner(OWNER);
         assert!(
-            set_member_role(
-                &mut ws,
-                &OWNER.to_string(),
-                &PEER.to_string(),
-                CapRole::Viewer
-            )
-            .is_ok_and(|edit| !edit.is_empty()),
+            set_member_role(&mut ws, OWNER, PEER, CapRole::Viewer)
+                .is_ok_and(|edit| !edit.is_empty()),
             "owner may admit a member"
         );
         ws
@@ -973,9 +968,9 @@ mod members_tests {
 
     /// Whether `who` may change the workspace's content now.
     fn may_write(ws: &Workspace, who: &str) -> bool {
-        ws.answer_at(
+        ws.policy.answer_at(
             who,
-            &ws.node(),
+            &ws.policy.node(),
             ActionKind::Undoable,
             tilo_clock::unix_now(),
         ) == Answer::Allow
@@ -989,9 +984,9 @@ mod members_tests {
             use crate::desktop::people::{PeopleNames, roster_rows};
             let owner_key = "fa4834147f".repeat(6) + "0123";
             let mut ws = Workspace::new(WorkspaceId::from_u128(9), "Studio");
-            ws.set_owner(owner_key.as_str());
+            ws.policy.set_owner(owner_key.as_str());
             assert!(
-                set_member_role(&mut ws, &owner_key, &"ada".to_string(), CapRole::Editor)
+                set_member_role(&mut ws, &owner_key, "ada", CapRole::Editor)
                     .is_ok_and(|edit| !edit.is_empty())
             );
             // The roster knows Ada from presence; the workspace's own record of her has no name.
@@ -1037,11 +1032,11 @@ mod members_tests {
                 Scope::FsPath("/var/workspace".into()),
                 Access::Write,
             );
-            ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
+            ws.grant_as(OWNER, cap).expect("owner grants");
             let notes = Grant::new(
                 "peer-notes",
                 tilo_action_policy::Grantee::person(PEER),
-                ws.node().app("so.tilo.notes"),
+                ws.policy.node().app("so.tilo.notes"),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
                 tilo_action_policy::Grantee::person(OWNER),
@@ -1049,7 +1044,7 @@ mod members_tests {
             ws.policy.change_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
                 .expect("owner shares an app");
 
-            let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string())
+            let edit = remove_member(&mut ws, OWNER, PEER)
                 .expect("the owner may remove a member");
             assert_eq!(edit.members, vec![PEER.to_string()]);
             assert_eq!(edit.revoked.len(), 1, "the app grant");
@@ -1057,14 +1052,14 @@ mod members_tests {
             assert_eq!(ws.role_of(PEER), None);
             assert!(
                 !ws.allows(
-                    &ws.acting_for_person(&PEER.to_string()),
+                    &ws.acting_for_person(PEER),
                     &collab_types::caps::ResourceRef::FsPath("/var/workspace/notes".into()),
                     Access::Write
                 ),
                 "removing a member must revoke what they held, not just hide them"
             );
 
-            let refusal = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
+            let refusal = remove_member(&mut ws, OWNER, OWNER);
             assert!(refusal.is_err(), "the owner cannot be removed");
             assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
         }
@@ -1079,13 +1074,8 @@ mod members_tests {
         {
             let mut ws = ws_with_two_members();
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
-            let edit = set_member_role(
-                &mut ws,
-                &OWNER.to_string(),
-                &PEER.to_string(),
-                CapRole::Editor,
-            )
-            .expect("the owner may set a role");
+            let edit = set_member_role(&mut ws, OWNER, PEER, CapRole::Editor)
+                .expect("the owner may set a role");
             assert!(!edit.is_empty());
             assert_eq!(
                 ws.role_of(PEER),
@@ -1097,21 +1087,11 @@ mod members_tests {
 
         {
             let mut ws = ws_with_two_members();
-            set_member_role(
-                &mut ws,
-                &OWNER.to_string(),
-                &PEER.to_string(),
-                CapRole::Editor,
-            )
-            .expect("the owner may set a role");
+            set_member_role(&mut ws, OWNER, PEER, CapRole::Editor)
+                .expect("the owner may set a role");
             assert_eq!(ws.role_of(PEER), Some(CapRole::Editor));
-            set_member_role(
-                &mut ws,
-                &OWNER.to_string(),
-                &PEER.to_string(),
-                CapRole::Viewer,
-            )
-            .expect("the owner may set a role");
+            set_member_role(&mut ws, OWNER, PEER, CapRole::Viewer)
+                .expect("the owner may set a role");
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
             assert!(
                 !may_write(&ws, PEER),
@@ -1121,12 +1101,7 @@ mod members_tests {
 
         {
             let mut ws = ws_with_two_members();
-            let refusal = set_member_role(
-                &mut ws,
-                &PEER.to_string(),
-                &PEER.to_string(),
-                CapRole::Owner,
-            );
+            let refusal = set_member_role(&mut ws, PEER, PEER, CapRole::Owner);
             assert!(
                 refusal.is_err(),
                 "a viewer must not be able to promote itself"
@@ -1136,24 +1111,14 @@ mod members_tests {
 
         {
             let mut ws = ws_with_two_members();
-            let refusal = set_member_role(
-                &mut ws,
-                &OWNER.to_string(),
-                &OWNER.to_string(),
-                CapRole::Viewer,
-            );
+            let refusal = set_member_role(&mut ws, OWNER, OWNER, CapRole::Viewer);
             assert!(refusal.is_err(), "nobody changes their own role");
             assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
         }
 
         {
             let mut ws = ws_with_two_members();
-            let refusal = set_member_role(
-                &mut ws,
-                &OWNER.to_string(),
-                &PEER.to_string(),
-                CapRole::Owner,
-            );
+            let refusal = set_member_role(&mut ws, OWNER, PEER, CapRole::Owner);
             assert!(refusal.is_err(), "ownership is not handed out");
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
             assert_eq!(ws.policy.owner(), Some(OWNER));
@@ -1174,18 +1139,10 @@ mod members_tests {
                 .expect("owner delegates administration");
             let before = ws.policy.clone();
 
-            assert!(
-                set_member_role(
-                    &mut ws,
-                    &PEER.to_string(),
-                    &PEER.to_string(),
-                    CapRole::Viewer,
-                )
-                .is_err()
-            );
-            assert!(remove_member(&mut ws, &PEER.to_string(), &PEER.to_string()).is_err());
+            assert!(set_member_role(&mut ws, PEER, PEER, CapRole::Viewer,).is_err());
+            assert!(remove_member(&mut ws, PEER, PEER).is_err());
             assert_eq!(ws.policy, before);
-            assert!(ws.may_administer(&PEER.to_string()));
+            assert!(ws.may_administer(PEER));
         }
     }
 }
@@ -1205,11 +1162,11 @@ mod agents_tests {
 
     fn ws_with_agent() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from_u128(17), "agents-test");
-        ws.set_owner(OWNER);
-        ws.grant(Grant::new(
+        ws.policy.set_owner(OWNER);
+        ws.policy.grant(Grant::new(
             format!("agent-member:{AGENT}"),
             tilo_action_policy::Grantee::agent(AGENT),
-            ws.node(),
+            ws.policy.node(),
             KindSet::READ,
             Answer::Allow,
             tilo_action_policy::Grantee::person(OWNER),
@@ -1217,7 +1174,7 @@ mod agents_tests {
         let notes = Grant::new(
             "scribe-notes",
             tilo_action_policy::Grantee::agent(AGENT),
-            ws.node().app("so.tilo.notes"),
+            ws.policy.node().app("so.tilo.notes"),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
             tilo_action_policy::Grantee::person(OWNER),
@@ -1232,7 +1189,7 @@ mod agents_tests {
         ws.policy
             .party_of(tilo_action_policy::Grantee::agent(AGENT))
             .decide(
-                &ws.node().app(app),
+                &ws.policy.node().app(app),
                 kind,
                 &tilo_action_policy::Context::at_secs(tilo_clock::unix_now()),
             )
@@ -1259,11 +1216,11 @@ mod agents_tests {
 
         {
             let mut ws = Workspace::new(WorkspaceId::from_u128(18), "profile-test");
-            ws.set_owner(OWNER);
-            ws.grant(Grant::new(
+            ws.policy.set_owner(OWNER);
+            ws.policy.grant(Grant::new(
                 format!("agent-member:{AGENT}"),
                 tilo_action_policy::Grantee::agent(AGENT),
-                ws.node(),
+                ws.policy.node(),
                 KindSet::READ,
                 Answer::Allow,
                 tilo_action_policy::Grantee::person(OWNER),
@@ -1283,7 +1240,7 @@ mod agents_tests {
             );
 
             ws.grant_as(
-                &OWNER.to_string(),
+                OWNER,
                 CapOverride::grant(
                     Grantee::agent(AGENT),
                     Scope::FsPath("/var/workspace/brief.md".into()),
@@ -1308,7 +1265,7 @@ mod agents_tests {
 
         {
             let mut ws = ws_with_agent();
-            let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
+            let edit = remove_agent(&mut ws, OWNER, AGENT);
             assert_eq!(
                 edit.revoked.len(),
                 2,
@@ -1328,7 +1285,7 @@ mod agents_tests {
         {
             let mut ws = ws_with_agent();
             let before = ws.policy.clone();
-            assert!(remove_agent(&mut ws, &"viewer".into(), AGENT).is_empty());
+            assert!(remove_agent(&mut ws, "viewer", AGENT).is_empty());
             assert_eq!(ws.policy, before);
         }
 
@@ -1385,7 +1342,7 @@ mod permissions_tests {
 
     fn ws_with_grants() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from_u128(3), "perm-test");
-        ws.set_owner(OWNER);
+        ws.policy.set_owner(OWNER);
         sandbox::grant(
             &mut ws.sandbox,
             CapOverride::grant(
@@ -1483,7 +1440,7 @@ mod permissions_tests {
         {
             let mut ws = ws_with_grants();
             ws.grant_as(
-                &OWNER.to_string(),
+                OWNER,
                 CapOverride::grant(
                     Grantee::person("peer-user"),
                     Scope::FsPath("/var/workspace".into()),
@@ -1497,7 +1454,7 @@ mod permissions_tests {
                     tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
                         "editors-camera-app",
                         tilo_action_policy::Grantee::role(CapRole::Editor),
-                        ws.node().app("so.tilo.camera"),
+                        ws.policy.node().app("so.tilo.camera"),
                         tilo_action_policy::KindSet::READ,
                         tilo_action_policy::Answer::Allow,
                         tilo_action_policy::Grantee::person(OWNER),
@@ -1525,7 +1482,7 @@ mod permissions_tests {
             let ada = "ad".repeat(32);
             let bea = "be".repeat(32);
             let mut ws = Workspace::new(WorkspaceId::from_u128(5), "names");
-            ws.set_owner(&ada);
+            ws.policy.set_owner(&ada);
             ws.members_here([
                 tilo_desktop_model::Member::named(
                     collab_types::MemberId::person(ada.clone()),
@@ -1569,9 +1526,9 @@ mod permissions_tests {
 
         {
             let mut ws = Workspace::new(WorkspaceId::from_u128(4), "labels");
-            ws.set_owner(OWNER);
+            ws.policy.set_owner(OWNER);
             ws.grant_as(
-                &OWNER.to_string(),
+                OWNER,
                 CapOverride::grant(
                     Grantee::person(OWNER),
                     Scope::FsPath("/var/workspace".into()),
@@ -1676,7 +1633,7 @@ mod permissions_tests {
             "an end already past composes nothing"
         );
         let mut granted = ws;
-        apply_grant_draft(&mut granted, &OWNER.to_string(), &draft).expect("the owner grants");
+        apply_grant_draft(&mut granted, OWNER, &draft).expect("the owner grants");
         assert!(
             granted
                 .sandbox
@@ -1729,8 +1686,7 @@ mod permissions_tests {
                 Access::Read
             ));
 
-            let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft)
-                .expect("the owner may grant");
+            let edit = apply_grant_draft(&mut ws, OWNER, &draft).expect("the owner may grant");
             assert_eq!(edit.sandbox_granted.len(), 1);
             assert!(
                 ws.allows(
@@ -1758,8 +1714,7 @@ mod permissions_tests {
             while draft.choice().label() != "Read workspace files" {
                 draft.cycle_choice();
             }
-            let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft)
-                .expect("the owner may grant");
+            let edit = apply_grant_draft(&mut ws, OWNER, &draft).expect("the owner may grant");
             let id = &edit.sandbox_granted[0];
             let cap = ws
                 .sandbox
@@ -1789,8 +1744,8 @@ mod permissions_tests {
                 lifetime: Lifetime::UntilRevoked,
                 ..draft
             };
-            apply_grant_draft(&mut ws, &OWNER.to_string(), &always).expect("the owner may grant");
-            apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("the owner may grant");
+            apply_grant_draft(&mut ws, OWNER, &always).expect("the owner may grant");
+            apply_grant_draft(&mut ws, OWNER, &draft).expect("the owner may grant");
             let files = ws
                 .sandbox
                 .iter()
@@ -1829,7 +1784,7 @@ mod permissions_tests {
             };
             let before = ws.sandbox.len();
             assert!(
-                apply_grant_draft(&mut ws, &"someone-else".to_string(), &draft).is_err(),
+                apply_grant_draft(&mut ws, "someone-else", &draft).is_err(),
                 "grant_as must refuse a non-administrator"
             );
             assert_eq!(ws.sandbox.len(), before);
@@ -1858,9 +1813,7 @@ mod permissions_tests {
                         panic!("unexpected scope in the grant table: {record:?}")
                     }
                 };
-                probe
-                    .grant_as(&OWNER.to_string(), cap.clone())
-                    .expect("owner grants");
+                probe.grant_as(OWNER, cap.clone()).expect("owner grants");
                 assert!(
                     probe.allows(&app_acting("firefox"), &resource, cap.access),
                     "granting {:?} must make the decision function allow it",
@@ -1875,8 +1828,7 @@ mod permissions_tests {
                 .into_iter()
                 .find(|r| r.allows.contains("camera"))
                 .expect("camera row");
-            let edit = apply_revoke(&mut ws, &OWNER.to_string(), &camera_row.id)
-                .expect("the owner may revoke");
+            let edit = apply_revoke(&mut ws, OWNER, &camera_row.id).expect("the owner may revoke");
             assert_eq!(edit.sandbox_revoked, vec![camera_row.id.clone()]);
             assert!(
                 !ws.allows(
@@ -1892,14 +1844,14 @@ mod permissions_tests {
         {
             let mut ws = ws_with_grants();
             let target = listed(&ws)[0].id.clone();
-            let refusal = apply_revoke(&mut ws, &"someone-else".to_string(), &target);
+            let refusal = apply_revoke(&mut ws, "someone-else", &target);
             assert!(refusal.is_err(), "only an administrator may revoke");
             assert_eq!(listed(&ws).len(), 2);
         }
 
         {
             let mut ws = ws_with_grants();
-            let refusal = apply_revoke(&mut ws, &OWNER.to_string(), "cap-does-not-exist");
+            let refusal = apply_revoke(&mut ws, OWNER, "cap-does-not-exist");
             assert!(refusal.is_err(), "there is no such grant to revoke");
             assert_eq!(ws.sandbox.len(), 2, "the two grants");
         }
@@ -1912,7 +1864,7 @@ mod permissions_tests {
         {
             let mut ws = ws_with_grants();
             let draft = draft_for(&ws, "app:firefox", "read-files", None, 0).expect("a draft");
-            let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("owner grants");
+            let edit = apply_grant_draft(&mut ws, OWNER, &draft).expect("owner grants");
             assert_eq!(edit.sandbox_granted.len(), 1);
             let rows = listed(&ws);
             assert_eq!(
@@ -1951,7 +1903,7 @@ mod permissions_tests {
         use tilo_action_policy::{ActionKind, Answer, Grantee};
 
         let mut ws = Workspace::new(WorkspaceId::from_u128(6), "action-names");
-        ws.set_owner(OWNER);
+        ws.policy.set_owner(OWNER);
         let front = ws.id().to_string();
         let grant = |action: &str| {
             answer_grant(
@@ -1965,14 +1917,14 @@ mod permissions_tests {
                 Grantee::person(OWNER),
             )
         };
-        ws.grant(grant("post"));
+        ws.policy.grant(grant("post"));
         let named = listed_permissions(&ws, &ChatCatalogue, VIEWER);
         assert_eq!(
             named[0].allows,
             "Use \u{201c}Post a message\u{201d} in Chat"
         );
 
-        ws.grant(grant("post-view"));
+        ws.policy.grant(grant("post-view"));
         let unnamed = listed_permissions(&ws, &ChatCatalogue, VIEWER)
             .into_iter()
             .find(|row| row.allows.contains("Post view"))
@@ -2003,11 +1955,11 @@ mod default_app_authority_tests {
             let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
             let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
             let mut ws = Workspace::new(WorkspaceId::from_u128(7), "Docs");
-            ws.set_owner("owner");
+            ws.policy.set_owner("owner");
 
             assert!(
                 ws.set_default_app_policy_as(
-                    &"member".into(),
+                    "member",
                     pdf.clone(),
                     desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into()),
                     &resolver
@@ -2015,7 +1967,7 @@ mod default_app_authority_tests {
                 .is_err()
             );
             ws.set_default_app_policy_as(
-                &"owner".into(),
+                "owner",
                 pdf.clone(),
                 desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into()),
                 &resolver,
@@ -2024,8 +1976,8 @@ mod default_app_authority_tests {
 
             assert!(
                 ws.set_default_app_choice_as(
-                    &"owner".into(),
-                    &"member".into(),
+                    "owner",
+                    "member",
                     pdf.clone(),
                     desktop_policy::UserWorkspaceChoice::PersonalDefault,
                     &resolver
@@ -2033,8 +1985,8 @@ mod default_app_authority_tests {
                 .is_err()
             );
             ws.set_default_app_choice_as(
-                &"member".into(),
-                &"member".into(),
+                "member",
+                "member",
                 pdf.clone(),
                 desktop_policy::UserWorkspaceChoice::App("so.tilo.other".into()),
                 &resolver,

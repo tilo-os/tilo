@@ -62,6 +62,13 @@ impl DesktopHandle {
         if let Some(carried) = self.perform_workspace_verb(verb) {
             return Ok(carried);
         }
+        if let Some(carried) = self
+            .perform_strip_verb(verb)
+            .or_else(|| self.perform_bar_verb(verb))
+            .or_else(|| self.perform_shortcut_verb(verb))
+        {
+            return carried;
+        }
         let carried = match verb {
             ChromeEffect::OpenApp { .. }
             | ChromeEffect::ShowApp { .. }
@@ -100,101 +107,6 @@ impl DesktopHandle {
                 self.step_workspace(i32::try_from(*delta).unwrap_or_default());
                 Carried::Done
             }
-            ChromeEffect::StepStrip { steps } => {
-                self.step_strip(isize::try_from(*steps).unwrap_or_default());
-                Carried::Done
-            }
-            // A strip made here keeps no name until the person gives it one: the shell names it by
-            // its place, in the language of whoever reads it.
-            ChromeEffect::NewStrip { name } => {
-                if self.add_strip(name.clone().unwrap_or_default()).is_none() {
-                    return Err(t("strip-switcher-refused"));
-                }
-                Carried::Done
-            }
-            ChromeEffect::MoveToNewStrip { tab } => {
-                let tab: u64 = tab
-                    .trim()
-                    .parse()
-                    .map_err(|_| format!("{tab} is no window"))?;
-                self.move_to_new_strip(tab);
-                Carried::Done
-            }
-            ChromeEffect::DeleteStrip { strip } => {
-                let strip: u64 = strip
-                    .trim()
-                    .parse()
-                    .map_err(|_| format!("{strip} is no strip"))?;
-                self.delete_strip(StripId(strip))?;
-                Carried::Done
-            }
-            ChromeEffect::RenameInBar { tab } => {
-                self.rename_in_bar_now(win(tab)?);
-                Carried::Done
-            }
-            ChromeEffect::CloseBarField { tab } => {
-                self.close_bar_field(win(tab)?);
-                Carried::Done
-            }
-            ChromeEffect::BarEdit { tab, text } => {
-                self.bar_event(
-                    win(tab)?,
-                    ToolbarEvent::Edit {
-                        text: text.clone(),
-                    },
-                );
-                Carried::Done
-            }
-            ChromeEffect::BarCommit { tab, text } => {
-                self.bar_event(
-                    win(tab)?,
-                    ToolbarEvent::Commit {
-                        text: text.clone(),
-                    },
-                );
-                self.close_bar_field(win(tab)?);
-                Carried::Done
-            }
-            ChromeEffect::BarSearch { tab, query } => {
-                self.bar_event(
-                    win(tab)?,
-                    ToolbarEvent::Search {
-                        query: query.clone(),
-                    },
-                );
-                Carried::Done
-            }
-            ChromeEffect::BarSearchStep { tab, forward } => {
-                self.bar_event(
-                    win(tab)?,
-                    ToolbarEvent::SearchStep { forward: *forward },
-                );
-                Carried::Done
-            }
-            ChromeEffect::BarSearchClose { tab } => {
-                self.bar_event(win(tab)?, ToolbarEvent::SearchClose);
-                self.close_bar_field(win(tab)?);
-                Carried::Done
-            }
-            ChromeEffect::BarAction { tab, id } => {
-                self.bar_event(
-                    win(tab)?,
-                    ToolbarEvent::Action { id: id.clone() },
-                );
-                Carried::Done
-            }
-            ChromeEffect::BarSidebar { tab } => {
-                self.bar_event(win(tab)?, ToolbarEvent::ToggleSidebar);
-                Carried::Done
-            }
-            ChromeEffect::BarBack { tab } => {
-                self.bar_event(win(tab)?, ToolbarEvent::Back);
-                Carried::Done
-            }
-            ChromeEffect::BarForward { tab } => {
-                self.bar_event(win(tab)?, ToolbarEvent::Forward);
-                Carried::Done
-            }
             ChromeEffect::NewWorkspace {
                 workspace,
                 name,
@@ -211,29 +123,6 @@ impl DesktopHandle {
                 let branch = self.branch_workspace(source, name.as_deref())?;
                 Carried::Answer(serde_json::Value::String(branch.to_string()))
             }
-            ChromeEffect::Shortcut { action } => {
-                let Ok(action) = serde_json::from_value::<ShortcutAction>(
-                    serde_json::Value::String(action.clone()),
-                ) else {
-                    return Err(format!("no shortcut is called {action}"));
-                };
-                let performed = self.perform_shortcut(action);
-                // Not the desktop's: the host carries it out, once.
-                if performed == Performed::Session {
-                    self.ask(DesktopAsk::Shortcut(action));
-                }
-                Carried::Shortcut(performed)
-            }
-            ChromeEffect::FixedShortcut { action } => {
-                let Some(action) = FixedAction::from_id(action) else {
-                    return Err(format!("no fixed shortcut is called {action}"));
-                };
-                let performed = self.perform_fixed_shortcut(action);
-                if performed == Performed::Session {
-                    self.ask(DesktopAsk::FixedShortcut(action));
-                }
-                Carried::Shortcut(performed)
-            }
             ChromeEffect::RevealTopBar
             | ChromeEffect::Overview { .. }
             | ChromeEffect::About { .. }
@@ -244,8 +133,25 @@ impl DesktopHandle {
             | ChromeEffect::TogglePeople
             | ChromeEffect::ShowStrips
             | ChromeEffect::SwitchWorkspace { .. } => Carried::Shell,
-            // Carried out by the workspace verbs above.
+            // Carried out by the workspace, strip, bar and shortcut verbs above.
             ChromeEffect::MoveStrip { .. }
+            | ChromeEffect::StepStrip { .. }
+            | ChromeEffect::NewStrip { .. }
+            | ChromeEffect::MoveToNewStrip { .. }
+            | ChromeEffect::DeleteStrip { .. }
+            | ChromeEffect::RenameInBar { .. }
+            | ChromeEffect::CloseBarField { .. }
+            | ChromeEffect::BarEdit { .. }
+            | ChromeEffect::BarCommit { .. }
+            | ChromeEffect::BarSearch { .. }
+            | ChromeEffect::BarSearchStep { .. }
+            | ChromeEffect::BarSearchClose { .. }
+            | ChromeEffect::BarAction { .. }
+            | ChromeEffect::BarSidebar { .. }
+            | ChromeEffect::BarBack { .. }
+            | ChromeEffect::BarForward { .. }
+            | ChromeEffect::Shortcut { .. }
+            | ChromeEffect::FixedShortcut { .. }
             | ChromeEffect::JoinWorkspace
             | ChromeEffect::OpenSettings { .. }
             | ChromeEffect::LeaveWorkspace { .. }
@@ -253,6 +159,117 @@ impl DesktopHandle {
             | ChromeEffect::WorkspaceSettings => Carried::Done,
         };
         Ok(carried)
+    }
+
+    /// What the desktop does to the active workspace's strips: `None` for a verb of another kind.
+    fn perform_strip_verb(&self, verb: &ChromeEffect) -> Option<Result<Carried, String>> {
+        let done = match verb {
+            ChromeEffect::StepStrip { steps } => {
+                self.step_strip(isize::try_from(*steps).unwrap_or_default());
+                Ok(())
+            }
+            // A strip made here keeps no name until the person gives it one: the shell names it by
+            // its place, in the language of whoever reads it.
+            ChromeEffect::NewStrip { name } => self
+                .add_strip(name.clone().unwrap_or_default())
+                .map(drop)
+                .ok_or_else(|| t("strip-switcher-refused")),
+            ChromeEffect::MoveToNewStrip { tab } => win(tab).map(|tab| self.move_to_new_strip(tab)),
+            ChromeEffect::DeleteStrip { strip } => strip
+                .trim()
+                .parse()
+                .map_err(|_| format!("{strip} is no strip"))
+                .and_then(|strip| self.delete_strip(StripId(strip))),
+            _ => return None,
+        };
+        Some(done.map(|()| Carried::Done))
+    }
+
+    /// What the desktop does with a window's bar (its name field, its location and its search):
+    /// `None` for a verb of another kind.
+    fn perform_bar_verb(&self, verb: &ChromeEffect) -> Option<Result<Carried, String>> {
+        let (ChromeEffect::RenameInBar { tab }
+        | ChromeEffect::CloseBarField { tab }
+        | ChromeEffect::BarEdit { tab, .. }
+        | ChromeEffect::BarCommit { tab, .. }
+        | ChromeEffect::BarSearch { tab, .. }
+        | ChromeEffect::BarSearchStep { tab, .. }
+        | ChromeEffect::BarSearchClose { tab }
+        | ChromeEffect::BarAction { tab, .. }
+        | ChromeEffect::BarSidebar { tab }
+        | ChromeEffect::BarBack { tab }
+        | ChromeEffect::BarForward { tab }) = verb
+        else {
+            return None;
+        };
+        let tab = match win(tab) {
+            Ok(tab) => tab,
+            Err(refusal) => return Some(Err(refusal)),
+        };
+        match verb {
+            ChromeEffect::RenameInBar { .. } => self.rename_in_bar_now(tab),
+            ChromeEffect::CloseBarField { .. } => self.close_bar_field(tab),
+            ChromeEffect::BarEdit { text, .. } => {
+                self.bar_event(tab, ToolbarEvent::Edit { text: text.clone() });
+            }
+            ChromeEffect::BarCommit { text, .. } => {
+                self.bar_event(tab, ToolbarEvent::Commit { text: text.clone() });
+                self.close_bar_field(tab);
+            }
+            ChromeEffect::BarSearch { query, .. } => {
+                self.bar_event(
+                    tab,
+                    ToolbarEvent::Search {
+                        query: query.clone(),
+                    },
+                );
+            }
+            ChromeEffect::BarSearchStep { forward, .. } => {
+                self.bar_event(tab, ToolbarEvent::SearchStep { forward: *forward });
+            }
+            ChromeEffect::BarSearchClose { .. } => {
+                self.bar_event(tab, ToolbarEvent::SearchClose);
+                self.close_bar_field(tab);
+            }
+            ChromeEffect::BarAction { id, .. } => {
+                self.bar_event(tab, ToolbarEvent::Action { id: id.clone() });
+            }
+            ChromeEffect::BarSidebar { .. } => self.bar_event(tab, ToolbarEvent::ToggleSidebar),
+            ChromeEffect::BarBack { .. } => self.bar_event(tab, ToolbarEvent::Back),
+            ChromeEffect::BarForward { .. } => self.bar_event(tab, ToolbarEvent::Forward),
+            _ => return None,
+        }
+        Some(Ok(Carried::Done))
+    }
+
+    /// The shortcut a verb names, carried out: `None` for a verb of another kind.
+    fn perform_shortcut_verb(&self, verb: &ChromeEffect) -> Option<Result<Carried, String>> {
+        match verb {
+            ChromeEffect::Shortcut { action } => {
+                let Ok(action) = serde_json::from_value::<ShortcutAction>(
+                    serde_json::Value::String(action.clone()),
+                ) else {
+                    return Some(Err(format!("no shortcut is called {action}")));
+                };
+                let performed = self.perform_shortcut(action);
+                // Not the desktop's: the host carries it out, once.
+                if performed == Performed::Session {
+                    self.ask(DesktopAsk::Shortcut(action));
+                }
+                Some(Ok(Carried::Shortcut(performed)))
+            }
+            ChromeEffect::FixedShortcut { action } => {
+                let Some(action) = FixedAction::from_id(action) else {
+                    return Some(Err(format!("no fixed shortcut is called {action}")));
+                };
+                let performed = self.perform_fixed_shortcut(action);
+                if performed == Performed::Session {
+                    self.ask(DesktopAsk::FixedShortcut(action));
+                }
+                Some(Ok(Carried::Shortcut(performed)))
+            }
+            _ => None,
+        }
     }
 
     /// What the desktop does to its workspaces and strips by address: `None` for a verb of another

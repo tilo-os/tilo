@@ -2,7 +2,9 @@
 //! [`Workspace`] takes `now` explicitly so the model stays clock-free; every host asks through this
 //! one trait instead of reading the time itself.
 
-use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef, decide_capability, sandbox};
+use collab_types::caps::{
+    Access, CapDecision, CapOverride, ResourceRef, decide_capability, sandbox,
+};
 use collab_types::role::Role as CapRole;
 use tilo_action_policy::{Acting, ActionKind, Answer, Grant, KindSet, TreePath, roles};
 use tilo_clock::unix_now;
@@ -126,7 +128,7 @@ mod tests {
     fn ws_with_member(role: CapRole) -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from_u128(23), "authority-test");
         ws.policy.set_owner(OWNER);
-        ws.policy.admit(PEER, role);
+        ws.policy.add_member(PEER, role);
         ws
     }
 
@@ -168,7 +170,7 @@ mod tests {
                 "a blocked member has no role to act with"
             );
             assert_eq!(
-                WorkspaceAuthority::role_of(&ws, &OWNER.to_string()),
+                WorkspaceAuthority::role_of(&ws, OWNER),
                 Some(CapRole::Owner),
                 "blocking a member takes nothing from the owner"
             );
