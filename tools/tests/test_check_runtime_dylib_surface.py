@@ -53,9 +53,8 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertIn("reaches tilo-fs", found[0])
 
     def test_an_engine_with_its_own_library_back_in_the_runtime_fails(self) -> None:
-        # Typst lives in libtilo_typst_engine.so; a runtime crate depending on
-        # its font table again carries it into every app process, even though
-        # Typst Editor reaches the crate itself.
+        # Typst's font table belongs to the typesetting program alone; a runtime
+        # crate depending on it again carries it into every app process.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
             "4serde v1.0.228\n4typst-assets v0.15.1\n",
@@ -66,7 +65,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
         found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1, found)
         self.assertIn("reaches typst-assets", found[0])
-        self.assertIn("libtilo_typst_engine.so", found[0])
+        self.assertIn("font table", found[0])
 
     def test_the_workspace_hack_alone_puts_no_engine_in_the_runtime(self) -> None:
         # The hack's library names none of its dependencies, so rustc links

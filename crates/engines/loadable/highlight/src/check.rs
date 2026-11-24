@@ -6,15 +6,17 @@
 
 use std::process::ExitCode;
 
+// The library exports only its unmangled entry points (the toolkit opens it,
+// and no crate compiles against it), so this binary links it by name.
+#[link(name = "tilo_highlight_engine", kind = "dylib")]
+unsafe extern "C-unwind" {
+    safe fn tilo_highlight_engine_check() -> bool;
+}
+
 fn main() -> ExitCode {
-    match tilo_highlight_engine::self_check() {
-        Ok(report) => {
-            println!("tilo-highlight-engine: {report}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("tilo-highlight-engine: {error}");
-            ExitCode::FAILURE
-        }
+    if tilo_highlight_engine_check() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }

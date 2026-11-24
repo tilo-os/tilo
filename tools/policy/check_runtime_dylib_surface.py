@@ -82,10 +82,9 @@ DENIED = {
 # Crates only the programs that use them map: an engine's library of its own
 # beside the runtime (crates/engines/loadable/), or code a program links itself.
 ENGINES = {
-    "tilo-typst-engine": "Typst's engine library (libtilo_typst_engine.so)",
-    "typst": "Typst, which Typst Editor loads from libtilo_typst_engine.so",
-    "typst-library": "Typst's standard library, in libtilo_typst_engine.so",
-    "typst-assets": "Typst's 9.6 MB font table, in libtilo_typst_engine.so",
+    "typst": "Typst, which only the program typesetting a document links",
+    "typst-library": "Typst's standard library, under typst",
+    "typst-assets": "Typst's 9.6 MB font table, under typst",
     "tilo-spotify": "Spotify playback, which only a program playing it links",
     "librespot": "the Spotify client under tilo-spotify",
     "tilo-wet-media": "the wet-media simulation, which only a painting program links",

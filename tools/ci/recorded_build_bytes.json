@@ -1373,10 +1373,6 @@
       "libraries": 2204410,
       "tests": 4809368
     },
-    "tilo-typst-engine": {
-      "libraries": 0,
-      "tests": 2852008
-    },
     "tilo-typst-fonts": {
       "libraries": 95458,
       "tests": 12605256

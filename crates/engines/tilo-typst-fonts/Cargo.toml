@@ -18,8 +18,8 @@ path = "src/lib.rs"
 # dependency is the same on every target all the same: the page never calls
 # `typst_assets::fonts()`, so the linker drops the tables there. One feature
 # set everywhere keeps typst-assets out of the workspace-hack, which is linked
-# into the shared runtime every app maps; the fonts belong to Typst's engine
-# library (crates/engines/loadable/typst).
+# into the shared runtime every app maps; the fonts belong to the typesetting
+# engine (crates/engines/typst-engine).
 [dependencies]
 typst-assets = { version = "0.15", features = ["fonts"] }
 

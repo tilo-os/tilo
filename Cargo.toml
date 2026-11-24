@@ -390,7 +390,6 @@ members = [
     "crates/engines/loadable/highlight",
     "crates/engines/loadable/settings",
     "crates/engines/loadable/theme-painter",
-    "crates/engines/loadable/typst",
     "crates/engines/loadable/wasm",
     "crates/core/runtime-fs",
     "crates/core/tilo-fs-client",

@@ -141,7 +141,6 @@ bytes = 2490368
 "libtilo_highlight_engine.so" = 2818048
 "libtilo_settings_engine.so" = 14090240
 "libtilo_theme_painter_engine.so" = 131072
-"libtilo_typst_engine.so" = 41156608
 "libtilo_wasm_engine.so" = 2621440
 
 [engines.aarch64]
@@ -152,5 +151,4 @@ bytes = 2490368
 "libtilo_highlight_engine.so" = 2752512
 "libtilo_settings_engine.so" = 9240576
 "libtilo_theme_painter_engine.so" = 131072
-"libtilo_typst_engine.so" = 41418752
 "libtilo_wasm_engine.so" = 2621440

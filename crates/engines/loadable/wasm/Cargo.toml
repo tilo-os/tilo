@@ -4,11 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The wasm interpreter (wasmi) and a painter set's guest on it, as an engine library beside the shared runtime: libtilo_wasm_engine.so, which the theme painter and Typst engines chain on."
+description = "The wasm interpreter (wasmi) and a painter set's guest on it, as an engine library beside the shared runtime: libtilo_wasm_engine.so, which the theme painter engine chains on."
 
-# Two engines interpret wasm: a theme's painter sets (libtilo_theme_painter_engine.so)
-# and Typst's plugins (libtilo_typst_engine.so). Both chain on this library, so the
-# bundle holds one copy of the interpreter and no app maps it until one of them loads.
+# A theme's painter sets (libtilo_theme_painter_engine.so) are interpreted wasm and
+# chain on this library, so no app maps the interpreter until that engine loads.
 # Like every engine it is a Rust dylib chained on libruntime_dylib.so, built in the
 # same Cargo graph (os/scripts/build-thin-apps.sh) and shipped under the runtime
 # bundle's lib/.

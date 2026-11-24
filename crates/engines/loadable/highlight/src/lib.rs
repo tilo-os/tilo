@@ -25,13 +25,32 @@ pub fn tilo_highlight_engine_entry() -> &'static dyn tilo_highlight::Grammars {
 #[cfg(feature = "thin")]
 const _: tilo_highlight::GrammarsEntry = tilo_highlight_engine_entry;
 
+/// The engine's self-check ([`self_check`]) for its check binary, by the
+/// unmangled name the binary links: the toolkit opens this library rather than
+/// compiling against it, so it exports no Rust item. Prints the report; whether
+/// it passed.
+#[cfg(feature = "thin")]
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn tilo_highlight_engine_check() -> bool {
+    match self_check() {
+        Ok(report) => {
+            println!("tilo-highlight-engine: {report}");
+            true
+        }
+        Err(error) => {
+            eprintln!("tilo-highlight-engine: {error}");
+            false
+        }
+    }
+}
+
 /// Run the engine's own code: highlight a line of Rust through the entry the
 /// toolkit opens, and a block comment across two lines.
 ///
 /// The engine's check binary calls it, so a release proves the library loads
 /// and runs against the runtime it ships with.
 #[cfg(feature = "thin")]
-pub fn self_check() -> Result<String, String> {
+fn self_check() -> Result<String, String> {
     use tilo_highlight::TokenKind;
 
     let grammars = tilo_highlight_engine_entry();

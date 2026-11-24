@@ -61,8 +61,7 @@ out.
 
 An engine a few apps use moves out of the runtime into an engine library
 of its own: a crate under `crates/engines/loadable/<name>/` that is a Rust
-`dylib` chained on the runtime (Typst: `libtilo_typst_engine.so` for Typst
-Editor; account credentials with its OAuth client and cloud-storage
+`dylib` chained on the runtime (account credentials with its OAuth client and cloud-storage
 providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
 reaches ownership: `libtilo_accounts_engine.so` for Settings; the contact directory:
 `libtilo_contact_directory_engine.so` for Messages; Settings itself, its library with

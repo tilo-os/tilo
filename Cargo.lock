@@ -21073,22 +21073,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-typst-engine"
-version = "0.1.0"
-dependencies = [
- "comemo",
- "runtime-dylib",
- "tilo-highlight-engine",
- "tilo-wasm-engine",
- "typst",
- "typst-assets",
- "typst-layout",
- "typst-pdf",
- "typst-render",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-typst-fonts"
 version = "0.1.0"
 dependencies = [

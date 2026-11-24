@@ -9,9 +9,7 @@ description = "Tilo's grammar set for syntax highlighting (syntect over two-face
 # A runtime engine the toolkit opens on first use rather than one an app
 # names DT_NEEDED: the code editor's highlighter loads it through
 # tilo-engine-loader the first time a line of code is highlighted, so an app
-# that never shows code never maps it. The Typst engine chains on it (Typst's
-# raw blocks use the same syntect and grammar set), so Typst Editor maps one
-# copy. Like every engine it is a Rust dylib chained on libruntime_dylib.so,
+# that never shows code never maps it. Like every engine it is a Rust dylib chained on libruntime_dylib.so,
 # built in the same Cargo graph (os/scripts/build-thin-apps.sh) and shipped
 # under the runtime bundle's lib/.
 #
