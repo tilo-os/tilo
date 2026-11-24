@@ -220,7 +220,6 @@ pub use crate::documents::device_keys::{
 pub use sealed_documents::fixtures as sealed_fixtures;
 #[cfg(test)]
 mod copy_now_tests;
-mod desktop_document;
 #[cfg(test)]
 mod governed_grants_tests;
 pub mod membership;
@@ -1678,10 +1677,6 @@ impl Workspaces {
                 .await
                 .map_err(|e| format!("recall: {e}"))?;
             tracing::info!("recalled");
-            self.prepare_desktop_document(&mut workspace)
-                .await
-                .map_err(|e| format!("desktop record: {e}"))?;
-            tracing::info!("desktop record ready");
             // What the server's log revoked while the workspace was closed.
             self.carry_revocations(&mut workspace, &[]).await?;
         }

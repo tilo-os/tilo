@@ -846,9 +846,9 @@ impl Workspaces {
     /// The keys the governor writes `record` of `app` with: in a workspace whose
     /// channels this server takes part in every new record is sealed from its
     /// first write, so its channel is opened first when it has none (its
-    /// genesis, published before anything is written there). A record it
-    /// already holds in the clear stays so. `None` in a workspace it does
-    /// not take part in, where records are written in the clear.
+    /// genesis, published before anything is written there). `None` in a
+    /// workspace it does not take part in, which refuses the write: a record
+    /// is never written in the clear.
     ///
     /// # Errors
     ///
@@ -879,14 +879,6 @@ impl Workspaces {
             .map(Some);
         }
         if !workspace.seals() || neighbour_wire::KeyScope::has_named_readers(document) {
-            return workspace.document_keys(app, document).await;
-        }
-        let held_in_the_clear = workspace.peer().holds_document(app, document)
-            && !workspace
-                .peer()
-                .publication()
-                .is_sealed_document(app, document);
-        if held_in_the_clear {
             return workspace.document_keys(app, document).await;
         }
         let name = workspace.workspace();

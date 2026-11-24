@@ -12,8 +12,8 @@ use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
-use tilo_peer_state::store::{Appetite, Store};
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
+use tilo_peer_state::store::{Appetite, Frame, Store};
+use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
 
@@ -44,8 +44,8 @@ struct Linked {
     router: iroh::protocol::Router,
     host_endpoint: iroh::Endpoint,
     b_endpoint: iroh::Endpoint,
-    /// The writer's one store, kept alive for the test.
-    _store: (tempfile::TempDir, Arc<Store>),
+    /// The writer's one store.
+    store: (tempfile::TempDir, Arc<Store>),
 }
 
 impl Linked {
@@ -64,27 +64,28 @@ impl Linked {
         )
         .unwrap();
         a.select_exact_admissions().unwrap();
-        let mut document = AutoCommit::new();
-        document.put(ROOT, "value", "first").unwrap();
-        document.commit_edit("fixture", "value", &a_cert.user_public_key);
         a.install_seed(
             SeedState {
                 workspace_changes: seed_workspace(WORKSPACE, &a_cert, &devices).unwrap(),
-                documents: vec![SeedDocument {
-                    app_id: APP.into(),
-                    document_id: RECORD.into(),
-                    kind: "test".into(),
-                    bytes: document.save(),
-                }],
+                documents: Vec::new(),
             },
             &a_key,
             now,
         )
         .unwrap();
-        let b = StatePeer::from_join(WORKSPACE, a_cert, devices, &[], now).unwrap();
+        let b = StatePeer::from_join(WORKSPACE, a_cert.clone(), devices, &[], now).unwrap();
         let store_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(store_dir.path(), Appetite::StoreAll).unwrap());
         let a = DirectSync::new(a, a_key.clone()).with_store(Arc::clone(&store));
+        // The record's first write, kept in the writer's store.
+        let mut document = AutoCommit::new();
+        document.put(ROOT, "value", "first").unwrap();
+        document.commit_edit("fixture", "value", &a_cert.user_public_key);
+        a.publish(|a| {
+            a.publication_mut()
+                .publish_document(APP, RECORD, document.save(), &a_key, now)
+        })
+        .unwrap();
         let b = DirectSync::new(b, b_key.clone());
         let host_endpoint = localhost_endpoint(&a_key).await;
         let router = iroh::protocol::Router::builder(host_endpoint.clone())
@@ -107,7 +108,7 @@ impl Linked {
             router,
             host_endpoint,
             b_endpoint,
-            _store: (store_dir, store),
+            store: (store_dir, store),
         }
     }
 
@@ -166,9 +167,8 @@ async fn a_workspace_change_sent_without_its_parent_is_applied() {
     })
     .unwrap();
 
-    // What `a` answers with is its state as it stands then, its governance
-    // moved by the checkpoints it signs for the answer: `b` holds the child,
-    // and what `a` holds.
+    // What `a` answers with is its governance as it stands then: `b` holds
+    // the child, and what `a` holds.
     until(&linked.b, |b| {
         b.governance().workspace_name().as_deref() == Some("Sent")
     })
@@ -186,13 +186,21 @@ async fn a_record_write_sent_without_the_one_it_builds_on_is_applied() {
     let linked = Box::pin(Linked::start()).await;
     let (a, key) = (&linked.a, &linked.a_key);
 
-    // The earlier write: made on `a`, never sent.
+    // The earlier write: made on `a` and kept in its store, never sent.
     let earlier = document_change(a, key, "kept back");
-    a.replica().write(|a| {
+    let earlier = a.replica().write(|a| {
         a.publication_mut()
             .publish_incremental(APP, RECORD, earlier, key, SystemTime::now())
-            .unwrap();
+            .unwrap()
     });
+    linked
+        .store
+        .1
+        .retain(
+            tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
+            &Frame::of(&earlier).unwrap(),
+        )
+        .unwrap();
     // The later one, built on it, is all `b` hears.
     let later = document_change(a, key, "sent");
     a.publish(|a| {

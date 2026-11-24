@@ -867,14 +867,13 @@ impl Pairing {
         member
             .admit_history(
                 holder
-                    .catch_up()
-                    .await?
+                    .catch_up(false)?
                     .into_iter()
                     .map(|authored| (authored.from, authored.message))
                     .collect(),
             )
             .await;
-        for authored in member.catch_up().await? {
+        for authored in member.catch_up(false)? {
             holder.admit(authored.from, authored.message, true).await;
         }
         member.replay_from(&holder).await?;
@@ -1368,7 +1367,12 @@ impl DirectSync {
         let (message, workspace) = {
             let mut peer = self.0.replica.lock();
             let heads = peer.workspace_heads().unwrap_or_default();
+            let before = peer.clone();
             let message = write(&mut peer)?;
+            if written_clear(&message) {
+                *peer = before;
+                return Err(WRITTEN_CLEAR.into());
+            }
             (message, peer.workspace_changes_since(&heads))
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -1552,6 +1556,9 @@ impl DirectSync {
     ///
     /// The frame could not be kept.
     pub fn send(&self, message: NeighbourMsg) -> Result<(), String> {
+        if written_clear(&message) {
+            return Err(WRITTEN_CLEAR.into());
+        }
         // Content goes on each link's own content stream, never kept: one that
         // sends much of it waits for room with [`Self::send_content`].
         if content_frame(&message) {
@@ -2319,7 +2326,7 @@ impl DirectSync {
                 authored.push((author, message.clone()));
             }
             if self.admit_history(authored).await {
-                let state = host.answer_state_request().await;
+                let state = host.answer_state_request(false);
                 self.admit_history(
                     state
                         .into_iter()
@@ -2413,7 +2420,7 @@ impl DirectSync {
             allow(unused_mut, reason = "a page keeps no store to open the link with")
         )]
         let mut catch_up = if dialing {
-            self.catch_up().await?
+            self.catch_up(true)?
         } else {
             Vec::new()
         };
@@ -2899,9 +2906,10 @@ impl DirectSync {
                 opened.write_recover().extend(eager.followed());
             }
             if opens_an_ask {
+                // The store's frames follow the state, from where the device
+                // asking stands.
                 state.extend(
-                    self.answer_state_request()
-                        .await
+                    self.answer_state_request(false)
                         .into_iter()
                         .filter(|state| reaches(&state.message))
                         .filter(|state| {
@@ -3324,12 +3332,11 @@ impl DirectSync {
 
     /// What the other device may lack: this device's certificate and the
     /// revocations its person signed, then, from a holder of the workspace of
-    /// its owning person, the governance and a checkpoint of every document,
-    /// signed under the holder's own key. A member device signs no
-    /// checkpoints, and a holder of another person cannot sign checkpoints
-    /// others' writes depend on; their own writes reach the other device
-    /// live.
-    async fn catch_up(&self) -> Result<Vec<Authored>, String> {
+    /// its owning person, the governance and, with `history`, every write its
+    /// store keeps, as its author signed it. No device signs anything for a
+    /// catch-up: a checkpoint it signed would take a number of its key's own
+    /// sequence, which the same key may be writing elsewhere.
+    fn catch_up(&self, history: bool) -> Result<Vec<Authored>, String> {
         let device = self.device();
         let (hello, bootstraps) = {
             let replica = self.0.replica.lock();
@@ -3351,9 +3358,8 @@ impl DirectSync {
                 cert: Box::new(cert),
                 revocations,
             };
-            // Only a holder of the workspace signs checkpoints of it: a member device's link
-            // is to a holder, which has every write the member made, and a member signing
-            // snapshots would take numbers of its own sequence its engine never committed.
+            // Only a holder of the workspace sends its governance and history: a member
+            // device's link is to a holder, which has every write the member made.
             (
                 hello,
                 self.0.admission.is_none()
@@ -3363,17 +3369,18 @@ impl DirectSync {
         };
         let mut messages = vec![hello];
         if bootstraps {
-            messages.extend(
-                self.signed_change(|peer, signer, now| {
-                    peer.publication_mut().bootstrap_messages(signer, now)
-                })
-                .await?,
-            );
+            messages.push(self.0.replica.lock().workspace_message());
+            #[cfg(not(target_arch = "wasm32"))]
+            if history {
+                messages.extend(self.kept()?);
+            }
         }
+        // A frame the store keeps names its own author; one that does not is
+        // this device's.
         Ok(messages
             .into_iter()
             .map(|message| Authored {
-                from: device,
+                from: author_of(&message).unwrap_or(device),
                 message,
                 published: false,
             })
@@ -3942,11 +3949,26 @@ impl DirectSync {
 
     /// Answer the other end of a link's ask for the state this device holds:
     /// what the link started with, again ([`Self::catch_up`]).
-    async fn answer_state_request(&self) -> Vec<Authored> {
-        self.catch_up().await.unwrap_or_else(|error| {
+    fn answer_state_request(&self, history: bool) -> Vec<Authored> {
+        self.catch_up(history).unwrap_or_else(|error| {
             tracing::warn!(%error, "a device's ask for this device's state went unanswered");
             Vec::new()
         })
+    }
+
+    /// Every frame this device's store keeps of the workspace.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn kept(&self) -> Result<Vec<NeighbourMsg>, String> {
+        let (mut cursors, mut kept) = (Vec::new(), Vec::new());
+        loop {
+            let (frames, more) = self.replay(&cursors)?;
+            advance(&mut cursors, &frames);
+            let done = !more || frames.is_empty();
+            kept.extend(frames);
+            if done {
+                return Ok(kept);
+            }
+        }
     }
 
     /// Admit `message`, `author`'s frame, into this device's workspace: what
@@ -3960,6 +3982,13 @@ impl DirectSync {
         retained: bool,
         history: bool,
     ) -> Heard {
+        if written_clear(&message) {
+            let refused = crate::AdmissionError::Rejected {
+                reason: neighbour_wire::RefusalReason::Forbidden,
+                detail: WRITTEN_CLEAR.into(),
+            };
+            return heard_of(author, message, Err(refused), retained || history);
+        }
         let origin = if retained || history {
             TransportOrigin::RetainedServerDelta(author)
         } else {
@@ -4423,7 +4452,7 @@ async fn forward(
                     .admit(authored.from, authored.message, retained)
                     .await
                 {
-                    for state in sender.answer_state_request().await {
+                    for state in sender.answer_state_request(true) {
                         // What still waits after the answer waits for history
                         // the sender lacks too: asking again brings nothing.
                         device.admit(state.from, state.message, true).await;
@@ -4477,6 +4506,16 @@ fn arrived_late(error: &crate::AdmissionError) -> bool {
 /// Why a link to a device ends, or is refused: the workspace removed its
 /// person.
 pub const REMOVED: &str = "the workspace removed the device's person";
+
+/// Why a record's write in the clear is refused.
+pub const WRITTEN_CLEAR: &str =
+    "a workspace's records are sealed under its members' keys; a write in the clear is refused";
+
+/// Whether `message` writes a record in the clear: a workspace keeps every
+/// record sealed under its group's keys, and refuses a write that is not.
+fn written_clear(message: &NeighbourMsg) -> bool {
+    matches!(message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_none())
+}
 
 /// What a link's one-way stream carries, named by the byte it opens with: its
 /// device's frames, its answers to the other device's writes, and content.
@@ -4806,7 +4845,7 @@ async fn send_authored(
                     }
                 }
                 if waiting.contains(&OnlyHere::Answer) {
-                    for state in link.answer_state_request().await {
+                    for state in link.answer_state_request(true) {
                         if takes(&state.message) {
                             write_authored(&mut send, &state).await?;
                         }
@@ -5204,7 +5243,7 @@ mod tests {
             .unwrap(),
             roster[1].0.clone(),
         );
-        let state = host.catch_up().await.unwrap();
+        let state = host.catch_up(true).unwrap();
         // Two writes on the record as the member's history has it, neither
         // built on the other.
         let mut edit = |field: &str, actor: u8| {
