@@ -2097,12 +2097,17 @@ const WORKSPACES: &str = "workspaces";
 /// document writes no longer name the member's own record they were. Version 6 is version 5's
 /// layout, whose identity hello names a certificate whose capabilities carry the retired grants
 /// they already wrote in their binary form
-/// ([`tilo_user_identity::DeviceCapabilities`]). A build before a version
-/// refuses the store by version instead of reading what it cannot; a store opening an earlier
-/// version moves its frames into segments, each written as today
-/// ([`crate::before_own_removal::frame`]), before it
-/// records the version it keeps.
-pub(crate) const FRAMES_VERSION: u32 = 6;
+/// ([`tilo_user_identity::DeviceCapabilities`]). Version 7 is the frames whose claims carry the
+/// caller's signed call, which the claim's signature covers. A build before a version refuses
+/// the store by version instead of reading what it cannot; a store opening an earlier version
+/// moves its frames into segments, each written as today
+/// ([`crate::before_own_removal::frame`]), before it records the version it keeps.
+///
+/// A frame of version 6 or before cannot be written again as version 7: its author signed claim
+/// bytes that name no call, and this build writes every claim with one. The store drops such a
+/// frame as it opens, and the workspace's devices answer for what it lost on the next replay
+/// ([`gaps`]).
+pub(crate) const FRAMES_VERSION: u32 = 7;
 /// The first version that kept frames in segments.
 const SEGMENTS_VERSION: u32 = 4;
 /// Where a store opening segments of an earlier version sets them aside while it packs their
@@ -2605,7 +2610,7 @@ mod tests {
         ArtifactId, AttestationId, Ed25519PublicKey, EncryptionMetadata, OpKind, SealedCompaction,
         SignedOp, sign_op,
     };
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer as _, SigningKey, Verifier as _};
     use neighbour_wire::peer_handle;
     use std::fs;
     use std::time::Duration;
@@ -3510,6 +3515,193 @@ mod tests {
             let again = Store::open(dir.path(), Appetite::StoreAll).unwrap();
             assert_eq!(again.replay(workspace(), &[], Budget::default()).unwrap().frames, replay.frames);
         }
+
+        phase frames_of_version_6_are_not_served_again;
+        {
+            // Version 6's build wrote each claim without a call and signed exactly those claim
+            // bytes. Version 7 writes every claim with its call, which its signature covers, so
+            // such a frame cannot be written again with a signature that still verifies.
+            let dir = tempfile::tempdir().unwrap();
+            let key = device(4);
+            let (bytes, signed) = before_call_frame(&key);
+            let (read, rest) = postcard::take_from_bytes::<BeforeCallFrame>(&bytes[1..]).unwrap();
+            assert!(rest.is_empty(), "the fixture is one whole frame");
+            let verifier = key.verifying_key();
+            assert!(
+                verifier
+                    .verify(
+                        &signed,
+                        &ed25519_dalek::Signature::from_bytes(&read.envelope.signature.0),
+                    )
+                    .is_ok(),
+                "a version 6 frame's claim signature verifies over version 6's bytes"
+            );
+            assert!(
+                read.envelope.claims.iter().all(|run| !run.changes.is_empty()),
+                "the fixture's claims name their changes and no call"
+            );
+
+            let frame = frame(&key, 9, ContentRetention::Delta);
+            let record = frame_record(&frame, &bytes).unwrap();
+            let path = segment_path(dir.path(), workspace(), 0, 0);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, record).unwrap();
+            fs::write(dir.path().join(FRAMES_VERSION_FILE), b"6").unwrap();
+
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert!(
+                store
+                    .replay(workspace(), &[], Budget::default())
+                    .unwrap()
+                    .frames
+                    .is_empty(),
+                "a frame of version 6 is not served: its claim bytes cannot be written again as this build writes them"
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
+                FRAMES_VERSION.to_string()
+            );
+            assert!(!dir.path().join(EARLIER_SEGMENTS).exists(), "what was set aside is dropped");
+        }
+    }
+
+    /// A link's claims as version 6 wrote them: one run per shared action, and no call for the
+    /// run or for the claim the op's signature covers.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct BeforeCallRun {
+        changes: Vec<[u8; 32]>,
+        action: collab_types::ClaimedAction,
+        units: Vec<collab_types::UnitPath>,
+        invoker: Option<String>,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct BeforeCallClaim {
+        change: [u8; 32],
+        action: collab_types::ClaimedAction,
+        units: Vec<collab_types::UnitPath>,
+        invoker: Option<String>,
+    }
+
+    /// What version 6's build signed: the op's fields, its claims naming no call.
+    #[derive(serde::Serialize)]
+    struct BeforeCallSigning {
+        #[serde(with = "serde_bytes")]
+        payload: Vec<u8>,
+        artifact: ArtifactId,
+        author: Ed25519PublicKey,
+        attestation_id: AttestationId,
+        kind: OpKind,
+        timestamp: SystemTime,
+        seq: u64,
+        encryption: Option<EncryptionMetadata>,
+        claims: Vec<BeforeCallClaim>,
+        surface: Option<[u8; 32]>,
+        governance: Vec<[u8; 4]>,
+    }
+
+    /// Version 6's signed op, as it kept it in a frame.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct BeforeCallEnvelope {
+        #[serde(with = "serde_bytes")]
+        payload: Vec<u8>,
+        artifact: ArtifactId,
+        author: Ed25519PublicKey,
+        attestation_id: AttestationId,
+        kind: OpKind,
+        timestamp: SystemTime,
+        seq: u64,
+        encryption: Option<EncryptionMetadata>,
+        claims: Vec<BeforeCallRun>,
+        surface: Option<[u8; 32]>,
+        governance: Vec<[u8; 4]>,
+        signature: collab_types::Signature,
+    }
+
+    /// Version 6's frame: one `AppDocument` as it wrote it, tagged as today tags it.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct BeforeCallFrame {
+        peer: neighbour_wire::PeerId,
+        app_id: String,
+        cluster_id: String,
+        document_id: String,
+        envelope: BeforeCallEnvelope,
+        readers: Option<String>,
+    }
+
+    /// `key`'s version 6 frame, and the bytes its claim signature covers: built from version 6's
+    /// layout, not from this build's types.
+    fn before_call_frame(key: &SigningKey) -> (Vec<u8>, Vec<u8>) {
+        let acting = tilo_action_policy::Acting {
+            by: tilo_action_policy::Actor::member(tilo_action_policy::MemberId::person("ana")),
+            app: None,
+            agent_session: None,
+            cause: None,
+            foreign_device: false,
+            handed: false,
+            acted_for: Vec::new(),
+        };
+        let command = serde_json::to_string(&acting).unwrap();
+        let change = [9_u8; 32];
+        let action = collab_types::ClaimedAction::whole_resource_edit(String::new());
+        let units = vec![Vec::new()];
+        let payload = vec![7_u8; 64];
+        let artifact = ArtifactId::new();
+        let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+        let attestation_id = AttestationId::new();
+        let timestamp = at(9);
+        let encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
+        let signed = postcard::to_allocvec(&BeforeCallSigning {
+            payload: payload.clone(),
+            artifact,
+            author,
+            attestation_id,
+            kind: OpKind::Change,
+            timestamp,
+            seq: 9,
+            encryption,
+            claims: vec![BeforeCallClaim {
+                change,
+                action: action.clone(),
+                units: units.clone(),
+                invoker: Some(command.clone()),
+            }],
+            surface: None,
+            governance: Vec::new(),
+        })
+        .unwrap();
+        let signature = key.sign(&signed);
+        let mut bytes = vec![NeighbourMsg::APP_DOCUMENT_TAG];
+        bytes.extend(
+            postcard::to_allocvec(&BeforeCallFrame {
+                peer: peer_handle(&key.verifying_key().to_bytes()),
+                app_id: APP.into(),
+                cluster_id: CLUSTER.into(),
+                document_id: RECORD.into(),
+                envelope: BeforeCallEnvelope {
+                    payload,
+                    artifact,
+                    author,
+                    attestation_id,
+                    kind: OpKind::Change,
+                    timestamp,
+                    seq: 9,
+                    encryption,
+                    claims: vec![BeforeCallRun {
+                        changes: vec![change],
+                        action,
+                        units,
+                        invoker: Some(command),
+                    }],
+                    surface: None,
+                    governance: Vec::new(),
+                    signature: collab_types::Signature::from_bytes(signature.to_bytes()),
+                },
+                readers: None,
+            })
+            .unwrap(),
+        );
+        (bytes, signed)
     }
 
     /// `message` as a store kept it before version 5: a document write names the member's own

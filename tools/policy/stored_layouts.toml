@@ -160,3 +160,12 @@ types = [
   "crates/core/tilo-peer-state/src/owner/publication.rs:RecordBinding",
   "crates/core/tilo-peer-state/src/owner/publication.rs:RecordTarget",
 ]
+
+[[layout]]
+format = "peer store frames"
+version = 7
+digest = "2ed437d603f4eaca"
+what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set; version 3 is a document write whose envelope may name its own content key; version 6 is version 5's layout, whose identity hello names a certificate carrying the retired grants its binary form already wrote; version 7 is the frames whose claims carry the caller's signed call, which their signature covers, so a store opening a frame of version 6 or before drops it rather than writing it again)"""
+types = [
+  "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",
+]
