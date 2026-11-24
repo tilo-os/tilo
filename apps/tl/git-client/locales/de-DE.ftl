@@ -64,6 +64,7 @@ d-qmisixex = Rechts
     .doc = Die neue Seite einer Ansicht nebeneinander.
 
 d-qo6hyuiv = Hunks
+    .doc = Seine Hunks, jeder als eigener JSON-Text.
 
 d-nf7rji7c-filter-area = Bereich
 
@@ -360,6 +361,7 @@ d-eptgnppa = Name des Autors
 d-zqo4qf2p = E-Mail des Autors
 
 d-dijqjokd = Änderungen
+    .doc = Jede Sammlung als Liste von JSON-Texten, einer je Eintrag.
 
 d-ylfrksiq = Commits
 
@@ -781,6 +783,7 @@ d-noccxekz = Aktualisieren
     .doc = Liest das Repository auf der Platte neu in die Aufzeichnungen der App, für dieses Fenster.
 
 d-hftffvs5 = Repository öffnen
+    .doc = Öffnet das Repository unter `path` auf diesem Gerät.
 
 d-hftffvs5-path = Pfad
 
@@ -929,6 +932,7 @@ d-vbt5h6db = Commit lesen
 d-vbt5h6db-id = Id
 
 d-umhtkuee = Diff-Ansicht
+    .doc = Ändert, wie diese Person Diffs liest: eine Spalte oder zwei.
 
 d-umhtkuee-s = S
 
@@ -1083,4 +1087,3 @@ d-m4t7437c = Zweige
 d-kz5j2n5t = Zweigzeile
     .w-delete = Delete
     .w-delete-2 = Delete { $name }
-
