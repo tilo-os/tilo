@@ -2687,6 +2687,7 @@ fn opening_with(stub: &ToolsStub, bytes: &[u8], name: &str) -> (TilolangProcess,
         content: Some(content.clone()),
         chooser: None,
         clipboard: None,
+        thumbnails: None,
         tools: Some(std::sync::Arc::new(tools)),
     };
     let connection = Connection::new(manager).expect("the connection joined its route");

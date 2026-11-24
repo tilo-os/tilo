@@ -21,8 +21,6 @@ tilo_automerge_isolate::test_worker!();
 
 #[path = "adhoc_group.rs"]
 mod adhoc_group;
-#[path = "bootstrap_growth.rs"]
-mod bootstrap_growth;
 #[path = "direct_access.rs"]
 mod direct_access;
 #[path = "direct_actions.rs"]

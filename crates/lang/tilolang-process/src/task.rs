@@ -957,7 +957,6 @@ mod tests {
     fn ran(task: &Task, source: &str) -> Json {
         task.session.run(
             source,
-            false,
             &tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::agent(
                 "task",
             )),

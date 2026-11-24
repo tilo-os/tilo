@@ -188,7 +188,7 @@ tilo_test_env::scenario! {
             &inbox,
             child.invocation,
             ReceiptStatus::Rejected {
-                error: ActionCallError::ConfirmationRequired { departure: Vec::new() },
+                error: ActionCallError::ConfirmationRequired(Box::default()),
             },
         );
         settle(&mut host, &mut window);
@@ -514,7 +514,7 @@ tilo_test_env::scenario! {
             &inbox,
             child.invocation,
             ReceiptStatus::Rejected {
-                error: ActionCallError::ConfirmationRequired { departure: Vec::new() },
+                error: ActionCallError::ConfirmationRequired(Box::default()),
             },
         );
         settle(&mut host, &mut window);
@@ -569,7 +569,7 @@ tilo_test_env::scenario! {
             &inbox,
             child.invocation,
             ReceiptStatus::Rejected {
-                error: ActionCallError::ConfirmationRequired { departure: Vec::new() },
+                error: ActionCallError::ConfirmationRequired(Box::default()),
             },
         );
         settle(&mut host, &mut window);
