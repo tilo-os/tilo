@@ -109,3 +109,10 @@ tilo-host-blocked-block-device = Block a device
 tilo-host-blocked-unblock-device = Stop blocking a device
 tilo-host-blocked-block-user = Block a person and all their devices
 tilo-host-blocked-unblock-user = Stop blocking a person
+
+## Workspace vault
+passwords-workspace-vault = Workspace vault
+passwords-workspace-vault-keep-sealed = Save encrypted vault entry
+passwords-workspace-vault-import-sealed = Import encrypted vault entry
+passwords-workspace-vault-remove-sealed = Delete encrypted vault entry
+passwords-workspace-vault-keep-uses = Record where an entry was used

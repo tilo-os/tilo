@@ -109,3 +109,10 @@ tilo-host-blocked-block-device = Ein Gerät sperren
 tilo-host-blocked-unblock-device = Ein Gerät nicht mehr sperren
 tilo-host-blocked-block-user = Eine Person und alle ihre Geräte sperren
 tilo-host-blocked-unblock-user = Eine Person nicht mehr sperren
+
+## Workspace vault
+passwords-workspace-vault = Arbeitsbereichstresor
+passwords-workspace-vault-keep-sealed = Verschlüsselten Tresoreintrag speichern
+passwords-workspace-vault-import-sealed = Verschlüsselten Tresoreintrag importieren
+passwords-workspace-vault-remove-sealed = Verschlüsselten Tresoreintrag löschen
+passwords-workspace-vault-keep-uses = Festhalten, wo ein Eintrag verwendet wurde
