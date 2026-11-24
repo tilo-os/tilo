@@ -279,6 +279,7 @@ impl DeviceAsked {
 
     /// Whether this device runs what waits for a device that keeps the person's root: it keeps
     /// one or more of them.
+    #[cfg(test)]
     pub(crate) fn serves_at_root(&self) -> bool {
         self.serving_at_root.get().is_some()
     }

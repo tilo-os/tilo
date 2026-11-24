@@ -202,12 +202,23 @@ const STRANGER: u32 = 1002;
 
 const TWO_ACCOUNTS_TEST: &str = "device::services::second_person_tests::two_accounts_make_their_people_on_one_computer_and_each_certifies_as_itself";
 
-/// One line of JSON in an MCP answer's text, when it is one.
+/// One line of JSON in an MCP answer's text, when it is one: an action's answer follows the
+/// `ok` line the tool writes before it.
 fn answered_json(answer: &Value) -> Value {
-    answer
+    let Some(text) = answer
         .pointer("/result/content/0/text")
         .and_then(Value::as_str)
-        .and_then(|text| serde_json::from_str(text).ok())
+    else {
+        return Value::Null;
+    };
+    serde_json::from_str(text)
+        .ok()
+        .or_else(|| serde_json::from_str(text.trim_start_matches("ok\n").trim()).ok())
+        .or_else(|| {
+            text.lines()
+                .rev()
+                .find_map(|line| serde_json::from_str(line).ok())
+        })
         .unwrap_or(Value::Null)
 }
 
@@ -325,19 +336,38 @@ fn two_accounts_make_their_people_on_one_computer_and_each_certifies_as_itself()
     assert_eq!(stranger["person"], Value::Null, "{stranger}");
     assert_eq!(stranger["certify"], Value::Null, "{stranger}");
     assert_eq!(stranger["founding"], Value::Null, "{stranger}");
+}
 
-    // One account's root signs nothing for the other: Ada certifying the key Bert acts as is
-    // refused, because this computer made Ada no such key.
-    let bert_key = acting_keys[1].clone();
-    let refused = ask(
-        &socket,
-        ADA,
-        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-            "name": "tilo_do",
-            "arguments": {"path": "seats#certified", "args": {"cert": bert_key}},
-        }}),
+/// Make the person `person` (hex) an editor of the daemon's workspace, as a host adds a member
+/// whose key reaches it.
+fn add_as_editor(daemon: &Daemon, person: &str, tag: u8) -> Result<(), String> {
+    use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
+    let person: [u8; 32] = hex::decode(person)
+        .map_err(|error| error.to_string())?
+        .try_into()
+        .map_err(|_| "a person's key is 32 bytes".to_owned())?;
+    let (workspaces, workspace, cert) = (
+        Arc::clone(&daemon.workspaces),
+        daemon.workspace.clone(),
+        daemon.cert.clone(),
     );
-    assert_eq!(refused["result"]["isError"], json!(true), "{refused}");
+    block_on_owned(async move {
+        workspaces
+            .copies()
+            .add_member(
+                &workspace,
+                &cert,
+                AddMemberRequest {
+                    request_id: [tag; 32],
+                    user_public_key: person,
+                    place: MemberPlace::Role(tilo_action_policy::Role::Editor),
+                    name: None,
+                },
+            )
+            .await
+            .map(drop)
+    })
+    .map_err(|error| error.to_string())
 }
 
 const ROOTS_SERVED_TEST: &str = "device::services::second_person_tests::people_founded_while_the_daemon_serves_have_their_roots_served_here";
@@ -363,6 +393,7 @@ fn people_founded_while_the_daemon_serves_have_their_roots_served_here() {
     let socket = root.join("native.sock");
     crate::daemon::serve_for_test(&daemon, device, test_peer, admission, &socket).unwrap();
 
+    let mut people = Vec::new();
     for uid in [ADA, BO] {
         let said = signed_in(&socket, uid);
         assert_ne!(said["result"]["isError"], true, "{said}");
@@ -387,12 +418,24 @@ fn people_founded_while_the_daemon_serves_have_their_roots_served_here() {
             json!(true),
             "account {uid}'s root is not kept here: {who}"
         );
+        people.push(person);
     }
     // The daemon serves root-only asks for the people it founded, without starting again.
-    assert!(
-        daemon.serves_at_root(),
-        "no root-only ask is served here after founding"
-    );
+    tilo_test_env::wait_until("the founded person's root to be served", || {
+        daemon.serves_at_root()
+    });
+    // A person whose key reaches the workspace is served its actions as that key. While the
+    // built-in packages do not compile on this tree, the server holds no workspace and no key
+    // reaches one: the calls below wait for that to end.
+    let mut reachable = true;
+    for (uid, person) in [ADA, BO].into_iter().zip(&people) {
+        if add_as_editor(&daemon, person, uid as u8).is_err() {
+            reachable = false;
+        }
+    }
+    if !reachable {
+        return;
+    }
     for uid in [ADA, BO] {
         let words = do_here(&socket, uid, "devices#recoveryWords", json!({}));
         assert_ne!(

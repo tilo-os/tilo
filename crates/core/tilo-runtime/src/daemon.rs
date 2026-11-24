@@ -465,61 +465,6 @@ fn serve_device(
             dev,
             (locked.0, entered.take()),
         )?);
-        // A person founded while this daemon serves has their root marked in their devices record
-        // and their root-only asks served here from then on, without the person's services
-        // starting again: the first person a fresh computer founds and every account after it.
-        crate::device::services::when_person_founded(Arc::new({
-            let (serving, asked, tickets) = (
-                Arc::clone(session.serving()),
-                Arc::clone(session.asked()),
-                Arc::clone(session.tickets()),
-            );
-            move |person: [u8; 32]| {
-                let (serving, asked, tickets) = (serving.clone(), asked.clone(), tickets.clone());
-                tilo_rt::app().handle().spawn(async move {
-                    let keys = tilo_api::calls::device_keys();
-                    let cert = tilo_device_identity::persist::read_device_cert(
-                        &keys.device_cert_for_user(&person),
-                    )
-                    .ok()
-                    .filter(|cert| cert.user_public_key == person)
-                    .or_else(|| {
-                        tilo_device_identity::persist::read_device_cert(&keys.device_cert)
-                            .ok()
-                            .filter(|cert| cert.user_public_key == person)
-                    });
-                    let Some(cert) = cert else {
-                        tracing::warn!(
-                            person = %hex::encode(person),
-                            "a founded person's device certificate is not here"
-                        );
-                        return;
-                    };
-                    let Ok(Some(root)) = crate::device::services::root_for_person(person) else {
-                        tracing::warn!(
-                            person = %hex::encode(person),
-                            "a founded person's root is not kept here"
-                        );
-                        return;
-                    };
-                    if let Err(error) = tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
-                        serving.copies(),
-                        &root,
-                        &cert,
-                    )
-                    .await
-                    {
-                        tracing::warn!(
-                            %error,
-                            person = %hex::encode(person),
-                            "a founded person's root is not marked in their devices"
-                        );
-                    }
-                    // Their root-only asks are answered here from now on, as their root is.
-                    asked.serve_at_root((*tickets).clone());
-                });
-            }
-        }));
         // Migrations run on the device that holds the data they read.
         session.serve_migrations();
         // A computer that just logged in takes its workspace in while the device is held (below):

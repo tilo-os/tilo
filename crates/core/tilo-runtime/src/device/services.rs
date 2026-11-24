@@ -381,6 +381,22 @@ pub(crate) fn root_record_for_person(person: [u8; 32]) -> io::Result<std::path::
     if device_person() == Some(person) {
         return device_root_record();
     }
+    // A process that keeps no accounts record (a person's own service, a test's daemon) finds a
+    // person's root by what each account's identity names.
+    let accounts = tilo_identity::store::identity_dir_from_env()?.join("accounts");
+    for entry in std::fs::read_dir(&accounts).into_iter().flatten().flatten() {
+        let Ok(uid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(record) = root_record(uid) else {
+            continue;
+        };
+        if tilo_identity::store::load_metadata_from_path(&record)
+            .is_ok_and(|metadata| metadata.group_public_key == person)
+        {
+            return Ok(record);
+        }
+    }
     Err(io::Error::new(
         io::ErrorKind::NotFound,
         "this computer keeps no root of this person's",
@@ -696,19 +712,8 @@ impl Daemon {
         self.workspaces.copies()
     }
 
-    /// The calls that wait for their person's answer here, each as its asked record.
-    #[must_use]
-    pub(crate) fn asked(&self) -> &Arc<super::asked::DeviceAsked> {
-        &self.asked
-    }
-
-    /// The device actions this daemon answers: a ticket, a login, and what only a root signs.
-    #[must_use]
-    pub(crate) fn tickets(&self) -> &Arc<Tickets> {
-        &self.tickets
-    }
-
     /// Whether this device runs what waits for a device that keeps a person's root.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn serves_at_root(&self) -> bool {
         self.asked.serves_at_root()
@@ -1555,6 +1560,7 @@ impl Daemon {
                 &workspaces,
                 (&actor, founded, serves_pages),
                 (&policy_origin, &first),
+                (&asked, &tickets, &identity.cert),
             )?;
         }
         serve_agent_steps(&workspaces, &fanout);
@@ -1683,6 +1689,66 @@ impl Daemon {
             dir: identity.place.dir().to_path_buf(),
             _lock: lock,
         };
+        // A person founded while this daemon serves has their root marked in their devices record
+        // and their root-only asks served here from then on, without the person's services
+        // starting again: the first person a fresh computer founds and every account after it.
+        {
+            let (asked, tickets, serving) = (
+                Arc::downgrade(&daemon.asked),
+                Arc::downgrade(&daemon.tickets),
+                Arc::downgrade(&daemon.workspaces),
+            );
+            when_person_founded(Arc::new(move |person: [u8; 32]| {
+                let (Some(asked), Some(tickets), Some(serving)) =
+                    (asked.upgrade(), tickets.upgrade(), serving.upgrade())
+                else {
+                    return;
+                };
+                tilo_rt::app().handle().spawn(async move {
+                    let keys = tilo_api::calls::device_keys();
+                    let cert = tilo_device_identity::persist::read_device_cert(
+                        &keys.device_cert_for_user(&person),
+                    )
+                    .ok()
+                    .filter(|cert| cert.user_public_key == person)
+                    .or_else(|| {
+                        tilo_device_identity::persist::read_device_cert(&keys.device_cert)
+                            .ok()
+                            .filter(|cert| cert.user_public_key == person)
+                    });
+                    let Some(cert) = cert else {
+                        tracing::warn!(
+                            person = %hex::encode(person),
+                            "a founded person's device certificate is not here"
+                        );
+                        return;
+                    };
+                    let Ok(Some(root)) = root_for_person(person) else {
+                        tracing::warn!(
+                            person = %hex::encode(person),
+                            "a founded person's root is not kept here"
+                        );
+                        return;
+                    };
+                    if let Err(error) =
+                        tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+                            serving.copies(),
+                            &root,
+                            &cert,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            %error,
+                            person = %hex::encode(person),
+                            "a founded person's root is not marked in their devices"
+                        );
+                    }
+                    // Their root-only asks are answered here from now on, as their root is.
+                    asked.serve_at_root((*tickets).clone());
+                });
+            }));
+        }
         // The person's shell reaches the one dispatch their own runs do, as them.
         #[cfg(unix)]
         match daemon.person() {
@@ -4723,6 +4789,11 @@ fn serve_key_sessions(
         &tilo_workspace_service::apps::policy_clock::PolicyOrigin,
         &Arc<super::first_workspace::FirstWorkspace>,
     ),
+    (asked, tickets, cert): (
+        &Arc<super::asked::DeviceAsked>,
+        &Arc<Tickets>,
+        &tilo_user_identity::DeviceCert,
+    ),
 ) -> io::Result<()> {
     let broker = broker
         .app_action_broker()
@@ -4736,6 +4807,10 @@ fn serve_key_sessions(
             workspaces: Arc::clone(workspaces),
             invocations: Arc::clone(invocations),
             first: Arc::clone(first),
+            asked: Arc::clone(asked),
+            tickets: Arc::clone(tickets),
+            cert: cert.clone(),
+            done: std::sync::OnceLock::new(),
             provider: std::sync::OnceLock::new(),
             workspace: workspace.to_string(),
             actor: actor.to_owned(),

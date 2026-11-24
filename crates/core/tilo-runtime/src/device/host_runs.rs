@@ -28,6 +28,15 @@ pub(super) struct HostRuns {
     pub(super) workspaces: Arc<ServiceWorkspaces>,
     pub(super) invocations: Arc<Invocations>,
     pub(super) first: Arc<super::first_workspace::FirstWorkspace>,
+    /// The calls that wait for their person's root, and the device actions its answer runs.
+    pub(super) asked: Arc<super::asked::DeviceAsked>,
+    pub(super) tickets: Arc<super::ticket::Tickets>,
+    /// This device's certificate, which its person's root signed.
+    pub(super) cert: DeviceCert,
+    /// Whether what the start could not do for a fresh person was done once their workspace
+    /// was founded: listing this device with their others, marking their root here, and serving
+    /// their root-only asks.
+    pub(super) done: OnceLock<()>,
     /// The workspace's dispatch, once a key reached it.
     pub(super) provider: OnceLock<RuntimeActionProvider>,
     /// The person's workspace, by its UUID.
@@ -38,6 +47,10 @@ pub(super) struct HostRuns {
 
 impl HostRuns {
     /// The person's workspace's dispatch: founded, and admitted for the person, the first time.
+    ///
+    /// A fresh person's workspace is not held when the daemon starts, so what the start does for
+    /// a person with one is done here the first time: this device is listed with their others,
+    /// their root is marked in their devices, and their root-only asks are served.
     fn provider(&self) -> Result<RuntimeActionProvider, String> {
         if let Some(provider) = self.provider.get() {
             return Ok(provider.clone());
@@ -45,6 +58,7 @@ impl HostRuns {
         if self.first.get().is_none() {
             self.first.found_blocking()?;
         }
+        self.done.get_or_init(|| self.hold_person());
         let provider = action_provider(
             &self.broker,
             &self.workspaces,
@@ -55,6 +69,29 @@ impl HostRuns {
         )
         .map_err(|error| error.to_string())?;
         Ok(self.provider.get_or_init(|| provider).clone())
+    }
+
+    /// What the daemon's start does for a person whose workspace it holds, done here for a person
+    /// whose workspace was not held then: this device listed with their others, their root marked
+    /// in their devices, their root-only asks served here, and their workspaces read as held.
+    fn hold_person(&self) {
+        use tilo_workspace_service::workspaces::person_workspace::devices;
+        let (copies, cert) = (self.workspaces.copies().clone(), self.cert.clone());
+        let (asked, tickets) = (Arc::clone(&self.asked), Arc::clone(&self.tickets));
+        // Their workspaces, listed now that theirs is held: what this device offers their keys,
+        // and what their own tilo reads.
+        drop(self.workspaces.workspaces());
+        super::workspaces::block_on_owned(async move {
+            if let Err(error) = devices::keep(&copies, &cert).await {
+                tracing::warn!(%error, "this device is not listed with its person's");
+            }
+            if let Ok(Some(root)) = super::services::root_for_person(cert.user_public_key)
+                && let Err(error) = devices::mark_root_holder(&copies, &root, &cert).await
+            {
+                tracing::warn!(%error, "this device's root is not marked in its person's devices");
+            }
+            asked.serve_at_root((*tickets).clone());
+        });
     }
 }
 
