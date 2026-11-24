@@ -198,6 +198,35 @@ pub trait AppPages: Send + Sync {
 
     /// Let go of `page`: its person closed it.
     fn close(&self, workspace_id: WorkspaceId, page: u64);
+
+    /// The call steps the view of `page` asked for since they were last taken, each with the
+    /// number the browser answers it by: a page whose view shows a call gives them to the
+    /// browser, which carries the call, since its microphone, camera and the workspace's live
+    /// session are there.
+    fn take_calls(
+        &self,
+        workspace_id: WorkspaceId,
+        page: u64,
+    ) -> Vec<(u64, runtime_collab::native_media::Request)> {
+        let _ = (workspace_id, page);
+        Vec::new()
+    }
+
+    /// What the browser answered to the step `request_id` of `page`.
+    fn answer_call(
+        &self,
+        page: u64,
+        request_id: u64,
+        answer: tilo_server_protocol::page::CallAnswer,
+    ) {
+        let _ = (page, request_id, answer);
+    }
+
+    /// Woken when a page's view asks for a call step: what a page's stream selects on beside
+    /// the person's asks, so the browser hears of a step at once.
+    fn calls_waker(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
 }
 
 /// What a page's person did on it ([`AppPages::act`]).

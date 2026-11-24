@@ -56,6 +56,7 @@ mod own_device;
 pub mod package_runs;
 #[cfg(unix)]
 pub mod packages;
+mod page_media;
 #[cfg(test)]
 mod page_ticket_tests;
 pub mod peer;

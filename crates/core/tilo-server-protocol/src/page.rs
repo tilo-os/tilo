@@ -181,6 +181,31 @@ pub enum PageAsk {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signed: Option<Box<tilo_actions::remote::SignedCall>>,
     },
+    /// What the browser's call service answered to the step `CallAnswer::Call` gave it, by the
+    /// request id that step carried.
+    CallResult { request_id: u64, answer: CallAnswer },
+}
+
+/// A call step a page's view asked for, from the device that lays the view out to the browser
+/// that shows the page: joining, leaving, muting, deafening, the camera or the screen, and the
+/// watch that keeps who is in the call current. The browser carries the call itself — its
+/// microphone, camera and screen, and the workspace's live session — so a call is never laid
+/// out by a window process.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageCall {
+    /// The number the browser answers this step by: the view's own request id.
+    pub request_id: u64,
+    pub command: runtime_collab::native_media::Request,
+}
+
+/// What the browser's call service answered to a [`PageCall`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallAnswer {
+    /// The call as it stands after the step, in the vocabulary the view's call service reads.
+    Answered(runtime_collab::native_media::Snapshot),
+    /// Why the step could not be taken, in the browser's own words.
+    Refused(String),
 }
 
 /// What a person does on an element of a page (`data-a`): one vocabulary with the page's
@@ -224,6 +249,9 @@ pub enum PageAnswer {
     /// What others changed on the page since, unasked: the elements,
     /// outermost first.
     Changed(Vec<PagePatch>),
+    /// A call step the page's view asked for: the browser carries it, and answers with
+    /// [`PageAsk::CallResult`] under the step's request id.
+    Call(PageCall),
 }
 
 /// Why a page is not shown.

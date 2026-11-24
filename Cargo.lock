@@ -20183,6 +20183,7 @@ dependencies = [
  "tilo-headless-schema",
  "tilo-neighbour-wire",
  "tilo-paths",
+ "tilo-runtime-collab",
  "tilo-test-env",
  "tilo-unlock-protocol",
  "tilo-user-identity",

@@ -13,6 +13,9 @@ pub struct NativeMediaRequestContext {
     app_id: String,
     workspace_id: String,
     document_id: String,
+    /// The caller the device opened this view for, when it opened one for a caller: a page's
+    /// view is opened for its person, and the browser that shows the page carries its call.
+    opened_for: Option<tilo_actions::remote::Caller>,
     revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
 }
 
@@ -32,6 +35,7 @@ impl NativeMediaRequestContext {
             app_id,
             workspace_id,
             document_id,
+            opened_for: None,
             revalidate: Arc::new(|| Ok(())),
         }
     }
@@ -47,6 +51,10 @@ impl NativeMediaRequestContext {
     }
     pub fn document_id(&self) -> &str {
         &self.document_id
+    }
+    /// The caller the device opened this view for, when it opened one for a caller.
+    pub const fn opened_for(&self) -> Option<&tilo_actions::remote::Caller> {
+        self.opened_for.as_ref()
     }
     /// Re-checks that the admitted connection, process and route are still live.
     pub fn revalidate(&self) -> Result<(), String> {
@@ -225,10 +233,7 @@ impl PeerProcess {
         None
     }
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn handed(
-        _: std::os::fd::OwnedFd,
-        _: Option<std::os::fd::OwnedFd>,
-    ) -> Option<Self> {
+    pub(super) fn handed(_: std::os::fd::OwnedFd, _: Option<std::os::fd::OwnedFd>) -> Option<Self> {
         None
     }
 
@@ -522,6 +527,7 @@ impl JoinedChannel {
         let state = Arc::downgrade(&self.state);
         let admitted = self.verified_identity.clone();
         let checked_route = route.clone();
+        let opened_for = local.opened_for.clone();
         let revalidate = Arc::new(move || {
             if !local.current() {
                 return Err("local media process ended".into());
@@ -538,6 +544,7 @@ impl JoinedChannel {
             app_id: route.app_id,
             workspace_id: route.cluster_id,
             document_id: route.document_id,
+            opened_for,
             revalidate,
         })
     }

@@ -1453,6 +1453,7 @@ impl Daemon {
                 creation: Arc::clone(&creation),
                 files: Arc::clone(&files_daemons),
                 wifi,
+                key_sessions: key_sessions.as_ref(),
                 #[cfg(unix)]
                 shell_links: &shell_links,
                 #[cfg(unix)]
@@ -2048,6 +2049,9 @@ struct BrokerParts<'a> {
     /// The links of the shells this daemon starts.
     #[cfg(unix)]
     shell_links: &'a Arc<tilo_workspace_service::apps::shell::ShellLinks>,
+    /// The person's key sessions, which serve the workspaces' apps as pages: a page's view's
+    /// call is the browser's that shows it.
+    key_sessions: Option<&'a Arc<crate::key_sessions::KeySessions>>,
     /// The dispatch those shells' calls reach, once the broker serves.
     #[cfg(unix)]
     shell_dispatch: &'a Arc<super::shell::Dispatching>,
@@ -2189,7 +2193,15 @@ fn broker_services(
     );
     Ok(ProcessServices {
         audio_output: Some(forwarded.audio_output),
-        native_media: Some(forwarded.native_media),
+        // A page's view's call is the browser's that shows it; the seat carries every other.
+        native_media: Some(match parts.key_sessions {
+            Some(sessions) => Arc::new(super::page_media::PageMedia {
+                pages: sessions.pages_served().clone(),
+                seat: forwarded.native_media,
+            })
+                as Arc<dyn tilo_workspace_service::apps::collab_app_broker::NativeMediaServices>,
+            None => forwarded.native_media,
+        }),
         continuations: Some(forwarded.continuations),
         document_index_changes: Some(forwarded.document_index_changes),
         drives: Some(forwarded.drives),

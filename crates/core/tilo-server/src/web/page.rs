@@ -20,7 +20,7 @@ use std::time::Duration;
 use tilo_actions::remote::Caller;
 use tilo_server_client::frame::{read_frame_or_eof, write_frame};
 use tilo_server_protocol::page::{
-    MAX_PAGE_FRAME_BYTES, PageAddress, PageAnswer, PageAsk, PageRefusal,
+    MAX_PAGE_FRAME_BYTES, PageAddress, PageAnswer, PageAsk, PageCall, PageRefusal,
 };
 use tilo_server_protocol::web::LINK_PAGE_PATH;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -113,8 +113,17 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
     let mut open: Option<(WorkspaceId, u64)> = None;
     let mut follow = tokio::time::interval(FOLLOW_EVERY);
     follow.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // What wakes this stream when the page's view asks for a call step: the browser carries
+    // the call, and hears of a step the moment the view asks for it.
+    let calls = pages.calls_waker();
     loop {
-        let answer = tokio::select! {
+        let asked_for_a_call = async {
+            match &calls {
+                Some(calls) => calls.notified().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let answer: Option<PageAnswer> = tokio::select! {
             frame = asks.recv() => {
                 let Some(ask) = frame.and_then(|frame| serde_json::from_slice::<PageAsk>(&frame).ok()) else {
                     break;
@@ -128,20 +137,20 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         if let Ok((workspace_id, page, _)) = &opened {
                             open = Some((*workspace_id, *page));
                         }
-                        match opened {
+                        Some(match opened {
                             Ok((_, _, answer)) => answer,
                             Err(refusal) => {
                                 tracing::debug!(?refusal, "a page was refused");
                                 PageAnswer::Refused(refusal)
                             }
-                        }
+                        })
                     }
                     PageAsk::Act {
                         id,
                         target,
                         action,
                         signed,
-                    } => match open {
+                    } => Some(match open {
                         Some((workspace_id, page)) => patched(
                             pages
                                 .act(
@@ -159,27 +168,58 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         None => PageAnswer::Refused(PageRefusal::Unavailable(
                             "no page is open".to_owned(),
                         )),
-                    },
+                    }),
+                    // The browser carried a call step the page's view asked for: an answer to
+                    // an answer, which the page is not told again.
+                    PageAsk::CallResult { request_id, answer } => {
+                        if let Some((_, page)) = open {
+                            pages.answer_call(page, request_id, answer);
+                        }
+                        None
+                    }
                 }
             }
             _ = follow.tick(), if open.is_some() => {
                 let Some((workspace_id, page)) = open else { continue };
                 match pages.act(workspace_id, page, None).await {
-                    Some(Ok(patches)) if patches.is_empty() => continue,
-                    Some(Ok(patches)) => PageAnswer::Changed(patches),
+                    Some(Ok(patches)) if patches.is_empty() => None,
+                    Some(Ok(patches)) => Some(PageAnswer::Changed(patches)),
                     // A pass the page did not ask for answers nothing: the
                     // page's own asks keep their order, and the next pass
                     // answers what changed. A page that left hears it on its
                     // own next ask.
                     answered => {
                         tracing::debug!(?answered, "a page's pass was not answered");
-                        continue;
+                        None
                     }
                 }
             }
+            () = asked_for_a_call, if open.is_some() => None,
         };
-        if write(&mut send, &answer).await.is_err() {
-            break;
+        if let Some(answer) = answer {
+            if write(&mut send, &answer).await.is_err() {
+                break;
+            }
+        }
+        // Every step the view asked for since the browser was last given one: the page's own
+        // answer to the press that asked for it is already on its way.
+        if let Some((workspace_id, page)) = open {
+            let mut steps = pages.take_calls(workspace_id, page);
+            steps.sort_by_key(|(request_id, _)| *request_id);
+            let mut closed = false;
+            for (request_id, command) in steps {
+                let call = PageAnswer::Call(PageCall {
+                    request_id,
+                    command,
+                });
+                if write(&mut send, &call).await.is_err() {
+                    closed = true;
+                    break;
+                }
+            }
+            if closed {
+                break;
+            }
         }
     }
     reader.abort();

@@ -18,7 +18,7 @@ test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-accou
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]). Their turns write tilolang records through the store an app's window
 # writes through, so they serve apps too.
-agents = ["apps", "device-keys", "dep:tilolang-tilo", "dep:tilolang-service", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
+agents = ["apps", "device-keys", "dep:tilolang-tilo", "dep:tilolang-service", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
@@ -35,7 +35,7 @@ session-pages = ["device-keys", "dep:tilo-session-client"]
 fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
+apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.
@@ -121,7 +121,7 @@ registry-types = { package = "tilo-registry-types", path = "../registry-types", 
 reqwest = { workspace = true, features = ["blocking", "json"], optional = true }
 tilo-rt.workspace = true
 futures = { workspace = true, default-features = true }
-runtime-collab = { package = "tilo-runtime-collab", path = "../runtime-collab", features = ["settings-host"], optional = true }
+runtime-collab = { package = "tilo-runtime-collab", path = "../runtime-collab", features = ["settings-host"] }
 tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json", optional = true }
 tilo-identity = { path = "../tilo-identity", optional = true }
 tilo-broker-core = { path = "../broker-core", optional = true }

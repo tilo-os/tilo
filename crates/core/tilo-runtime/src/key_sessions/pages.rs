@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use runtime_collab::native_media::{Request, Snapshot};
 use tilo_actions::remote::{
     Caller, CatalogueQuery, FOUND_FILE, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
     ReceiptStatus, RemoteActionTarget, Within, pending,
@@ -30,7 +31,7 @@ use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::page::window::{WindowAsk, WindowLink};
 use tilo_server_protocol::page::{
-    DESKTOP, OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, encode_part,
+    CallAnswer, DESKTOP, OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, encode_part,
 };
 use tilo_workspace_service::app_serving::{AppPages, PageAct};
 use ui::composition::page::escape;
@@ -69,7 +70,36 @@ struct Inner {
     devices: OnceLock<Arc<crate::personal_devices::PersonalDevices>>,
     views: OnceLock<Arc<dyn PageViews>>,
     open: Mutex<HashMap<u64, Arc<Mutex<Held>>>>,
+    /// How a page's view reaches the browser that shows it when it asks for a call: what the
+    /// view's device cannot carry itself, because the microphone, camera and the workspace's
+    /// live session are in the browser.
+    calls: Mutex<CallRoutes>,
+    /// Woken when a view queues a call step, so a page's stream tells the browser at once.
+    calls_woken: Arc<tokio::sync::Notify>,
     next: AtomicU64,
+}
+
+/// Where each page's call steps go: the pages whose views show a call, the steps their views
+/// asked for and not yet handed to the browser, and who waits for each answer.
+#[derive(Default)]
+struct CallRoutes {
+    /// By page number, what a call's request names the page by.
+    routes: HashMap<u64, CallRoute>,
+    /// The answer a step waits for, by the page's number and the step's request id.
+    waiting: HashMap<(u64, u64), tilo_actions::remote::Completer<Result<Snapshot, String>>>,
+    /// The number the next step of a page is asked by.
+    next: u64,
+}
+
+struct CallRoute {
+    /// The workspace's id, as a call's request names it.
+    workspace: WorkspaceId,
+    /// The app's full id (`so.tilo.chat`), as a call's request names it.
+    app: String,
+    /// The person the page was opened for, as a call's request names the view's caller.
+    person: String,
+    /// The steps the view asked for and the browser has not been given yet.
+    steps: Vec<(u64, Request)>,
 }
 
 enum Held {
@@ -101,6 +131,19 @@ impl Pages {
     /// Show apps' views through `views` from now on. A second call is ignored.
     pub fn show_through(&self, views: Arc<dyn PageViews>) {
         let _ = self.0.views.set(views);
+    }
+
+    /// Ask the browser that shows the page of `app` in `workspace` for `person` to carry
+    /// `request`: what to wait on for its answer, or none when no page shows that view. A view
+    /// laid out where the browser is not, whose page shows a call, has the browser carry it.
+    pub fn ask_call(
+        &self,
+        workspace: &str,
+        app: &str,
+        person: &str,
+        request: Request,
+    ) -> Option<tilo_actions::remote::Pending<Result<Snapshot, String>>> {
+        self.0.ask_call(workspace, app, person, request)
     }
 }
 
@@ -194,6 +237,7 @@ impl Inner {
             app: address.app.clone(),
             wells,
         });
+        self.route_call(page, workspace_id, &app_id, caller);
         Ok(OpenedPage {
             page,
             title,
@@ -286,6 +330,103 @@ impl Inner {
         Ok(collab_types::Stamp::by(&tilo_action_policy::Actor::member(
             person,
         )))
+    }
+
+    /// Point the call steps of `page` at the browser that shows it: a view's call is the
+    /// browser's, since its microphone, camera and screen are there.
+    fn route_call(&self, page: u64, workspace: WorkspaceId, app: &str, caller: &Caller) {
+        let acting = caller.acting();
+        let person = acting
+            .person_id()
+            .or_else(|| acting.acted_for_person())
+            .map_or_else(|| acting.by.to_string(), ToOwned::to_owned);
+        self.calls.lock_recover().routes.insert(
+            page,
+            CallRoute {
+                workspace,
+                app: app.to_owned(),
+                person,
+                steps: Vec::new(),
+            },
+        );
+    }
+
+    /// The call steps the view of `page` asked for since the browser was last given them.
+    fn take_calls(&self, page: u64) -> Vec<(u64, Request)> {
+        self.calls
+            .lock_recover()
+            .routes
+            .get_mut(&page)
+            .map(|route| std::mem::take(&mut route.steps))
+            .unwrap_or_default()
+    }
+
+    /// Ask the browser that shows the page of `app` in `workspace` for `person` to carry
+    /// `request`: what to wait on for its answer, or `None` when no page shows that view.
+    fn ask_call(
+        &self,
+        workspace: &str,
+        app: &str,
+        person: &str,
+        request: Request,
+    ) -> Option<tilo_actions::remote::Pending<Result<Snapshot, String>>> {
+        let mut calls = self.calls.lock_recover();
+        let page = calls
+            .routes
+            .iter()
+            .filter(|(_, route)| {
+                route.workspace.to_string() == workspace
+                    && route.app == app
+                    && route.person == person
+            })
+            .map(|(page, _)| *page)
+            .max()?;
+        let request_id = calls.next;
+        calls.next = calls.next.saturating_add(1);
+        if let Some(route) = calls.routes.get_mut(&page) {
+            route.steps.push((request_id, request));
+        }
+        let (done, wait) = tilo_actions::remote::pending();
+        calls.waiting.insert((page, request_id), done);
+        drop(calls);
+        // The streams waiting now, and one still getting there: a step queued between the last
+        // drain and the next wait must not go unheard.
+        self.calls_woken.notify_waiters();
+        self.calls_woken.notify_one();
+        Some(wait)
+    }
+
+    /// What the browser answered to the step `request_id` of `page`.
+    fn answer_call(&self, page: u64, request_id: u64, answer: CallAnswer) {
+        let done = self
+            .calls
+            .lock_recover()
+            .waiting
+            .remove(&(page, request_id));
+        if let Some(done) = done {
+            done.complete(match answer {
+                CallAnswer::Answered(snapshot) => Ok(snapshot),
+                CallAnswer::Refused(why) => Err(why),
+            });
+        }
+    }
+
+    /// Let go of what `page`'s view asked of its browser, answering each as unanswered: its
+    /// page is closed.
+    fn forget_page(&self, page: u64) {
+        let mut calls = self.calls.lock_recover();
+        calls.routes.remove(&page);
+        let waiting: Vec<(u64, u64)> = calls
+            .waiting
+            .keys()
+            .filter(|(of, _)| *of == page)
+            .copied()
+            .collect();
+        for key in waiting {
+            if let Some(done) = calls.waiting.remove(&key) {
+                done.complete(Err("the page closed".to_owned()));
+            }
+        }
     }
 }
 
@@ -407,6 +548,19 @@ impl AppPages for Pages {
     fn close(&self, _workspace_id: WorkspaceId, page: u64) {
         // The window's link closes with it, and the window goes.
         self.0.open.lock_recover().remove(&page);
+        self.0.forget_page(page);
+    }
+
+    fn take_calls(&self, _workspace_id: WorkspaceId, page: u64) -> Vec<(u64, Request)> {
+        self.0.take_calls(page)
+    }
+
+    fn answer_call(&self, page: u64, request_id: u64, answer: CallAnswer) {
+        self.0.answer_call(page, request_id, answer);
+    }
+
+    fn calls_waker(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(Arc::clone(&self.0.calls_woken))
     }
 }
 
