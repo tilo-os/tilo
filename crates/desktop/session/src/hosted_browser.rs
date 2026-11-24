@@ -656,8 +656,8 @@ impl HostedBrowser {
     }
 
     /// Once the workspace's host can be asked, have the session ask it for what this device may not
-    /// hold or write itself: the action service is lent the media keys of this device's own streams
-    /// ([`HostLends`]), and the window shares are written by the host ([`HostGoverns`]).
+    /// hold or write itself: the pages read from vault items, and the window shares written by the
+    /// host ([`HostGoverns`]).
     fn ask_host(&mut self, shared: &Shared) {
         if self.asks_host {
             return;
@@ -702,10 +702,6 @@ impl HostedBrowser {
                 .borrow_mut()
                 .governed_by(std::rc::Rc::new(HostGoverns(asking.clone())));
         }
-        let Some(sync) = shared.sync.clone() else {
-            return;
-        };
-        let _ = (&asking, &sync);
         self.asks_host = true;
     }
 
