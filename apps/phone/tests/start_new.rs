@@ -14,6 +14,8 @@
 
 mod support;
 
+tilo_automerge_isolate::test_worker!();
+
 #[test]
 fn a_first_phone_starts_its_person() {
     let _home = support::Home::new();
