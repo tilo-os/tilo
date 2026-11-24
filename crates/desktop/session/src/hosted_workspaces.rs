@@ -28,6 +28,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_session_actions::SessionActions;
+use tilo_workspace_service::service::WorkspaceService;
 
 use crate::engine::Engine;
 
@@ -37,6 +38,8 @@ pub(crate) struct HostedWorkspaces(Arc<Inner>);
 
 struct Inner {
     engine: Arc<Engine>,
+    /// The member copies the host sessions read and write through.
+    copies: VmMemberCopies,
     /// Where the endpoint this device runs under its key lands once bound: every host is dialled
     /// from it. `None` for a session that binds none.
     endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
@@ -70,8 +73,10 @@ impl HostedWorkspaces {
         endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
         runtime: tokio::runtime::Handle,
     ) -> Option<Self> {
+        let engine = Arc::clone(engine?);
         Some(Self(Arc::new(Inner {
-            engine: Arc::clone(engine?),
+            copies: VmMemberCopies::new(Arc::clone(&engine), endpoint.clone(), runtime.clone()),
+            engine,
             endpoint,
             runtime,
             hosts: Mutex::default(),
@@ -125,7 +130,7 @@ impl HostedWorkspaces {
             &identity.device_cert.device_label,
             tilo_session_client::Lent {
                 keys: self.0.engine.keys().get(),
-                links: Arc::new(NoMemberCopies),
+                links: Arc::new(self.0.copies.clone()),
                 endpoint: self.0.endpoint.clone(),
                 own: false,
             },
@@ -380,16 +385,271 @@ mod tests {
             "a device that takes no work has its records run where its windows are"
         );
     }
-}
 
-/// A session placed in a workspace's VM keeps no member copy of its own: the host keeps the
-/// workspace, so there is no copy to lend the host's session and none to take a workspace in as.
-struct NoMemberCopies;
-
-impl tilo_session_client::MemberLinks for NoMemberCopies {
-    fn link(&self, _workspace: WorkspaceId) -> Option<tilo_peer_state::direct::DirectSync> {
-        None
+    /// A device certified under `root` as `label`, signing with `key`.
+    fn certified(root: &ed25519_dalek::SigningKey, key: &ed25519_dalek::SigningKey, label: &str) -> DeviceCert {
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: label.into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, root).unwrap();
+        cert
     }
 
-    fn take_in(&self, _workspace: WorkspaceId, _host: tilo_peer_state::join::TransportHint) {}
+    /// A session the host placed in a workspace's VM is that workspace's member device, and the
+    /// session it opens with its host dials no link of its own: it reads and asks the host's actions
+    /// over the workspace's link the VM session's member copy keeps, which the host's admission has
+    /// it take in. Without that copy the join waits for a link that never comes, and every host
+    /// action over it is refused.
+    #[test]
+    fn a_vm_sessions_host_action_over_the_workspace_link_is_admitted() {
+        use std::sync::Arc;
+
+        use tilo_session_client::PeerConfig;
+        use tilo_session_client::device::Device;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let host_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let host = certified(&root, &host_key, "The host");
+        let state = tempfile::tempdir().unwrap();
+        let (server, workspaces, workspace) = runtime.block_on(async {
+            let server = tilo_server::daemon::Server::start_with_relay_mode(
+                tilo_server::ServerConfig {
+                    state_root: state.path().join("host"),
+                    ..tilo_server::ServerConfig::default()
+                }
+                .on_loopback(),
+                tilo_server::daemon::ServerIdentity {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_signing_key: host_key.clone(),
+                    device_cert: host.clone(),
+                    revocations: tilo_user_identity::RevocationList::new(),
+                },
+                test_server::relay_mode(),
+            )
+            .await
+            .unwrap();
+            let workspaces = server.workspaces().unwrap().clone();
+            let workspace = workspaces.create("Browser").await.unwrap().workspace;
+            workspaces.enter(&workspace, &host).await.unwrap();
+            (server, workspaces, workspace)
+        });
+
+        // The device the host placed in the workspace's VM, which the host let in.
+        let vm_key = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+        let vm = certified(&root, &vm_key, "The VM");
+        runtime
+            .block_on(workspaces.enter(&workspace, &vm))
+            .unwrap();
+        let vm_state = tempfile::tempdir().unwrap();
+        let engine = Arc::new(
+            crate::engine::Engine::open(
+                tilo_network_actor::DeviceIdentity::kept(vm.clone(), vm_key.clone()),
+                Some(vm_state.path()),
+                std::iter::empty(),
+            )
+            .unwrap(),
+        );
+        let bound = Arc::new(std::sync::OnceLock::new());
+        let endpoint = runtime
+            .block_on(
+                iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                    .secret_key(iroh::SecretKey::from_bytes(&vm_key.to_bytes()))
+                    .relay_mode(test_server::relay_mode())
+                    .bind(),
+            )
+            .unwrap();
+        let _ = bound.set(endpoint);
+        let copies = super::VmMemberCopies::new(
+            Arc::clone(&engine),
+            Some(Arc::clone(&bound)),
+            runtime.handle().clone(),
+        );
+
+        let _inside = runtime.enter();
+        let device = Device::over_lent(
+            PeerConfig {
+                host: tilo_server_client::ServerAddress::at(server.node_addr()),
+                cert: vm.clone(),
+                server_cert: host.clone(),
+                revocations: tilo_user_identity::RevocationList::new(),
+                entering: None,
+            },
+            Arc::clone(&engine.identity().signer),
+            "The VM",
+            tilo_session_client::Lent {
+                keys: engine.keys().get(),
+                links: Arc::new(copies),
+                endpoint: Some(bound),
+                own: false,
+            },
+        );
+        let workspace_id = runtime
+            .block_on(device.join(&workspace))
+            .expect("the host lets the VM's device in over the workspace's link its copy keeps");
+        let read = runtime
+            .block_on(device.actions(workspace_id).read_record(
+                tilo_actions::remote::ResourceReadRequest {
+                    workspace: workspace.clone(),
+                    app: "so.tilo.browser".to_owned(),
+                    record: "uuid:5c07c075-0000-4000-8000-0000000000aa".to_owned(),
+                    joined: false,
+                    after: None,
+                    wait_ms: None,
+                    answer: tilo_actions::remote::ReadAnswer::Document,
+                },
+            ))
+            .expect("the host answers");
+        assert!(
+            read.is_ok(),
+            "the host admits the VM's read over the workspace's link: {read:?}"
+        );
+        device.close();
+        runtime.block_on(server.shutdown());
+    }
+}
+
+/// The member copies a session placed in a workspace's VM keeps of the workspaces its host lets it
+/// into: the links the session it opens with that host reads, writes and asks the host's actions
+/// through. The host's session dials no link of its own, so without a copy here every one of its
+/// actions over a workspace's link is refused.
+///
+/// They are kept by a workspace service of the session's own, opened the first time a host lets
+/// this device in, on the endpoint the session binds under the device's key. That service exists
+/// only because the session in a VM is the member device and runs no daemon to keep its copies;
+/// once the VM runs its own daemon as the member device, the daemon keeps them as every device's
+/// does, and this goes.
+#[derive(Clone)]
+struct VmMemberCopies(Arc<VmCopies>);
+
+struct VmCopies {
+    engine: Arc<Engine>,
+    endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
+    runtime: tokio::runtime::Handle,
+    /// The service, once it opened; `None` once it could not.
+    service: tokio::sync::OnceCell<Option<WorkspaceService>>,
+}
+
+impl VmMemberCopies {
+    fn new(
+        engine: Arc<Engine>,
+        endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        Self(Arc::new(VmCopies {
+            engine,
+            endpoint,
+            runtime,
+            service: tokio::sync::OnceCell::new(),
+        }))
+    }
+}
+
+impl VmCopies {
+    /// The service keeping the copies, opened on first use.
+    async fn service(&self) -> Option<&WorkspaceService> {
+        self.service
+            .get_or_init(|| async {
+                self.open()
+                    .await
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "this session keeps no member copy for its host's session");
+                    })
+                    .ok()
+            })
+            .await
+            .as_ref()
+    }
+
+    async fn open(&self) -> Result<WorkspaceService, String> {
+        let engine = &self.engine;
+        let root = engine
+            .service_root()
+            .ok_or("this session keeps no state to keep a member copy in")?;
+        let endpoint = self
+            .endpoint
+            .as_ref()
+            .and_then(|bound| bound.get().cloned())
+            .ok_or("this session's endpoint is not bound")?;
+        let handed = Arc::downgrade(engine);
+        let behind = Arc::downgrade(engine);
+        let groups = tilo_workspace_service::own_device::key_groups(
+            engine.keys(),
+            Some(Box::new(move |workspace| {
+                WorkspaceId::parse(workspace).and_then(|id| handed.upgrade()?.handed_keys(id))
+            })),
+            Some(Arc::new(DeviceKeySink(Arc::downgrade(engine)))),
+            Some(Arc::new(move |group, held| {
+                if let Some(link) = behind.upgrade().and_then(|engine| engine.link()) {
+                    link.want_frames(group, held);
+                }
+            })),
+        );
+        let identity = engine.identity();
+        tilo_workspace_service::own_device::open(
+            root,
+            tilo_workspace_service::own_device::Device {
+                cert: &identity.device_cert,
+                signer: &identity.signer,
+                itself: None,
+            },
+            endpoint,
+            groups,
+            |config| config,
+        )
+        .await
+        .map_err(|error| error.to_string())
+    }
+}
+
+impl tilo_session_client::MemberLinks for VmMemberCopies {
+    fn link(&self, workspace: WorkspaceId) -> Option<tilo_peer_state::direct::DirectSync> {
+        self.0
+            .service
+            .get()?
+            .as_ref()?
+            .workspaces()
+            .member_link(workspace)
+    }
+
+    fn take_in(&self, workspace: WorkspaceId, host: tilo_peer_state::join::TransportHint) {
+        let copies = Arc::clone(&self.0);
+        self.0.runtime.spawn(async move {
+            if let Some(service) = copies.service().await {
+                service
+                    .workspaces()
+                    .hold_as_members([(workspace, host)])
+                    .await;
+            }
+        });
+    }
+}
+
+/// Where the copies' service hands what the workspaces' members send for their key groups: this
+/// device's key service, through the link the session's key groups hear on.
+struct DeviceKeySink(std::sync::Weak<Engine>);
+
+impl tilo_workspace_service::workspaces::KeySink for DeviceKeySink {
+    fn take(&self, messages: Vec<neighbour_wire::NeighbourMsg>) {
+        let Some(link) = self.0.upgrade().and_then(|engine| engine.link()) else {
+            return;
+        };
+        for message in &messages {
+            link.heard(message);
+        }
+    }
+
+    /// Nothing to note: this device's key service reads the workspace's governance itself.
+    fn settled(&self, _workspace: &str, _state: tilo_peer_state::StatePeer) {}
 }
