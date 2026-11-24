@@ -1101,7 +1101,7 @@ owner_daemon() {
   runtime=$(dirname "$(find_tilo)")/tilo-runtime
   [[ -x $runtime ]] || die "no tilo-runtime beside $(find_tilo)"
   mkdir -p "$state/logs"
-  (owner_run setsid "$runtime" >> "$log" 2>&1 < /dev/null &)
+  (owner_run setsid "$runtime" >> "$log" 2>&1 < /dev/null &) 9>&-
   for _ in $(seq 1 60); do
     [[ -z $(people_holders) ]] || return 0
     sleep 0.5
