@@ -84,6 +84,8 @@ mod personal;
 mod presence;
 #[path = "hosted/tasks_board.rs"]
 mod tasks_board;
+#[path = "hosted/ticking.rs"]
+mod ticking;
 #[path = "hosted/two_windows.rs"]
 mod two_windows;
 #[path = "hosted/window.rs"]

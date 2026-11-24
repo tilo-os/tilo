@@ -58,12 +58,9 @@ pub(super) fn later(dir: &'static str, edit: impl Fn(&str) -> String) -> Bundle 
 /// builds it.
 fn ordered(path: &Path) -> (Vec<std::path::PathBuf>, Vec<tilolang::PackageMeta>) {
     let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
-    let dirs = tilolang::source::dependency_order_with(
-        path,
-        &[],
-        &tilolang::source::apps_of(&platform),
-    )
-    .expect("the packages resolve");
+    let dirs =
+        tilolang::source::dependency_order_with(path, &[], &tilolang::source::apps_of(&platform))
+            .expect("the packages resolve");
     (dirs, platform)
 }
 
@@ -86,6 +83,7 @@ pub(super) fn package_of(app: &str) -> &'static str {
         "so.tilo.lang.views" => "../../../apps/tl/views",
         "so.tilo.lang.interaction" => "tests/window/interaction",
         "so.tilo.lang.mentions" => "tests/window/mentions",
+        "so.tilo.lang.ticking" => "tests/window/ticking",
         "test.letters" => "../tilolang/tests/fixtures/letters",
         other => panic!("no test package is {other}"),
     }

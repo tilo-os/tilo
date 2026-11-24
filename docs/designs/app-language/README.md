@@ -320,6 +320,28 @@ trigger is due. The field an `at` trigger reads is kept as one of the type's col
 the next instant costs the pages up to it, not the type's records: a reminder among ten
 thousand tasks wakes at its own time and reads none of the others.
 
+### A view's own clock
+
+A countdown that belongs to one window is presentation, not the workspace's, so it is written in
+the view rather than as a trigger: `every 1s: step(c)` handles a tick again and again, and
+`after 3s: shoot(c)` handles one tick, three seconds after the view first showed it. The handler
+is what an `on press:` takes: a `set` of the view's state or an action call.
+
+```
+view viewfinder(c: Camera) {
+    if counting {
+        after Duration(p.timer): shutter_due(c)
+    }
+}
+```
+
+The window runs it on its own device, as the person at it, while it shows the view. A trigger
+runs wherever the workspace takes its turn; this runs where the window is, and a closed window
+has no clock. A window nobody can see (hidden, minimised, covered) holds its clocks, and when it
+is seen again a tick that came due while it was away fires once. The length is a whole number of
+seconds. Both forms are the toolkit's `ui.Timer` and its `tick` event, which a view can also
+write out in full.
+
 ## Packages and libraries
 
 A package is a directory of `.tl` files with one `app` header and its `app.ids`, the ids every

@@ -613,6 +613,9 @@ d-hl65pw5y = Stop recording
 d-w7cps4pe = Poll
     .doc = Asks how far the recording and the document scan have got, finishing what is done.
 
+d-codxq4tq = Shutter due
+    .doc = The self-timer's moment came: take the photo it counted down to, unless it was cancelled.
+
 d-ehd7gfhp = Look on open
     .doc = Opening the camera starts its moving picture and reads what it sees.
 

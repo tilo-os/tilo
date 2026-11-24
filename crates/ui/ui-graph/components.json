@@ -7312,6 +7312,32 @@
       }
     },
     {
+      "name": "Timer",
+      "doc": "A clock the view holds: `tick` every `every` seconds, or once `after` seconds, counted from when the view first showed it.",
+      "props": [
+        {
+          "name": "every",
+          "doc": "How many seconds between ticks: it ticks again and again while it is shown; 0 for a timer that ticks once.",
+          "type": "float"
+        },
+        {
+          "name": "after",
+          "doc": "How many seconds until its one tick: it ticks once and then rests; 0 for one that ticks again and again.",
+          "type": "float"
+        }
+      ],
+      "events": [
+        {
+          "name": "tick",
+          "doc": "Its time came."
+        }
+      ],
+      "semantics": {
+        "role": "Timer",
+        "not_in_gallery": "it draws nothing: its ticks are what a view does with them"
+      }
+    },
+    {
       "name": "Toggle",
       "doc": "A switch: the same two states as a checkbox, for a setting that takes effect at once rather than when a form is sent. Its knob slides to the side it turns to.",
       "props": [

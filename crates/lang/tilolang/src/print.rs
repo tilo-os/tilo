@@ -1404,7 +1404,15 @@ impl Printer<'_> {
                 let a = self.ex_at(action, col);
                 self.line(&format!("{head}{a}{binds}"));
             }
-            UiKind::Call(c) => self.ui_call(c),
+            UiKind::Call(c) => match clock_parts(c) {
+                Some((clock, length, action)) => {
+                    let head = format!("{} {}: ", clock.word(), self.ex_at(length, 0));
+                    let col = self.level * 4 + head.len();
+                    let a = self.ex_at(action, col);
+                    self.line(&format!("{head}{a}"));
+                }
+                None => self.ui_call(c),
+            },
         }
     }
 
@@ -1470,4 +1478,29 @@ impl Printer<'_> {
             }
         }
     }
+}
+
+/// A view's clock written short (`every 1s: tick(c)`): what it is, its length and its handler,
+/// read back from the `ui.Timer` call the parser made of it.
+fn clock_parts(
+    c: &crate::ast::UiCall,
+) -> Option<(crate::ast::Clock, &crate::ast::Expr, &crate::ast::Expr)> {
+    use crate::ast::ExprKind;
+    let clock = c.clock?;
+    let ExprKind::Call { args, .. } = &c.call.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, .. } = &args.first()?.value.kind else {
+        return None;
+    };
+    let ExprKind::Field { base, .. } = &callee.kind else {
+        return None;
+    };
+    let [tick] = c.block.as_deref()? else {
+        return None;
+    };
+    let UiKind::On { action, .. } = &tick.kind else {
+        return None;
+    };
+    Some((clock, base, action))
 }

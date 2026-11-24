@@ -5,8 +5,8 @@
 
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
-    DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FnDecl, Ident, Item, LetBind, MatchArm,
-    MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, LiveDecl, ReadersDecl, RootDecl,
+    DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FnDecl, Ident, Item, LetBind, LiveDecl,
+    MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, ReadersDecl, RootDecl,
     ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart,
     TitleDecl, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UntitledDecl,
     UseDecl, VariantDecl, ViewDecl, ViewsDecl,
@@ -2868,6 +2868,70 @@ impl<'a> Parser<'a> {
                 let value = self.expr()?;
                 UiKind::Let { name, ty, value }
             }
+            // `every 1s: tick(c)`, `after 3s: shoot(c)`: the view's own clock, which the window
+            // runs on its device while it shows the view: the toolkit's `ui.Timer`, its `tick`
+            // handled by what follows the colon.
+            Tok::Ident(word)
+                if (word == "every" || word == "after")
+                    && matches!(self.peek_at(1), Tok::Duration(..) | Tok::Ident(_)) =>
+            {
+                let clock = if word == "every" {
+                    crate::ast::Clock::Every
+                } else {
+                    crate::ast::Clock::After
+                };
+                let at = self.span();
+                self.bump();
+                let node = self.node();
+                let length = self.expr()?;
+                self.expect(&Tok::Colon)?;
+                let action = self.expr()?;
+                let span = length.span;
+                let expr = |kind| Expr { kind, span };
+                let seconds = expr(ExprKind::Call {
+                    callee: Box::new(expr(ExprKind::Field {
+                        base: Box::new(length),
+                        name: Ident::plain("seconds", span),
+                    })),
+                    types: Vec::new(),
+                    args: Vec::new(),
+                });
+                let call = expr(ExprKind::Call {
+                    callee: Box::new(Expr {
+                        kind: ExprKind::Field {
+                            base: Box::new(Expr {
+                                kind: ExprKind::Ident(crate::toolkit::UI_ALIAS.to_owned()),
+                                span: at,
+                            }),
+                            name: Ident::plain("Timer", at),
+                        },
+                        span: at,
+                    }),
+                    types: Vec::new(),
+                    args: vec![Arg {
+                        name: Some(Ident::plain(clock.word(), at)),
+                        value: seconds,
+                    }],
+                });
+                let tick = UiStmt {
+                    kind: UiKind::On {
+                        event: Ident::plain("tick", at),
+                        param: None,
+                        at: None,
+                        action: Box::new(action),
+                        binds: None,
+                    },
+                    span: at,
+                };
+                UiKind::Call(UiCall {
+                    node,
+                    call,
+                    clock: Some(clock),
+                    params: Vec::new(),
+                    block: Some(vec![tick]),
+                    anchor: None,
+                })
+            }
             Tok::Ident(word)
                 if word == "on"
                     && matches!(self.peek_at(1), Tok::Ident(_))
@@ -3008,6 +3072,7 @@ impl<'a> Parser<'a> {
         Ok(UiCall {
             node,
             call,
+            clock: None,
             params,
             block,
             anchor,

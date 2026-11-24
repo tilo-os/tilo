@@ -830,16 +830,20 @@ action poll(c: Camera) uses time {
             }
         }
     }
-    if let due = p.shutter_at {
-        if now >= due {
-            p.shutter_at = .none
-            capture(c)
-        }
-    }
 }
 
-/// The viewfinder and the document scanner ask about their work once a second.
+/// The recording and the document scanner ask about their work once a second.
 trigger watch(c: Camera) every 1s: poll(c)
+
+/// The self-timer's moment came: take the photo it counted down to, unless it was cancelled.
+action shutter_due(c: Camera) uses time {
+    let p = prefs_of(c)
+    if p.shutter_at == .none {
+        return
+    }
+    p.shutter_at = .none
+    capture(c)
+}
 
 /// Opening the camera starts its moving picture and reads what it sees.
 opened action look_on_open(c: Camera) uses time {
@@ -1076,6 +1080,10 @@ view viewfinder(c: Camera) {
     let counting = p.shutter_at != .none
     let recording = p.recording != ""
     stack(gap: .related, fill) {
+        // The self-timer counts in the window the person looks at, on its device.
+        if counting {
+            after Duration(p.timer): shutter_due(c)
+        }
         row(gap: .tight, wrap: true, align: .center) {
             ui.Chip("Photo", selected: p.mode == "photo") {
                 on press: use_mode(c, "photo")

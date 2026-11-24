@@ -4167,6 +4167,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // anything is pending: a frame may never come, and the work an agent,
         // the session or the engine is waiting on is theirs, not the pixels'.
         // Nothing is marked dirty for paint that nobody asks for.
+        // A view's own timers wait for a window the person can see.
+        crate::widget::set_window_shown(
+            !self.surface_suspended && !self.primary_retry.known_occluded(),
+        );
         if self.undrawn.due(
             self.primary_retry.known_occluded(),
             app.needs_sync,

@@ -160,6 +160,15 @@ tilo_test_env::scenario! {
         assert_eq!(print_of(src), src);
     }
 
+    phase a_views_clock_prints_as_it_is_written_and_a_slot_of_its_name_stays_a_slot;
+    {
+        let src = "app t.x \"X\"\n\ntype C {\n    n: Int merge counter\n}\n\naction step(c: C) {\n    c.n += 1\n}\n\nview v(c: C) {\n    every 1s: step(c)\n    if c.n > 2 {\n        after Duration(c.n): step(c)\n    }\n}\n";
+        assert_eq!(print_of(src), src);
+        crate::common::compile(src);
+        let slot = "app t.x \"X\"\n\ntemplate view pair(before: View, after: View) {\n    row {\n        before\n        after\n    }\n}\n";
+        assert_eq!(print_of(slot), slot);
+    }
+
     phase doc_comments_are_kept;
     {
         let out = print_of(&fixture("counter.tl"));

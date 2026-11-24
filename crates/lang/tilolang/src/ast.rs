@@ -861,10 +861,33 @@ pub struct StateDecl {
     pub span: Span,
 }
 
+/// How a view's clock is written: which of `every` and `after` it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clock {
+    /// `every 1s: ...`: again and again while the view is shown.
+    Every,
+    /// `after 3s: ...`: once, that long after the view first showed it.
+    After,
+}
+
+impl Clock {
+    /// The word it is written with, which is also the `ui.Timer` prop it sets.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Every => "every",
+            Self::After => "after",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiCall {
     pub node: NodeId,
     pub call: Expr,
+    /// Written as the view's own clock, `every 1s: tick(c)` or `after 3s: shoot(c)`: the call is
+    /// the toolkit's `ui.Timer` it stands for, and the source keeps the short form.
+    pub clock: Option<Clock>,
     /// The names a block opens with: `list(xs) { x -> ... }`, or `(x, under)` for a template's
     /// function of several values.
     pub params: Vec<Ident>,
