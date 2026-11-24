@@ -63,6 +63,12 @@ impl Core {
                 let input = self.text(a.h(2)?)?;
                 self.result(self.engine_begin(&app, &op, &input).map(Value::text))
             }
+            Imp::EnginePicture => {
+                let app = self.text(a.h(0)?)?;
+                let op = self.text(a.h(1)?)?;
+                let input = self.text(a.h(2)?)?;
+                self.result(self.engine_picture(&app, &op, &input))
+            }
             Imp::EngineStatus => {
                 let job = self.text(a.h(0)?)?;
                 self.result(self.engine_status(&job).map(Value::text))
@@ -80,6 +86,17 @@ impl Core {
             Some(host) => host.call(app, op, input),
             None => Err(no_engine()),
         }
+    }
+
+    /// One picture the device's engine answers: the same request as `engine.call`, whose answer
+    /// names the bytes the device kept (`url`, `name`, `media`, `size`), read into the `File` the
+    /// app shows by its address.
+    fn engine_picture(&self, app: &str, op: &str, input: &str) -> Result<Value, String> {
+        let text = self.engine_ask(app, op, input)?;
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|why| format!("the picture's answer is no JSON: {why}"))?;
+        let file = crate::blob::file_from_json(&json)?;
+        Ok(Value::file(file))
     }
 
     fn engine_begin(&self, app: &str, op: &str, input: &str) -> Result<String, String> {

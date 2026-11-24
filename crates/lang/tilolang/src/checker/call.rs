@@ -2786,25 +2786,28 @@ impl Checker<'_> {
         Ex::host(imp, arguments, held)
     }
 
-    /// `engine.call(op, input)`, `engine.start(op, input)`, `engine.status(job)` and
-    /// `engine.cancel(job)`: the device's own work — a decode, a render, a raster — asked by a
-    /// name the host answers for this app. A call answers now; a start answers a job id, and the
-    /// job's progress is asked for by that id. Both carry JSON, which the app reads into its own
-    /// records with `json.decode<T>`. An action asks; a view is drawn again from what it is
-    /// shown, so it never does.
+    /// `engine.call(op, input)`, `engine.start(op, input)`, `engine.picture(op, input)`,
+    /// `engine.status(job)` and `engine.cancel(job)`: the device's own work — a decode, a render,
+    /// a raster — asked by a name the host answers for this app. A call answers now; a start
+    /// answers a job id, and the job's progress is asked for by that id. Both carry JSON, which
+    /// the app reads into its own records with `json.decode<T>`. A picture is the same work
+    /// answered as a picture the device keeps: the answer names its bytes, and the app shows
+    /// them in `ui.Image` and `ui.Drawing` by the address it gets. An action asks; a view is
+    /// drawn again from what it is shown, so it never does.
     fn builtin_engine(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let result = || Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text));
         let asks_input = match name.name.as_str() {
-            "call" | "start" => true,
+            "call" | "start" | "picture" => true,
             "status" | "cancel" => false,
             other => {
                 self.err(
                     "E022",
                     name.span,
                     format!(
-                        "`engine` has `call`, `start`, `status` and `cancel`, not `{other}`: \
-                         `engine.call(op, input)`, `engine.start(op, input)`, \
-                         `engine.status(job)` and `engine.cancel(job)`"
+                        "`engine` has `call`, `start`, `picture`, `status` and `cancel`, not \
+                         `{other}`: `engine.call(op, input)`, `engine.start(op, input)`, \
+                         `engine.picture(op, input)`, `engine.status(job)` and \
+                         `engine.cancel(job)`"
                     ),
                 );
                 for a in args {
@@ -2902,6 +2905,14 @@ impl Checker<'_> {
             "start" => {
                 let input = input.unwrap_or_else(Ex::error);
                 Ex::host(Imp::EngineStart, vec![app, held, input], result())
+            }
+            "picture" => {
+                let input = input.unwrap_or_else(Ex::error);
+                Ex::host(
+                    Imp::EnginePicture,
+                    vec![app, held, input],
+                    Ty::Result(Box::new(Ty::File), Box::new(Ty::Text)),
+                )
             }
             "status" => Ex::host(Imp::EngineStatus, vec![held], result()),
             _ => Ex::host(Imp::EngineCancel, vec![held], Ty::Bool),
@@ -3523,12 +3534,9 @@ impl Checker<'_> {
                 let form = "marked(name, value, at: anchor, start: n, end: m)`: the document with \
                             the mark `name` valued `value` over the `start`th to `end`th character \
                             of the paragraph at `anchor`";
-                let Some(named) = self.named_args(
-                    args,
-                    &["name", "value", "at", "start", "end"],
-                    form,
-                    span,
-                ) else {
+                let Some(named) =
+                    self.named_args(args, &["name", "value", "at", "start", "end"], form, span)
+                else {
                     return Ex::error();
                 };
                 let name = self.expr_as(&named[0].value, &Ty::Text);

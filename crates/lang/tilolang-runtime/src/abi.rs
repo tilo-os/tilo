@@ -422,9 +422,11 @@ imports! {
     (ClipboardPasteText, "clipboard_paste_text", "", "i"),
     (ClipboardPasteImage, "clipboard_paste_image", "", "i"),
 
-    // The device's own work, asked by name: an answer now, or a job with its status and cancel.
+    // The device's own work, asked by name: an answer now, a job with its status and cancel, or
+    // a picture the device keeps and the app shows by its address.
     (EngineCall, "engine_call", "iii", "i"),
     (EngineStart, "engine_start", "iii", "i"),
+    (EnginePicture, "engine_picture", "iii", "i"),
     (EngineStatus, "engine_status", "i", "i"),
     (EngineCancel, "engine_cancel", "i", "i"),
 

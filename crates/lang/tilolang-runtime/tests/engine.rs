@@ -19,29 +19,69 @@ type Page {
 
 /// What the device answered, kept where a test reads it.
 action decode(p: Page) {
-    let answer = engine.call("page.decode", "first")
-    if let text = answer {
-        p.words = text
+    match engine.call("page.decode", "first") {
+        .ok(text) => {
+            p.words = text
+        }
+        .err(why) => {
+            p.words = why
+        }
     }
 }
 
 /// A job: started, asked about, then stopped.
 action paint(p: Page) {
-    let started = engine.start("page.paint", "second")
-    if let job = started {
-        let answer = engine.status(job)
-        if let said = answer {
-            p.words = said
+    match engine.start("page.paint", "second") {
+        .ok(job) => {
+            match engine.status(job) {
+                .ok(said) => {
+                    p.words = said
+                }
+                .err(why) => {
+                    p.words = why
+                }
+            }
+            engine.cancel(job)
         }
-        engine.cancel(job)
+        .err(why) => {
+            p.words = why
+        }
+    }
+}
+
+/// The picture the device drew, shown by the address it kept it at.
+action drawn(p: Page) {
+    match engine.picture("page.render", "third") {
+        .ok(file) => {
+            p.words = file.url
+        }
+        .err(why) => {
+            p.words = why
+        }
+    }
+}
+
+/// A picture the device refuses reads as its words.
+action drawn_unknown(p: Page) {
+    match engine.picture("page.unknown", "") {
+        .ok(file) => {
+            p.words = file.url
+        }
+        .err(why) => {
+            p.words = why
+        }
     }
 }
 
 /// A refusal reads as the device's words, never as a success.
 action refused(p: Page) {
-    let answer = engine.call("page.unknown", "")
-    if let why = answer {
-        p.words = why
+    match engine.call("page.unknown", "") {
+        .ok(text) => {
+            p.words = text
+        }
+        .err(why) => {
+            p.words = why
+        }
     }
 }
 "#;
@@ -54,6 +94,15 @@ action refused(p: Page) {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
             if op == "page.unknown" {
                 return Err(format!("`{op}` is not this app's: {app} asks its own ops"));
+            }
+            if op == "page.render" {
+                self.0
+                    .borrow_mut()
+                    .push((app.to_owned(), op.to_owned(), input.to_owned()));
+                return Ok(
+                    r#"{"url":"tilo-blob://drawn","name":"page.png","media":"image/png"}"#
+                        .to_owned(),
+                );
             }
             self.0
                 .borrow_mut()
@@ -147,6 +196,32 @@ action refused(p: Page) {
             )]
         );
         assert_eq!(bench.words(), r#"{"state":"done","job":"job-1"}"#);
+    }
+
+    #[test]
+    fn a_picture_answers_the_file_the_device_kept() {
+        let bench = Bench::new(true);
+        bench.call("drawn");
+        assert_eq!(
+            bench.device.0.borrow().as_slice(),
+            [(
+                "so.tilo.engined".to_owned(),
+                "page.render".to_owned(),
+                "third".to_owned()
+            )],
+            "the op, its input and the app asking reach the device"
+        );
+        assert_eq!(bench.words(), "tilo-blob://drawn");
+    }
+
+    #[test]
+    fn a_picture_the_device_refuses_reads_as_its_words() {
+        let bench = Bench::new(true);
+        bench.call("drawn_unknown");
+        assert_eq!(
+            bench.words(),
+            "`page.unknown` is not this app's: so.tilo.engined asks its own ops"
+        );
     }
 
     #[test]
