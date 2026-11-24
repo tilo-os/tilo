@@ -4,7 +4,6 @@ d-so-tilo-chat = Chat
 
 d-so-tilo-lang-chat-keywords = nachrichten, chat, unterhaltung, gespräch, messenger, sofortnachrichten
 
-
 d-lmdoxbnn = Unterhaltungen
     .doc = Die Unterhaltungen des Arbeitsbereichs in der Reihenfolge der Seitenleiste: Kanäle außerhalb jeder Kategorie, die Kategorien mit ihren eigenen, und die Direktnachrichten, in der Liste als Personen.
     .noun = { $count ->
@@ -291,6 +290,7 @@ d-5rkfnkg4 = Seitenleiste
     .w-channels = Kanäle
     .w-no-channels-yet = Noch keine Kanäle
     .w-channels-are-where-your-workspace-talks = Kanäle sind, wo dein Arbeitsbereich spricht, jeder ein Thema.
+    .w-notes-to-self = Notizen an mich
     .w-direct-messages = Direktnachrichten
     .w-workspace = Arbeitsbereich
     .w-workspace-skills = Fähigkeiten im Arbeitsbereich
@@ -299,6 +299,13 @@ d-5rkfnkg4 = Seitenleiste
 d-ymtess4x = Kanal
     .w-message = Nachricht an #{ $name }
     .w-send = Senden
+    .w-wrote-this-in-the-native-chat = { $by } hat das im nativen Chat geschrieben
+    .w-pinned = Angeheftet
+    .w-edit-message = Nachricht bearbeiten
+    .w-cancel = Abbrechen
+    .w-save = Speichern
+    .w-reply = Antworten
+    .w-edit = Bearbeiten
     .w-running = Läuft …
     .w-working = Arbeitet …
     .w-waiting-for-your-answer = Wartet auf deine Antwort
@@ -312,6 +319,13 @@ d-ymtess4x = Kanal
 d-jbezqvlc = Direkt
     .w-message = Nachricht an { $name }
     .w-send = Senden
+    .w-wrote-this-in-the-native-chat = { $by } hat das im nativen Chat geschrieben
+    .w-pinned = Angeheftet
+    .w-edit-message = Nachricht bearbeiten
+    .w-cancel = Abbrechen
+    .w-save = Speichern
+    .w-reply = Antworten
+    .w-edit = Bearbeiten
     .w-running = Läuft …
     .w-working = Arbeitet …
     .w-waiting-for-your-answer = Wartet auf deine Antwort
@@ -333,6 +347,13 @@ d-hrbsxhor = Fähigkeitszeile
 d-enkgjyn7 = Thread
     .w-message = Nachricht an { $name }
     .w-send = Senden
+    .w-wrote-this-in-the-native-chat = { $by } hat das im nativen Chat geschrieben
+    .w-pinned = Angeheftet
+    .w-edit-message = Nachricht bearbeiten
+    .w-cancel = Abbrechen
+    .w-save = Speichern
+    .w-reply = Antworten
+    .w-edit = Bearbeiten
     .w-running = Läuft …
     .w-working = Arbeitet …
     .w-waiting-for-your-answer = Wartet auf deine Antwort
@@ -370,7 +391,6 @@ d-hjw5xd6b = Gesagt
     .w-edited = bearbeitet
 
 # What each argument is called where a person gives it.
-
 d-msf7yzn7-name = Name
 
 d-26f7sh5k-name = Name
