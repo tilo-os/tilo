@@ -78,7 +78,10 @@ tilo_test_env::scenario! {
         let _ = service;
         let cancelled = "type Event (origin: caldav.event, title: title) {\n    title: Text\n    cancelled: Bool\n}\n\
             action call_off(e: Event) {\n    e.cancelled = true\n}";
-        assert_eq!(codes(cancelled), ["E113"]);
+        assert!(codes(cancelled).is_empty(), "{:?}", codes(cancelled));
+        let writable = "type Calendar (origin: caldav.calendar) {\n    name: Text\n    writable: Bool\n}\n\
+            action unlock(c: Calendar) {\n    c.writable = true\n}";
+        assert_eq!(codes(writable), ["E113"]);
     }
 }
 
