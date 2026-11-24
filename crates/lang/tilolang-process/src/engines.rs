@@ -201,6 +201,41 @@ pub struct Caller<'a> {
 /// The app's engine runs no such job, the device could not be told, or the engine refused it.
 pub fn start(caller: &Caller<'_>, op: &str, input: &str) -> Result<String, String> {
     let declared = engine::job_op(caller.app, op)?;
+    start_placed(
+        caller,
+        op,
+        input,
+        declared.needs,
+        |job, moved| engine::begin(caller.app, job, op, input, moved),
+    )
+}
+
+/// `engine.start` for `caller` of an engine this process opened from its runtime bundle: the job
+/// runs here, where the engine reads the app's own content through this process, and its record
+/// is the device's as every job's is. `start` starts it under the job's id, telling its moves to
+/// the sink it is handed.
+///
+/// # Errors
+///
+/// The device could not be told, or the engine refused the job.
+pub fn start_loaded(
+    caller: &Caller<'_>,
+    op: &str,
+    input: &str,
+    start: impl FnOnce(&str, JobSink) -> Result<(), String>,
+) -> Result<String, String> {
+    start_placed(caller, op, input, Needs::APP_STATE, start)
+}
+
+/// The job `op` of `caller`'s app, needing `needs`, started where that lets it run; `start`
+/// starts it when that is here.
+fn start_placed(
+    caller: &Caller<'_>,
+    op: &str,
+    input: &str,
+    needs: Needs,
+    start: impl FnOnce(&str, JobSink) -> Result<(), String>,
+) -> Result<String, String> {
     let Some((device, under)) =
         device().and_then(|device| Some((device, held(&device.under).clone()?)))
     else {
@@ -208,14 +243,20 @@ pub fn start(caller: &Caller<'_>, op: &str, input: &str) -> Result<String, Strin
         // work itself, and its views read the job here.
         let job = format!("job-{}", uuid::Uuid::new_v4().simple());
         let wake = LINKED.get().map(|(_, wake)| Arc::clone(wake));
-        engine::begin_here(caller.app, &job, op, input, move |_, _| {
-            if let Some(wake) = &wake {
-                wake();
-            }
-        })?;
+        engine::begin_here_with(
+            caller.app,
+            &job,
+            op,
+            move |_, _| {
+                if let Some(wake) = &wake {
+                    wake();
+                }
+            },
+            |moved| start(&job, moved),
+        )?;
         return Ok(job);
     };
-    let place = declared.needs.place();
+    let place = needs.place();
     let job = EngineJob {
         job: format!("{under}/{}", uuid::Uuid::new_v4().simple()),
         app: caller.app.to_owned(),
@@ -224,7 +265,7 @@ pub fn start(caller: &Caller<'_>, op: &str, input: &str) -> Result<String, Strin
         by: caller.by.to_owned(),
         op: op.to_owned(),
         input: input.to_owned(),
-        needs: needs_of(declared.needs),
+        needs: needs_of(needs),
         here: place == Place::App,
         handlers: caller.handlers.clone(),
     };
@@ -248,13 +289,19 @@ pub fn start(caller: &Caller<'_>, op: &str, input: &str) -> Result<String, Strin
     if place == Place::App {
         let (link, wake) = (Arc::clone(&device.link), Arc::clone(&device.wake));
         let refused = ran.clone();
-        let started = engine::begin_here(caller.app, &named, op, input, move |state, detail| {
-            report(&link, &ran, state, detail);
-            if state.ended() {
-                here().remove(&ran.job);
-                wake();
-            }
-        });
+        let started = engine::begin_here_with(
+            caller.app,
+            &named,
+            op,
+            move |state, detail| {
+                report(&link, &ran, state, detail);
+                if state.ended() {
+                    here().remove(&ran.job);
+                    wake();
+                }
+            },
+            |moved| start(&named, moved),
+        );
         if let Err(why) = started {
             // The device holds the process for the job until its record ends.
             report(

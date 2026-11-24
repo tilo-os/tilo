@@ -921,13 +921,11 @@ impl Platform for HostPlatform {
         input: &str,
         handlers: &tilolang_tilo::runtime::host_work::JobHandlers,
     ) -> Result<String, String> {
-        if crate::loaded_engines::answers(app) {
-            // A loaded engine's job is followed through the engine that runs it: its moves do not
-            // reach the device's records yet.
-            return crate::loaded_engines::start(self, app, op, input);
+        let loaded = crate::loaded_engines::answers(app);
+        if !loaded {
+            crate::engines::register_all();
+            self.register_content_engines();
         }
-        crate::engines::register_all();
-        self.register_content_engines();
         let served = SERVING.with(|served| served.borrow().clone());
         let invocation = served
             .as_ref()
@@ -937,17 +935,19 @@ impl Platform for HostPlatform {
             .and_then(|served| served.person)
             .unwrap_or_else(|| self.person.clone());
         let handlers = self.published_handlers(app, handlers)?;
-        crate::engines::start(
-            &crate::engines::Caller {
-                app,
-                workspace: &self.workspace,
-                invocation: &invocation,
-                by: &by,
-                handlers: &handlers,
-            },
-            op,
-            input,
-        )
+        let caller = crate::engines::Caller {
+            app,
+            workspace: &self.workspace,
+            invocation: &invocation,
+            by: &by,
+            handlers: &handlers,
+        };
+        if loaded {
+            return crate::engines::start_loaded(&caller, op, input, |job, moved| {
+                crate::loaded_engines::start(self, app, job, op, input, moved)
+            });
+        }
+        crate::engines::start(&caller, op, input)
     }
 
     #[cfg(feature = "app-launch")]
@@ -1031,10 +1031,14 @@ impl Platform for HostPlatform {
         if let Some(said) = self.checks.status(job) {
             return Ok(tilolang_tilo::engine::record_of(job, &said));
         }
-        if let Some(said) = crate::loaded_engines::status(self, job) {
-            return Ok(tilolang_tilo::engine::record_of(job, &said?));
+        if let Some(record) = crate::engines::job(job) {
+            return Ok(Some(record));
         }
-        Ok(crate::engines::job(job))
+        // A stream a loaded engine runs keeps no record: its engine says how it stands.
+        match crate::loaded_engines::status(self, job) {
+            Some(said) => Ok(tilolang_tilo::engine::record_of(job, &said?)),
+            None => Ok(None),
+        }
     }
 
     #[cfg(feature = "app-launch")]

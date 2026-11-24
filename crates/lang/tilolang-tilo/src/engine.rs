@@ -483,6 +483,22 @@ pub fn begin_here(
     input: &str,
     also: impl Fn(State, &serde_json::Value) + Send + Sync + 'static,
 ) -> Result<(), String> {
+    begin_here_with(app, job, op, also, |moved| begin(app, job, op, input, moved))
+}
+
+/// [`begin_here`], with the job started by `start` rather than by `app`'s registered engine: an
+/// engine this process opened from its runtime bundle, which it asks itself.
+///
+/// # Errors
+///
+/// What `start` refused.
+pub fn begin_here_with(
+    app: &str,
+    job: &str,
+    op: &str,
+    also: impl Fn(State, &serde_json::Value) + Send + Sync + 'static,
+    start: impl FnOnce(JobSink) -> Result<(), String>,
+) -> Result<(), String> {
     hear(
         job,
         record(job, app, op, State::Queued, &serde_json::json!({})),
@@ -492,7 +508,7 @@ pub fn begin_here(
         hear(&named, record(&named, &owner, &doing, state, &detail));
         also(state, &detail);
     });
-    begin(app, job, op, input, moved).inspect_err(|_| {
+    start(moved).inspect_err(|_| {
         heard_held().remove(job);
     })
 }

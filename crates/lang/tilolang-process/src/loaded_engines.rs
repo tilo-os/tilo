@@ -16,10 +16,10 @@
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use tilo_engine_loader::{Device, EngineApi, File};
+use tilolang_tilo::engine::{JobSink, State};
 use tilolang_tilo::instance::Platform;
 
 /// The app whose typesetting `libtilo_typst_engine.so` answers.
@@ -102,25 +102,51 @@ pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result
     (engine.call)(&device, op, input)
 }
 
-/// One `engine.start` for `app`: the job `op` started, answered with the job's id, or the
-/// engine's refusal.
+/// One `engine.start` for `app`: the job `op` started as `job`, each of its moves told to
+/// `moved`.
 ///
 /// # Errors
 ///
 /// The engine's refusal, or that this device loads none for `app`.
-pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
+pub fn start(
+    platform: &dyn Platform,
+    app: &str,
+    job: &str,
+    op: &str,
+    input: &str,
+    moved: JobSink,
+) -> Result<(), String> {
     let engine = engine_of(app)?;
-    let job = next_job(app);
     let context = Context(platform);
     let device = device(&context);
-    let sink = tilo_engine_loader::JobSink::new(std::ptr::null_mut(), nowhere);
-    (engine.start)(&device, &job, op, input, &sink)?;
+    // The engine tells moves from its own thread for as long as the job runs, and may tell one
+    // after it says the job ended, so what its sink names is kept as long as this process runs.
+    let moved: &'static JobSink = Box::leak(Box::new(moved));
+    let sink = tilo_engine_loader::JobSink::new(
+        std::ptr::from_ref(moved).cast_mut().cast::<c_void>(),
+        tell,
+    );
     jobs()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(job.clone(), app.to_owned());
-    // Every engine answers a started job as `{job}`, which the app reads its id from.
-    Ok(serde_json::json!({ "job": job }).to_string())
+        .insert(job.to_owned(), app.to_owned());
+    (engine.start)(&device, job, op, input, &sink).inspect_err(|_| {
+        jobs()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(job);
+    })
+}
+
+/// A move a loaded engine told: its state's word and its fields, onto the job's sink.
+fn tell(context: *mut c_void, state: &str, detail: &str) {
+    // SAFETY: `start` hands the engine a context naming a sink it leaked, so it is never freed.
+    let moved = unsafe { &*context.cast_const().cast::<JobSink>() };
+    let state = State::from_word(state)
+        .unwrap_or_else(|| panic!("a loaded engine told a job's move as {state:?}, no state"));
+    let detail = serde_json::from_str(detail)
+        .unwrap_or_else(|error| panic!("a loaded engine told a job's fields not as JSON: {error}"));
+    moved.moved(state, detail);
 }
 
 /// One `engine.stream` for `app`: the stream `op` started, answered with its job's id, whose
@@ -159,24 +185,12 @@ pub fn stream(
     Ok(answer)
 }
 
-/// The job id a loaded engine starts: the app's own name, then the count. A job's record is kept
-/// by its id, so it names the app that started it.
-fn next_job(app: &str) -> String {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    let name = app.rsplit('.').next().unwrap_or(app);
-    format!("{name}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
-}
-
 /// The jobs this process started in a loaded engine, by the job's id: the app whose engine runs
 /// each.
 fn jobs() -> &'static Mutex<BTreeMap<String, String>> {
     static JOBS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
     JOBS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
-
-/// A job sink that tells nothing: this process starts a job of a loaded engine and answers its
-/// id, and the engine's own moves are the engine's to keep until the device records jobs here.
-fn nowhere(_context: *mut c_void, _state: &str, _detail: &str) {}
 
 /// How far a job a loaded engine runs has got, as JSON: `None` when no loaded engine started it.
 ///
