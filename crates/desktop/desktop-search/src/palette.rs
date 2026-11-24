@@ -47,7 +47,7 @@ mod windowed_host_tests;
 
 use rows::{
     all_results_entry, always_shown, entries_for, kind_facets, narrowed, nothing_matched,
-    pressed_hit, stands_tall, take_the_press,
+    pressed_hit, stands_tall,
 };
 
 /// The row `id` names when it is a group's "more" row: an id this palette
@@ -229,32 +229,6 @@ impl Sources {
     }
 }
 
-/// How many rows the palette cut its rows to, and whether the card had given
-/// the room they stand in when it did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowRoom {
-    /// The card has not given its room since search was opened: the rows
-    /// are cut to a guess it will correct, so they are not what the search
-    /// ends with.
-    Guess(usize),
-    /// The card gave its room: the rows are cut to that many rows of it.
-    Room(usize),
-}
-
-impl RowRoom {
-    /// The rows the palette cut to, however it knew the room.
-    fn cut(self) -> usize {
-        match self {
-            RowRoom::Guess(rows) | RowRoom::Room(rows) => rows,
-        }
-    }
-
-    /// The same cut, against the room the card gave.
-    fn given(self) -> Self {
-        RowRoom::Room(self.cut())
-    }
-}
-
 /// How soon a host looks again while an application's answer to the query is
 /// still coming: the answer arrives on the host's clock, so the host asks
 /// [`DesktopSearch::refresh`] until it does. A host that draws only what asks
@@ -312,10 +286,9 @@ pub struct DesktopSearch {
     order: Vec<(String, (u8, usize))>,
     /// How many sources at the head of this search are the desktop's own ([`rows::own_count`]).
     own_sources: usize,
-    /// How many rows the palette cut its rows to, and whether that is the
-    /// card's real room: when the card grew or shrank since, the groups are
-    /// cut again.
-    rows_room: RowRoom,
+    /// How many rows each group was cut to: the room the palette has for them. When that room
+    /// changes since, the groups are cut again.
+    rows_cut: usize,
     /// Whether the rows the palette holds stand two lines tall: what the
     /// capacity is counted in.
     shown_two_lines: bool,
@@ -524,7 +497,7 @@ impl DesktopSearch {
             workers: SearchWorkers::new(),
             order: Vec::new(),
             own_sources: 0,
-            rows_room: RowRoom::Guess(0),
+            rows_cut: 0,
             shown_two_lines: false,
             kept_choice: None,
             shown_rows: std::collections::HashMap::new(),
@@ -542,13 +515,13 @@ impl DesktopSearch {
     /// arrives on the host's clock, so the host keeps calling
     /// [`Self::refresh`] until it does. A source of the search's own is not
     /// this: it answers on a worker, which wakes the shell's next pass.
-    pub fn waiting(&self) -> bool {
+    fn waiting(&self) -> bool {
         self.sources.as_ref().is_some_and(Sources::waiting)
     }
 
     /// Whether a source of the open search still owes an answer: it works it
     /// out off the frame, and wakes the shell when it is in.
-    pub fn answering(&self) -> bool {
+    fn answering(&self) -> bool {
         self.stream.as_ref().is_some_and(SearchStream::pending)
     }
 
@@ -589,23 +562,6 @@ impl DesktopSearch {
     pub fn close(&mut self) {
         self.palette.close();
         self.finish();
-    }
-
-    /// What Escape does in the shell's search: it closes, whatever the person
-    /// typed there. A search is a card over what they were doing, and Escape
-    /// on it means they are done with it. Returns whether the shell did that.
-    ///
-    /// A step that asks for a value, a row's other actions, or a question a
-    /// window's control asked is the palette's own to back out of, before it
-    /// would close ([`ActionPalette::handle_event`]): then this answers
-    /// `false` and the key goes to the palette, which goes back a step and
-    /// closes only from the results.
-    pub fn escape(&mut self) -> bool {
-        if !self.is_open() || self.palette.in_argument_mode() {
-            return false;
-        }
-        self.close();
-        true
     }
 
     pub fn set_query(&mut self, query: &str) {
@@ -650,40 +606,16 @@ impl DesktopSearch {
         &mut self.palette
     }
 
-    /// The room the card has where it stands: how wide it is, and the
-    /// tallest its result list may grow, as the display or window it shows
-    /// over gives them.
+    /// The room a host gives the rows: how wide they stand and how tall their list may be. The
+    /// groups are cut to it on the next refresh.
     pub fn set_room(&mut self, width: f64, list_height: f64) {
         self.palette.set_max_width(Some(width));
         self.palette.set_max_list_height(list_height);
-        self.rows_room = self.rows_room.given();
     }
 
-    /// Whether the rows shown are cut to the room the card gave them: before
-    /// it has given one, and in the frame it gives a new one, they are not.
+    /// Whether the rows shown are cut to the room the palette has for them now.
     fn rows_placed(&self) -> bool {
-        match self.rows_room {
-            RowRoom::Guess(_) => false,
-            RowRoom::Room(rows) => {
-                rows == self.palette.entry_row_capacity_for(0, self.shown_two_lines)
-            }
-        }
-    }
-
-    /// Whether the search has a frame's work of its own left: a source that
-    /// holds the frame's state still to ask, or rows to cut to the card's
-    /// room. A host draws the frames this asks for; a source on a worker is
-    /// not this (its answer wakes the shell), and neither is an
-    /// application's answer still coming, which is looked for on the host's
-    /// clock ([`Self::waiting`]).
-    #[must_use]
-    pub fn filling_in(&self) -> bool {
-        self.sources.is_some()
-            && (self
-                .stream
-                .as_ref()
-                .is_some_and(SearchStream::awaiting_here)
-                || !self.rows_placed())
+        self.rows_cut == self.palette.entry_row_capacity_for(0, self.shown_two_lines)
     }
 
     /// Whether the search is over: the rows that are ready are cut to the
@@ -846,7 +778,7 @@ impl DesktopSearch {
             return true;
         }
         // The card grew or shrank: the groups share what it shows now.
-        if self.palette.entry_row_capacity_for(0, self.shown_two_lines) != self.rows_room.cut() {
+        if self.palette.entry_row_capacity_for(0, self.shown_two_lines) != self.rows_cut {
             self.render(&query);
             return true;
         }
@@ -1091,10 +1023,7 @@ impl DesktopSearch {
             .set_searching(self.searching_for(rows.is_empty()));
         self.rows = rows;
         self.shown_query = Some(query.to_owned());
-        self.rows_room = match self.rows_room {
-            RowRoom::Guess(_) => RowRoom::Guess(capacity),
-            RowRoom::Room(_) => RowRoom::Room(capacity),
-        };
+        self.rows_cut = capacity;
         self.shown_two_lines = two_lines;
     }
 
@@ -1675,12 +1604,6 @@ impl DesktopSearch {
     /// over every workspace.
     pub fn take_scope_widened(&mut self) -> bool {
         self.palette.take_scope_token_removed()
-    }
-
-    /// Take the press `id` names, as [`Self::observe`] does for the palette's own outcome: a row
-    /// the frame handed out, opened as the thing it stood for then.
-    pub fn take_the_press(&mut self, id: &str) {
-        take_the_press(self, id);
     }
 
     fn hit(&self, id: &str) -> Option<Hit> {

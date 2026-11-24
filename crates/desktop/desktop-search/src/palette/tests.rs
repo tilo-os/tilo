@@ -743,29 +743,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase escape_closes_the_search_whatever_was_typed;
-    // Escape closes search from wherever the person stands in it: a query
-    // still in the field is no reason for the card to stay over what they
-    // were doing.
-    {
-        let mut search = DesktopSearch::new();
-        search.open(data());
-        settled(&mut search);
-        search.set_query("notes");
-        settled(&mut search);
-        assert!(search.escape(), "the shell's search takes Escape");
-        assert!(!search.is_open(), "Escape closes search with a query typed");
-        assert!(
-            !search.escape(),
-            "and Escape on a closed search is not the shell's to handle"
-        );
-        // An empty field closes it the same way.
-        search.open(data());
-        settled(&mut search);
-        assert!(search.escape());
-        assert!(!search.is_open(), "Escape on the empty field closes");
-    }
-
     phase enter_on_a_typed_app_name_chooses_its_launch;
     {
         let mut search = DesktopSearch::new();

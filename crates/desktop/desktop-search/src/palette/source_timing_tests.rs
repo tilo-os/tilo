@@ -199,22 +199,6 @@ fn frames_until(search: &mut DesktopSearch, done: impl Fn(&DesktopSearch) -> boo
 tilo_test_env::scenario! {
     fn each_source_shows_its_rows_when_it_has_them;
 
-    phase the_frame_that_types_leaves_no_source_to_a_later_frame;
-    // The only source asked on the frame is the apps' own content, and the frame that typed asks
-    // it: after that frame the search owes the shell no frame of its own, so a host that draws only
-    // when woken (the page) shows every row as its worker's answer wakes it.
-    {
-        let (mut search, release) = shell();
-        frames_until(&mut search, |search| !search.results().is_empty());
-        search.set_query("mail");
-        search.refresh();
-        assert!(
-            !search.filling_in(),
-            "no source is left for a frame nobody asks for"
-        );
-        drop(release);
-    }
-
     phase apps_windows_and_commands_show_while_a_slow_source_is_out;
     {
         let (mut search, release) = shell();

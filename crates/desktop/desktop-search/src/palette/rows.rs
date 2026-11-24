@@ -420,11 +420,8 @@ pub(super) fn shown_rows(
     for (index, hit) in rows.iter().enumerate() {
         shown.insert(format!("hit:{index}"), ShownRow::Thing(hit.thing()));
     }
-    for (index, kind) in more.iter().enumerate() {
-        shown.insert(
-            format!("{MORE_PREFIX}{index}"),
-            ShownRow::ShowAll(kind.clone()),
-        );
+    for index in 0..more.len() {
+        shown.insert(format!("{MORE_PREFIX}{index}"), ShownRow::ShowAll);
     }
     shown
 }
@@ -436,34 +433,7 @@ pub(super) enum ShownRow {
     /// thing under another source still names the row the person read.
     Thing(crate::model::Thing),
     /// A group asked whole, by its kind.
-    ShowAll(ResourceKind),
-}
-
-/// Take the press `id` names, as `DesktopSearch::observe` does for the palette's own outcome: a
-/// row the frame handed out, opened as the thing it stood for then, whatever place a rebuild of
-/// the list put it at.
-pub(super) fn take_the_press(search: &mut super::DesktopSearch, id: &str) {
-    match search.shown_rows.get(id) {
-        // A group asked whole, as the frame handed it out: its group, whatever place it stands
-        // at now.
-        Some(ShownRow::ShowAll(kind)) => {
-            if let Some(more) = search.more_rows.iter().position(|row| row == kind) {
-                search.expand(more);
-            }
-        }
-        Some(ShownRow::Thing(_)) => {
-            if let Some(hit) = pressed_hit(search, id) {
-                search.choose_hit(hit, None, None);
-            }
-        }
-        None => {
-            if let Some(more) = super::more_row(id) {
-                search.expand(more);
-            } else if let Some(hit) = search.hit(id) {
-                search.choose_hit(hit, None, None);
-            }
-        }
-    }
+    ShowAll,
 }
 
 /// The row the press `id` names: the thing that stood under that id when the frame handed it
@@ -477,7 +447,7 @@ pub(super) fn pressed_hit(search: &super::DesktopSearch, id: &str) -> Option<Hit
             .iter()
             .find(|hit| hit.thing() == *thing)
             .cloned(),
-        Some(ShownRow::ShowAll(_)) | None => search.hit(id),
+        Some(ShownRow::ShowAll) | None => search.hit(id),
     }
 }
 
