@@ -1280,10 +1280,15 @@ fn layers_of(meta: &tilolang::PackageMeta, root: Option<&str>) -> Vec<Option<Str
     let others: BTreeSet<&str> = meta
         .named_roots
         .iter()
-        .filter(|r| meta.roots.first() != Some(&r.ty))
+        .filter(|r| !r.device && meta.roots.first() != Some(&r.ty))
         .map(|r| r.name.as_str())
         .collect();
     for ty in &meta.roots {
+        // A root each device keeps its own (`device root readings: Readings`) is the app's state
+        // on the device, never a window's: it opens no layer of its own.
+        if meta.device_roots.contains(ty) {
+            continue;
+        }
         let Some(declared) = meta.types.iter().find(|t| &t.id == ty) else {
             continue;
         };
