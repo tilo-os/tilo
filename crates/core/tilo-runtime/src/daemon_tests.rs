@@ -1957,6 +1957,7 @@ impl crate::seats::Shells for NestedShells {
         super::the_shells_environment(&mut command, env);
         daemon.start_shell(command, window)
     }
+}
 
 /// The person's services start when this device's own account founds them (`devices#found`),
 /// without the daemon restarting: before founding they are not there and a call as the person is
