@@ -30,6 +30,9 @@ const STATUS_FRESH: Duration = Duration::from_secs(2);
 /// How long a command may run before it is given up.
 const ACTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
+/// How long a program that ended is said, after it ended.
+const ENDED_SAID: Duration = Duration::from_secs(30);
+
 /// The Windows programs and appliance as this session reads and drives them.
 pub struct SessionWindows {
     manager: compat_service::ManagerOut,
@@ -39,10 +42,7 @@ pub struct SessionWindows {
 }
 
 impl SessionWindows {
-    /// How long a program that ended is said, after it ended.
-const ENDED_SAID: Duration = Duration::from_secs(30);
-
-/// The manager over the compatibility service `manager` and the appliance on this computer.
+    /// The manager over the compatibility service `manager` and the appliance on this computer.
     #[must_use]
     pub fn new(manager: compat_service::ManagerOut, wake: Option<tilo_service::Wake>) -> Arc<Self> {
         Arc::new(Self {
