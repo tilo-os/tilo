@@ -25,13 +25,13 @@ path = "tests/it.rs"
 [dependencies]
 base64.workspace = true
 blake3.workspace = true
-discord-wire = { path = "../../discord-model" }
+discord-wire = { path = "../discord-wire" }
 futures-util = { workspace = true, features = ["sink"] }
 percent-encoding.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tilo-connector = { path = "../../../crates/integrations/connector" }
-tilo-net = { path = "../../../crates/platform/tilo-net", features = ["http"] }
+tilo-connector = { path = "../../integrations/connector" }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls.workspace = true
 # Discord's REST rate limits: buckets per route and major parameter, and the
@@ -40,14 +40,14 @@ twilight-http-ratelimiting = "0.18.0"
 tokio-websockets = { version = "0.13.3", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector"] }
 url.workspace = true
 zeroize.workspace = true
-tilo-clock = { path = "../../../crates/platform/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 # Voice: transport encryption (Discord's rtpsize AEAD modes, sealed in
 # tilo-seal), DAVE end-to-end encryption, and Opus to mix several Tilo
 # speakers into one stream. libopus is built from source by opusic-sys (cmake).
 davey.workspace = true
 getrandom.workspace = true
 opus = "0.4"
-tilo-seal = { path = "../../../crates/core/tilo-seal" }
+tilo-seal = { path = "../../core/tilo-seal" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -58,8 +58,7 @@ fake-discord = { path = "../../../tools/fake-discord" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 tokio = { workspace = true, features = ["test-util"] }
-tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
-discord = { path = ".." }
+tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [lints]
 workspace = true

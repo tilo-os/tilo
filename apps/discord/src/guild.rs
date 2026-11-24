@@ -353,6 +353,18 @@ pub(crate) fn upsert<T: Identified>(items: &mut Keyed<T>, item: T) {
 }
 
 impl Guild {
+    /// Whether the bridge knows the Discord `id`: a channel it observed, or one it made since.
+    #[must_use]
+    fn knows_mapped(&self, id: &str) -> bool {
+        self.channels.iter().any(|c| c.id == id)
+            || self.map.iter().any(|m| {
+                matches!(
+                    m.kind,
+                    MappedKind::Channel | MappedKind::Category | MappedKind::Thread
+                ) && m.discord == id
+            })
+    }
+
     #[must_use]
     pub fn mapping(&self, kind: MappedKind, tilo: &str) -> Option<&Mapping> {
         self.map.find(&Id::from_raw(map_key(kind, tilo)))
@@ -460,11 +472,6 @@ impl Guild {
                 overwrites: c.overwrites,
             })
             .collect();
-        // An order the bridge asked for and Discord showed whole (or
-        // refused) is no longer laid over what Discord shows.
-        for id in crate::order::finished(self, &channels) {
-            self.outbox.forget(&id);
-        }
         self.channels = channels;
         self.roles = roles
             .into_iter()
@@ -1680,5 +1687,3 @@ fn bot_or_person(cx: &ActionCx) -> Result<(), Refusal> {
     guard::bot(cx).or_else(|_| guard::person(cx).map(drop))
 }
 
-#[cfg(test)]
-pub(crate) mod tests;

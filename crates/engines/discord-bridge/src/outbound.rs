@@ -5,14 +5,16 @@
 use discord_wire::op::{DeleteOp, EditOp, OutAttachment, ReactOp, SendOp, StartThreadOp};
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, JsonSchema};
+
+
+use tilo_resource::MemberId;
 
 use crate::guild::{Guild, MAX_CONTENT_CHARS, MAX_UPLOAD_BYTES, MappedKind, Origin};
 use crate::tilo::Message;
 use crate::{emoji, slug};
 
 /// A send, and the thread root the posted message maps under.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendItem {
     pub op: SendOp,
     /// `map` the result as a message with this root.
@@ -23,7 +25,7 @@ pub struct SendItem {
 }
 
 /// What a Tilo post becomes.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostPlan {
     /// `start-thread`, then `map` as a thread, then plan again: the send
     /// needs the thread's id.
@@ -33,7 +35,7 @@ pub struct PostPlan {
 }
 
 /// Where the bridge's notice of a removed message points readers.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Context {
     /// The base of public avatar URLs, `https://…/avatars/`.
     #[serde(default)]
@@ -51,7 +53,7 @@ pub struct Context {
 /// Where a workspace's host serves its resources on the web: what `share-link`
 /// mints its links from (`ResourceViewLocator`), less the resource, which
 /// each message names.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Links {
     /// The web entry the browser bundle is served under (`https://…/`).
     pub web_entry: String,
@@ -250,7 +252,7 @@ pub fn fit(text: &str, link: &str) -> String {
 }
 
 fn human_size(bytes: u64) -> String {
-    ui::format::size(bytes)
+    crate::format::size(bytes)
 }
 
 /// What an edit of `message` becomes.
@@ -293,7 +295,7 @@ pub fn plan_edit(
 }
 
 /// A delete, then `unmap` of the message.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteItem {
     pub op: DeleteOp,
     pub tilo: String,
@@ -389,7 +391,7 @@ pub fn plan_reaction(
         .filter(|r| {
             r.member
                 .as_ref()
-                .is_some_and(ui::tilo_resource::MemberId::is_person)
+                .is_some_and(MemberId::is_person)
         })
         .filter(|r| emoji::to_discord(guild, &r.emoji).is_some_and(|e| emoji::key(&e) == wanted))
         .count();

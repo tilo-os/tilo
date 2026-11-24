@@ -17,25 +17,25 @@
 //! the worker reads them the first time it meets the server (its newest
 //! messages per channel), at the time they were written.
 
-use discord_wire::op::{ChannelKind, DiscordOp, DiscordResult};
+use discord_wire::op::ChannelKind;
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, JsonSchema};
+
 
 use crate::guild::{DChannel, Guild, MappedKind, Ownership};
 use crate::slug;
 use crate::tilo::{Channel, WorkspaceChat};
 use std::collections::HashSet;
-use ui::tilo_resource::Settled;
+use crate::guild::Settled;
 
 /// Chat `create-category`, then `map` (category, origin Discord).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CategoryItem {
     pub name: String,
     pub discord: String,
 }
 
 /// Chat `create-channel`, then `map` (channel, origin Discord).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelItem {
     pub name: String,
     pub category: Option<String>,
@@ -45,7 +45,7 @@ pub struct ChannelItem {
 }
 
 /// `map` an existing Tilo object (origin Discord).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdoptItem {
     pub kind: MappedKind,
     pub tilo: String,
@@ -54,14 +54,14 @@ pub struct AdoptItem {
 
 /// Chat `set-channel-category`: a joined channel moves to its Discord
 /// channel's category.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileItem {
     pub channel: String,
     pub category: Option<String>,
 }
 
 /// One import round.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportPlan {
     pub categories: Vec<CategoryItem>,
     pub channels: Vec<ChannelItem>,
@@ -80,7 +80,7 @@ pub struct ImportPlan {
 }
 
 /// `finish-import`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinishItem {
     pub tilo_only: Vec<String>,
 }
@@ -103,10 +103,10 @@ fn ordered<'g>(guild: &'g Guild, kinds: &[ChannelKind]) -> Vec<&'g DChannel> {
 /// in yet: never imported back.
 fn made_by_bridge(guild: &Guild, discord: &str) -> bool {
     guild.outbox.entries().any(|(_, entry)| {
-        matches!(
-            &entry.settled,
-            Some(Settled::Done(DiscordResult::Channel { channel_id, .. })) if channel_id == discord
-        )
+        entry.settled.as_ref().and_then(Settled::done_result).is_some_and(|result| {
+            result.get("result").and_then(serde_json::Value::as_str) == Some("channel")
+                && result.get("channel_id").and_then(serde_json::Value::as_str) == Some(discord)
+        })
     })
 }
 
@@ -114,7 +114,9 @@ fn made_by_bridge(guild: &Guild, discord: &str) -> bool {
 fn making(guild: &Guild) -> bool {
     guild.outbox.entries().any(|(_, entry)| {
         entry.settled.is_none()
-            && matches!(&entry.value.op, DiscordOp::ApplyChannel(op) if op.id.is_none())
+            && entry.op.get("apply-channel").is_some_and(|op| {
+                op.get("id").is_none_or(serde_json::Value::is_null)
+            })
     })
 }
 

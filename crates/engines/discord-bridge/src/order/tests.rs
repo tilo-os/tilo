@@ -1,5 +1,5 @@
 use discord_wire::op::{DiscordResult, Queued};
-use ui::tilo_resource::Settled;
+use crate::guild::Settled;
 
 use super::*;
 use crate::guild::{Mapping, Origin, Ownership};
@@ -106,14 +106,14 @@ fn moved_to<'a>(moves: &'a [ChatMove], id: &str) -> &'a ChatMove {
 }
 
 /// `guild` with `op` asked for, answered as `settled`.
-fn asked(guild: &Guild, op: ArrangeOp, settled: Option<Settled<DiscordResult>>) -> Guild {
+fn asked(guild: &Guild, op: ArrangeOp, settled: Option<Settled>) -> Guild {
     let mut guild = guild.clone();
     let id = guild.outbox.push(
         Id::from_raw("arrange1"),
-        Queued {
-            op: DiscordOp::ArrangeChannels(op),
-            publish: Vec::new(),
-            attach: Vec::new(),
+        crate::guild::Queued {
+            key: String::new(),
+            op: serde_json::json!({"arrange-channels": op}),
+            settled: None,
         },
     );
     if let Some(settled) = settled {
@@ -347,7 +347,7 @@ tilo_test_env::scenario! {
         let done = asked(
             &guild(),
             op.clone(),
-            Some(Settled::Done(DiscordResult::Done)),
+            Some(Settled::Done(serde_json::json!({"result": "done"}))),
         );
         let shown = echoes(&done, &op).pop().unwrap();
         assert_eq!(finished(&done, &shown.channels), [Id::from_raw("arrange1")]);
@@ -394,10 +394,10 @@ tilo_test_env::scenario! {
         let failed = asked(
             &guild(),
             op.clone(),
-            Some(Settled::Failed {
-                reason: "Missing Permissions".into(),
-                partial: DiscordResult::Done,
-            }),
+            Some(Settled::Failed(serde_json::json!({
+                "reason": "Missing Permissions",
+                "partial": "done",
+            }))),
         );
         assert_eq!(
             finished(&failed, &failed.channels),

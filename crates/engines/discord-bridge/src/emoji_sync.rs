@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use discord_wire::op::{DeleteEmojiOp, EmojiSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ui::tilo_resource::{self, JsonSchema};
+
 
 use crate::emoji::discord_name;
 use crate::guild::{Guild, MappedKind, Mapping};
@@ -43,7 +43,7 @@ pub fn wanted(input: Option<&Value>) -> Option<Vec<Wanted>> {
 }
 
 /// An upload or rename, then `settle-emoji` with its result.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplyItem {
     pub op: EmojiSpec,
     /// The picture's content address, kept with the emoji in the map.

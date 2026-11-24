@@ -5,26 +5,20 @@
 //! only sequences steps. The `discord-worker` binary performs the queued
 //! calls and reports Discord's events.
 
-pub mod bridge;
+// What a Discord event or a workspace change means for both sides, and the protocol client,
+// live in the engine crates; the app keeps its resource, its views and its setup.
+pub use discord_bridge::{
+    bridge, emoji, emoji_sync, import, inbound, layout, order, outbound, roles, slug, tilo,
+};
 pub mod effects;
-pub mod emoji;
-pub mod emoji_sync;
 pub mod guard;
 pub mod guild;
-pub mod import;
-pub mod inbound;
-pub mod layout;
 pub mod locales;
-pub mod order;
-pub mod outbound;
 pub mod resource;
-pub mod roles;
 #[cfg(feature = "samples")]
 pub mod sample;
 
 pub mod setup;
-pub mod slug;
-pub mod tilo;
 pub mod token;
 pub mod voice;
 

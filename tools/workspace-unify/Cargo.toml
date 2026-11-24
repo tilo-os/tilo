@@ -261,8 +261,9 @@ doc = false
 "dirs-5_0_1" = { package = "dirs", version = "^5.0.1", default-features = false, features = [] }
 "dirs-sys-0_4_1" = { package = "dirs-sys", version = "^0.4.1", default-features = false, features = [] }
 "discord" = { path = "../../apps/discord", default-features = false, features = ["samples"] }
-"discord-wire" = { path = "../../apps/discord-model", default-features = false, features = ["resource"] }
-"discord-worker" = { path = "../../apps/discord/worker", default-features = false, features = [] }
+"discord-bridge" = { path = "../../crates/engines/discord-bridge", default-features = false, features = [] }
+"discord-wire" = { path = "../../crates/engines/discord-wire", default-features = false, features = ["resource"] }
+"discord-worker" = { path = "../../crates/engines/discord-worker", default-features = false, features = [] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
 "downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }
@@ -3041,8 +3042,9 @@ doc = false
 "dirs-5_0_1" = { package = "dirs", version = "^5.0.1", default-features = false, features = [] }
 "dirs-sys-0_4_1" = { package = "dirs-sys", version = "^0.4.1", default-features = false, features = [] }
 "discord" = { path = "../../apps/discord", default-features = false, features = ["samples"] }
-"discord-wire" = { path = "../../apps/discord-model", default-features = false, features = ["resource"] }
-"discord-worker" = { path = "../../apps/discord/worker", default-features = false, features = [] }
+"discord-bridge" = { path = "../../crates/engines/discord-bridge", default-features = false, features = [] }
+"discord-wire" = { path = "../../crates/engines/discord-wire", default-features = false, features = ["resource"] }
+"discord-worker" = { path = "../../crates/engines/discord-worker", default-features = false, features = [] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
 "downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }

@@ -140,18 +140,26 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
             context,
             workspace,
             emoji,
-        } => serde_json::to_value(bridge::plan(
-            bridge::Reading {
-                guild,
-                chat: &crate::tilo::ChatRead::of(chat)
-                    .knowing(workspace.as_ref().unwrap_or(&Value::Null)),
-                context: &context.clone().unwrap_or_default(),
-                workspace: workspace.as_ref().unwrap_or(&Value::Null),
-                emoji: emoji.as_ref(),
-            },
-            event,
-        ))
-        .ok(),
+        } => {
+            // The planners read the guild as the engine crate's model: the resource's own
+            // fields are their JSON.
+            let guild: discord_bridge::Guild = serde_json::from_value(
+                tilo_resource::Model::to_json(guild),
+            )
+            .ok()?;
+            serde_json::to_value(bridge::plan(
+                bridge::Reading {
+                    guild: &guild,
+                    chat: &crate::tilo::ChatRead::of(chat)
+                        .knowing(workspace.as_ref().unwrap_or(&Value::Null)),
+                    context: &context.clone().unwrap_or_default(),
+                    workspace: workspace.as_ref().unwrap_or(&Value::Null),
+                    emoji: emoji.as_ref(),
+                },
+                event,
+            ))
+            .ok()
+        }
     }
 }
 

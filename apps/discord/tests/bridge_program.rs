@@ -835,6 +835,7 @@ fn triggers() -> Vec<TriggerSpec> {
             actions: Vec::new(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
+            filter: Default::default(),
         })
         .collect();
     // The workspace's own governance: who joined, whose role changed,
@@ -1129,9 +1130,13 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
     };
 
     let state = ada.state().unwrap();
+    let guild: discord_bridge::Guild = serde_json::from_value(
+        ui::tilo_resource::Model::to_json(&state),
+    )
+    .expect("the guild reads as the bridge's");
     let plan = discord::bridge::plan(
         discord::bridge::Reading {
-            guild: &state,
+            guild: &guild,
             chat: &discord::tilo::ChatRead::default(),
             context: &discord::outbound::Context::default(),
             workspace: &Value::Null,

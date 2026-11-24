@@ -6,10 +6,10 @@
 //! permissions, so what Viewer and Commenter may not do is denied through an
 //! overwrite for that bridge role on every bridged channel.
 
-use discord_wire::op::{DiscordOp, MemberRolesOp, OverwriteKind, OverwriteOp, RoleSpec};
+use discord_wire::op::{MemberRolesOp, OverwriteKind, OverwriteOp, RoleSpec};
 use discord_wire::perm;
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Id, JsonSchema, Settled};
+use crate::guild::{Id, Settled};
 
 use crate::guild::{Guild, MappedKind};
 
@@ -77,13 +77,13 @@ const fn color(role: &str) -> u32 {
 }
 
 /// Create or correct one role, then map it as a role.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleItem {
     pub op: RoleSpec,
 }
 
 /// One role reconcile run.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RolePlan {
     /// `apply-role`, then `map` (kind role, tilo = `op.tilo`).
     pub apply: Vec<RoleItem>,
@@ -145,15 +145,15 @@ pub fn plan(guild: &Guild) -> RolePlan {
     // events Discord sent before it took effect still arrive, and asking
     // again on each one echoes yet more of them. `Guild::observe` forgets
     // the ask once a layout reports a change to that overwrite.
-    let asked: Vec<&OverwriteOp> = guild
+    let asked: Vec<OverwriteOp> = guild
         .outbox
         .entries()
         .filter(|(_, entry)| entry.settled.as_ref().is_none_or(Settled::is_done))
-        .filter_map(|(_, entry)| match &entry.value.op {
-            DiscordOp::SetOverwrite(op) => Some(op),
-            _ => None,
+        .filter_map(|(_, entry)| {
+            serde_json::from_value::<OverwriteOp>(entry.op.get("set-overwrite")?.clone()).ok()
         })
-        .collect();
+        .collect::<Vec<OverwriteOp>>();
+    let asked: Vec<&OverwriteOp> = asked.iter().collect();
     for role in ["viewer", "commenter"] {
         let Some(role_id) = guild
             .mapping(MappedKind::Role, role)
@@ -411,15 +411,15 @@ mod tests {
             let entry = Id::from_raw("e1");
             g.outbox.push(
                 entry.clone(),
-                discord_wire::op::Queued {
-                    op: DiscordOp::SetOverwrite(asked.clone()),
-                    publish: Vec::new(),
-                    attach: Vec::new(),
+                crate::guild::Queued {
+                    key: String::new(),
+                    op: serde_json::json!({"set-overwrite": asked.clone()}),
+                    settled: None,
                 },
             );
             assert_eq!(plan(&g).overwrites, first.overwrites[1..], "queued");
             g.outbox
-                .settle(&entry, Settled::Done(discord_wire::op::DiscordResult::Done));
+                .settle(&entry, Settled::Done(serde_json::json!({"result": "done"})));
             // A layout from before it took effect: nothing changed for it.
             let stale = layout_of(&g);
             g.observe(String::new(), stale.clone(), roles_of(&g));

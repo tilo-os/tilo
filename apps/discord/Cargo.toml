@@ -25,7 +25,9 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
-discord-wire = { path = "../discord-model", features = ["resource"] }
+discord-wire = { path = "../../crates/engines/discord-wire", features = ["resource"] }
+# What a Discord event or a workspace change means for both sides.
+discord-bridge = { path = "../../crates/engines/discord-bridge" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Finding the servers a bot is in, for bridging one from the app.
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
