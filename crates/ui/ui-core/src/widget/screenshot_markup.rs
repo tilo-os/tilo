@@ -1391,10 +1391,12 @@ impl Widget for ScreenshotMarkup {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let keyboard = self.keyboard_control();
-        let children = self
-            .semantic_controls()
-            .into_iter()
-            .map(|(id, rect, key)| {
+        // The screenshot as it is marked up, under the controls that stand over it.
+        let picture = AccessNode::new(Role::Image)
+            .with_name(markup_text("widget-markup-screenshot"))
+            .with_bounds(self.canvas);
+        let children = std::iter::once(picture)
+            .chain(self.semantic_controls().into_iter().map(|(id, rect, key)| {
                 let role = if id.starts_with("tool-") || id.starts_with("color-") {
                     Role::RadioButton
                 } else {
@@ -1418,7 +1420,7 @@ impl Widget for ScreenshotMarkup {
                     .with_action_target(id)
                     .with_state(state)
                     .with_bounds(rect)
-            })
+            }))
             .collect();
         Some(
             AccessNode::new(Role::Dialog)
@@ -1432,15 +1434,23 @@ impl Widget for ScreenshotMarkup {
                 .with_children(children),
         )
     }
+    /// Its first node is the screenshot; the controls follow it.
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        let [index] = path else { return None };
-        self.semantic_controls()
-            .get(*index)
-            .map(|(_, rect, _)| *rect)
+        match path {
+            [0] => Some(self.canvas),
+            [index] => self
+                .semantic_controls()
+                .get(index.checked_sub(1)?)
+                .map(|(_, rect, _)| *rect),
+            _ => None,
+        }
     }
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         let [index] = path else { return false };
-        let Some((id, _, _)) = self.semantic_controls().get(*index).copied() else {
+        let Some(control) = index.checked_sub(1) else {
+            return false;
+        };
+        let Some((id, _, _)) = self.semantic_controls().get(control).copied() else {
             return false;
         };
         self.keyboard = Some(id);

@@ -182,6 +182,17 @@ fn shows(semantics: Option<&AccessNode>, width: Option<f64>) -> Shows {
         })
     };
     let structured = !node.children.is_empty();
+    // A part that holds something drawn and controls standing on it, nothing else (a screenshot
+    // being marked up), is its paint, with the controls over it.
+    if width.is_some()
+        && node.children.iter().any(drawn)
+        && node
+            .children
+            .iter()
+            .all(|child| drawn(child) || child.action_target.is_some() && child.bounds.is_some())
+    {
+        return Shows::Paint;
+    }
     match node.role {
         Role::TextInput | Role::MultilineTextInput | Role::SpinButton if !node.state.read_only => {
             Shows::Field
@@ -272,6 +283,11 @@ fn shows(semantics: Option<&AccessNode>, width: Option<f64>) -> Shows {
             }
         }
     }
+}
+
+/// Whether a node is drawn and says nothing more of itself: a picture or a canvas with no parts.
+fn drawn(node: &AccessNode) -> bool {
+    matches!(node.role, Role::Image | Role::Canvas) && node.children.is_empty()
 }
 
 /// The place whose window a node shows, which the page's host fills ([`Page::wells`]): a window

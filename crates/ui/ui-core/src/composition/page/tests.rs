@@ -336,3 +336,31 @@ fn a_link_is_a_link_to_its_address() {
         "its words: {link:.300}"
     );
 }
+
+/// The screenshot being marked up is its picture on the page, and each of the editor's tools
+/// stands over it as a control a press acts on.
+#[test]
+fn a_screenshot_being_marked_up_is_its_picture_with_its_tools_over_it() {
+    let rgba: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![20_u8; 64 * 64 * 4]);
+    let mut frame = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        crate::widget::ScreenshotMarkup::new(rgba, 64, 64),
+        (900, 700),
+        crate::Theme::dark().with_reduce_motion(true),
+    );
+    frame.relayout();
+    let html = Page::new().render(&shown(&mut frame));
+    assert!(
+        html.contains("<img class=\"tilo-paint\" src=\"data:image/png;base64,"),
+        "the screenshot is a picture: {html:.2000}"
+    );
+    let tools = html.matches("class=\"tilo-over\"").count();
+    assert!(
+        tools >= 3,
+        "the tools stand over it, {tools} do: {html:.2000}"
+    );
+    assert!(
+        element_with(&html, "class=\"tilo-over\"").contains("data-a="),
+        "a tool acts on a press: {html:.2000}"
+    );
+}

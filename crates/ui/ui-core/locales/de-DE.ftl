@@ -870,6 +870,7 @@ widget-screenshot-send-workspace = In den Dateien dieses Arbeitsbereichs speiche
 widget-screenshot-send-no-device = Kein anderes Gerät ist online
 widget-screenshot-send-device = An { $device } senden
 widget-markup-title = Markieren
+widget-markup-screenshot = Bildschirmfoto
 widget-markup-close = Schließen
 widget-markup-undo = Rückgängig
 widget-markup-redo = Wiederholen

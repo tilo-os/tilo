@@ -874,6 +874,7 @@ widget-screenshot-send-workspace = Save to this workspace's files
 widget-screenshot-send-no-device = No other device is online
 widget-screenshot-send-device = Send to { $device }
 widget-markup-title = Markup
+widget-markup-screenshot = Screenshot
 widget-markup-close = Close
 widget-markup-undo = Undo
 widget-markup-redo = Redo
