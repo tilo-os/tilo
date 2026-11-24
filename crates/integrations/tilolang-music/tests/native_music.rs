@@ -568,7 +568,7 @@ fn spotify_sign_in_devices_and_transfer_reach_the_library() {
             ],
             active: "laptop".to_owned(),
             now: "First Light — Aurora Skies".to_owned(),
-            playing: true,
+            playing: true.into(),
             ..SpotifyReply::default()
         },
     );
@@ -708,21 +708,21 @@ fn a_spotify_library_write_reads_back_into_the_song_the_album_and_the_artist() {
     scripted.spotify.insert(
         "like".to_owned(),
         SpotifyReply {
-            liked: true,
+            liked: true.into(),
             ..SpotifyReply::default()
         },
     );
     scripted.spotify.insert(
         "save_album".to_owned(),
         SpotifyReply {
-            saved: true,
+            saved: true.into(),
             ..SpotifyReply::default()
         },
     );
     scripted.spotify.insert(
         "follow".to_owned(),
         SpotifyReply {
-            followed: true,
+            followed: true.into(),
             ..SpotifyReply::default()
         },
     );
@@ -922,7 +922,7 @@ fn a_sign_in_spotify_ended_is_a_state_the_app_shows_a_connect_button_for() {
     scripted.spotify.insert(
         "status".to_owned(),
         SpotifyReply {
-            expired: true,
+            expired: true.into(),
             ..SpotifyReply::default()
         },
     );

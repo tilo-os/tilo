@@ -80,8 +80,10 @@ impl Stand {
                             .and_then(|value| value.trim().parse::<usize>().ok())
                     })
                     .unwrap_or(0);
-                let split = head.find("\r\n\r\n").map_or(request.len(), |at| at + 4);
-                while request.len() < split + length {
+                let split = head
+                    .find("\r\n\r\n")
+                    .map_or(request.len(), |at| at.saturating_add(4));
+                while request.len() < split.saturating_add(length) {
                     match stream.read(&mut buffer) {
                         Ok(0) | Err(_) => break,
                         Ok(read) => request.extend_from_slice(&buffer[..read]),
@@ -179,7 +181,7 @@ fn a_like_puts_the_song_in_the_library_and_reads_back_what_spotify_holds() {
         })
         .unwrap();
     assert!(
-        reply.liked,
+        reply.liked.yes(),
         "the song is in the library, as Spotify reads it back"
     );
     assert_eq!(
@@ -206,8 +208,8 @@ fn a_like_puts_the_song_in_the_library_and_reads_back_what_spotify_holds() {
 fn an_unlike_takes_it_out_and_an_album_and_an_artist_are_kept_and_followed() {
     let stand = Stand::start(|seen| match seen.target.as_str() {
         "/v1/me/tracks/contains?ids=track-1" => (200, "[false]".to_owned()),
-        "/v1/me/albums/contains?ids=album-1" => (200, "[true]".to_owned()),
-        "/v1/me/following/contains?type=artist&ids=artist-1" => (200, "[true]".to_owned()),
+        "/v1/me/albums/contains?ids=album-1"
+        | "/v1/me/following/contains?type=artist&ids=artist-1" => (200, "[true]".to_owned()),
         _ => (200, String::new()),
     });
     let (spotify, _vault) = signed_in(&stand);
@@ -217,21 +219,21 @@ fn an_unlike_takes_it_out_and_an_album_and_an_artist_are_kept_and_followed() {
             liked: false,
         })
         .unwrap();
-    assert!(!unliked.liked);
+    assert!(!unliked.liked.yes());
     let saved = spotify
         .op(&SpotifyOp::SaveAlbum {
             key: "spotify:album:album-1".to_owned(),
             keep: true,
         })
         .unwrap();
-    assert!(saved.saved);
+    assert!(saved.saved.yes());
     let followed = spotify
         .op(&SpotifyOp::Follow {
             key: "spotify:artist:artist-1".to_owned(),
             follow: true,
         })
         .unwrap();
-    assert!(followed.followed);
+    assert!(followed.followed.yes());
     assert_eq!(
         stand.targets(),
         vec![
@@ -498,7 +500,7 @@ fn a_sign_in_spotify_will_not_renew_is_an_answer_that_the_person_connects_again(
         })
         .expect("a sign-in that is over is answered, not failed");
     assert!(
-        reply.expired,
+        reply.expired.yes(),
         "the app shows its connect button, not an error"
     );
     assert_eq!(

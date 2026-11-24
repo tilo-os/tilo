@@ -130,7 +130,7 @@ impl Spotify {
     }
 
     fn get(&self, path: &str, query: &[(&str, &str)]) -> Result<Value, Refusal> {
-        self.send(reqwest::Method::GET, path, query, None)
+        self.send(&reqwest::Method::GET, path, query, None)
     }
 
     fn put(
@@ -139,7 +139,7 @@ impl Spotify {
         query: &[(&str, &str)],
         body: Option<&Value>,
     ) -> Result<Value, Refusal> {
-        self.send(reqwest::Method::PUT, path, query, body)
+        self.send(&reqwest::Method::PUT, path, query, body)
     }
 
     fn post(
@@ -148,7 +148,7 @@ impl Spotify {
         query: &[(&str, &str)],
         body: Option<&Value>,
     ) -> Result<Value, Refusal> {
-        self.send(reqwest::Method::POST, path, query, body)
+        self.send(&reqwest::Method::POST, path, query, body)
     }
 
     fn delete(
@@ -157,7 +157,7 @@ impl Spotify {
         query: &[(&str, &str)],
         body: Option<&Value>,
     ) -> Result<Value, Refusal> {
-        self.send(reqwest::Method::DELETE, path, query, body)
+        self.send(&reqwest::Method::DELETE, path, query, body)
     }
 
     /// One request to Spotify, and its answer read as JSON.
@@ -167,7 +167,7 @@ impl Spotify {
     /// the app answers by asking the person to connect again.
     fn send(
         &self,
-        method: reqwest::Method,
+        method: &reqwest::Method,
         path: &str,
         query: &[(&str, &str)],
         body: Option<&Value>,
@@ -177,7 +177,7 @@ impl Spotify {
             let url = format!("{}/{path}", self.api);
             let mut request = self
                 .http
-                .request(method.clone(), url)
+                .request((*method).clone(), url)
                 .bearer_auth(&*self.token(renewed)?)
                 .query(query);
             if let Some(body) = body {
@@ -232,7 +232,7 @@ impl Spotify {
         match self.ask(op) {
             Ok(reply) => Ok(reply),
             Err(Refusal::Expired) => Ok(SpotifyReply {
-                expired: true,
+                expired: true.into(),
                 ..SpotifyReply::default()
             }),
             Err(refusal) => Err(refusal.into()),
@@ -340,7 +340,8 @@ impl Spotify {
             playing: playing
                 .get("is_playing")
                 .and_then(Value::as_bool)
-                .unwrap_or(false),
+                .unwrap_or(false)
+                .into(),
             now: now_of(&playing),
             ..SpotifyReply::default()
         })
@@ -395,7 +396,8 @@ impl Spotify {
             playing: playing
                 .get("is_playing")
                 .and_then(Value::as_bool)
-                .unwrap_or(false),
+                .unwrap_or(false)
+                .into(),
             now: now_of(&playing),
             ..SpotifyReply::default()
         })
@@ -557,7 +559,7 @@ impl Spotify {
             self.delete("me/tracks", &query, None)?;
         }
         Ok(SpotifyReply {
-            liked: self.kept("me/tracks/contains", &query),
+            liked: self.kept("me/tracks/contains", &query).into(),
             ..SpotifyReply::default()
         })
     }
@@ -572,7 +574,7 @@ impl Spotify {
             self.delete("me/albums", &query, None)?;
         }
         Ok(SpotifyReply {
-            saved: self.kept("me/albums/contains", &query),
+            saved: self.kept("me/albums/contains", &query).into(),
             ..SpotifyReply::default()
         })
     }
@@ -587,7 +589,7 @@ impl Spotify {
             self.delete("me/following", &query, None)?;
         }
         Ok(SpotifyReply {
-            followed: self.kept("me/following/contains", &query),
+            followed: self.kept("me/following/contains", &query).into(),
             ..SpotifyReply::default()
         })
     }
@@ -744,7 +746,7 @@ impl Spotify {
             })
             .collect();
         let next = if more {
-            offset.max(0) + SAVED_PAGE_ITEMS
+            offset.max(0).saturating_add(SAVED_PAGE_ITEMS)
         } else {
             0
         };

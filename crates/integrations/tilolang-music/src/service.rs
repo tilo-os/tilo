@@ -684,6 +684,24 @@ pub struct SpotifyPage {
     pub next: i64,
 }
 
+/// Whether something holds with Spotify: one plain boolean on the wire, and a named type here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Allowed(pub bool);
+
+impl Allowed {
+    #[must_use]
+    pub const fn yes(self) -> bool {
+        self.0
+    }
+}
+
+impl From<bool> for Allowed {
+    fn from(allowed: bool) -> Self {
+        Self(allowed)
+    }
+}
+
 /// What Spotify answered: a catalogue page, the person's sign-in, or their devices.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpotifyReply {
@@ -700,7 +718,7 @@ pub struct SpotifyReply {
     /// What plays now, as people read it: the song and who sings it.
     pub now: String,
     /// Whether it plays.
-    pub playing: bool,
+    pub playing: Allowed,
     pub search: Option<SearchPage>,
     pub home: Option<HomePage>,
     pub album: Option<AlbumPage>,
@@ -714,20 +732,20 @@ pub struct SpotifyReply {
     pub pages: Vec<SpotifyPage>,
     /// Whether the song a like or unlike named is in the library now, read back.
     #[serde(default)]
-    pub liked: bool,
+    pub liked: Allowed,
     /// Whether the album a save or removal named is in the library now, read back.
     #[serde(default)]
-    pub saved: bool,
+    pub saved: Allowed,
     /// Whether the person follows the artist a follow or unfollow named, read back.
     #[serde(default)]
-    pub followed: bool,
+    pub followed: Allowed,
     /// The playlist a create or edit made, as Spotify has it now.
     #[serde(default)]
     pub made: Option<PlaylistItem>,
     /// Spotify says this sign-in is over: the person connects again. Nothing else in it is an
     /// answer to what was asked.
     #[serde(default)]
-    pub expired: bool,
+    pub expired: Allowed,
 }
 
 /// A service that answers from a script, for a test or a development session: the same answers

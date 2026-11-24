@@ -859,7 +859,7 @@ fn spotify_writes(
     let mut writes = Vec::new();
     // A sign-in Spotify will not renew is the person's to give again: that, and nothing else
     // the answer might have held.
-    if reply.expired {
+    if reply.expired.yes() {
         let mut fields = Vec::new();
         put(
             &t.root_ty,
@@ -941,7 +941,7 @@ fn spotify_writes(
             &t.track,
             &t.tracks_field,
             key,
-            &[("liked", Value::Bool(reply.liked))],
+            &[("liked", Value::Bool(reply.liked.yes()))],
         )),
         SpotifyOp::SaveAlbum { key, .. } => writes.extend(marked(
             host,
@@ -949,7 +949,7 @@ fn spotify_writes(
             &t.album,
             &t.albums_field,
             key,
-            &[("in_library", Value::Bool(reply.saved))],
+            &[("in_library", Value::Bool(reply.saved.yes()))],
         )),
         SpotifyOp::Follow { key, .. } => writes.extend(marked(
             host,
@@ -957,7 +957,7 @@ fn spotify_writes(
             &t.artist,
             &t.artists_field,
             key,
-            &[("followed", Value::Bool(reply.followed))],
+            &[("followed", Value::Bool(reply.followed.yes()))],
         )),
         // A playlist of the person's own, as Spotify has it: the app holds the key its writes
         // go to, and what the provider says it is called now.
@@ -1060,7 +1060,7 @@ fn spotify_writes(
             MusicOrigin::text(""),
         );
     }
-    if !reply.now.is_empty() || !reply.active.is_empty() || reply.playing {
+    if !reply.now.is_empty() || !reply.active.is_empty() || reply.playing.yes() {
         put(
             &t.root_ty,
             &mut fields,
@@ -1071,7 +1071,7 @@ fn spotify_writes(
             &t.root_ty,
             &mut fields,
             "spotify_playing",
-            Value::Bool(reply.playing),
+            Value::Bool(reply.playing.yes()),
         );
     }
     if !reply.active.is_empty() {
