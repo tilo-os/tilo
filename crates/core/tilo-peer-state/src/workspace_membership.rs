@@ -670,7 +670,7 @@ mod tests {
                 ),
                 (
                     WorkspaceMembershipCommand::UninstallApp { app: "e".into() },
-                    vec![0x03, 0x01, b'e'],
+                    vec![0x0a, 0x01, b'e'],
                 ),
             ];
             for (command, golden) in cases {
