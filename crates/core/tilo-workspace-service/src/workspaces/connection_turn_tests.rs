@@ -20,7 +20,9 @@ use super::super::Workspaces;
 use super::super::fixtures::{TestHost, device_cert};
 use super::tests::{member_service, shared_with};
 use crate::apps::triggers::{Firing, Runner, StartRun};
-use crate::work::{HostConnections, Ineligible, NotTaken, Order, Turn, takes_turn};
+use crate::work::{
+    HostConnections, Ineligible, NotTaken, Order, Turn, connection_holder, takes_turn,
+};
 
 const BRIDGE: &str = "so.tilo.bridge";
 const NEEDS: [&str; 2] = ["network.http", "secrets"];
@@ -149,8 +151,7 @@ async fn two_devices(
 
 /// The device the workspace, as `workspaces` reads it, says holds the bridge's lease.
 async fn holder(workspaces: &Workspaces, workspace: &str) -> Option<[u8; 32]> {
-    workspaces
-        .lease_holder(workspace, &Turn::connection(BRIDGE, Vec::new()).lease())
+    connection_holder(workspaces, workspace, BRIDGE)
         .await
         .unwrap()
 }

@@ -243,6 +243,28 @@ pub enum Turn {
     },
 }
 
+/// The lease `app`'s connection turn in a workspace is claimed under ([`Turn::Connection`]).
+#[must_use]
+pub fn connection_lease(app: &str) -> String {
+    format!("connection/{app}")
+}
+
+/// The device that holds `app`'s connection in `workspace` now, as this device reads the
+/// workspace: where the app's long-lived connection runs, and where a call to the app goes.
+/// `None` while no device holds it.
+///
+/// # Errors
+/// The workspace is not kept here.
+pub async fn connection_holder(
+    workspaces: &Workspaces,
+    workspace: &str,
+    app: &str,
+) -> Result<Option<[u8; 32]>, crate::workspaces::CollaborationError> {
+    workspaces
+        .lease_holder(workspace, &connection_lease(app))
+        .await
+}
+
 /// The lease ids of every turn that runs `address` once all start with this.
 #[must_use]
 pub fn once_leases(address: &str) -> String {
@@ -265,7 +287,7 @@ impl Turn {
         match self {
             Self::Invocation { id, .. } => format!("invocation/{}", id.0),
             Self::Linux { id, .. } => format!("linux/{}", id.0),
-            Self::Connection { app, .. } => format!("connection/{app}"),
+            Self::Connection { app, .. } => connection_lease(app),
             Self::Once {
                 address, inputs, ..
             } => {
