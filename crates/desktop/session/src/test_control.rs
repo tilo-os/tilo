@@ -1052,13 +1052,16 @@ fn windows_answer(ctx: &Context, compositor: &Compositor, session: &Session<'_>)
                 .map(|place| place.resource.clone())
                 .filter(|resource| !resource.is_empty())
         };
+        // The item a window was opened on, which a restart opens it on again: the document of
+        // the app's library the window shows.
+        let items = session.handle.window_items();
+        let item_of = |tab: u64| items.get(&tab).cloned();
+        let shown = (rect_of, frames_of, resource_of, item_of);
         match &ctx.scope {
-            None => session
-                .handle
-                .read(|tree| window_rows(tree, rect_of, frames_of, resource_of)),
+            None => session.handle.read(|tree| window_rows(tree, shown)),
             Some(scope) => session
                 .handle
-                .read(|tree| window_rows(&within(tree, scope), rect_of, frames_of, resource_of)),
+                .read(|tree| window_rows(&within(tree, scope), shown)),
         }
     };
     json!({"answer": {"windows": rows}})

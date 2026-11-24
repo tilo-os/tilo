@@ -147,6 +147,8 @@ mod layout_shortcuts;
 mod layout_verbs;
 #[path = "layout_view.rs"]
 mod layout_view;
+#[path = "library_items.rs"]
+mod library_items;
 #[path = "live_activities.rs"]
 mod live_activities;
 #[path = "live_relay_bound.rs"]

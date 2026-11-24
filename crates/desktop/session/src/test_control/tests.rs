@@ -241,11 +241,16 @@ tilo_test_env::scenario! {
         let frames = |id: u64| if id == 7 { 41 } else { 0 };
         // The window's app says what it shows; the tab with no window shows nothing.
         let resources = |tab: u64| (tab == 100).then(|| "notes.page:groceries".to_owned());
+        // The window was opened on one document of its app's library.
+        let items = |tab: u64| (tab == 100).then(|| "tl:so.tilo.pdf-viewer:lib/a".to_owned());
         let rows = window_rows(
             &tree,
-            |id| (id == 7).then_some((14, 96, 946, 984)),
-            frames,
-            resources,
+            (
+                |id| (id == 7).then_some((14, 96, 946, 984)),
+                frames,
+                resources,
+                items,
+            ),
         );
         assert_eq!(rows.len(), 2, "one row per tab: {rows:?}");
         assert_eq!(rows[0]["window"], json!(7));
@@ -253,13 +258,15 @@ tilo_test_env::scenario! {
         assert_eq!(rows[0]["active"], json!(true));
         assert_eq!(rows[0]["frames"], json!(41));
         assert_eq!(rows[0]["resource"], json!("notes.page:groceries"));
+        assert_eq!(rows[0]["item"], json!("tl:so.tilo.pdf-viewer:lib/a"));
         assert_eq!(rows[1]["window"], Json::Null);
         assert_eq!(rows[1]["rect"], Json::Null);
         assert_eq!(rows[1]["frames"], json!(0));
         assert_eq!(rows[1]["resource"], Json::Null);
+        assert_eq!(rows[1]["item"], Json::Null);
         // A frame that no longer maps the window leaves the row without a rectangle rather than one
         // that is no longer where it is drawn.
-        let closed = window_rows(&tree, |_| None, frames, resources);
+        let closed = window_rows(&tree, (|_| None, frames, resources, items));
         assert_eq!(closed[0]["window"], json!(7));
         assert_eq!(closed[0]["rect"], Json::Null);
     }

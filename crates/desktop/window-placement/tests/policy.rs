@@ -1641,7 +1641,7 @@ fn the_keyboard_waits_for_the_window_a_launch_in_front_of_the_person_brings() {
     // An empty desktop: the launch the person starts is where their keys go, before the shell
     // has even made its tab.
     assert!(!policy.awaits_launched_window(), "nothing is on its way");
-    assert!(policy.hold_open("so.tilo.notes", false));
+    assert!(policy.hold_open("so.tilo.notes", false, None));
     assert!(
         policy.awaits_launched_window(),
         "the keys wait for the window of the launch"
@@ -1658,14 +1658,14 @@ fn the_keyboard_waits_for_the_window_a_launch_in_front_of_the_person_brings() {
     );
 
     // A launch in the background brings nothing to where the person is.
-    assert!(policy.hold_open("org.gnome.Terminal", true));
+    assert!(policy.hold_open("org.gnome.Terminal", true, None));
     settle(&mut policy);
     assert!(!policy.awaits_launched_window());
     map(&mut policy, 5, "org.gnome.Terminal");
 
     // One started in front of a window: the place it holds comes forward, and the keys wait
     // for its window there.
-    assert!(policy.hold_open("so.tilo.files", false));
+    assert!(policy.hold_open("so.tilo.files", false, None));
     settle(&mut policy);
     assert!(policy.awaits_launched_window());
     // It started nothing: its place goes, and the keys with it.

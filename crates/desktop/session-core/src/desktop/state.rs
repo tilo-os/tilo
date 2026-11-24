@@ -757,6 +757,13 @@ impl DesktopHandle {
         true
     }
 
+    /// The item each window was opened on, by tab, as the workspace's layout keeps it
+    /// ([`Self::set_window_items`]).
+    #[must_use]
+    pub fn window_items(&self) -> std::collections::BTreeMap<TabId, String> {
+        self.shared.borrow().items.clone()
+    }
+
     /// Replace the tree with one changed elsewhere. The next update pass reconciles the live rows
     /// with it: tabs still present keep their running content, new tabs get content from the host's
     /// [`TileSource`], and removed tabs' applications close. Queued commands stay queued and are

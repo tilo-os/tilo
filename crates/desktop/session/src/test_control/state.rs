@@ -355,12 +355,16 @@ pub(super) fn presence_stamp(session: &Session<'_>, hash: &mut impl std::hash::H
 /// many frames the window's client committed: a window showing the same thing keeps its count,
 /// so two reads that agree say it drew nothing between them. `resource` is what the window
 /// shows, as its bar carries it when the person picks it up: null until the app says what the
-/// window shows.
+/// window shows. `item` is the item the window was opened on (a document of its app's library),
+/// which a restart opens it on again: null for a window opened on none.
 pub(super) fn window_rows(
     tree: &Layout,
-    rect_of: impl Fn(u64) -> Option<(i32, i32, i32, i32)>,
-    frames_of: impl Fn(u64) -> u64,
-    resource_of: impl Fn(u64) -> Option<String>,
+    (rect_of, frames_of, resource_of, item_of): (
+        impl Fn(u64) -> Option<(i32, i32, i32, i32)>,
+        impl Fn(u64) -> u64,
+        impl Fn(u64) -> Option<String>,
+        impl Fn(u64) -> Option<String>,
+    ),
 ) -> Vec<Json> {
     fn named(name: &str, id: Json) -> Json {
         if name.is_empty() { id } else { name.into() }
@@ -414,6 +418,7 @@ pub(super) fn window_rows(
                         "rect": rect,
                         "frames": window.map_or(0, &frames_of),
                         "resource": resource,
+                        "item": item_of(tab.id),
                     }));
                 }
             }

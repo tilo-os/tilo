@@ -29,6 +29,7 @@ use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_session_core::desktop::outcome::{Closed, Outcome};
 
+mod items;
 mod launch;
 mod reach;
 pub(crate) use reach::ReachFirst;
@@ -1476,8 +1477,10 @@ impl Apps {
                 .flatten()
                 .filter(|_| !elsewhere)
             {
-                Some((anchor, ..)) => policy.hold(app, Some(anchor), (false, false), None),
-                None => policy.hold_open(app, elsewhere),
+                // The item the window opens on is kept with its tab, so the layout keeps it and a
+                // restart opens the window on it again.
+                Some((anchor, ..)) => policy.hold(app, Some(anchor), (false, false), reveal),
+                None => policy.hold_open(app, elsewhere, reveal),
             }
         });
         if !held {
@@ -1688,7 +1691,16 @@ impl Apps {
                 .into_iter()
                 .filter(|(tab, _)| Some(*tab) != instance),
         );
-        let answer = app.answer(launch, &shown);
+        let answer = match launch {
+            // A file an app whose windows each show one item of its library opens is an item of
+            // its own: the app's action for the file finds the item those bytes already are or
+            // makes one, and it shows in a window of its own, never in place of the item another
+            // window shows.
+            Launch::Content { .. } if items::windows_show_items(&app.id) => Answer::Start {
+                new_window: shown.of(&app).is_some(),
+            },
+            _ => app.answer(launch, &shown),
+        };
         if let Answer::Raise { tab } = answer
             && desktop.with_policy(|policy| policy.focus_tab(tab))
         {
@@ -1836,6 +1848,9 @@ impl Apps {
                 OpenPlace::Focus | OpenPlace::TabHere => self.start(&launch, &workspace),
                 OpenPlace::Beside => self.start_beside(&launch, &workspace, None, None),
             };
+        }
+        if let Some(opened) = self.opens_item(&target, &arguments, &workspace) {
+            return opened;
         }
         // The person's own action that takes them somewhere in an app (a conversation, a page, a
         // message) shows them where it took them: the app's window comes forward here, as its
@@ -2571,6 +2586,11 @@ impl AppActions for Apps {
         arguments: serde_json::Map<String, serde_json::Value>,
         item: &str,
     ) -> Result<(), ApiError> {
+        if let Some(workspace) = application_provider(&target.provider).map(|(at, _)| at.to_owned())
+            && let Some(opened) = self.opens_item(&target, &arguments, &workspace)
+        {
+            return opened;
+        }
         if let Some((_, app)) = application_provider(&target.provider) {
             let launch = Launch::Package {
                 app: app.to_owned(),
@@ -2623,11 +2643,12 @@ impl Apps {
         record: Option<&str>,
         reference: &tilo_reference::ResourceRef,
     ) -> Result<(), ApiError> {
-        self.deliver(
-            reference.open_target(workspace, app, record),
-            serde_json::Map::new(),
-            workspace,
-        )
+        let target = reference.open_target(workspace, app, record);
+        let arguments = serde_json::Map::new();
+        if let Some(opened) = self.opens_item(&target, &arguments, workspace) {
+            return opened;
+        }
+        self.deliver(target, arguments, workspace)
     }
 
     /// Open `uri` in `workspace` in the app that takes it, as [`AppActions::open_uri`] does: the

@@ -373,6 +373,19 @@ pub fn install_package(dir: &Path, store: &Path) -> String {
     installed
 }
 
+/// Build the tree's tilolang app `apps/tl/<app>` from a copy of it under `scratch`, and install
+/// it into the store `store` ([`install_package`]): an app a development session does not install,
+/// which a test installs as a person installs it. The copy is built, since a build writes the
+/// package's ids lock and source catalogue. Answers the package id it installed.
+///
+/// # Panics
+/// The package does not compile, or the store refuses it.
+pub fn install_tree_app(app: &str, store: &Path, scratch: &Path) -> String {
+    let copy = scratch.join(app);
+    copy_tree(&packages().join(app), &copy);
+    install_package(&copy, store)
+}
+
 /// Copy the directory at `from` , a package or a build of them, into `to` , created.
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).expect("the copy's directory");
