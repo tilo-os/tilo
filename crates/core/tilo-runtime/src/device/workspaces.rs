@@ -904,6 +904,22 @@ impl WorkspaceGrants for MemberListGrants {
     }
 }
 
+/// The agents each workspace this device keeps names in its own list of its agents: whom the
+/// broker admits as an agent acting for its person there, read again each time it asks.
+pub(crate) struct RecordedAgents {
+    pub(crate) workspaces: std::sync::Weak<ServiceWorkspaces>,
+}
+
+impl tilo_workspace_service::apps::services::AgentRoster for RecordedAgents {
+    fn listed(&self, workspace: &str) -> Vec<tilo_workspace_service::apps::services::ListedAgent> {
+        let Some(workspaces) = self.workspaces.upgrade() else {
+            return Vec::new();
+        };
+        let workspace = workspace.to_owned();
+        block_on_owned(async move { workspaces.copies().listed_agents(&workspace).await })
+    }
+}
+
 /// `workspace` as `workspaces` hold it here, with its name: its member copy, or the workspace
 /// the service founded and keeps here.
 async fn copy_of(

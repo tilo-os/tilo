@@ -73,24 +73,13 @@ impl HostRuns {
     /// whose workspace was not held then: this device listed with their others, their root marked
     /// in their devices, their root-only asks served here, and their workspaces read as held.
     fn hold_person(&self) {
-        use tilo_workspace_service::workspaces::person_workspace::devices;
         let (copies, cert) = (self.workspaces.copies().clone(), self.cert.clone());
         let (asked, tickets) = (Arc::clone(&self.asked), Arc::clone(&self.tickets));
         // Their workspaces, listed now that theirs is held: what this device offers their keys,
         // and what their own tilo reads.
         drop(self.workspaces.workspaces());
         super::workspaces::block_on_owned(async move {
-            if let Err(error) = devices::keep(&copies, &cert).await {
-                tracing::warn!(%error, "this device is not listed with its person's");
-            }
-            // The root is this account's own: the person whose workspace this is, read by the
-            // account it runs as, not looked up through a sign-in record.
-            if let Ok(record) = super::services::device_root_record()
-                && let Ok(root) = tilo_identity::store::load_from_path(record)
-                && let Err(error) = devices::mark_root_holder(&copies, &root, &cert).await
-            {
-                tracing::warn!(%error, "this device's root is not marked in its person's devices");
-            }
+            super::first_workspace::hold_person(&copies, &cert).await;
             asked.serve_at_root((*tickets).clone());
         });
     }

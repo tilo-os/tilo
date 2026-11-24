@@ -212,6 +212,43 @@ impl AppBrokerState {
         Ok(self.checked_local_host(caller, presentation)?)
     }
 
+    /// The calls of `agent`, which the workspace's record lists, acting for the person
+    /// `caller`'s existing signed admission (`presentation`) certifies: a run of theirs,
+    /// carrying that admission with the agent's delegation as its origin, so a host action
+    /// is owned by this agent acting for this person and nobody else. The delegation is
+    /// checked again, against the record, on every revalidation; the agent's own signature
+    /// never stands in for it. The workspace's grants and its asked records still decide each
+    /// call. No device is enrolled and no grant is minted.
+    ///
+    /// # Errors
+    /// The admission does not verify or names another caller, or the record lists no such
+    /// agent.
+    pub fn certified_agent_run(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+        agent: &str,
+    ) -> Result<Arc<dyn ActionProvider + Send + Sync>, String> {
+        let checked = self.checked_local_host(caller, presentation)?;
+        let workspace = checked.admission.workspace.clone();
+        let mut admitted = checked.admission.admitted.clone();
+        let roster = self
+            .services
+            .agents
+            .as_deref()
+            .ok_or("this host reads no workspace's agents")?;
+        super::agent_cert::admit_listed_agent(roster, &workspace, &mut admitted, agent)?;
+        let origin = InvocationCaller::Local {
+            route: super::CrdtRoute::cluster(workspace),
+            admitted: Box::new(admitted),
+            time: checked.admission.policy_time.clone(),
+        };
+        Ok(Arc::new(super::action_provider::BrokerApi::for_run(
+            Arc::clone(self),
+            Some(origin),
+        )))
+    }
+
     /// Preserve native physical intent without dropping the signed session.
     /// Network, app and delegated-MCP servers never select this entrypoint.
     #[allow(

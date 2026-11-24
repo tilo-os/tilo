@@ -117,6 +117,10 @@ impl FirstWorkspace {
                 };
                 let workspace = own_workspace(&self.workspaces.device_cert().user_public_key);
                 self.workspaces.found(workspace, FOUNDED_NAME).await?;
+                // Held now, it lists this device with the person's others, as the daemon's start
+                // does for a workspace it holds: what every host admits the device by, and what
+                // the evidence of a call it runs is signed under.
+                hold_person(self.workspaces.copies(), self.workspaces.device_cert()).await;
                 self.name(file, workspace)?;
                 self.show(&[workspace]);
                 Ok(workspace.to_string())
@@ -200,4 +204,25 @@ impl FirstWorkspace {
 pub(super) fn own_workspace(person: &[u8; 32]) -> WorkspaceId {
     WorkspaceId::parse(&tilo_server_protocol::servers::person_workspace_id(person))
         .expect("a person's workspace id is a workspace id")
+}
+
+/// What the daemon's start does for a person whose workspace it holds, done where their workspace
+/// comes to be held later: `cert`, this device, listed with their others in the devices record
+/// of their workspace, and the root this account keeps marked there.
+pub(super) async fn hold_person(
+    copies: &tilo_workspace_service::workspaces::Workspaces,
+    cert: &tilo_user_identity::DeviceCert,
+) {
+    use tilo_workspace_service::workspaces::person_workspace::devices;
+    if let Err(error) = devices::keep(copies, cert).await {
+        tracing::warn!(%error, "this device is not listed with its person's");
+    }
+    // The root is this account's own: the person whose workspace this is, read by the account it
+    // runs as, not looked up through a sign-in record.
+    if let Ok(record) = super::services::device_root_record()
+        && let Ok(root) = tilo_identity::store::load_from_path(record)
+        && let Err(error) = devices::mark_root_holder(copies, &root, cert).await
+    {
+        tracing::warn!(%error, "this device's root is not marked in its person's devices");
+    }
 }

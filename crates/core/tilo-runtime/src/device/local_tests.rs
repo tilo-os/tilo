@@ -734,6 +734,12 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
         matches!(resolved.status, ReceiptStatus::Completed { .. }),
         "the answer goes through: {resolved:?}"
     );
+    // Their yes runs the call it answers, once it is admitted again for its caller.
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    while probe.asked().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(probe.asked().len(), 1, "their yes runs the call it answers");
     assert!(
         steps(&studio)
             .questions()
@@ -833,6 +839,39 @@ fn the_clis_calls_reach_a_second_workspace_through_the_daemon_and_no_other() {
         "the listing was asked in the second workspace: {asked_in:?}"
     );
 
+    // `tilo do -w <studio> probe#publish`: the action runs there, once, and the command reads
+    // its answer.
+    let act = |workspace: &str| {
+        runtime.block_on(async {
+            let workspace = calls.workspace_id(workspace).await?;
+            let started = calls
+                .start(
+                    Some(&workspace),
+                    "probe",
+                    "publish",
+                    &serde_json::json!({}),
+                    "probe#publish",
+                )
+                .await?;
+            calls.follow(Some(&workspace), started).await
+        })
+    };
+    let answer = act(&studio).expect("the action runs in the second workspace");
+    assert_eq!(
+        answer.get("status").and_then(Value::as_str),
+        Some("ok"),
+        "{answer:#}"
+    );
+    assert_eq!(probe.asked().len(), 1, "the action ran once");
+    assert!(
+        probe
+            .callers()
+            .last()
+            .is_some_and(|caller| caller.workspace() == Some(studio.as_str())),
+        "it ran in the second workspace: {:?}",
+        probe.callers()
+    );
+
     // `tilo ls probe -w <elsewhere>` and `tilo do -w <elsewhere> probe#publish`, in a workspace the
     // person is not in: each refused, saying which workspace refused it.
     let elsewhere = tilo_desktop_model::WorkspaceId::new().to_string();
@@ -847,27 +886,14 @@ fn the_clis_calls_reach_a_second_workspace_through_the_daemon_and_no_other() {
         "{:#}",
         ls(&elsewhere).expect_err("a workspace they are not in lists nothing")
     ));
-    let done = runtime.block_on(async {
-        let workspace = calls.workspace_id(&elsewhere).await?;
-        let started = calls
-            .start(
-                Some(&workspace),
-                "probe",
-                "publish",
-                &serde_json::json!({}),
-                "probe#publish",
-            )
-            .await?;
-        calls.follow(Some(&workspace), started).await
-    });
     refused_by(format!(
         "{:#}",
-        done.expect_err("a workspace they are not in runs nothing")
+        act(&elsewhere).expect_err("a workspace they are not in runs nothing")
     ));
     assert_eq!(
         probe.callers().len(),
         asked_before,
         "nothing reached the provider from it"
     );
-    assert!(probe.asked().is_empty(), "nothing ran in it");
+    assert_eq!(probe.asked().len(), 1, "nothing ran in it");
 }

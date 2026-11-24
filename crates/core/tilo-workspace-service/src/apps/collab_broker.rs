@@ -554,6 +554,21 @@ impl AppActionBroker {
             .certified_local_action_provider(caller, presentation)
     }
 
+    /// The calls of the listed agent `agent` acting for the person an already-issued signed
+    /// workspace admission certifies: a run of theirs, owned by that agent for that person
+    /// ([`AppBrokerState::certified_agent_run`]). No device is enrolled and no grant is minted.
+    ///
+    /// [`AppBrokerState::certified_agent_run`]: crate::apps::collab_app_broker::AppBrokerState::certified_agent_run
+    pub fn certified_agent_run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+        agent: &str,
+    ) -> Result<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>, String> {
+        self.state
+            .certified_agent_run(caller, presentation, agent)
+    }
+
     /// Reuse the checked signed personal-cluster admission for native owner checks.
     pub fn certified_person_context(
         &self,

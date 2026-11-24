@@ -18,6 +18,7 @@
 //! - A session that could not begin or finish (the task's budget, the day's limit, a failure)
 //!   is written on the task as stopped, with its plain line (`stop`). Nothing here closes it.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -475,7 +476,7 @@ impl TaskWork {
             },
         };
         let asked = InvokeArgument::Json(arguments);
-        super::invoke_at(&self.service, &self.caller, target, asked)
+        super::invoke_at(Arc::new(self.service.clone()), &self.caller, target, asked)
             .await
             .map(drop)
     }
@@ -486,7 +487,7 @@ impl TaskWork {
         // The agent opens Notes in the workspace, as it does with its own tools: an app's
         // actions are offered to a session once it opened the app.
         let opened = super::invoke_at(
-            &self.service,
+            Arc::new(self.service.clone()),
             &self.caller,
             tilo_actions::remote::application_open_target(&self.workspace, NOTES),
             InvokeArgument::None,

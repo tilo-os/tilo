@@ -213,6 +213,28 @@ impl Workspaces {
         (!name.is_empty()).then(|| name.to_owned())
     }
 
+    /// The agents that work in `workspace`, as its list of its agents names them, each with the
+    /// person it acts for: whom a broker admits as an agent there. None while the list does not
+    /// exist or cannot be read.
+    pub async fn listed_agents(&self, workspace: &str) -> Vec<crate::apps::services::ListedAgent> {
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let Ok(Some(agents)) = self
+            .read_resource::<WorkspaceAgents>(workspace, (tilo_workspace_agent::OWNER, &list))
+            .await
+        else {
+            return Vec::new();
+        };
+        agents
+            .active()
+            .map(|agent| crate::apps::services::ListedAgent {
+                id: agent.id.0.as_str().to_owned(),
+                name: agent.name.clone(),
+                avatar: agent.avatar.clone(),
+                acts_for: agent.acts_for.clone(),
+            })
+            .collect()
+    }
+
     /// Whether the agent `agent` still works in `workspace`: the workspace's list of its
     /// agents names it and it is not retired.
     pub async fn agent_is_active(&self, workspace: &str, agent: &str) -> bool {

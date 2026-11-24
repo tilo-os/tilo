@@ -1827,12 +1827,28 @@ fn admits_again(
         admission
             .check(workspaces.copies())
             .map_err(|refusal| refusal.to_string())?;
+        // Admitted again as a run of the person's admission delegated to this agent, as its
+        // session first was ([`RuntimeActionProvider::agent_session`]).
+        let delegated = broker.certified_agent_run(
+            admission.caller(),
+            admission.presentation(),
+            delegated_agent(&agent)?,
+        )?;
         let provider: Arc<dyn ActionProvider + Send + Sync> = Arc::new(AdmittedAgain {
-            provider: Arc::new(Signed::new(broker.device_host(), Some(signer))),
+            provider: Arc::new(Signed::new(delegated, Some(signer))),
             _admission: admission,
         });
         Ok((provider, agent))
     })
+}
+
+/// The agent `agent`, the caller a device's agent key acts as, is: the id the workspace's record
+/// of its agents lists it by.
+fn delegated_agent(agent: &Caller) -> Result<&str, String> {
+    agent
+        .acting()
+        .agent_id()
+        .ok_or_else(|| "the agent's key acts as no agent".to_owned())
 }
 
 /// A run admitted again for a call that waited across the daemon's restart, kept for as long as
@@ -2248,6 +2264,11 @@ fn broker_services(
         }),
         workspace_grants: Some(Arc::new(MemberListGrants {
             workspaces: Arc::clone(parts.workspaces),
+        })),
+        // The agents each workspace's own list names: an agent of the person's is admitted, and
+        // owns what it starts, only while that list names it.
+        agents: Some(Arc::new(super::workspaces::RecordedAgents {
+            workspaces: Arc::downgrade(parts.workspaces),
         })),
         // Who is in each workspace this host holds, for the apps it serves: their names and the
         // picture each person set in the profile kept here.
@@ -3808,13 +3829,27 @@ impl RuntimeActionProvider {
         // for its person, so the Agents tab and the workspace's roster read it by the id every
         // run of it shares.
         let record = Arc::clone(&self.workspaces);
+        let person = admission.caller().clone();
         let (named, listed) = (workspace.to_owned(), agent.clone());
         block_on_owned(async move {
             let Some(id) = WorkspaceId::parse(&named) else {
                 return;
             };
-            tilo_workspace_service::agents::workspace_agent(record.copies(), id, &listed).await;
+            tilo_workspace_service::agents::workspace_agent(record.copies(), id, &listed, &person)
+                .await;
         });
+        // Once listed, the agent's calls are a run of the person's admission, delegated to this
+        // agent: what owns a host action they start, rechecked against the workspace's record of
+        // its agents. The agent's signature on each call is checked too, but never stands in for
+        // that.
+        let delegated = self
+            .broker
+            .certified_agent_run(
+                admission.caller(),
+                admission.presentation(),
+                delegated_agent(&agent).map_err(io::Error::other)?,
+            )
+            .map_err(io::Error::other)?;
         let run = Self {
             broker: self.broker.clone(),
             workspace: self.workspace.clone(),
@@ -3822,7 +3857,7 @@ impl RuntimeActionProvider {
             apps: self.apps.clone(),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: policy_time.clone(),
-                provider: Arc::new(Signed::new(self.broker.device_host(), Some(signer))),
+                provider: Arc::new(Signed::new(delegated, Some(signer))),
                 admission,
                 agent: Some(agent),
                 projection: None,
@@ -3943,12 +3978,16 @@ impl ActionProvider for RuntimeActionProvider {
         let Some(agent) = session.agent.as_ref() else {
             return;
         };
-        let (Some(agent_id), Some(person)) = (
-            agent.acting().agent_id().map(str::to_owned),
-            agent.acting().acted_for_person().map(str::to_owned),
-        ) else {
+        let Some(agent_id) = agent.acting().agent_id().map(str::to_owned) else {
             return;
         };
+        // The agent's own person keeps its name, through their own run.
+        if agent.acting().acted_for_person().is_none()
+            || agent.acting().acted_for_person() != session.admission.caller().acting().person_id()
+        {
+            return;
+        }
+        let person = session.admission.caller().clone();
         let (workspaces, workspace, client) = (
             Arc::clone(&self.workspaces),
             self.workspace.clone(),

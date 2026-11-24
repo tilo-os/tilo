@@ -2223,15 +2223,21 @@ fn made_resource(output: &Value) -> Option<String> {
 /// Keep the agent `caller` works in `workspace`'s list of its agents: a computer's agent the
 /// list does not name yet is added as it first arrives or acts, so the workspace's Agents tab
 /// shows it. It is added once, under the name it came with; a name its keeper gives it later
-/// stays.
-pub async fn workspace_agent(workspaces: &Workspaces, workspace: WorkspaceId, caller: &Caller) {
-    let (Some(agent), Some(person)) = (
+/// stays. `person` is the agent's person, as this device admitted them: who writes the list.
+pub async fn workspace_agent(
+    workspaces: &Workspaces,
+    workspace: WorkspaceId,
+    caller: &Caller,
+    person: &Caller,
+) {
+    let (Some(agent), Some(keeper)) = (
         caller.acting().agent_id(),
         caller.acting().acted_for_person(),
     ) else {
         return;
     };
-    if !caller.is_device_agent() {
+    // Only the agent's own person lists it, as themselves.
+    if !caller.is_device_agent() || person.acting().person_id() != Some(keeper) {
         return;
     }
     let workspace = workspace.to_string();
@@ -2249,14 +2255,15 @@ pub async fn workspace_agent(workspaces: &Workspaces, workspace: WorkspaceId, ca
 }
 
 /// Name the agent `agent` in `workspace`'s list as `name`, keeping its id: what the client the
-/// agent serves named itself. The write is Assistant's own action, asked of the host and admitted
-/// as every write is, so every later read of the list names it so. Nothing when the list does not
-/// name it, or names it so already.
+/// agent serves named itself. The write is the record's own change, asked as `person` of the
+/// workspace's governance and admitted by the record's grants as every change of theirs is, so
+/// every later read of the list names it so. Nothing when the list does not name it, or names it
+/// so already.
 pub async fn rename_agent(
     workspaces: &Workspaces,
     workspace: WorkspaceId,
     (agent, name): (&str, &str),
-    person: &str,
+    person: &Caller,
 ) -> Result<(), String> {
     let Some(current) = workspaces.agent_name(&workspace.to_string(), agent).await else {
         return Ok(());
@@ -2265,108 +2272,73 @@ pub async fn rename_agent(
     if current == name.as_str() {
         return Ok(());
     }
-    let workspace_text = workspace.to_string();
-    let route = DocumentRoute {
-        app_id: AGENTS_OWNER.to_owned(),
-        cluster_id: workspace_text.clone(),
-        document: collab_types::workspace_document_id(tilo_workspace_agent::KIND),
-    };
-    let caller = tilo_actions::remote::Caller::local_person(person).in_workspace(workspace_text);
-    let mut arguments = serde_json::Map::new();
+    let mut arguments = Map::new();
     arguments.insert("agent".into(), serde_json::json!(agent));
     arguments.insert("name".into(), serde_json::json!(name.as_str()));
-    let request = invocation_of(
-        target_named(&route, tilo_workspace_agent::KIND, "rename-agent"),
-        tilo_actions::remote::InvokeArgument::Json(arguments),
-    );
-    let requested = request.invocation;
-    let reply = workspaces
-        .serve_app(
-            workspace,
-            &caller,
-            tilo_actions::remote::RemoteActionMessage::Invoke(request),
-        )
-        .await
-        .ok_or("this host serves no apps")?;
-    match reply {
-        tilo_actions::remote::RemoteActionMessage::Receipt(receipt)
-            if receipt.invocation == requested =>
-        {
-            match receipt.status {
-                tilo_actions::remote::ReceiptStatus::Completed { .. }
-                | tilo_actions::remote::ReceiptStatus::Accepted => Ok(()),
-                tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error.to_string()),
-                tilo_actions::remote::ReceiptStatus::Failed { error } => Err(error.message),
-                tilo_actions::remote::ReceiptStatus::Cancelled { message } => Err(message
-                    .unwrap_or_else(|| "the action was cancelled before it was taken".to_owned())),
-            }
-        }
-        _ => Err("the host answered no receipt".to_owned()),
-    }
+    let mut change = Map::new();
+    change.insert("action".into(), serde_json::json!("rename-agent"));
+    change.insert("arguments".into(), Value::Object(arguments));
+    keep_agents(
+        workspaces,
+        &workspace.to_string(),
+        person,
+        tilo_actions::remote::WORKSPACE_AGENT_UPDATE,
+        change,
+    )
+    .await
+    .map(drop)
+}
+
+/// Ask `operation` of `workspace`'s record of its agents with `arguments`, as `person`: through
+/// this device's dispatch, where the record's grants decide it.
+async fn keep_agents(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &Caller,
+    operation: &str,
+    arguments: Map<String, Value>,
+) -> Result<Value, String> {
+    invoke_at(
+        workspaces.device_actions(),
+        person,
+        RemoteActionTarget::workspace_governance(workspace, operation),
+        InvokeArgument::Json(arguments),
+    )
+    .await
 }
 
 /// Add the computer's agent `agent` named `name` to `workspace`'s list of its agents, kept by
-/// `person`: the list starts with it where the workspace has none yet. The write is Assistant's
-/// own action, asked of the host and admitted as every write is, so what follows the record sees
-/// it land and every later read of the list names it. Nothing when another arrival added it
-/// first.
+/// `person`: the list starts with it where the workspace has none yet. The write is the record's
+/// own change, asked as `person` of the workspace's governance and admitted by the record's
+/// grants as every change of theirs is, so what follows the record sees it land and every later
+/// read of the list names it. Nothing when another arrival added it first.
 async fn list_agent(
     workspaces: &Workspaces,
     workspace: &str,
     (agent, name): (&str, &str),
-    person: &str,
+    person: &Caller,
 ) -> Result<(), String> {
-    let workspace_id = WorkspaceId::parse(workspace)
-        .ok_or_else(|| format!("{workspace} is not a workspace id"))?;
     let name = tilo_resource::NonBlank::parse(name.trim()).ok_or("the agent has no name")?;
     // A workspace whose people made no agent yet has no list of them: it starts with the genesis
     // every device makes of it, as the roster copy does, and the agent joins it there.
     workspaces.author_agents(workspace, |_| Ok(())).await?;
-    let route = DocumentRoute {
-        app_id: AGENTS_OWNER.to_owned(),
-        cluster_id: workspace.to_owned(),
-        document: collab_types::workspace_document_id(tilo_workspace_agent::KIND),
-    };
-    let caller =
-        tilo_actions::remote::Caller::local_person(person).in_workspace(workspace.to_owned());
-    let mut arguments = serde_json::Map::new();
+    let mut arguments = Map::new();
     arguments.insert("name".into(), serde_json::json!(name.as_str()));
     arguments.insert("id".into(), serde_json::json!(agent));
     arguments.insert("mcp_client".into(), serde_json::json!(name.as_str()));
-    let request = invocation_of(
-        target_named(&route, tilo_workspace_agent::KIND, "create-agent"),
-        tilo_actions::remote::InvokeArgument::Json(arguments),
-    );
-    let requested = request.invocation;
-    let reply = workspaces
-        .serve_app(
-            workspace_id,
-            &caller,
-            tilo_actions::remote::RemoteActionMessage::Invoke(request),
-        )
-        .await
-        .ok_or("this host serves no apps")?;
-    let answer =
-        |status| match status {
-            tilo_actions::remote::ReceiptStatus::Completed { .. }
-            | tilo_actions::remote::ReceiptStatus::Accepted => Ok(()),
-            tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error.to_string()),
-            tilo_actions::remote::ReceiptStatus::Failed { error } => Err(error.message),
-            tilo_actions::remote::ReceiptStatus::Cancelled { message } => Err(message
-                .unwrap_or_else(|| "the action was cancelled before it was taken".to_owned())),
-        };
-    match reply {
-        tilo_actions::remote::RemoteActionMessage::Receipt(receipt)
-            if receipt.invocation == requested =>
-        {
-            // Another arrival listed it first: the workspace refused the second write, and the
-            // list names the agent already, which is all this was for.
-            match answer(receipt.status) {
-                Err(_) if workspaces.agent_name(workspace, agent).await.is_some() => Ok(()),
-                other => other,
-            }
-        }
-        _ => Err("the host answered no receipt".to_owned()),
+    match keep_agents(
+        workspaces,
+        workspace,
+        person,
+        tilo_actions::remote::WORKSPACE_AGENT_CREATE,
+        arguments,
+    )
+    .await
+    {
+        // Another arrival listed it first: the workspace refused the second write, and the list
+        // names the agent already, which is all this was for.
+        Err(_) if workspaces.agent_name(workspace, agent).await.is_some() => Ok(()),
+        other => other.map(drop),
     }
 }
 
@@ -2383,7 +2355,13 @@ pub async fn invoke_named(
     arguments: Map<String, Value>,
 ) -> Result<Value, String> {
     let target = target_named(route, resource, action);
-    invoke_at(provider, caller, target, InvokeArgument::Json(arguments)).await
+    invoke_at(
+        Arc::new(provider.clone()),
+        caller,
+        target,
+        InvokeArgument::Json(arguments),
+    )
+    .await
 }
 
 /// `action` on `resource` of what is kept at `route`, as what an invocation names.
@@ -2418,13 +2396,13 @@ fn invocation_of(target: RemoteActionTarget, argument: InvokeArgument) -> Invoke
 /// # Errors
 /// The action was refused or failed, or it did not end in time.
 async fn invoke_at(
-    provider: &WorkspaceActionProvider,
+    provider: Arc<dyn ActionProvider + Send + Sync>,
     caller: &Caller,
     target: RemoteActionTarget,
     argument: InvokeArgument,
 ) -> Result<Value, String> {
     let request = invocation_of(target, argument);
-    let (provider, caller) = (provider.clone(), caller.clone());
+    let caller = caller.clone();
     tokio::task::spawn_blocking(move || {
         let invocation = request.invocation;
         let receipt = provider
