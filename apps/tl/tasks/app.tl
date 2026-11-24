@@ -597,15 +597,10 @@ action add_subtask(t: Task, title: Text) -> Task uses time (
     key: "Ctrl+Shift+N",
 ) {
     tasks.numbers += 1
+    // A step is work still to do: under a finished task it is a step to do, and the task opens.
+    let status = if closed(t.status) { Status.todo } else { t.status }
     let made = tasks.items.insert(
-        Task(
-            number: tasks.numbers,
-            title: title,
-            parent: t,
-            project: t.project,
-            status: t.status,
-            done: closed(t.status),
-        ),
+        Task(number: tasks.numbers, title: title, parent: t, project: t.project, status: status),
     )
     let last = tasks.items.filter(x -> x.parent == t and x != made).last() ?? t
     tasks.items.move(made, after: last)
