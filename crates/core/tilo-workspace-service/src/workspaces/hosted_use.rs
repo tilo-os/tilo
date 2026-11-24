@@ -60,12 +60,16 @@ use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems}
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{ActionKind, Answer, Rule, TreePath};
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, UnknownAction};
+#[cfg(feature = "agents")]
+use tilo_actions::remote::CatalogueRow;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
 use tilo_actions::remote::person_models::{self, SetKeyFromItem};
-use tilo_actions::remote::person_vault::{self, FillPage, ItemRef};
+#[cfg(feature = "agents")]
+use tilo_actions::remote::person_vault::FillPage;
+use tilo_actions::remote::person_vault::{self, ItemRef};
 use tilo_actions::remote::{
-    Caller, CatalogueRow, InvokeArgument, InvokeRequest, RemoteActionTarget, person_connections,
+    Caller, InvokeArgument, InvokeRequest, RemoteActionTarget, person_connections,
 };
 
 use super::workspace_stores::Store;

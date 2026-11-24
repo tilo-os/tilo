@@ -38,7 +38,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::asked::{AskedBy, AskedFacts, Fact};
 use tilo_actions::remote::person_accounts::{self, BeginSend, SendId, SentMail};
-use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteActionTarget};
+use tilo_actions::remote::{ActionCallError, InvokeRequest};
+#[cfg(feature = "agents")]
+use tilo_actions::remote::{CatalogueRow, RemoteActionTarget};
 
 use super::kept_sign_ins::Signing;
 use super::{Staged, argument, begun_for, send_staged};

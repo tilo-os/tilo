@@ -23,6 +23,7 @@
 //! - a connection is never added by a turn alone. An agent proposes one, and
 //!   it is added once its person approved the proposal.
 
+#[cfg(feature = "agents")]
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -30,19 +31,23 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use tilo_action_policy::{Answer, Level, Segment, TreePath};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
-use tilo_actions::remote::person_connections::{
-    self, AtAddress, Call, Command, Connection, Connections, Leave, Named,
-};
-use tilo_actions::remote::{
-    CatalogueResource, CatalogueRow, InvokeArgument, InvokeRequest, RemoteActionTarget,
-};
+use tilo_actions::remote::person_connections::{self, AtAddress, Call, Leave, Named};
+#[cfg(feature = "agents")]
+use tilo_actions::remote::person_connections::{Command, Connection, Connections};
+#[cfg(feature = "agents")]
+use tilo_actions::remote::{CatalogueResource, CatalogueRow};
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+#[cfg(feature = "agents")]
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
     InputSpec, OperationKind, ParamType, RiskLevel,
 };
 
+#[cfg(feature = "agents")]
 use super::super::Verb;
-use super::{AGENT_VERBS, CONNECTIONS, Refused, address_params, argument};
+#[cfg(feature = "agents")]
+use super::{AGENT_VERBS, CONNECTIONS, address_params};
+use super::{Refused, argument};
 use crate::connections::{self, Calling, Reach};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};

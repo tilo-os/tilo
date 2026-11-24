@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Rule, TreePath};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::ActionCallError::{
-    self, InvalidRequest, NotPermitted, Refused, UnknownAction,
-};
+#[cfg(feature = "agents")]
+use tilo_actions::remote::ActionCallError::NotPermitted;
+use tilo_actions::remote::ActionCallError::{self, InvalidRequest, Refused, UnknownAction};
 use tilo_actions::remote::asked::{Approval, AskedBy, AskedFacts, Named, RecordRef};
 use tilo_actions::remote::{
     Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -326,6 +326,7 @@ pub(super) async fn always(
         .unwrap();
 }
 
+#[cfg(feature = "agents")]
 /// The first use of an item by a turn the server carries out waits for its person and uses
 /// nothing. What they are shown names the agent, its reason, the item by its kind and where it
 /// goes, never the item's reference or its secret, and offers always; asked again, it waits
@@ -622,6 +623,7 @@ pub(super) fn not_hosted_turns(ada: &DeviceCert, workspace: &str) -> Vec<(&'stat
 /// What [`not_hosted_turns`] calls the agent a person's own device hands its session to.
 pub(super) const HANDED: &str = "an agent her own device hands its session to";
 
+#[cfg(feature = "agents")]
 /// Every caller that is not a turn this server carries out is refused before the vault is
 /// opened: a person, an agent with no turn, an agent admitted as a member, a bot, an app, a turn
 /// confined elsewhere and an agent a person's own device hands its session to. Any
@@ -698,6 +700,7 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
     server.shutdown().await;
 }
 
+#[cfg(feature = "agents")]
 /// What reaches the workspace's vault is the agent's own word in the workspace's policy, not
 /// the asker's: an owner's grant that keeps the agent from the vault refuses its turn though
 /// Ada, who asked it, keeps and reads the item herself, and once the grant is gone the same
@@ -770,6 +773,7 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
     server.shutdown().await;
 }
 
+#[cfg(feature = "agents")]
 /// An agent its entry narrows uses an item only where a rule of its bound
 /// names exactly this use: no rule, a rule for the whole provider, a rule
 /// for another action and a rule that denies it all refuse. With the rule,

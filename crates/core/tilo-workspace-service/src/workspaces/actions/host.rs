@@ -1700,11 +1700,11 @@ mod mail_assistant_tests;
 mod mail_reach_tests;
 #[cfg(all(test, feature = "agents"))]
 mod mail_sign_in_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "agents"))]
 mod mail_turn_tests;
 #[cfg(test)]
 mod own_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "agents"))]
 mod page_use_tests;
 #[cfg(test)]
 #[cfg(test)]
@@ -1720,5 +1720,5 @@ mod told_tests;
 mod turn_use_tests;
 #[cfg(test)]
 mod vault_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "agents"))]
 mod web_call_tests;
