@@ -106,6 +106,37 @@ tilo_test_env::scenario! {
         assert_eq!(dropdown.selected(), "Studio");
     }
 
+    phase a_dropdown_shows_words_and_reports_the_ids_behind_them;
+    {
+        let queue = crate::Intents::default();
+        let mut node = Node::new("Dropdown", "shortcut", &queue)
+            .bound(text_bound(
+                "Shortcut",
+                "shortcut:search",
+                edits(&queue, "shortcut"),
+            ))
+            .prop(
+                "options",
+                Value::List(vec![text("Search"), text("Lock the screen")]),
+            )
+            .prop(
+                "values",
+                Value::List(vec![
+                    text("shortcut:search"),
+                    text("shortcut:lock"),
+                ]),
+            );
+        let props = DropdownProps::from_source(&mut node).unwrap();
+        let dropdown = Dropdown::from_props("shortcut", props);
+        assert_eq!(dropdown.options(), ["Search", "Lock the screen"]);
+        assert_eq!(dropdown.values(), ["shortcut:search", "shortcut:lock"]);
+        assert_eq!(
+            dropdown.selected(),
+            "shortcut:search",
+            "the id is what the field holds"
+        );
+    }
+
     phase a_strip_of_choices_is_a_slot_of_segments_and_reports_the_one_chosen;
     {
         let queue = crate::Intents::default();

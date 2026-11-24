@@ -4,6 +4,7 @@ use tilo_actions::{ActionSpec, ApiError, ConfirmationPolicy, ResourceSpec};
 use tilo_service::{Service, Services};
 
 use super::SettingsService;
+use super::tablet_choices;
 
 fn arguments(value: Value) -> Map<String, Value> {
     match value {
@@ -575,5 +576,81 @@ fn use_model_changes_what_agents_answer_with_and_is_undone_as_one_step() {
         resolve(),
         ("hosted".into(), Some("claude".into())),
         "and made again"
+    );
+}
+
+/// A pad's button takes any of the desktop's shortcuts, and each ring and strip keeps what it
+/// does in every mode: the input section holds both, and reads them back as the choices its verbs
+/// take.
+#[test]
+fn a_pads_buttons_and_dials_are_kept_by_the_choice_its_verb_takes() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settings = held();
+    let mut services = services();
+    let device = "056a:0374:Wacom Intuos Pro M Pad";
+    let input = section("input_device");
+
+    services
+        .invoke(
+            &input,
+            "set-pad-button",
+            &arguments(json!({
+                "device": device,
+                "button": 2,
+                "action": "shortcut:focus-previous-window",
+            })),
+        )
+        .unwrap()
+        .unwrap();
+    // The second mode of the first ring, counted from zero as the mapping is.
+    services
+        .invoke(
+            &input,
+            "set-pad-dial",
+            &arguments(json!({
+                "device": device,
+                "dial": "ring",
+                "index": 0,
+                "mode": 1,
+                "action": "volume",
+            })),
+        )
+        .unwrap()
+        .unwrap();
+
+    let stored = services.read(&input).unwrap();
+    let tablet = &stored["tablets"][device];
+    assert_eq!(
+        tablet["pad_buttons"]["2"],
+        json!("focus_previous_window"),
+        "the shortcut the catalogue names is the one the section keeps"
+    );
+    assert_eq!(
+        tablet["pad_rings"]["0"],
+        json!(["scroll", "volume"]),
+        "the second mode holds what it was given, and the first keeps scrolling"
+    );
+
+    let choices = services.read(tablet_choices::RESOURCE).unwrap();
+    let ids = &choices["tablets"][device];
+    assert_eq!(
+        ids["pad_buttons"]["2"],
+        json!("shortcut:focus-previous-window"),
+        "the pane names the choice by the catalogue's own id"
+    );
+    assert_eq!(ids["pad_rings"]["0"], json!(["scroll", "volume"]));
+
+    let refused = services.invoke(
+        &input,
+        "set-pad-button",
+        &arguments(json!({
+            "device": device,
+            "button": 0,
+            "action": "shortcut:not-a-shortcut",
+        })),
+    );
+    assert!(
+        refused.is_some_and(|done| done.is_err()),
+        "a shortcut the desktop does not have is refused, not stored"
     );
 }

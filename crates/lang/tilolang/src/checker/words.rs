@@ -47,6 +47,16 @@ impl Checker<'_> {
                 self.mark_shown(lhs);
                 self.mark_shown(rhs);
             }
+            // A list of words and the others it is joined with: a control's own choices before the
+            // ones another list adds.
+            ExprKind::Binary {
+                op: BinOp::Add,
+                lhs,
+                rhs,
+            } => {
+                self.mark_shown(lhs);
+                self.mark_shown(rhs);
+            }
             ExprKind::If { then, els, .. } | ExprKind::IfLet { then, els, .. } => {
                 self.mark_shown_block(then);
                 if let Some(els) = els {

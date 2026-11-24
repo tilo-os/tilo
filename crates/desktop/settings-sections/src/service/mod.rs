@@ -26,6 +26,7 @@ pub mod agent_models;
 mod i18n;
 pub mod languages;
 pub mod shortcuts_table;
+pub mod tablet_choices;
 
 use serde_json::{Map, Value};
 use settings_store::index::{self, Change, Setting};
@@ -186,6 +187,12 @@ impl SettingsService {
         >(
             shortcuts_table::RESOURCE,
             i18n::t("settings-shortcuts-table"),
+        ));
+        resources.push(tilo_resource::typed_resource::<
+            tablet_choices::TabletChoicesReading,
+        >(
+            tablet_choices::RESOURCE,
+            i18n::t("settings-tablet-choices"),
         ));
         resources
     }
@@ -381,6 +388,15 @@ impl Service for SettingsService {
                 .stored_at(&placement::address("shortcuts", None, "").id)
                 .unwrap_or(Value::Null);
             return serde_json::to_value(shortcuts_table::ShortcutsTable::of(&stored)).ok();
+        }
+        if resource == tablet_choices::RESOURCE {
+            // Each tablet's choices read from this device's input section as it is stored now.
+            let device = ui::framework::settings_device();
+            let stored = self
+                .records
+                .stored_at(&placement::address("input_device", None, &device).id)
+                .unwrap_or(Value::Null);
+            return serde_json::to_value(tablet_choices::TabletChoices::of(&stored)).ok();
         }
         let published = self
             .published

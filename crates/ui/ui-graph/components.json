@@ -2816,6 +2816,14 @@
           }
         },
         {
+          "name": "values",
+          "doc": "What each option stands for, in order, when it is not the text shown: the list offers the words, and a choice reaches the bound value as its id. Empty makes each option its own value.",
+          "type": {
+            "list": "text"
+          },
+          "data": true
+        },
+        {
           "name": "placeholder",
           "doc": "What the field says while nothing is chosen, and what names it to assistive technology.",
           "type": {

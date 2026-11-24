@@ -27,7 +27,7 @@ use smithay::wayland::tablet_manager::{
     TabletDescriptor, TabletPadDescriptor, TabletPadGroupDescriptor,
 };
 
-use settings_store::hardware::input_device_key;
+use settings_store::hardware::{PadDial, PadDialAction, input_device_key};
 
 use super::access_keys::AccessKeys;
 use super::input_config::{
@@ -36,7 +36,7 @@ use super::input_config::{
 };
 use super::tablet::{
     ButtonOutcome, EraserRoute, KeyChord, TabletConfig, apply_pressure_curve, chord_keycodes,
-    eraser_route, map_tablet_position, pen_target, shape_normalised, stylus_button,
+    dial_chord, eraser_route, map_tablet_position, pen_target, shape_normalised, stylus_button,
 };
 use crate::LoopData;
 use crate::input::{InputEvent, PadAction, TabletEvent, TabletPadEvent, TabletPhase};
@@ -132,11 +132,29 @@ impl PublishedInputs {
         let (publisher_pid, publisher_start_ticks) = self.publisher.unwrap_or_default();
         let mut entries: Vec<settings_store::hardware::InputDeviceSnapshot> = devices
             .iter()
-            .map(|device| settings_store::hardware::InputDeviceSnapshot {
-                key: input_device_key(device.id_vendor(), device.id_product(), device.name()),
-                name: device.name().to_owned(),
-                kind: device_caps(device).kind(),
-                ..settings_store::hardware::InputDeviceSnapshot::default()
+            .map(|device| {
+                let kind = device_caps(device).kind();
+                let pad = (kind == settings_store::hardware::InputDeviceKind::TabletPad)
+                    .then(|| pad_controls(device));
+                settings_store::hardware::InputDeviceSnapshot {
+                    key: input_device_key(device.id_vendor(), device.id_product(), device.name()),
+                    name: device.name().to_owned(),
+                    kind,
+                    pad_buttons: pad.as_ref().map_or(0, |pad| pad.buttons),
+                    pad_rings: pad
+                        .as_ref()
+                        .map(|pad| pad.rings.clone())
+                        .unwrap_or_default(),
+                    pad_strips: pad
+                        .as_ref()
+                        .map(|pad| pad.strips.clone())
+                        .unwrap_or_default(),
+                    pad_mode_buttons: pad
+                        .as_ref()
+                        .map(|pad| pad.mode_buttons.clone())
+                        .unwrap_or_default(),
+                    physical_device: physical_device(device),
+                }
             })
             .collect();
         entries.sort_by(|left, right| left.key.cmp(&right.key));
@@ -185,7 +203,7 @@ pub(super) fn dispatch_pad(
     state: &mut State,
 ) {
     let layout = state.keyboard.clone();
-    let (switched, event, chord, steps) = {
+    let (switched, event, chord, steps, dial) = {
         let mut this = input.borrow_mut();
         let this = &mut *this;
         let Some(pad) = this.pads.iter_mut().find(|pad| &pad.device == device) else {
@@ -214,10 +232,40 @@ pub(super) fn dispatch_pad(
             }),
             _ => None,
         };
+        // What the ring or strip does in the mode its group is in now.
+        let dial_action = match action {
+            PadAction::Ring { ring, .. } => PadDial::Ring(ring),
+            PadAction::Strip { strip, .. } => PadDial::Strip(strip),
+            _ => PadDial::Ring(0),
+        };
+        let dial_action = match action {
+            PadAction::Ring { .. } | PadAction::Strip { .. } => this
+                .pad_config(device)
+                .map_or_else(PadDialAction::default, |config| {
+                    config.dial_action(dial_action, mode)
+                }),
+            _ => PadDialAction::Nothing,
+        };
         // Followed even while a client takes the control, so a scroll starts afresh where it is.
         let steps = this.dials.steps(&action);
-        let scroll = f64::from(steps) * DIAL_SCROLL * this.config.scroll_speed;
-        (switched, event, chord, (steps != 0).then_some(scroll))
+        let scroll = (dial_action == PadDialAction::Scroll)
+            .then(|| f64::from(steps) * DIAL_SCROLL * this.config.scroll_speed);
+        // One chord per whole step: Ctrl+= zooms, ] grows the brush, and the volume and
+        // brightness keys step those as the keyboard's own do.
+        let typed = match dial_chord(dial_action, steps > 0) {
+            Some(chord) if steps != 0 => {
+                let once = this.chord(&chord, layout.as_ref());
+                let mut keys =
+                    Vec::with_capacity(once.len().saturating_mul(steps.unsigned_abs() as usize));
+                for _ in 0..steps.unsigned_abs() {
+                    keys.extend(once.iter().cloned());
+                }
+                keys
+            }
+            _ => Vec::new(),
+        };
+        let scroll = if steps != 0 { scroll } else { None };
+        (switched, event, chord, scroll, typed)
     };
     if let Some(switched) = switched {
         state.pad_input(&switched);
@@ -231,6 +279,9 @@ pub(super) fn dispatch_pad(
     }
     if state.pad_input(&event) {
         return;
+    }
+    for key in dial {
+        state.handle_input(key);
     }
     if let Some(vertical) = steps {
         state.handle_input(InputEvent::PointerAxis(Scroll::Pixels(0.0, vertical)));
@@ -246,8 +297,18 @@ impl Pad {
     }
 }
 
-/// A pad's buttons, rings and strips in libinput's mode groups, and the mode each group is in.
-fn pad_layout(device: &Device) -> (TabletPadDescriptor, Vec<u32>) {
+/// A pad's controls as libinput reports them, before they are grouped.
+struct PadControls {
+    buttons: u32,
+    rings: u32,
+    strips: u32,
+    groups: Vec<TabletPadGroupDescriptor>,
+    /// The mode each group is in, in group order.
+    modes: Vec<u32>,
+}
+
+/// The controls of the pad `device`, as libinput reports them.
+fn read_controls(device: &Device) -> PadControls {
     let count = |n: i32| u32::try_from(n).unwrap_or(0);
     let buttons = count(device.tablet_pad_number_of_buttons());
     let rings = count(device.tablet_pad_number_of_rings());
@@ -265,14 +326,90 @@ fn pad_layout(device: &Device) -> (TabletPadDescriptor, Vec<u32>) {
             }
         })
         .collect();
+    PadControls {
+        buttons,
+        rings,
+        strips,
+        groups,
+        modes,
+    }
+}
+
+/// What Settings offers of a pad's controls: its buttons, the modes each of its rings and strips
+/// switches between, and the buttons that switch them.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct PadOffering {
+    buttons: u32,
+    rings: Vec<u32>,
+    strips: Vec<u32>,
+    mode_buttons: Vec<u32>,
+}
+
+/// What `controls` offer a pane: every ring and strip in the mode group that holds it, and every
+/// button that is in no group's buttons, which libinput's mode switch buttons are.
+fn offering(controls: &PadControls) -> PadOffering {
+    let modes_of = |index: u32, ring: bool| {
+        controls
+            .groups
+            .iter()
+            .find(|group| {
+                if ring {
+                    group.rings.contains(&index)
+                } else {
+                    group.strips.contains(&index)
+                }
+            })
+            .map_or(1, |group| group.modes.max(1))
+    };
+    PadOffering {
+        buttons: controls.buttons,
+        rings: (0..controls.rings)
+            .map(|ring| modes_of(ring, true))
+            .collect(),
+        strips: (0..controls.strips)
+            .map(|strip| modes_of(strip, false))
+            .collect(),
+        mode_buttons: (0..controls.buttons)
+            .filter(|button| {
+                !controls
+                    .groups
+                    .iter()
+                    .any(|group| group.buttons.contains(button))
+            })
+            .collect(),
+    }
+}
+
+/// A pad's buttons, rings and strips in libinput's mode groups, and the mode each group is in.
+fn pad_layout(device: &Device) -> (TabletPadDescriptor, Vec<u32>) {
+    let controls = read_controls(device);
     let identity = TabletDescriptor::from(device);
     let pad = TabletPadDescriptor {
         name: identity.name,
         syspath: identity.syspath,
-        buttons,
-        groups,
+        buttons: controls.buttons,
+        groups: controls.groups,
     };
-    (pad, modes)
+    (pad, controls.modes)
+}
+
+/// What Settings offers of the pad `device`, read from the same libinput queries as the pad's
+/// clients are told about.
+fn pad_controls(device: &Device) -> PadOffering {
+    offering(&read_controls(device))
+}
+
+/// The physical device `device` is part of: its path in the system without the input node and
+/// event node under it, which a drawing tablet's pen and pad share.
+fn physical_device(device: &Device) -> String {
+    use smithay::backend::input::Device as _;
+    device
+        .syspath()
+        .as_deref()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 impl Input {
@@ -326,22 +463,24 @@ impl Input {
         vec![InputEvent::TabletPad(pad.event(PadAction::Removed))]
     }
 
-    /// The chord a pad button is mapped to in its tablet's settings.
-    fn pad_chord(&self, device: &Device, button: u32) -> Option<KeyChord> {
+    /// The settings of the tablet `device` is part of.
+    fn pad_config(&self, device: &Device) -> Option<&TabletConfig> {
         let key = input_device_key(device.id_vendor(), device.id_product(), device.name());
         // A pad is its own libinput device; its tablet's settings are found by the pad's name, else
         // by the tablet's model.
         let model = format!("{:04x}:{:04x}:", device.id_vendor(), device.id_product());
-        self.config
-            .tablets
-            .get(&key)
-            .or_else(|| {
-                self.config
-                    .tablets
-                    .iter()
-                    .find(|(known, _)| known.starts_with(&model))
-                    .map(|(_, config)| config)
-            })
+        self.config.tablets.get(&key).or_else(|| {
+            self.config
+                .tablets
+                .iter()
+                .find(|(known, _)| known.starts_with(&model))
+                .map(|(_, config)| config)
+        })
+    }
+
+    /// The chord a pad button is mapped to in its tablet's settings.
+    fn pad_chord(&self, device: &Device, button: u32) -> Option<KeyChord> {
+        self.pad_config(device)
             .and_then(|config| super::tablet::pad_button(config, button))
             .cloned()
     }
@@ -838,5 +977,51 @@ fn device_caps(device: &Device) -> DeviceCaps {
         is_touch: device.has_capability(DeviceCapability::Touch),
         is_tablet_tool: device.has_capability(DeviceCapability::TabletTool),
         is_tablet_pad: device.has_capability(DeviceCapability::TabletPad),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, reason = "in a test these are the assertion")]
+
+    use super::*;
+
+    /// What a pad with two mode groups offers a pane: each ring and strip in its group's modes,
+    /// and the buttons that switch them, which no group holds.
+    #[test]
+    fn a_pads_controls_are_offered_in_the_modes_their_groups_switch_between() {
+        let controls = PadControls {
+            buttons: 5,
+            rings: 2,
+            strips: 1,
+            groups: vec![
+                TabletPadGroupDescriptor {
+                    buttons: vec![0, 1],
+                    rings: vec![0],
+                    strips: vec![0],
+                    modes: 3,
+                },
+                TabletPadGroupDescriptor {
+                    buttons: vec![2],
+                    rings: vec![1],
+                    strips: Vec::new(),
+                    modes: 1,
+                },
+            ],
+            modes: vec![0, 0],
+        };
+        let offered = offering(&controls);
+        assert_eq!(offered.buttons, 5);
+        assert_eq!(
+            offered.rings,
+            vec![3, 1],
+            "a ring keeps its own group's mode count"
+        );
+        assert_eq!(offered.strips, vec![3]);
+        assert_eq!(
+            offered.mode_buttons,
+            vec![3, 4],
+            "buttons in no group switch the pad's modes"
+        );
     }
 }

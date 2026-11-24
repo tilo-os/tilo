@@ -767,21 +767,17 @@ pub mod tablet_choices {
         ("brightness", PadDialAction::Brightness),
     ];
 
-    /// `shortcut:<name>`, the choice running a desktop shortcut.
+    /// `shortcut:<name>`, the choice running a desktop shortcut. The name is the shortcut's id
+    /// in the desktop's own table, the one the Shortcuts pane lists and `rebind` takes.
     #[must_use]
     pub fn shortcut_id(action: ShortcutAction) -> String {
-        let name = serde_json::to_value(action)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_string))
-            .unwrap_or_default();
-        format!("shortcut:{name}")
+        format!("shortcut:{}", action.id())
     }
 
     /// The shortcut a `shortcut:<name>` choice runs.
     #[must_use]
     pub fn shortcut(id: &str) -> Option<ShortcutAction> {
-        let name = id.strip_prefix("shortcut:")?;
-        serde_json::from_value(serde_json::Value::String(name.to_string())).ok()
+        ShortcutAction::from_id(id.strip_prefix("shortcut:")?)
     }
 
     #[must_use]

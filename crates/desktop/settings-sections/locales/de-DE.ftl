@@ -125,6 +125,7 @@ so-tilo-settings-agent-models-redo-model = Modell erneut wählen
 settings-shortcuts-table = Tastenkürzel
 settings-languages = Sprachen
 settings-appearance-choose-language = Die Sprache wählen
+settings-tablet-choices = Stift- und Pad-Belegung
 so-tilo-settings-agent-providers-add-provider = Anbieter hinzufügen
 so-tilo-settings-agent-providers-remove-provider = Anbieter entfernen
 so-tilo-settings-agent-providers-set-provider-enabled = Anbieter für Agenten freigeben

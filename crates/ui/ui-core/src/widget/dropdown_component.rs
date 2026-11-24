@@ -15,6 +15,11 @@ pub struct DropdownProps {
     pub value: Bound<String>,
     /// What the list offers, in order.
     pub options: Vec<String>,
+    /// What each option stands for, in order, when it is not the text shown: the list offers the
+    /// words, and a choice reaches the bound value as its id. Empty makes each option its own
+    /// value.
+    #[component(data)]
+    pub values: Vec<String>,
     /// What the field says while nothing is chosen, and what names it to assistive technology.
     pub placeholder: Option<String>,
     /// A glyph before the field: the kind of thing chosen.
@@ -37,6 +42,7 @@ impl Default for DropdownProps {
         Self {
             value: Bound::default(),
             options: Vec::new(),
+            values: Vec::new(),
             placeholder: None,
             icon: None,
             caption: None,
@@ -55,6 +61,7 @@ impl Described for Dropdown {
         let DropdownProps {
             value,
             options,
+            values,
             placeholder,
             icon,
             caption,
@@ -64,7 +71,7 @@ impl Described for Dropdown {
             change,
         } = props;
         let edits = value.clone();
-        let mut dropdown = Self::from_state(options, &value.state)
+        let mut dropdown = Self::from_state(options.clone(), &value.state)
             .with_id(key)
             .on_change(move |chosen| {
                 // A view that names an action for the choice owns it: the action records the
@@ -77,6 +84,9 @@ impl Described for Dropdown {
             })
             .with_enabled(enabled)
             .control_size(size);
+        if !values.is_empty() {
+            dropdown.set_value_options(values.into_iter().zip(options).collect());
+        }
         if let Some(placeholder) = &placeholder {
             dropdown = dropdown
                 .with_placeholder(placeholder)
@@ -99,8 +109,12 @@ impl Described for Dropdown {
             return false;
         }
         self.set_enabled(props.enabled);
-        if props.options != self.options() {
-            self.set_options(props.options);
+        if props.values.is_empty() {
+            if props.options != self.options() {
+                self.set_options(props.options);
+            }
+        } else if props.values != self.values() || props.options != self.options() {
+            self.set_value_options(props.values.into_iter().zip(props.options).collect());
         }
         let chosen = props.value.state.get();
         if chosen != self.selected() {

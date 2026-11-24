@@ -1818,6 +1818,26 @@ fields = [
   { name = "name", type = "text" },
 ]
 
+[[resources]]
+kind = "settings.tablet-choices"
+label = "Tablet controls"
+version = 1
+fields = [
+  { path = "tablets", type = { map = { named = "TabletChoiceIds" } }, readonly = true },
+]
+
+[[resources.types]]
+name = "TabletChoiceIds"
+fields = [
+  { name = "lower_button", type = "text" },
+  { name = "upper_button", type = "text" },
+  { name = "third_button", type = "text" },
+  { name = "eraser", type = "text" },
+  { name = "pad_buttons", type = { map = "text" } },
+  { name = "pad_rings", type = { map = { list = "text" } } },
+  { name = "pad_strips", type = { map = { list = "text" } } },
+]
+
 [[roots]]
 name = "appearance"
 kind = "settings.appearance"
@@ -1992,4 +2012,9 @@ published = "settings/shortcuts-table"
 name = "languages"
 kind = "settings.languages"
 published = "settings/languages"
+
+[[roots]]
+name = "tablet_choices"
+kind = "settings.tablet-choices"
+published = "settings/tablet-choices"
 
