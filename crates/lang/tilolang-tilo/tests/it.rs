@@ -57,6 +57,7 @@ mod native_chat;
 mod native_chat_skills;
 mod native_mail;
 mod native_notes;
+mod native_tube;
 mod note_import;
 mod notebook_order;
 mod notes;

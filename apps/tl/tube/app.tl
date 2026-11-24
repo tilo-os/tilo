@@ -1092,6 +1092,11 @@ migration action carry_native_tube(yt: YouTube) uses time {
                 yt.queue.insert(QueuedVideo(key: key))
             }
         }
+        // A history the person deleted there stays deleted: an earlier history is not imported
+        // over it here either.
+        if (kept.texts.get("cleared") ?? "") == "true" {
+            yt.history_cleared = true
+        }
         // When each video was watched, in milliseconds since 1970 as the native app kept it.
         let watched = kept.entries.get("watched") ?? Map<Text>()
         for key in watched.keys() {
