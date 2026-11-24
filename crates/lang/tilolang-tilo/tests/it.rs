@@ -19,6 +19,7 @@ mod atomic;
 mod block_search;
 mod board_lists;
 mod bundle;
+mod canvas;
 mod capture;
 mod chained;
 mod chat;

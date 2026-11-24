@@ -47,7 +47,7 @@ pub use schema::{
     Writes,
 };
 pub use store::{
-    CHANGED, CREATED, Live, RecordReader, Resource, Source, Store, StoreError, UPDATED, Written,
-    Wrote,
+    CHANGED, CREATED, Live, PastChild, RecordReader, Resource, Source, Store, StoreError, UPDATED,
+    Written, Wrote,
 };
 pub use value::{Cell, Value};

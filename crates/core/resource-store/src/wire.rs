@@ -170,6 +170,18 @@ pub enum Command {
         filters: Vec<Filter>,
         field: String,
     },
+    /// The resources nested in `parent` as they stood at the version the change `change` (its
+    /// hash in hex) made, each with its fields and content then: what a reader comparing a
+    /// parent's past states reads its collections from. Answered as [`Reply::ChildrenAt`], in
+    /// pages: `from` is where in the answer this page starts, `0` first.
+    ///
+    /// A service older than this read refuses it as a command it does not know, which the
+    /// reader says plainly; nothing it already answers changes.
+    ChildrenAt {
+        parent: String,
+        change: String,
+        from: u64,
+    },
 }
 
 /// One edit of a resource's content.
@@ -257,6 +269,41 @@ pub enum Reply {
     },
     /// The values a field holds, each once, in order ([`Command::Values`]).
     Values(Vec<Value>),
+    /// The resources nested in a parent at a version, a page of them, and where the next page
+    /// starts ([`Command::ChildrenAt`]); `None` where the store holds no such change.
+    ChildrenAt(Option<PastChildren>),
+}
+
+/// A page of the resources nested in a parent at a version ([`Reply::ChildrenAt`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PastChildren {
+    pub children: Vec<crate::store::PastChild>,
+    /// Where the next page starts; `None` on the last.
+    pub next: Option<u64>,
+}
+
+impl PastChildren {
+    /// The page of `children` from `from` on, of at most [`RECORD_PAGE_BYTES`] encoded.
+    #[must_use]
+    pub fn page(children: Vec<crate::store::PastChild>, from: u64) -> Self {
+        let start = usize::try_from(from).unwrap_or(usize::MAX);
+        let mut bytes = 0usize;
+        let mut page = Vec::new();
+        let mut next = None;
+        for (at, child) in children.into_iter().enumerate().skip(start) {
+            let size = serde_json::to_vec(&child).map_or(0, |encoded| encoded.len());
+            if !page.is_empty() && bytes.saturating_add(size) > RECORD_PAGE_BYTES {
+                next = u64::try_from(at).ok();
+                break;
+            }
+            bytes = bytes.saturating_add(size);
+            page.push(child);
+        }
+        Self {
+            children: page,
+            next,
+        }
+    }
 }
 
 /// How many bytes of changes one page or run carries: under [`MAX_WIRE_BYTES`] once encoded.
@@ -461,6 +508,7 @@ fn write_into(
         | Command::Contents { .. }
         | Command::Fields { .. }
         | Command::Values { .. }
+        | Command::ChildrenAt { .. }
         | Command::Turn { .. }
         | Command::Reach { .. }
         | Command::RecordChanges { .. }
@@ -566,6 +614,15 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         }
         Command::Position { query, id } => Reply::Position(store.position(query, id, may_read)),
         Command::PageAt { query, at } => Reply::Page(store.at(query, *at, may_read)),
+        Command::ChildrenAt {
+            parent,
+            change,
+            from,
+        } => Reply::ChildrenAt(
+            store
+                .children_at(parent, change, may_read)
+                .map(|children| PastChildren::page(children, *from)),
+        ),
         Command::Reach { .. } => Reply::Reach(Reach::default()),
         Command::Put { .. }
         | Command::Remove { .. }

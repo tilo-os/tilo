@@ -52,7 +52,9 @@ use crate::query::{Filter, Page, Query};
 use crate::schema::Schema;
 use crate::value::{Cell, Value};
 
+mod past;
 mod readers;
+pub use past::PastChild;
 pub use readers::RecordReader;
 
 /// The most resources one document holds before the next one starts.
@@ -1955,6 +1957,41 @@ impl Store {
         out
     }
 
+    /// The resource `id` of `kind` as it stood at a version that is a change of another
+    /// document: of a resource nested in it, or of one it is nested in, read across the
+    /// documents at the cut that change makes.
+    fn at_cut(
+        &self,
+        kind: &str,
+        id: &str,
+        change: &str,
+    ) -> Option<(Option<Indexed>, Option<serde_json::Value>)> {
+        let cut = self.cut_of(id, change)?;
+        let (index_doc, readers) = self.placed(kind, id)?;
+        let held = self.docs.get(&index_doc)?;
+        let heads = cut.heads(held);
+        let indexed = read_as_of(held, Some(&heads), id)
+            .filter(|(held_kind, _)| held_kind == kind)
+            .map(|(_, resource)| Indexed {
+                doc: index_doc.clone(),
+                parent: resource.parent,
+                order: resource.order,
+                fields: resource.fields,
+            });
+        let content = self
+            .docs
+            .get(&content_id(&readers, kind, id))
+            .and_then(|doc| {
+                let heads = cut.heads(doc);
+                let look = crate::wire::AsOf {
+                    doc,
+                    heads: Some(&heads),
+                };
+                (look.length(&ROOT) > 0).then(|| look.json(&ROOT))
+            });
+        Some((indexed, content))
+    }
+
     /// The resource `id` of `kind` as it stood just before the write that made the change
     /// `change` (its hash, in hex), or just after it with `after`: its indexed fields and its
     /// content then. One write may change both of a resource's documents, each change stamped
@@ -1978,10 +2015,15 @@ impl Store {
         let content_doc = content_id(&readers, kind, id);
         let held = self.docs.get(&index_doc)?;
         let content = self.docs.get(&content_doc);
-        let written = held
+        let Some(written) = held
             .get_change_by_hash(&hash)
             .or_else(|| content.and_then(|doc| doc.get_change_by_hash(&hash)))
-            .and_then(|change| Stamp::of(&change))?;
+            .and_then(|change| Stamp::of(&change))
+        else {
+            // A change of what it holds, or of what holds it, is a version of it too: it is
+            // read as it stood then, at the cut that change makes.
+            return after.then(|| self.at_cut(kind, id, change)).flatten();
+        };
         let one_write = |stamp: &Stamp| {
             stamp.invocation == written.invocation
                 && (written.moment == 0 || stamp.moment == written.moment)
