@@ -170,11 +170,7 @@ tilo_test_env::scenario! {
                 vec![0x0c, 0x01, b'p', 0x01, b'i', 0x01],
             ),
             (Change::TransferOwnership { person: p() }, vec![0x0d, 0x01, b'p']),
-            (
-                Change::AddAgent { agent: "a".into(), for_person: p(), by: None },
-                vec![0x0e, 0x01, b'a', 0x01, b'p', 0x00],
-            ),
-            (Change::RemoveAgent { agent: "a".into(), by: None }, vec![0x0f, 0x01, b'a', 0x00]),
+
         ];
         for (change, golden) in &cases {
             match change {
@@ -191,9 +187,7 @@ tilo_test_env::scenario! {
                 | Change::RemoveRole { .. }
                 | Change::RetiredSetMemberRoles { .. }
                 | Change::SetMemberCustomRole { .. }
-                | Change::TransferOwnership { .. }
-                | Change::AddAgent { .. }
-                | Change::RemoveAgent { .. } => stored_as!(change, golden),
+                | Change::TransferOwnership { .. } => stored_as!(change, golden),
             }
         }
         let grant = Grant::new(

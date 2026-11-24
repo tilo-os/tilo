@@ -2187,15 +2187,25 @@ fn a_draft_is_its_authors_alone_and_the_send_empties_it() {
 /// the same change Settings' Agent models pane makes, with what the answers here have cost so
 /// far. A conversation between people offers no model: which one an agent answers with is not
 /// theirs to choose.
+/// The grant admitting `agent` to `workspace` as `person`'s agent: an agent is the pair of its
+/// id and the person it acts for, and only that person's grants reach it.
+fn admitted(workspace: &str, agent: &str, person: &str) -> tilo_action_policy::Grant {
+    tilo_action_policy::Grant::new(
+        format!("agent-member:{agent}"),
+        tilo_action_policy::Grantee::agent(agent),
+        tilo_action_policy::TreePath::workspace(workspace),
+        tilo_action_policy::KindSet::READ_UNDOABLE,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(person),
+    )
+}
+
 #[test]
 fn a_conversation_with_an_agent_offers_the_model_its_answers_come_from() {
     let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace-model", "ada");
-    policy.agents.insert(
-        "helper".to_owned(),
-        tilo_action_policy::AgentMember {
-            for_person: "ada".to_owned(),
-        },
-    );
+    policy
+        .grants
+        .push(admitted("workspace-model", "helper", "ada"));
     let (ada, _) = Replica::access(
         "ada",
         Workspace::new(),
@@ -2582,12 +2592,9 @@ fn the_workspaces_people_are_a_page_of_their_own() {
     policy
         .members
         .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
-    policy.agents.insert(
-        "helper".to_owned(),
-        tilo_action_policy::AgentMember {
-            for_person: "ada".to_owned(),
-        },
-    );
+    policy
+        .grants
+        .push(admitted("workspace-people", "helper", "ada"));
     let (ada, _) = Replica::access(
         "ada",
         Workspace::new(),

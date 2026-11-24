@@ -100,8 +100,9 @@ pub(super) struct Resources {
 }
 
 /// The workspace's one read decision, for the store of the workspace: a person reads as
-/// themselves, an agent of the member list as the person it acts for where its preset, narrowed
-/// to that person's reach, reads the resource, and anyone else reads none of it.
+/// themselves, an agent a person's record names as that person's own agent, reading as them
+/// where its preset, narrowed to their reach, reads the resource, and anyone else reads none of
+/// it.
 #[cfg(any(feature = "apps", feature = "agents"))]
 struct PolicyReaders(std::sync::RwLock<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>);
 
@@ -120,6 +121,7 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
     fn reader_of(
         &self,
         actor: &tilo_actions::Actor,
+        writer: Option<&str>,
         kind: &str,
         id: &str,
     ) -> Option<tilo_action_policy::PersonId> {
@@ -134,7 +136,7 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
         match actor.member_id()? {
             MemberId::Person(person) => Some(person.clone()),
             MemberId::Agent(agent) => {
-                let member = policy.agents.get(agent.as_str())?;
+                let person = writer?;
                 let workspace = TreePath::workspace(&policy.workspace);
                 // A tilolang record's kind names its app: `tl.<app>.<Type>`.
                 let node = kind
@@ -150,7 +152,7 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
                                 .resource(id.to_owned())
                         },
                     );
-                let acting = Acting::handed_agent(agent.as_str(), member.for_person.as_str());
+                let acting = Acting::handed_agent(agent.as_str(), person);
                 let preset = acting.handed_preset(&policy.workspace);
                 let reads = Policy::of_acting(&acting, &policy, &preset)
                     .decide(
@@ -160,7 +162,7 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
                     )
                     .answer
                     == Answer::Allow;
-                reads.then(|| tilo_action_policy::PersonId::from(member.for_person.as_str()))
+                reads.then(|| tilo_action_policy::PersonId::from(person))
             }
             MemberId::Bot(_) => None,
         }

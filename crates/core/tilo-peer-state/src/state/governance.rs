@@ -901,19 +901,17 @@ impl PeerGovernanceMut<'_> {
         self.peer.write_changes(document, changes, key, now)
     }
 
-    /// Sign one custom-role or agent change through the workspace's
-    /// governance: it holds as far as the signer's grants reach, on every
-    /// device that replays it.
+    /// Sign one custom-role change through the workspace's governance: it
+    /// holds as far as the signer's grants reach, on every device that
+    /// replays it.
     pub fn change_member_list(
         self,
         change: Change,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        if !change.is_custom_role_change()
-            && !matches!(change, Change::AddAgent { .. } | Change::RemoveAgent { .. })
-        {
-            return Err("expected a custom role or agent change".into());
+        if !change.is_custom_role_change() {
+            return Err("expected a custom role change".into());
         }
         self.peer.require_member_writer(key, now)?;
         let document = self

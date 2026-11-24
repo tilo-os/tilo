@@ -36,12 +36,15 @@ fn chat_with_an_agent() -> (Session, String) {
     let route = RouteSpec::app(CHAT, uuid::Uuid::new_v4());
     let workspace = route.cluster_id.to_string();
     let mut policy = policy::WorkspacePolicy::new(workspace.as_str(), "ada");
-    policy.agents.insert(
-        AGENT.to_owned(),
-        policy::AgentMember {
-            for_person: "ada".to_owned(),
-        },
-    );
+    // Ada's agent, admitted by her: an agent is the pair of its id and its person.
+    policy.grants.push(policy::Grant::new(
+        format!("agent-member:{AGENT}"),
+        policy::Grantee::agent(AGENT),
+        policy::TreePath::workspace(&workspace),
+        policy::KindSet::READ_UNDOABLE,
+        policy::Answer::Allow,
+        policy::Grantee::person("ada"),
+    ));
     let spec = spec_of(&route, "ada").access(MemberAccess::person(policy, "ada"));
     // A window tall enough to show a conversation's messages and the turn under them without
     // scrolling: what the test reads and presses is what the person sees.

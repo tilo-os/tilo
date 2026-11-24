@@ -7,8 +7,7 @@
 //! comes in with both of its people, or with that person alone when no person opened it.
 
 use tilo_action_policy::{
-    AgentMember, Answer, Grant, Grantee, KindSet, MemberAccess, PersonId, Role, TreePath,
-    WorkspacePolicy,
+    Answer, Grant, Grantee, KindSet, MemberAccess, PersonId, Role, TreePath, WorkspacePolicy,
 };
 use tilo_actions::ResourceSpec;
 use tilo_resource_store::history::verbs::HistoryView;
@@ -38,18 +37,21 @@ fn agent(id: &str) -> Actor {
     Actor::from(MemberId::agent(id))
 }
 
-/// Ada's workspace: Bo edits it, and the agents Scout and Helper are members: Scout acts for
-/// Ada, Helper for Bo, each reading no more than the person it acts for.
+/// Ada's workspace: Bo edits it, and Scout and Helper are admitted to it: Scout by Ada, Helper
+/// by Bo. An agent is the pair of its id and its person, so an agent a person's record names is
+/// their own, reading no more than they do.
 fn policy() -> WorkspacePolicy {
     let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
     policy.members.insert("bo".to_owned(), Role::Editor);
     for (agent, person) in [("scout", "ada"), ("helper", "bo")] {
-        policy.agents.insert(
-            agent.to_owned(),
-            AgentMember {
-                for_person: person.to_owned(),
-            },
-        );
+        policy.grants.push(Grant::new(
+            format!("agent-member:{agent}"),
+            Grantee::agent(agent),
+            TreePath::workspace(WORKSPACE),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            Grantee::person(person),
+        ));
     }
     policy
 }
@@ -582,56 +584,27 @@ fn a_conversation_an_earlier_chat_kept_that_no_person_opened_is_its_one_person_s
     let all = Value::resource(&before.host.root_of(APP).unwrap());
     before.commit();
     // The app made it by itself, as an automation or a migration does: no person opened it.
+    // It names a person: an agent is the pair of its id and its person, and a record no person
+    // made names no agent's person.
     let made = call_as(
         &before,
         &Actor::App(AppId::from(APP)),
         "message_person",
-        vec![all, Value::Actor(agent("scout"))],
+        vec![all, Value::Actor(person("bo"))],
     );
     before.commit();
-    let with_scout = target(&made);
+    let with_bo = target(&made);
 
     let now = chat("ada", before.doc.fork());
     assert!(now.host.migrate() >= 1, "its migration runs");
     settle(&now);
     assert_eq!(
-        people(&now, &with_scout),
-        [agent("scout")],
+        people(&now, &with_bo),
+        [person("bo")],
         "the one person it was with, never everyone"
     );
-    for who in [person("ada"), person("bo")] {
-        assert!(!now.host.runtime().may_read(&who, &with_scout), "{who:?}");
-    }
-    assert!(now.host.runtime().may_read(&agent("scout"), &with_scout));
-}
-
-/// A reader field naming an agent of a person the workspace does not have reads none of it: the
-/// store refuses to place the conversation rather than seal it to nobody.
-#[test]
-fn a_conversation_naming_an_agent_of_no_member_is_refused() {
-    let mut policy = policy();
-    policy.agents.insert(
-        "scout".to_owned(),
-        AgentMember {
-            for_person: "zoe".to_owned(),
-        },
-    );
-    let ada = device_with("ada", policy, crate::fixtures::Workspace::new(), &[CHAT]);
-    let all = Value::resource(&ada.host.root_of(APP).unwrap());
-    ada.commit();
-    let invoked = invoke_as(
-        &ada,
-        &person("ada"),
-        "message_person",
-        vec![all, Value::Actor(agent("scout"))],
-    );
-    let refused = ada.host.store().take_refusal().or_else(|| invoked.err());
-    assert!(
-        refused
-            .as_ref()
-            .is_some_and(|why| why.contains("reads none of it")),
-        "an agent acting for no member places nothing, got {refused:?}"
-    );
+    assert!(!now.host.runtime().may_read(&person("ada"), &with_bo));
+    assert!(now.host.runtime().may_read(&person("bo"), &with_bo));
 }
 
 /// A reader field naming an agent whose own grant is smaller than its person's reads none of it:

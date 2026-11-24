@@ -4254,17 +4254,20 @@ impl RuntimeActionProvider {
         let agent = device_agent_id(&operator, MCP_CLIENT);
         // The person's own act, as the caller that made the agent's calls works for them.
         let person = Caller::local_person(hex::encode(operator)).in_workspace(&workspace);
-        // Every workspace the agent works in: the one its session is in, and each whose member
-        // list names it. The answer syncs with the workspace, so a host running the agent
-        // elsewhere refuses its next call.
+        // Every workspace the agent may work in: a stop is the person's own say about their own
+        // agent, which reaches only the agent acting for them, so it is written in each workspace
+        // this device holds; going on takes it back where it stands. The answer syncs with the
+        // workspace, so a host running the agent elsewhere refuses its next call.
+        let operator_person = hex::encode(operator);
+        let now = tilo_action_policy::Context::at_time(tilo_clock::wall());
         let targets: Vec<String> = self
             .workspaces
             .workspaces()
             .into_iter()
             .filter(|held| {
-                held.id().to_string() == workspace
+                stopping
                     || self.workspaces.policy_of(held.id())()
-                        .is_some_and(|policy| policy.agents.contains_key(&agent))
+                        .is_some_and(|policy| policy.stops(&agent, &operator_person, &now))
             })
             .map(|held| held.id().to_string())
             .collect();

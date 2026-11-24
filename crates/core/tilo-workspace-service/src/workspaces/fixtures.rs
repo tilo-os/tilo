@@ -1212,6 +1212,24 @@ pub async fn invitation(
     tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation)
 }
 
+/// The membership a replica holding nothing but `workspace`'s membership log, as `workspaces`
+/// sends it to a peer, replays: none of the workspace's records and none of its keys.
+///
+/// # Panics
+/// `workspaces` does not hold `workspace`.
+pub async fn membership_log_alone(
+    workspaces: &Workspaces,
+    workspace: &str,
+) -> tilo_action_policy::WorkspacePolicy {
+    let state = workspaces.workspace(workspace).await.unwrap();
+    let message = state.lock().await.peer().workspace_message();
+    let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = message else {
+        panic!("a workspace sends its log whole: {message:?}");
+    };
+    let log = tilo_peer_state::workspace::candidate(None, &changes).unwrap();
+    tilo_peer_state::members::replay(&log, workspace)
+}
+
 /// The runs a test's broker was asked to start, each of which ran to its end at once.
 #[derive(Default)]
 pub struct Started(pub Mutex<Vec<crate::apps::triggers::Firing>>);

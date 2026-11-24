@@ -173,7 +173,10 @@ impl Invoker for Sent {
 
 #[test]
 fn supervision_shows_what_the_assistant_plans_with_and_spent() {
-    let (_ada, open) = opened(vec![agent("assistant", "Ada's assistant", 1)], "supervision");
+    let (_ada, open) = opened(
+        vec![agent("assistant", "Ada's assistant", 1)],
+        "supervision",
+    );
     let said = shown(&open);
     for expected in [
         "Supervision",
@@ -181,7 +184,10 @@ fn supervision_shows_what_the_assistant_plans_with_and_spent() {
         "google/gemini-3-pro",
         "3.12 of 10 a day",
     ] {
-        assert!(said.iter().any(|said| said.contains(expected)), "{expected}: {said:?}");
+        assert!(
+            said.iter().any(|said| said.contains(expected)),
+            "{expected}: {said:?}"
+        );
     }
 }
 
@@ -211,14 +217,16 @@ fn supervision_offers_to_make_an_assistant_and_the_record_makes_it() {
     open.press(&create)
         .expect("the button invokes the workspace's record");
     let sent = sent.borrow();
-    let [Invocation::Action {
-        app,
-        action,
-        name,
-        args,
-        target,
-        ..
-    }] = sent.as_slice()
+    let [
+        Invocation::Action {
+            app,
+            action,
+            name,
+            args,
+            target,
+            ..
+        },
+    ] = sent.as_slice()
     else {
         panic!("one invocation of the record's verb: {sent:?}");
     };
@@ -252,16 +260,34 @@ fn the_sub_agents_the_assistant_started_stand_with_their_job_role_and_progress()
                 2,
             ),
             // Another agent's sub-agent is not the assistant's.
-            sub_agent("other", "Other", "someone-else", "Something else", "Researcher", 3),
+            sub_agent(
+                "other",
+                "Other",
+                "someone-else",
+                "Something else",
+                "Researcher",
+                3,
+            ),
         ],
         "sub_agents",
     );
     let said = shown(&open);
-    assert!(said.iter().any(|said| said.contains("Sub-agents of Ada's assistant")), "{said:?}");
-    assert!(said.iter().any(|said| said.contains("Find out why sign-ups dropped")), "{said:?}");
+    assert!(
+        said.iter()
+            .any(|said| said.contains("Sub-agents of Ada's assistant")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|said| said.contains("Find out why sign-ups dropped")),
+        "{said:?}"
+    );
     assert!(said.iter().any(|said| said.contains("Coder")), "{said:?}");
     assert!(said.iter().any(|said| said.contains("Working")), "{said:?}");
-    assert!(!said.iter().any(|said| said.contains("Something else")), "{said:?}");
+    assert!(
+        !said.iter().any(|said| said.contains("Something else")),
+        "{said:?}"
+    );
     assert!(
         said.iter()
             .any(|said| said.contains("cannot read the main chat")),
@@ -282,15 +308,20 @@ fn a_workspace_without_an_assistant_says_so_in_the_sub_agents_place() {
 
 #[test]
 fn starting_a_sub_agent_asks_the_assistant_in_the_conversation_it_answers_in() {
-    use tilo_action_policy::{AgentMember, MemberAccess, WorkspacePolicy};
+    use tilo_action_policy::{
+        Answer, Grant, Grantee, KindSet, MemberAccess, TreePath, WorkspacePolicy,
+    };
 
     let mut policy = WorkspacePolicy::new("workspace", "ada");
-    policy.agents.insert(
-        "assistant".to_owned(),
-        AgentMember {
-            for_person: "ada".to_owned(),
-        },
-    );
+    // Ada's assistant, admitted by her: an agent is the pair of its id and its person.
+    policy.grants.push(Grant::new(
+        "agent-member:assistant",
+        Grantee::agent("assistant"),
+        TreePath::workspace("workspace"),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        Grantee::person("ada"),
+    ));
     let (ada, mut open) = opened_as(
         vec![agent("assistant", "Ada's assistant", 1)],
         "start_sub_agent",
@@ -357,13 +388,16 @@ fn a_sub_agents_row_opens_its_own_page() {
     );
     let closed = shown(&open);
     assert!(
-        !closed.iter().any(|said| said.contains("It cannot read the main chat")),
+        !closed
+            .iter()
+            .any(|said| said.contains("It cannot read the main chat")),
         "the page is closed until its row is chosen: {closed:?}"
     );
     let card = crate::tasks::key_of(&open, "ui.Card", &|node| {
         node.props.get("title") == Some(&Value::text("Find out why sign-ups dropped"))
     });
-    open.fire(&card, "activate").expect("the row opens the sub-agent");
+    open.fire(&card, "activate")
+        .expect("the row opens the sub-agent");
     open.poll_patches().expect("the page runs");
     let said = shown(&open);
     for expected in [
@@ -372,7 +406,10 @@ fn a_sub_agents_row_opens_its_own_page() {
         "Scout",
         "It cannot read the main chat",
     ] {
-        assert!(said.iter().any(|said| said.contains(expected)), "{expected}: {said:?}");
+        assert!(
+            said.iter().any(|said| said.contains(expected)),
+            "{expected}: {said:?}"
+        );
     }
 }
 
@@ -385,7 +422,8 @@ fn the_sidebar_shows_the_person_looking_at_its_foot() {
         "new_channel",
         vec![Value::resource(&all), Value::text("design")],
     );
-    open.poll_patches().expect("the channel reaches the sidebar");
+    open.poll_patches()
+        .expect("the channel reaches the sidebar");
     let person = nodes(open.tree())
         .into_iter()
         .find(|node| node.props.contains_key("person"));
@@ -413,7 +451,8 @@ fn a_window_opened_before_the_agents_arrive_shows_them_when_they_do() {
             &json!({ "agents": [agent("assistant", "Ada's assistant", 1)] }).to_string(),
         )
         .expect("the record arrives");
-    open.poll_patches().expect("the record's arrival reaches the view");
+    open.poll_patches()
+        .expect("the record's arrival reaches the view");
     assert!(
         shown(&open)
             .iter()
@@ -428,7 +467,9 @@ fn a_window_the_record_was_never_served_opens_without_claiming_none() {
     let (_ada, open) = opened_without_roster("supervision");
     let said = shown(&open);
     assert!(
-        !said.iter().any(|said| said.contains("You have no assistant")),
+        !said
+            .iter()
+            .any(|said| said.contains("You have no assistant")),
         "a record that is not here yet is not a workspace without an assistant: {said:?}"
     );
 }

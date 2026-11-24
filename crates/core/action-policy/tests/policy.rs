@@ -2363,7 +2363,7 @@ tilo_test_env::scenario! {
         }
         // The owner's delegations still bound what acts for them.
         let agent = Authority::person(workspace.party(ALICE))
-            .bounded_by(workspace.party_of(Grantee::agent("ag")));
+            .bounded_by(workspace.party_of_agent("ag", ALICE));
         assert_eq!(
             agent.decide(&send(), ActionKind::Read, &cx()).answer,
             Answer::Deny
@@ -2547,7 +2547,7 @@ tilo_test_env::scenario! {
         }
         // The owner's own grant set still bounds what acts for them.
         let agent = Authority::person(workspace.party(ALICE))
-            .bounded_by(workspace.party_of(Grantee::agent("ag")));
+            .bounded_by(workspace.party_of_agent("ag", ALICE));
         assert_eq!(
             agent.decide(&send(), ActionKind::Read, &cx()).answer,
             Answer::Deny

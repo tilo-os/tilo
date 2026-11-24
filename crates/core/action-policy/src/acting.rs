@@ -86,7 +86,7 @@ impl<'a> Authority<'a> {
                     }
                     MemberId::Agent(_) | MemberId::Bot(_) => {
                         others.push(
-                            software_party(member, policy, granted)
+                            software_party(member, node.acted_for_person(), policy, granted)
                                 .with_grants(answers.iter().copied()),
                         );
                     }
@@ -120,13 +120,22 @@ pub fn granted_to(member: &MemberId) -> Grantee {
     }
 }
 
-/// An agent's or bot's own grants.
+/// An agent's or bot's own grants: the workspace's naming it, and those its
+/// acting carries (`granted`, what its certificate's delegation gives it). An
+/// agent is the pair of its id and the person it acts for (`person`, whom its
+/// certificate chains to): only that person's grants and answers in the
+/// workspace reach it, and one acting for nobody holds none of them.
 fn software_party<'a>(
     member: &MemberId,
+    person: Option<&str>,
     policy: &'a WorkspacePolicy,
     granted: &'a [Grant],
 ) -> Party<'a> {
-    policy.party_of(granted_to(member)).with_grants(granted)
+    let party = match member {
+        MemberId::Agent(agent) => policy.party_of_agent(agent, person.unwrap_or_default()),
+        member => policy.party_of(granted_to(member)),
+    };
+    party.with_grants(granted)
 }
 
 /// One invocation, as admission weighs it.
@@ -332,7 +341,7 @@ mod tests {
                 TreePath::workspace(WORKSPACE),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
-                Grantee::person("owner"),
+                Grantee::person("editor"),
             ));
             let acting = Acting::agent("scribe").acting_for(Acting::person("editor"));
             assert_eq!(
@@ -357,7 +366,7 @@ mod tests {
                 TreePath::workspace(WORKSPACE),
                 KindSet::READ_UNDOABLE,
                 Answer::Ask,
-                Grantee::person("owner"),
+                Grantee::person("editor"),
             ));
             policy.grants.push(Grant::new(
                 format!("{SESSION_ANSWER_PREFIX}{session}:app:so.tilo.notes:undoable"),

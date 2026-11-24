@@ -1188,7 +1188,7 @@ mod agents_tests {
 
     fn agent_answer(ws: &Workspace, app: &str, kind: ActionKind) -> Answer {
         ws.policy
-            .party_of(tilo_action_policy::Grantee::agent(AGENT))
+            .party_of_agent(AGENT, OWNER)
             .decide(
                 &ws.policy.node().app(app),
                 kind,

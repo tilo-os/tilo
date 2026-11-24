@@ -379,12 +379,28 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         (&key, &cert),
     )
     .await;
-    // The workspace's membership holds Scout as an agent acting for its owner: a direct
-    // conversation's `people` names the agent, and it reads the conversation as the person it
-    // works for.
+    // The workspace's record of its agents holds Scout acting for its owner: a direct
+    // conversation the owner's `people` names the agent in is the owner's agent's, and it reads
+    // the conversation as the person it works for.
     let owner = hex::encode(cert.user_public_key);
     workspaces
-        .add_agent(&workspace, MemberId::person(owner.clone()), "scout", &owner)
+        .author_agents(&workspace, |doc| {
+            use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
+            let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                .as_author(&owner);
+            made.apply(
+                WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    avatar: None,
+                    name: tilo_resource::NonBlank::parse("Scout").unwrap(),
+                    id: Some("scout".into()),
+                    model: None,
+                    mcp_client: None,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+            std::mem::swap(doc, made.doc_mut());
+            Ok(())
+        })
         .await
         .expect("the owner adds their agent");
     let started = Arc::new(Started::default());

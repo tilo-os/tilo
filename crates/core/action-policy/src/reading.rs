@@ -30,12 +30,17 @@ pub fn published_node(workspace: &str, resource: &str) -> Option<TreePath> {
     })
 }
 
-/// The id of the one grant that says whether `grantee` reads `node`.
+/// The id of the one grant `granted_by` gives that says whether `grantee` reads `node`. An
+/// agent is the pair of its id and its person, whose grants alone reach it, so a reading grant
+/// for an agent is named by whom it is given by as well.
 #[must_use]
-pub fn reading_grant_id(grantee: &Grantee, node: &TreePath) -> GrantId {
+pub fn reading_grant_id(grantee: &Grantee, node: &TreePath, granted_by: &Grantee) -> GrantId {
     let who = match grantee {
         Grantee::Member(crate::MemberId::Person(person)) => format!("person:{}", person.as_str()),
-        Grantee::Member(crate::MemberId::Agent(agent)) => format!("agent:{agent}"),
+        Grantee::Member(crate::MemberId::Agent(agent)) => format!(
+            "agent:{}",
+            crate::agent_answers::agent_key(agent, granted_by.person_id().unwrap_or_default())
+        ),
         Grantee::Member(crate::MemberId::Bot(bot)) => format!("bot:{bot}"),
         Grantee::Role(role) => format!("role:{}", role.key()),
         Grantee::CustomRole(role) => format!("custom-role:{role}"),
@@ -71,14 +76,17 @@ impl WorkspacePolicy {
             governance::REVOKE
         };
         self.check_action(actor, right, cx, false)?;
-        let id = reading_grant_id(&grantee, node);
+        let id = reading_grant_id(&grantee, node, &granted_by);
         let held = self.grants.iter().find(|grant| grant.id == id);
         // How they would stand with no reading grant of their own on it.
         let mut without = self.clone();
         without.grants.retain(|grant| grant.id != id);
-        let party = match grantee.person_id() {
-            Some(person) => without.party(person),
-            None => without.party_of(grantee.clone()),
+        let party = match (grantee.person_id(), grantee.agent_id()) {
+            (Some(person), _) => without.party(person),
+            (None, Some(agent)) => {
+                without.party_of_agent(agent, granted_by.person_id().unwrap_or_default())
+            }
+            (None, None) => without.party_of(grantee.clone()),
         };
         let reads_without = Authority::person(party)
             .decide(node, ActionKind::Read, cx)

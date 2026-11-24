@@ -214,21 +214,43 @@ pub fn grant_id(agent: &str, scope: &AnswerScope, kind: ActionKind) -> GrantId {
     GrantId(format!("{PREFIX}{agent}:{}:{kind}", scope.key()))
 }
 
-/// The id of the answer that stops `agent` in a workspace ([`stop_grant`]).
+/// What an answer for the agent `agent` acting for `person` is named by. An
+/// agent is the pair: `scout` acting for one person and `scout` acting for
+/// another are two agents, and each person's answers are kept apart from the
+/// other's, so neither replaces nor takes back the other's.
 #[must_use]
-pub fn stop_grant_id(agent: &str) -> GrantId {
-    GrantId(format!("{PREFIX}{agent}:workspace:all"))
+pub fn agent_key(agent: &str, person: &str) -> String {
+    format!("{person}/{agent}")
+}
+
+/// Whom `granted_by` is, as an answer's name spells it: the person, or the
+/// grantee as text where it is none.
+fn answerer(granted_by: &Grantee) -> String {
+    granted_by
+        .person_id()
+        .map_or_else(|| granted_by.to_string(), str::to_owned)
+}
+
+/// The id of the answer that stops `agent` acting for `person` in a workspace
+/// ([`stop_grant`]).
+#[must_use]
+pub fn stop_grant_id(agent: &str, person: &str) -> GrantId {
+    GrantId(format!(
+        "{PREFIX}{}:workspace:all",
+        agent_key(agent, person)
+    ))
 }
 
 /// The answer that stops `agent` in `workspace` until its person lets it go on:
-/// every kind denied on the whole workspace, given by `granted_by`. No more
-/// specific grant of the agent lifts it
-/// ([`crate::WorkspacePolicy::party_of`]), so a stop holds whatever the agent's
+/// every kind denied on the whole workspace, given by `granted_by`. It holds
+/// off only the agent acting for `granted_by`
+/// ([`crate::WorkspacePolicy::party_of_agent`]), and there no more specific
+/// grant of the agent lifts it, so a stop holds whatever the agent's
 /// certificate or its person's earlier answers allow.
 #[must_use]
 pub fn stop_grant(workspace: &str, agent: &str, granted_by: Grantee) -> Grant {
     Grant::new(
-        stop_grant_id(agent).0,
+        stop_grant_id(agent, &answerer(&granted_by)).0,
         Grantee::agent(agent),
         AnswerScope::Workspace.node(workspace),
         KindSet::ALL,
@@ -280,7 +302,7 @@ pub fn answer_grant(
     granted_by: Grantee,
 ) -> Grant {
     let key = match &delegate {
-        Grantee::Member(crate::MemberId::Agent(agent)) => agent.clone(),
+        Grantee::Member(crate::MemberId::Agent(agent)) => agent_key(agent, &answerer(&granted_by)),
         Grantee::App(app) => format!("app:{app}"),
         other => other.to_string(),
     };

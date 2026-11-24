@@ -367,20 +367,6 @@ impl TurnTeam {
         if let Err(why) = started {
             return Ok(Err(why));
         }
-        // It is a member acting for the same person, added by the agent that started it: the
-        // member list takes that only from a member acting for that person.
-        if let Err(error) = self
-            .workspaces
-            .add_agent(
-                &self.workspace,
-                tilo_action_policy::MemberId::agent(self.agent.id.0.clone()),
-                &id,
-                &self.agent.acts_for,
-            )
-            .await
-        {
-            tracing::warn!(workspace = %self.workspace, agent = %id, %error, "a sub-agent is not a member yet");
-        }
         // Its job is told at once, in a message that mentions it: its trigger starts its turn.
         let name = given
             .get("name")

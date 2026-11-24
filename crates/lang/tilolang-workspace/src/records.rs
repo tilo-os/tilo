@@ -395,16 +395,6 @@ impl Opened {
             let me = tilo_action_policy::PersonId::parse(&owner).map_err(|error| {
                 format!("the workspace's owner {owner:?} is no person: {error}")
             })?;
-            // Each agent the workspace holds as a member acts for the person its entry names,
-            // with that person's authority bounded by the agent's delegation: an ask taken, a
-            // reply written or a step of a turn recorded here is the agent's action, decided as
-            // it is where the agent's own device does the same.
-            for (agent, member) in &policy.agents {
-                host.authority().admit_agent(
-                    &Actor::Member(tilo_actions::MemberId::agent(agent.clone())),
-                    Some(member.for_person.as_str()),
-                );
-            }
             // The owner stands at no window here: whoever the policy names, the host names the
             // same.
             let access = MemberAccess::person(policy, me.clone());
