@@ -692,6 +692,10 @@ d-ibft2idy = Arbeitsmappe
     .w-show-the-cells = Zellen zeigen
     .w-column-chart = Säulendiagramm
     .w-line-chart = Liniendiagramm
+    .w-chart-title = Diagrammtitel
+    .w-rename-or-move-the-chart = Diagramm umbenennen oder verschieben…
+    .w-chart-the-chosen-cells = Gewählte Zellen darstellen
+    .w-delete-the-chart = Diagramm löschen
     .w-sheets = Blätter
     .w-add-sheet = Blatt hinzufügen
     .w-sheet = Blatt
@@ -714,6 +718,10 @@ d-ibft2idy = Arbeitsmappe
     .w-dates = Datum: { $date_name }
     .w-times = Uhrzeit: { $time_name }
     .w-this-workbook-has-no-sheet = Diese Arbeitsmappe hat kein Blatt
+    .w-cells-as-a1-d9 = Zellen, als A1:D9
+    .w-edit-the-comment = Den Kommentar bearbeiten
+    .w-more = Mehr
+    .w-save = Speichern
 
 d-stzolo66 = Blattfenster
     .w-comments = Kommentare
@@ -732,6 +740,10 @@ d-stzolo66 = Blattfenster
     .w-show-the-cells = Zellen zeigen
     .w-column-chart = Säulendiagramm
     .w-line-chart = Liniendiagramm
+    .w-chart-title = Diagrammtitel
+    .w-rename-or-move-the-chart = Diagramm umbenennen oder verschieben…
+    .w-chart-the-chosen-cells = Gewählte Zellen darstellen
+    .w-delete-the-chart = Diagramm löschen
     .w-sheets = Blätter
     .w-add-sheet = Blatt hinzufügen
     .w-sheet = Blatt
@@ -754,8 +766,41 @@ d-stzolo66 = Blattfenster
     .w-dates = Datum: { $date_name }
     .w-times = Uhrzeit: { $time_name }
     .w-this-workbook-has-no-sheet = Diese Arbeitsmappe hat kein Blatt
+    .w-cells-as-a1-d9 = Zellen, als A1:D9
+    .w-edit-the-comment = Den Kommentar bearbeiten
+    .w-more = Mehr
+    .w-save = Speichern
 
 d-b7vdig4c = Blattzeile
     .w-cells = { $len } Zellen
 
 d-msl2xtvn = Antwortzeile
+    .w-delete-reply = Antwort löschen
+
+d-7bar2fy5 = Nach unten füllen
+    .doc = Füllt die Zeilen unter der ersten Zeile von `range` aus ihr: die erste Zeile nach unten kopiert, weitergezählt wie an einem Ziehgriff.
+    .w-there-is-nothing-below-the-first = Unter der ersten Zeile gibt es nichts zu füllen
+
+d-7bar2fy5-s = S
+
+d-7bar2fy5-range = Bereich
+
+d-s7hn4a22 = Nach rechts füllen
+    .doc = Füllt die Spalten rechts der ersten Spalte von `range` aus ihr: die erste Spalte nach rechts kopiert, weitergezählt wie an einem Ziehgriff.
+    .w-there-is-nothing-right-of-the = Rechts der ersten Spalte gibt es nichts zu füllen
+
+d-s7hn4a22-s = S
+
+d-s7hn4a22-range = Bereich
+
+d-xnqm5thi = Antwort löschen
+    .doc = Löscht eine Antwort.
+    .w-only-its-author-can-delete-a = Nur die verfassende Person kann eine Antwort löschen
+
+d-xnqm5thi-r = A
+
+d-wuzrpfk3 = Nach unten füllen~present
+
+d-d3esk7xt = Nach rechts füllen~present
+
+d-u5d6cfi4 = Antwort löschen~present

@@ -126,6 +126,7 @@ d-kfdvrrjc-filter-block = Block
 d-kfdvrrjc-filter-page = Seite
 
 d-kfdvrrjc-filter-place = Stelle
+d-kfdvrrjc-filter-finished = Beendet
 
 d-kfdvrrjc-filter-at = Am
 
@@ -233,6 +234,7 @@ d-srrcatfl-filter-text_size = Textgröße
 d-srrcatfl-filter-line_spacing = Zeilenabstand
 
 d-srrcatfl-filter-justified = Blocksatz
+d-srrcatfl-filter-hide_finished = Beendete ausblenden
 
 d-4xgt6ef3 = Füllen
     .doc = Womit eine neue Bibliothek beginnt: die Seitenfarben, die jeder Leser kennt, und die gewählte Sepiaseite.
@@ -465,6 +467,11 @@ d-yseykhty = Bibliothek
     .w-found-online = Online gefunden
     .w-no-books-yet = Noch keine Bücher
     .w-open-an-epub-file-and-it = Öffne eine EPUB-Datei; sie steht dann hier und merkt sich deine Stelle beim Lesen.
+    .w-added-last = Zuletzt hinzugefügt
+    .w-by-author = Nach Autor
+    .w-by-title = Nach Titel
+    .w-hide-finished = Beendete ausblenden
+    .w-sort = Sortieren
 
 d-cmr5ibgv = Leseeinstellungen
     .w-reading-settings = Leseeinstellungen
@@ -524,6 +531,12 @@ d-tntic6tx = Buchseite
     .w-delete = Löschen
     .w-comment-on-the-highlight = Die Markierung kommentieren
     .w-send-comment = Kommentar senden
+    .w-cancel = Abbrechen
+    .w-copy = Kopieren
+    .w-edit = Bearbeiten
+    .w-edit-the-note = Die Notiz bearbeiten
+    .w-finished = Beendet
+    .w-save = Speichern
 
 d-uxr7ymrf = Kapitelseite
     .w-read-in = In { $title } lesen
@@ -539,3 +552,62 @@ d-hjpohooo = Buchzeile
 d-4dzykgkv = Markierungszeile
 
 d-so-tilo-ebook-keywords = buch, bücher, ebook, ebooks, epub, lesen, leser, roman, bibliothek, markierungen, anmerkungen
+
+d-m5vjvjxn = Beendet
+    .doc = Ob die Person das Buch beendet hat: was das Regal auslässt, wenn es beendete Bücher verbirgt.
+
+d-rmk5y2dl = Sortieren nach
+    .doc = Wie das Regal seine Bücher ordnet: `title`, `author` oder `added`, zuletzt hinzugefügte zuerst.
+
+d-iw7jv3y3 = Beendete ausblenden
+    .doc = Ob das Regal die Bücher auslässt, die eine Person beendet hat.
+
+d-jya2xpym = Markieren
+    .doc = Eine Markierungsfarbe, nach dem Namen, mit dem sie gewählt wird, und der Farbe, die sie malt.
+    .noun = { $count ->
+        [one] Markierung
+       *[other] Markierungen
+    }
+
+d-2mud3bws = Name
+
+d-ztqdbzwg = Wert
+
+d-qazz5dbn = Regalreihenfolge setzen
+    .doc = Ordnet das Regal nach Titel, nach Autor oder nach den zuletzt hinzugefügten Büchern.
+    .did = sortierte das Regal
+    .w-a-shelf-is-sorted-by-title = Ein Regal wird nach Titel, Autor oder Hinzufügen sortiert
+
+d-qazz5dbn-order = Reihenfolge
+
+d-7c3mgmnh = Beendete ausblenden setzen
+    .doc = Lässt die Bücher, die eine Person beendet hat, aus dem Regal, oder zeigt sie wieder.
+    .did = änderte, ob beendete Bücher erscheinen
+
+d-7c3mgmnh-hidden = Verborgen
+
+d-4wmsw3oj = Beendet setzen
+    .doc = Markiert `b` als beendet für die lesende Person oder beginnt es neu.
+    .did = änderte, ob ein Buch beendet ist
+
+d-4wmsw3oj-who = Wer
+
+d-4wmsw3oj-finished = Beendet
+
+d-rhst3sds = Eine Notiz bearbeiten
+    .doc = Schreibt neu, was eine Notiz oder ein Kommentar sagt.
+    .w-only-its-author-can-edit-a = Nur die verfassende Person kann eine Notiz bearbeiten
+    .w-write-a-note-first = Schreib zuerst eine Notiz
+
+d-rhst3sds-m = M
+
+d-rhst3sds-text = Text
+
+d-t53zqwaz = Die Passage kopieren
+    .doc = Kopiert eine Passage, sodass sie überall eingefügt werden kann: was das Kopieren einer Auswahl tut.
+
+d-t53zqwaz-text = Text
+
+d-om3e7iv4 = Regalreihenfolge setzen~present
+
+d-7n672gfq = Notiztext bearbeiten~present
