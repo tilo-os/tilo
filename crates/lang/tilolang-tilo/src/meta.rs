@@ -114,6 +114,13 @@ pub trait MetaExt {
     /// The kind of the document a package keeps its resources in: its first root type's, which its
     /// surface publishes (`tl.<app>.<Root>`), else the package's own.
     fn resource_type(&self) -> String;
+
+    /// The kinds the package's own records are of, as its signed manifest declares them: each
+    /// root's, the kind the workspace keeps a record of the app's under where it keeps one apart
+    /// (Mail's mailbox, Chat's drafts), and each person's own state of it. An app reads and acts
+    /// in its own node only within the kinds it declares, so a record it keeps of a kind left out
+    /// would be refused to it.
+    fn declared_kinds(&self) -> Vec<String>;
 }
 
 /// Whether a field's declared type names a resource: a document, or one inside an option.
@@ -253,6 +260,28 @@ impl MetaExt for Meta {
                 .map(|declared| declared.name.as_str())
         });
         root.map_or_else(|| self.package_kind(), |name| self.kind_of(name))
+    }
+
+    fn declared_kinds(&self) -> Vec<String> {
+        let mut kinds = vec![self.resource_type()];
+        let roots = self.roots.iter().filter_map(|id| {
+            self.types
+                .iter()
+                .find(|declared| declared.id == *id)
+                .map(|declared| self.kind_of(&declared.name))
+        });
+        let kept_apart = tilo_action_policy::roles::protected_kinds_of(&self.app)
+            .into_iter()
+            .map(str::to_owned);
+        for kind in roots
+            .chain(kept_apart)
+            .chain([tilolang::PERSONAL_RESOURCE_TYPE.to_owned()])
+        {
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+        kinds
     }
 }
 

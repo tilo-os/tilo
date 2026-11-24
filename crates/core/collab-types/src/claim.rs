@@ -38,22 +38,96 @@ pub struct ChangeClaim {
     /// by the signer. A receiver that cannot read a sealed change decides it
     /// by this; the devices that open it check that the change names the same.
     #[serde(with = "invoker_text")]
-    pub invoker: Option<tilo_action_policy::Acting>,
+    pub invoker: Option<Invoker>,
 }
 
-/// An invoker as a claim carries it: its tree as the history entry writes it.
-/// A tree leaves out what it does not name, which a positional format could
-/// not read field by field, so the bytes carry that entry's own text.
+/// Who made a change, as a claim carries them: the tree, and the text the claim's signer wrote it
+/// as. A claim read keeps that text exactly as it came, so the signature is checked over the bytes
+/// that were signed, never over this build's writing of the tree.
+#[derive(Clone, Debug)]
+pub struct Invoker {
+    acting: tilo_action_policy::Acting,
+    /// The text as read; `None` for an invoker made here, written as its JSON when it is sent.
+    text: Option<String>,
+}
+
+impl Invoker {
+    /// `acting`, as this device names it in a claim it makes.
+    #[must_use]
+    pub const fn new(acting: tilo_action_policy::Acting) -> Self {
+        Self { acting, text: None }
+    }
+
+    /// The tree.
+    #[must_use]
+    pub const fn acting(&self) -> &tilo_action_policy::Acting {
+        &self.acting
+    }
+
+    /// The tree, owned.
+    #[must_use]
+    pub fn into_acting(self) -> tilo_action_policy::Acting {
+        self.acting
+    }
+
+    /// The text the claim carries: as read, or this device's writing of the tree.
+    ///
+    /// # Errors
+    /// A tree that does not write.
+    pub fn text(&self) -> Result<String, serde_json::Error> {
+        match &self.text {
+            Some(text) => Ok(text.clone()),
+            None => serde_json::to_string(&self.acting),
+        }
+    }
+
+    /// The invoker `text` names, keeping `text` as it is.
+    ///
+    /// # Errors
+    /// Text that is no tree.
+    pub fn read(text: String) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            acting: serde_json::from_str(&text)?,
+            text: Some(text),
+        })
+    }
+}
+
+impl From<tilo_action_policy::Acting> for Invoker {
+    fn from(acting: tilo_action_policy::Acting) -> Self {
+        Self::new(acting)
+    }
+}
+
+impl std::ops::Deref for Invoker {
+    type Target = tilo_action_policy::Acting;
+
+    fn deref(&self) -> &Self::Target {
+        &self.acting
+    }
+}
+
+/// Two invokers are the same who: the text each was written as decides nothing.
+impl PartialEq for Invoker {
+    fn eq(&self, other: &Self) -> bool {
+        self.acting == other.acting
+    }
+}
+
+impl Eq for Invoker {}
+
+/// An invoker as a claim carries it: the text its signer wrote, as [`Invoker::text`] keeps it.
 pub(crate) mod invoker_text {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use tilo_action_policy::Acting;
+
+    use super::Invoker;
 
     /// The text `invoker` is written as.
     ///
     /// # Errors
     /// A tree that does not write.
-    pub fn text(invoker: Option<&Acting>) -> Result<Option<String>, serde_json::Error> {
-        invoker.map(serde_json::to_string).transpose()
+    pub fn text(invoker: Option<&Invoker>) -> Result<Option<String>, serde_json::Error> {
+        invoker.map(Invoker::text).transpose()
     }
 
     /// Writes `invoker` as its text.
@@ -65,7 +139,7 @@ pub(crate) mod invoker_text {
         reason = "serde's `with` hands the field by reference"
     )]
     pub fn serialize<S: Serializer>(
-        invoker: &Option<Acting>,
+        invoker: &Option<Invoker>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         text(invoker.as_ref())
@@ -79,10 +153,9 @@ pub(crate) mod invoker_text {
     /// Text that is no tree.
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> Result<Option<Acting>, D::Error> {
+    ) -> Result<Option<Invoker>, D::Error> {
         Option::<String>::deserialize(deserializer)?
-            .as_deref()
-            .map(serde_json::from_str)
+            .map(Invoker::read)
             .transpose()
             .map_err(serde::de::Error::custom)
     }
@@ -314,7 +387,8 @@ impl ChangeClaim {
             invoker: match &stamp {
                 Some(stamp) => Some(stamp_invoker(stamp)?),
                 None => invoker_of_message(message),
-            },
+            }
+            .map(Invoker::new),
         })
     }
 
@@ -335,7 +409,7 @@ impl ChangeClaim {
                 change: hash,
                 action: ClaimedAction::whole_resource_edit(String::new()),
                 units,
-                invoker: Some(person.clone()),
+                invoker: Some(Invoker::new(person.clone())),
             }),
             (claim, _) => claim,
         }

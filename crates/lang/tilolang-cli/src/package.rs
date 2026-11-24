@@ -252,7 +252,6 @@ pub fn manifest_text(
     publisher: &str,
 ) -> String {
     let category = meta.category.as_deref().map_or("Utility", menu_category);
-    let resource_type = tilolang_tilo::meta::MetaExt::resource_type(meta);
     let (providers_mime, providers_ext) = opens_of(meta);
     let providers_mime: Vec<String> = providers_mime
         .iter()
@@ -391,11 +390,11 @@ schemes = [{providers_schemes}]
         seccomp = toml_string(seccomp),
         // The app's workspace record, and the workspace's record of each person's own state of it,
         // which every app of the language opens.
-        resource_types = [
-            toml_string(&resource_type),
-            toml_string(tilolang::PERSONAL_RESOURCE_TYPE),
-        ]
-        .join(", "),
+        resource_types = tilolang_tilo::meta::MetaExt::declared_kinds(meta)
+            .iter()
+            .map(|kind| toml_string(kind))
+            .collect::<Vec<String>>()
+            .join(", "),
         bin = toml_string(RUNTIME_BIN),
         window = window,
         // The promise the app's header made (`splash_budget:`), or nothing where it made none,

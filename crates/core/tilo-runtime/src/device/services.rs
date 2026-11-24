@@ -1040,14 +1040,13 @@ impl Daemon {
         // device's one reader, decided by the workspace the record is in.
         if let Some(broker) = broker.app_action_broker() {
             broker.state().serve_invocations(Arc::clone(&invocations));
-            broker.state().serve_records(
-                tilo_workspace_service::workspaces::RecordReads::with_apps(
-                    workspaces.copies(),
-                    broker.state(),
-                    None,
-                ),
+            let reads = tilo_workspace_service::workspaces::RecordReads::with_apps(
+                workspaces.copies(),
+                broker.state(),
+                None,
             );
-            search.serve(&broker);
+            broker.state().serve_records(Arc::clone(&reads) as _);
+            search.serve(reads);
         }
         workspaces.serve_invocations(Arc::clone(&invocations));
         stage("reading the calls that wait for the person");

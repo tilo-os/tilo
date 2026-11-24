@@ -233,7 +233,7 @@ fn sealed(
         change: [1; 32],
         action,
         units,
-        invoker: Some(Acting::person(by)),
+        invoker: Some(Acting::person(by).into()),
     };
     let cx = Context::at_secs(1);
     let allows = |invoker: Option<&Acting>, node: &TreePath, kind: ActionKind| {

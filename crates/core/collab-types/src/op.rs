@@ -583,7 +583,6 @@ impl EncryptionMetadata {
 mod claims_wire {
     use crate::claim::{ChangeClaim, ClaimedAction, UnitPath};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use tilo_action_policy::Acting;
 
     #[derive(Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -592,7 +591,7 @@ mod claims_wire {
         action: ClaimedAction,
         units: Vec<UnitPath>,
         #[serde(with = "crate::claim::invoker_text")]
-        invoker: Option<Acting>,
+        invoker: Option<crate::claim::Invoker>,
     }
 
     #[derive(Serialize)]

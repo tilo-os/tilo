@@ -418,7 +418,7 @@ pub fn check_claims(
                 kind => kind,
             };
             let node = claim_node(document, surface, member);
-            if !allows(claim.invoker.as_ref(), &node, kind) {
+            if !allows(claim.invoker.as_deref(), &node, kind) {
                 return Err(ReceiptRefusal::NotGranted {
                     node: node.to_string(),
                     kind,
@@ -957,7 +957,9 @@ fn cleartext_claims(
                         other => ReceiptRefusal::Unnamed(other.to_string()),
                     })?;
             match crate::claim::maker_of(change) {
-                crate::claim::Maker::Signer => claim.invoker = signer.cloned(),
+                crate::claim::Maker::Signer => {
+                    claim.invoker = signer.cloned().map(crate::claim::Invoker::new);
+                }
                 crate::claim::Maker::Nobody if claim.invoker.is_none() => {
                     return Err(ReceiptRefusal::NoInvoker);
                 }
@@ -1421,7 +1423,7 @@ pub fn claimed_invokers(op: &crate::op::SignedOp) -> Vec<Acting> {
         _ => op
             .claims
             .iter()
-            .map(|claim| claim.invoker.clone())
+            .map(|claim| claim.invoker.as_deref().cloned())
             .collect(),
     };
     let mut invokers: Vec<Acting> = Vec::new();

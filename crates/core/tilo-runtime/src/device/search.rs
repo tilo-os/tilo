@@ -7,18 +7,18 @@
 //! daemon's state. Every caller
 //! the daemon answers (the person's shell, `tilo do`, an agent's `find`) searches that index
 //! ([`IndexSearch`]), and is answered only what it may read: each result's record is decided by
-//! the broker as every read of it is.
+//! the device's one reader as every read of it is.
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+use tilo_actions::remote::ResourceAddress;
 use tilo_desktop_model::WorkspaceId;
-use tilo_workspace_service::apps::collab_broker::AppActionBroker;
 use tilo_workspace_service::apps::services::SearchIndexServices;
 use tilo_workspace_service::device_documents::ServiceDocuments;
 use tilo_workspace_service::search::records::{RecordIndex, RecordReader, StoreReader};
 use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
-use tilo_workspace_service::workspaces::Workspaces;
+use tilo_workspace_service::workspaces::{RecordReads, Workspaces};
 
 /// Where under the daemon's profile the index is kept.
 const INDEX_DIR: &str = "state/search/app-content";
@@ -54,7 +54,9 @@ impl DeviceSearch {
             loop {
                 match writes.recv().await {
                     Ok(write) => match following.upgrade() {
-                        Some(records) => records.changed(&write.workspace, &write.app, &write.record),
+                        Some(records) => {
+                            records.changed(&write.workspace, &write.app, &write.record)
+                        }
                         None => return,
                     },
                     // A write missed is read with the record's next one.
@@ -77,15 +79,20 @@ impl DeviceSearch {
         Arc::new(Publications(Arc::clone(&self.index)))
     }
 
-    /// Search the index from now on, each result decided by `broker` for the caller asking.
-    pub(crate) fn serve(&self, broker: &AppActionBroker) {
-        let state = Arc::downgrade(broker.state());
+    /// Search the index from now on, each result's record decided by the device's one reader
+    /// (`reads`) for the caller asking, as a read of that record is.
+    pub(crate) fn serve(&self, reads: Arc<RecordReads>) {
         let _ = self.search.set(Arc::new(IndexSearch::new(
             Arc::clone(&self.index),
             Arc::new(move |caller, key| {
-                state.upgrade().is_some_and(|state| {
-                    state.may_read_record(caller, &key.workspace, &key.app, &key.record)
-                })
+                reads.may_read_held(
+                    caller,
+                    &ResourceAddress {
+                        workspace: key.workspace.clone(),
+                        app: key.app.clone(),
+                        record: key.record.clone(),
+                    },
+                )
             }),
         )));
     }

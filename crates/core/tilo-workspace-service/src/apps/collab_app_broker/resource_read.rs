@@ -187,19 +187,6 @@ impl AppBrokerState {
     }
 }
 
-impl AppBrokerState {
-    /// Whether `caller` may read `app`'s record `record` of `workspace` now, decided at the
-    /// record's node as every read of it is ([`Self::may_read_document`]): what the device's
-    /// search answers a caller with of what that record says.
-    #[must_use]
-    pub fn may_read_record(&self, caller: &Caller, workspace: &str, app: &str, record: &str) -> bool {
-        let node = collab_types::document_node(workspace, app, record);
-        self.decide_for(caller, workspace, |workspace, actor, now| {
-            actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow
-        }) == Some(true)
-    }
-}
-
 /// What a caller is told about a change the workspace does not allow it.
 pub const DOCUMENT_CHANGE_REFUSED: &str = "not allowed to make this change";
 

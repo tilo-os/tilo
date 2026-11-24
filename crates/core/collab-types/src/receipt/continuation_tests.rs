@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
             vec![Vec::new()]
         })
         .unwrap();
-        assert!(claims.iter().all(|claim| claim.invoker.as_ref() == Some(&agent)));
+        assert!(claims.iter().all(|claim| claim.invoker.as_deref() == Some(&agent)));
         let mut last = continued(&mut AutoCommit::new(), None).with_claims(claims);
         last.payload = vec![0; 16];
         last.encryption = Some(crate::op::EncryptionMetadata::content_key(

@@ -173,6 +173,31 @@ pub(crate) fn lacks_private_record_owner_at(node: &TreePath) -> bool {
         .is_some_and(|(app, record)| lacks_private_record_owner(app, record))
 }
 
+/// The kinds of `app`'s records the workspace keeps apart ([`protected_resource_kind`]), each
+/// once: what the app declares it keeps, so it reaches its own records by the kinds it declares.
+#[must_use]
+pub fn protected_kinds_of(app: &str) -> Vec<&'static str> {
+    let mut kinds = Vec::new();
+    for document in [
+        "",
+        WORKSPACE_VAULT_DOCUMENT,
+        WORKSPACE_CHAT_DRAFTS_DOCUMENT,
+        WORKSPACE_MESSAGE_DRAFTS_DOCUMENT,
+        WORKSPACE_TERMINAL_HISTORY_DOCUMENT,
+        WORKSPACE_TUBE_HISTORY_DOCUMENT,
+        WORKSPACE_MAIL_COPIES_DOCUMENT,
+        WORKSPACE_MAIL_TRUST_DOCUMENT,
+        WORKSPACE_MAIL_MESSAGES_DOCUMENT,
+    ] {
+        if let Some(kind) = protected_resource_kind(app, document)
+            && !kinds.contains(&kind)
+        {
+            kinds.push(kind);
+        }
+    }
+    kinds
+}
+
 /// The resource kind of a record that always uses independent document keys.
 #[must_use]
 pub fn protected_resource_kind(app: &str, document: &str) -> Option<&'static str> {

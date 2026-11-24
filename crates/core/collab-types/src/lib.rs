@@ -103,8 +103,8 @@ pub use caps::{
     Scope, decide_app, decide_capability, host_covers, path_covers,
 };
 pub use claim::{
-    ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, UnitPath, check_claimed,
-    claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,
+    ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, Invoker, UnitPath,
+    check_claimed, claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,
 };
 pub use commit::{
     COMMIT_VERSION, CommitAuthor, CommitError, CommitGroup, CommitPart, MAX_COMMIT_BYTES,
@@ -141,8 +141,8 @@ pub use op::{
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use readers::{
-    EVERY_MEMBER, NamedReaders, ROLE_READERS, Readers, app_document_id, content_artifact_id, is_store_document, reader_group,
-    reader_set_name, store_document_readers,
+    EVERY_MEMBER, NamedReaders, ROLE_READERS, Readers, app_document_id, content_artifact_id,
+    is_store_document, reader_group, reader_set_name, store_document_readers,
 };
 pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,

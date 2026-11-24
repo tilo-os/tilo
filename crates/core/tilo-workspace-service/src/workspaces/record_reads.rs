@@ -352,6 +352,17 @@ impl RecordReads {
         }
     }
 
+    /// Whether `caller` may read `address` now, a record of a workspace this device holds, decided
+    /// as its read is: what the device's search answers a caller with of what that record says.
+    #[must_use]
+    pub fn may_read_held(&self, caller: &Caller, address: &ResourceAddress) -> bool {
+        self.workspaces
+            .as_ref()
+            .and_then(WeakWorkspaces::upgrade)
+            .and_then(|workspaces| Self::held(&workspaces, &address.workspace))
+            .is_some_and(|state| self.may_read(&state, caller, address).is_ok())
+    }
+
     /// `bytes`, the copy of `address` read for `caller`, handed out only once the workspace
     /// decided again that the caller may read it: a grant revoked while it was read cuts it.
     fn hand_out(
