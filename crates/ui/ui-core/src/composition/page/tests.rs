@@ -254,3 +254,57 @@ fn a_canvas_places_what_it_holds_and_a_host_fills_its_wells() {
     );
     assert_eq!(page.path(patches[0].id), Some("Root[0]/MapPin[1]"));
 }
+
+/// A real widget's frame, laid out at `size`, as a page reads it: its composition with the
+/// pictures of what only paints.
+fn framed(root: Box<dyn crate::widget::Widget>, size: (u32, u32)) -> crate::headless::FrameHarness {
+    let mut frame = crate::headless::FrameHarness::new(crate::State::new(), root, size);
+    frame.relayout();
+    frame
+}
+
+fn shown(frame: &mut crate::headless::FrameHarness) -> Composition {
+    let mut composition = frame.composition();
+    frame.paint_pictures(&mut composition);
+    composition
+}
+
+#[test]
+fn an_iso_date_time_or_span_is_a_time() {
+    for time in [
+        "2026-11-23",
+        "2026-11-23T09:30",
+        "2026-11-23T09:30:15",
+        "2026-11-23T09:30:15.250Z",
+        "2026-11-23T09:30+01:00",
+        "2026-11-23T09:00/2026-11-23T09:30",
+        "2026-11-23/2026-11-25",
+    ] {
+        assert!(is_iso_time(time), "{time} is a time");
+    }
+    for not in [
+        "",
+        "Monday",
+        "23 November",
+        "2026-11",
+        "2026-11-23T9:30",
+        "2026-11-23T09:30/",
+        "2026-11-23/2026-11-24/2026-11-25",
+        "12:30",
+        "2026-11-23T09:30:15.",
+    ] {
+        assert!(!is_iso_time(not), "{not:?} is no time");
+    }
+}
+
+/// A picked day says on the page the date it stands for, which a browser and a reader read.
+#[test]
+fn a_picked_date_is_a_time_on_the_page() {
+    let day = jiff::civil::date(2026, 11, 23);
+    let mut frame = framed(Box::new(crate::widget::DatePicker::new(day)), (360, 420));
+    let html = Page::new().render(&shown(&mut frame));
+    assert!(
+        html.contains("<time datetime=\"2026-11-23\">"),
+        "the picked day is a time: {html}"
+    );
+}

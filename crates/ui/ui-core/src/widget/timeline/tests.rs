@@ -370,6 +370,25 @@ tilo_test_env::scenario! {
         )));
         assert!(html.contains("a title long enough to run past the width of one day"));
         assert!(html.contains("data-a=\"activate\" data-t=\"tilo.key-action:timeline:"));
+        // Each day and each event tells the browser the time it stands for.
+        for day in &days {
+            let heading = crate::composition::page::escape(&crate::format::day_heading(*day, false));
+            assert!(
+                html.contains(&format!("<time datetime=\"{day}\">{heading}</time>")),
+                "{day} is a time on the page: {html}"
+            );
+        }
+        for &button in &buttons {
+            let value = button.value.as_deref().expect("an event carries its time");
+            let hours = button.description.as_deref().expect("an event says its hours");
+            assert!(
+                html.contains(&format!(
+                    "<time datetime=\"{value}\">{}</time>",
+                    crate::composition::page::escape(hours)
+                )),
+                "the event at {value} is a time on the page: {html}"
+            );
+        }
     }
 
     phase activating_an_events_element_presses_what_a_click_on_it_presses;

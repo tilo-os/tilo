@@ -832,24 +832,104 @@ fn words_into(element: &mut Element, access: &AccessNode) {
             },
         );
     }
-    match words.detail {
-        Some(detail) if !matches!(element.tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
+    let time = time_of(access);
+    let detail = words
+        .detail
+        .filter(|_| !matches!(element.tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6"));
+    // The time a node stands for is told on the words that say it: what it says after its title
+    // (an event's hours), or its title (a day).
+    let (title, detail) = match detail {
+        Some(detail) => (escape(&words.title), Some(timed(&detail, time))),
+        None => (timed(&words.title, time), None),
+    };
+    match detail {
+        Some(detail) => {
             let _ = write!(
                 element.own,
-                "<span class=\"tilo-title\">{}</span><span class=\"tilo-detail\">{}</span>",
-                escape(&words.title),
-                escape(&detail)
+                "<span class=\"tilo-title\">{title}</span><span class=\"tilo-detail\">{detail}</span>"
             );
         }
-        _ if element.own.is_empty() => element.own = escape(&words.title),
-        _ => {
-            let _ = write!(
-                element.own,
-                "<span class=\"tilo-title\">{}</span>",
-                escape(&words.title)
-            );
+        None if element.own.is_empty() => element.own = title,
+        None => {
+            let _ = write!(element.own, "<span class=\"tilo-title\">{title}</span>");
         }
     }
+}
+
+/// The ISO 8601 time a node's value stands for: a date, a date and time, or a span of two of them
+/// (`2026-11-23T09:00/2026-11-23T09:30`).
+fn time_of(access: &AccessNode) -> Option<&str> {
+    access.value.as_deref().filter(|value| is_iso_time(value))
+}
+
+/// `words`, escaped, in a `<time>` that tells the browser, a reader and a script the time `time`
+/// they say, when they say one.
+fn timed(words: &str, time: Option<&str>) -> String {
+    match time {
+        Some(time) => format!(
+            "<time datetime=\"{}\">{}</time>",
+            escape(time),
+            escape(words)
+        ),
+        None => escape(words),
+    }
+}
+
+/// Whether `value` is an ISO 8601 date or date and time (`2026-11-23`, `2026-11-23T09:30`,
+/// `2026-11-23T09:30:00Z`), or a span of two of them.
+fn is_iso_time(value: &str) -> bool {
+    let mut ends = value.split('/');
+    let (Some(first), second, None) = (ends.next(), ends.next(), ends.next()) else {
+        return false;
+    };
+    is_iso_instant(first) && second.is_none_or(is_iso_instant)
+}
+
+/// Whether `value` is one ISO 8601 date, or date and time with an optional offset.
+fn is_iso_instant(value: &str) -> bool {
+    let digits = |text: &str, count: usize| {
+        text.len() == count && text.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    let (date, time) = value
+        .split_once('T')
+        .map_or((value, None), |(date, time)| (date, Some(time)));
+    let mut parts = date.split('-');
+    let dated = matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(year), Some(month), Some(day), None)
+            if digits(year, 4) && digits(month, 2) && digits(day, 2)
+    );
+    let Some(time) = time else {
+        return dated;
+    };
+    // The offset, if any: `Z`, or a sign and hours and minutes.
+    let clock = time
+        .strip_suffix('Z')
+        .or_else(|| {
+            let at = time.rfind(['+', '-'])?;
+            let (clock, offset) = time.split_at(at);
+            let (hours, minutes) = offset.get(1..)?.split_once(':')?;
+            (digits(hours, 2) && digits(minutes, 2)).then_some(clock)
+        })
+        .unwrap_or(time);
+    let (whole, fraction) = clock
+        .split_once('.')
+        .map_or((clock, None), |(whole, fraction)| (whole, Some(fraction)));
+    let mut fields = whole.split(':');
+    let timed = match (fields.next(), fields.next(), fields.next(), fields.next()) {
+        (Some(hours), Some(minutes), seconds, None) => {
+            digits(hours, 2)
+                && digits(minutes, 2)
+                && seconds.is_none_or(|seconds| digits(seconds, 2))
+                && fraction.is_none_or(|fraction| {
+                    seconds.is_some()
+                        && !fraction.is_empty()
+                        && fraction.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        }
+        _ => false,
+    };
+    dated && timed
 }
 
 /// The words of a named section or dialog, said above what it holds: its heading and what it
@@ -861,16 +941,17 @@ fn caption_into(element: &mut Element, access: &AccessNode) {
     let Some(words) = node_words(access) else {
         return;
     };
+    let time = time_of(access);
     let _ = write!(
         element.own,
         "<header class=\"tilo-caption\"><span class=\"tilo-title\">{}</span>",
-        escape(&words.title)
+        timed(&words.title, time.filter(|_| words.detail.is_none()))
     );
     if let Some(detail) = &words.detail {
         let _ = write!(
             element.own,
             "<span class=\"tilo-detail\">{}</span>",
-            escape(detail)
+            timed(detail, time)
         );
     }
     element.own.push_str("</header>");
