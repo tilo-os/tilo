@@ -6199,6 +6199,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
+ "tilolang-tilo",
+]
+
+[[package]]
 name = "hex-literal"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20637,6 +20648,7 @@ dependencies = [
  "getrandom 0.4.3",
  "greetd-client",
  "hex",
+ "hex-engine",
  "host-fs",
  "image",
  "iroh",

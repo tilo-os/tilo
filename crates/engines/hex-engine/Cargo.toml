@@ -1,0 +1,20 @@
+[package]
+name = "hex-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The hex editor's device work: a file read as bytes, the edits a person typed applied to them, a pattern found and the bytes around a place read as numbers"
+
+[dependencies]
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+# A file's bytes are kept where every device of the workspace reads them by their address.
+tilo-resource = { path = "../../core/tilo-resource" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

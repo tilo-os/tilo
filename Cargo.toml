@@ -79,6 +79,7 @@ members = [
     "crates/engines/code-engine",
     "crates/engines/speed-engine",
     "crates/engines/disk-usage",
+    "crates/engines/hex-engine",
     "crates/integrations/tilo-messaging",
     "crates/core/broker-core",
     "crates/core/workspace-keys",

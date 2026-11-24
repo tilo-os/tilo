@@ -66,6 +66,9 @@ fn main() -> std::process::ExitCode {
     speed_engine::register();
     // The disk usage analyzer's device work, for the hosts this process runs itself.
     tilo_disk_usage::register();
+    // The hex editor's device work: the bytes of a file, the edits typed into them and the
+    // numbers they read as.
+    hex_engine::register();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it opens no display and
