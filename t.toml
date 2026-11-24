@@ -1465,8 +1465,8 @@ arch = ["x86_64", "aarch64"]
 name = "imager-tests-{arch}/{shard}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "set -eu\n# The guest's /var/tmp is on the step's own scratch disk, an empty ext4 t makes for each step\n# (its README, \"Micro-VM steps\"), not the node's filesystem. The tests assert the filesystem\n# themselves and fail, naming it, on any other. /var/tmp itself is world-writable, which the\n# publication of an installed system refuses among its target's ancestors (as a job's private\n# TMPDIR never is), so a directory on it is mounted at /imager, below / alone.\necho \"imager-tests-{arch}/{shard}: $(nproc) vCPUs; /var/tmp is $(awk '$2 == \"/var/tmp\" { print $3 }' /proc/mounts)\"\nmkdir -p /var/tmp/imager /imager\nmount --bind /var/tmp/imager /imager\nchmod 700 /imager\nexport TMPDIR=/imager/tmp TILO_IMAGER_TEST_CACHE_ROOT=/imager/cache\nmkdir -p \"$TMPDIR\" \"$TILO_IMAGER_TEST_CACHE_ROOT\"\n# The tests run as the guest's root, with its capabilities: the original-image review's refusal\n# of a changed held image is observed only so (as uid 0 without capabilities, the job\n# sandbox's identity, it fails), and the fixtures that need root run instead of skipping.\n# nextest's store, as in imager-tests-build-{arch}: not in the read-only sources.\nprintf '[store]\\ndir = \"/var/tmp/nextest\"\\n' > /var/tmp/nextest-store.toml\nbash tools/test-env.sh cargo nextest run --profile ci --no-fail-fast \\\n  --tool-config-file t:/var/tmp/nextest-store.toml \\\n  --archive-file /target/vm/imager-tests-{arch}.tar.zst --workspace-remap /src \\\n  --partition hash:{shard}/8\n"
-needs = ["imager-tests-build-{arch}"]
-env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
+needs = ["font-seed", "imager-tests-build-{arch}"]
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch={arch}"]
 isolation = "vm"
 [check.matrix]
@@ -7078,8 +7078,8 @@ default = false
 name = "e2e/{proof}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh bash tools/ci/session-proofs.sh {proof}"
-needs = ["nested-session", "collab-probe-binary"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_COLLAB_PROBE = "/target/debug/tilo-collab-probe", TILO_TEST_NTFS_FIXTURES = "0" }
+needs = ["font-seed", "nested-session", "collab-probe-binary"]
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_COLLAB_PROBE = "/target/debug/tilo-collab-probe", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/e2e/{proof}/**"]
@@ -7107,8 +7107,8 @@ proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "sessio
 [[check]]
 name = "app-walk/{app}"
 run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app}"
-needs = ["nested-session", "tilolang-cli-binary"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TILOLANG = "/target/debug/tilolang", TILO_TEST_NTFS_FIXTURES = "0" }
+needs = ["font-seed", "nested-session", "tilolang-cli-binary"]
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TILOLANG = "/target/debug/tilolang", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/app-walk/{app}/**"]
@@ -7142,9 +7142,9 @@ on = ["dispatch", "idle"]
 name = "run-headless"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh /target/debug/tilo-local headless --check --no-build --apps activity"
-needs = ["nested-session", "tilo-local-binaries"]
+needs = ["font-seed", "nested-session", "tilo-local-binaries"]
 # The session's apps read no NTFS image, whose set takes a minute to build.
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1200
@@ -7154,9 +7154,9 @@ on = ["idle"]
 name = "run-desktop"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh /target/debug/tilo-local desktop --check --no-build --apps activity"
-needs = ["nested-session", "tilo-local-binaries"]
+needs = ["font-seed", "nested-session", "tilo-local-binaries"]
 # The window's apps read no NTFS image, whose set takes a minute to build.
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1200
@@ -7601,7 +7601,7 @@ on = ["schedule:0 6 * * *", "dispatch", "idle"]
 # itself meets only its own loopback.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/test-env.sh bash os/containers/tilo-lounge/test-user-stories.sh /target/user-stories-shell/{story} {story}"
-needs = ["nested-session", "lounge-check-cli"]
+needs = ["font-seed", "nested-session", "lounge-check-cli"]
 # ffmpeg encodes each person's video, and podman starts the Nextcloud a story's people meet. Not
 # pinned: dnf installs the newest builds Fedora's updates repository holds, and pip the newest
 # Anthropic SDK, from hosts no fixed list names.
@@ -7609,7 +7609,7 @@ setup = { run = "dnf install -y --setopt=install_weak_deps=False podman ffmpeg-f
 # The session's apps read no NTFS image, whose set takes a minute to build. A story's people run
 # the `tilo` command against their own desktop, at the socket it serves its person's programs on
 # (the desktop API): it is the release the page stories drive, built once for them.
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo" }
 # The account folders a cloud story's person sees are FUSE mounts.
 requires = ["/dev/fuse", "arch=x86_64"]
 isolation = "vm"

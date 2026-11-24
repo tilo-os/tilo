@@ -270,6 +270,48 @@ class CacheLockTest(unittest.TestCase):
         self.assertEqual(free, "free", "the lock outlived the job that held it")
 
 
+class OfflineTest(unittest.TestCase):
+    """A check that sets text runs with no network: it takes the font seed (`t` builds it once per
+    pin set, the `font-seed` check, `font-catalog.py seed`) and prepares the catalog from it
+    offline. A pin the seed lacks stops it legibly; it never goes to the network."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.seed_dir = tempfile.TemporaryDirectory()
+        cls.seed = Path(cls.seed_dir.name) / "font-seed"
+        # The seed, as the font-seed check lays it out, from the fonts this machine has.
+        fc.seed(FONTS, cls.seed, offline=False)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.seed_dir.cleanup()
+
+    def setUp(self):
+        def no_network(url):
+            raise AssertionError(f"a check with no network asked for {url}")
+        for name, value in [("open_url", no_network),
+                            ("IMAGE_SEED", Path(self.seed_dir.name) / "no-image-seed")]:
+            patcher = mock.patch.object(fc, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        environment = mock.patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("TILO_FONT_CATALOG_ROOT", None)
+        os.environ["TILO_FONT_ASSETS_OFFLINE"] = "1"
+
+    def test_the_catalog_is_prepared_from_the_seed_with_no_network(self):
+        with tempfile.TemporaryDirectory() as catalogs:
+            root = fc.prepared_root(FONTS, "fixtures", cache=self.seed, catalogs=Path(catalogs))
+            self.assertEqual(fc.verify(root, "fixtures"), (37, 55771024))
+
+    def test_a_pin_the_seed_lacks_stops_the_check_and_names_the_font(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, r"font artifact unavailable offline: \S+\.(ttf|otf|woff2)"):
+                fc.prepared_root(FONTS, "fixtures", cache=Path(tmp) / "empty",
+                                 catalogs=Path(tmp) / "catalogs")
+
+
 class CatalogTest(unittest.TestCase):
     def test_reviewed_payload_is_staged_and_corruption_is_never_substituted(self):
         with self.subTest(phase='reviewed payload and product staging'):
