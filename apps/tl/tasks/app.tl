@@ -26,19 +26,22 @@ enum Priority {
 }
 
 /// Where a task stands in its work: a board's columns, fixed so that every task of the workspace
-/// reads in the same place in the same column.
+/// reads in the same place in the same column. Backlog is written down and not planned yet; todo
+/// is the next thing to pick up; in progress is being worked on; in review is done by whoever
+/// worked on it and waits for a person to look; done is checked by its person; cancelled is not
+/// to be done.
 enum Status {
-    /// Written down, not planned yet.
+    /// Backlog
     backlog
-    /// Planned: the next thing to pick up.
+    /// Todo
     todo (icon: .circle)
-    /// Someone is working on it.
+    /// In progress
     in_progress (icon: .circle_dot, tone: .info)
-    /// Done by whoever worked on it, waiting for a person to look.
+    /// In review
     in_review (icon: .eye, tone: .info)
-    /// Done and checked by its person.
+    /// Done
     done (icon: .circle_check, tone: .success)
-    /// Not to be done.
+    /// Cancelled
     cancelled (icon: .ban)
 }
 
@@ -47,35 +50,39 @@ fn closed(s: Status) -> Bool {
     s == .done or s == .cancelled
 }
 
-/// Which kind of project this is.
+/// Which kind of project this is: a finite goal whose work ends with it, or an ongoing
+/// responsibility that has no end, only what is done next.
 enum Kind {
-    /// A finite goal: the work ends, and so does the project.
+    /// Project
     project
-    /// An ongoing responsibility that has no end, only what is done next.
+    /// Area
     area
 }
 
-/// Whose budget a task's work spends.
+/// Whose budget a task's work spends: its person's, or the agent working on it.
 enum BudgetBy {
-    /// Its person's.
+    /// Its person
     person
-    /// The agent working on it, which holds itself to it.
+    /// Its agent
     agent
 }
 
-/// What a wait waits for: the kinds a session of an agent tells apart.
+/// What a wait waits for: the kinds a session of an agent tells apart. A moment ends at its
+/// time; a reply in a mail thread or a conversation; a change in a resource of the workspace; an
+/// answer of the person the work is for; answers of several people; and its pieces, the tasks
+/// under it, which let it go on when none of them is still to be worked on.
 enum WaitKind {
-    /// A moment: nothing else ends it.
+    /// A moment
     time
-    /// A reply: in a mail thread, a conversation.
+    /// A reply
     reply
-    /// A resource of the workspace changing.
+    /// A change
     change
-    /// An answer of the person the work is for: the task needs them.
+    /// An answer
     answer
-    /// Answers of several people.
+    /// Answers
     people
-    /// Its pieces, the tasks under it: it goes on when none of them is still to be worked on.
+    /// Its pieces
     pieces
 }
 
@@ -106,17 +113,18 @@ type Wait {
     event: Text = ""
 }
 
-/// Why a task's work stopped.
+/// Why a task's work stopped: it could not go on, its budget in money or in working time is
+/// spent, its agent sessions were interrupted and did not come back, or a person stopped it.
 enum StoppedWhy {
-    /// It could not go on: the line says what failed.
+    /// Failed
     failed
-    /// Its budget in money is spent.
+    /// Out of money
     budget
-    /// Its budget in working time is spent.
+    /// Out of time
     time
-    /// Its agent sessions were interrupted and did not come back.
+    /// Interrupted
     lost_worker
-    /// A person stopped it.
+    /// Stopped by a person
     person
 }
 
@@ -246,7 +254,7 @@ type Task {
     related: Collection<Related>
 
     search {
-        filter "All issues" = number >= 0 (icon: .list_tree)
+        filter "Tasks" = number >= 0 (icon: .list_tree)
         filter "Inbox" = project == .none
             and due == .none
             and not (status == .done or status == .cancelled) (icon: .inbox)
@@ -488,7 +496,6 @@ action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Ctrl+[", gro
 /// card's drag names. A drop in its own column only moves it among the column's tasks.
 action set_status(t: Task, status: Status, at: Int = 0) uses time (
     label: "Status",
-    did: "moved",
     settles: t.status,
 ) {
     t.status = status
@@ -1391,7 +1398,7 @@ fn place_named(every: List<Filter<Task>>, key: Text) -> Filter<Task> {
 fn places(shared: Bool) -> List<Filter<Task>> {
     let every = filters(Task)
     let out = [
-        place_named(every, "all_issues"),
+        place_named(every, "tasks"),
         place_named(every, "inbox"),
         place_named(every, "today"),
         place_named(every, "upcoming"),
@@ -1458,17 +1465,13 @@ view home(t: Tasks) {
     let shown = if done_place {
         found.sort_by(x -> changed(x, .status)?.at, desc)
     } else if folds { ordered.sort_by(x -> folded(found, x)) } else { ordered }
-    let title = if label != "" {
-        label
-    } else if let p = project {
-        p.name
-    } else if chosen == "all_issues" { "All issues" } else { place.label }
+    let title = if label != "" { label } else if let p = project { p.name } else { place.label }
     // What waits here, read from the index: the same cost at three tasks or three thousand.
     let open = found.count(x -> not closed(x.status))
     let all_done = open == 0 and not found.is_empty()
     // The places whose badge counts what waits.
     let counted: List<Text> = [
-        "all_issues",
+        "tasks",
         "inbox",
         "today",
         "todos",
@@ -1883,19 +1886,22 @@ template view task_body(t: Task) {
     stack(gap: .group) {
         stack(gap: .related) {
             row(gap: .related, align: .start) {
-                button(check(t))
+                button(check(t), icon_only: true)
                 ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
             }
-            row(gap: .related, align: .center, wrap: true) {
-                ui.Text("#{t.number}", secondary: true)
-                let from = if let o = t.origin {
-                    if let r = o.reference { "From {o.source} {r}" } else { "From {o.source}" }
-                } else { "" }
-                if from != "" {
-                    ui.Text(from, secondary: true)
-                }
-                if let u = t.url {
-                    ui.Link(u, label: u)
+            // What came before it in another tracker, and where it is read there: the number it
+            // has here stands in the facts beside these, so a narrow page keeps its line whole.
+            let from = if let o = t.origin {
+                if let r = o.reference { "From {o.source} {r}" } else { "From {o.source}" }
+            } else { "" }
+            if from != "" or t.url != .none {
+                row(gap: .related, align: .center, wrap: true) {
+                    if from != "" {
+                        ui.Text(from, secondary: true)
+                    }
+                    if let u = t.url {
+                        ui.Link(u, label: u)
+                    }
                 }
             }
             if t.waiting_for != "" {
@@ -1950,6 +1956,7 @@ template view task_body(t: Task) {
         std.body() {
             std.suggestions(t)
             facts(t) {
+                ui.Text("#{t.number}", secondary: true)
                 ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
                     ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
                         on choose: unfile(t)

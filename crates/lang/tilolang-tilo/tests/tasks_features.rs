@@ -11,7 +11,7 @@ use tilolang_tilo::host::RootView;
 use tilolang_tilo::runtime::ids::MemberId;
 
 use crate::fixtures::Replica;
-use crate::tasks::{APP, call, create, items, read, target, workspace};
+use crate::tasks::{APP, call, create, items, key_of, read, target, workspace};
 
 /// The value of the declared enum `ty_name`'s case `name`, as the app's own ids name it.
 fn case(ada: &Replica, ty_name: &str, name: &str) -> Value {
@@ -777,6 +777,115 @@ fn a_task_page_shows_its_number_and_its_status() {
     assert!(shown.contains("#1"), "and its number: {shown}");
 }
 
+/// A project's title stands on a line that wraps: beside it the window's views and the "…" it
+/// keeps its commands behind share that line, and wrap onto the next one of a narrow page rather
+/// than standing over each other.
+#[test]
+fn the_line_beside_a_project_pages_title_wraps() {
+    let (ada, root) = workspace();
+    let made = plan(&ada, &root, "Launch");
+    ada.commit();
+    let Value::Ref(at) = &made else {
+        panic!("a resource: {made:?}")
+    };
+    let mut view = ada.host.open_resource(&at.target, None).unwrap();
+    view.poll_patches().unwrap();
+    // The window switches the project's views from the bar: find the page among them, which is
+    // the one whose title input holds what the work goes towards.
+    let tabs = key_of(&view, "ui.ViewTabs", &|_| true);
+    let pages = view.tree().of_kind("ui.Segment").len();
+    let mut found = None;
+    for index in 0..pages {
+        view.fire_with(
+            &tabs,
+            "change",
+            Some(&Value::Int(i64::try_from(index).unwrap_or(i64::MAX))),
+        )
+        .unwrap();
+        view.poll_patches().unwrap();
+        let page = view.tree().of_kind("ui.TextInput").iter().any(|input| {
+            input.props.get("placeholder") == Some(&Value::text("What the work goes towards"))
+        });
+        if page {
+            found = Some(index);
+            break;
+        }
+    }
+    assert!(
+        found.is_some(),
+        "the project's page among the window's {pages} views"
+    );
+    // A project's page is one of the views that share its title's line, and its own actions
+    // stand behind the line's "…".
+    let line = view
+        .tree()
+        .of_kind("row")
+        .into_iter()
+        .find(|row| row.key.ends_with("~line"))
+        .unwrap_or_else(|| panic!("the title's line: {:#?}", view.tree()));
+    assert_eq!(
+        line.props.get("wrap"),
+        Some(&Value::Int(1)),
+        "the title's line wraps: {line:#?}"
+    );
+    for kind in ["ui.ViewTabs", "ui.MenuButton"] {
+        assert!(
+            line.children.iter().any(|child| child.kind == kind),
+            "the {kind} shares the title's line: {line:#?}"
+        );
+    }
+}
+
+/// The row that holds `key`, as the nearest one over it: what stands beside the node a page
+/// shows reads off it.
+fn row_holding<'a>(
+    node: &'a tilolang_runtime::UiNode,
+    key: &str,
+) -> Option<&'a tilolang_runtime::UiNode> {
+    if node.kind == "row" && node.children.iter().any(|child| child.key == key) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| row_holding(child, key))
+}
+
+/// The number a task has stands with its facts, beside the pickers, not alone on a line under
+/// its title where a narrow page wraps it there.
+#[test]
+fn a_task_pages_number_stands_with_its_facts() {
+    let (ada, root) = workspace();
+    let one = task(&ada, &root, "Shown");
+    ada.commit();
+    let view = crate::tasks::task_page(&ada, &one);
+    let number = view
+        .tree()
+        .of_kind("ui.Text")
+        .into_iter()
+        .find(|node| {
+            node.props.get("value") == Some(&Value::text("#1"))
+                || node.props.get("label") == Some(&Value::text("#1"))
+        })
+        .expect("the page shows its number");
+    let facts = row_holding(view.tree(), &number.key).expect("the number stands in a row");
+    assert!(
+        !facts.of_kind("ui.MenuButton").is_empty(),
+        "the number stands with the task's facts: {facts:#?}"
+    );
+}
+
+/// A task's page offers one person to pick: its assignee. The hand that gave a task to an agent
+/// is the app's bookkeeping, so it takes no second "No one" picker beside the first.
+#[test]
+fn a_task_page_offers_one_person_to_pick() {
+    let (ada, root) = workspace();
+    let one = task(&ada, &root, "Shown");
+    ada.commit();
+    let view = crate::tasks::task_page(&ada, &one);
+    let pickers = view.tree().of_kind("ui.PersonField");
+    assert_eq!(pickers.len(), 1, "one person to pick: {:#?}", view.tree());
+}
+
 /// The page of a task keeps every command it offers behind the "…" beside its title: the host
 /// reads what the task's type declares, so the page names them without the view drawing them.
 #[test]
@@ -983,7 +1092,7 @@ fn the_home_window_offers_every_place_and_each_label_in_use() {
         })
         .collect();
     for place in [
-        "All issues",
+        "Tasks",
         "Inbox",
         "Today",
         "Upcoming",

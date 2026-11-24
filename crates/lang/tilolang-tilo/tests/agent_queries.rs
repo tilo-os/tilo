@@ -304,7 +304,7 @@ fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
     );
     assert!(
         ty.contains(
-            "filters: all_issues, inbox, today, upcoming, todos, done, assigned_to_me, \
+            "filters: tasks, inbox, today, upcoming, todos, done, assigned_to_me, \
              nobody_yet, agent_work, waiting, due, project, priority, parent, labels, status, \
              assignee"
         ),

@@ -16,6 +16,25 @@ fn sections(view: &ViewInstance) -> Vec<ShownSection> {
     crate::fixtures::sections(view.tree())
 }
 
+/// The window's list is titled by the place it shows, and the place that holds every task says
+/// what the app collects: tasks, never the tracker's word for them.
+#[test]
+fn the_tasks_list_is_titled_tasks() {
+    let (ada, _root) = workspace();
+    ada.commit();
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Tasks");
+    let shell = view
+        .tree()
+        .first_of_kind("ui.NavShell")
+        .expect("the window's shell");
+    assert_eq!(
+        shell.props.get("overview_title"),
+        Some(&Value::text("Tasks")),
+        "the list's heading says what it holds"
+    );
+}
+
 tilo_test_env::scenario! {
     fn the_tasks_window_has_its_places;
 
@@ -41,7 +60,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             labels,
             [
-                "All issues",
+                "Tasks",
                 "Inbox",
                 "Today",
                 "Upcoming",
@@ -56,7 +75,7 @@ tilo_test_env::scenario! {
          projects: a priority is searched, never offered as a place: {labels:?}"
         );
         assert_eq!(
-            count(&view, "All issues"),
+            count(&view, "Tasks"),
             Some(2),
             "every issue counts, the one done with as well: {:?}",
             places(&view)
@@ -358,7 +377,7 @@ tilo_test_env::scenario! {
                 .map(|(label, _)| label.as_str())
                 .collect::<Vec<_>>(),
             [
-                "All issues",
+                "Tasks",
                 "Inbox",
                 "Today",
                 "Upcoming",

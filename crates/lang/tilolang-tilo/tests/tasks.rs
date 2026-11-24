@@ -594,12 +594,12 @@ tilo_test_env::scenario! {
         assert_eq!(
             lists(&view),
             [
-                (Some("Written down, not planned yet".to_owned()), Some(2), ids(&[&boxes, &tape])),
-                (Some("Planned: the next thing to pick up".to_owned()), Some(0), vec![]),
-                (Some("Someone is working on it".to_owned()), Some(1), ids(&[&kitchen])),
-                (Some("Done by whoever worked on it, waiting for a person to look".to_owned()), Some(0), vec![]),
-                (Some("Done and checked by its person".to_owned()), Some(1), ids(&[&books])),
-                (Some("Not to be done".to_owned()), Some(0), vec![]),
+                (Some("Backlog".to_owned()), Some(2), ids(&[&boxes, &tape])),
+                (Some("Todo".to_owned()), Some(0), vec![]),
+                (Some("In progress".to_owned()), Some(1), ids(&[&kitchen])),
+                (Some("In review".to_owned()), Some(0), vec![]),
+                (Some("Done".to_owned()), Some(1), ids(&[&books])),
+                (Some("Cancelled".to_owned()), Some(0), vec![]),
             ]
         );
         for (title, count, cards) in lists(&view) {
@@ -863,7 +863,7 @@ fn a_tasks_row_and_card_say_its_number_status_steps_and_labels() {
     };
 
     let mut view = ada.view(APP);
-    go_to(&mut view, "All issues");
+    go_to(&mut view, "Tasks");
     let row = home_row_node(&mut view, &target(&post).expect("a task"));
     let drawn = *row.of_kind("ui.ListRow").first().expect("the row is drawn");
     assert_eq!(
@@ -952,27 +952,15 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_column_where_it_was_dropped()
         lists(&view),
         [
             (
-                Some("Written down, not planned yet".to_owned()),
+                Some("Backlog".to_owned()),
                 Some(4),
                 ids(&[&boxes, &van, &books, &bedworkspace])
             ),
-            (
-                Some("Planned: the next thing to pick up".to_owned()),
-                Some(0),
-                vec![]
-            ),
-            (Some("Someone is working on it".to_owned()), Some(0), vec![]),
-            (
-                Some("Done by whoever worked on it, waiting for a person to look".to_owned()),
-                Some(0),
-                vec![]
-            ),
-            (
-                Some("Done and checked by its person".to_owned()),
-                Some(0),
-                vec![]
-            ),
-            (Some("Not to be done".to_owned()), Some(0), vec![]),
+            (Some("Todo".to_owned()), Some(0), vec![]),
+            (Some("In progress".to_owned()), Some(0), vec![]),
+            (Some("In review".to_owned()), Some(0), vec![]),
+            (Some("Done".to_owned()), Some(0), vec![]),
+            (Some("Cancelled".to_owned()), Some(0), vec![]),
         ]
     );
     let drop = |view: &mut ViewInstance, list: &str, task: &Value, at: i64| {
@@ -983,12 +971,12 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_column_where_it_was_dropped()
         view.fire_with(&key, "drop", Some(&carried)).unwrap();
     };
     // Into the empty column, then a second card above it.
-    drop(&mut view, "Someone is working on it", &books, 0);
-    drop(&mut view, "Someone is working on it", &van, 0);
+    drop(&mut view, "In progress", &books, 0);
+    drop(&mut view, "In progress", &van, 0);
     // Within a column: the last card to the top.
-    drop(&mut view, "Written down, not planned yet", &bedworkspace, 0);
+    drop(&mut view, "Backlog", &bedworkspace, 0);
     // Below a column's last card.
-    drop(&mut view, "Someone is working on it", &boxes, 2);
+    drop(&mut view, "In progress", &boxes, 2);
     ada.commit();
     // A window hears of a change once, after the document holds it: it runs again now, and shows
     // the cards where they landed.
@@ -996,32 +984,16 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_column_where_it_was_dropped()
     assert_eq!(
         lists(&view),
         [
+            (Some("Backlog".to_owned()), Some(1), ids(&[&bedworkspace])),
+            (Some("Todo".to_owned()), Some(0), vec![]),
             (
-                Some("Written down, not planned yet".to_owned()),
-                Some(1),
-                ids(&[&bedworkspace])
-            ),
-            (
-                Some("Planned: the next thing to pick up".to_owned()),
-                Some(0),
-                vec![]
-            ),
-            (
-                Some("Someone is working on it".to_owned()),
+                Some("In progress".to_owned()),
                 Some(3),
                 ids(&[&van, &books, &boxes])
             ),
-            (
-                Some("Done by whoever worked on it, waiting for a person to look".to_owned()),
-                Some(0),
-                vec![]
-            ),
-            (
-                Some("Done and checked by its person".to_owned()),
-                Some(0),
-                vec![]
-            ),
-            (Some("Not to be done".to_owned()), Some(0), vec![]),
+            (Some("In review".to_owned()), Some(0), vec![]),
+            (Some("Done".to_owned()), Some(0), vec![]),
+            (Some("Cancelled".to_owned()), Some(0), vec![]),
         ]
     );
     assert_eq!(status_of(&ada, &van), "in_progress");
@@ -2006,6 +1978,60 @@ fn history_says_who_a_task_went_to_not_the_bookkeeping_kept_for_its_agent() {
     assert!(
         !joined.contains("assigned by"),
         "the hand that gave it is the app's bookkeeping: {shown:?}"
+    );
+}
+
+/// A move through the statuses says the status it went to: history names the fact the change
+/// made, never a bare verb that leaves the person to guess what moved.
+#[test]
+fn history_says_the_status_a_task_moved_to() {
+    let (ada, root) = workspace();
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+        ],
+        None,
+    );
+    let task = call(&ada, "new_task", create(&root, "Sort the paper mail"));
+    ada.commit();
+    // Ben moves it, so the move stands as a step of its own rather than folding into Ada's making.
+    let set_status = ada
+        .host
+        .package(APP)
+        .unwrap()
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "set_status")
+        .unwrap()
+        .id
+        .clone();
+    let ben = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben"));
+    ada.host
+        .runtime()
+        .invoke_action(
+            &ben,
+            (
+                set_status.as_str(),
+                vec![
+                    task.clone(),
+                    case(&ada, "Status", "in_progress"),
+                    Value::Int(0),
+                ],
+            ),
+        )
+        .unwrap();
+    ada.commit();
+    let shown = history_texts(&ada, &task);
+    let joined = shown.join(" ");
+    assert!(
+        joined.contains("set status to In progress"),
+        "history says which status the task moved to: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|line| line.trim() == "moved"),
+        "no line stops at the verb: {shown:?}"
     );
 }
 
