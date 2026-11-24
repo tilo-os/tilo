@@ -708,3 +708,376 @@ async fn entries_of_one_purpose_are_each_adopted() {
         "the same entry answers the item it made"
     );
 }
+
+/// Another app, which keeps nothing of the bridge's.
+const READER: &str = "so.tilo.reader";
+
+/// The bridge and the reader, both installed here; neither runs a process.
+struct BridgeAndReader;
+
+impl HostConnections for BridgeAndReader {
+    fn connections(&self) -> Vec<(String, Vec<String>)> {
+        vec![
+            (BRIDGE.to_owned(), Vec::new()),
+            (READER.to_owned(), Vec::new()),
+        ]
+    }
+    fn installed(&self, app: &str) -> bool {
+        app == BRIDGE || app == READER
+    }
+    fn gives(&self, _: &str, _: &str, _: &str) -> bool {
+        true
+    }
+    fn on_power(&self) -> bool {
+        true
+    }
+    fn start(&self, _: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn runs(&self, _: &str, _: &str) -> bool {
+        false
+    }
+    fn stop(&self, _: &str, _: &str) {}
+}
+
+/// The keep of `value` for `purpose`, renewing `replacing` when named, as an app's held
+/// connection calls it.
+fn keep_of(purpose: &str, value: &str, replacing: Option<&ItemRef>) -> InvokeRequest {
+    let mut argument = json!({"purpose": purpose, "value": value});
+    if let Some(item) = replacing {
+        argument["replacing"] = json!(item.to_string());
+    }
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target: person_vault::keep_target(),
+        argument: InvokeArgument::Json(argument.as_object().cloned().unwrap()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// The bridge's held connection keeps a token it was handed as its own: it is answered the
+/// item's reference, keeping again renews that one item, and releasing it to the bridge asks
+/// nobody. The person sees it among their items, titled and tagged. Another app is asked for it
+/// first, is released it once the person approved and granted, and is asked again once they
+/// took that leave back. The token is in no record, log line or file in the clear.
+#[tokio::test]
+async fn an_app_keeps_its_own_secret_renews_it_and_reads_it_back_unasked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    workspaces.run_connections(Arc::new(BridgeAndReader));
+    for app in [BRIDGE, READER] {
+        takes_turn_in(
+            workspaces,
+            &workspace,
+            &Turn::connection(app, Vec::new()),
+            AT_ONCE,
+        )
+        .await
+        .expect("this device takes the app's connection");
+    }
+    let bridge = AppProcess::connection(BRIDGE);
+    let reader = AppProcess::connection(READER);
+    let (lines, guard) = logged();
+    tracing::info!("the line that shows the log is read");
+
+    // The value is a secret of the published action, so no record of a call keeps it.
+    let described = crate::workspaces::actions::published_params(&person_vault::keep_target())
+        .expect("vault#keep is described");
+    assert_eq!(
+        tilo_actions::remote::secret_arguments::secret_parameters(&described),
+        vec!["value".to_owned()]
+    );
+
+    let kept = workspaces
+        .keep_for(
+            (BRIDGE, &workspace),
+            &bridge,
+            &keep_of("bot-token", OTHER, None),
+        )
+        .await
+        .expect("the bridge keeps its own token");
+    let store = workspaces.asked_store().unwrap();
+    assert!(
+        store.waiting_in(&workspace).is_empty(),
+        "keeping asks nobody"
+    );
+
+    // Keeping again for the purpose renews the one item, and so does naming it.
+    let renewed = workspaces
+        .keep_for(
+            (BRIDGE, &workspace),
+            &bridge,
+            &keep_of("bot-token", OTHER, None),
+        )
+        .await
+        .unwrap();
+    assert_eq!(renewed.reference, kept.reference);
+    let named = workspaces
+        .keep_for(
+            (BRIDGE, &workspace),
+            &bridge,
+            &keep_of("bot-token", TOKEN, Some(&kept.reference)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(named.reference, kept.reference);
+    assert_eq!(
+        workspaces
+            .item_tagged(&workspace, BRIDGE, "bot-token")
+            .await
+            .unwrap(),
+        Some(kept.reference.clone()),
+        "the bridge finds it by its purpose"
+    );
+
+    // The person sees it as one item of their vault, titled for the app and the purpose.
+    let mine = (&owner, &caller(&owner));
+    let listed = ask(
+        &service,
+        workspace_id,
+        mine,
+        person_vault::LIST,
+        Value::Null,
+    )
+    .await
+    .unwrap();
+    let [item] = &listed["items"].as_array().unwrap()[..] else {
+        panic!("one item, renewed in place: {listed}");
+    };
+    assert_eq!(item["reference"], kept.reference.to_string());
+    assert_eq!(item["kind"], "value");
+    assert_eq!(item["title"], format!("{BRIDGE} · bot token"));
+    assert_eq!(
+        item["tags"],
+        json!([
+            person_vault::app_tag(BRIDGE),
+            person_vault::purpose_tag("bot-token")
+        ])
+    );
+
+    // The bridge reads back the newest value, asking nobody.
+    let call = release_of(&kept.reference);
+    let released: Released = workspaces
+        .release_to((BRIDGE, &workspace), &bridge, &call)
+        .await
+        .expect("the bridge reads what it kept");
+    assert_eq!(released.secret, TOKEN);
+    assert!(
+        store.waiting_in(&workspace).is_empty(),
+        "its own release asks nobody"
+    );
+
+    // Another app is asked for it first; approved and granted, it reads it.
+    assert_eq!(
+        refusal(
+            workspaces
+                .release_to((READER, &workspace), &reader, &call)
+                .await
+        ),
+        release::asked_first(READER)
+    );
+    let [waiting] = &store.waiting_in(&workspace)[..] else {
+        panic!("one question");
+    };
+    assert!(!asked_records(workspaces, &workspace).contains(TOKEN));
+    super::super::tests::settled(workspaces.resolve_asked(
+        &caller(&owner).in_workspace(&workspace),
+        &approve_and_grant(&waiting.asked.record),
+    ))
+    .await
+    .expect("their answer is taken");
+    let lent: Released = workspaces
+        .release_to((READER, &workspace), &reader, &call)
+        .await
+        .expect("the reader reads what it was lent");
+    assert_eq!(lent.secret, TOKEN);
+
+    // The person sees the reader's leave and takes it back: the reader is asked again, the
+    // bridge still is not.
+    let read = ask(
+        &service,
+        workspace_id,
+        mine,
+        person_vault::USES,
+        json!({"item": kept.reference.to_string()}),
+    )
+    .await
+    .unwrap();
+    let leaves = read["always"].as_array().cloned().unwrap_or_default();
+    let [leave] = &leaves[..] else {
+        panic!("the reader's leave is listed: {read}");
+    };
+    assert_eq!(leave["app"], READER);
+    ask(
+        &service,
+        workspace_id,
+        mine,
+        person_vault::TAKE_BACK,
+        json!({"item": kept.reference.to_string(), "app": READER}),
+    )
+    .await
+    .expect("the person takes the reader's leave back");
+    assert_eq!(
+        refusal(
+            workspaces
+                .release_to((READER, &workspace), &reader, &call)
+                .await
+        ),
+        release::asked_first(READER)
+    );
+    workspaces
+        .release_to((BRIDGE, &workspace), &bridge, &call)
+        .await
+        .expect("the bridge still reads its own");
+
+    // Neither value is in a record, a use, a log line or a file in the clear.
+    drop(guard);
+    let logged = String::from_utf8(lines.0.lock().unwrap().clone()).unwrap();
+    assert!(logged.contains("the line that shows the log is read"));
+    let items = workspaces.open_vault(&workspace).await.unwrap().items();
+    let uses = items
+        .uses(&vault_items::ItemId::parse(kept.reference.id()).unwrap())
+        .unwrap();
+    assert!(
+        uses.iter()
+            .any(|used| used.by == BRIDGE && used.allowed.is_none()),
+        "the bridge's own release was nobody's leave: {uses:?}"
+    );
+    for secret in [TOKEN, OTHER] {
+        assert!(!logged.contains(secret), "a log line holds it: {logged}");
+        assert!(!asked_records(workspaces, &workspace).contains(secret));
+        assert!(!listed.to_string().contains(secret));
+        assert!(!format!("{uses:?}").contains(secret));
+        assert!(!format!("{:?}", items.facts()).contains(secret));
+        assert_eq!(
+            files_holding(dir.path(), secret.as_bytes()),
+            Vec::<std::path::PathBuf>::new(),
+            "no file holds it in the clear"
+        );
+    }
+}
+
+/// Every caller that is not an app's held connection placed here is refused a keep, saying why,
+/// as a release is: the person and the pages they open, an agent, an app calling from a process
+/// apps share, a window or a process started for a call, a tilolang process, and a connection
+/// another device holds. A held connection is refused renewing an item it did not keep, and a
+/// keep that names no purpose.
+#[tokio::test]
+async fn every_other_caller_is_refused_a_keep_saying_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let persons = kept(&service, workspace_id, &owner, (GATEWAY, OTHER)).await;
+    let through_the_vault = |caller: Caller| {
+        let service = &service;
+        let owner = &owner;
+        async move {
+            ask_at(
+                service,
+                workspace_id,
+                (owner, &caller),
+                person_vault::keep_target(),
+                json!({"purpose": "bot-token", "value": TOKEN}),
+            )
+            .await
+        }
+    };
+    let person = caller(&owner).in_workspace(&workspace);
+    assert_eq!(
+        refusal(through_the_vault(person).await),
+        release::BY_A_PERSON
+    );
+    let agent = on_turn(&owner, &workspace, "scout");
+    assert_eq!(
+        refusal(through_the_vault(agent).await),
+        release::BY_AN_AGENT
+    );
+    let shared = Caller::local_app(BRIDGE)
+        .acting_for(hex::encode(owner.user_public_key))
+        .in_workspace(&workspace);
+    assert_eq!(
+        refusal(through_the_vault(shared).await),
+        release::from_a_shared_process(BRIDGE)
+    );
+
+    let call = keep_of("bot-token", TOKEN, None);
+    assert_eq!(
+        refusal(
+            workspaces
+                .keep_for((BRIDGE, &workspace), &AppProcess::Unplaced, &call)
+                .await
+        ),
+        release::from_an_unplaced_process(BRIDGE)
+    );
+    assert_eq!(
+        refusal(
+            workspaces
+                .keep_for((BRIDGE, &workspace), &AppProcess::Tilolang, &call)
+                .await
+        ),
+        release::from_a_tilolang_process(BRIDGE)
+    );
+    // A process that says it is the connection, while this device holds no turn of it.
+    let held = AppProcess::connection(BRIDGE);
+    assert_eq!(
+        refusal(
+            workspaces
+                .keep_for((BRIDGE, &workspace), &held, &call)
+                .await
+        ),
+        release::held_elsewhere(BRIDGE)
+    );
+
+    workspaces.run_connections(Arc::new(Bridge));
+    takes_turn_in(
+        workspaces,
+        &workspace,
+        &Turn::connection(BRIDGE, Vec::new()),
+        AT_ONCE,
+    )
+    .await
+    .expect("this device takes the bridge's connection");
+    assert_eq!(
+        refusal(
+            workspaces
+                .keep_for(
+                    (BRIDGE, &workspace),
+                    &held,
+                    &keep_of("bot-token", TOKEN, Some(&persons)),
+                )
+                .await
+        ),
+        release::not_its_own(BRIDGE),
+        "the person's own item is not the bridge's to renew"
+    );
+    assert_eq!(
+        refusal(
+            workspaces
+                .keep_for((BRIDGE, &workspace), &held, &keep_of(" ", TOKEN, None))
+                .await
+        ),
+        release::NOT_A_PURPOSE
+    );
+    // The person's item is still theirs alone, and nothing of the bridge's was kept.
+    let facts = workspaces
+        .open_vault(&workspace)
+        .await
+        .unwrap()
+        .items()
+        .facts();
+    assert_eq!(facts.len(), 1);
+    assert!(facts[0].tags.is_empty());
+    assert!(!asked_records(workspaces, &workspace).contains(TOKEN));
+    assert!(files_holding(dir.path(), TOKEN.as_bytes()).is_empty());
+}

@@ -1242,12 +1242,14 @@ impl VaultItems {
     /// answering what is safe to say of it. Where `replacing` names a login the vault keeps,
     /// `item` takes its place under the same id: its name and secret change, it belongs to
     /// `item`'s places as well as its own, and it keeps its title, tags and uses. Any other
-    /// `replacing` is refused, so nothing kept elsewhere is overwritten by mistake.
+    /// `replacing` is refused, so nothing kept elsewhere is overwritten by mistake. A new item is
+    /// titled `title`, unless that is empty.
     pub fn keep_tagged(
         &mut self,
         tags: &[String],
         replacing: Option<&ItemId>,
         mut item: NewItem,
+        title: &str,
     ) -> Result<ItemFacts, ItemError> {
         let before = match replacing {
             Some(id) => {
@@ -1272,9 +1274,13 @@ impl VaultItems {
             }
             None => ItemId::new(),
         };
+        let fresh = !self.entries.contains_key(&id);
         self.write(&id, &sealed);
         if let Some((entry, _)) = self.entries.get_mut(&id) {
             entry.tags.extend(tags.iter().cloned());
+            if fresh && !title.trim().is_empty() {
+                title.trim().clone_into(&mut entry.title);
+            }
             let tagged = entry.clone();
             if let Some(VaultChange::Keep(kept)) = self.changes.last_mut() {
                 *kept = tagged;
@@ -1566,7 +1572,7 @@ mod tests {
         ];
         let mut items = VaultItems::default();
         let kept = items
-            .keep_tagged(&tags, None, login(&["https://shop.example"]))
+            .keep_tagged(&tags, None, login(&["https://shop.example"]), "")
             .unwrap();
         assert_eq!(kept.tags, tags);
         assert_eq!(kept.title, "shop.example");
@@ -1597,7 +1603,7 @@ mod tests {
         let mut again = login(&["https://www.shop.example"]);
         again.username = "ada2@example.test".into();
         again.secret = Zeroizing::new("a newer one".into());
-        let replaced = items.keep_tagged(&[], Some(&kept.id), again).unwrap();
+        let replaced = items.keep_tagged(&[], Some(&kept.id), again, "").unwrap();
         assert_eq!(replaced.id, kept.id);
         assert_eq!(replaced.tags, tags);
         assert_eq!(
@@ -1622,7 +1628,7 @@ mod tests {
         assert_eq!(released.secret.as_str(), "a newer one");
         let none = ItemId::parse("0123456789abcdef0123456789abcdef").unwrap();
         assert!(matches!(
-            items.keep_tagged(&tags, Some(&none), login(&["https://a.example"])),
+            items.keep_tagged(&tags, Some(&none), login(&["https://a.example"]), ""),
             Err(ItemError::NotFound)
         ));
     }

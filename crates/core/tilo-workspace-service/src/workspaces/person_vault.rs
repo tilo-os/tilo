@@ -122,12 +122,13 @@ impl Workspaces {
             | person_vault::REVEAL => ActionKind::Read,
             _ => ActionKind::Undoable,
         };
-        // A release reaches the vault only through the process it answers
-        // (`Workspaces::release_to`): whatever calls it here is refused, saying why.
+        // A release, and an app keeping its own secret, reach the vault only through the
+        // process they answer (`Workspaces::release_to`, `Workspaces::keep_for`): whatever calls
+        // them here is refused, saying why.
         if person_vault::is_page_login(&request.target) {
             return Err(ActionCallError::refused(super::page_logins::NOT_A_WINDOW));
         }
-        if action == person_vault::RELEASE {
+        if action == person_vault::RELEASE || action == person_vault::KEEP {
             return Err(ActionCallError::refused(super::vault_release::refusal_for(
                 caller,
             )));

@@ -195,6 +195,11 @@ fn show_params() -> Vec<ActionParam> {
 /// The parameters the vault's action `action` (a `tilo.vault` action, or a verb of the vault in
 /// a workspace's governance tree) is published with.
 pub(super) fn params_of(action: &str) -> Option<Vec<ActionParam>> {
+    // An app keeps its own secret on its held connection alone, so no catalogue offers it; it
+    // is described all the same, so what keeps a call of it leaves its value out.
+    if action == person_vault::KEEP {
+        return Some(person_vault::keep_params());
+    }
     VAULT_VERBS
         .iter()
         .find(|(verb, named)| verb.id == action || *named == action)

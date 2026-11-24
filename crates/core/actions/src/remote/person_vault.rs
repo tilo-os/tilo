@@ -96,7 +96,7 @@ pub const KEEP_USES: &str = "keep-uses";
 #[must_use]
 pub fn effects(action: &str) -> Vec<crate::ActionEffect> {
     match action {
-        ADD | ASK => vec![vault_step(KEEP_SEALED)],
+        ADD | ASK | KEEP => vec![vault_step(KEEP_SEALED)],
         REMOVE => vec![vault_step(REMOVE_SEALED)],
         COPY | REVEAL | FILL_PAGE | WEB_CALL | SIGN | RELEASE => vec![vault_step(KEEP_USES)],
         _ => Vec::new(),
@@ -1248,6 +1248,83 @@ pub struct Found {
 #[must_use]
 pub fn is_find(target: &RemoteActionTarget) -> bool {
     target.provider == PROVIDER && target.address.action == FIND
+}
+
+/// Keep a secret an app obtained or made itself, such as an OAuth token or a key it generated
+/// ([`KeepValue`]), in the workspace's vault as that app's own, answering the item's reference as
+/// [`Kept`]. It is answered only on the app's held connection, the same one [`RELEASE`] is: the
+/// app is the one that connection was placed for, never an argument, so no app keeps under
+/// another's name. The item is tagged with the app and the purpose ([`app_tag`],
+/// [`purpose_tag`]); keeping one for a purpose the app already keeps a value for renews that
+/// item's secret in place. The app releases what it kept without its person being asked; any
+/// other app is asked for, as for every item.
+pub const KEEP: &str = "keep";
+
+/// Where [`KEEP`] is addressed: the vault itself.
+#[must_use]
+pub fn keep_target() -> RemoteActionTarget {
+    target(KEEP)
+}
+
+/// Whether `target` is a [`KEEP`] at the vault's own resource.
+#[must_use]
+pub fn is_keep(target: &RemoteActionTarget) -> bool {
+    *target == keep_target()
+}
+
+/// The parameters [`KEEP`] is published with: the value is a secret, so no record of a call of
+/// it keeps the value.
+#[must_use]
+pub fn keep_params() -> Vec<crate::ActionParam> {
+    use crate::{ActionParam, ParamType};
+    vec![
+        ActionParam::required(
+            "purpose",
+            ParamType::Text,
+            "What the app keeps it for, such as `oauth-token`: the app finds it again by this.",
+        ),
+        ActionParam::required(
+            "value",
+            ParamType::Secret,
+            "The secret: sealed in the workspace's vault, released back only to the app's own \
+             process.",
+        ),
+        ActionParam::optional(
+            "replacing",
+            ParamType::Resource,
+            "The app's own item whose secret this renews, by its reference; left out, the item \
+             the app keeps for the purpose is renewed, or a new one kept.",
+        )
+        .of_resource_kind(ITEM_KIND),
+    ]
+}
+
+/// What [`KEEP`] names: the purpose the app keeps a secret for, the secret, and the app's own
+/// item it renews, if it names one. The secret travels here and nowhere back.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeepValue {
+    pub purpose: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacing: Option<ItemRef>,
+}
+
+impl std::fmt::Debug for KeepValue {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KeepValue")
+            .field("purpose", &self.purpose)
+            .field("replacing", &self.replacing)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What [`KEEP`] answers: the reference of the item the secret is kept as.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Kept {
+    pub reference: ItemRef,
 }
 
 /// The logins the vault keeps for one site ([`PageLoginsAt`]), as [`PageLogins`]: what is safe to
