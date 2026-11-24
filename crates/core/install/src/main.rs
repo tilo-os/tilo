@@ -1114,7 +1114,11 @@ fn image(cmd: ImageCmd) -> Result<(), String> {
                         .filter(|url| !url.is_empty())
                 })
                 .unwrap_or_else(|| "https://apps.tilo.so".to_owned());
-            make(Change::FetchImage { id, registry })
+            make(Change::FetchImage {
+                id,
+                registry,
+                trust: wire_trust(&TrustFlags::default()),
+            })
         }
         ImageCmd::Remove { id } => make(Change::RemoveImage { id }),
     }

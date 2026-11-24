@@ -1,6 +1,6 @@
 //! The attestors the workspace trusts, the publisher keys it refuses, and the
 //! verdict `check` prints for a package: reads through the workspace's action
-//! API. Changing them is [`crate::workspace::call`]'s, the workspace's actions.
+//! API. Changing them is [`tilo_control::packages::call`]'s, the workspace's actions.
 
 use super::{Error, TrustFlags, installer};
 
