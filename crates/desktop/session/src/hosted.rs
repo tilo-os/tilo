@@ -10,7 +10,7 @@ use ui::icons::Icon;
 pub use tilo_session_core::desktop::now_playing::Offer as MediaOffer;
 
 pub use tilo_device_surfaces::devices::{
-    ClipboardCopy, DeviceWorkspace, RowPart, SendableSound, SoundAsk, SoundRoute,
+    AccessKey, ClipboardCopy, DeviceWorkspace, RowPart, SendableSound, SoundAsk, SoundRoute,
 };
 
 /// One of the person's devices a Bluetooth accessory can move to.
@@ -233,6 +233,10 @@ pub fn handoff_targets(devices: &[PersonalDevice]) -> Vec<HandoffTarget> {
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DevicesReading {
     pub devices: Vec<PersonalDevice>,
+    /// Every key the person's root certified, as the record of their own workspace lists them,
+    /// with the ones it took back and the one this machine is.
+    #[serde(default)]
+    pub access: Vec<AccessKey>,
     /// What plays here, titled, while media continuity is on: what a press on
     /// another device sends.
     pub playing: Option<String>,

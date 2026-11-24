@@ -14,6 +14,7 @@ use tilo.models as models
 use tilo.workspace as workspace
 use tilo.accounts as accounts
 use tilo.host-account as billing
+use tilo.mcp-server as mcp
 
 /// The window's root. Settings keeps nothing of its own here: every row below changes a
 /// resource the session publishes — the person's appearance, notification, accessibility and

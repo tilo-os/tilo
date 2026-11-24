@@ -37,6 +37,7 @@ so-tilo-session-devices-found = Start a new person on this device
 so-tilo-session-devices-hand-off = Hand off an accessory
 so-tilo-session-devices-log-in = Log in with a ticket
 so-tilo-session-devices-press = Press one of the person's devices
+so-tilo-session-devices-rename = Name one of the person's keys
 so-tilo-session-devices-revoke = Take another of the person's devices back
 so-tilo-session-displays-arrange-displays = Move a display
 so-tilo-session-displays-brightness-down = Dimmer

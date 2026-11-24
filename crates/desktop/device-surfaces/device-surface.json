@@ -13094,6 +13094,43 @@
                 "type": "string"
               },
               "type": "text"
+            },
+            {
+              "name": "reason",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "rename",
+          "label": "Name one of the person's keys",
+          "description": "Name one of the person's keys: what every list of them, on every device of theirs, reads it by from then on. Two computers set up the same way enrol under one name, so the person tells them apart here.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
             }
           ]
         },
@@ -13112,6 +13149,16 @@
           "type": {
             "list": {
               "named": "PersonalDeviceView"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "access",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "AccessKey"
             }
           },
           "readonly": true
@@ -13186,6 +13233,90 @@
         }
       ],
       "types": [
+        {
+          "name": "AccessKey",
+          "doc": "One key that may act as the person, as the record of their own workspace keeps it: one of their computers, an agent's grant, or a key they made for their own script or backend.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": {
+                "named": "AccessKind"
+              }
+            },
+            {
+              "name": "agent",
+              "type": "text"
+            },
+            {
+              "name": "current",
+              "type": "bool"
+            },
+            {
+              "name": "revoked",
+              "type": "bool"
+            },
+            {
+              "name": "online",
+              "type": "bool"
+            },
+            {
+              "name": "nearby",
+              "type": "bool"
+            },
+            {
+              "name": "fingerprint",
+              "type": "text"
+            },
+            {
+              "name": "issued_ms",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "expires_ms",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "last_active_ms",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "workspace",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "AccessKind",
+          "doc": "What a key that may act as the person is.",
+          "cases": [
+            {
+              "name": "device",
+              "label": "Device"
+            },
+            {
+              "name": "agent",
+              "label": "Agent"
+            },
+            {
+              "name": "script",
+              "label": "Script"
+            }
+          ]
+        },
         {
           "name": "DeviceWorkspace",
           "doc": "A workspace this device's shell lists, as a view of the devices reads it: the same `key` and `name` the layout's workspaces go by.",

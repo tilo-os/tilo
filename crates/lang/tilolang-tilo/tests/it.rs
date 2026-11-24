@@ -97,6 +97,7 @@ mod rich_text;
 mod scenarios;
 mod settings_about;
 mod settings_billing;
+mod settings_devices;
 mod settings_displays;
 mod settings_input;
 mod settings_input_tablets;

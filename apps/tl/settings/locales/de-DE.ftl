@@ -1477,13 +1477,39 @@ d-jgu2wdwn = Updates pane
     .w-go-back-and-restart = Zurückgehen und neu starten
     .w-there-is-nothing-to-go-back = Es gibt nichts, wohin man zurückkönnte.
 
-d-turaaosk = Devices pane
-    .w-your-devices = Deine Geräte
-    .w-this-is-the-only-device-this = Dies ist das einzige Gerät, das dieser Arbeitsbereich bisher kennt.
+d-turaaosk = Bereich Geräte
+    .w-add-this-device = Dieses Gerät hinzufügen
+    .w-this-device-is-not-one-of = Dieses Gerät gehört noch zu niemandem, also handelt hier nichts als du. Füge es mit einem Code von einem deiner anderen Geräte hinzu.
+    .w-add-a-device = Ein Gerät hinzufügen
+    .w-everything-that-can-act-as-you = Alles, was als du handeln kann
+    .w-remove-anything-you-don-t-recognize = Entferne alles, das du nicht kennst.
+    .w-connect-an-agent-or-computer = Einen Agenten oder Rechner verbinden
+    .w-agents = Agenten
+    .w-no-agent-acts-as-you-yet = Noch kein Agent handelt als du.
+    .w-removed-every-device-of-yours-refuses = Entfernt; jedes deiner Geräte lehnt es ab
+    .w-manage = Verwalten: { $label }
+    .w-name = Benennen: { $label }…
+    .w-browsers-and-computers = Browser und Rechner
+    .w-no-browser-or-computer-acts-as = Außer diesem handelt noch kein Browser und kein Rechner als du.
+    .w-this-computer = Dieser Rechner
+    .w-this-computer-your-other-devices-reach = Dieser Rechner; deine anderen Geräte erreichen ihn
+    .w-how-your-devices-reach-each-other = Wie deine Geräte einander erreichen
+    .w-no-other-device-of-yours-is = Kein anderes deiner Geräte ist jetzt erreichbar.
+    .w-a-device-is-reached-directly-when = Ein Gerät wird direkt erreicht, wenn es in deinem Netz ist, sonst über den Arbeitsbereich, mit dem dieses Gerät abgleicht.
     .w-you = Du
     .w-your-colour = Deine Farbe
     .w-the-colour-your-pointer-your-presence = Die Farbe, in der dein Zeiger, deine Anwesenheit und deine Änderungen erscheinen; leer folgt deinem Namen
     .w-from-your-name = Aus deinem Namen
+    .w-remove-no-longer-used = Entfernen: { $label } – nicht mehr in Gebrauch
+    .w-remove-it-was-lost = Entfernen: { $label } – es ging verloren
+    .w-remove-it-was-stolen = Entfernen: { $label } – es wurde gestohlen
+    .w-remove-someone-knows-its-key = Entfernen: { $label } – jemand kennt seinen Schlüssel
+    .w-the-name-should-read-by = Der Name, unter dem { $label } erscheinen soll
+    .w-save-name = Namen speichern
+    .w-cancel = Abbrechen
+    .w-let-it-go-on = Lass es weiterlaufen
+    .w-stop = Stopp { $name }
+
 
 d-ofmlxj3n = Continuity pane
     .w-continuity = Kontinuität
@@ -1815,3 +1841,39 @@ d-oouuwdrk = Ebenen-Wörter
     .w-altgr = AltGr
     .w-shift-altgr = Umschalt+AltGr
     .w-level = Ebene { $value }
+d-6mazknnq = Reichweite des Agenten
+    .w-only-in = Nur in { $name }
+    .w-only-in-one-workspace = Nur in einem Arbeitsbereich
+    .w-in-all-your-workspaces = In allen deinen Arbeitsbereichen
+    .w-acts-as-you = Handelt als du
+
+d-nivgbtue = Agent arbeitet
+    .w-stopped-it-can-t-act-until = Gestoppt; es kann nicht handeln, bis du es weiterlaufen lässt
+    .w-working-now = Arbeitet jetzt
+    .w-sessions-working-now = { $working } Sitzungen arbeiten jetzt
+    .w-last-active = Zuletzt aktiv { $day }
+    .w-let-in = Hereingelassen { $day }
+
+d-ofukk4dg = Zustand eines Schlüssels
+    .w-removed-every-device-of-yours-refuses = Entfernt; jedes deiner Geräte lehnt es ab
+    .w-this-computer = Dieser Rechner
+    .w-online-on-your-network = Online, in deinem Netz
+    .w-online-through-your-workspace = Online, über deinen Arbeitsbereich
+    .w-offline-last-seen = Offline, zuletzt gesehen { $day }
+    .w-offline = Offline
+
+d-xnc7axix = Weg zu einem Gerät
+    .w-directly-on-your-network = Direkt, in deinem Netz
+    .w-through-your-workspace = Über deinen Arbeitsbereich
+    .w-out-of-reach-now = Jetzt nicht erreichbar
+
+d-ytu2kilt = Angaben zum Agenten
+    .w-added = Hinzugefügt { $day }
+    .w-ends = Endet { $day }
+    .w-operates-web-pages-in-browser = Bedient Webseiten im Browser
+    .w-asks-before-operating-web-pages-in = Fragt, bevor es Webseiten im Browser bedient
+
+d-w36u33n4 = Angaben zum Rechner
+    .w-added = Hinzugefügt { $day }
+    .w-ends = Endet { $day }
+    .w-to-remove-it-use-another-of = Um ihn zu entfernen, nutze ein anderes deiner Geräte.

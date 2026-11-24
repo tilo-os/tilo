@@ -3,6 +3,9 @@
 
 use tilo_resource::Effect;
 
+/// The reasons a key's access ends, as the record's revocations keep them.
+pub const REASONS: [&str; 4] = ["retired", "lost", "stolen", "compromised"];
+
 /// What the resource offers beside its reading: a press on one of its rows.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.session.devices")]
@@ -46,6 +49,23 @@ pub enum DevicesAction {
         /// The device's key, in hex, as their keys record and every list of theirs names it
         #[param("The device's key, in hex, as their keys record names it")]
         device: String,
+        /// Why its access ends: `lost`, `stolen`, `retired` or `compromised`; `retired` when none
+        /// is given.
+        #[param("Why its access ends: lost, stolen, retired or compromised", choices = REASONS)]
+        reason: Option<String>,
+    },
+    /// Name one of the person's keys: what every list of them, on every device of theirs, reads it
+    /// by from then on. Two computers set up the same way enrol under one name, so the person tells
+    /// them apart here.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    Rename {
+        /// The key, in hex, as their keys record names it
+        #[param("The key, in hex, as their keys record names it")]
+        device: String,
+        /// The name it should read by
+        #[param("The name it should read by")]
+        name: String,
     },
     /// Start a new person on this device, when no person's certificate names it yet
     #[effect(kind = "outside")]
@@ -69,6 +89,10 @@ pub enum DevicesAction {
 )]
 pub struct DevicesView {
     pub devices: Vec<PersonalDeviceView>,
+    /// Every key the person's root certified, as the record of their own workspace lists them:
+    /// their computers, the agents' grants and their own scripts, with the ones the root took back.
+    #[serde(default)]
+    pub access: Vec<AccessKey>,
     /// What plays here, titled, while media continuity is on: what a press on another device
     /// sends.
     #[serde(default)]
@@ -129,6 +153,80 @@ pub struct PersonalDeviceView {
     pub wakeable: bool,
     /// It plays the sound this device sends it.
     pub audio_output: bool,
+}
+
+/// One key that may act as the person, as the record of their own workspace keeps it: one of
+/// their computers, an agent's grant, or a key they made for their own script or backend.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one fact the record states of a key, read apart by a view"
+)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct AccessKey {
+    /// Its key, in hex: what a rename or a revocation names it by.
+    pub id: String,
+    /// What a list of the person's keys calls it.
+    pub label: String,
+    /// What kind of key it is.
+    pub kind: AccessKind,
+    /// The agent a computer runs ("Claude Code"), as the sessions it opened said; empty for a
+    /// computer no agent works on.
+    pub agent: String,
+    /// This machine.
+    pub current: bool,
+    /// The person's root took it back: every device of theirs refuses it from then on.
+    pub revoked: bool,
+    /// It has a live session with this device now.
+    pub online: bool,
+    /// It is heard on this device's local network, so the two reach each other directly.
+    pub nearby: bool,
+    /// Its first six bytes, which every list of the person's keys shows it by.
+    pub fingerprint: String,
+    /// When the person's root certified it, in Unix milliseconds.
+    #[serde(default)]
+    pub issued_ms: Option<i64>,
+    /// When it stops being good, in Unix milliseconds; none while it lasts until it is revoked.
+    #[serde(default)]
+    pub expires_ms: Option<i64>,
+    /// When a session of it was last with a host, in Unix milliseconds; none before it ever was.
+    #[serde(default)]
+    pub last_active_ms: Option<i64>,
+    /// The one workspace an agent's grant reaches, by its id; empty for every workspace of the
+    /// person's, and for a computer.
+    #[serde(default)]
+    pub workspace: String,
+}
+
+/// What a key that may act as the person is.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum AccessKind {
+    /// One of their devices.
+    #[default]
+    Device,
+    /// An agent's grant: a key an agent signs with for them.
+    Agent,
+    /// A key they made for their own script or backend.
+    Script,
 }
 
 /// The Devices section as a view of another language reads it (`device.devices`).

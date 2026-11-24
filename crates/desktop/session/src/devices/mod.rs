@@ -41,7 +41,9 @@ use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_speaker_service::remote_audio::{self, RemoteAudioPhase};
+use tilo_user_identity::AgentScope;
 use tilo_workspace_service::workspaces::person_workspace::devices::Devices as DevicesRecord;
+use tilo_workspace_service::workspaces::person_workspace::devices::KeyKind as RecordKey;
 use tilo_workspace_service::workspaces::person_workspace::wake;
 
 use crate::i18n::t;
@@ -58,7 +60,8 @@ pub const RESOURCE: &str = "session:devices";
 pub struct Devices;
 
 pub use tilo_device_surfaces::devices::{
-    DeviceWorkspace, DevicesAction, RowPart, SendableSound, SoundAsk, SoundRoute,
+    AccessKey, AccessKind, DeviceWorkspace, DevicesAction, RowPart, SendableSound, SoundAsk,
+    SoundRoute,
 };
 pub(crate) use tilo_device_surfaces::devices::{DevicesView, PersonalDeviceView};
 
@@ -185,6 +188,68 @@ fn read(
     devices
 }
 
+/// Every key that may act as the person, as the record of their own workspace lists it, with
+/// whether the fabric reaches each right now. A key whose certificate the person's root did not
+/// sign, or one whose revocation does not verify, is none of theirs and is left out: the record
+/// says who may act as them, and its own signatures are what a reader trusts.
+fn access(
+    record: Option<&FollowedResource<DevicesRecord>>,
+    devices: &[PersonalDevice],
+) -> Vec<AccessKey> {
+    let Some(kept) = record.map(FollowedResource::get) else {
+        return Vec::new();
+    };
+    let Some(person) =
+        crate::sync::device_identity().map(|identity| identity.device_cert.user_public_key)
+    else {
+        return Vec::new();
+    };
+    kept.listed(&person)
+        .into_iter()
+        .map(|listed| {
+            let reaching = devices.iter().find(|device| device.id == listed.key);
+            let cert = &listed.cert;
+            let seen = listed.device.seen_ms();
+            let active = listed.device.session.active_ms;
+            AccessKey {
+                id: listed.key.clone(),
+                label: listed.device.called(cert),
+                kind: match RecordKey::of(cert) {
+                    RecordKey::Device => AccessKind::Device,
+                    RecordKey::Agent => AccessKind::Agent,
+                    RecordKey::Script => AccessKind::Script,
+                },
+                agent: listed.device.agent.clone().unwrap_or_default(),
+                current: reaching.is_some_and(|device| device.local),
+                revoked: listed.device.revoked(cert),
+                online: reaching.is_some_and(|device| device.online),
+                nearby: reaching.is_some_and(|device| device.nearby),
+                fingerprint: cert
+                    .device_public_key
+                    .iter()
+                    .take(6)
+                    .map(|byte| format!("{byte:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                issued_ms: Some(milliseconds(cert.issued_at_ns)),
+                expires_ms: cert.expires_at_ns.map(milliseconds),
+                last_active_ms: seen.or_else(|| (active > 0).then_some(active)),
+                workspace: cert
+                    .capabilities
+                    .agent
+                    .as_ref()
+                    .and_then(AgentScope::workspace_name)
+                    .unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+/// `ns` nanoseconds since the epoch in milliseconds, for a list that shows a day.
+fn milliseconds(ns: u64) -> i64 {
+    i64::try_from(ns / 1_000_000).unwrap_or(i64::MAX)
+}
+
 /// The person's devices as the session's services publish them: read off the fabric every pass, so
 /// a device that comes or goes is one revision.
 pub(crate) struct Served {
@@ -267,6 +332,7 @@ impl Served {
         // A device the fabric knows this session as is one a person's certificate names it: their
         // device, logged in.
         reading.signed_in = self.fabric.local_device_fabric_identity().is_some();
+        reading.access = access(self.record.as_ref(), &reading.devices);
         reading.workspaces = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
@@ -342,8 +408,21 @@ impl Service for Served {
             }
             // Taking a device back is the person's root's, which the daemon of the device that
             // keeps it signs the record with: it answers once the record holds the revocation.
-            DevicesAction::Revoke { device } => {
-                return Ok(Started::Later(revoke(device, Arc::clone(&self.refused))));
+            DevicesAction::Revoke { device, reason } => {
+                return Ok(Started::Later(revoke(
+                    device,
+                    reason,
+                    Arc::clone(&self.refused),
+                )));
+            }
+            // A name is written to the record of the person's devices, which this computer's
+            // daemon holds and every list of theirs follows.
+            DevicesAction::Rename { device, name } => {
+                return Ok(Started::Later(rename(
+                    device,
+                    name,
+                    Arc::clone(&self.refused),
+                )));
             }
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
@@ -398,9 +477,23 @@ fn found(
 /// refusal included.
 fn revoke(
     device: String,
+    reason: Option<String>,
     refused: Arc<Mutex<String>>,
 ) -> tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, ApiError>> {
-    crate::landing::off_loop(async move { answered(revoke_with(&device).await, &refused) })
+    crate::landing::off_loop(async move {
+        answered(revoke_with(&device, reason.as_deref()).await, &refused)
+    })
+}
+
+/// Name the key `device` (its key, in hex) `name`, as `tilo device rename` does: this computer's
+/// daemon writes the name the record of the person's devices keeps, and every list of theirs reads
+/// it by from then on.
+fn rename(
+    device: String,
+    name: String,
+    refused: Arc<Mutex<String>>,
+) -> tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, ApiError>> {
+    crate::landing::off_loop(async move { answered(rename_with(&device, &name).await, &refused) })
 }
 
 /// What the daemon answered `outcome`, kept in `refused` (cleared when it went through), which
@@ -437,7 +530,32 @@ async fn log_in_with(ticket: &str, label: Option<&str>) -> Result<(), String> {
 
 /// [`revoke`] through this computer's daemon, as `tilo` calls it: the workspace the revocation is
 /// recorded in, then `devices#revoke`. A refusal is the daemon's own words.
-async fn revoke_with(device: &str) -> Result<(), String> {
+async fn revoke_with(device: &str, reason: Option<&str>) -> Result<(), String> {
+    let said = |error: anyhow::Error| format!("{error:#}");
+    let calls = tilo_api::calls::Calls::open(tilo_api::calls::Reach::default())
+        .await
+        .map_err(said)?;
+    let workspace = calls.founded_workspace().await.map_err(said)?;
+    let mut arguments = serde_json::json!({"device": device.trim()});
+    if let Some(reason) = reason.map(str::trim).filter(|reason| !reason.is_empty()) {
+        arguments["reason"] = serde_json::Value::String(reason.to_owned());
+    }
+    calls
+        .act(
+            Some(&workspace),
+            "devices",
+            tilo_device_identity::login::REVOKE,
+            &arguments,
+            "Revoke a device",
+        )
+        .await
+        .map_err(said)?;
+    Ok(())
+}
+
+/// [`rename`] through this computer's daemon, as `tilo` calls it: the workspace the name is
+/// recorded in, then `devices#rename`. A refusal is the daemon's own words.
+async fn rename_with(device: &str, name: &str) -> Result<(), String> {
     let said = |error: anyhow::Error| format!("{error:#}");
     let calls = tilo_api::calls::Calls::open(tilo_api::calls::Reach::default())
         .await
@@ -447,9 +565,9 @@ async fn revoke_with(device: &str) -> Result<(), String> {
         .act(
             Some(&workspace),
             "devices",
-            tilo_device_identity::login::REVOKE,
-            &serde_json::json!({"device": device.trim()}),
-            "Revoke a device",
+            tilo_device_identity::login::RENAME,
+            &serde_json::json!({"device": device.trim(), "name": name.trim()}),
+            "Name a device",
         )
         .await
         .map_err(said)?;
@@ -480,6 +598,7 @@ impl From<&DevicesReading> for DevicesView {
                     audio_output: device.audio_output,
                 })
                 .collect(),
+            access: reading.access.clone(),
             playing: reading.playing.clone(),
             chosen: reading.chosen,
             sounds: reading.sounds.clone(),
@@ -531,6 +650,7 @@ mod surface_tests {
                 .map(String::as_str)
                 .collect::<std::collections::BTreeSet<&str>>(),
             std::collections::BTreeSet::from([
+                "access",
                 "asks",
                 "chosen",
                 "devices",
@@ -541,8 +661,8 @@ mod surface_tests {
                 "sounds",
                 "workspaces",
             ]),
-            "the view reads the devices, what plays, what would be sent, the sounds that travel \
-             and the devices asking for this one's"
+            "the view reads the devices, the keys that may act as the person, what plays, what \
+             would be sent, the sounds that travel and the devices asking for this one's"
         );
         for key in view_fields.keys() {
             assert!(
@@ -589,6 +709,7 @@ mod surface_tests {
             fields,
             [
                 "devices",
+                "access",
                 "playing",
                 "chosen",
                 "sounds",
@@ -598,6 +719,30 @@ mod surface_tests {
                 "workspaces",
                 "refused"
             ]
+        );
+        assert!(
+            published
+                .types
+                .iter()
+                .any(|declared| declared.name == "AccessKey"
+                    && declared.fields.iter().map(|field| field.name.as_str()).eq([
+                        "id",
+                        "label",
+                        "kind",
+                        "agent",
+                        "current",
+                        "revoked",
+                        "online",
+                        "nearby",
+                        "fingerprint",
+                        "issued_ms",
+                        "expires_ms",
+                        "last_active_ms",
+                        "workspace",
+                    ])),
+            "a key a view lists says what it is, what the person calls it, whether it reaches \
+             this device and when it was certified and last seen: {:?}",
+            published.types
         );
         assert!(
             published
@@ -637,8 +782,22 @@ mod surface_tests {
                 .iter()
                 .map(|param| param.name.as_str())
                 .collect::<Vec<_>>(),
-            ["device"],
-            "a revocation names the device, by the key its lists show"
+            ["device", "reason"],
+            "a revocation names the device, by the key its lists show, and why it ends"
+        );
+        let rename = published
+            .verbs
+            .iter()
+            .find(|verb| verb.id == "rename")
+            .expect("the surface publishes rename");
+        assert_eq!(
+            rename
+                .params
+                .iter()
+                .map(|param| param.name.as_str())
+                .collect::<Vec<_>>(),
+            ["device", "name"],
+            "a rename names the key and what it should read by"
         );
     }
 }

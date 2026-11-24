@@ -37,6 +37,7 @@ so-tilo-session-devices-found = Auf diesem Gerät neu beginnen
 so-tilo-session-devices-hand-off = Zubehör weitergeben
 so-tilo-session-devices-log-in = Mit einem Ticket anmelden
 so-tilo-session-devices-press = Eines der Geräte drücken
+so-tilo-session-devices-rename = Einen Schlüssel der Person benennen
 so-tilo-session-devices-revoke = Ein weiteres Gerät der Person zurücknehmen
 so-tilo-session-displays-arrange-displays = Eine Anzeige verschieben
 so-tilo-session-displays-brightness-down = Dunkler
