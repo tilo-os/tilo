@@ -5,7 +5,7 @@
 //! holds its key on the session's connection, with that invitation.
 
 use tilo_server_protocol::directory::EntryJoin;
-use tilo_server_protocol::entering::{EnterRefusal, Entered, Entry, Through};
+use tilo_server_protocol::entering::{EnterRefusal, Entered, Entering, Entry, Through};
 use tilo_server_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_server_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
@@ -28,20 +28,7 @@ impl Admit for Workspaces {
                 entering, access, ..
             } = entry;
             let device = cert.device_public_key;
-            // A device the workspace met and took off its member list comes back
-            // by a deliberate admission — the workspace handed to it again, a
-            // ticket or an invitation — never by presenting the certificate
-            // the workspace still holds. An invitation is that deliberate
-            // admission, so the entry it comes through decides for itself.
-            let removed = entering.through == Through::Entry
-                && match self.workspace(&entering.workspace).await {
-                    Ok(governed) => {
-                        let governed = governed.lock().await;
-                        governed.peer().governance().removed_from_member_list(cert)
-                    }
-                    Err(_) => false,
-                };
-            if removed {
+            if self.removed_before_entry(cert, &entering).await {
                 return Entered::Refused(refused(tilo_peer_state::REMOVED_DEVICE_REFUSED.to_owned()));
             }
             // A device asking again under an entry the workspace already
@@ -205,6 +192,23 @@ impl Workspaces {
                 },
                 refused: refusal.answer_with(self.wait_list_page()),
             })
+    }
+
+    /// Whether `entering` is one the removed `cert` may not make: a device the
+    /// workspace met and took off its member list comes back by a deliberate
+    /// admission — the workspace handed to it again, a ticket or an invitation
+    /// — never by presenting the certificate the workspace still holds. An
+    /// invitation is that deliberate admission, so the entry it comes through
+    /// decides for itself.
+    async fn removed_before_entry(&self, cert: &DeviceCert, entering: &Entering) -> bool {
+        entering.through == Through::Entry
+            && match self.workspace(&entering.workspace).await {
+                Ok(governed) => {
+                    let governed = governed.lock().await;
+                    governed.peer().governance().removed_from_member_list(cert)
+                }
+                Err(_) => false,
+            }
     }
 
     /// What `cert`'s device hears when it is a member of `workspace` already,
