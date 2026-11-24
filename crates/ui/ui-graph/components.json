@@ -4957,6 +4957,13 @@
           "name": "panel",
           "doc": "The rail paints the document's whole side panel; without it it paints only the thumbnails, on the host's background.",
           "type": "bool"
+        },
+        {
+          "name": "pictures",
+          "doc": "Each page's picture, by address, in page order: what its thumbnail shows. A page with no address, or one whose picture is still loading, keeps its placeholder tile.",
+          "type": {
+            "list": "text"
+          }
         }
       ],
       "events": [

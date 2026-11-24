@@ -32,6 +32,9 @@ pub struct PageSidebarProps {
     /// The rail paints the document's whole side panel; without it it paints only the
     /// thumbnails, on the host's background.
     pub panel: bool,
+    /// Each page's picture, by address, in page order: what its thumbnail shows. A page with no
+    /// address, or one whose picture is still loading, keeps its placeholder tile.
+    pub pictures: Vec<String>,
     /// A page was chosen: its index, counted from 0, is the value.
     #[component(event(value = i64))]
     pub select: Event,
@@ -58,6 +61,8 @@ pub struct DeclaredRail {
     add: Event,
     count: usize,
     current: usize,
+    /// Each page's picture, by address, as the view last gave them.
+    pictures: Vec<String>,
     rect: Rect,
     cursor: Point,
     /// How many pages it was last laid out for: its height where nothing gives it one.
@@ -83,6 +88,7 @@ impl DeclaredRail {
             add: props.add_page.clone(),
             count: usize::try_from(props.count.max(0)).unwrap_or(0),
             current: usize::try_from(props.current.max(0)).unwrap_or(0),
+            pictures: props.pictures.clone(),
             rect: Rect::ZERO,
             cursor: Point::ZERO,
             laid_out: None,
@@ -127,7 +133,21 @@ impl DeclaredRail {
 
 impl crate::widget::Widget for DeclaredRail {
     fn needs_redraw(&self) -> bool {
-        self.rail.needs_redraw() || self.rail.needs_animation_frame()
+        if self.rail.needs_redraw() || self.rail.needs_animation_frame() {
+            return true;
+        }
+        // A page's picture on its way here keeps the rail painting frames, so the placeholder
+        // becomes the page the moment its bytes are read.
+        let pictures = crate::pictures::Pictures::window();
+        self.pictures
+            .iter()
+            .filter(|address| !address.is_empty())
+            .any(|address| {
+                let source = crate::widget::PictureSource {
+                    src: address.clone(),
+                };
+                pictures.loaded(&source).is_none() && !pictures.failed(&source)
+            })
     }
 
     fn mark_drawn(&mut self) {
@@ -225,7 +245,7 @@ impl crate::widget::Widget for DeclaredRail {
         let mut thumb = |scene: &mut vello::Scene,
                          _text: &mut crate::text_render::TextRenderer,
                          base: Affine,
-                         _i: usize,
+                         i: usize,
                          rect: Rect| {
             let radius = f64::from(radii.detail);
             scene.fill(
@@ -235,6 +255,11 @@ impl crate::widget::Widget for DeclaredRail {
                 None,
                 &vello::kurbo::RoundedRect::from_rect(rect, radius),
             );
+            // The page's own picture stands on the tile once it is here; until then the tile is
+            // the placeholder it always was.
+            if let Some(address) = self.pictures.get(i) {
+                paint_page_picture(scene, base, rect, radius, address);
+            }
         };
         self.rail.render(scene, transform, text, theme, &mut thumb);
     }
@@ -328,8 +353,56 @@ impl Described for DeclaredRail {
         self.duplicate = duplicate;
         self.delete = delete;
         self.add = props.add_page;
+        if props.pictures != self.pictures {
+            self.pictures = props.pictures;
+        }
         true
     }
+}
+
+/// Paint the page's picture at `address` on the tile `rect`, whole and centred, cut at the
+/// tile's rounded corners. `false`, painting nothing, while its bytes are on their way or it
+/// names nothing: the tile stays the placeholder.
+fn paint_page_picture(
+    scene: &mut vello::Scene,
+    base: Affine,
+    rect: Rect,
+    radius: f64,
+    address: &str,
+) -> bool {
+    if address.is_empty() {
+        return false;
+    }
+    let source = crate::widget::PictureSource {
+        src: address.to_owned(),
+    };
+    let Some(image) = crate::pictures::Pictures::window().get(&source) else {
+        return false;
+    };
+    let (wide, tall) = (f64::from(image.width), f64::from(image.height));
+    if wide <= 0.0 || tall <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return false;
+    }
+    let scale = (rect.width() / wide).min(rect.height() / tall);
+    let (drawn_w, drawn_h) = (wide * scale, tall * scale);
+    let dest = Rect::new(
+        rect.x0 + (rect.width() - drawn_w) / 2.0,
+        rect.y0 + (rect.height() - drawn_h) / 2.0,
+        rect.x0 + (rect.width() + drawn_w) / 2.0,
+        rect.y0 + (rect.height() + drawn_h) / 2.0,
+    );
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        base,
+        &vello::kurbo::RoundedRect::from_rect(dest, radius),
+    );
+    let brush = vello::peniko::ImageBrush::new(image);
+    let placement = Affine::translate((dest.x0, dest.y0)) * Affine::scale_non_uniform(scale, scale);
+    scene.fill(Fill::NonZero, base, &brush, Some(placement), &dest);
+    scene.pop_layer();
+    true
 }
 
 #[cfg(test)]

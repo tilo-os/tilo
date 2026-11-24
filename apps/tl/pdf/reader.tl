@@ -361,11 +361,18 @@ view rail_view(d: Document, page_at: State<Int>, zoom: State<Float>, note: State
         current: page_at + 1,
         header: "Pages",
         add: "Import…",
+        pictures: d.pages.map(p -> page_picture(d, p)),
     ) {
         on select(index: Int): turn_to(d, index, zoom).then(set(page_at, index))
         on reorder(index: Int, at: Int): reorder(d, index, at)
         on add_page: file.choose(import_after(d, at), accept: ["application/pdf", "image/*"])
     }
+}
+
+/// The address of the picture a page is drawn by, as the reader shows it; empty until the
+/// engine has drawn the page, so its thumbnail keeps its placeholder until then.
+fn page_picture(d: Document, p: Page) -> Text {
+    if let held = d.pictures.find(x -> x.page == p) { held.url } else { "" }
 }
 
 /// The row the page column shows for the page at `at`: what the list scrolls to when the person

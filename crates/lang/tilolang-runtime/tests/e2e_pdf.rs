@@ -683,4 +683,60 @@ mod cases {
             "the toolbar's controls stand in the window's bar:\n{bar_shown}"
         );
     }
+
+    /// The addresses of the pictures a document holds, in page order.
+    fn rail_pictures(reader: &Reader, doc: &ResourceRef) -> Vec<String> {
+        let held = reader.rt.read(doc, "pictures").unwrap();
+        let projected = reader.rt.project(&held);
+        projected["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the pictures project as {projected}"))
+            .iter()
+            .map(|item| {
+                item["fields"]["url"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("a picture has no address: {item}"))
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_rail_carries_each_pages_picture() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        for at in 0..2 {
+            let page = reader.page(&doc, at);
+            reader.call(
+                "show_page",
+                vec![
+                    Value::resource(&doc),
+                    Value::resource(&page),
+                    Value::Int(612),
+                ],
+            );
+        }
+        let pictures = rail_pictures(&reader, &doc);
+        assert_eq!(pictures.len(), 2, "each page is drawn: {pictures:?}");
+        let window = reader.window("reader", vec![Value::resource(&doc)]);
+        let tree = window.tree();
+        let rail = crate::common::of_kind(tree, "ui.PageSidebar")
+            .into_iter()
+            .next()
+            .expect("the reader's page rail");
+        let carried = match rail.props.get("pictures") {
+            Some(Value::List(items)) => items
+                .iter()
+                .map(|item| match item {
+                    Value::Text(address) => address.clone(),
+                    other => panic!("a page's picture reads {other:?}"),
+                })
+                .collect::<Vec<_>>(),
+            other => panic!("the rail's pictures read {other:?}"),
+        };
+        assert_eq!(
+            carried, pictures,
+            "the rail carries each page's picture, in page order"
+        );
+    }
 }
