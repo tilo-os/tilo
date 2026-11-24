@@ -245,8 +245,9 @@ pub struct MediaCardProps {
     /// The card's stable key.
     #[component(key)]
     pub key: String,
-    /// The resource the card stands for: what a press opens.
-    #[component(required, positional)]
+    /// The resource the card stands for: what a press opens. A card a press runs its own event
+    /// for stands for nothing.
+    #[component(positional)]
     pub item: Option<ResourceId>,
     /// What the card is called, under its art. Without one it is art only (a photo).
     pub title: Option<String>,

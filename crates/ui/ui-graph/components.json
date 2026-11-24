@@ -4342,11 +4342,10 @@
       "props": [
         {
           "name": "item",
-          "doc": "The resource the card stands for: what a press opens.",
+          "doc": "The resource the card stands for: what a press opens. A card a press runs its own event for stands for nothing.",
           "type": {
             "option": "resource"
           },
-          "required": true,
           "positional": true
         },
         {

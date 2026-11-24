@@ -506,3 +506,225 @@ fn the_about_pane_offers_to_back_up_this_identity() {
         "asked of this computer's devices, where the identity's backup is published"
     );
 }
+
+/// The session's reading of the pictures the image ships, as a host hands it in.
+fn wallpapers(host: &Host, reading: serde_json::Value) {
+    let resource =
+        tilolang_runtime::ResourceRef::parse_id("session:wallpaper", "so.tilo.device#Wallpaper")
+            .expect("the wallpaper resource");
+    assert!(
+        host.runtime()
+            .set_reading(&resource, &reading.to_string())
+            .expect("the reading is set"),
+        "the session serves a wallpaper reading"
+    );
+}
+
+/// The person's appearance at `settings/appearance`, as a host hands it in.
+fn appearance(host: &Host, reading: serde_json::Value) {
+    let resource = tilolang_runtime::ResourceRef::parse_id(
+        "settings/appearance",
+        "so.tilo.settings.sections#Appearance",
+    )
+    .expect("the appearance resource");
+    host.runtime()
+        .set_reading(&resource, &reading.to_string())
+        .expect("the reading is set");
+}
+
+/// The card the pane lays out with `title`, among the grid's cards as the page stands them.
+fn tile<'a>(view: &'a ViewInstance, title: &str) -> &'a tilolang_runtime::UiNode {
+    view.tree()
+        .of_kind("ui.MediaCard")
+        .into_iter()
+        .find(|node| node.props.get("title") == Some(&Value::text(title)))
+        .unwrap_or_else(|| {
+            let shown: Vec<_> = view
+                .tree()
+                .of_kind("ui.MediaCard")
+                .into_iter()
+                .map(|node| node.props.get("title").cloned())
+                .collect();
+            panic!("a tile called {title}; the cards read {shown:?}")
+        })
+}
+
+/// Whether a card is the one in use: a tl flag reaches the card as the number it is.
+fn chosen(node: &tilolang_runtime::UiNode) -> bool {
+    match node.props.get("selected") {
+        Some(Value::Bool(on)) => *on,
+        Some(Value::Int(on)) => *on != 0,
+        other => panic!("a card's selected reads {other:?}"),
+    }
+}
+
+/// The theme each of the pane's drawings draws in, `None` for the one that follows the device.
+fn drawn_themes(tree: &tilolang_runtime::UiNode) -> Vec<Option<String>> {
+    tree.of_kind("ui.Drawing")
+        .into_iter()
+        .map(|node| match node.props.get("theme") {
+            Some(Value::Text(text)) => Some(text.clone()),
+            Some(Value::Opt(Some(held))) => match held.as_ref() {
+                Value::Text(text) => Some(text.clone()),
+                other => panic!("a theme reads {other:?}"),
+            },
+            Some(Value::Opt(None)) | None => None,
+            Some(other) => panic!("a theme reads {other:?}"),
+        })
+        .collect()
+}
+
+/// The pictures the image ships are a grid of previews with what each credits, and choosing one
+/// sets `appearance.wallpaper` through the section's own verb.
+#[test]
+fn the_wallpapers_the_image_ships_are_offered_and_chosen_through_the_setting() {
+    let (host, _) = settings();
+    wallpapers(
+        &host,
+        serde_json::json!({
+            "picture": "",
+            "shipped": "alps",
+            "catalogue": [
+                {
+                    "id": "alps",
+                    "title": "The Alps from Grenoble",
+                    "author": "Dktue",
+                    "license": "CC0-1.0",
+                    "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+                    "tone": "mid",
+                    "thumbnail": "",
+                },
+                {
+                    "id": "andromeda",
+                    "title": "Andromeda Galaxy",
+                    "author": "Brody Wesner",
+                    "license": "CC0-1.0",
+                    "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+                    "tone": "dark",
+                    "thumbnail": "",
+                },
+            ],
+        }),
+    );
+    invoke(&host, "open_pane", vec![Value::text("appearance")]);
+    let mut view = open_view(&host, "appearance_pane");
+    view.set_lazy_rows(false).expect("the pictures stand");
+    // A tile's words are its title and the two lines under it.
+    let words_of = |node: &tilolang_runtime::UiNode| -> Vec<String> {
+        node.props
+            .values()
+            .flat_map(|value| match value {
+                Value::Text(text) => vec![text.clone()],
+                Value::List(items) => items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Value::Text(text) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect()
+    };
+    for words in ["Andromeda Galaxy", "Brody Wesner", "CC0-1.0"] {
+        assert!(
+            words_of(tile(&view, "Andromeda Galaxy")).contains(&words.to_owned()),
+            "{words} shows on its tile"
+        );
+    }
+    // The picture the image ships is chosen while the person has chosen none.
+    assert!(
+        chosen(tile(&view, "The Alps from Grenoble")),
+        "the shipped picture is the one in use"
+    );
+    assert!(
+        !chosen(tile(&view, "Andromeda Galaxy")),
+        "a picture the person has not chosen is not the one in use"
+    );
+
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    let key = tile(&view, "Andromeda Galaxy").key.clone();
+    view.fire(&key, "activate").expect("the tile is chosen");
+    let sent = sent.borrow();
+    let [
+        Invocation::Action {
+            app,
+            name,
+            target,
+            args,
+            ..
+        },
+    ] = sent.as_slice()
+    else {
+        panic!("one verb of the settings: {sent:?}");
+    };
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        (tilolang_tilo::platform_apps::SECTIONS_APP, "set-wallpaper"),
+        "the appearance's own setter, as its surface publishes it"
+    );
+    assert_eq!(
+        target.as_ref().map(|held| held.doc.as_str()),
+        Some("settings/appearance"),
+        "the setting the picture is chosen on"
+    );
+    let value = args
+        .iter()
+        .find(|(named, _)| named == "value")
+        .map(|(_, value)| value.clone());
+    assert_eq!(
+        value,
+        Some(Value::Opt(Some(Box::new(Value::text("andromeda"))))),
+        "the picture the person chose, as the optional the setting holds"
+    );
+}
+
+/// The pane previews the theme each mode shows, beside the one in use, and an edit to which theme
+/// a mode shows reaches the preview.
+#[test]
+fn the_theme_previews_draw_the_modes_themes_and_follow_a_change() {
+    let (host, _) = settings();
+    appearance(
+        &host,
+        serde_json::json!({
+            "mode": "dark",
+            "light_theme": "tilo-light",
+            "dark_theme": "tilo-dark",
+        }),
+    );
+    invoke(&host, "open_pane", vec![Value::text("appearance")]);
+    let mut view = open_view(&host, "appearance_pane");
+    let themes = drawn_themes(view.tree());
+    assert!(
+        themes.contains(&Some("tilo-light".to_owned())),
+        "the light mode's theme is drawn: {themes:?}"
+    );
+    assert!(
+        themes.contains(&Some("tilo-dark".to_owned())),
+        "the dark mode's theme is drawn: {themes:?}"
+    );
+    assert!(
+        themes.contains(&None),
+        "the theme in use follows the device: {themes:?}"
+    );
+
+    appearance(
+        &host,
+        serde_json::json!({
+            "mode": "dark",
+            "light_theme": "tilo-light",
+            "dark_theme": "paper-dark",
+        }),
+    );
+    view.poll_patches().expect("the preview takes the change");
+    let themes = drawn_themes(view.tree());
+    assert!(
+        themes.contains(&Some("paper-dark".to_owned())),
+        "the dark mode's new theme is drawn: {themes:?}"
+    );
+    assert!(
+        !themes.contains(&Some("tilo-dark".to_owned())),
+        "the one it showed before is gone: {themes:?}"
+    );
+}

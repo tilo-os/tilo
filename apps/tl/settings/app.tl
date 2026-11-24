@@ -394,6 +394,73 @@ template view read_pane<R>(of: R, what: Text, content: View) {
     }
 }
 
+/// The pictures Tilo ships, each a thumbnail with what it credits; choosing one makes it the
+/// picture the desktop stands on, through the setting the person's devices read.
+template view wallpaper_picker(a: settings.Appearance) {
+    read_pane(of: device.wallpaper, what: "Wallpaper") {
+        let wallpaper = device.wallpaper
+        if wallpaper.catalogue.is_empty() {
+            ui.Text(
+                "The pictures Tilo ships are not installed on this computer.",
+                role: .caption,
+                secondary: true,
+            )
+        } else {
+            ui.MediaGrid(size: .small) {
+                for picture in wallpaper.catalogue {
+                    ui.MediaCard(
+                        title: picture.title,
+                        picture: picture.thumbnail,
+                        meta: [picture.author, picture.license],
+                        aspect: .wide,
+                        selected: shown_wallpaper(wallpaper) == picture.id,
+                    ) {
+                        on activate: settings.set_wallpaper(a, picture.id)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The picture this workspace shows: the one the person chose, or the one the image ships while
+/// they have chosen none.
+fn shown_wallpaper(wallpaper: device.Wallpaper) -> Text {
+    if wallpaper.picture == "" { wallpaper.shipped } else { wallpaper.picture }
+}
+
+/// A small desktop drawn in `theme`, so a person sees what a theme looks like beside the one in
+/// use; an empty `theme` draws the theme this device uses now.
+template view theme_preview(caption: Text, theme: Text) {
+    stack(gap: .tight) {
+        ui.Text(caption, role: .caption, secondary: true)
+        ui.Drawing(
+            theme_preview_shapes(),
+            meaning: .picture,
+            label: .some(caption),
+            width: .some(150.0),
+            height: .some(94.0),
+            theme: if theme == "" { .none } else { .some(theme) },
+        )
+    }
+}
+
+/// The shapes of a small desktop: its surface, a window with its sidebar, a card, a heading, a
+/// line of words, a press, and what went well beside what failed.
+fn theme_preview_shapes() -> List<ui.Shape> {
+    [
+        ui.Shape.rect(x: 0.0, y: 0.0, w: 1.0, h: 1.0, fill: .some(.base)),
+        ui.Shape.rect(x: 0.06, y: 0.1, w: 0.88, h: 0.8, round: 0.05, fill: .some(.surface)),
+        ui.Shape.rect(x: 0.06, y: 0.1, w: 0.24, h: 0.8, round: 0.05, fill: .some(.sidebar)),
+        ui.Shape.text(x: 0.13, y: 0.2, text: "Aa", role: .title, ink: .ink, anchor: .start),
+        ui.Shape.rect(x: 0.38, y: 0.18, w: 0.48, h: 0.26, round: 0.04, fill: .some(.track)),
+        ui.Shape.text(x: 0.4, y: 0.56, text: "Text", role: .body, ink: .muted, anchor: .start),
+        ui.Shape.rect(x: 0.4, y: 0.66, w: 0.2, h: 0.1, round: 0.5, fill: .some(.accent)),
+        ui.Shape.ellipse(cx: 0.68, cy: 0.71, rx: 0.025, ry: 0.04, fill: .some(.success)),
+        ui.Shape.ellipse(cx: 0.76, cy: 0.71, rx: 0.025, ry: 0.04, fill: .some(.danger)),
+    ]
+}
+
 /// The look of the person's workspace and of this device: the theme they chose, the motion and
 /// contrast they want, and how large text and controls are.
 view appearance_pane() {
@@ -448,10 +515,20 @@ view appearance_pane() {
             ui.TextInput(bind: a.ui_face, placeholder: "Follow the theme")
         }
     }
-    ui.Section("Reading") {
-        setting("Wallpaper", "The picture the desktop stands on; empty follows the theme") {
-            ui.TextInput(bind: a.wallpaper, placeholder: "Follow the theme")
+    ui.Section("Preview") {
+        ui.Text(
+            "A desktop drawn in the themes your modes show, and in the one this device uses now, which follows every change as you make it.",
+            role: .caption,
+            secondary: true,
+        )
+        row(gap: .related, align: .start, wrap: true) {
+            theme_preview("Light mode", a.light_theme)
+            theme_preview("Dark mode", a.dark_theme)
+            theme_preview("In use now", "")
         }
+    }
+    ui.Section("Reading") {
+        wallpaper_picker(a)
         setting("Where it shows", "Behind the windows, at the lock screen, or both") {
             ui.ToggleGroup(
                 selected: wallpaper_target_index(a.wallpaper_target),
