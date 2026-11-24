@@ -1327,6 +1327,8 @@ fn admit_chrome(
                 .ok_or_else(|| "Strip unavailable".into())
         }
         ChromeEffect::NewStrip { .. }
+        | ChromeEffect::MoveToNewStrip { .. }
+        | ChromeEffect::DeleteStrip { .. }
         | ChromeEffect::MoveStrip { .. }
         | ChromeEffect::StepStrip { .. }
         | ChromeEffect::NewWorkspace { .. }
