@@ -62,6 +62,7 @@ tilo-devices = Deine Geräte
 tilo-devices-keep-device = Ein Gerät der Person behalten
 tilo-devices-keep-fact = Behalten, was ein Gerät über sich sagt
 tilo-devices-keep-wifi = Ein WLAN-Passwort behalten
+tilo-devices-say-session = Sagen, wie deine Sitzung auf einem Gerät steht
 tilo-devices-name-device = Ein Gerät umbenennen
 tilo-devices-keep-agent = Den Agenten behalten, den ein Gerät ausführt
 tilo-devices-revoke-device = Ein Gerät als zurückgenommen markieren

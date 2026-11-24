@@ -207,7 +207,6 @@ fn a_device_says_only_wake_routes_and_screens_it_could_have() {
     };
     let presence = DevicePresence {
         wake_routes: vec![route([0x02; 6])],
-        session: OwnerSession::default(),
         display: Some(display(0)),
     };
     assert_eq!(presence.validate(), Ok(()));

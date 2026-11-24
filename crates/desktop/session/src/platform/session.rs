@@ -1741,6 +1741,14 @@ impl Session {
             Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>,
             Rc::clone(&directory_store),
         );
+        // The person's session on their devices is followed in the record of their devices.
+        let owner_devices = crate::sync::device_identity().map(|identity| {
+            crate::owner_session::OwnerDevices::follow(
+                &daemon,
+                identity.device_cert,
+                options.wake.handle(),
+            )
+        });
         let mut shared = Shared {
             handle,
             desktop,
@@ -1806,6 +1814,7 @@ impl Session {
             lock,
             keyboard,
             owner_session: crate::owner_session::SessionFollow::default(),
+            owner_devices,
             display_confirm,
             notices: notices.clone(),
             moves: crate::window_move::Moves::new(

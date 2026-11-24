@@ -10,7 +10,8 @@
 //! of their devices reads, on any device of theirs, with whether it is online
 //! now from presence beside it. Each device writes its own facts (what it is,
 //! its speaker groups, its disk unlock, when it was last with a host), each the
-//! postcard bytes of its type in hex under its name, and a Wi-Fi passphrase one
+//! postcard bytes of its type in hex under its name, and how the person's
+//! session on it stands ([`OwnerSession`]), and a Wi-Fi passphrase one
 //! of them learned is kept for all of them, sealed to the devices that may open
 //! it. The workspace carries all of it to every device of the person, a device
 //! that comes up later included.
@@ -110,6 +111,25 @@ pub struct Device {
     pub keeps_root: Option<String>,
     /// Each fact under its name, postcard in hex.
     pub facts: std::collections::BTreeMap<String, String>,
+    /// How the person's session on it stands, as it said last ([`Devices::say_session`]).
+    pub session: OwnerSession,
+}
+
+/// How the person's session on one of their devices stands: what their other devices follow, so
+/// the lock follows them from one device to the next. A device says it only when it changes (a
+/// lock, an unlock, the person starting or stopping using it), never as they type, so the record
+/// moves a few times an hour at most.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnerSession {
+    /// The session is locked.
+    pub locked: bool,
+    /// When the person last locked or unlocked it themselves, ms since the epoch: `0` while it is
+    /// locked by its idle timer or by following another device, a lock the others do not follow.
+    pub changed_ms: i64,
+    /// Their last input on it as of when it last said its session, ms since the epoch.
+    pub active_ms: i64,
+    /// They were using it when it said its session, and go on until it says otherwise.
+    pub using: bool,
 }
 
 impl Device {
@@ -190,6 +210,18 @@ impl Devices {
             hex::encode(cert.device_public_key),
             hex::encode(certificate),
         )))
+    }
+
+    /// The action that says `session` as how the person's session on `device` stands.
+    #[must_use]
+    pub fn saying_session(device: &[u8; 32], session: OwnerSession) -> tilo_resource::Invoke<Self> {
+        Self::SAY_SESSION.with((
+            hex::encode(device),
+            session.locked,
+            session.changed_ms,
+            session.active_ms,
+            session.using,
+        ))
     }
 
     /// The devices of `person`'s that keep their root, as the root marked them: not one taken
@@ -419,6 +451,35 @@ impl Devices {
         Ok(())
     }
 
+    /// Say how the person's session on `device` stands: whether it is locked, when they last
+    /// locked or unlocked it themselves (`changed_ms`, `0` for a lock they did not take there),
+    /// their last input on it (`active_ms`) and whether they are using it. A device says only its
+    /// own, once the record keeps it.
+    #[action(housekeeping)]
+    pub fn say_session(
+        &mut self,
+        device: String,
+        locked: bool,
+        changed_ms: i64,
+        active_ms: i64,
+        using: bool,
+    ) -> Result<(), Refusal> {
+        if changed_ms < 0 || active_ms < 0 {
+            return Err(Refusal::new("a session's times are ms since the epoch"));
+        }
+        let kept = self
+            .devices
+            .get_mut(&Id::from_raw(device))
+            .ok_or_else(|| Refusal::new("that key is not one of your devices"))?;
+        kept.session = OwnerSession {
+            locked,
+            changed_ms,
+            active_ms,
+            using,
+        };
+        Ok(())
+    }
+
     /// Keep `credential` as the passphrase of the network `network`, replacing
     /// what was kept for it.
     #[action(housekeeping)]
@@ -556,4 +617,51 @@ fn validate_hex(value: &str) -> Result<(), Refusal> {
         return Err(Refusal::new("a device's value is postcard bytes in hex"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_device_says_its_session_and_only_a_kept_one_does() {
+        let device = [7; 32];
+        let mut devices = tilo_resource::Replica::<Devices>::new();
+        let said = OwnerSession {
+            locked: true,
+            changed_ms: 1_700_000_000_000,
+            active_ms: 1_699_999_990_000,
+            using: false,
+        };
+        assert!(
+            devices
+                .apply(Devices::saying_session(&device, said))
+                .is_err(),
+            "a device the record does not keep says nothing"
+        );
+        devices
+            .apply(Devices::KEEP_DEVICE.with((hex::encode(device), "00".to_owned())))
+            .expect("the device is kept");
+        devices
+            .apply(Devices::saying_session(&device, said))
+            .expect("the device says its session");
+        let state = devices.state().expect("the record reads");
+        let kept = state
+            .devices
+            .get(&Id::from_raw(hex::encode(device)))
+            .expect("the device's entry");
+        assert_eq!(kept.session, said);
+        assert!(
+            devices
+                .apply(Devices::saying_session(
+                    &device,
+                    OwnerSession {
+                        changed_ms: -1,
+                        ..said
+                    }
+                ))
+                .is_err(),
+            "a time before the epoch is refused"
+        );
+    }
 }

@@ -258,6 +258,10 @@ pub(crate) struct Shared {
     /// says of its own lock and what it has followed from theirs.
     #[cfg(target_os = "linux")]
     pub(crate) owner_session: crate::owner_session::SessionFollow,
+    /// The record of the person's devices, where this device reads how their session stands on the
+    /// others and says its own; none where this device has no identity.
+    #[cfg(target_os = "linux")]
+    pub(crate) owner_devices: Option<crate::owner_session::OwnerDevices>,
     /// The desktop's own notices: what the session tells the person, such as
     /// leaving a workspace.
     pub(crate) notices: tilo_session_core::desktop::state::DesktopNotifications,

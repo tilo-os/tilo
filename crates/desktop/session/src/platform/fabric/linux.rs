@@ -7,7 +7,8 @@ mod session;
 mod store;
 
 pub use session::Continuity;
-pub(crate) use session::{Reach, SessionFabric};
+pub(crate) use session::{Reach, SessionFabric, about};
+pub(crate) use store::ABOUT;
 
 pub use tilo_network_actor::fabric::link::{
     FabricLink, NearbySpoolOffer, PersonalFabricSendError, SharedLink,
@@ -28,9 +29,9 @@ pub use tilo_network_actor::fabric::{
     CarriedDrag, CarriedOffer, ClipboardEntry, ClipboardPayload, DeviceAbout, DeviceDisplay,
     DeviceKind, DevicePresence, FabricCapabilities, FabricError, FabricInputEvent, InputLease,
     Ipv4Subnet, MAX_CLIPBOARD_ITEMS, MAX_FABRIC_ACTION_AGE_MS, MAX_INPUT_LEASE_MS, MAX_WAKE_ROUTES,
-    MediaSourceLocator, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession, PersonDevice, PersonDevices,
-    PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
-    REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
-    ScrollUnit, WakeInterfaceKind, WakeOutcome, WakeRoute,
+    MediaSourceLocator, PersonDevice, PersonDevices, PersonalFabricAction,
+    PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
+    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ, ScrollUnit, WakeInterfaceKind,
+    WakeOutcome, WakeRoute,
 };
 pub use tilo_network_actor::fabric::{clock, wake};

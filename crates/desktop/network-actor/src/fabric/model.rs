@@ -167,24 +167,6 @@ impl WakeRoute {
     }
 }
 
-/// Whether the person's session on a device is locked, when they last locked
-/// or unlocked it themselves, and when they last used it
-/// (the shell's owner session).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OwnerSession {
-    pub locked: bool,
-    /// The person's own lock or unlock. `0` while the device is locked by
-    /// its idle timer or by following another device: a lock the others do
-    /// not follow.
-    pub changed_unix_ms: u64,
-    /// Their last input, rounded down to [`OWNER_SESSION_ACTIVE_STEP_MS`] so
-    /// typing does not republish the presence.
-    pub active_unix_ms: u64,
-}
-
-/// How finely [`OwnerSession::active_unix_ms`] follows input.
-pub const OWNER_SESSION_ACTIVE_STEP_MS: u64 = 10_000;
-
 /// A locator usable on another Tilo device. Workspace paths hydrate through
 /// Files; stream URLs travel only in an ephemeral exact-target action and are
 /// never kept anywhere.

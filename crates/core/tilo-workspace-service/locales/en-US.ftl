@@ -62,6 +62,7 @@ tilo-devices = Your devices
 tilo-devices-keep-device = Keep a device of the person's
 tilo-devices-keep-fact = Keep what a device says of itself
 tilo-devices-keep-wifi = Keep a Wi-Fi passphrase
+tilo-devices-say-session = Say how your session on a device stands
 tilo-devices-name-device = Rename a device
 tilo-devices-keep-agent = Keep the agent a device runs
 tilo-devices-revoke-device = Mark a device taken back

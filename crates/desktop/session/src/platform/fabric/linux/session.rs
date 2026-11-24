@@ -19,9 +19,9 @@ use super::live::Live;
 use super::store;
 use super::{
     ClipboardEntry, ContinuityNotificationProjection, DeviceAbout, DeviceKind, FabricCapabilities,
-    FabricLink, MediaSourceLocator, NearbySpoolOffer, OwnerSession, PersonDevices,
-    PersonalFabricAction, PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink,
-    UnlockFabricState, WakeRoute, clock,
+    FabricLink, MediaSourceLocator, NearbySpoolOffer, PersonDevices, PersonalFabricAction,
+    PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, UnlockFabricState,
+    WakeRoute, clock,
 };
 use crate::platform::fabric::{DeviceId, FabricStamp, nonzero};
 /// Where this session's frames leave for the person's other devices.
@@ -92,7 +92,7 @@ impl Continuity {
 /// What this device says of itself that lasts, as its first session writes it: what the person
 /// calls it, and what it does for their other devices. Input, display and speaker groups are not
 /// offered here, so they are not claimed.
-fn about(label: &str) -> DeviceAbout {
+pub(crate) fn about(label: &str) -> DeviceAbout {
     DeviceAbout {
         label: label.to_owned(),
         kind: DeviceKind::Desktop,
@@ -181,18 +181,14 @@ impl Reach {
 
 impl SessionFabric {
     /// The link of `device`, called `label`, onto the person's devices, with what lasts of them in
-    /// `personal`: this device says what it is there at once.
+    /// `personal`. What this device is reaches the record through its daemon
+    /// ([`crate::owner_session::OwnerDevices`]).
     pub(crate) fn new(
         device: DeviceId,
         label: String,
         personal: Option<(PersonResources, tilo_user_identity::DeviceCert)>,
         reach: Reach,
     ) -> Arc<Self> {
-        if let Some((resources, cert)) = &personal
-            && let Err(error) = store::keep_own(resources, cert, store::ABOUT, &about(&label))
-        {
-            tracing::warn!(%error, "what this device is was not kept for the person's devices");
-        }
         Arc::new(Self {
             live: Mutex::new(Live::new(device)),
             personal,
@@ -525,12 +521,6 @@ impl FabricLink for SessionFabric {
             Ok(false) => {}
             Err(error) => tracing::warn!(%error, "the clipboard is not shared"),
         }
-    }
-
-    fn publish_owner_session(&self, session: OwnerSession) {
-        self.say("the person's session", |presence| {
-            presence.session = session;
-        });
     }
 
     fn share_display(

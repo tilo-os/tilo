@@ -1,7 +1,7 @@
-//! The lock follows the person across their own devices. Each device tells
-//! the others, in its fabric presence, whether it is locked, when the person
-//! last locked or unlocked it themselves and when they last used it
-//! ([`OwnerSession`]). From those:
+//! The lock follows the person across their own devices. Each device says, in the record of their
+//! devices in their own workspace, whether it is locked, when the person last locked or unlocked it
+//! themselves, their last input on it and whether they are using it ([`OwnerSession`]), written by
+//! the device's daemon and followed here through it ([`OwnerDevices`]). From those:
 //!
 //! - Locking a device locks the person's other devices, unless they used one
 //!   after that.
@@ -12,6 +12,10 @@
 //!   their devices on the same network: its idle time counts from their last
 //!   input there.
 //!
+//! A device says its session only when it changes: a lock, an unlock, the person starting to use it
+//! or leaving it for [`USING_FOR_MS`]. Typing writes nothing, so the record moves a few times an hour.
+//! Which devices are online and on a common network is live, from the fabric.
+//!
 //! The idle timer's lock (and the lock before an idle sleep) stays on its
 //! device: it neither spreads nor is undone by another device, so a device set
 //! never to lock on its own is not locked by another one going idle. A lock
@@ -19,12 +23,26 @@
 //! client holds is the client's, and is not followed either. Unlocking always
 //! takes the person's credential on one of their devices.
 
-use std::time::Instant;
+use std::cell::{Cell, RefCell};
+use std::time::{Duration, Instant};
 
-use crate::platform::fabric::{DevicePresence, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession};
+use tilo_compositor::Error;
+use tilo_session_client::daemon_documents::DaemonShell;
+use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::workspaces::person_workspace::devices::{
+    DEVICES, Devices, KeyKind, OwnerSession,
+};
 
 use crate::Session;
-use tilo_compositor::Error;
+use crate::followed_resource::FollowedResource;
+use crate::platform::fabric::{DeviceId, DevicePresence};
+
+/// How long after their last input the person counts as using a device. Their other devices hear
+/// of it as they start and as they stop, never as they type.
+pub const USING_FOR_MS: u64 = 60_000;
+
+/// How long a device waits before it says its session again after its daemon did not take it.
+const SAY_AGAIN: Duration = Duration::from_secs(5);
 
 /// What this device does to follow the person's other devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +51,7 @@ pub enum Follow {
     Unlock,
 }
 
-/// This device's side of [`OwnerSession`]: what it publishes and what it has already followed.
+/// This device's side of [`OwnerSession`]: what it says and what it has already followed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionFollow {
     /// When the person last locked or unlocked this device themselves.
@@ -47,12 +65,24 @@ pub struct SessionFollow {
     /// Whether the lock this device has, if any, is the person's own here and not the idle timer's
     /// or another device's.
     locked_by_person: bool,
+    /// What this device said last, which it does not say again.
+    said: Option<OwnerSession>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Followed {
     since_unix_ms: u64,
     in_use: bool,
+}
+
+/// `ms` as the record keeps a time.
+fn record_ms(ms: u64) -> i64 {
+    i64::try_from(ms).unwrap_or(i64::MAX)
+}
+
+/// A time the record keeps, as ms since the epoch.
+fn unix_ms(ms: i64) -> u64 {
+    u64::try_from(ms).unwrap_or(0)
 }
 
 impl SessionFollow {
@@ -77,23 +107,46 @@ impl SessionFollow {
         self.followed.is_some()
     }
 
-    /// What this device publishes, given its lock and the person's last input. A lock that is not
-    /// the person's own here publishes no change for the others to follow.
+    /// What this device says of itself, given its lock, the person's last input and whether they are
+    /// using it. A lock that is not the person's own here says no change for the others to follow.
     #[must_use]
-    pub fn presence(&self, locked: bool, input_unix_ms: u64) -> OwnerSession {
+    pub fn presence(&self, locked: bool, input_unix_ms: u64, using: bool) -> OwnerSession {
         OwnerSession {
             locked,
-            changed_unix_ms: if locked && !self.locked_by_person {
+            changed_ms: if locked && !self.locked_by_person {
                 0
             } else {
-                self.changed_unix_ms
+                record_ms(self.changed_unix_ms)
             },
-            active_unix_ms: input_unix_ms.saturating_sub(
-                input_unix_ms
-                    .checked_rem(OWNER_SESSION_ACTIVE_STEP_MS)
-                    .unwrap_or(0),
-            ),
+            active_ms: record_ms(input_unix_ms),
+            using,
         }
+    }
+
+    /// What this device has to say now, when it differs from what it said last in anything but the
+    /// time of the last input: that moves with every key and is said only with the rest.
+    pub fn to_say(
+        &mut self,
+        locked: bool,
+        input_unix_ms: u64,
+        using: bool,
+    ) -> Option<OwnerSession> {
+        let now = self.presence(locked, input_unix_ms, using);
+        let same = self.said.is_some_and(|said| {
+            said.locked == now.locked
+                && said.changed_ms == now.changed_ms
+                && said.using == now.using
+        });
+        if same {
+            return None;
+        }
+        self.said = Some(now);
+        Some(now)
+    }
+
+    /// What this device said did not reach the record: it says it again.
+    pub fn unsaid(&mut self) {
+        self.said = None;
     }
 
     /// Follow the person's other devices' sessions, each with whether it shares a network with this
@@ -113,7 +166,7 @@ impl SessionFollow {
                 .filter(|(session, nearby)| {
                     session.locked == want_locked && (*nearby || !nearby_only)
                 })
-                .map(|(session, _)| session.changed_unix_ms)
+                .map(|(session, _)| unix_ms(session.changed_ms))
                 .max()
         };
         if !locked {
@@ -145,17 +198,32 @@ impl SessionFollow {
     }
 }
 
-/// The person's latest input on another of their devices that is here, shares a network with this
-/// one and is unlocked; idle time here counts from it.
+/// Another of the person's devices, as this one follows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Other {
+    /// How their session on it stands, as it said last.
+    pub session: OwnerSession,
+    /// It is on a session with this device now.
+    pub online: bool,
+    /// It was last seen on a network this device is on.
+    pub nearby: bool,
+}
+
+/// The person's latest use of another of their devices that is here, shares a network with this
+/// one and is unlocked, at `now_unix_ms`: one they are using is in use now. Idle time here counts
+/// from it.
 #[must_use]
-pub fn latest_use_nearby<'a>(
-    own: &DevicePresence,
-    others: impl IntoIterator<Item = (&'a DevicePresence, bool)>,
-) -> Option<u64> {
+pub fn latest_use_nearby(now_unix_ms: u64, others: &[Other]) -> Option<u64> {
     others
-        .into_iter()
-        .filter(|(other, online)| *online && !other.session.locked && shares_network(own, other))
-        .map(|(other, _)| other.session.active_unix_ms)
+        .iter()
+        .filter(|other| other.online && other.nearby && !other.session.locked)
+        .map(|other| {
+            if other.session.using {
+                now_unix_ms
+            } else {
+                unix_ms(other.session.active_ms)
+            }
+        })
         .max()
 }
 
@@ -173,44 +241,179 @@ pub fn shares_network(own: &DevicePresence, other: &DevicePresence) -> bool {
         })
 }
 
+/// The record of the person's devices in their own workspace, followed through the device's daemon:
+/// where this device reads how the person's session stands on their others, and says its own.
+pub(crate) struct OwnerDevices {
+    record: FollowedResource<Devices>,
+    cert: DeviceCert,
+    /// The other devices' sessions as the record last read, by device, and the reading they are of.
+    others: RefCell<Option<(u64, Vec<(DeviceId, OwnerSession)>)>>,
+    /// When this device may say its session again, after its daemon did not take it.
+    quiet_until: Cell<Option<Instant>>,
+    /// What this device is ([`crate::platform::fabric::DeviceAbout`]), postcard in hex, and its
+    /// certificate the same way: what it keeps of itself in the record, through its daemon too.
+    about: Option<(String, String)>,
+}
+
+impl OwnerDevices {
+    /// Follow the record of the devices of `cert`'s person, as this device of theirs.
+    pub(crate) fn follow(daemon: &DaemonShell, cert: DeviceCert, wake: tilo_service::Wake) -> Self {
+        let person = cert.user_public_key;
+        let own = tilo_server_protocol::servers::person_workspace_id(&person);
+        let member = tilo_action_policy::PersonId::from_root(person);
+        let record = FollowedResource::follow(
+            daemon,
+            (&own, DEVICES.0, DEVICES.1),
+            member.as_str(),
+            None,
+            wake,
+        );
+        let about = crate::platform::fabric::about(&cert.device_label);
+        let about = postcard::to_allocvec(&about)
+            .and_then(|about| Ok((about, postcard::to_allocvec(&cert)?)))
+            .map(|(about, certificate)| (hex::encode(about), hex::encode(certificate)))
+            .inspect_err(|error| tracing::warn!(%error, "what this device is does not encode"))
+            .ok();
+        Self {
+            record,
+            cert,
+            others: RefCell::default(),
+            quiet_until: Cell::new(None),
+            about,
+        }
+    }
+
+    /// Keep what this device is in the record, once it read the record and found it says something
+    /// else: what the person's other devices list it as.
+    fn keep_about(&self) {
+        let Some((about, certificate)) = &self.about else {
+            return;
+        };
+        if self.record.held().is_none()
+            || self
+                .quiet_until
+                .get()
+                .is_some_and(|until| Instant::now() < until)
+        {
+            return;
+        }
+        let key = hex::encode(self.cert.device_public_key);
+        let kept = self
+            .record
+            .get()
+            .devices
+            .get(&tilo_resource::Id::from_raw(key.clone()))
+            .is_some_and(|kept| {
+                &kept.certificate == certificate
+                    && kept.facts.get(crate::platform::fabric::ABOUT) == Some(about)
+            });
+        if kept {
+            return;
+        }
+        let keep = Devices::KEEP_FACT.with((
+            key,
+            certificate.clone(),
+            crate::platform::fabric::ABOUT.to_owned(),
+            about.clone(),
+        ));
+        if let Err(error) = self.record.invoke(&keep) {
+            tracing::warn!(%error, "what this device is reaches the person's devices later");
+            self.quiet_until.set(Instant::now().checked_add(SAY_AGAIN));
+        }
+    }
+
+    /// The person's other devices the record keeps, whose certificates their root signed and did
+    /// not take back, and how their session stands on each.
+    fn others(&self) -> Vec<(DeviceId, OwnerSession)> {
+        let revision = self.record.revision();
+        if let Some((at, others)) = self.others.borrow().as_ref()
+            && *at == revision
+        {
+            return others.clone();
+        }
+        let person = self.cert.user_public_key;
+        let others: Vec<(DeviceId, OwnerSession)> = self
+            .record
+            .get()
+            .listed(&person)
+            .into_iter()
+            .filter(|listed| {
+                listed.cert.device_public_key != self.cert.device_public_key
+                    && listed.device.kind == KeyKind::Device
+                    && !listed.device.revoked(&listed.cert)
+            })
+            .filter_map(|listed| Some((DeviceId::new(listed.key).ok()?, listed.device.session)))
+            .collect();
+        *self.others.borrow_mut() = Some((revision, others.clone()));
+        others
+    }
+
+    /// Say `session` as this device's: through its daemon, which writes it into the record. Whether
+    /// the daemon took it; one that did not is not asked again for a few seconds.
+    fn say(&self, session: OwnerSession) -> bool {
+        if self
+            .quiet_until
+            .get()
+            .is_some_and(|until| Instant::now() < until)
+        {
+            return false;
+        }
+        match self.record.invoke(&Devices::saying_session(
+            &self.cert.device_public_key,
+            session,
+        )) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, "this device's session reaches the person's devices later");
+                self.quiet_until.set(Instant::now().checked_add(SAY_AGAIN));
+                false
+            }
+        }
+    }
+}
+
 impl Session {
     /// Follow the person's session on their other devices, every pass: idle time here counts from
     /// their use of one nearby, a lock or unlock there is followed on the pass that brings it, and
-    /// this device says its own session to them.
+    /// this device says its own session to them when it changed.
     pub(crate) fn follow_owner_session(&mut self) -> Result<(), Error> {
-        let Some(fabric) = self.shared.fabric.clone() else {
+        let Some(devices) = self.shared.owner_devices.as_ref() else {
             return Ok(());
         };
+        devices.keep_about();
         let now = Instant::now();
         let now_ms = tilo_clock::unix_now_ms();
         let since_input =
             u64::try_from(self.compositor.input_idle().as_millis()).unwrap_or(u64::MAX);
         let input_ms = now_ms.saturating_sub(since_input);
+        let using = since_input < USING_FOR_MS;
         let locked = self.compositor.locked();
         let in_use = self.compositor.in_use();
-        let device = fabric.devices();
-        let local = fabric
-            .local_device_fabric_identity()
-            .map(|(local, _)| local);
-        let own = local
-            .as_ref()
-            .and_then(|local| device.get(local))
-            .map(|device| device.presence.clone());
-        let others: Vec<(&DevicePresence, bool)> = device
-            .devices()
-            .iter()
-            .filter(|(id, _)| Some(*id) != local.as_ref())
-            .map(|(_, device)| (&device.presence, device.online))
+        // Which of the devices are online and on a network with this one is live, from the fabric:
+        // without it none is, and only a lock is followed.
+        let fabric = self.shared.fabric.as_ref().map(|fabric| fabric.devices());
+        let own = fabric.as_ref().and_then(|fabric| {
+            let local = DeviceId::new(hex::encode(devices.cert.device_public_key)).ok()?;
+            fabric.get(&local).map(|device| device.presence.clone())
+        });
+        let others: Vec<Other> = devices
+            .others()
+            .into_iter()
+            .map(|(id, session)| {
+                let live = fabric.as_ref().and_then(|fabric| fabric.get(&id));
+                Other {
+                    session,
+                    online: live.is_some_and(|device| device.online),
+                    nearby: live
+                        .zip(own.as_ref())
+                        .is_some_and(|(device, own)| shares_network(own, &device.presence)),
+                }
+            })
             .collect();
         // Idle time here counts from the person's last input on a device of theirs nearby: neither
         // locks while they are on the other.
-        let used_nearby = own
-            .as_ref()
-            .and_then(|own| latest_use_nearby(own, others.iter().copied()));
-        if let Some(used) = used_nearby
-            && let Some(at) = now.checked_sub(std::time::Duration::from_millis(
-                now_ms.saturating_sub(used),
-            ))
+        if let Some(used) = latest_use_nearby(now_ms, &others)
+            && let Some(at) = now.checked_sub(Duration::from_millis(now_ms.saturating_sub(used)))
         {
             self.compositor.note_use_elsewhere(at);
         }
@@ -218,10 +421,7 @@ impl Session {
             locked,
             input_ms,
             in_use,
-            others.iter().map(|(other, _)| {
-                let nearby = own.as_ref().is_some_and(|own| shares_network(own, other));
-                (other.session, nearby)
-            }),
+            others.iter().map(|other| (other.session, other.nearby)),
         );
         match followed {
             Some(Follow::Lock) => self.lock_by_person()?,
@@ -233,7 +433,12 @@ impl Session {
         // What this device says of itself is what it is now: a lock or unlock followed this pass is
         // said on the same one.
         let locked = self.compositor.locked();
-        fabric.publish_owner_session(self.shared.owner_session.presence(locked, input_ms));
+        if let Some(said) = self.shared.owner_session.to_say(locked, input_ms, using)
+            && let Some(devices) = self.shared.owner_devices.as_ref()
+            && !devices.say(said)
+        {
+            self.shared.owner_session.unsaid();
+        }
         Ok(())
     }
 }
@@ -243,11 +448,11 @@ mod tests {
     use super::*;
 
     /// A device on the same network.
-    fn session(locked: bool, changed_unix_ms: u64) -> (OwnerSession, bool) {
+    fn session(locked: bool, changed_ms: i64) -> (OwnerSession, bool) {
         let session = OwnerSession {
             locked,
-            changed_unix_ms,
-            active_unix_ms: 0,
+            changed_ms,
+            ..OwnerSession::default()
         };
         (session, true)
     }
@@ -389,26 +594,82 @@ mod tests {
             );
             assert!(follow.followed_lock());
             assert_eq!(
-                follow.presence(true, 1_000).changed_unix_ms,
+                follow.presence(true, 1_000, false).changed_ms,
                 0,
-                "a followed lock is not published for others to follow"
+                "a followed lock is not said for others to follow"
             );
             follow.changed_by_person(3_000);
             assert!(!follow.followed_lock());
-            assert_eq!(follow.presence(true, 1_000).changed_unix_ms, 3_000);
+            assert_eq!(follow.presence(true, 1_000, false).changed_ms, 3_000);
         }
     }
 
-    /// What `device` publishes, as seen on the same network.
+    /// What `device` says, as seen on the same network.
     fn published(device: &SessionFollow, locked: bool, input_unix_ms: u64) -> (OwnerSession, bool) {
-        (device.presence(locked, input_unix_ms), true)
+        (device.presence(locked, input_unix_ms, false), true)
     }
 
     #[test]
-    fn the_published_input_moves_in_steps() {
-        let follow = SessionFollow::default();
-        let first = follow.presence(false, 20_001);
-        assert_eq!(first, follow.presence(false, 29_999));
-        assert_eq!(first.active_unix_ms, 20_000);
+    fn a_device_says_its_session_only_when_it_changed() {
+        let mut follow = SessionFollow::default();
+        let first = follow
+            .to_say(false, 20_001, true)
+            .expect("the first pass says it");
+        assert_eq!(first.active_ms, 20_001);
+        assert_eq!(
+            follow.to_say(false, 29_999, true),
+            None,
+            "typing on moves no record"
+        );
+        let idle = follow
+            .to_say(false, 29_999, false)
+            .expect("leaving the device is said");
+        assert!(!idle.using);
+        assert_eq!(idle.active_ms, 29_999, "with the last input it had");
+        follow.changed_by_person(40_000);
+        assert!(
+            follow.to_say(true, 29_999, false).is_some(),
+            "the person's lock is said"
+        );
+        follow.unsaid();
+        assert!(
+            follow.to_say(true, 29_999, false).is_some(),
+            "what did not reach the record is said again"
+        );
+    }
+
+    #[test]
+    fn a_device_in_use_nearby_keeps_this_one_in_use_now() {
+        let other = |locked, using, online, nearby| Other {
+            session: OwnerSession {
+                locked,
+                changed_ms: 0,
+                active_ms: 5_000,
+                using,
+            },
+            online,
+            nearby,
+        };
+        assert_eq!(
+            latest_use_nearby(9_000, &[other(false, true, true, true)]),
+            Some(9_000)
+        );
+        assert_eq!(
+            latest_use_nearby(9_000, &[other(false, false, true, true)]),
+            Some(5_000),
+            "a device left idle counts from its last input"
+        );
+        assert_eq!(
+            latest_use_nearby(
+                9_000,
+                &[
+                    other(true, true, true, true),
+                    other(false, true, false, true),
+                    other(false, true, true, false)
+                ]
+            ),
+            None,
+            "a locked device, one offline and one away keep nothing in use"
+        );
     }
 }

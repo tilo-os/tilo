@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use tilo_network_actor::PersonalFabricPayload;
 use tilo_network_actor::fabric::link::FabricLink as _;
-use tilo_network_actor::fabric::{ClipboardPayload, FabricStamp, OwnerSession};
+use tilo_network_actor::fabric::{ClipboardPayload, FabricStamp, WakeInterfaceKind, WakeRoute};
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 use super::super::{Continuity, Reach, SessionFabric};
@@ -73,6 +73,16 @@ impl Device {
     }
 }
 
+/// A wired interface that wakes on a magic packet.
+fn ethernet() -> WakeRoute {
+    WakeRoute {
+        mac: [0x02, 0, 0, 0, 0, 0x21],
+        kind: WakeInterfaceKind::Ethernet,
+        magic_packet: true,
+        subnet: None,
+    }
+}
+
 /// What a device says of itself while it is there reaches the person's other device when their
 /// session starts and whenever it changes, and holds only while the session lasts.
 #[test]
@@ -87,22 +97,19 @@ fn a_devices_presence_holds_while_its_session_lasts() {
     let there = seen.get(&laptop.id).expect("the desktop knows the laptop");
     assert!(there.online);
     assert_eq!(there.about.label, "Laptop");
-    assert!(!there.presence.session.locked);
+    assert!(there.presence.wake_routes.is_empty());
 
-    // The person locks the laptop: the desktop hears it on the next announcement.
-    laptop.link.publish_owner_session(OwnerSession {
-        locked: true,
-        changed_unix_ms: 7,
-        active_unix_ms: 0,
-    });
+    // The laptop offers to be woken: the desktop hears it on the next announcement.
+    laptop.link.share_wake_routes(vec![ethernet()]);
     laptop.link.announce();
     desktop.hears(&mut laptop);
-    assert!(
+    assert_eq!(
         desktop
             .link
             .devices()
             .get(&laptop.id)
-            .is_some_and(|device| device.presence.session.locked)
+            .map(|device| device.presence.wake_routes.clone()),
+        Some(vec![ethernet()])
     );
     // Nothing changed: nothing more is said.
     laptop.link.announce();
@@ -113,7 +120,7 @@ fn a_devices_presence_holds_while_its_session_lasts() {
     let gone = seen.get(&laptop.id).expect("still the person's device");
     assert!(!gone.online);
     assert!(
-        !gone.presence.session.locked,
+        gone.presence.wake_routes.is_empty(),
         "what it said held only while it was there"
     );
     assert!(desktop.link.online_device_ids().is_empty());
@@ -126,12 +133,7 @@ fn a_stranger_says_nothing_of_the_persons_devices() {
     let desktop = Device::new(0x22, "Desktop");
     let mut stranger = Device::new(0x31, "Stranger");
 
-    stranger.link.share_wake_routes(Vec::new());
-    stranger.link.publish_owner_session(OwnerSession {
-        locked: true,
-        changed_unix_ms: 1,
-        active_unix_ms: 0,
-    });
+    stranger.link.share_wake_routes(vec![ethernet()]);
     stranger.link.announce();
     desktop.hears(&mut stranger);
 

@@ -22,7 +22,7 @@ use crate::fabric::unlock::UnlockFabricState;
 use crate::fabric::{
     ClipboardEntry, ClipboardHistory, DeviceId, DeviceKind, DisplayConnectorPlacement,
     DisplayOutputObservation, DisplayRect, FabricCapabilities, FabricError, MAX_WAKE_ROUTES,
-    OwnerSession, WakeRoute,
+    WakeRoute,
 };
 
 /// What a device says it is, in its own part of the person's store: the name the person knows it
@@ -144,8 +144,6 @@ impl DeviceDisplay {
 pub struct DevicePresence {
     /// How siblings on the same LAN can wake it.
     pub wake_routes: Vec<WakeRoute>,
-    /// The person's session on it, which their other devices' locks follow.
-    pub session: OwnerSession,
     /// Its displays, when it offers them.
     pub display: Option<DeviceDisplay>,
 }
