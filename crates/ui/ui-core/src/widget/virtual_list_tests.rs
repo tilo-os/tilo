@@ -2735,3 +2735,48 @@ fn a_list_read_to_its_end_tells_once_until_the_person_reads_away_and_back() {
     list.set_scroll_offset(next);
     assert_eq!(told.get(), 3, "the next arrival at the end is told");
 }
+
+// USER REQUIREMENT: a finger held on a list row that reorders lifts it, and the finger then
+// moves it in the list — the rail of a slide deck reorders under a held finger.
+#[test]
+fn a_finger_held_on_a_row_lifts_it_and_moves_it_in_the_list() {
+    use crate::theme::Theme;
+    use winit::event::TouchPhase;
+
+    let list = VirtualList::from_items(
+        vec![0_u64, 1, 2],
+        20.0,
+        |key| *key,
+        |key, _, _| {
+            Box::new(ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        },
+    )
+    .unwrap()
+    .with_viewport_height(60.0)
+    .reorderable();
+    let mut host =
+        crate::headless::FrameHarness::for_root(crate::State::new(), list, (200, 200), Theme::dark());
+    host.relayout_at((200, 200)).expect("layout");
+
+    let first = host
+        .root::<VirtualList<VecListModel<u64, u64>>>()
+        .row_rect(&0)
+        .expect("the first row is placed")
+        .center();
+    host.touch_down_and_hold_at(first.x, first.y);
+    host.touch(0, TouchPhase::Moved, first.x, first.y + 55.0);
+    host.touch(0, TouchPhase::Ended, first.x, first.y + 55.0);
+
+    assert_eq!(
+        host.root::<VirtualList<VecListModel<u64, u64>>>()
+            .model()
+            .items(),
+        &[1, 2, 0],
+        "the held row moved where the finger took it"
+    );
+}

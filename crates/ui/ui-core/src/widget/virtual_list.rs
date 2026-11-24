@@ -2511,6 +2511,14 @@ impl Widget for VirtualRows {
     }
 
     fn touch_claim(&self, point: vello::kurbo::Point) -> crate::interaction::TouchClaim {
+        // A list whose rows reorder lifts a row under a held finger, as a pointer press does: the
+        // finger then moves it, and a drag before the hold still scrolls.
+        if self.reorder_validator.is_some()
+            && self.reorder_commit.is_some()
+            && self.row_at(point).is_some()
+        {
+            return crate::interaction::TouchClaim::HoldDrag;
+        }
         self.mounted
             .iter()
             .find(|row| row.widget.get_rect().contains(point))

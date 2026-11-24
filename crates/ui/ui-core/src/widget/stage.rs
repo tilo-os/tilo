@@ -29,7 +29,10 @@ use winit::keyboard::{Key, NamedKey};
 use crate::component::{Component, Described, Event, PartType, PartViews, Source, Value};
 use crate::theme::Theme;
 use crate::widget::composition_parts::Parts;
-use crate::widget::{DrawChild, Element, Manual, MeasureConstraint, Widget, WidgetLayoutError};
+use crate::widget::context_menu::{ContextMenu, MenuItem};
+use crate::widget::{
+    DrawChild, Element, Manual, MeasureConstraint, MenuPart, Widget, WidgetLayoutError,
+};
 
 /// How close to a place's trailing or bottom edge a press grabs it, in logical pixels: the same
 /// reach a canvas's places keep, so the pips of a slide are as easy to hit as a window's edge.
@@ -72,6 +75,11 @@ pub struct StagePinProps {
     /// and pressing it with the right button report. Without it, the place's key.
     #[component(data)]
     pub item: Option<String>,
+    /// What the place offers on its context menu: a right press, the Menu key, a long press of a
+    /// finger, or assistive technology opens it, and the place is chosen first. Its commands run
+    /// as the view bound them (`on choose`), one undo step each.
+    #[component(part)]
+    pub menu: Vec<MenuPart>,
     /// What it shows.
     #[component(part(default))]
     pub body: Vec<Element>,
@@ -234,6 +242,12 @@ pub struct Stage {
     pins: Vec<(String, Place, Element)>,
     /// What each place stands for, by its key, as its view named it.
     items: HashMap<String, String>,
+    /// The menu each place offers, by its key, as its view placed it: a text box's words, an
+    /// element's own commands. Empty for a place that offers none.
+    menus: HashMap<String, Vec<MenuPart>>,
+    /// The one menu a place offered that is open now, and the place it is about.
+    menu: ContextMenu,
+    menu_pin: Option<usize>,
     /// What the page is, for assistive technology.
     name: Option<String>,
     canvas: (f64, f64),
@@ -285,6 +299,9 @@ pub struct Stage {
     guides: RefCell<Vec<crate::snap::Guide>>,
     /// The page stands where the view puts it, taking no zoom, pan or keys of its own.
     still: bool,
+    /// The clicks on a place, so a second one on the same place opens it: a double click's, or a
+    /// finger's double tap, which the window's touch emulation makes a click too.
+    clicks: super::rows::Clicks<usize>,
 }
 
 impl Stage {
@@ -680,6 +697,114 @@ impl Stage {
         let (x, y) = (at.x.round() as i64, at.y.round() as i64);
         Value::List(vec![Value::Int(x), Value::Int(y)])
     }
+
+    /// Whether the place at `index` offers a context menu.
+    fn offers_menu(&self, index: usize) -> bool {
+        self.pins.get(index).is_some_and(|(key, _, _)| {
+            self.menus.get(key).is_some_and(|parts| !parts.is_empty())
+        })
+    }
+
+    /// Open the menu the place at `index` offers, built anew from what the view placed there,
+    /// with its corner at the window point `at`. Whether one opened.
+    fn open_menu(&mut self, index: usize, at: Point) -> bool {
+        let Some((key, _, _)) = self.pins.get(index) else {
+            return false;
+        };
+        let Some(parts) = self.menus.get(key) else {
+            return false;
+        };
+        let mut menu = ContextMenu::new();
+        for part in parts {
+            match part.again() {
+                MenuPart::Item(item) => menu.push(item.into_item()),
+                MenuPart::Separator => menu.push(MenuItem::separator()),
+                // An emoji bar reacts to a message; a page's menu holds commands.
+                MenuPart::Emoji(_) => {}
+            }
+        }
+        if menu.items().is_empty() {
+            return false;
+        }
+        menu.open_at([crate::num::f32_of_f64(at.x), crate::num::f32_of_f64(at.y)]);
+        self.menu = menu;
+        self.menu_pin = Some(index);
+        self.dirty = true;
+        true
+    }
+
+    /// Route `event` to the open menu. Returns whether it consumed it; a press outside closes
+    /// the menu and falls through to the places.
+    fn route_menu(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        if !self.menu.is_open() {
+            return false;
+        }
+        let mut consumed = false;
+        self.menu.handle_event(
+            event,
+            &mut crate::widget::EventCtx {
+                handled: &mut consumed,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
+        );
+        self.drain_menu_selection();
+        if !self.menu.is_open() {
+            self.menu_pin = None;
+            self.dirty = true;
+        }
+        if consumed {
+            *ctx.handled = true;
+        }
+        consumed
+    }
+
+    /// Note the row the person took: it ran the view's command as it went, and the menu is no
+    /// longer about a place.
+    fn drain_menu_selection(&mut self) {
+        if self.menu.take_selection().is_some() {
+            self.menu_pin = None;
+        }
+    }
+
+    /// Paint the open menu above the page and its places, in the window's own pixels.
+    fn paint_menu(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        if !self.menu.is_open() {
+            return;
+        }
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
+    }
+
+    /// Whether the open menu needs a frame: it arrives, leaves, a key moved its highlight, or
+    /// the box beside it changed.
+    fn menu_needs_redraw(&self) -> bool {
+        self.menu.is_open() && self.menu.needs_redraw()
+    }
+
+    /// The semantics of the open menu, its targets namespaced into the stage's.
+    fn menu_node(&self) -> Option<crate::a11y::AccessNode> {
+        if !self.menu.is_open() {
+            return None;
+        }
+        let mut node = Widget::accessibility(&self.menu)?;
+        namespace_menu_targets(&mut node);
+        Some(node)
+    }
 }
 
 impl Described for Stage {
@@ -710,6 +835,9 @@ impl Described for Stage {
             parts: Parts::default(),
             pins: Vec::new(),
             items: HashMap::new(),
+            menus: HashMap::new(),
+            menu: ContextMenu::new(),
+            menu_pin: None,
             name: name.filter(|name| !name.trim().is_empty()),
             canvas: (
                 canvas.first().copied().unwrap_or(1280) as f64,
@@ -751,6 +879,7 @@ impl Described for Stage {
             editing: None,
             guides: RefCell::new(Vec::new()),
             still,
+            clicks: super::rows::Clicks::default(),
         };
         for pin in pins {
             let place = Place {
@@ -762,6 +891,9 @@ impl Described for Stage {
             };
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
                 stage.items.insert(pin.key.clone(), item);
+            }
+            if !pin.menu.is_empty() {
+                stage.menus.insert(pin.key.clone(), pin.menu);
             }
             let body: Element = match pin.body.into_iter().next() {
                 Some(body) => body,
@@ -844,9 +976,13 @@ impl Described for Stage {
         self.delete = delete;
         self.still = still;
         self.items.clear();
+        self.menus.clear();
         for (pin, (key, held, _)) in pins.into_iter().zip(self.pins.iter_mut()) {
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
                 self.items.insert(key.clone(), item);
+            }
+            if !pin.menu.is_empty() {
+                self.menus.insert(key.clone(), pin.menu);
             }
             *held = Place {
                 x: pin.x.unwrap_or(0) as f64,
@@ -1170,17 +1306,27 @@ impl Widget for Stage {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        crate::widget::redraw_or_children(self.dirty || self.menu_needs_redraw(), self)
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        Widget::mark_drawn(&mut self.menu);
         for child in &mut self.parts.children {
             child.mark_drawn();
         }
     }
 
+    /// The menu a place opened paints in the top layer, above every place and the page itself.
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        crate::widget::defaults::draw_overlay(self.children_mut(), ctx);
+        self.paint_menu(ctx);    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // The menu a place opened hears the event first, above the places and the page.
+        if self.route_menu(event, ctx) {
+            return;
+        }
         match event {
             // The hand's place is read in page coordinates: a drag keeps moving the place it
             // holds past the stage's edge, as it would past the page's.
@@ -1263,6 +1409,9 @@ impl Widget for Stage {
         if *ctx.handled {
             return;
         }
+        // The Menu key and Shift+F10 open the chosen place's menu where it stands.
+        let keyboard_menu = self.focused
+            && crate::widget::context_menu::opens_from_keyboard(event, ctx.modifiers.state());
         // The page's own view: a wheel moves it, the command modifier and a wheel (or a
         // pinch) zoom it about the pointer, and the keys that zoom it reach it while it holds
         // the keyboard. A fitted page has nowhere to move, so its wheel is the view's.
@@ -1310,6 +1459,20 @@ impl Widget for Stage {
             WindowEvent::KeyboardInput { event, .. }
                 if !self.still && self.focused && event.state == ElementState::Pressed =>
             {
+                // The Menu key and Shift+F10 open the chosen place's menu where it stands.
+                if keyboard_menu
+                    && let Some(index) = self.chosen_index()
+                {
+                    let at = self
+                        .laid
+                        .borrow()
+                        .get(index)
+                        .map_or(self.cursor, |rect| self.screen_rect(*rect).center());
+                    if self.open_menu(index, at) {
+                        *ctx.handled = true;
+                        return;
+                    }
+                }
                 let plain = !ctx.modifiers.state().control_key()
                     && !ctx.modifiers.state().super_key()
                     && !ctx.modifiers.state().alt_key();
@@ -1448,9 +1611,19 @@ impl Widget for Stage {
                 // A click on the page's own surface points there; a press that became a drag of
                 // a place was a drag, not a click.
                 self.grab = None;
-                if self.place_under(local).is_none() {
-                    self.press
-                        .fire(Some(Self::point_value(self.page_point(local))));
+                match self.place_under(local) {
+                    None => {
+                        self.press
+                            .fire(Some(Self::point_value(self.page_point(local))));
+                    }
+                    // A second click on the same place opens it: the view puts the typing in it
+                    // (a text box) or opens where it stands. A finger's double tap is two
+                    // clicks too, as the window makes a tap a click.
+                    Some(index) => {
+                        if self.clicks.register(index) {
+                            self.open.fire(Some(Value::Text(self.item_of(index))));
+                        }
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -1459,13 +1632,19 @@ impl Widget for Stage {
                 ..
             } if self.rect.contains(self.cursor) => {
                 let at = self.page_point(local);
-                let item = self
-                    .place_under(local)
-                    .map_or_else(String::new, |index| self.item_of(index));
+                let under = self.place_under(local);
+                let item = under.map_or_else(String::new, |index| self.item_of(index));
                 self.context.fire(Some(Value::List(vec![
                     Value::Text(item),
                     Self::point_value(at),
                 ])));
+                // A place that names commands opens them where the press landed; the press is
+                // the menu's, so it reaches no place behind it.
+                if let Some(index) = under
+                    && self.open_menu(index, self.cursor)
+                {
+                    *ctx.handled = true;
+                }
             }
             _ => {}
         }
@@ -1473,6 +1652,45 @@ impl Widget for Stage {
 
     fn is_focusable(&self) -> bool {
         !self.still
+    }
+
+    /// A finger on a place that moves drags it, as a pointer does: a tap clicks, a held finger is
+    /// the right press that opens the place's menu, and a drag moves the place past the tap's
+    /// slop. Elsewhere the page is ordinary content: a tap clicks and a drag scrolls.
+    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+        use crate::interaction::TouchClaim;
+        if !self.rect.contains(point) {
+            return TouchClaim::Pointer;
+        }
+        let local = point - self.rect.origin().to_vec2();
+        if self.edge_at(local).is_some() {
+            return TouchClaim::Drag;
+        }
+        match self.place_under(local) {
+            Some(index) if self.pins[index].1.moves => TouchClaim::Drag,
+            _ => TouchClaim::Pointer,
+        }
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        let Some(target) = target.strip_prefix(MENU_TARGET) else {
+            return false;
+        };
+        let performed = self.menu.perform_semantic_action(target, action, state, path);
+        if performed {
+            self.drain_menu_selection();
+        }
+        performed
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -1516,10 +1734,26 @@ impl Widget for Stage {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_optional_name(self.name.clone()),
-        )
+        let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+            .with_optional_name(self.name.clone());
+        if let Some(menu) = self.menu_node() {
+            node.children.push(menu);
+        }
+        Some(node)
+    }
+}
+
+/// The prefix a place's menu targets carry, namespacing them into the stage's own semantics.
+const MENU_TARGET: &str = "pin-menu:";
+
+fn namespace_menu_targets(node: &mut crate::a11y::AccessNode) {
+    if let Some(target) = node.action_target.take() {
+        let target = format!("{MENU_TARGET}{target}");
+        node.semantic_key = Some(target.clone());
+        node.action_target = Some(target);
+    }
+    for child in &mut node.children {
+        namespace_menu_targets(child);
     }
 }
 

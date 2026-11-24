@@ -1504,6 +1504,13 @@ impl ContextMenu {
         self.selection.take()
     }
 
+    /// The box the menu stands against as it opened: a control's or a row's, or the point a
+    /// press opened it at, which has no area. For a test that a menu opened where it was asked.
+    #[cfg(test)]
+    pub(crate) fn anchor_box(&self) -> Option<Rect> {
+        self.anchor
+    }
+
     pub fn hovered(&self) -> Option<usize> {
         self.hovered
     }

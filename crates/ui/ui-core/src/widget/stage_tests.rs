@@ -115,6 +115,7 @@ fn boxes_props(queue: &crate::Intents<crate::component::Fired>, count: i64) -> S
             width: Some(160),
             height: Some(90),
             moves: true,
+            menu: Vec::new(),
             body: Vec::new(),
         })
         .collect();
@@ -273,5 +274,227 @@ fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
             ("box-0".to_string(), vec![106, 91]),
         ],
         "an arrow moves it ten, and with Shift one"
+    );
+}
+
+/// A stage whose first place, "box-0", offers two commands, and whose second offers none.
+fn menu_stage(queue: &crate::Intents<crate::component::Fired>) -> Stage {
+    use crate::widget::{MenuItemProps, MenuPart};
+
+    let command = |label: &str, event: &str, destructive: bool| {
+        MenuPart::Item(MenuItemProps {
+            label: label.into(),
+            destructive,
+            choose: Event::View(Intent::new(queue, "box-0", event)),
+            ..MenuItemProps::default()
+        })
+    };
+    let pins = vec![
+        StagePinProps {
+            key: "pin-0".into(),
+            item: Some("box-0".into()),
+            x: Some(96),
+            y: Some(90),
+            width: Some(160),
+            height: Some(90),
+            moves: true,
+            menu: vec![
+                command("Bring to front", "front", false),
+                MenuPart::Separator,
+                command("Delete", "delete", true),
+            ],
+            ..StagePinProps::default()
+        },
+        StagePinProps {
+            key: "pin-1".into(),
+            item: Some("box-1".into()),
+            x: Some(400),
+            y: Some(90),
+            width: Some(160),
+            height: Some(90),
+            moves: true,
+            menu: Vec::new(),
+            ..StagePinProps::default()
+        },
+    ];
+    Stage::from_props(
+        "stage",
+        StageProps {
+            name: Some("Slide".into()),
+            canvas: vec![1280, 720],
+            pins,
+            select: Event::View(Intent::new(queue, "stage", "select")),
+            ..StageProps::default()
+        },
+    )
+}
+
+#[test]
+fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
+    // The editor fits a 1280 × 720 page into 800 × 600 at 0.625, centred: page (96, 90) stands
+    // at window (60, 131), and the place's middle at about (110, 159).
+    let queue = crate::Intents::default();
+    let mut host = FrameHarness::new(
+        crate::State::new(),
+        Box::new(menu_stage(&queue)),
+        (800, 600),
+    );
+    host.dispatch_to_root(&synthetic_input::cursor_moved(110.0, 159.0));
+    host.dispatch_to_root(&synthetic_input::mouse_input(
+        ElementState::Pressed,
+        MouseButton::Right,
+    ));
+
+    let stage = shown(&mut host);
+    assert!(stage.menu.is_open(), "the place's menu opened under the press");
+    let labels: Vec<String> = stage
+        .menu
+        .items()
+        .iter()
+        .filter_map(|item| item.label().map(str::to_owned))
+        .collect();
+    assert_eq!(
+        labels,
+        ["Bring to front", "Delete"],
+        "the commands the view placed on the place"
+    );
+    let opened_at = stage
+        .menu
+        .anchor_box()
+        .expect("the menu stands against the press")
+        .origin();
+    assert!(
+        (opened_at.x - 110.0).abs() < 0.5 && (opened_at.y - 159.0).abs() < 0.5,
+        "it opens where the press landed: {opened_at:?}"
+    );
+
+    // Choosing a command runs what the view bound, and the menu is no longer about a place.
+    let deleted = stage
+        .menu
+        .items()
+        .iter()
+        .position(|item| item.label() == Some("Delete"))
+        .expect("the Delete row");
+    shown(&mut host).menu.click_item(deleted);
+    let fired: Vec<(String, String)> = queue
+        .take()
+        .into_iter()
+        .map(|fired| (fired.key, fired.event))
+        .collect();
+    assert_eq!(
+        fired,
+        [("box-0".to_owned(), "delete".to_owned())],
+        "the command the view bound ran"
+    );
+    assert!(!shown(&mut host).menu.is_open(), "and the menu closed");
+
+    // A place that names no command opens none: the press is the view's own report and nothing
+    // more.
+    host.dispatch_to_root(&synthetic_input::cursor_moved(300.0, 159.0));
+    host.dispatch_to_root(&synthetic_input::mouse_input(
+        ElementState::Pressed,
+        MouseButton::Right,
+    ));
+    assert!(
+        !shown(&mut host).menu.is_open(),
+        "a place without commands opens no menu"
+    );
+    let selected: Vec<String> = queue
+        .take()
+        .into_iter()
+        .map(|fired| fired.event)
+        .collect();
+    assert!(
+        !selected.contains(&"delete".to_owned()),
+        "nothing ran for the press"
+    );
+}
+
+/// The page points of the two boxes in `boxes_stage`, as the 800 × 600 window shows a fitted
+/// 1280 × 720 page: 0.625 and centred, so the first box's middle is at (110, 159) and the
+/// second's at (300, 159).
+const BOX_0: (f64, f64) = (110.0, 159.0);
+const BOX_1: (f64, f64) = (300.0, 159.0);
+
+#[test]
+fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
+    use winit::event::TouchPhase;
+
+    let queue = crate::Intents::default();
+    let mut host = FrameHarness::new(
+        crate::State::new(),
+        Box::new(boxes_stage(&queue, 2)),
+        (800, 600),
+    );
+
+    // A finger dragged across the first box moves it with the hand, as a pointer does.
+    let (x, y) = BOX_0;
+    host.touch(0, TouchPhase::Started, x, y);
+    host.touch(0, TouchPhase::Moved, x + 40.0, y);
+    host.touch(0, TouchPhase::Moved, x + 80.0, y);
+    host.touch(0, TouchPhase::Ended, x + 80.0, y);
+    let moved: Vec<(String, i64)> = queue
+        .take()
+        .into_iter()
+        .filter(|fired| fired.event == "moved")
+        .map(|fired| match fired.value {
+            Some(crate::component::Value::List(mut parts)) => {
+                let item = match parts.remove(0) {
+                    crate::component::Value::Text(item) => item,
+                    other => panic!("a place is named: {other:?}"),
+                };
+                let at = match parts.remove(0) {
+                    crate::component::Value::List(mut at) => match at.remove(0) {
+                        crate::component::Value::Int(x) => x,
+                        other => panic!("a page point is whole: {other:?}"),
+                    },
+                    other => panic!("a page point: {other:?}"),
+                };
+                (item, at)
+            }
+            other => panic!("a place moved: {other:?}"),
+        })
+        .collect();
+    assert!(
+        moved
+            .iter()
+            .any(|(item, at)| item == "box-0" && *at > 96),
+        "a dragged finger moves the place with it: {moved:?}"
+    );
+
+    // A tap chooses the place, and a second tap on the same place opens it.
+    let (x, y) = BOX_1;
+    host.touch(1, TouchPhase::Started, x, y);
+    host.touch(1, TouchPhase::Ended, x, y);
+    host.touch(2, TouchPhase::Started, x, y);
+    host.touch(2, TouchPhase::Ended, x, y);
+    let fired: Vec<String> = queue
+        .take()
+        .into_iter()
+        .map(|fired| fired.event)
+        .collect();
+    assert!(
+        fired.iter().any(|event| event == "select"),
+        "a tap chooses the place: {fired:?}"
+    );
+    assert!(
+        fired.iter().any(|event| event == "open"),
+        "a double tap opens it: {fired:?}"
+    );
+}
+
+#[test]
+fn a_finger_held_on_a_place_opens_its_menu() {
+    let queue = crate::Intents::default();
+    let mut host = FrameHarness::new(
+        crate::State::new(),
+        Box::new(menu_stage(&queue)),
+        (800, 600),
+    );
+    let (x, y) = BOX_0;
+    host.touch_hold_at(x, y);
+    assert!(
+        shown(&mut host).menu.is_open(),
+        "a held finger is the right press that opens the place's menu"
     );
 }
