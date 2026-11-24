@@ -152,12 +152,15 @@ async fn an_agent_governs_as_its_grants_answer_and_asks_its_person_by_default() 
 }
 
 /// A device of `person`'s root with `capabilities`.
-fn device_of(person: &SigningKey, label: &str, capabilities: DeviceCapabilities) -> DeviceCert {
+fn device_of(
+    person: &SigningKey,
+    label: &str,
+    capabilities: DeviceCapabilities,
+) -> (SigningKey, DeviceCert) {
+    let key = SigningKey::from_bytes(&rand::random());
     let mut cert = DeviceCert {
         user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: SigningKey::from_bytes(&rand::random())
-            .verifying_key()
-            .to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
         device_label: label.into(),
         capabilities,
         issued_at_ns: 1,
@@ -166,7 +169,7 @@ fn device_of(person: &SigningKey, label: &str, capabilities: DeviceCapabilities)
         issuer: None,
     };
     sign_device_cert(&mut cert, person).unwrap();
-    cert
+    (key, cert)
 }
 
 /// `device` let into `workspace` by its owner, under `seed`.
@@ -174,7 +177,7 @@ async fn let_in(
     workspaces: &Workspaces,
     workspace: &str,
     owner: &DeviceCert,
-    device: &DeviceCert,
+    (key, device): (&SigningKey, &DeviceCert),
     seed: u8,
 ) {
     let token = [seed; 8];
@@ -193,7 +196,7 @@ async fn let_in(
     let reply = workspaces
         .admit_proven(
             issued.signed_invitation,
-            device.clone(),
+            (device.clone(), key),
             rand::random(),
             &device.device_label,
             Some(token.as_slice()),
@@ -219,8 +222,8 @@ async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
 
     // Quinten administers the workspace; his scripts' key is him.
     let quinten = SigningKey::from_bytes(&rand::random());
-    let laptop = device_of(&quinten, "laptop", DeviceCapabilities::member());
-    let_in(workspaces, &workspace, &owner, &laptop, 2).await;
+    let (laptop_signer, laptop) = device_of(&quinten, "laptop", DeviceCapabilities::member());
+    let_in(workspaces, &workspace, &owner, (&laptop_signer, &laptop), 2).await;
     workspaces
         .set_member_administrator(
             &workspace,
@@ -231,8 +234,16 @@ async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
         )
         .await
         .unwrap();
-    let scripts = device_of(&quinten, "scripts", DeviceCapabilities::server_key_grant());
-    let_in(workspaces, &workspace, &owner, &scripts, 3).await;
+    let (scripts_signer, scripts) =
+        device_of(&quinten, "scripts", DeviceCapabilities::server_key_grant());
+    let_in(
+        workspaces,
+        &workspace,
+        &owner,
+        (&scripts_signer, &scripts),
+        3,
+    )
+    .await;
     let remove = |caller: &Caller, member: &DeviceCert| {
         let asked = request(
             &workspace,
@@ -247,8 +258,9 @@ async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
 
     // An Editor's own key removes nobody: neither may they.
     let bo = SigningKey::from_bytes(&rand::random());
-    let bo_key = device_of(&bo, "bo's scripts", DeviceCapabilities::server_key_grant());
-    let_in(workspaces, &workspace, &owner, &bo_key, 4).await;
+    let (bo_key_signer, bo_key) =
+        device_of(&bo, "bo's scripts", DeviceCapabilities::server_key_grant());
+    let_in(workspaces, &workspace, &owner, (&bo_key_signer, &bo_key), 4).await;
     let refused = remove(&caller(&bo_key).delegated_to("scripts"), &laptop).await;
     assert!(refused.is_err(), "{refused:?}");
     server.shutdown().await;

@@ -955,6 +955,7 @@ pub(super) mod tests {
 
 #[cfg(test)]
 pub(crate) mod entry_tests {
+    use ed25519_dalek::SigningKey;
     use tilo_actions::remote::{
         ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
         RemoteActionTarget,
@@ -1034,12 +1035,12 @@ pub(crate) mod entry_tests {
         workspaces: &Workspaces,
         workspace: &str,
     ) -> (Result<JoinReply, String>, DeviceCert) {
-        let (_, cert) = guest_device();
+        let (key, cert) = guest_device();
         let join = EntryJoin {
             user_public_key: hex::encode(cert.user_public_key),
             display_name: "Cy".into(),
         };
-        let reply = walk_in_as(workspaces, workspace, &join, &cert).await;
+        let reply = walk_in_as(workspaces, workspace, &join, (&key, &cert)).await;
         (reply, cert)
     }
 
@@ -1047,13 +1048,13 @@ pub(crate) mod entry_tests {
         workspaces: &Workspaces,
         workspace: &str,
         join: &EntryJoin,
-        cert: &DeviceCert,
+        device: (&SigningKey, &DeviceCert),
     ) -> Result<JoinReply, String> {
         let (issued, token) = workspaces
             .admit_listed(workspace, join)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(redeem(workspaces, issued.signed_invitation, token, cert).await)
+        Ok(redeem(workspaces, issued.signed_invitation, token, device).await)
     }
 
     /// Redeem `invitation` with the entry's `token`, as the person's device.
@@ -1061,12 +1062,12 @@ pub(crate) mod entry_tests {
         workspaces: &Workspaces,
         invitation: Vec<u8>,
         token: String,
-        cert: &DeviceCert,
+        (key, cert): (&SigningKey, &DeviceCert),
     ) -> JoinReply {
         workspaces
             .admit_proven(
                 invitation,
-                cert.clone(),
+                (cert.clone(), key),
                 rand::random(),
                 "Cy",
                 Some(token.as_bytes()),
@@ -1120,7 +1121,7 @@ pub(crate) mod entry_tests {
             ),
         ];
         for (what, forge) in forgeries {
-            let (_, guest) = guest_device();
+            let (guest_key, guest) = guest_device();
             let join = EntryJoin {
                 user_public_key: hex::encode(guest.user_public_key),
                 display_name: "Mallory".into(),
@@ -1134,7 +1135,13 @@ pub(crate) mod entry_tests {
                 .await
                 .admissions
                 .tamper(issued.invite_id, forge);
-            let reply = redeem(workspaces, issued.signed_invitation, token, &guest).await;
+            let reply = redeem(
+                workspaces,
+                issued.signed_invitation,
+                token,
+                (&guest_key, &guest),
+            )
+            .await;
             assert!(
                 !matches!(reply, JoinReply::Admitted { .. }),
                 "{what} admitted someone: {reply:?}"
@@ -1148,13 +1155,13 @@ pub(crate) mod entry_tests {
             );
         }
 
-        let (_, guest) = guest_device();
+        let (guest_key, guest) = guest_device();
         let join = EntryJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Cy".into(),
         };
         assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, &guest).await,
+            walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await,
             Ok(JoinReply::Admitted { .. })
         ));
         server.shutdown().await;
@@ -1414,7 +1421,7 @@ pub(crate) mod entry_tests {
             )
             .await
             .unwrap();
-        let (_, guest) = guest_device();
+        let (guest_key, guest) = guest_device();
         let join = EntryJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Cy".into(),
@@ -1425,7 +1432,7 @@ pub(crate) mod entry_tests {
                 .any(|member| member.root() == Some(guest.user_public_key) && !member.removed)
         };
         assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, &guest).await,
+            walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await,
             Ok(JoinReply::Admitted { .. })
         ));
         workspaces
@@ -1443,7 +1450,7 @@ pub(crate) mod entry_tests {
 
         assert!(
             matches!(
-                walk_in_as(workspaces, &workspace, &join, &guest).await,
+                walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await,
                 Ok(JoinReply::Admitted {
                     role: Role::Editor,
                     ..
@@ -1478,13 +1485,13 @@ pub(crate) mod entry_tests {
             )
             .await
             .unwrap();
-        let (_, guest) = guest_device();
+        let (guest_key, guest) = guest_device();
         let join = EntryJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Troll".into(),
         };
         assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, &guest).await,
+            walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await,
             Ok(JoinReply::Admitted { .. })
         ));
         workspaces
@@ -1530,7 +1537,7 @@ pub(crate) mod entry_tests {
                 .await
         );
         assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, &guest).await,
+            walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await,
             Ok(JoinReply::Admitted { .. })
         ));
 
@@ -1577,7 +1584,7 @@ pub(crate) mod entry_tests {
             workspaces
                 .admit_proven(
                     signed_invitation,
-                    guest.clone(),
+                    (guest.clone(), &guest_key),
                     rand::random(),
                     "Troll",
                     None
@@ -1614,13 +1621,13 @@ pub(crate) mod entry_tests {
             )
             .await
             .unwrap();
-        let (_, guest) = guest_device();
+        let (guest_key, guest) = guest_device();
         let join = EntryJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Troll".into(),
         };
         assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, &guest).await,
+            walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await,
             Ok(JoinReply::Admitted { .. })
         ));
         workspaces
@@ -1672,7 +1679,7 @@ pub(crate) mod entry_tests {
         let reply = workspaces
             .admit_proven(
                 signed_invitation,
-                guest.clone(),
+                (guest.clone(), &guest_key),
                 rand::random(),
                 "Troll",
                 None,
@@ -1880,13 +1887,13 @@ pub(crate) mod entry_tests {
             )
             .await
             .unwrap();
-        let (_, guest) = guest_device();
+        let (guest_key, guest) = guest_device();
         let join = EntryJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Troll".into(),
         };
         assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, &guest).await,
+            walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await,
             Ok(JoinReply::Admitted { .. })
         ));
         assert!(
@@ -1982,7 +1989,7 @@ pub(crate) mod entry_tests {
         );
 
         // A person a member invited is let in.
-        let (_, invited) = guest_device();
+        let (invited_key, invited) = guest_device();
         workspaces
             .pre_admit(
                 &owner,
@@ -1999,9 +2006,14 @@ pub(crate) mod entry_tests {
             user_public_key: hex::encode(invited.user_public_key),
             display_name: "Ada".into(),
         };
-        let reply = walk_in_as(workspaces, &workspace, &invited_join, &invited)
-            .await
-            .unwrap();
+        let reply = walk_in_as(
+            workspaces,
+            &workspace,
+            &invited_join,
+            (&invited_key, &invited),
+        )
+        .await
+        .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
 
         // Open again, the same workspace hands a stranger in.
@@ -2009,12 +2021,12 @@ pub(crate) mod entry_tests {
             .list_invitation_only(&workspace, &owner, false)
             .await
             .unwrap();
-        let (_, open) = guest_device();
+        let (open_key, open) = guest_device();
         let open_join = EntryJoin {
             user_public_key: hex::encode(open.user_public_key),
             display_name: "Di".into(),
         };
-        let reply = walk_in_as(workspaces, &workspace, &open_join, &open)
+        let reply = walk_in_as(workspaces, &workspace, &open_join, (&open_key, &open))
             .await
             .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
@@ -2051,7 +2063,7 @@ pub(crate) mod entry_tests {
 
         // Someone the operator declares an owner holds governance before any
         // device of theirs arrives, so the entry does not see a stranger.
-        let (_, declared) = guest_device();
+        let (declared_key, declared) = guest_device();
         workspaces
             .set_member_administrator(
                 &workspace,
@@ -2066,9 +2078,14 @@ pub(crate) mod entry_tests {
             user_public_key: hex::encode(declared.user_public_key),
             display_name: "Ed".into(),
         };
-        let reply = walk_in_as(workspaces, &workspace, &declared_join, &declared)
-            .await
-            .unwrap();
+        let reply = walk_in_as(
+            workspaces,
+            &workspace,
+            &declared_join,
+            (&declared_key, &declared),
+        )
+        .await
+        .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
         server.shutdown().await;
 
@@ -2099,7 +2116,7 @@ pub(crate) mod entry_tests {
                 user_public_key: hex::encode(declared.user_public_key),
                 display_name: "Ed".into(),
             },
-            &declared,
+            (&declared_key, &declared),
         )
         .await;
         assert!(

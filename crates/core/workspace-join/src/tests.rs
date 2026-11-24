@@ -265,6 +265,7 @@ fn current_complete(layouts: &Layouts, signed: &[u8]) -> (JoinChallenge, Vec<u8>
     let proof = sign_join_proof(challenge.clone(), &layouts.guest_device).unwrap();
     let complete = postcard::to_stdvec(&JoinTransportRequest::Complete(JoinCompleteRequest {
         proof,
+        admission: Vec::new(),
     }))
     .unwrap();
     (challenge, complete)
@@ -352,8 +353,8 @@ fn a_stored_complete_verifies_in_the_join_layout_its_version_names() {
     let (_, complete) = current_complete(&layouts, &invitation);
     assert_eq!(
         complete.get(1),
-        Some(&3),
-        "this build writes join version 3"
+        Some(&4),
+        "this build writes join version 4"
     );
     let redemption = verify_stored_complete(&complete, &layouts.guest, &revocations, 3).unwrap();
     assert_eq!(redemption.join().signed_invitation(), invitation.as_slice());

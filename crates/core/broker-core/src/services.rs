@@ -747,15 +747,6 @@ pub trait SearchIndexServices: Send + Sync {
     ) -> Result<(), String>;
 }
 
-/// What the session hears of a workspace's record changing: an app of the
-/// workspace wrote it here, or a peer's change of it was taken in. The content
-/// the record holds may have moved, and the search index that reads it without
-/// the app's window is out of date.
-pub trait DocumentIndexChanges: Send + Sync {
-    /// The record `record` of `app` in `workspace` changed.
-    fn changed(&self, workspace: &str, app: &str, record: &str);
-}
-
 /// The scope component content puts are kept under in a workspace's content
 /// store: neutral, no application's. The store reads by workspace, so every app
 /// of the workspace reads what was put there once an action hands it the

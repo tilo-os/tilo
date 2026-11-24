@@ -301,24 +301,6 @@ impl StoredResource {
         }
     }
 
-    /// The record index of the app whose records `store` keeps, in the store's workspace: the
-    /// app's own record there ([`DocumentId::package_primary`]), which names each record of the
-    /// app the workspace holds ([`super::index`]) and which the shell lists them from. Created
-    /// where nothing holds it yet; the app publishes it, as it is its own.
-    ///
-    /// # Errors
-    /// The index could not be read or created now: [`ResourceOpenError::Arriving`] while the
-    /// workspace has not answered for it, [`ResourceOpenError::Busy`] while the store is in use.
-    pub fn record_index(
-        store: &ResourceStore,
-        kind: ResourceType,
-        author: MemberId,
-    ) -> Result<Self, ResourceOpenError> {
-        let checkout = DocumentCheckout::package_primary(kind);
-        open_in(store, &checkout, &|_| Ok(()))?;
-        Ok(Self::new(store.clone(), checkout, author, true))
-    }
-
     /// Whether this app publishes the record's changes on its route.
     ///
     /// The identity service signs a change only for the route's own app, and

@@ -1442,15 +1442,16 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
             .all(|name| labels.iter().any(|label| label == name))
     });
     keep(&mut session, "shell-people-roster");
-    // The roster's own way to bring someone new into the workspace: its button, and the
-    // session's invite sheet the button opens.
+    // This session reaches no device daemon, so no workspace answers whether this person may
+    // invite: the list offers no invite at all, where a session that may offers one
+    // (`the_people_list_offers_the_invite_only_where_this_person_may_invite`).
     assert!(
-        session.shell_control("Invite someone").is_some(),
-        "the roster offers the invite: {:?}",
+        session.shell_control("Invite someone").is_none(),
+        "no invite without a workspace that lets this person invite: {:?}",
         session.accessible_labels()
     );
-    // The action the button runs opens the session's own sheet; what the sheet draws is its
-    // own, not the roster's.
+    // The action such a button runs opens the session's own sheet; what the sheet draws is its
+    // own, not the list's.
     session
         .invoke("session:invite", "show-invite", &serde_json::Map::new())
         .expect("the invite sheet opens");
@@ -1514,6 +1515,8 @@ struct PeopleReading {
     following: String,
     #[serde(default)]
     waved_to: String,
+    #[serde(default)]
+    may_invite: bool,
 }
 
 /// One row of the roster, as the session publishes it.
@@ -1527,6 +1530,8 @@ struct SomeoneReading {
     agent: bool,
     #[serde(default)]
     bot: bool,
+    #[serde(default)]
+    automatic: bool,
 }
 
 fn people_reading(session: &Session) -> PeopleReading {
@@ -1807,6 +1812,75 @@ fn a_people_row_follows_waves_and_goes_where_software_works() {
     until(&mut session, |session| {
         the_window_in_front(session) == Some(notes)
     });
+}
+
+/// A line their device read off their steps wears the sparkles on the row: the words are
+/// software's, never shown as if the person had said them.
+#[test]
+fn a_line_software_wrote_wears_the_mark_on_its_row() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    let mut mia = someone_here(1, "Mia Clayton", None, "");
+    mia.activity = Some("Editing the release plan".to_owned());
+    mia.automatic = false;
+    set_the_people(&session, vec![mia.clone()]);
+    open_who_is_here(&mut session);
+    until(&mut session, |session| {
+        session.shell_control("Follow Mia Clayton").is_some()
+    });
+    let row = people_place(&session, "Mia Clayton");
+    let theirs = keep(&mut session, "shell-people-row-their-own-words");
+    // Their device wrote the line for them: the row marks it as software's.
+    mia.automatic = true;
+    set_the_people(&session, vec![mia]);
+    until(&mut session, |session| {
+        people_reading(session).rows.iter().any(|row| row.automatic)
+    });
+    let written = keep(&mut session, "shell-people-row-written-for-them");
+    let (inside, _) = changed_in(&theirs, &written, row);
+    assert!(
+        inside > 20,
+        "the mark for words software wrote is on the row: {inside} pixels of it changed"
+    );
+}
+
+/// The invite stands on the list where the workspace lets this person invite, and nowhere else: a
+/// session on its own device's daemon, in its person's own workspace, offers it, and a session
+/// that reaches no workspace to invite into offers none.
+#[test]
+fn the_people_list_offers_the_invite_only_where_this_person_may_invite() {
+    let _settled = ui::motion::testing::settled();
+    let mut theirs =
+        crate::common::on_its_daemon(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options());
+    until(&mut theirs, |session| says(session, &time(session).clock));
+    open_who_is_here(&mut theirs);
+    until(&mut theirs, |session| says(session, "Just you"));
+    assert!(
+        people_reading(&theirs).may_invite,
+        "the workspace this person owns lets them invite"
+    );
+    assert!(
+        theirs.shell_control("Invite someone").is_some(),
+        "the list offers the invite: {:?}",
+        theirs.accessible_labels()
+    );
+
+    // A session that reaches no device daemon holds no workspace whose governance could let it
+    // invite, and says so rather than offering a button whose sheet could only refuse.
+    let mut alone = session();
+    until(&mut alone, |session| says(session, &time(session).clock));
+    open_who_is_here(&mut alone);
+    until(&mut alone, |session| says(session, "Just you"));
+    assert!(
+        !people_reading(&alone).may_invite,
+        "no workspace answers for this session"
+    );
+    assert!(
+        alone.shell_control("Invite someone").is_none(),
+        "and the list offers no invite: {:?}",
+        alone.accessible_labels()
+    );
 }
 
 /// Someone nobody named is told apart by when they joined, never a bare "Someone": two admitted
@@ -3805,7 +3879,7 @@ impl tilo_connectivity_service::device::Device for Radios {
             }
             tilo_connectivity_service::device::Change::Autoconnect { profile, on } => {
                 for saved in &mut readings.network.saved {
-                    if saved.id == *profile {
+                    if saved.profile == *profile {
                         saved.autoconnect = *on;
                     }
                 }
@@ -3855,7 +3929,7 @@ fn wireless_session() -> Session {
         }];
         readings.network.saved = vec![tilo_connectivity_service::model::SavedNetwork {
             name: "Home".to_owned(),
-            id: "uuid-home".to_owned(),
+            profile: "uuid-home".to_owned(),
             ..tilo_connectivity_service::model::SavedNetwork::default()
         }];
         readings.bluetooth.available = true;

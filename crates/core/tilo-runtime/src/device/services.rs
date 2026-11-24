@@ -1784,6 +1784,7 @@ impl Daemon {
                 shell_dispatch: &shell_dispatch,
                 identity: identity_broker.handover(),
                 live: &live,
+                fanout: &fanout,
             },
             brokers,
             Arc::clone(&fanout),
@@ -1995,7 +1996,7 @@ impl Daemon {
             );
         }
         // So is its package cache, the one it answered before the login too.
-        match super::packages::PackageCache::this_device(&identity.cert.device_public_key) {
+        match super::packages::PackageCache::this_device(&identity.key) {
             Ok(cache) => {
                 super::packages::follow(&cache, Arc::clone(&workspaces));
                 workspaces
@@ -2476,6 +2477,9 @@ struct BrokerParts<'a> {
     identity: Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>,
     /// The device's live session, which carries those shells' live links.
     live: &'a Arc<super::live_relay::Live>,
+    /// The broker's fanout, which serves the broker the windows connect to: what the daemon
+    /// publishes what those windows hold of.
+    fanout: &'a Arc<FanoutState>,
 }
 
 /// What carries a shell's live links: `live`, for as long as each link lasts.
@@ -2607,6 +2611,9 @@ fn broker_services(
     let nearby: Arc<dyn PublishedResources> = Arc::new(parts.nearby.published());
     // What is live in the workspaces this device keeps, which the desktop shows.
     let live: Arc<dyn PublishedResources> = super::live::Published::of(parts.workspaces.copies());
+    // The record each window this device runs holds, which its desktop notes beside the window.
+    let window_notes: Arc<dyn PublishedResources> =
+        super::window_notes::Published::of(parts.fanout);
     // The code of this moment a vault item's seed makes, which an app that shows one-time codes
     // follows as the item's reading: read here, where the seed is.
     let vault_codes: Arc<dyn PublishedResources> =
@@ -2623,6 +2630,10 @@ fn broker_services(
             )
             .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
             .serving(&[tilo_workspace_service::live::RESOURCE], Arc::clone(&live))
+            .serving(
+                &[tilo_workspace_service::window_notes::RESOURCE],
+                Arc::clone(&window_notes),
+            )
             .serving(&[super::mcp_server::SERVER], Arc::clone(&mcp_server))
             .serving(
                 &[tilo_actions::remote::model_providers::RESOURCE],
@@ -2689,7 +2700,6 @@ fn broker_services(
             None => forwarded.native_media,
         }),
         continuations: Some(forwarded.continuations),
-        document_index_changes: Some(forwarded.document_index_changes),
         workspace_nodes: Some(forwarded.workspace_nodes),
         // The device's keyboard shortcuts, the person's account credentials and Files'
         // clipboard are the desktop session's.
@@ -3856,16 +3866,18 @@ impl Daemon {
     }
 }
 
-/// Enter `workspace` as this device's, as `device`: a workspace the device made for its person
-/// is one it keeps, so its views and calls reach it at once.
+/// Enter `workspace` as this device's, as `device`, signing its own row there with this device's
+/// key: a workspace the device made for its person is one it keeps, so its views and calls reach
+/// it at once.
 async fn enter_here(
     workspaces: &ServiceWorkspaces,
     workspace: &str,
     device: &DeviceCert,
 ) -> Result<(), ServerError> {
+    let signer = workspaces.signer();
     workspaces
         .copies()
-        .enter(workspace, device)
+        .enter(workspace, (device, &*signer))
         .await
         .map(drop)
         .map_err(unavailable)
@@ -4280,17 +4292,20 @@ impl RuntimeActionProvider {
         let agent = device_agent_id(&operator, MCP_CLIENT);
         // The person's own act, as the caller that made the agent's calls works for them.
         let person = Caller::local_person(hex::encode(operator)).in_workspace(&workspace);
-        // Every workspace the agent works in: the one its session is in, and each whose member
-        // list names it. The answer syncs with the workspace, so a host running the agent
-        // elsewhere refuses its next call.
+        // Every workspace the agent may work in: a stop is the person's own say about their own
+        // agent, which reaches only the agent acting for them, so it is written in each workspace
+        // this device holds; going on takes it back where it stands. The answer syncs with the
+        // workspace, so a host running the agent elsewhere refuses its next call.
+        let operator_person = hex::encode(operator);
+        let now = tilo_action_policy::Context::at_time(tilo_clock::wall());
         let targets: Vec<String> = self
             .workspaces
             .workspaces()
             .into_iter()
             .filter(|held| {
-                held.id().to_string() == workspace
+                stopping
                     || self.workspaces.policy_of(held.id())()
-                        .is_some_and(|policy| policy.agents.contains_key(&agent))
+                        .is_some_and(|policy| policy.stops(&agent, &operator_person, &now))
             })
             .map(|held| held.id().to_string())
             .collect();

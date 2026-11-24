@@ -201,7 +201,7 @@ impl Site {
             // The site's own device is in the workspace it governs, as a site's is: it hosts what
             // its people record there.
             workspaces
-                .enter(&workspace, &host)
+                .enter(&workspace, (&host, &host_key))
                 .await
                 .expect("the site's device is in its workspace");
             (server, workspaces, workspace)

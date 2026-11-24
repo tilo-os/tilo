@@ -18,7 +18,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use wasmtime::{Config, Module, ResourceLimiter, Store, Strategy as Compiler};
+use wasmtime::{Module, ResourceLimiter, Store};
 
 use tilo_wasm_host::{
     DEADLINE_EXCEEDED, Deadline, Failure, GROWTH_LIMITED, ImportPolicy, Limits, OUT_OF_FUEL,
@@ -192,6 +192,7 @@ pub fn in_call(engine: &Engine) -> InCall<'_> {
 }
 
 /// Which compiler wasmtime uses.
+#[cfg(any(feature = "compile", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Strategy {
     /// The optimizing compiler.
@@ -203,19 +204,43 @@ pub enum Strategy {
 /// The engine, fuel metering on, epochs counted for a call's deadline, and no guest stack
 /// walked for a trap, as wasmi's trap text is what every engine reports.
 ///
+/// The configuration is the one the device daemon compiles with, made in one place: a module
+/// it compiled is only accepted by an engine configured the same way.
+///
 /// # Errors
 ///
-/// The strategy is not built into this wasmtime, or the engine cannot be made on this machine.
+/// The engine cannot be made on this machine.
+#[cfg(any(feature = "compile", test))]
 pub fn engine(strategy: Strategy) -> Result<Engine, wasmtime::Error> {
-    let mut config = Config::new();
+    #[allow(
+        unused_mut,
+        reason = "a runtime-only build has no compiler to choose, so the configuration is not moved"
+    )]
+    let mut config = tilo_wasm_aot::config();
+    // Winch is a comparison engine only, so only a build that can compile can select it.
+    #[cfg(feature = "compile")]
     config.strategy(match strategy {
-        Strategy::Cranelift => Compiler::Cranelift,
-        Strategy::Winch => Compiler::Winch,
+        Strategy::Cranelift => wasmtime::Strategy::Cranelift,
+        Strategy::Winch => wasmtime::Strategy::Winch,
     });
-    config.consume_fuel(true);
-    config.epoch_interruption(true);
-    config.wasm_backtrace_max_frames(None);
+    #[cfg(not(feature = "compile"))]
+    let _ = strategy;
     let inner = wasmtime::Engine::new(&config)?;
+    let (clock, ticker) = Clock::new(&inner);
+    Ok(Engine {
+        inner,
+        clock,
+        ticker,
+    })
+}
+
+/// The engine a runtime deserializes with: the shared configuration, no compiler linked.
+///
+/// # Errors
+///
+/// The engine cannot be made on this machine.
+pub fn runtime_engine() -> Result<Engine, wasmtime::Error> {
+    let inner = wasmtime::Engine::new(&tilo_wasm_aot::config())?;
     let (clock, ticker) = Clock::new(&inner);
     Ok(Engine {
         inner,
@@ -358,6 +383,7 @@ pub fn begin<'a, T>(
 ///
 /// The bytes are not a wasm module ([`Failure::Invalid`]), or the module imports what the policy
 /// admits nothing named ([`Failure::Imports`]).
+#[cfg(any(feature = "compile", test))]
 pub fn compile(engine: &Engine, bytes: &[u8], policy: ImportPolicy) -> Result<Module, Failure> {
     let module =
         Module::new(&engine.inner, bytes).map_err(|error| Failure::Invalid(error.to_string()))?;

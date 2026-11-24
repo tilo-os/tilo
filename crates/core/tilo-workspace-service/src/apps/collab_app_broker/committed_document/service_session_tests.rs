@@ -55,11 +55,11 @@ impl BrowserServiceSessionServices for Items {
         Ok(())
     }
     fn command(
-        &self,
+        self: Arc<Self>,
         _: &BrowserServiceSessionRequestContext,
         _: BrowserServiceSessionCommand,
-    ) -> Result<BrowserServiceSessionReply, String> {
-        Err("an item's use is never answered on the dispatch".into())
+    ) -> ItemAnswering {
+        Box::pin(std::future::ready(Err("an item's use is never answered on the dispatch".into())))
     }
     fn item_use(
         &self,
@@ -100,7 +100,15 @@ fn dispatch(
     let context = context(app, live);
     match delegate_item_use(services.browser_service_sessions.as_ref(), &context, bytes) {
         Some(answer) => now(&mut answer?).expect("a stand-in answers without waiting"),
-        None => delegate_browser_service_session_command(services, &context, bytes),
+        None => {
+            let answer = delegate_browser_service_session_command(services, &context, bytes);
+            match std::pin::pin!(answer)
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            {
+                std::task::Poll::Ready(answered) => answered,
+                std::task::Poll::Pending => panic!("a stand-in answers without waiting"),
+            }
+        }
     }
 }
 /// What `answer` is now, without waiting for it: `None` while nobody answered.
@@ -126,11 +134,11 @@ impl BrowserServiceSessionServices for Service {
         context.revalidate()
     }
     fn command(
-        &self,
+        self: Arc<Self>,
         _: &BrowserServiceSessionRequestContext,
         _: BrowserServiceSessionCommand,
-    ) -> Result<BrowserServiceSessionReply, String> {
-        Err("a website session is never answered on the dispatch".into())
+    ) -> ItemAnswering {
+        Box::pin(std::future::ready(Err("a website session is never answered on the dispatch".into())))
     }
     fn answered_later(
         &self,
@@ -200,11 +208,11 @@ impl BrowserServiceSessionServices for AdminService {
         Ok(())
     }
     fn command(
-        &self,
+        self: Arc<Self>,
         _: &BrowserServiceSessionRequestContext,
         _: BrowserServiceSessionCommand,
-    ) -> Result<BrowserServiceSessionReply, String> {
-        Err("a website session is never answered on the dispatch".into())
+    ) -> ItemAnswering {
+        Box::pin(std::future::ready(Err("a website session is never answered on the dispatch".into())))
     }
     fn answered_later(
         &self,
@@ -479,4 +487,119 @@ tilo_test_env::scenario! {
             BrowserServiceSessionReply::ItemRefused { reason, .. } if reason.contains("no vault items")
         ));
     }
+}
+
+/// The desktop session's seat as the broker reaches it over the session's link: each call is
+/// written to a socket, and the session's end of it, served on the thread that asked, writes the
+/// answer back.
+struct SeatOverSocket;
+impl tilo_actions::remote::ActionProvider for SeatOverSocket {
+    fn query(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
+    > {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionCallError::UnknownAction,
+        ))
+    }
+    fn invoke(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let (answer, answered) = tilo_actions::remote::pending();
+        let invocation = request.invocation;
+        let tilo_actions::remote::InvokeArgument::Json(arguments) = request.argument else {
+            panic!("the seat is asked in JSON");
+        };
+        let (mut broker, mut session) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            let mut call = Vec::new();
+            session.read_to_end(&mut call).await.unwrap();
+            let call: serde_json::Value = serde_json::from_slice(&call).unwrap();
+            let BrowserServiceSessionCommand::ReportAccountSync { account, .. } =
+                serde_json::from_value(call["command"].clone()).unwrap()
+            else {
+                panic!("the test reports an account's sync");
+            };
+            let reply = BrowserServiceSessionReply::AccountSyncReported { account };
+            session
+                .write_all(&serde_json::to_vec(&reply).unwrap())
+                .await
+                .unwrap();
+        });
+        tokio::spawn(async move {
+            broker
+                .write_all(&serde_json::to_vec(&arguments).unwrap())
+                .await
+                .unwrap();
+            broker.shutdown().await.unwrap();
+            let mut reply = Vec::new();
+            broker.read_to_end(&mut reply).await.unwrap();
+            answer.complete(Ok(tilo_actions::remote::InvocationReceipt {
+                invocation,
+                status: tilo_actions::remote::ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput {
+                        value: Some(serde_json::from_slice(&reply).unwrap()),
+                        resources: Vec::new(),
+                    },
+                },
+            }));
+        });
+        answered
+    }
+    fn observe(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+    fn cancel(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
+    }
+}
+
+/// An app's command the seat answers over a socket the asking thread serves itself is answered:
+/// the broker awaits the seat, never holds the thread until the seat answered.
+#[tokio::test(flavor = "current_thread")]
+async fn a_seat_answer_over_the_asking_threads_socket_arrives() {
+    let providers = crate::workspaces::providers::Providers::default();
+    providers.serve_seat(Arc::new(SeatOverSocket), None);
+    let seat = crate::apps::seat::Seat::new(providers, tokio::runtime::Handle::current());
+    let services = ProcessServices {
+        browser_service_sessions: Some(Arc::new(
+            crate::apps::seat::SeatBrowserServiceSessions(seat),
+        )),
+        ..Default::default()
+    };
+    let command = BrowserServiceSessionCommand::ReportAccountSync {
+        account: "mail".into(),
+        health: "healthy".into(),
+        signed_in: false,
+        message: "Synced".into(),
+    };
+    let context = context("so.tilo.settings", Arc::new(AtomicBool::new(true)));
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        delegate_browser_service_session_command(&services, &context, &command.encode().unwrap()),
+    )
+    .await
+    .expect("the seat's answer arrives on the thread that serves its socket")
+    .unwrap();
+    assert!(
+        BrowserServiceSessionReply::decode(&reply)
+            .unwrap()
+            .matches(&command)
+    );
 }

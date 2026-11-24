@@ -51,8 +51,6 @@ use tilo_lock::RwLockRecover as _;
 pub(super) enum WorkspaceOp<'a> {
     /// The host's own business, which no workspace decides.
     Host(ServiceOperation),
-    /// Let a further device of a member in, as theirs.
-    Enter,
     /// One of the workspace's governance actions on the workspace itself
     /// ([`roles::governance`]).
     Govern(&'static str),
@@ -92,7 +90,6 @@ impl WorkspaceOp<'_> {
     fn name(self) -> &'static str {
         match self {
             Self::Host(operation) => operation.name(),
-            Self::Enter => "workspace.enter",
             Self::Govern(action) => action,
             Self::MakeAdministrator => "make-administrator",
             Self::MakeOwner => "make-owner",
@@ -268,30 +265,15 @@ impl Workspaces {
             .governance()
             .governed_policy()
             .map_err(CollaborationError::new)?;
-        match op {
-            // A further device of a member comes in as theirs, whichever server they ask;
-            // anyone else comes in by an invitation.
-            WorkspaceOp::Enter => {
-                let person = hex::encode(device.user_public_key);
-                return if of_a_member(workspace, device, &policy) {
-                    Ok(person)
-                } else {
-                    Err(CollaborationError::new(
-                        tilo_action_policy::Refusal::NotAMember(person).to_string(),
-                    ))
-                };
+        // A place is changed on a person the workspace has, whoever asks: someone it does not
+        // have is given one by `member.add`, never a place here.
+        if let WorkspaceOp::Role(target, _) = op {
+            let target = hex::encode(target);
+            if !policy.is_member(&target) {
+                return Err(CollaborationError::new(
+                    tilo_action_policy::Refusal::NotAMember(target).to_string(),
+                ));
             }
-            // A place is changed on a person the workspace has, whoever asks: someone it does
-            // not have is given one by `member.add`, never a place here.
-            WorkspaceOp::Role(target, _) => {
-                let target = hex::encode(target);
-                if !policy.is_member(&target) {
-                    return Err(CollaborationError::new(
-                        tilo_action_policy::Refusal::NotAMember(target).to_string(),
-                    ));
-                }
-            }
-            _ => {}
         }
         decide_by_governance(workspace, device, op, now, Some(host))
     }
@@ -372,7 +354,7 @@ fn decide_by_governance(
     // holds already is set, and anyone else is added with it.
     let change;
     let op = match op {
-        WorkspaceOp::Host(_) | WorkspaceOp::Enter => {
+        WorkspaceOp::Host(_) => {
             return Err(CollaborationError::new(NO_WORKSPACE));
         }
         // Who the place belongs to was checked before: one the workspace has is
@@ -424,10 +406,9 @@ fn decide_by_governance(
                 }
             }
             WorkspaceOp::Change(change) => member.policy.check(who, &authority, change, &cx, false),
-            WorkspaceOp::Host(_)
-            | WorkspaceOp::Enter
-            | WorkspaceOp::Place(..)
-            | WorkspaceOp::Role(..) => Err(tilo_action_policy::Refusal::NotAMember(who.to_owned())),
+            WorkspaceOp::Host(_) | WorkspaceOp::Place(..) | WorkspaceOp::Role(..) => {
+                Err(tilo_action_policy::Refusal::NotAMember(who.to_owned()))
+            }
         }
     };
     // Its person decides, whichever key of theirs asks: an agent's own

@@ -145,6 +145,23 @@ tilo_test_env::scenario! {
         let surface = Review::surface();
         assert!(surface.verb("reply").is_some());
         assert!(surface.verb("nothing").is_none());
+        // A person's direct edit writes content anywhere in the record, its units too; the
+        // framework declares it, not the app, and declares no migration the type registers none.
+        let direct = surface
+            .verbs
+            .iter()
+            .find(|verb| verb.id == "type")
+            .expect("a record with editable fields takes `type`");
+        assert_eq!(direct.writes, [RESOURCE_UNIT, "threads.*", "summary"]);
+        assert!(surface.verb("migrate").is_none());
+        assert_eq!(
+            surface.footprint("type", None),
+            [
+                vec![],
+                vec![PathStep::Field("threads".into()), PathStep::Item("*".into())],
+                vec![PathStep::Field("summary".into())],
+            ]
+        );
         assert!(surface.editable(&[PathStep::Field("title".into())]));
         assert!(surface.editable(&[
             PathStep::Field("threads".into()),

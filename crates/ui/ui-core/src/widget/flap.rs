@@ -116,6 +116,17 @@ impl FlapState {
         self.choose(false);
     }
 
+    /// Take `open` as the flap's state in every layout, for a view that binds it: the docked
+    /// column and the overlay drawer open or close together, wherever the window next lays out.
+    pub fn set_open(&mut self, open: bool) {
+        let source = self
+            .asked
+            .map_or(MotionSource::Action, |(_, source)| source);
+        self.asked = Some((crate::time::now(), source));
+        self.docked_choice = Some(open);
+        self.overlay_choice = Some(open);
+    }
+
     /// Set the open state with no animation, for deterministic shots.
     pub fn snap(&mut self, open: bool) {
         self.choose(open);

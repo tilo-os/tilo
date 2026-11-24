@@ -27,6 +27,17 @@ const fn is_false(value: &bool) -> bool {
 /// The record unit, as footprints and unit indexes name it.
 pub const RESOURCE_UNIT: &str = "record";
 
+/// The verb of a change that writes a record's content directly, with no finer action: typing
+/// in a cell, a list splice made from the window. The framework stamps such a change with it.
+pub const TYPE_VERB: &str = "type";
+
+/// The verb of the framework's storage migration of a record (`tilo_resource::evolution`).
+pub const MIGRATE_VERB: &str = "migrate";
+
+/// The verbs the framework writes under on every record kind, which no app's action publishes:
+/// a direct content edit ([`TYPE_VERB`]) and a storage migration ([`MIGRATE_VERB`]).
+pub const CONTENT_VERBS: [&str; 2] = [TYPE_VERB, MIGRATE_VERB];
+
 /// The key under which a record of a reading that is a resource of its own (a Wi-Fi network in
 /// the network's reading) carries its address. Its type declares it as a field of that name,
 /// typed [`FieldType::Resource`] of the record's kind, and the kind's own surface lists the

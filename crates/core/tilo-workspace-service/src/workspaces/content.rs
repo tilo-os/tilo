@@ -674,17 +674,15 @@ impl Workspaces {
     pub async fn content_reading(&self, workspace: &str, reader: [u8; 32]) -> serde_json::Value {
         let policy = self.content_policy(workspace).await.unwrap_or_default();
         // A limit raised since refuses nothing: its record stays until the content it refused is
-        // kept, and stands for no reader meanwhile. What the host keeps for the workspace
-        // together is its own person's budget, which the owners' policy does not carry.
+        // kept, and stands for no reader meanwhile, as much as the owners' policy alone can say
+        // (a member's share, their hour and the host's budget are about content together, which
+        // the host that keeps it weighs against its totals).
         let limits = tilo_action_policy::KeptLimits::of(&policy, None);
         let refusals: Vec<serde_json::Value> = self
             .refusals_for(workspace, reader)
             .await
             .iter()
-            .filter(|refusal| {
-                refusal.raise == tilo_action_policy::Raises::Host
-                    || !limits.allows(refusal.limit, refusal.bytes)
-            })
+            .filter(|refusal| limits.refuses(refusal.limit, refusal.bytes))
             .filter_map(|refusal| serde_json::to_value(refusal.read()).ok())
             .collect();
         serde_json::json!({

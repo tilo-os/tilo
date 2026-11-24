@@ -9,6 +9,7 @@ use neighbour_wire::NeighbourMsg;
 use super::{GovernedWorkspace, KEEP_FOLLOWED, WeakWorkspaces, Workspaces, peer_parts};
 use ed25519_dalek::SigningKey;
 use tilo_lock::MutexRecover as _;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 /// A member's write to a record of a governed workspace, after the governor's
@@ -754,35 +755,36 @@ impl Workspaces {
         slot: &Arc<std::sync::OnceLock<WeakWorkspaces>>,
     ) -> Arc<tilo_peer_state::direct::Admitting> {
         let slot = Arc::clone(slot);
-        Arc::new(move |remote, link| {
+        Arc::new(move |remote, certificate, link| {
             let Some(workspaces) = slot.get().and_then(WeakWorkspaces::upgrade) else {
                 return Err(tilo_server_protocol::refusal::Refusal::NotAdmitted);
             };
-            workspaces.admit_link(remote, link)
+            workspaces.admit_link(remote, certificate, link)
         })
     }
 
-    /// Whether `device` may link to `workspace` now, and what it reaches there:
-    /// the one admission rule ([`crate::workspace_access::decide`]) for a
-    /// subscribe, asked of the workspace's replica, which the link admits
-    /// into.
+    /// What the one admission rule ([`crate::workspace_access::decide`])
+    /// decides of `remote` linking to the workspace `link` serves, asked of
+    /// the workspace's replica, which the link admits into: the decision for
+    /// a subscribe, whether it holds the channels' keys, whether the device
+    /// keeps the workspace, and the device as it was decided.
     ///
-    /// It runs before the link listens, so nothing a device sends is taken
-    /// before it is admitted, and it answers the scope the link carries:
-    /// everything, or the one record a hosted browser environment reaches.
-    /// A device that keeps no workspace passes no other device's frames, and
-    /// one the workspace does not admit for its channels' keys carries none of
-    /// their commits.
-    pub(super) fn admit_link(
+    /// The device is the one the workspace's roster certifies, a hosted
+    /// browser environment's this server placed, or, for a device the
+    /// workspace does not list yet, the certificate it named itself by on
+    /// its dial (`offered`), once it verifies as that device's.
+    fn link_decision(
         &self,
         remote: [u8; 32],
+        offered: Option<&DeviceCert>,
         link: &tilo_peer_state::direct::DirectSync,
-    ) -> Result<tilo_peer_state::direct::LinkScope, tilo_server_protocol::refusal::Refusal> {
+    ) -> Result<LinkDecision, tilo_server_protocol::refusal::Refusal> {
         use tilo_server_protocol::refusal::Refusal;
 
         let state = link.replica();
         let workspace_id = state.id().map_err(Refusal::Other)?;
         let host = &self.inner.host;
+        let now = tilo_clock::unix_now_ns();
         let (certificate, keeps_workspace) = state.read(|peer| {
             // The device a workspace names among its holders is no member and is
             // admitted by the one row its naming writes: the address it signed,
@@ -802,9 +804,18 @@ impl Workspaces {
         // A hosted browser environment's device is the server's own: the
         // register holds the certificate it was placed with, which the
         // workspace's roster need not.
-        let certificate = certificate.or_else(|| host.environments.certificate(&remote));
-        // A device neither holds is no member's and reaches nothing: its
-        // refusal is the link's, not a frame's.
+        let certificate = certificate
+            .or_else(|| host.environments.certificate(&remote))
+            .or_else(|| {
+                offered
+                    .filter(|offered| {
+                        offered.device_public_key == remote
+                            && tilo_user_identity::verify_device_cert_at(offered, now).is_ok()
+                    })
+                    .cloned()
+            });
+        // A device neither holds nor proves is no member's and reaches
+        // nothing: its refusal is the link's, not a frame's.
         let Some(certificate) = certificate else {
             return Err(Refusal::NotAMember(
                 "this workspace does not hold the device's certificate".into(),
@@ -823,7 +834,6 @@ impl Workspaces {
             agents: &host.agents,
             environments: &host.environments,
         };
-        let now = tilo_clock::unix_now_ns();
         let at = tilo_clock::wall();
         let (decision, key_access) = state.read(|facts| {
             let decide = |op| {
@@ -844,32 +854,53 @@ impl Workspaces {
                 decide(crate::workspace_access::WorkspaceOperation::KeyAccess).admitted(),
             )
         });
+        Ok(LinkDecision {
+            workspace_id,
+            decision,
+            key_access,
+            keeps_workspace,
+            peer,
+        })
+    }
+
+    /// Whether `device` may link to `workspace` now, and what it reaches there
+    /// ([`Self::link_decision`]).
+    ///
+    /// It runs before the link listens, so nothing a device sends is taken
+    /// before it is admitted, and it answers the scope the link carries:
+    /// everything, or the one record a hosted browser environment reaches.
+    /// A device that keeps no workspace passes no other device's frames, and
+    /// one the workspace does not admit for its channels' keys carries none of
+    /// their commits. A device of someone the workspace has in it that its
+    /// member list does not list yet is admitted to sign its own row there,
+    /// and to nothing else ([`tilo_peer_state::direct::LinkScope::lists_itself`]): no host writes a device
+    /// into the list in its place.
+    pub(super) fn admit_link(
+        &self,
+        remote: [u8; 32],
+        offered: Option<&DeviceCert>,
+        link: &tilo_peer_state::direct::DirectSync,
+    ) -> Result<tilo_peer_state::direct::LinkScope, tilo_server_protocol::refusal::Refusal> {
+        let LinkDecision {
+            workspace_id,
+            decision,
+            key_access,
+            keeps_workspace,
+            peer,
+        } = self.link_decision(remote, offered, link)?;
+        let host = &self.inner.host;
         // A hosted browser environment's device reaches its one record and
         // nothing else here, whatever its person's part in the workspace.
         let reads = crate::environment::environment_of(&host.environments, &remote)
             .and_then(crate::environment::Environment::placed)
             .map(|scope| scope.channel);
         match decision {
-            crate::workspace_access::Decision::Admit => {
-                // A device of a member's whose part here comes from its
-                // person's is written into the host's own membership list when
-                // that list has not caught up with it: its first link enrols
-                // it. A host keeping the workspace is listed another way. An
-                // environment's device is listed nowhere: this host's register
-                // admits it, confined to its one record.
-                if reads.is_none() && !keeps_workspace {
-                    self.keep_device_in_membership(peer.cert.clone(), workspace_id, false);
-                }
-            }
-            // One of a member's devices the workspace's governance has not
-            // listed yet. It is enrolled, and the link it dials next is
-            // admitted from what its governance then holds: a device admitted
-            // on a decision re-made as it is kept, as a session's subscribe is.
-            crate::workspace_access::Decision::AdmitAndEnrol => {
-                self.keep_device_in_membership(peer.cert, workspace_id, true);
-                return Err(Refusal::NotAMember(
-                    "this workspace is admitting the device; link again".into(),
-                ));
+            crate::workspace_access::Decision::Admit => {}
+            crate::workspace_access::Decision::Deny(
+                crate::workspace_access::DenyReason::Unlisted,
+            ) => {
+                self.hold_for_own_row(workspace_id, remote, link);
+                return Ok(tilo_peer_state::direct::LinkScope::listing_itself());
             }
             crate::workspace_access::Decision::Deny(reason) => {
                 // A device the person's root retired is told with the entry that retires it, as a
@@ -899,51 +930,68 @@ impl Workspaces {
             reads,
             own_frames_only: !keeps_workspace,
             key_access,
+            lists_itself: false,
         })
     }
 
-    /// Enrol `cert`'s device in `workspace`, one of a member's: the device's
-    /// part there follows its person's, so the host's membership list and the
-    /// workspace's governance record it ([`crate::workspace_io::enrol`]), off
-    /// the link's admission so the dial is answered at once. `always` writes
-    /// it whether or not the host's list has it already, for a decision that
-    /// admitted the device on the strength of its being enrolled.
-    fn keep_device_in_membership(
+    /// Hold `remote`'s link to `workspace_id` as one its device signs its own
+    /// row on, and watch the workspace's replica until that row is in: then
+    /// what admission reads changed, and [`Self::reenforce_links`] ends the
+    /// link with [`Refusal::Listed`](tilo_server_protocol::refusal::Refusal::Listed),
+    /// so the device dials again as the member device it now is.
+    fn hold_for_own_row(
         &self,
-        cert: tilo_user_identity::DeviceCert,
-        workspace_id: tilo_server_protocol::WorkspaceId,
-        always: bool,
+        workspace_id: WorkspaceId,
+        remote: [u8; 32],
+        link: &tilo_peer_state::direct::DirectSync,
     ) {
-        let workspaces = self.clone();
+        self.inner
+            .link_remotes
+            .lock_recover()
+            .entry(workspace_id)
+            .or_default()
+            .insert(remote);
+        if !self
+            .inner
+            .listing_themselves
+            .lock_recover()
+            .insert((workspace_id, remote))
+        {
+            return;
+        }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            tracing::warn!(
-                device = %hex::encode(cert.device_public_key),
-                "a member's device cannot be enrolled outside a runtime"
-            );
             return;
         };
+        let workspaces = self.downgrade();
+        let link = link.clone();
         runtime.spawn(async move {
-            let state = workspaces
-                .inner
-                .host
-                .workspaces
-                .lock()
-                .await
-                .get(&workspace_id)
-                .cloned();
-            let Some(state) = state else {
-                return;
-            };
-            let listed = {
-                let held = state.lock().await;
-                held.members
-                    .member_devices
-                    .contains(&cert.device_public_key)
-            };
-            if !always && listed {
-                return;
+            let mut changes = link.changes();
+            loop {
+                let Some(held) = workspaces.upgrade() else {
+                    return;
+                };
+                if !held
+                    .inner
+                    .listing_themselves
+                    .lock_recover()
+                    .contains(&(workspace_id, remote))
+                {
+                    return;
+                }
+                let listed = held
+                    .link_decision(remote, None, &link)
+                    .is_ok_and(|decided| {
+                        decided.decision == crate::workspace_access::Decision::Admit
+                    });
+                drop(held);
+                if listed {
+                    crate::authority_epoch::bump();
+                    return;
+                }
+                if changes.changed().await.is_err() {
+                    return;
+                }
             }
-            crate::workspace_io::enrol(&state, &cert).await;
         });
     }
 
@@ -952,7 +1000,8 @@ impl Workspaces {
     /// the workspace no longer admits has its own links ended, told why, while
     /// every other device's links keep running and are sent what it writes. A
     /// device whose access is back has the links that were ended for it opened
-    /// again.
+    /// again, and one that signed its own row on a link that carried only that
+    /// has that link ended, told it is listed now, so it dials again.
     pub(super) fn watch_link_access(&self) {
         let workspaces = self.downgrade();
         tokio::spawn(async move {
@@ -968,7 +1017,7 @@ impl Workspaces {
 
     /// [`Self::watch_link_access`]'s one pass.
     fn reenforce_links(&self) {
-        let served: Vec<tilo_server_protocol::WorkspaceId> = self
+        let served: Vec<WorkspaceId> = self
             .inner
             .link_remotes
             .lock_recover()
@@ -992,6 +1041,15 @@ impl Workspaces {
             // refuses is recorded again so a later widening can open it.
             self.inner.link_remotes.lock_recover().remove(&workspace_id);
             for remote in remotes {
+                if self
+                    .inner
+                    .listing_themselves
+                    .lock_recover()
+                    .contains(&(workspace_id, remote))
+                {
+                    self.reenforce_listing_itself(workspace_id, remote, &link);
+                    continue;
+                }
                 let certificate = link.replica().read(|peer| {
                     peer.certificates()
                         .into_iter()
@@ -1014,7 +1072,7 @@ impl Workspaces {
                         "the device's certificate expired".into(),
                     ))
                 } else {
-                    self.admit_link(remote, &link).err()
+                    self.admit_link(remote, None, &link).err()
                 };
                 match refusal {
                     None => {
@@ -1045,6 +1103,52 @@ impl Workspaces {
         // A link this pass ended or opened again moves who is present.
         super::presence_changed();
     }
+
+    /// [`Self::reenforce_links`] for a link its device signs its own row on:
+    /// once the row is in, the link ends, told it is listed now, and the
+    /// device's next dial is admitted as a member device's; until then it
+    /// stays as it is.
+    fn reenforce_listing_itself(
+        &self,
+        workspace_id: WorkspaceId,
+        remote: [u8; 32],
+        link: &tilo_peer_state::direct::DirectSync,
+    ) {
+        let listed = self
+            .link_decision(remote, None, link)
+            .is_ok_and(|decided| decided.decision == crate::workspace_access::Decision::Admit);
+        if !listed {
+            self.inner
+                .link_remotes
+                .lock_recover()
+                .entry(workspace_id)
+                .or_default()
+                .insert(remote);
+            return;
+        }
+        self.inner
+            .listing_themselves
+            .lock_recover()
+            .remove(&(workspace_id, remote));
+        tracing::info!(
+            workspace = %workspace_id,
+            remote = %hex::encode(remote),
+            "a device signed its own row onto the member list; its link ends so it dials again"
+        );
+        link.end_link(remote, tilo_server_protocol::refusal::Refusal::Listed);
+        // Ended for the link that ran, not for the device: its next dial is
+        // a member device's.
+        link.reopen_link(remote);
+    }
+}
+
+/// What [`Workspaces::link_decision`] decided of a link's device.
+struct LinkDecision {
+    workspace_id: WorkspaceId,
+    decision: crate::workspace_access::Decision,
+    key_access: bool,
+    keeps_workspace: bool,
+    peer: crate::auth::AuthenticatedPeer,
 }
 
 impl Workspaces {

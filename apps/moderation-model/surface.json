@@ -306,6 +306,11 @@
             }
           ],
           "field": "moderation"
+        },
+        {
+          "id": "migrate",
+          "kind": "undoable",
+          "params": []
         }
       ],
       "fields": [

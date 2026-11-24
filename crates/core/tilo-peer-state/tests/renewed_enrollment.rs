@@ -100,7 +100,7 @@ impl Admitted {
         let workspaces = server.workspaces().unwrap();
         let workspace = workspaces.create("Design review").await.unwrap();
         workspaces
-            .enter(&workspace.workspace, &laptop)
+            .enter(&workspace.workspace, (&laptop, &laptop_key))
             .await
             .unwrap();
         let invitation = workspaces

@@ -1,6 +1,10 @@
-//! A holder of a workspace that is no member: what it may write there.
+//! A holder of a workspace that is no member: it carries what members and
+//! joining devices signed, byte for byte, and writes nothing of its own.
 use super::*;
-use tilo_user_identity::prepare_minted_grant;
+use crate::join::{
+    InviteGrant, Role, decode_and_verify_invitation, issue_invitation, verify_connection_redemption,
+};
+use std::collections::BTreeSet;
 
 /// A device of `root_seed`'s person, `device_seed`'s key, certified by that
 /// person's root.
@@ -21,29 +25,41 @@ fn device_of(root_seed: u8, device_seed: u8, label: &str) -> (SigningKey, Device
     (key, cert)
 }
 
-/// A holder of the workspace that is no member, another person's server
-/// keeping it, writes the redemption of an invitation it answers, and every
-/// receiver admits whom it redeemed: only while the workspace names it among
-/// its holders, and nothing but redemptions.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: its setup and assertions stay together"
-)]
-fn a_holder_that_is_no_member_writes_redemptions_and_nothing_else() {
-    use crate::join::{
-        InviteGrant, JoinChallenge, Role, decode_and_verify_invitation, issue_invitation,
-        sign_join_proof, verify_join_proof,
-    };
+/// `peer`, the owner's copy, with `holder` named among the workspace's
+/// holders by its own signed address: another person's server keeping it.
+fn holding(peer: &mut StatePeer, authority: &SigningKey, holder: (&SigningKey, &DeviceCert)) {
+    let hint = tilo_workspace_join::sign_transport_hint(
+        "iroh",
+        "an address",
+        holder.1.clone(),
+        [3; 32],
+        holder.0,
+    )
+    .unwrap();
+    assert!(
+        peer.governance_mut()
+            .author_keeping_device(&hint, authority, tilo_clock::wall())
+            .unwrap()
+    );
+}
 
-    let (mut peer, authority_key, _, bc, now) = seeded();
+/// The workspace's governance as a join answer carries it.
+fn governance_of(peer: &StatePeer) -> Vec<Vec<u8>> {
+    vec![postcard::to_stdvec(&peer.workspace_message()).unwrap()]
+}
+
+/// An invitation the owner (`authority`) issued for `guest`, redeemed by its
+/// device under request `[96; 32]`.
+fn invited(
+    peer: &StatePeer,
+    authority: &SigningKey,
+    guest: &DeviceCert,
+    now: SystemTime,
+) -> crate::join::VerifiedRedemption {
     let now_ns = ns_since_epoch(now);
-    let workspace = peer.workspace_id().to_owned();
-    let (holder_key, holder) = device_of(91, 92, "Holder");
-    let (guest_key, guest) = device_of(93, 94, "Guest");
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: WorkspaceId::parse(&workspace).unwrap(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: peer.owner_certificates()[0].clone(),
             role: Role::Editor,
             nonce: [95; 16],
@@ -52,182 +68,178 @@ fn a_holder_that_is_no_member_writes_redemptions_and_nothing_else() {
             expires_at_ns: now_ns.saturating_add(10_000_000_000),
             transport: vec![],
         },
-        &authority_key,
+        authority,
     )
     .unwrap();
-    let join = decode_and_verify_invitation(
+    decode_and_verify_invitation(
         &signed,
         Some(guest.user_public_key),
         &RevocationList::new(),
         now_ns,
     )
     .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        &guest,
-        [96; 32],
-        [97; 32],
-        now_ns.saturating_add(1_000_000_000),
-        now_ns,
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), &guest_key).unwrap();
-    let redemption =
-        verify_join_proof(&proof, &challenge, &guest, &RevocationList::new(), now_ns).unwrap();
-    // Not named among the holders, the server writes nothing, not even locally.
-    let mut unnamed = peer.clone();
-    assert!(
-        unnamed
-            .governance_mut()
-            .admit_invited_member(&redemption, &holder_key, now)
-            .is_err()
-    );
-
-    let hint = tilo_workspace_join::sign_transport_hint(
-        "iroh",
-        "an address",
-        holder.clone(),
-        [3; 32],
-        &holder_key,
-    )
-    .unwrap();
-    assert!(
-        peer.governance_mut()
-            .author_keeping_device(&hint, &authority_key, now)
-            .unwrap()
-    );
-    let redeemed = written(&peer, &|copy| {
-        assert!(
-            copy.governance_mut()
-                .admit_invited_member(&redemption, &holder_key, now)
-                .unwrap()
-        );
-    });
-    // A receiver that does not hold the server named refuses it.
-    let mut before_named = unnamed.clone();
-    assert!(
-        from_holder(
-            &mut before_named,
-            &workspace,
-            holder.device_public_key,
-            redeemed.clone(),
-            now,
-        )
-        .is_err()
-    );
-
-    // Anything else the server writes is refused, and lands nowhere.
-    let renamed = written(&peer, &|copy| {
-        let mut doc = copy.admitted_workspace().unwrap().clone();
-        let heads = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(holder.device_public_key.to_vec()));
-        doc.put(ROOT, "name", "Taken").unwrap();
-        doc.commit_edit("rename", "name", &bc.user_public_key);
-        let changes = doc
-            .get_changes(&heads)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect();
-        copy.receive_from(
-            TransportOrigin::ServerDelta(authority_key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp {
-                changes,
-                workspace: workspace.clone(),
-            },
-            now,
-        )
-        .unwrap();
-    });
-    let mut receiver = peer.clone();
-    assert!(
-        from_holder(
-            &mut receiver,
-            &workspace,
-            holder.device_public_key,
-            renamed,
-            now,
-        )
-        .is_err()
-    );
-    assert_ne!(
-        receiver.governance().workspace_name().as_deref(),
-        Some("Taken")
-    );
-
-    // The redemption is admitted by every receiver alike.
-    from_holder(
-        &mut receiver,
-        &workspace,
-        holder.device_public_key,
-        redeemed,
-        now,
-    )
-    .unwrap();
-    assert_eq!(
-        receiver.role(&guest.device_public_key, now).unwrap(),
-        collab_types::Role::Editor
-    );
-    assert!(
-        receiver.role(&holder.device_public_key, now).is_err(),
-        "the server is no member for having admitted someone"
-    );
+    verify_connection_redemption(&signed, guest, [96; 32], &RevocationList::new(), now_ns).unwrap()
 }
 
-/// What the server writes on its own copy, as changes on `held`'s.
-fn written(held: &StatePeer, write: &dyn Fn(&mut StatePeer)) -> Vec<Vec<u8>> {
-    written_onto(&mut held.clone(), write)
+/// What `held`'s copy took in since `heads`, as the changes it would carry on.
+fn carried_since(held: &StatePeer, heads: &[automerge::ChangeHash]) -> BTreeSet<Vec<u8>> {
+    held.workspace_changes_since(heads).into_iter().collect()
 }
 
-/// [`written`] on `copy` itself: the next write on it builds on this one.
-fn written_onto(copy: &mut StatePeer, write: &dyn Fn(&mut StatePeer)) -> Vec<Vec<u8>> {
-    let heads = copy.admitted_workspace().unwrap().clone().get_heads();
-    write(copy);
-    copy.admitted_workspace()
-        .unwrap()
-        .clone()
-        .get_changes(&heads)
-        .into_iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect()
-}
-
-/// `changes` reaching `receiver` from the holder `holder` of `workspace`.
-fn from_holder(
+/// `changes` reaching `receiver` from `author`, as a holder relays a frame:
+/// under the device that wrote it.
+fn from_author(
     receiver: &mut StatePeer,
-    workspace: &str,
-    holder: [u8; 32],
+    author: [u8; 32],
     changes: Vec<Vec<u8>>,
     now: SystemTime,
 ) -> Result<(), String> {
+    let workspace = receiver.workspace_id().to_owned();
     receiver
         .receive_from(
-            TransportOrigin::ServerDelta(holder),
-            NeighbourMsg::SyncResp {
-                changes,
-                workspace: workspace.to_owned(),
-            },
+            TransportOrigin::ServerDelta(author),
+            NeighbourMsg::SyncResp { changes, workspace },
             now,
         )
         .map(drop)
         .map_err(|error| error.to_string())
 }
 
-/// A holder that is no member admits a member's further device and a key
-/// minted for the workspace, on the device's own certificate, and no device
-/// of a person the workspace has no member of: every receiver admits them
-/// alike, as it admits the holder's redemptions.
+/// The authors of the membership operations `peer` holds that `before` did not.
+fn new_authors(before: &StatePeer, peer: &StatePeer) -> Vec<[u8; 32]> {
+    let held = crate::members::ops(before.admitted_workspace().unwrap());
+    crate::members::ops(peer.admitted_workspace().unwrap())
+        .into_iter()
+        .filter(|(id, _)| !held.contains_key(id))
+        .map(|(_, op)| op.author.device_public_key)
+        .collect()
+}
+
+/// A joining device signs its own admission, the invitation its authority. A
+/// server of another person keeping the workspace takes it in as that device's
+/// and carries it on byte for byte, and every member's device admits whom it
+/// redeemed under the device that signed it: the server wrote no operation and
+/// no row, and is no member for having carried it.
 #[test]
-fn a_holder_that_is_no_member_admits_a_members_devices() {
+fn a_joining_device_signs_its_own_admission_and_a_holder_carries_it() {
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let (holder_key, holder) = device_of(91, 92, "Holder");
+    let (guest_key, guest) = device_of(93, 94, "Guest");
+    holding(&mut peer, &authority_key, (&holder_key, &holder));
+    let redemption = invited(&peer, &authority_key, &guest, now);
+    let admission = crate::own_admission::own_admission(
+        peer.workspace_id(),
+        &governance_of(&peer),
+        &redemption,
+        Some("Guest"),
+        &guest_key,
+        now,
+    )
+    .unwrap();
+    // A device signs only its own admission.
+    assert!(
+        crate::own_admission::own_admission(
+            peer.workspace_id(),
+            &governance_of(&peer),
+            &redemption,
+            None,
+            &holder_key,
+            now,
+        )
+        .is_err()
+    );
+
+    let heads = peer.workspace_heads().unwrap();
+    let mut held = peer.clone();
+    held.admit_own_redemption(&redemption, admission.clone(), now)
+        .unwrap();
+    assert_eq!(
+        carried_since(&held, &heads),
+        admission.iter().cloned().collect(),
+        "the holder carries the device's admission byte for byte"
+    );
+    assert_eq!(new_authors(&peer, &held), vec![guest.device_public_key]);
+    assert!(held.role(&holder.device_public_key, now).is_err());
+
+    let mut member = peer.clone();
+    from_author(
+        &mut member,
+        guest.device_public_key,
+        carried_since(&held, &heads).into_iter().collect(),
+        now,
+    )
+    .unwrap();
+    assert_eq!(
+        member.role(&guest.device_public_key, now).unwrap(),
+        collab_types::Role::Editor
+    );
+    assert_eq!(
+        new_authors(&peer, &member),
+        vec![guest.device_public_key],
+        "the one operation admitting the guest is the guest's own"
+    );
+    assert!(
+        member.role(&holder.device_public_key, now).is_err(),
+        "the holder is no member for having carried an admission"
+    );
+}
+
+/// A member's device admits someone while a server of another person keeps
+/// the workspace: the server takes the member's change in under the member's
+/// device and carries it on unchanged, so every other device reads the
+/// member's operation, written by that device.
+#[test]
+fn a_members_admission_reaches_everyone_through_a_holder_unchanged() {
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let (holder_key, holder) = device_of(91, 92, "Holder");
+    holding(&mut peer, &authority_key, (&holder_key, &holder));
+    let (_, guest) = device_of(93, 94, "Guest");
+    let redemption = invited(&peer, &authority_key, &guest, now);
+    let heads = peer.workspace_heads().unwrap();
+    let mut phone = peer.clone();
+    assert!(
+        phone
+            .governance_mut()
+            .admit_invited_member(&redemption, &authority_key, now)
+            .unwrap()
+    );
+    let signed = phone.workspace_changes_since(&heads);
+    let phone_key = authority_key.verifying_key().to_bytes();
+
+    let mut held = peer.clone();
+    from_author(&mut held, phone_key, signed.clone(), now).unwrap();
+    assert_eq!(
+        carried_since(&held, &heads),
+        signed.iter().cloned().collect()
+    );
+    let mut member = peer.clone();
+    from_author(
+        &mut member,
+        phone_key,
+        carried_since(&held, &heads).into_iter().collect(),
+        now,
+    )
+    .unwrap();
+    assert!(member.role(&guest.device_public_key, now).is_ok());
+    assert_eq!(new_authors(&peer, &member), vec![phone_key]);
+    assert!(held.role(&holder.device_public_key, now).is_err());
+}
+
+/// A member's further device and a key minted for the workspace each sign
+/// their own row, admissible because their certificates chain to a root the
+/// list names; a server of another person carries the row on, and every
+/// receiver admits the device under its own operation. A device of a person
+/// the workspace has no member of signs nothing in.
+#[test]
+fn a_further_device_signs_its_own_row_through_a_holder() {
     let (mut peer, authority_key, _, _, now) = seeded();
     let now_ns = ns_since_epoch(now);
-    let workspace = peer.workspace_id().to_owned();
     let (holder_key, holder) = device_of(91, 92, "Holder");
+    holding(&mut peer, &authority_key, (&holder_key, &holder));
     let (_, member, _) = add_member_with(&mut peer, &authority_key, now, 5, 6);
+    let (further_key, further) = device_of(5, 7, "Second desktop");
+    assert_ne!(member.device_public_key, further.device_public_key);
     let member_root = SigningKey::from_bytes(&[5; 32]);
-    let (_, further) = device_of(5, 7, "Second desktop");
-    // The member's key for this workspace: their person's all-workspaces key
-    // minted it, as a backend key does, and the workspace's governance takes
-    // it as the member's device ([`tilo_user_identity::prepare_minted_grant`]).
     let backend_key = SigningKey::from_bytes(&[8; 32]);
     let mut backend = DeviceCert {
         user_public_key: member_root.verifying_key().to_bytes(),
@@ -241,169 +253,174 @@ fn a_holder_that_is_no_member_admits_a_members_devices() {
     };
     sign_device_cert(&mut backend, &member_root).unwrap();
     let api_key_key = SigningKey::from_bytes(&[9; 32]);
-    let mut api_key = prepare_minted_grant(
+    let mut api_key = tilo_user_identity::prepare_minted_grant(
         &backend,
         api_key_key.verifying_key().to_bytes(),
-        *uuid::Uuid::parse_str(&workspace).unwrap().as_bytes(),
+        *uuid::Uuid::parse_str(peer.workspace_id())
+            .unwrap()
+            .as_bytes(),
         "API key",
         now_ns,
         now_ns.saturating_add(3_600_000_000_000),
     );
     sign_device_cert(&mut api_key, &backend_key).unwrap();
 
-    let hint = tilo_workspace_join::sign_transport_hint(
-        "iroh",
-        "an address",
-        holder.clone(),
-        [3; 32],
-        &holder_key,
-    )
-    .unwrap();
-    assert!(
-        peer.governance_mut()
-            .author_keeping_device(&hint, &authority_key, now)
-            .unwrap()
-    );
-    assert_ne!(member.device_public_key, further.device_public_key);
-
-    // The holder writes both in on its own copy, as the device that keeps the
-    // workspace's keys.
-    let mut holder_copy = peer.clone();
-    let device_admitted = written_onto(&mut holder_copy, &|copy| {
-        assert!(
-            copy.governance_mut()
-                .admit_member_device(&further, &holder_key, now)
-                .unwrap()
-        );
-    });
-    let key_admitted = written_onto(&mut holder_copy, &|copy| {
-        assert!(
-            copy.governance_mut()
-                .admit_member_device(&api_key, &holder_key, now)
-                .unwrap()
-        );
-    });
     let mut receiver = peer.clone();
-    from_holder(
-        &mut receiver,
-        &workspace,
-        holder.device_public_key,
-        device_admitted,
-        now,
-    )
-    .unwrap();
-    from_holder(
-        &mut receiver,
-        &workspace,
-        holder.device_public_key,
-        key_admitted,
-        now,
-    )
-    .unwrap();
+    for (key, cert) in [(&further_key, &further), (&api_key_key, &api_key)] {
+        let row = crate::own_admission::further_device_row(
+            peer.workspace_id(),
+            &governance_of(&receiver),
+            cert,
+            key,
+            now,
+        )
+        .unwrap();
+        assert!(!row.is_empty());
+        let mut held = receiver.clone();
+        assert!(held.admit_own(cert, row.clone(), now).unwrap());
+        assert!(held.role(&holder.device_public_key, now).is_err());
+        let before = receiver.clone();
+        from_author(&mut receiver, cert.device_public_key, row, now).unwrap();
+        assert!(receiver.permissions(cert.device_public_key, now).is_ok());
+        assert_eq!(
+            new_authors(&before, &receiver),
+            vec![cert.device_public_key],
+            "the device's row is its own operation"
+        );
+    }
+    // A device the workspace lists already writes nothing again.
     assert!(
-        receiver.permissions(further.device_public_key, now).is_ok(),
-        "every receiver admits the member's further device"
-    );
-    assert!(
-        receiver.permissions(api_key.device_public_key, now).is_ok(),
-        "and the member's key for the workspace"
-    );
-    assert!(
-        receiver.role(&holder.device_public_key, now).is_err(),
-        "the holder is no member for having admitted them"
+        crate::own_admission::further_device_row(
+            peer.workspace_id(),
+            &governance_of(&receiver),
+            &further,
+            &further_key,
+            now,
+        )
+        .unwrap()
+        .is_empty()
     );
 
-    // A device of a person the workspace has no member of is nobody's.
-    let (_, stranger) = device_of(93, 94, "Stranger");
-    let refused = peer
-        .governance_mut()
-        .admit_member_device(&stranger, &holder_key, now)
-        .unwrap_err();
+    let (stranger_key, stranger) = device_of(93, 94, "Stranger");
+    let refused = crate::own_admission::further_device_row(
+        peer.workspace_id(),
+        &governance_of(&peer),
+        &stranger,
+        &stranger_key,
+        now,
+    )
+    .unwrap_err();
     assert!(refused.contains("not a member"), "{refused}");
 }
 
-/// A holder that is no member says where its own copy stands, and every
-/// receiver takes the row in; it writes no other holder's row.
+/// A holder that is no member writes nothing of its own: not the row saying
+/// where its copy stands, not a redemption it signed, not a renamed
+/// workspace, not someone else's admission passed off as its own batch, not
+/// an operation it backdated, and none of its record writes lands.
 #[test]
-fn a_holder_that_is_no_member_says_where_its_own_copy_stands() {
-    let (mut peer, authority_key, _, _, now) = seeded();
+fn a_holder_that_is_no_member_writes_nothing_of_its_own() {
+    let (mut peer, authority_key, _, bc, now) = seeded();
     let workspace = peer.workspace_id().to_owned();
     let (holder_key, holder) = device_of(91, 92, "Holder");
-    let hint = tilo_workspace_join::sign_transport_hint(
-        "iroh",
-        "an address",
-        holder.clone(),
-        [3; 32],
-        &holder_key,
-    )
-    .unwrap();
-    let unnamed = peer.clone();
-    assert!(
-        peer.governance_mut()
-            .author_keeping_device(&hint, &authority_key, now)
-            .unwrap()
-    );
+    let (guest_key, guest) = device_of(93, 94, "Guest");
+    holding(&mut peer, &authority_key, (&holder_key, &holder));
+    let heads = peer.workspace_heads().unwrap();
+
+    // Its own copy's row.
     let held = crate::HeldCopy {
         catching_up_from: [[7; 32]].into_iter().collect(),
         ..Default::default()
     };
-    let heads = peer.admitted_workspace().unwrap().clone().get_heads();
-    let changes_since = |doc: &automerge::AutoCommit| -> Vec<Vec<u8>> {
-        doc.clone()
-            .get_changes(&heads)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect()
-    };
-    let mut copy = peer.clone();
     assert!(
-        copy.workspace_mut()
-            .report_copy(&holder, &held, now)
-            .unwrap()
-    );
-    let own = changes_since(copy.admitted_workspace().unwrap());
-    let from_holder = |receiver: &mut StatePeer, changes: Vec<Vec<u8>>| {
-        receiver.receive_from(
-            TransportOrigin::ServerDelta(holder.device_public_key),
-            NeighbourMsg::SyncResp {
-                changes,
-                workspace: workspace.clone(),
-            },
-            now,
-        )
-    };
-    let mut before_named = unnamed;
-    assert!(
-        before_named
+        peer.clone()
             .workspace_mut()
             .report_copy(&holder, &held, now)
             .is_err(),
-        "a device the workspace does not name writes no row"
+        "a holder that is no member says nothing of its copy in the workspace"
     );
-    assert!(from_holder(&mut before_named, own.clone()).is_err());
-
-    let mut receiver = peer.clone();
-    from_holder(&mut receiver, own).unwrap();
-    assert!(
-        receiver
-            .workspace()
-            .copies()
-            .holders
-            .iter()
-            .any(|copy| copy.device == holder.device_public_key),
-        "every receiver reads where the holder's copy stands"
-    );
-
-    // Another device's row, written under the holder's key, is refused.
-    let mut forged = peer.clone();
-    let mut doc = forged.admitted_workspace().unwrap().clone();
+    let mut doc = peer.admitted_workspace().unwrap().clone();
     doc.set_actor(automerge::ActorId::from(holder.device_public_key.to_vec()));
-    let rows = doc
-        .put_object(ROOT, crate::HELD_COPIES_KEY, automerge::ObjType::Map)
-        .unwrap();
-    doc.put(&rows, hex::encode([7_u8; 32]).as_str(), "{}")
+    let rows = match doc.get(ROOT, crate::HELD_COPIES_KEY).unwrap() {
+        Some((_, rows)) => rows,
+        None => doc
+            .put_object(ROOT, crate::HELD_COPIES_KEY, automerge::ObjType::Map)
+            .unwrap(),
+    };
+    doc.put(&rows, hex::encode(holder.device_public_key).as_str(), "{}")
         .unwrap();
     doc.commit();
-    let other = changes_since(&doc);
-    assert!(from_holder(&mut forged, other).is_err());
+    let copy_row = doc
+        .get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    assert!(from_author(&mut peer.clone(), holder.device_public_key, copy_row, now).is_err());
+
+    // A redemption it signs.
+    let redemption = invited(&peer, &authority_key, &guest, now);
+    assert!(
+        peer.clone()
+            .governance_mut()
+            .admit_invited_member(&redemption, &holder_key, now)
+            .is_err(),
+        "a holder that is no member signs nobody in"
+    );
+
+    // The guest's own admission, sent as the holder's own batch.
+    let admission = crate::own_admission::own_admission(
+        &workspace,
+        &governance_of(&peer),
+        &redemption,
+        None,
+        &guest_key,
+        now,
+    )
+    .unwrap();
+    let mut receiver = peer.clone();
+    assert!(
+        from_author(&mut receiver, holder.device_public_key, admission, now).is_err(),
+        "operations another device signed are no holder's own batch"
+    );
+    assert!(receiver.role(&guest.device_public_key, now).is_err());
+
+    // An operation it signs itself, backdated to before anything it could
+    // claim: its person held no role at any point.
+    let mut doc = peer.admitted_workspace().unwrap().clone();
+    doc.set_actor(automerge::ActorId::from(holder.device_public_key.to_vec()));
+    let op = crate::members::SignedMembershipOp::signed(
+        &holder,
+        &holder_key,
+        crate::members::heads_of(&doc, &workspace),
+        1,
+        crate::members::MembershipOpCommand::Admit {
+            invite: redemption.join().invite_id(),
+            person: guest.user_public_key,
+        },
+    )
+    .unwrap();
+    crate::members::put_op(&mut doc, &op).unwrap();
+    doc.commit();
+    let backdated = doc
+        .get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    assert!(from_author(&mut receiver, holder.device_public_key, backdated, now).is_err());
+
+    // A rename.
+    let mut doc = peer.admitted_workspace().unwrap().clone();
+    doc.set_actor(automerge::ActorId::from(holder.device_public_key.to_vec()));
+    doc.put(ROOT, "name", "Taken").unwrap();
+    doc.commit_edit("rename", "name", &bc.user_public_key);
+    let renamed = doc
+        .get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    assert!(from_author(&mut receiver, holder.device_public_key, renamed, now).is_err());
+    assert_ne!(
+        receiver.governance().workspace_name().as_deref(),
+        Some("Taken")
+    );
+    assert_eq!(receiver.workspace_heads().unwrap(), heads);
 }

@@ -546,6 +546,8 @@ imports! {
     ActChoose = "act_choose" ([H, H] -> [H]);
     ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);
+    // `blur()`: the field the keyboard is in ends its edit, as closing its editor does.
+    ActBlur = "act_blur" ([] -> [H]);
 
     // A PDF, read by the device's engine: its pages, contents, a page's text and links, its
     // forms, the markup the file carries, one page as a picture, what the file holds as pages,

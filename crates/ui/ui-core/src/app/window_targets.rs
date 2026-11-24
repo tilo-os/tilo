@@ -216,6 +216,46 @@ impl App {
         )
     }
 
+    /// Tell the shell what assistive technology reads of this window, when the
+    /// tree it is read from changed: the same revision the controls are read
+    /// at, so a pass that changed nothing sends nothing and walks nothing. The
+    /// session publishes it for this window over AT-SPI and sends back what a
+    /// client asks ([`Self::receive_accessibility_action`]); off a session the
+    /// window publishes it itself, through the platform adapter.
+    #[cfg(feature = "native")]
+    fn send_accessibility_tree(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+        instance: Option<u64>,
+    ) -> Result<(), String> {
+        if !self.semantic_tree_current() {
+            self.refresh_semantic_tree();
+        }
+        let revision = self.accessibility.semantic_tree_revision;
+        if self.floating.accessibility_told == Some(revision) {
+            return Ok(());
+        }
+        self.floating.accessibility_told = Some(revision);
+        let name = self
+            .window
+            .shown_title
+            .clone()
+            .or_else(|| self.window.title.clone())
+            .unwrap_or_default();
+        let scale = self.accessibility.export_scale;
+        let mut tree = self.build_a11y_tree_update(scale);
+        if !name.is_empty() {
+            crate::accesskit_bridge::name_window(&mut tree, &name);
+        }
+        client.send(
+            &crate::floating_surface::FloatingSurfaceClientMessage::AccessibilityTree {
+                tree,
+                name,
+                instance,
+            },
+        )
+    }
+
     /// What this window's content offers by name, when it differs from what
     /// the shell was told last: `None` for a pass whose tree changed nothing.
     /// What it answers is what the shell is told from now on.

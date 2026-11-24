@@ -143,6 +143,7 @@ pub mod members;
 pub mod workspace_membership;
 
 mod admission;
+pub mod own_admission;
 pub mod resources;
 /// The work reading and writing a workspace's history costs, for the whole
 /// process.

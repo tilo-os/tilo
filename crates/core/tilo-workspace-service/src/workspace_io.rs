@@ -19,22 +19,6 @@ fn io_error(message: impl Into<String>) -> FilesError {
     FilesError::Io(std::io::Error::other(message.into()))
 }
 
-/// Enrol `cert`'s device as a member of `workspace`, where
-/// [`crate::workspace_access::decide`] answered
-/// [`crate::workspace_access::Decision::AdmitAndEnrol`]: the signed member list records the
-/// device under its person, and its settle lists it here. The caller decides again afterwards: a
-/// device the list did not take is still no member.
-pub(crate) async fn enrol(workspace: &SharedWorkspace, cert: &tilo_user_identity::DeviceCert) {
-    let authority = workspace.lock().await.workspace_authority.clone();
-    if let Some(authority) = authority
-        && let Some(workspaces) = authority.workspaces()
-    {
-        workspaces
-            .enrol_member_device(cert, authority.workspace())
-            .await;
-    }
-}
-
 type OpenResult = Result<SharedWorkspace, String>;
 type Opening = watch::Receiver<Option<OpenResult>>;
 type ReservationKey = (usize, WorkspaceId);
@@ -129,8 +113,7 @@ pub(crate) async fn get_or_initialize(
     }
 }
 
-/// Admit `peer` to `workspace` for `operation`, enrolling a member's device
-/// first.
+/// Admit `peer` to `workspace` for `operation`.
 ///
 /// `Err(reason)` when the device is refused.
 #[cfg(test)]
@@ -140,19 +123,10 @@ pub(crate) async fn admit_for(
     peer: &crate::auth::AuthenticatedPeer,
     operation: crate::workspace_access::WorkspaceOperation,
 ) -> Result<(), crate::workspace_access::DenyReason> {
-    use crate::workspace_access::{Decision, DenyReason, decide};
+    use crate::workspace_access::{Decision, decide};
     let decision = decide(&*workspace.lock().await, trust, peer, operation);
     match decision {
         Decision::Admit => Ok(()),
         Decision::Deny(reason) => Err(reason),
-        Decision::AdmitAndEnrol => {
-            enrol(workspace, &peer.cert).await;
-            let decision = decide(&*workspace.lock().await, trust, peer, operation);
-            match decision {
-                Decision::Admit => Ok(()),
-                Decision::AdmitAndEnrol => Err(DenyReason::NotAMember),
-                Decision::Deny(reason) => Err(reason),
-            }
-        }
     }
 }

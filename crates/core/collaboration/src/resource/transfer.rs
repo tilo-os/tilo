@@ -165,8 +165,7 @@ pub fn validate_import(
     {
         return Err(ResourceOpenError::IdentityMismatch.into());
     }
-    if !super::references(&doc).is_empty()
-        || matches!(object_at(&doc, &meta, "refs", ObjType::List), ObjectAt::Object(list) if doc.length(&list) != 0)
+    if matches!(object_at(&doc, &meta, "refs", ObjType::List), ObjectAt::Object(list) if doc.length(&list) != 0)
     {
         return Err(TransferError::NotTransferable(
             "a document referring to other resources cannot join a workspace",

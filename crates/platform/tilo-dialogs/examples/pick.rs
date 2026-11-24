@@ -1,6 +1,9 @@
 //! Open this platform's chooser through the same asynchronous path apps use.
 //!
-//! `cargo run -p tilo-dialogs --example pick -- open|multiple|directory|save|uri URL`
+//! `cargo run -p tilo-dialogs --features portal-client --example pick -- open|multiple|directory|save|uri URL`
+//!
+//! On Linux the desktop's chooser is the portal client, which a host build turns on with
+//! `portal-client`; without it this target has no chooser and every request is refused.
 //!
 //! Prints the outcome; Save mode reports the chosen path and writes nothing.
 #![allow(clippy::expect_used, reason = "an example fails loudly")]

@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use ed25519_dalek::SigningKey;
 use package_actions::{PackageRow, RowState};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ContentPuts,
@@ -45,6 +46,12 @@ pub struct PackageCache {
 struct Writer {
     /// The cache's root, which every package, runtime and image of the device's is under.
     root: PathBuf,
+    /// The device's own signing identity: what it marks, packs and signs a development build
+    /// with, and the only one whose builds it installs.
+    device: tilo_app_package::SigningIdentity,
+    /// Whether this is a computer's own daemon, run by its account, rather than a system's: its
+    /// account reaches it alone, and it answers for the device before its person's services run.
+    personal: bool,
     content: Arc<DeviceContent>,
     rows: Arc<Rows>,
     /// One Flatpak change at a time: the state of what this device installed is read, changed and
@@ -332,6 +339,18 @@ pub enum PackageChanges {
     /// Add Flathub.
     #[effect(kind = "outside")]
     FlatpakFlathub,
+    /// Install the app whose built directory is handed over as this device's development build
+    /// of it: it marks it, packs it, signs it with its own key, and it runs under its own id.
+    #[effect(kind = "outside")]
+    InstallDev {
+        #[param("The app's authored manifest: `{\"source\": \"tilo.content:<hash>\"}`.")]
+        manifest: serde_json::Value,
+        #[param(
+            "The package's files, each `{\"path\": \"bin/app\", \"file\": \
+             {\"source\": \"tilo.content:<hash>\"}}`; each file's bytes are put first."
+        )]
+        payload: Vec<serde_json::Value>,
+    },
 }
 
 /// What the cache answers about the device, changing nothing: its Flatpak installation, the apps a
@@ -371,10 +390,17 @@ pub enum PackageReadings {
 
 impl PackageCache {
     /// The cache of the device whose key is `device`, rooted at `root`, reading what callers put
-    /// from `content`.
+    /// from `content`. The key stays here: a development build is marked, packed and signed with
+    /// it, and it never leaves the daemon.
     #[must_use]
-    pub fn new(device: &[u8; 32], root: &Path, content: Arc<DeviceContent>) -> Self {
-        let resource = resource(device);
+    pub fn new(
+        device: &SigningKey,
+        personal: bool,
+        root: &Path,
+        content: Arc<DeviceContent>,
+    ) -> Self {
+        let public = device.verifying_key().to_bytes();
+        let resource = resource(&public);
         let spec = tilo_resource::offer::<PackageReadings>(tilo_resource::offer::<PackageChanges>(
             tilo_resource::typed_resource::<Packages>(&resource, "Packages"),
         ));
@@ -389,6 +415,8 @@ impl PackageCache {
             resources: vec![spec],
             writer: Writer {
                 root: root.to_owned(),
+                device: tilo_app_package::SigningIdentity::from_signing_key(device.clone()),
+                personal,
                 content,
                 rows,
                 flatpaks: Arc::default(),
@@ -403,14 +431,15 @@ impl PackageCache {
     ///
     /// # Errors
     /// This account has no data directory to keep packages in.
-    pub fn this_device(device: &[u8; 32]) -> Result<Arc<Self>, String> {
+    pub fn this_device(device: &SigningKey) -> Result<Arc<Self>, String> {
         if let Some(cache) = CACHE.get() {
             return Ok(Arc::clone(cache));
         }
         let root = cache_root().ok_or("this account has no data directory to keep packages in")?;
         let content = Arc::new(DeviceContent::at(&device_content(&root)));
+        let personal = !tilo_api::daemon::system_daemon();
         Ok(Arc::clone(CACHE.get_or_init(|| {
-            Arc::new(Self::new(device, &root, content))
+            Arc::new(Self::new(device, personal, &root, content))
         })))
     }
 
@@ -473,6 +502,7 @@ impl Writer {
                 store: &store,
                 catalog: &catalog,
                 max_store_bytes: package_store::DEFAULT_MAX_STORE_BYTES,
+                device: Some(&self.device),
             },
             change,
             &package_actions::Entry::Device(&files),
@@ -564,6 +594,13 @@ impl ActionProvider for PackageCache {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if !self.names(&request) {
             return Pending::ready(Err(ActionCallError::UnknownAction));
+        }
+        // A development build is the device person's own act: the daemon signs it with the key
+        // this device keeps, and only the person whose computer this is may ask for one.
+        if request.target.address.action == "install-dev"
+            && let Err(reason) = package_actions::dev_build_admitted(caller, self.writer.personal)
+        {
+            return Pending::ready(Err(ActionCallError::Refused { reason }));
         }
         let arguments = match &request.argument {
             InvokeArgument::Json(arguments) => arguments.clone(),
@@ -1338,7 +1375,12 @@ mod tests {
             ),
         )
         .unwrap();
-        PackageCache::new(&[7; 32], root, Arc::new(DeviceContent::at(root)))
+        PackageCache::new(
+            &SigningKey::from_bytes(&[7; 32]),
+            true,
+            root,
+            Arc::new(DeviceContent::at(root)),
+        )
     }
 
     #[test]

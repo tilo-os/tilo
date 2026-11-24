@@ -229,7 +229,16 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
     let log = root.path().join("out");
     let status = std::process::Command::new(std::env::current_exe().unwrap())
         .envs(installed)
-        .args(["--exact", test, "--nocapture", "--test-threads", "1"])
+        // The test is named exactly: run it even where `#[ignore]` keeps it out of an
+        // ordinary run, as the check that names it runs it here.
+        .args([
+            "--exact",
+            test,
+            "--include-ignored",
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
         .env(OWN, test)
         .env(PROFILE, profile)
         .env("HOME", place("h"))
@@ -466,16 +475,16 @@ impl Host {
         let (key, cert) = self.certify(label, DeviceCapabilities::member());
         self.daemon()
             .workspaces()
-            .enter(workspace, &cert)
+            .enter(workspace, (&cert, &key))
             .await
             .unwrap();
         self.dial(key, workspace).await
     }
 
     /// A device of another person than this computer's, `label`, in `workspace` as an editor:
-    /// the workspace's owner adds the person, and their device enters. Who a workspace shared
-    /// with other people has among its members. Answered with their person's root, by which
-    /// the owner names them.
+    /// the workspace's owner adds the person, and their device lists itself. Who a workspace
+    /// shared with other people has among its members. Answered with their person's root, by
+    /// which the owner names them.
     pub async fn other_person(&self, label: &str, workspace: &str) -> (Member, [u8; 32]) {
         use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
 
@@ -513,9 +522,9 @@ impl Host {
             .await
             .expect("the workspace's owner adds the person");
         workspaces
-            .enter(workspace, &cert)
+            .enter(workspace, (&cert, &key))
             .await
-            .expect("their device enters the workspace");
+            .expect("their device lists itself");
         (self.dial(key, workspace).await, user.public_key)
     }
 
@@ -556,7 +565,7 @@ impl Host {
         let (key, cert) = self.certify(label, DeviceCapabilities::member());
         let daemon = self.daemon();
         let workspaces = daemon.workspaces();
-        workspaces.enter(workspace, &cert).await.unwrap();
+        workspaces.enter(workspace, (&cert, &key)).await.unwrap();
         let held = workspaces
             .state(workspace)
             .await

@@ -351,20 +351,6 @@ impl SeatProvider {
                 };
                 Box::pin(std::future::ready(done.map(|()| Value::Null)))
             }
-            (calls::DOCUMENT_INDEX, calls::CHANGED) => {
-                let Some(records) = parts.records.clone() else {
-                    return unserved("record changes");
-                };
-                blocking(move || {
-                    tilo_broker_core::services::DocumentIndexChanges::changed(
-                        records.as_ref(),
-                        &field::<String>(&arguments, "workspace")?,
-                        &field::<String>(&arguments, "app")?,
-                        &field::<String>(&arguments, "record")?,
-                    );
-                    Ok(())
-                })
-            }
             (calls::PUBLISHED, call) => self.published(call, &arguments),
             (calls::WORKSPACE_NODES, calls::ASK) => {
                 let Some(nodes) = parts.workspace_nodes.clone() else {
@@ -506,13 +492,16 @@ impl SeatProvider {
                 let Some(clipboard) = parts.file_clipboard.clone() else {
                     return unserved("Files clipboard");
                 };
-                blocking(move || {
+                Box::pin(async move {
                     let context = field::<seat::ClipboardFacts>(&arguments, "context")?;
                     let command = field(&arguments, "command")?;
-                    tilo_workspace_service::apps::services::FileClipboardServices::command(
-                        clipboard.as_ref(),
-                        &context.context(selected?),
-                        command,
+                    answered(
+                        tilo_workspace_service::apps::services::FileClipboardServices::command(
+                            clipboard,
+                            &context.context(selected?),
+                            command,
+                        )
+                        .await?,
                     )
                 })
             }
@@ -580,7 +569,10 @@ impl SeatProvider {
             (Err(why), _) | (_, Err(why)) => return failed(why),
         };
         match call {
-            calls::COMMAND => blocking(move || sessions.command(&context, command)),
+            calls::COMMAND => {
+                let answer = sessions.command(&context, command);
+                Box::pin(async move { answered(answer.await?) })
+            }
             calls::ITEM_USE => {
                 let answer = sessions.item_use(&context, command);
                 Box::pin(async move { answered(answer.await?) })

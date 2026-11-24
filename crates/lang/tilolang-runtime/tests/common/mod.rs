@@ -1138,3 +1138,13 @@ impl DeviceJobs {
         self.records.lock().unwrap().get(job).cloned()
     }
 }
+
+/// The artifact the device daemon would compile for `wasm`, handed to this process: from its
+/// first load the module runs compiled instead of on the interpreter. What a device's daemon
+/// does at install, done here by the one compiler so the compiled tier is exercised.
+pub fn adopt_compiled(wasm: &[u8]) {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = tilo_wasm_aot::Cache::at(dir.path()).unwrap();
+    let entry = cache.ensure(wasm).unwrap();
+    tilolang_runtime::engine::adopt_precompiled(wasm, &entry).unwrap();
+}

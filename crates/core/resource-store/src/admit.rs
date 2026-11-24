@@ -456,6 +456,14 @@ fn verb_admits(
     kind: &str,
     touch: &Touch,
 ) -> Result<(), String> {
+    // A move founds, fills and removes a resource of whatever kind the store declares: whether its
+    // caller may is the workspace's to decide, on each side of it.
+    if verb.moves {
+        return schema
+            .get(kind)
+            .map(drop)
+            .ok_or_else(|| format!("no type `{kind}` is declared"));
+    }
     let Some(writes) = verb.writes.get(kind) else {
         // A record's verb writes the kinds its type nests that another surface declares, and
         // their fields are the ones that surface declares: a tilolang package publishes a

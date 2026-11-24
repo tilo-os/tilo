@@ -105,6 +105,13 @@ impl LayoutDocument {
         }
     }
 
+    /// The person whose the layout is: their changes are theirs to take back, and an agent's
+    /// change for them is too.
+    #[must_use]
+    pub fn person(&self) -> &str {
+        &self.person
+    }
+
     /// The layout the document holds, as this host draws it, and `None` on a document that holds no
     /// workspace yet. The record each window of the layout shows, by tab, as the document keeps it: a
     /// window placed on a record names it there, so the place shows the record it was placed on.

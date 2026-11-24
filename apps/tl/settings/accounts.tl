@@ -24,6 +24,8 @@ view accounts_pane() {
     state sign_in_open: Text = ""
     state sign_in_prompt: Text = ""
     state sign_in_code: Text = ""
+    state sign_in_item: Text = ""
+    state sign_in_choices: List<accounts.MailSignIn> = []
     let a = accounts.accounts
     ui.Section("Connected accounts") {
         if a.accounts.is_empty() {
@@ -75,10 +77,11 @@ view accounts_pane() {
                             } else if account.status == .syncing {
                                 "Syncing"
                             } else { "Not synced yet" },
-                            tone: if account.status == .error or account.status == .needs-reconnect {
-                                .warning
-                            } else { .neutral },
+                            tone: if account.status == .error or account.status == .needs-reconnect or account.paused { .warning } else { .neutral },
                         )
+                        if account.paused {
+                            ui.Chip("Paused", tone: .warning)
+                        }
                         ui.MenuButton(
                             "More for {account.name}",
                             icon: .more_horizontal,
@@ -112,11 +115,33 @@ view accounts_pane() {
                                             set(form, true),
                                         )
                                 }
-                                ui.MenuItem("Sign in again") {
-                                    on choose: accounts.reconnect(
-                                        accounts.accounts,
-                                        account: account.id,
-                                    )
+                                if account.provider == "google" or account.provider == "microsoft" {
+                                    ui.MenuItem(
+                                        if account.provider == "google" {
+                                            "Sign in again on Google's page"
+                                        } else { "Sign in again on Microsoft's page" },
+                                    ) {
+                                        on choose: {
+                                            let step = accounts.begin_sign_in(
+                                                accounts.accounts,
+                                                provider: account.provider,
+                                                address: account.address,
+                                                account: account.id,
+                                                mail: true,
+                                            )
+                                            set(sign_in, step.id)
+                                                .then(
+                                                    set(sign_in_open, step.open),
+                                                )
+                                        }
+                                    }
+                                } else {
+                                    ui.MenuItem("Sign in again") {
+                                        on choose: accounts.reconnect(
+                                            accounts.accounts,
+                                            account: account.id,
+                                        )
+                                    }
                                 }
                                 ui.MenuItem("Check the server") {
                                     on choose: accounts.check(
@@ -151,6 +176,65 @@ view accounts_pane() {
                                         calendar: account.services.calendar,
                                         files: not account.services.files,
                                     )
+                                }
+                                ui.MenuItem(
+                                    "Keep its files in sync",
+                                    checked: account.files_mode == "sync",
+                                ) {
+                                    on choose: accounts.set_files_mode(
+                                        accounts.accounts,
+                                        account: account.id,
+                                        mode: "sync",
+                                    )
+                                }
+                                ui.MenuItem(
+                                    "Import its files once",
+                                    checked: account.files_mode == "import",
+                                ) {
+                                    on choose: accounts
+                                        .set_files_mode(
+                                            accounts.accounts,
+                                            account: account.id,
+                                            mode: "import",
+                                        )
+                                        .then(
+                                            engine.choose(
+                                                source: import_source(account.provider),
+                                                account: account.id,
+                                                keys: ["path:"],
+                                                only: true,
+                                            ),
+                                        )
+                                        .then(
+                                            engine.start(
+                                                source: import_source(account.provider),
+                                                account: account.id,
+                                            ),
+                                        )
+                                }
+                                ui.MenuItem("Sync now") {
+                                    on choose: accounts.sync_now(
+                                        accounts.accounts,
+                                        account: account.id,
+                                    )
+                                }
+                                if account.paused {
+                                    ui.MenuItem("Resume sync") {
+                                        on choose: accounts.resume_sync(
+                                            accounts.accounts,
+                                            account: account.id,
+                                        )
+                                    }
+                                } else {
+                                    ui.MenuItem("Pause sync") {
+                                        on choose: accounts.pause_sync(
+                                            accounts.accounts,
+                                            account: account.id,
+                                        )
+                                    }
+                                }
+                                ui.MenuItem("Open its files in Files") {
+                                    on choose: session.open_app(app: "so.tilo.file-explorer")
                                 }
                             }
                             if account.kind == .calendar {
@@ -276,34 +360,154 @@ view accounts_pane() {
                 role: .caption,
                 secondary: true,
             )
-            row(gap: .related, align: .center, wrap: true) {
-                ui.Button(
-                    if editing == "" { "Add the account" } else { "Save the account" },
-                    role: .primary,
+            ui.Button("Use a password from Passwords") {
+                on press: {
+                    let found = accounts.sign_ins(accounts.accounts)
+                    set(sign_in_choices, found.sign_ins)
+                }
+            }
+            if editing == "" and address != "" {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Text(
+                        "Or approve this workspace on your mail provider's own page, with no password typed here.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                    ui.Button("Sign in with Google", size: .small) {
+                        on press: {
+                            let step = accounts.begin_sign_in(
+                                accounts.accounts,
+                                provider: "google",
+                                address: address,
+                                name: name,
+                                mail: true,
+                            )
+                            set(sign_in, step.id)
+                                .then(
+                                    set(sign_in_open, step.open),
+                                )
+                                .then(
+                                    set(sign_in_prompt, step.code),
+                                )
+                        }
+                    }
+                    ui.Button("Sign in with Microsoft", size: .small) {
+                        on press: {
+                            let step = accounts.begin_sign_in(
+                                accounts.accounts,
+                                provider: "microsoft",
+                                address: address,
+                                name: name,
+                                mail: true,
+                            )
+                            set(sign_in, step.id)
+                                .then(
+                                    set(sign_in_open, step.open),
+                                )
+                                .then(
+                                    set(sign_in_prompt, step.code),
+                                )
+                        }
+                    }
+                }
+                if sign_in != "" and cloud_kind == "" {
+                    if sign_in_open != "" {
+                        ui.Link(sign_in_open, label: "Open the sign-in page")
+                    }
+                    ui.Text(
+                        if sign_in_prompt == "" {
+                            "Waiting for you to approve it in your browser. The account appears here once you do."
+                        } else { sign_in_prompt },
+                        role: .caption,
+                        secondary: true,
+                    )
+                    ui.Button("Cancel the sign-in") {
+                        on press: accounts
+                            .cancel_sign_in(accounts.accounts, signIn: sign_in)
+                            .then(set(sign_in, ""))
+                            .then(set(sign_in_open, ""))
+                            .then(set(sign_in_prompt, ""))
+                    }
+                }
+            }
+            for choice in sign_in_choices {
+                ui.ListRow(
+                    choice.title,
+                    secondary: if choice.username == "" {
+                        choice.places.join(", ")
+                    } else { "{choice.username} · {choice.places.join(", ")}" },
+                    icon: .key,
                 ) {
-                    on press: accounts
-                        .add_mail(
-                            accounts.accounts,
-                            address: address,
-                            displayName: name,
-                            username: if username == "" { .none } else { .some(username) },
-                            incomingHost: incoming,
-                            outgoingHost: outgoing,
-                            password: password,
-                            identities: identities.split(",").filter(i -> i != ""),
-                        )
-                        .then(set(form, false))
-                        .then(set(editing, ""))
-                        .then(set(name, ""))
-                        .then(set(address, ""))
-                        .then(set(username, ""))
-                        .then(set(incoming, ""))
-                        .then(set(outgoing, ""))
-                        .then(set(password, ""))
-                        .then(set(identities, ""))
+                    trailing: {
+                        ui.Button(
+                            if sign_in_item == choice.id { "Chosen" } else { "Use it" },
+                            size: .small,
+                        ) {
+                            on press: set(sign_in_item, choice.id)
+                                .then(set(address, choice.title))
+                                .then(set(username, choice.username))
+                                .then(set(incoming, imap_place(choice.places)))
+                                .then(set(outgoing, smtp_place(choice.places)))
+                        }
+                    }
+                }
+            }
+            row(gap: .related, align: .center, wrap: true) {
+                if sign_in_item != "" {
+                    ui.Button("Add from Passwords", role: .primary) {
+                        on press: accounts
+                            .add_mail_with_item(
+                                accounts.accounts,
+                                address: address,
+                                displayName: name,
+                                username: if username == "" { .none } else { .some(username) },
+                                incomingHost: incoming,
+                                outgoingHost: outgoing,
+                                password: sign_in_item,
+                            )
+                            .then(set(form, false))
+                            .then(set(editing, ""))
+                            .then(set(sign_in_item, ""))
+                            .then(set(sign_in_choices, []))
+                            .then(set(address, ""))
+                            .then(set(username, ""))
+                            .then(set(incoming, ""))
+                            .then(set(outgoing, ""))
+                            .then(set(password, ""))
+                            .then(set(identities, ""))
+                    }
+                } else {
+                    ui.Button(
+                        if editing == "" { "Add the account" } else { "Save the account" },
+                        role: .primary,
+                    ) {
+                        on press: accounts
+                            .add_mail(
+                                accounts.accounts,
+                                address: address,
+                                displayName: name,
+                                username: if username == "" { .none } else { .some(username) },
+                                incomingHost: incoming,
+                                outgoingHost: outgoing,
+                                password: password,
+                                identities: identities.split(",").filter(i -> i != ""),
+                            )
+                            .then(set(form, false))
+                            .then(set(editing, ""))
+                            .then(set(name, ""))
+                            .then(set(address, ""))
+                            .then(set(username, ""))
+                            .then(set(incoming, ""))
+                            .then(set(outgoing, ""))
+                            .then(set(password, ""))
+                            .then(set(identities, ""))
+                    }
                 }
                 ui.Button("Cancel") {
-                    on press: set(form, false).then(set(editing, "")).then(set(password, ""))
+                    on press: set(form, false)
+                        .then(set(editing, ""))
+                        .then(set(password, ""))
+                        .then(set(sign_in_item, ""))
                 }
             }
         } else {
@@ -514,4 +718,40 @@ view accounts_pane() {
             }
         }
     }
+}
+
+/// The migration source a cloud-storage account's provider names: what copies its files into
+/// the workspace once.
+fn import_source(provider: Text) -> Text {
+    if provider == "google-drive" {
+        "gdrive"
+    } else if provider == "onedrive" {
+        "onedrive"
+    } else if provider == "dropbox" {
+        "dropbox"
+    } else if provider == "icloud-drive" {
+        "icloud"
+    } else if provider == "nextcloud" {
+        "nextcloud"
+    } else { "webdav" }
+}
+
+/// The incoming server a vault logins's places name, without its scheme.
+fn imap_place(places: List<Text>) -> Text {
+    for place in places {
+        if place.starts_with("imap://") {
+            return place.replace("imap://", "")
+        }
+    }
+    ""
+}
+
+/// The outgoing server a vault login's places name, without its scheme.
+fn smtp_place(places: List<Text>) -> Text {
+    for place in places {
+        if place.starts_with("smtp://") {
+            return place.replace("smtp://", "")
+        }
+    }
+    ""
 }

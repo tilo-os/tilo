@@ -115,6 +115,10 @@ mpris = ["native", "tilo-process-services/mpris"]
 # (`ui::portal`) and notifications (`ui::notify`) need no feature: their
 # platform crates select each target's backend.
 portal = ["native", "tilo-process-services/portal"]
+# The host's own portal clients (a foreign desktop's chooser, opener and wallpaper), for a
+# runner hosting an app outside Tilo. A Tilo app process reaches the session's chooser and
+# opener over their sockets and never enables this.
+host-portals = ["tilo-process-services/host-portals"]
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
@@ -356,17 +360,22 @@ serde_bytes.workspace = true
 thiserror.workspace = true
 # OS randomness comes from getrandom through its `rand_core` adapter.
 rand_core.workspace = true
-# Accessibility: AccessKit is the cross-platform a11y schema; the winit
-# adapter bridges our exported tree into the event loop and, via its
-# `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs
-# (Orca, braille) read every `ui` app. `accesskit_winit` 0.34 targets
-# winit 0.30.x — the same pin as the `winit` dep above. The `tokio` feature
-# keeps its D-Bus executor on the workspace's single async runtime. See
+# Accessibility: AccessKit is the cross-platform a11y schema. On Windows,
+# macOS, iOS and Android a window's winit adapter publishes its tree to the
+# platform's accessibility service from the process that draws it. On Linux a
+# window sends the same tree to the session over its shell-ui connection and
+# the session is the one AT-SPI2 exporter (`crates/desktop/session/src/a11y.rs`),
+# so no app process holds a D-Bus connection or links zbus. That is why the
+# Linux-only `accesskit_unix` feature is not enabled here: the adapter falls
+# back to its empty platform implementation on Linux.
+# The `serde` feature carries a window's tree and the actions a client asks
+# back over the shell-ui protocol. `accesskit_winit` 0.34 targets winit
+# 0.30.x — the same pin as the `winit` dep above. See
 # `crates/ui/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
 # adapter wiring in `crates/ui/ui-core/src/app.rs`.
-accesskit = "0.25.0"
+accesskit = { version = "0.25.0", features = ["serde"] }
 # Built on tilo-winit, so it shares the toolkit's winit types when published.
-accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path = "../../../vendor/accesskit_winit", optional = true, default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
+accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path = "../../../vendor/accesskit_winit", optional = true, default-features = false, features = ["rwh_06"] }
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
 # focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
@@ -399,6 +408,9 @@ wat = "1"
 # The Bauhaus theme's painter, run natively through the host to check its
 # shipped document and how the toolkit draws it.
 tilo-theme-bauhaus = { path = "../themes/bauhaus" }
+# The compiler that produces the artifact a device's daemon makes for a theme's changed module,
+# so the compiled painter path is measured beside the interpreter's.
+tilo-wasm-aot = { path = "../../core/tilo-wasm-aot", features = ["compile"] }
 # The headless host's `HeadlessApp` and its fixtures are behind `test-support`;
 # enabling it here runs the integration tests that drive them whenever the
 # package is tested, not only when a dependant happens to unify the feature in.

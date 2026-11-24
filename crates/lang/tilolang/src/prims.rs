@@ -102,7 +102,14 @@ pub const PRIMS: &[Prim] = &[
         &[],
         &["min", "columns", "gap", "motion", "transition"],
     ),
-    prim_of("split", &[], &["side", "ratio", "collapse", "gap"]),
+    // `collapse: .drawer` keeps the secondary pane closed until `drawer` is true (a view state,
+    // opened or closed by an action, a key or a button); `collapse: .navigate` shows one pane at
+    // a time and `side`, `ratio` and `gap` set how the two stand.
+    prim_of(
+        "split",
+        &[],
+        &["side", "ratio", "collapse", "gap", "drawer"],
+    ),
     prim_of("primary", &[], &[]),
     prim_of("secondary", &[], &[]),
     prim_of("layers", &[], &["transition", "motion"]),
@@ -283,6 +290,7 @@ pub const BUILTINS: &[&str] = &[
     "Duration",
     "open",
     "set",
+    "blur",
     "resource",
     "preview_rows",
 ];

@@ -70,6 +70,22 @@ tilolang check    # the full check: structure, format, Clippy, tests, scenarios
 tilolang shot     # render the app to an image without a window
 ```
 
+### Running a build through this device's daemon
+
+A built app directory (its `tilo-app.toml` and payload) installs as this
+computer's own development build with:
+
+```sh
+tilo app install --dev path/to/build
+```
+
+The daemon marks the package as this device's dev build of the app, packs and
+signs it with the device's own key (the key stays in the daemon), and installs
+it under an id of its own, marked as a dev build in the shell. It starts with
+no grants, asks for what it needs like any new app, and never takes the
+installed app's id or grants. Only the person on this computer's own daemon
+connection can install one; a key, a visitor or another account is refused.
+
 A new app is a Cargo project: `src/` holds the app, `tilo-app.toml` is the
 package manifest (id, entrypoint, sandbox), `surface.toml` records the public
 surface, `locales/` holds the text, `tests/` the tests and `AGENTS.md` a short

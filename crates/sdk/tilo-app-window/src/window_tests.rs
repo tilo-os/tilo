@@ -1656,9 +1656,14 @@ fn a_fields_select_all_stays_in_the_field() {
 }
 
 fn bound_page(kind: &str, props: &[(&str, Value)], value: Value) -> Vec<ToUi> {
+    bound_page_to(kind, props, value, "doc/notes:a")
+}
+
+/// [`bound_page`] whose field edits `target`: the same editor, the same key, another record.
+fn bound_page_to(kind: &str, props: &[(&str, Value)], value: Value, target: &str) -> Vec<ToUi> {
     let mut control = UiNode::empty(kind, "field");
     control.binding = Some(crate::Binding {
-        field: Some(("doc/notes:a".to_owned(), "field".to_owned())),
+        field: Some((target.to_owned(), "field".to_owned())),
         kind: Some("notes.Note".to_owned()),
         name: "Field".to_owned(),
     });
@@ -3345,6 +3350,77 @@ fn a_field_marked_autofocus_takes_the_keyboard_when_it_appears() {
         drawn_window(&mut harness).focused_field().as_deref(),
         Some("field"),
         "the keyboard is in the search field, where the person types next"
+    );
+}
+
+/// The editor holding the keyboard turns to another record (a deck's next slide): the keyboard
+/// leaves it, so what the person types next never lands in a record they did not choose.
+#[test]
+fn a_bound_editor_that_turns_to_another_record_gives_the_keyboard_up() {
+    let (mut app, mut harness) = drawn(&bound_page_to(
+        "ui.TextInput",
+        &[("autofocus", Value::Bool(true))],
+        Value::text("first slide"),
+        "doc/notes:a",
+    ));
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_field().as_deref(),
+        Some("field")
+    );
+    let _ = sent(&mut app);
+
+    // The same editor, the same key, the next record's field.
+    send(
+        &mut app,
+        &bound_page_to(
+            "ui.TextInput",
+            &[],
+            Value::text("second slide"),
+            "doc/notes:b",
+        ),
+    );
+    let window = drawn_window(&mut harness);
+    window.receive();
+    window.flush();
+    harness.relayout();
+    harness.relayout();
+    let told = told(&mut app);
+    assert!(
+        told.iter()
+            .any(|message| matches!(message, ToApp::Focus { at: None })),
+        "the app is told the keyboard left the field: {told:?}"
+    );
+    assert_eq!(
+        drawn_window(&mut harness).focused_field(),
+        None,
+        "typing no longer lands in the editor that turned"
+    );
+}
+
+/// A view ends the edit the keyboard is in (`blur()`): the window asks the field to let go, as
+/// closing its editor does.
+#[test]
+fn a_view_ends_the_edit_the_keyboard_is_in() {
+    let (mut app, mut harness) = drawn(&bound_page_to(
+        "ui.TextInput",
+        &[("autofocus", Value::Bool(true))],
+        Value::text("typed"),
+        "doc/notes:a",
+    ));
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_field().as_deref(),
+        Some("field")
+    );
+    send(&mut app, &[ToUi::Focus { key: None }]);
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_field(),
+        None,
+        "the field the view ended is no longer the keyboard's"
     );
 }
 

@@ -3,7 +3,7 @@
 use collab_types::claim::{
     ChangeClaim, ClaimError, FrameworkChange, UnitPath, claims_of, stamp_invoker,
 };
-use tilo_actions::ActionContext;
+use tilo_actions::stamp::Label;
 
 /// Who a change is decided as having been made by, as far as its own message says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,23 +27,13 @@ pub fn maker_of(change: &automerge::Change) -> Maker {
     let Some(message) = change.message() else {
         return Maker::Nobody;
     };
+    // A continuation names the gesture it continues, whose first entry names who made it.
     if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) {
         return Maker::Named;
     }
-    // A resource store's change names its invoker in its stamp, which reads as an action
-    // context too: one that names no invoker is nobody's, never a named entry's.
-    if let Some(stamp) = collab_types::Stamp::of_message(message) {
-        return if stamp_invoker(&stamp).is_ok() {
-            Maker::Named
-        } else {
-            Maker::Nobody
-        };
-    }
-    if ActionContext::from_change_message(message).is_some() {
-        return Maker::Named;
-    }
-    if let Some(named) = FrameworkChange::from_change_message(message) {
-        return match named {
+    match collab_types::Stamp::read(message) {
+        Some((Label::Entry | Label::Continuation, _)) => Maker::Named,
+        Some((Label::Framework(named), _)) => match named {
             FrameworkChange::Genesis | FrameworkChange::Structure
                 if collab_types::document::derived::is_derived(change, named, |bytes| {
                     tilo_automerge_isolate::load(bytes).ok()
@@ -55,9 +45,12 @@ pub fn maker_of(change: &automerge::Change) -> Maker {
             // one that is not the derived change is no structure at all.
             FrameworkChange::Structure => Maker::Nobody,
             _ => Maker::Signer,
-        };
+        },
+        // A resource store's change names its invoker in its stamp: one that names none is
+        // nobody's.
+        Some((Label::Stamp, read)) if stamp_invoker(&read).is_ok() => Maker::Named,
+        Some((Label::Stamp, _)) | None => Maker::Nobody,
     }
-    Maker::Nobody
 }
 
 /// The changes an incremental document mutation carries, parsed but merged

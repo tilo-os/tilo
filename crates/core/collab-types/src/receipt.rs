@@ -15,6 +15,7 @@
 //! The action is run again only before its recorded inverse is used for
 //! undo ([`tilo_actions::verify_change`]).
 
+use tilo_actions::stamp::Label;
 use std::collections::{BTreeMap, BTreeSet};
 
 use tilo_action_policy::{Acting, ActionKind, Answer, Context, Level, MemberAccess, TreePath};
@@ -668,7 +669,7 @@ pub fn check_continuations(
     for change in changes {
         let Some(message) = change
             .message()
-            .filter(|message| message.starts_with(tilo_actions::context::CONTINUATION_PREFIX))
+            .filter(|message| Label::of(message) == Some(Label::Continuation))
         else {
             continue;
         };
@@ -716,7 +717,7 @@ fn first_entry(
         if let Some(entry) = tilo_actions::ActionContext::from_change_message(&message) {
             return Some(entry);
         }
-        if !message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) {
+        if Label::of(&message) != Some(Label::Continuation) {
             return None;
         }
     }

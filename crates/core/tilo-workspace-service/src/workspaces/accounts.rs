@@ -29,12 +29,20 @@ impl Workspaces {
 /// hold yet lists none.
 async fn reading(workspaces: &Workspaces, workspace: &str) -> Value {
     let held = workspaces.workspace_accounts(workspace).await.ok();
+    // The device's mounts say which of its accounts are paused; a service that does not
+    // answer leaves every account as its record says.
+    let cloud = workspaces.cloud_control();
+    let mounts = tokio::task::spawn_blocking(move || cloud.mounts())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
     let accounts = held
         .as_ref()
         .map(|held| {
             held.all()
                 .iter()
-                .filter_map(|account| view_of(held, account))
+                .filter_map(|account| view_of(held, account, &mounts))
                 .collect()
         })
         .unwrap_or_default();
@@ -80,6 +88,11 @@ struct View {
     calendars: Vec<CalendarView>,
     /// Which of its services the account feeds.
     services: ServicesView,
+    /// A cloud-storage account's files: `sync` kept in sync, `import` copied into the
+    /// workspace once; empty for an account that mounts no files.
+    files_mode: String,
+    /// Whether its background sync and uploads are paused on this device.
+    paused: bool,
 }
 
 /// Which of an account's services its person uses, as its row reads them.
@@ -160,7 +173,11 @@ fn kind_of(type_id: &str) -> Option<Kind> {
 }
 
 /// One account as the reading shows it, or `None` for an account it does not list.
-fn view_of(held: &accounts::person::AccountList, account: &accounts::Account) -> Option<View> {
+fn view_of(
+    held: &accounts::person::AccountList,
+    account: &accounts::Account,
+    mounts: &[tilo_fs_client::cloud::CloudMount],
+) -> Option<View> {
     if account.type_id.as_str() == accounts::person::TILO_IDENTITY_TYPE {
         return None;
     }
@@ -249,6 +266,15 @@ fn view_of(held: &accounts::person::AccountList, account: &accounts::Account) ->
             calendar: services.calendar,
             files: services.files,
         },
+        files_mode: account
+            .config
+            .get(accounts::cloud_types::FILES_MODE_KEY)
+            .and_then(Value::as_str)
+            .unwrap_or(if kind == Kind::Cloud { "sync" } else { "" })
+            .to_owned(),
+        paused: mounts
+            .iter()
+            .any(|mount| mount.account == account.id.as_str() && mount.paused),
     })
 }
 

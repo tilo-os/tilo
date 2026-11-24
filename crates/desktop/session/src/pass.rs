@@ -462,8 +462,27 @@ impl Session {
         let answered = answering.elapsed();
         self.compositor
             .mark_testctl(answered.saturating_add(self.tool_input));
-        // What assistive technology reads of the frame just drawn, and what it asked of it.
-        self.a11y.step(&self.shared.published);
+        // What assistive technology reads of the frame just drawn, and what it asked of it:
+        // the session's own surfaces, and the windows apps draw in processes of their own at
+        // the instance the desktop works in.
+        let focused_app = self
+            .shared
+            .desktop
+            .with_policy(|policy| policy.focused_tab());
+        let mut windows = self.shared.windows.borrow_mut();
+        self.a11y
+            .step(&self.shared.published, &mut windows, focused_app);
+        drop(windows);
+        // What a client of the export asked of one of those windows is written to it now, so an
+        // idle desktop answers without waiting for the next input.
+        #[cfg(target_os = "linux")]
+        if let Some(tabs) = &self.tabs {
+            tabs.deliver_accessibility_now(
+                &self.shared.desktop,
+                &self.compositor,
+                &self.shared.windows,
+            );
+        }
         // A live projection is sent the desktop as the pass just drew it.
         let video = self.display_sheet.video_stream();
         self.projection_video

@@ -33,7 +33,12 @@ impl Published {
 }
 
 /// The cache's published actions.
-const PUBLISHED: [Published; 15] = [
+const PUBLISHED: [Published; 16] = [
+    Published {
+        id: "install-dev",
+        change: "InstallDev",
+        fixed: None,
+    },
     Published {
         id: "collect",
         change: "Collect",

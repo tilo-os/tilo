@@ -421,6 +421,7 @@ impl TestWorkspace {
         }) {
             return Ok(JoinChallengeResponse {
                 challenge: challenge.clone(),
+                governance: self.governance()?,
             });
         }
         let verified = self.inspect(&request.signed_invitation)?;
@@ -445,7 +446,19 @@ impl TestWorkspace {
         )?;
         self.challenges
             .push((challenge.clone(), request.device_cert));
-        Ok(JoinChallengeResponse { challenge })
+        Ok(JoinChallengeResponse {
+            challenge,
+            governance: self.governance()?,
+        })
+    }
+
+    /// The workspace's committed document, as the one message a join is
+    /// answered with: what a joining device signs its own admission on.
+    fn governance(&self) -> Result<Vec<Vec<u8>>, String> {
+        Ok(vec![
+            postcard::to_stdvec(&self.peer.workspace_message())
+                .map_err(|error| error.to_string())?,
+        ])
     }
 
     fn complete(
@@ -474,11 +487,10 @@ impl TestWorkspace {
             &self.revocations(),
             ns(now),
         )?;
-        let mut candidate = self.peer.clone();
-        candidate
-            .governance_mut()
-            .admit_invited_member(&redemption, &self.key, now)?;
-        self.peer = candidate;
+        // The joining device signed its own admission; this host takes it in
+        // as that device's and writes nothing of its own.
+        self.peer
+            .admit_own_redemption(&redemption, request.admission.clone(), now)?;
         self.advance();
         let bootstrap = JoinBootstrap {
             version: 1,
@@ -492,10 +504,7 @@ impl TestWorkspace {
             records: self.peer.rows(),
             // A join is answered with the workspace's committed document alone:
             // record publications reach the member through the workspace's sync.
-            governance_messages: vec![
-                postcard::to_stdvec(&self.peer.workspace_message())
-                    .map_err(|error| error.to_string())?,
-            ],
+            governance_messages: self.governance()?,
             generation: self.generation,
         };
         self.completions.insert(request_id, bootstrap.clone());
@@ -565,6 +574,7 @@ mod empty_interactive_tests {
                 Some("Fixture session".into()),
                 expiry,
             );
+            let invitation_bytes = invitation.clone();
             let response = workspace_fixture.handle(
                 cert.device_public_key,
                 JoinTransportRequest::Challenge(JoinChallengeRequest {
@@ -576,10 +586,27 @@ mod empty_interactive_tests {
             let JoinTransportResponse::Challenge(response) = response else {
                 panic!("actual session challenge refused: {response:?}");
             };
+            let redemption = join::verify_connection_redemption(
+                &invitation_bytes,
+                &cert,
+                [95; 32],
+                &tilo_user_identity::RevocationList::new(),
+                super::ns(workspace_fixture.now()),
+            )
+            .unwrap();
+            let admission = crate::own_admission::own_admission(
+                super::super::WORKSPACE,
+                &response.governance,
+                &redemption,
+                None,
+                &key,
+                workspace_fixture.now(),
+            )
+            .unwrap();
             let proof = join::sign_join_proof(response.challenge, &key).unwrap();
             let response = workspace_fixture.handle(
                 cert.device_public_key,
-                JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
+                JoinTransportRequest::Complete(JoinCompleteRequest { proof, admission }),
             );
             let JoinTransportResponse::Complete(bootstrap) = response else {
                 panic!("actual session completion refused: {response:?}");

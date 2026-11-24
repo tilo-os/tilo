@@ -587,6 +587,31 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
         "the key is the agent's grant"
     );
 
+    // The key lists itself on the copy of the agent host it runs on, signing its own row and
+    // grant there as the host's engine does once its person approved it, and the server takes the
+    // row in from that copy: approving the key is the person's one step.
+    host_copies
+        .copies()
+        .enter(&workspace, (&heard, &agent))
+        .await
+        .expect("the agent's key lists itself on its host's copy");
+    let agent_device = agent.verifying_key().to_bytes();
+    tilo_test_env::within("the server takes in the agent's own row", async {
+        loop {
+            let listed = hosted.state(&workspace).await.is_some_and(|state| {
+                state
+                    .certificates()
+                    .iter()
+                    .any(|cert| cert.device_public_key == agent_device)
+            });
+            if listed {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
     // The agent acts on it at once: with nothing restarted, the person's server admits what its
     // key signs in the workspace the grant the root just signed names.
     let at_server = tilo_server_client::ServerAddress::at(server.node_addr());
@@ -718,9 +743,9 @@ async fn tilo_device_add_signs_a_browser_in_at_a_server_serving_a_workspace() {
         .clone();
     let workspace = hosted.create("Studio").await.unwrap().workspace;
     hosted
-        .enter(&workspace, &laptop_cert)
+        .enter(&workspace, (&laptop_cert, &laptop_key))
         .await
-        .expect("a device of the person enters the workspace");
+        .expect("a device of the person lists itself in the workspace");
     let login = tilo_device_identity::login::Device {
         site: "https://tilo.test/".into(),
         host_origin: "https://eu1.tilo.test".into(),

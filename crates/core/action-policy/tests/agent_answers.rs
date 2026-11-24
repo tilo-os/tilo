@@ -42,10 +42,8 @@ fn decide_at(grants: &[Grant], node: &TreePath, kind: ActionKind, consequential:
         grants: grants.to_vec(),
         custom_roles: std::collections::BTreeMap::default(),
         assigned_roles: std::collections::BTreeMap::default(),
-        agents: std::collections::BTreeMap::default(),
     };
-    let verdict =
-        Authority::person(policy.party_of(Grantee::agent(AGENT))).decide(node, kind, &cx());
+    let verdict = Authority::person(policy.party_of_agent(AGENT, PERSON)).decide(node, kind, &cx());
     verdict.parts.first().map_or(Answer::Deny, |decision| {
         agent_answers::held_to_contract(decision, consequential)
     })
@@ -349,11 +347,8 @@ fn allowing_an_outside_effect_takes_one_action_outside_the_persons_account() {
     assert!(may_give(None, ActionKind::Undoable, Answer::Allow));
 }
 
-/// A workspace with `grants` and `agents`, and no other state to decide by.
-fn policy_with(
-    grants: Vec<Grant>,
-    agents: std::collections::BTreeMap<String, tilo_action_policy::AgentMember>,
-) -> WorkspacePolicy {
+/// A workspace with `grants`, and no other state to decide by.
+fn policy_with(grants: Vec<Grant>) -> WorkspacePolicy {
     WorkspacePolicy {
         workspace: WORKSPACE.into(),
         owner: Some(PERSON.into()),
@@ -362,7 +357,6 @@ fn policy_with(
         grants,
         custom_roles: std::collections::BTreeMap::default(),
         assigned_roles: std::collections::BTreeMap::default(),
-        agents,
     }
 }
 
@@ -404,10 +398,10 @@ fn a_stop_denies_everything_and_no_grant_of_the_agent_lifts_it() {
         ),
         Answer::Deny
     );
-    let policy = policy_with(all.clone(), std::collections::BTreeMap::default());
-    assert!(policy.stops(AGENT, &cx()));
+    let policy = policy_with(all.clone());
+    assert!(policy.stops(AGENT, PERSON, &cx()));
     // Letting it go on takes the answer back: it acts again.
-    all.retain(|grant| grant.id != agent_answers::stop_grant_id(AGENT));
+    all.retain(|grant| grant.id != agent_answers::stop_grant_id(AGENT, PERSON));
     assert_eq!(
         decide_at(&all, &mail_action("send"), ActionKind::Outside, false),
         Answer::Allow
@@ -415,22 +409,20 @@ fn a_stop_denies_everything_and_no_grant_of_the_agent_lifts_it() {
 }
 
 /// A person writes what their own agent may do, and what it may not, in a workspace they do not
-/// administer: their say over their agent needs no governance. Another person's agent is not
-/// theirs to answer for.
+/// administer: their say over their agent needs no governance. An agent is the pair of its id and
+/// its person, so what another person writes for an agent of the same id is about their own, and
+/// reaches this one not at all: neither stopping it nor holding it back.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one person and another, writing for agents of one id, read as one scenario"
+)]
 fn a_person_answers_for_their_own_agent_without_governing() {
     use tilo_action_policy::{Acting, Change};
-    let mut agents = std::collections::BTreeMap::new();
-    agents.insert(
-        AGENT.to_owned(),
-        tilo_action_policy::AgentMember {
-            for_person: PERSON.to_owned(),
-        },
-    );
     let mut members = std::collections::BTreeMap::new();
     members.insert(PERSON.to_owned(), tilo_action_policy::Role::Viewer);
     members.insert("b0b".to_owned(), tilo_action_policy::Role::Viewer);
-    let mut policy = policy_with(Vec::new(), agents);
+    let mut policy = policy_with(Vec::new());
     policy.owner = Some("0wner".into());
     policy.members = members;
     let person = Acting::person(PERSON);
@@ -443,30 +435,96 @@ fn a_person_answers_for_their_own_agent_without_governing() {
             .is_ok(),
         "a stop is the person's own answer for their agent"
     );
-    assert!(policy.stops(AGENT, &cx()));
+    assert!(policy.stops(AGENT, PERSON, &cx()));
     assert!(
         policy
             .apply(
                 PERSON,
                 &authority,
-                Change::Revoke(agent_answers::stop_grant_id(AGENT)),
+                Change::Revoke(agent_answers::stop_grant_id(AGENT, PERSON)),
                 &cx(),
                 false,
             )
             .is_ok(),
         "and taking it back is too"
     );
-    let not_ours = agent_answers::stop_grant(WORKSPACE, AGENT, Grantee::person("b0b"));
+    let bob_acting = Acting::person("b0b");
+    let bob = Authority::of_acting(&bob_acting, &read, &[]);
+    // Bob's stop and an answer keeping the agent from reading mail are his own, for his own
+    // agent of that id: admitted, and inert for the agent acting for the person.
+    let bobs_stop = agent_answers::stop_grant(WORKSPACE, AGENT, Grantee::person("b0b"));
+    let bobs_deny = agent_answers::grant(
+        WORKSPACE,
+        AGENT,
+        (&AnswerScope::app("so.tilo.mail"), ActionKind::Read),
+        Answer::Deny,
+        Grantee::person("b0b"),
+    );
+    let before = policy.clone();
+    for change in [Change::Grant(bobs_stop), Change::Grant(bobs_deny)] {
+        let applied = policy.apply("b0b", &bob, change, &cx(), false);
+        assert!(applied.is_ok(), "{applied:?}");
+    }
+    assert!(policy.stops(AGENT, "b0b", &cx()), "Bob stopped his own");
+    assert!(!policy.stops(AGENT, PERSON, &cx()), "and not the person's");
+    let theirs = Acting::handed_agent(AGENT, PERSON);
+    let preset = theirs.handed_preset(WORKSPACE);
+    for (node, kind) in [
+        (mail_action("send"), ActionKind::Outside),
+        (
+            TreePath::workspace(WORKSPACE).app("so.tilo.mail"),
+            ActionKind::Read,
+        ),
+        (TreePath::workspace(WORKSPACE), ActionKind::Read),
+    ] {
+        let decided = |policy: &WorkspacePolicy| {
+            (
+                Authority::person(policy.party_of_agent(AGENT, PERSON))
+                    .decide(&node, kind, &cx())
+                    .answer,
+                Authority::of_acting(&theirs, policy, &preset)
+                    .decide(&node, kind, &cx())
+                    .answer,
+            )
+        };
+        assert_eq!(
+            decided(&policy),
+            decided(&before),
+            "the person's agent is decided as before Bob wrote anything, at {node}"
+        );
+    }
+    let bobs = Acting::handed_agent(AGENT, "b0b");
+    assert_eq!(
+        Authority::of_acting(&bobs, &policy, &bobs.handed_preset(WORKSPACE))
+            .decide(&TreePath::workspace(WORKSPACE), ActionKind::Read, &cx())
+            .answer,
+        Answer::Deny,
+        "while Bob's own agent of that id is stopped"
+    );
+    // Nor may Bob write under the person's name for their agent: a stop named as theirs but
+    // given by him replaces or takes back nothing of theirs.
+    let mut posing = agent_answers::stop_grant(WORKSPACE, AGENT, Grantee::person("b0b"));
+    posing.id = agent_answers::stop_grant_id(AGENT, PERSON);
     assert!(
         policy
+            .apply("b0b", &bob, Change::Grant(posing), &cx(), false)
+            .is_err(),
+        "one person's say is not another's to write"
+    );
+    let mut stopped = policy.clone();
+    stopped
+        .apply(PERSON, &authority, Change::Grant(stop()), &cx(), false)
+        .expect("the person stops their agent");
+    assert!(
+        stopped
             .apply(
                 "b0b",
-                &Authority::of_acting(&Acting::person("b0b"), &read, &[]),
-                Change::Grant(not_ours),
+                &bob,
+                Change::Revoke(agent_answers::stop_grant_id(AGENT, PERSON)),
                 &cx(),
                 false
             )
             .is_err(),
-        "one person's say is not another's to write"
+        "nor take back the person's stop"
     );
 }

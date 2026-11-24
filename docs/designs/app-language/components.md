@@ -69,6 +69,10 @@ view contact_row(c: Contact) {
   `row(t.title, checkbox: t.done, check: check(t))` show the field and run the app's action,
   so completing a task completes what is under it in the same step, one undo, and history
   records the flag the app's action set.
+- The keyboard stays with the field the person put it in until the view moves it. `blur()` is an
+  action that ends that field's edit (`on press: blur()`), and an editor the view rebuilds for
+  another record — a deck's next slide in its notes editor — lets the keyboard go on its own,
+  so what the person types next never lands in a record they did not choose.
 - A document's running text is placed like any other component:
   `ui.BlockEditor(bind: doc.body, placeholder: "Write")`. It declares a binding to the field as
   a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same
@@ -298,8 +302,14 @@ view home(tasks: Tasks) {
 }
 ```
 
-What that already does, with no option set:
+The shell chooses where its columns stand from `content_kind`. A view can say more:
+`sidebar_collapse:` and `inspector_collapse:` decide how a column stands in a window too narrow
+to dock it (`.auto`, `.drawer` or `.screen` for the sidebar; `.sheet` or `.drawer` for the
+inspector), and `sidebar_open:` and `inspector_open:` bind its open state to a `Bool` view
+state, so an action, a key or a button opens and closes it through the same drawer or sheet the
+person uses. Both open at the shell's motion, and reduced motion lands them at once.
 
+What that already does, with no option set:
 - **Lists move.** A row a person adds by hand arrives at its place and the rows below it make
   room; a row they remove by hand fades where it stood and those below close the gap; a row they
   move glides to where it lands. A change a key or an action makes (Enter, a menu item, an

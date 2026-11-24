@@ -17,7 +17,7 @@ use tilo_server_protocol::workspaces::{
     CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
     RemoveMemberRequest, SetMemberRoleRequest,
 };
-use tilo_user_identity::{AgentScope, DeviceCert};
+use tilo_user_identity::DeviceCert;
 
 use tilo_action_policy::roles::governance;
 use tilo_action_policy::{Grantee, Role};
@@ -442,98 +442,77 @@ impl Workspaces {
         Ok(workspace.collaboration().pending(now))
     }
 
-    /// Enrol `device`, a further device of a member of `workspace`, under its person. Returns
-    /// whether the member list changed.
+    /// Have `device`, a further device of a person `workspace` has in it, list itself there
+    /// under them: it signs its own row with `signer` on the member list held here
+    /// ([`tilo_peer_state::own_admission::sign_further_device_row`]), and the workspace takes
+    /// the row in as every member does ([`Self::take_own_row`]); this host signs nothing.
+    /// Whether the member list changed: a device listed already signs nothing.
     ///
-    /// A device the workspace met and took out of its roster enters no more by asking: it is
-    /// told it was removed, and comes back only where the workspace is handed to it again
-    /// ([`Self::admit_entering`] as a holder hands it over), by a fresh ticket or an
-    /// invitation.
+    /// A device the workspace met and took off its member list enters no more by asking: it is
+    /// told it was removed, and comes back only where the workspace is handed to it again, by
+    /// a fresh ticket or an invitation.
     ///
     /// # Errors
     ///
-    /// The device is no device of a member's own, the workspace removed it, or the workspace is
-    /// not held here.
+    /// The workspace is not held here, removed the device or keeps it as a revoked key, does not
+    /// let the device in, or `signer` does not sign.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked until the device's row is committed and settled"
+    )]
     pub async fn enter(
         &self,
         workspace: &str,
-        device: &DeviceCert,
+        (device, signer): (&DeviceCert, &dyn collab_types::signer::DeviceSigner),
     ) -> Result<bool, CollaborationError> {
+        use tilo_peer_state::join_log::GovernanceMessages as _;
         let now = tilo_clock::unix_now_ns();
-        self.check_now(device, Some(workspace), WorkspaceOp::Enter)
-            .await?;
-        let removed = {
-            let governed = self.workspace(workspace).await?;
-            let governed = governed.lock().await;
-            governed
-                .peer()
-                .governance()
-                .removed_from_member_list(device)
-        };
-        if removed {
-            return Err(CollaborationError::new(
-                tilo_peer_state::REMOVED_DEVICE_REFUSED,
-            ));
-        }
-        self.admit_entering(workspace, device, now).await
-    }
-
-    /// Admit `device`, whose entry was decided, to `workspace`; a key keeps
-    /// the grant it entered under. Returns whether governance changed.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked until its decision is committed, published and answered"
-    )]
-    pub(crate) async fn admit_entering(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        now: u64,
-    ) -> Result<bool, CollaborationError> {
         self.inner
             .host
             .environments
             .refuse_joining(&device.device_public_key, now)?;
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
+        let held = self.workspace(workspace).await?;
+        let mut governed = held.lock().await;
         // A key whose grant this workspace records as revoked never enters it
         // again, whichever API server it comes through.
-        refuse_revoked(&workspace, device)?;
-        let state = workspace.collaboration().clone();
-        let admitted = workspace.change_held(
-            &self.inner.host.key,
+        refuse_revoked(&governed, device)?;
+        if governed
+            .peer()
+            .governance()
+            .removed_from_member_list(device)
+        {
+            return Err(CollaborationError::new(
+                tilo_peer_state::REMOVED_DEVICE_REFUSED,
+            ));
+        }
+        let governance = governed
+            .peer()
+            .governance_messages()
+            .map_err(CollaborationError::new)?;
+        let row = tilo_peer_state::own_admission::sign_further_device_row(
+            workspace,
+            &governance,
+            device,
+            signer,
             system_time(now),
-            |_, candidate| {
-                let admitted = candidate.governance_mut().admit_member_device(
-                    device,
-                    &self.inner.host.key,
-                    system_time(now),
-                )?;
-                Ok((admitted, admitted))
-            },
-            |_, _| Ok(state),
-        )?;
-        if admitted {
-            self.settle(&mut workspace).await?;
+        )
+        .await
+        .map_err(CollaborationError::new)?;
+        let changed = !row.is_empty();
+        if changed {
+            self.take_own_row(&mut governed, device, &row, now)
+                .await
+                .map_err(CollaborationError::new)?;
         } else if !self
-            .decides_for(workspace.workspace_id(), device.device_public_key)
+            .decides_for(governed.workspace_id(), device.device_public_key)
             .await
         {
-            // Admitted already, but an earlier entry can have been cut off
-            // between committing the admission and settling it (its page
-            // closed meanwhile): the server would then decide the device's
-            // changes against device_access that leave it out. Settle what
-            // governance holds before answering.
-            self.settle(&mut workspace).await?;
+            // Listed already, but an earlier entry can have been cut off between
+            // committing its row and settling it: settle what governance holds
+            // before answering, so the device's changes are decided against it.
+            self.settle(&mut governed).await?;
         }
-        // The workspace keeps the grant of every key it admitted, so every
-        // holder and every API server reads the same grant from the workspace
-        // itself, whichever way the key came in.
-        if let Some(scope) = device.capabilities.agent {
-            self.list_grant(&mut workspace, device, scope, None, now)
-                .await?;
-        }
-        Ok(admitted)
+        Ok(changed)
     }
 
     /// Refuse `device` when `workspace` keeps it as a revoked key, saying so:
@@ -554,68 +533,6 @@ impl Workspaces {
             Some(held) => refuse_revoked(&*held.lock().await, device),
             None => Ok(()),
         }
-    }
-
-    /// Keep the grant `cert` was admitted under in `workspace`'s governance,
-    /// reaching `scope`, authored by this host: the workspace's holders and
-    /// the API servers that read them see it from then on. It is named `name`,
-    /// what the key joined as (the name its person approved it under), where
-    /// its join says one; else as it is listed already, else as its
-    /// certificate is labelled.
-    pub(super) async fn list_grant(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        cert: &DeviceCert,
-        scope: AgentScope,
-        name: Option<&str>,
-        now: u64,
-    ) -> Result<(), CollaborationError> {
-        let at = system_time(now);
-        let grant = WorkspaceGrant {
-            id: WorkspaceGrant::id_of(&cert.device_public_key),
-            person: hex::encode(cert.user_public_key),
-            device: hex::encode(cert.device_public_key),
-            name: cert.device_label.clone(),
-            scope: scope.workspace_name(),
-            expires_ms: cert.expires_at_ns.map(|expiry| expiry / 1_000_000),
-            // A key that another grant minted names it, so the key that made
-            // it lists it wherever the workspace is held.
-            parent: cert
-                .issuer
-                .as_deref()
-                .map(|issuer| WorkspaceGrant::id_of(&issuer.device_public_key)),
-            created_ms: cert.issued_at_ns / 1_000_000,
-            revoked_ms: None,
-        };
-        // Recording the grant of a key this workspace revoked does not bring
-        // it back: its person's revocation stands. A name it is listed under
-        // stays, unless its join names it now.
-        let held = workspace
-            .peer()
-            .governance()
-            .workspace_grants()
-            .into_iter()
-            .find(|held| held.id == grant.id);
-        let named = name.map(str::trim).filter(|name| !name.is_empty());
-        let grant = WorkspaceGrant {
-            revoked_ms: held.as_ref().and_then(|held| held.revoked_ms),
-            name: match (named, held) {
-                (Some(named), _) => named.to_owned(),
-                (None, Some(held)) => held.name,
-                (None, None) => grant.name.clone(),
-            },
-            ..grant
-        };
-        let mut candidate = workspace.peer().clone();
-        if candidate
-            .governance_mut()
-            .author_workspace_grant(&grant, &self.inner.host.key, at)?
-        {
-            let state = workspace.collaboration().clone();
-            workspace.commit(candidate, &self.inner.host.key, at, |_, _| Ok(state))?;
-            self.settle(workspace).await?;
-        }
-        Ok(())
     }
 
     /// Every grant `workspace`'s governance holds, as the policy its holders
@@ -710,89 +627,17 @@ impl Workspaces {
         .await
     }
 
-    /// Make `agent` a member of `workspace` acting for `person`, written for the member `by`
-    /// ([`tilo_action_policy::Change::add_agent`]): what every place a turn or this server
-    /// makes an agent calls. `by` is the person, or an agent acting for them, whose right
-    /// decides, narrowed by this server's own: a member adds their own agents, and this device
-    /// signs the change as a member write for them. An agent the workspace holds already is
-    /// no change.
-    ///
-    /// # Errors
-    /// The workspace refuses the change, or its governance cannot be updated.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked from the check through the signed write"
-    )]
-    pub async fn add_agent(
-        &self,
-        workspace: &str,
-        by: tilo_action_policy::MemberId,
-        agent: &str,
-        person: &str,
-    ) -> Result<(), CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        let host = &self.inner.host;
-        let member = workspace
-            .peer()
-            .permissions(host.cert.device_public_key, system_time(now))?;
-        if member.policy.agents.contains_key(agent) {
-            return Ok(());
-        }
-        let change = tilo_action_policy::Change::add_agent(agent, person, Some(by));
-        let signer = hex::encode(host.cert.user_public_key);
-        member
-            .policy
-            .check(
-                &signer,
-                &member.policy.person_on_device(&signer, false),
-                &change,
-                &tilo_action_policy::Context::at_time(system_time(now)),
-                false,
-            )
-            .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
-        let request_id = *blake3::hash(format!("add-agent:{agent}").as_bytes()).as_bytes();
-        let key = host.key.clone();
-        self.administer(
-            &mut workspace,
-            request_id,
-            request_digest(&("member-list", &change))?,
-            |peer| {
-                peer.governance_mut()
-                    .change_member_list(change, &key, system_time(now))
-            },
-            now,
-        )
-        .await
-        .map(drop)
-    }
-
-    /// Make `change`, a custom role's or an agent's, to `workspace`'s member list as
-    /// `caller`, whom the workspace must allow it. An agent change this server signs for a
-    /// caller of another person names them as whom it is made for.
+    /// Make `change`, a custom role's, to `workspace`'s member list as `caller`, whom the
+    /// workspace must allow it.
     pub(super) async fn edit_member_list(
         &self,
         workspace: &str,
         caller: &DeviceCert,
         request_id: [u8; 32],
-        mut change: tilo_action_policy::Change,
+        change: tilo_action_policy::Change,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        use tilo_action_policy::Change;
-        match &mut change {
-            Change::AddAgent { by, .. } | Change::RemoveAgent { by, .. } => {
-                if caller.user_public_key != self.inner.host.cert.user_public_key {
-                    *by = Some(tilo_action_policy::MemberId::person(hex::encode(
-                        caller.user_public_key,
-                    )));
-                }
-            }
-            change if change.is_custom_role_change() => {}
-            _ => {
-                return Err(CollaborationError::new(
-                    "expected a custom role or agent change",
-                ));
-            }
+        if !change.is_custom_role_change() {
+            return Err(CollaborationError::new("expected a custom role change"));
         }
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
@@ -997,8 +842,9 @@ impl Workspaces {
     /// Why the workspace did not take the revocation, or does not hold this
     /// device as a member.
     pub async fn answer_go_on(&self, workspace: &str, agent: &str) -> Result<(), String> {
+        let person = hex::encode(self.inner.host.cert.user_public_key);
         let revoke = tilo_action_policy::Change::Revoke(
-            tilo_action_policy::agent_answers::stop_grant_id(agent),
+            tilo_action_policy::agent_answers::stop_grant_id(agent, &person),
         );
         self.commit_own_change(
             workspace,
@@ -2072,15 +1918,6 @@ impl Workspaces {
     }
 }
 
-/// What a change committed while a workspace is held keeps with it: the
-/// members' records an admission writes ([`super::admitting`]), answering
-/// whose it kept and the frames it wrote.
-pub(super) type Keeping<'a> =
-    &'a dyn Fn(
-        &mut tilo_peer_state::StatePeer,
-        (&SigningKey, std::time::SystemTime),
-    ) -> Result<(Vec<[u8; 32]>, Vec<neighbour_wire::NeighbourMsg>), String>;
-
 /// A workspace of this server while a governor decides, under its lock: whether
 /// its log changed unwritten, and whether a governance change was
 /// committed that its members have not been sent yet.
@@ -2093,15 +1930,8 @@ pub(super) struct HeldWorkspace<'a> {
     /// The workspace's state, held for the decision: a member's write reaches
     /// the replica over the link it syncs on, without this workspace's lock.
     replica: &'a mut tilo_peer_state::StatePeer,
-    /// What a change committed here keeps along.
-    keeping: Option<Keeping<'a>>,
     staged: bool,
     pub(super) committed: bool,
-    /// Whose memberships the committed changes kept.
-    pub(super) kept: Vec<[u8; 32]>,
-    /// The frames of the records the committed changes wrote, for the caller to carry once the
-    /// workspace settled ([`Workspaces::carry_written`]).
-    pub(super) written: Vec<neighbour_wire::NeighbourMsg>,
 }
 
 impl<'a> HeldWorkspace<'a> {
@@ -2110,34 +1940,26 @@ impl<'a> HeldWorkspace<'a> {
         answering: &'a DeviceCert,
         workspace: &'a mut GovernedWorkspace,
         replica: &'a mut tilo_peer_state::StatePeer,
-        keeping: Option<Keeping<'a>>,
     ) -> Self {
         Self {
             key,
             answering,
             workspace,
             replica,
-            keeping,
             staged: false,
             committed: false,
-            kept: Vec::new(),
-            written: Vec::new(),
         }
     }
 
-    /// Commit `peer` as `change`, with what it keeps along written in it,
-    /// and `log`'s answer as the workspace's join log.
+    /// Commit `peer` as `change`, and `log`'s answer as the workspace's join
+    /// log.
     fn commit(
         &mut self,
-        mut peer: tilo_peer_state::StatePeer,
+        peer: tilo_peer_state::StatePeer,
         now: u64,
         change: super::Change,
         log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
-        let (kept, written) = match self.keeping {
-            Some(keep) => keep(&mut peer, (self.key, system_time(now)))?,
-            None => (Vec::new(), Vec::new()),
-        };
         self.workspace.commit_held(
             self.replica,
             peer,
@@ -2152,8 +1974,6 @@ impl<'a> HeldWorkspace<'a> {
         // included.
         self.staged = false;
         self.committed = true;
-        self.kept.extend(kept);
-        self.written.extend(written);
         Ok(())
     }
 }
@@ -2230,7 +2050,6 @@ impl JoinWorkspaces for Workspaces {
                 self.device_cert(),
                 &mut locked,
                 &mut replica,
-                None,
             );
             let answer = decide(&mut held);
             (answer, held.staged, held.committed)
@@ -2252,8 +2071,13 @@ impl JoinWorkspaces for Workspaces {
         now: u64,
     ) -> Option<Result<JoinBootstrap, CollaborationError>> {
         Some(
-            self.admit_answered(remote_endpoint, request.proof.clone(), now)
-                .await,
+            self.admit_answered(
+                remote_endpoint,
+                request.proof.clone(),
+                request.admission.clone(),
+                now,
+            )
+            .await,
         )
     }
 }

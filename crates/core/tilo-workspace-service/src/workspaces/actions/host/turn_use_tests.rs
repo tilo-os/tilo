@@ -82,21 +82,25 @@ pub(super) async fn dispatched(
                 .collect();
             // The turn's answers are the agent's: whatever the workspace held for it before is
             // taken back first, as a person setting them anew replaces them.
+            // An answer the workspace holds already, as given, stands as it is; one given anew
+            // takes the place of what it held under that id.
+            let mut fresh = answers.clone();
             if let Some(held) = workspaces.policy_of(&workspace).await {
                 let stale: Vec<_> = held
                     .grants
                     .iter()
                     .filter(|grant| grant.grantee == named)
-                    .filter(|grant| !answers.iter().any(|answer| answer.id == grant.id))
+                    .filter(|grant| !answers.contains(grant))
                     .map(|grant| grant.id.clone())
                     .collect();
                 if !stale.is_empty() {
                     crate::workspaces::fixtures::revoke_grants(workspaces, &workspace, &stale)
                         .await;
                 }
+                fresh.retain(|answer| !held.grants.contains(answer));
             }
-            if !answers.is_empty() {
-                crate::workspaces::fixtures::record_grants(workspaces, &workspace, &answers).await;
+            if !fresh.is_empty() {
+                crate::workspaces::fixtures::record_grants(workspaces, &workspace, &fresh).await;
             }
         }
     }
@@ -565,6 +569,7 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
         remembers["always"],
         json!([{
             "agent": "scout",
+            "by": "Scout",
             "using": MAIL_USE,
             "places": [IMAP, SMTP],
             "since": remembers["always"][0]["since"],
@@ -600,7 +605,7 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
     // The leave names that one use of that one item: another item of hers is still put to her,
     // never refused for what the leave does not name.
     let another = a_mail_login(&service, workspace_id, hers).await;
-    let wanted = add_mail("other@example.test", IMAP, &another);
+    let wanted = add_mail("other@example.test", "imap.example.test", &another);
     asks(dispatched(workspaces, &turn, &wanted).await);
     assert_eq!(proved.lock().unwrap().len(), 2, "nothing more signed in");
 
@@ -1053,7 +1058,8 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
 }
 
 /// A workspace policy whose answers on the agent `caller` acts as are `rules`, set by the
-/// person who gave them: each kind of a rule is its own answer, as setting answers anew does.
+/// person who gave them: each kind of a rule is its own answer, as setting answers anew does,
+/// and a later answer on the same scope takes the place of an earlier one.
 pub(super) fn narrowing(
     workspace: &str,
     caller: &Caller,
@@ -1066,13 +1072,15 @@ pub(super) fn narrowing(
         let scope = AnswerScope::of_node(&rule.node)
             .expect("a rule of a bound stands at a node an answer names");
         for kind in rule.kinds.iter() {
-            policy.grants.push(agent_answers::grant(
+            let answer = agent_answers::grant(
                 workspace,
                 &agent,
                 (&scope, kind),
                 rule.answer,
                 tilo_action_policy::Grantee::person("owner"),
-            ));
+            );
+            policy.grants.retain(|given| given.id != answer.id);
+            policy.grants.push(answer);
         }
     }
     policy

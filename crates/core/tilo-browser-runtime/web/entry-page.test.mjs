@@ -152,7 +152,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     .replace("import {loadRuntime} from './host.mjs';", 'const loadRuntime = async () => globalThis.__entryPageFixture.runtime;')
     .replace(/import \{([^}]*)\bstartArrival, ([^}]*)\} from '.\/arrival.mjs';/, "import {$1$2} from './arrival.mjs';\nconst startArrival = () => {};")
     .replace("import {browserIdentity, browserPerson, currentIdentity, keepRecoveryWordsShown, keptIdentity, recoveryWords, recoveryWordsShown} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;\nconst recoveryWords = identity => identity.recoveryWords;\nconst recoveryWordsShown = async () => globalThis.__entryPageFixture.recoveryShown;\nconst keepRecoveryWordsShown = async () => {};')
-    .replace('hostToReconnect, joinViaHost,', 'hostToReconnect,')
+    .replace('hostDeviceOf, joinViaHost,', 'hostDeviceOf,')
     .replace('identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation,', 'identityProfile, inspectInvitation, invitedServer, openInvitation,')
     .replace('return await pairViaHost({origin,', 'return await pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), findProfile: (...args) => globalThis.__entryPageFixture.findProfile(...args), origin,')
     .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst joinWorkspace = (...args) => globalThis.__entryPageFixture.joinWorkspace(...args);\nconst PAGE_BUILD')

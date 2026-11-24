@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use tilo_session::platform::records::Changes;
-use tilo_session::{Options, Records, SearchOptions};
+use tilo_session::Options;
 
 use crate::common::private_home;
 
@@ -25,9 +25,9 @@ const SETTLE: Duration = Duration::from_millis(200);
 const WINDOW: Duration = Duration::from_millis(1_200);
 const NOTING: Duration = Duration::from_millis(2_000);
 
-/// The threads that follow the changes stream: search's reading of the workspaces' indexes, and
-/// the indexer of their content, as the kernel names them: a name is cut at fifteen characters.
-const FOLLOWERS: [&str; 2] = ["tilo-search-rec", "tilo-record-ind"];
+/// The threads that follow the changes stream: the indexer of the workspaces' content, as the
+/// kernel names it: a name is cut at fifteen characters.
+const FOLLOWERS: [&str; 1] = ["tilo-record-ind"];
 
 /// How many times each follower woke over `settle` then `window`, and what the session's threads
 /// took of a core over it.
@@ -59,14 +59,10 @@ fn wakes() -> (Vec<(String, u64)>, f64) {
 fn a_change_of_a_workspace_this_device_does_not_hold_wakes_nothing() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let found = Records::new();
-    let changes: Changes = found.changes();
+    let changes = Changes::default();
     let mut session = crate::common::headless(Options {
         // No shell and no app: what is under test is the stream the roles follow, not a window.
-        search: SearchOptions {
-            records: Some(found),
-            ..SearchOptions::default()
-        },
+        record_changes: Some(changes.clone()),
         ..crate::common::api_options(root.path())
     });
     // The session's own look at what it holds ran: the threads that follow the stream stand.

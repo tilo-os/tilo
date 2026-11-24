@@ -101,6 +101,56 @@ impl PeerGovernanceMut<'_> {
         })
     }
 
+    /// Record the grant `own`, a key its person made for an agent or a program, is admitted
+    /// under, written by that key itself (`key`) beside its own row: named `name`, what it
+    /// joined as, where its join says one; else as the workspace lists it already, else as its
+    /// certificate is labelled. A revocation the workspace records of it stands. A certificate
+    /// that is no key's grant records nothing. Whether it changed the workspace.
+    ///
+    /// # Errors
+    /// The grant cannot be encoded, or the workspace's governance cannot be
+    /// written.
+    pub fn author_own_grant(
+        self,
+        own: &tilo_user_identity::DeviceCert,
+        name: Option<&str>,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let Some(scope) = own.capabilities.agent else {
+            return Ok(false);
+        };
+        let id = WorkspaceGrant::id_of(&own.device_public_key);
+        let held = self
+            .peer
+            .governance()
+            .workspace_grants()
+            .into_iter()
+            .find(|held| held.id == id);
+        let named = name.map(str::trim).filter(|name| !name.is_empty());
+        let grant = WorkspaceGrant {
+            id,
+            person: hex::encode(own.user_public_key),
+            device: hex::encode(own.device_public_key),
+            name: match (named, &held) {
+                (Some(named), _) => named.to_owned(),
+                (None, Some(held)) => held.name.clone(),
+                (None, None) => own.device_label.clone(),
+            },
+            scope: scope.workspace_name(),
+            expires_ms: own.expires_at_ns.map(|expiry| expiry / 1_000_000),
+            // A key that another grant minted names it, so the key that made it
+            // lists it wherever the workspace is held.
+            parent: own
+                .issuer
+                .as_deref()
+                .map(|issuer| WorkspaceGrant::id_of(&issuer.device_public_key)),
+            created_ms: own.issued_at_ns / 1_000_000,
+            revoked_ms: held.as_ref().and_then(|held| held.revoked_ms),
+        };
+        self.author_workspace_grant(&grant, key, now)
+    }
+
     /// Mark the grant `id` revoked at `revoked_ms`, authored by the host
     /// `key`. Returns whether it changed the workspace.
     ///
@@ -223,7 +273,8 @@ mod tests {
             issuer: None,
         };
         sign_device_cert(&mut cert, &root)?;
-        peer.admit_certificate(cert, &governor, now)?;
+        peer.governance_mut()
+            .admit_member_device(&cert, &governor, now)?;
         let person = hex::encode(root.verifying_key().to_bytes());
         let agent = tilo_action_policy::key_agent_id(&key);
         // The key's call, carried out and signed by another device of the

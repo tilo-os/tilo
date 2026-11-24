@@ -277,6 +277,7 @@ impl Checker<'_> {
             "model_call" => return self.builtin_model(args, span),
             "run_block" => return self.builtin_run_block(args, span),
             "set" => return self.builtin_set(args, span),
+            "blur" => return self.builtin_blur(args, span),
             "open" => return self.builtin_open(args, span),
             "notify" => return self.builtin_notify(args, span),
             "notice" => return self.builtin_notice(args, span),
@@ -1737,6 +1738,30 @@ impl Checker<'_> {
             vec![Ex::str(&state.id), Self::handle_of(v)],
             Ty::Action,
         )
+    }
+
+    /// `blur()`: an action that ends the keyboard's place in the field the person is typing in,
+    /// as closing its editor does. Views only.
+    fn builtin_blur(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx != Ctx::View {
+            let who = self.st.ctx.word();
+            self.err(
+                "E066",
+                span,
+                format!("`blur()` ends a field's edit in a view; {who} has no field"),
+            );
+            return Ex::error();
+        }
+        if let Some(arg) = args.first() {
+            self.err(
+                "E022",
+                arg.value.span,
+                "`blur` takes nothing: it ends the edit of the field the keyboard is in",
+            );
+            let _ = self.expr(&arg.value, None);
+            return Ex::error();
+        }
+        Ex::host(Imp::ActBlur, Vec::new(), Ty::Action)
     }
 
     /// `open(r)`, or `open(r, view: v)`: an action reference that goes to the window of `r`. Views

@@ -32,6 +32,16 @@
 //! (`verify_connection_redemption`). An entry rides only a connection that
 //! has such a session; the host refuses it anywhere else.
 //!
+//! **The admission is the device's own.** No host signs anyone into a
+//! workspace: the device writes its own admission on the workspace's member
+//! list and signs it. An entry that would let the device in is first
+//! answered [`Entered::Sign`], with the member list and how to come back (the
+//! invitation the entry issued it, or as it came); the device asks again with
+//! the changes it signed ([`Entering::admission`]): its redemption of the
+//! invitation, or, for a further device of someone the workspace has in it,
+//! its own device row. The host passes them on unchanged, and every device of
+//! the workspace judges them under the device that signed them.
+//!
 //! A server reads nothing else from an entering session until the workspace
 //! admitted it. A client sends its first requests right behind its hello; the
 //! host reads them only once it answered [`Entered::Admitted`]. The client
@@ -82,6 +92,9 @@ pub struct Entering {
     pub request_id: [u8; 32],
     /// How the device comes in.
     pub through: Through,
+    /// The workspace changes the device signed to let itself in, written on
+    /// the member list [`Entered::Sign`] answered: empty on the first ask.
+    pub admission: Vec<Vec<u8>>,
 }
 
 /// How a device comes into a workspace.
@@ -196,6 +209,15 @@ pub enum Entered {
     },
     /// The workspace did not admit the device. The host closes the session.
     Refused(EnterRefusal),
+    /// The workspace lets the device in once it signs its own admission:
+    /// written on `governance`, the workspace's member list as encoded
+    /// neighbour messages, and asked again `through` (the invitation the
+    /// entry issued it, or as the device came) with those changes as its
+    /// [`Entering::admission`].
+    Sign {
+        governance: Vec<Vec<u8>>,
+        through: Through,
+    },
 }
 
 #[cfg(test)]

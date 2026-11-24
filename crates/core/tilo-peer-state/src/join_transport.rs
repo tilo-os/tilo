@@ -340,25 +340,49 @@ impl WorkspaceJoinClient {
                 "join client endpoint, certificate, and proof key disagree".into(),
             ));
         }
-        let challenge = match self
+        let response = match self
             .request(
                 address.clone(),
                 JoinTransportRequest::Challenge(JoinChallengeRequest {
-                    signed_invitation,
+                    signed_invitation: signed_invitation.clone(),
                     device_cert: device_cert.clone(),
                     request_id,
                 }),
             )
             .await?
         {
-            JoinTransportResponse::Challenge(response) => response.challenge,
+            JoinTransportResponse::Challenge(response) => response,
             response => return Err(response_error(response)),
         };
-        let proof = sign_join_proof(challenge, device_key).map_err(WorkspaceJoinError::Protocol)?;
+        // The device signs its own admission, the invitation its authority.
+        let now = tilo_clock::wall();
+        let redemption = tilo_workspace_join::verify_connection_redemption(
+            &signed_invitation,
+            &device_cert,
+            request_id,
+            &tilo_user_identity::RevocationList::new(),
+            crate::enrollment::ns(now).map_err(WorkspaceJoinError::Protocol)?,
+        )
+        .map_err(WorkspaceJoinError::Protocol)?;
+        let admission = crate::own_admission::sign_own_admission(
+            &redemption.join().grant().workspace_id.to_string(),
+            &response.governance,
+            &redemption,
+            None,
+            device_key,
+            now,
+        )
+        .await
+        .map_err(WorkspaceJoinError::Protocol)?;
+        let proof = sign_join_proof(response.challenge, device_key)
+            .map_err(WorkspaceJoinError::Protocol)?;
         match self
             .request(
                 address,
-                JoinTransportRequest::Complete(tilo_workspace_join::JoinCompleteRequest { proof }),
+                JoinTransportRequest::Complete(tilo_workspace_join::JoinCompleteRequest {
+                    proof,
+                    admission,
+                }),
             )
             .await?
         {

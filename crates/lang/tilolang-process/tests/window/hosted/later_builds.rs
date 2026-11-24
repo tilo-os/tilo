@@ -115,6 +115,7 @@ impl Session {
                 .iter()
                 .map(|used| used.wasm.clone())
                 .collect(),
+            ..runtime_portal::process_link::Module::default()
         }
         .encode();
         let build = runtime_portal::process_link::AppBuild {

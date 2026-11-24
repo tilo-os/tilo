@@ -277,7 +277,10 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
-            .enter(&created.workspace, &shell)
+            .enter(
+                &created.workspace,
+                (&shell, &SigningKey::from_bytes(&[43; 32])),
+            )
             .await
             .map_err(|error| error.to_string())?;
         Ok::<_, String>(created.workspace)
@@ -407,7 +410,10 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
-            .enter(&created.workspace, &shell)
+            .enter(
+                &created.workspace,
+                (&shell, &SigningKey::from_bytes(&[53; 32])),
+            )
             .await
             .map_err(|error| error.to_string())?;
         Ok::<_, String>(created.workspace)
@@ -521,7 +527,10 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
-            .enter(&created.workspace, &shell)
+            .enter(
+                &created.workspace,
+                (&shell, &SigningKey::from_bytes(&[63; 32])),
+            )
             .await
             .map_err(|error| error.to_string())?;
         Ok::<_, String>(created.workspace)
@@ -737,7 +746,10 @@ fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole()
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
-            .enter(&created.workspace, &shell)
+            .enter(
+                &created.workspace,
+                (&shell, &SigningKey::from_bytes(&[73; 32])),
+            )
             .await
             .map_err(|error| error.to_string())?;
         Ok::<_, String>(created.workspace)
@@ -987,7 +999,10 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
-            .enter(&created.workspace, &shell)
+            .enter(
+                &created.workspace,
+                (&shell, &SigningKey::from_bytes(&[83; 32])),
+            )
             .await
             .map_err(|error| error.to_string())?;
         Ok::<_, String>(created.workspace)

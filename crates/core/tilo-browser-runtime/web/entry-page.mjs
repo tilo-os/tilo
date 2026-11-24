@@ -38,7 +38,7 @@ import {hostUnreachable, refusalText, rejoinedName, retryUnreachable} from './se
 import {deviceRemoved} from './session-refusal.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
 import {isInvitedServer, invitedOrigin, nameInvitedServer, siteNames, siteServer} from './site-host.mjs';
-import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, hostDeviceOf, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {initial, shownName} from './person.mjs';
 import {hex} from './hex.mjs';
 import {memberText} from './json-text.mjs';
@@ -776,36 +776,21 @@ export async function startEntryPage({mode}) {
       // A person signed in here comes back as themself, whether or not this
       // browser kept this host (signed in just now, from a link to it): the
       // host says whether they are in the workspace.
-      const kept = hostToReconnect(origin, identity.userPublicKey) ?? {userPublicKey: identity.userPublicKey};
       displayName = chosenDisplayName(identity.userPublicKey);
-      if (kept.owner) {
-        // On a machine of their own the owner enters any of its workspaces
-        // (the host admits this device as its owner); the host refuses
-        // one that does not exist.
-        const lobby = await connectPeer({origin, identity, runtime, displayName, live: false});
-        try { await lobby.workspaces.enter(workspace); } finally { await lobby.dispose?.(); }
-      }
       // This tab's own device key, which may be one the workspace never
       // admitted: a new key where other tabs hold the others, or one this
       // browser's other pages took for this host while the person entered
       // the workspace on another. Whether the person is in the workspace is
       // the host's to say, by their root, not this browser's: the device
       // enters through the workspace's entry on its session, which lets a
-      // device it admitted straight back in and admits any other device of
-      // a member at the part the person holds.
+      // device it admitted straight back in and has any other device of a
+      // member sign its own row there, the owner's on a machine of their own
+      // too.
       const deviceKey = await openDeviceKey({profile: identityProfile(identity, origin), storage: idbStorage()});
-      if (!kept.owner) {
-        const entry = new URL(`directory/${workspace}/`, `${origin}/`).href;
-        const entered = await withDeviceKey(deviceKey, () => joinWorkspace({origin, entry, identity, runtime, displayName, deviceKey}));
-        keepJoinedHost({origin, workspace, userPublicKey: identity.userPublicKey});
-        return entered;
-      }
-      const peer = await withDeviceKey(deviceKey, () => connectPeer({origin, workspace, identity, runtime, displayName, deviceKey}));
-      // What is kept names the workspace the host's entry let this browser
-      // into (`keepJoinedHost`): reconnecting to another of the host's
-      // workspaces, such as the person's own, leaves it as it is.
+      const entry = new URL(`directory/${workspace}/`, `${origin}/`).href;
+      const entered = await withDeviceKey(deviceKey, () => joinWorkspace({origin, entry, identity, runtime, displayName, deviceKey}));
       keepJoinedHost({origin, workspace, userPublicKey: identity.userPublicKey});
-      return peer;
+      return entered;
     },
     // An embed lists no host actions, so it has nothing to invite with:
     // the desktop offers no Invite there rather than one that does nothing.

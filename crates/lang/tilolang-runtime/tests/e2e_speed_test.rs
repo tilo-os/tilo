@@ -482,16 +482,24 @@ mod cases {
 
         phase the_connection_quality_follows_the_numbers;
         {
-            let s = Speed::new();
-            s.start();
-            s.finish();
-            let window = s.window();
+            // A fast connection, as the numbers of one the engine measured: the tiers a page
+            // reads from them are the app's, not how a shared machine happened to schedule the
+            // six pings the run above takes.
+            let fast = Speed::new();
+            fast.start();
+            fast.finish();
+            fast.record(8.0, 1.0, 200.0, 50.0, "Cloudflare at LHR");
+            let window = fast.window();
             let badges: Vec<String> = of_kind(window.tree(), "ui.Badge")
                 .iter()
                 .filter_map(|b| b.props.get("text").and_then(Value::as_text))
                 .map(str::to_owned)
                 .collect();
-            assert_eq!(badges, ["Excellent", "Excellent", "Excellent"], "a fast connection");
+            assert_eq!(
+                badges,
+                ["Excellent", "Excellent", "Excellent"],
+                "a fast connection"
+            );
 
             // A slow connection: a measurement of one whose numbers are slow. It is recorded
             // after the run so the page's newest measurement is the slow one.

@@ -82,6 +82,11 @@
 #          uses 64 when it is unset). Only the `deep` profile takes this step
 #          (.config/nextest.toml); in a family's environment it would key
 #          every build script's and proc macro's cache entry by it.
+# throughput
+#          TILO_THROUGHPUT_*: the sizes t.toml's `throughput` family runs the
+#          device's ignored throughput test at. In the family's
+#          environment they would key every build script's and proc macro's
+#          cache entry by them; the ci profile takes this step for that test.
 #
 # The five before `property-cases` are values only a package's tests need, so the ci profile takes
 # them for those packages' tests alone: given to the job's environment instead, each would key
@@ -90,7 +95,7 @@
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-    echo "usage: $0 runtime|fonts|audio|ntfs|swtpm|pdf-sandbox|pam-module|property-cases ..." >&2
+    echo "usage: $0 runtime|fonts|audio|ntfs|swtpm|pdf-sandbox|pam-module|throughput|property-cases ..." >&2
     exit 2
 fi
 env_file=${NEXTEST_ENV:?test-env-setup.sh writes the environment to the file NEXTEST_ENV names}
@@ -330,13 +335,21 @@ pam-module() {
     fi
 }
 
+throughput() {
+    provide TILO_THROUGHPUT_SIZES 0,200
+    provide TILO_THROUGHPUT_SINGLES 10
+    provide TILO_THROUGHPUT_BULK 200
+    provide TILO_THROUGHPUT_FILES 20
+    provide TILO_THROUGHPUT_LARGE_MB 16
+}
+
 property-cases() {
     provide PROPTEST_CASES 256
 }
 
 for step; do
     case $step in
-        runtime | fonts | audio | ntfs | swtpm | pdf-sandbox | pam-module | property-cases)
+        runtime | fonts | audio | ntfs | swtpm | pdf-sandbox | pam-module | throughput | property-cases)
             "$step" ;;
         *) echo "unknown test environment step: $step" >&2; exit 2 ;;
     esac

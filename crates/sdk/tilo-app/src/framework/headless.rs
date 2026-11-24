@@ -837,84 +837,6 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         )
     }
 
-    /// A new window of the app on a fresh profile that already holds
-    /// `documents`, each a record a window of the app kept in the test workspace
-    /// (`window_resource`): how an app that now keeps one record per workspace
-    /// first opens where it used to keep one per window.
-    pub fn with_window_resources(
-        documents: &mut [tilo_resource::Doc],
-    ) -> Result<Self, LaunchError> {
-        let profile = Kept::fresh()?;
-        for document in documents {
-            profile.hold_record(super::app::hooks::<A>().id(), TEST_WORKSPACE, document)?;
-        }
-        Self::open(
-            Profile::Window(
-                profile,
-                TEST_WORKSPACE.to_owned(),
-                TEST_DEVICE.to_owned(),
-                INSTANCE + 1,
-            ),
-            Role::Owner,
-            AUTHOR,
-            &[],
-            None,
-            None,
-            None,
-            |_| {},
-        )
-    }
-
-    /// A new window of the app on a fresh profile whose workspace already
-    /// holds `documents`, each stamped with the identity beside it and named
-    /// in the app's workspace index by its name: records this device was
-    /// given from elsewhere — a window on another device, an agent in a
-    /// hosted workspace — rather than started here. What a server publishes
-    /// reaches a reader this way.
-    pub fn with_named_resources(
-        documents: &mut [(&str, ui_core::resource::DocumentId, tilo_resource::Doc)],
-    ) -> Result<Self, LaunchError> {
-        let profile = Kept::fresh()?;
-        let app = super::app::hooks::<A>().id();
-        let kind = super::app::definition::<A>().resource_type.clone();
-        let mut index = automerge::AutoCommit::new();
-        for (name, id, document) in documents.iter_mut() {
-            if !ui_core::resource::init_scoped(
-                document,
-                id,
-                &kind,
-                TEST_WORKSPACE,
-                Some(TEST_WORKSPACE),
-            ) {
-                return Err(operation("a record could not be stamped for the workspace"));
-            }
-            let checkout = profile.hold_record(app, TEST_WORKSPACE, document)?;
-            ui_core::resource::index::reference(&mut index, &checkout.id, &checkout.kind);
-            ui_core::resource::index::set_name(&mut index, &checkout.id, Some(name));
-        }
-        profile.hold(
-            app,
-            TEST_WORKSPACE,
-            &DocumentId::package_primary(),
-            &mut index,
-        )?;
-        Self::open(
-            Profile::Window(
-                profile,
-                TEST_WORKSPACE.to_owned(),
-                TEST_DEVICE.to_owned(),
-                INSTANCE + 2,
-            ),
-            Role::Owner,
-            AUTHOR,
-            &[],
-            None,
-            None,
-            None,
-            |_| {},
-        )
-    }
-
     /// A new window of an app that [keeps one record per workspace](ResourceApp::WORKSPACE_RESOURCE)
     /// on a fresh profile whose workspace record is already `document`: how a
     /// workspace an earlier version of the app wrote opens.
@@ -1509,14 +1431,6 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
             store.note_kept();
         }
         Ok(())
-    }
-
-    /// The workspace's default records of the app's windows kept on this
-    /// profile, as [`SeedCx::window_resources`](super::SeedCx::window_resources)
-    /// reads them.
-    pub fn window_resources(&self) -> Vec<(DocumentId, tilo_resource::Doc)> {
-        self.records
-            .window_resources(&definition::<A>().resource_type)
     }
 
     /// Open what a launch naming `arguments` opens in this window, as the

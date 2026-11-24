@@ -512,6 +512,18 @@ impl<L: Layout> Arranged<L> {
         true
     }
 
+    /// Note where the parts stand before the container's own arguments change what it shows, so
+    /// the change moves them from there (a split whose drawer opens or closes): the same note
+    /// [`Self::insert`] and [`Self::remove`] take.
+    pub fn note_change(&mut self) {
+        self.before_change();
+    }
+
+    /// A change of the container's own arguments laid its parts out again under its node.
+    pub fn arguments_changed(&mut self) {
+        self.parts_changed();
+    }
+
     /// Move the part at `from` to `to`, its child kept. Described, as [`Self::replace`] is.
     pub fn move_part(&mut self, from: usize, to: usize) {
         if from == to || from >= self.parts.len() {

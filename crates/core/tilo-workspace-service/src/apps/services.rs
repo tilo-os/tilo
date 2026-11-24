@@ -232,14 +232,15 @@ pub trait BrowserServiceSessionServices: Send + Sync {
         }
         self.authorize(context)
     }
-    /// Answer an authorized command that is answered at once, on the connection's dispatch:
-    /// whether this session lends vault items for a page
-    /// ([`runtime_collab::BrowserServiceSessionCommand::LendsItems`]).
+    /// Answer an authorized command that needs nobody's word but the service's: whether this
+    /// session lends vault items for a page
+    /// ([`runtime_collab::BrowserServiceSessionCommand::LendsItems`]). Awaited, never waited for
+    /// on a thread: the service may be the seat's, asked over a link the asking thread carries.
     fn command(
-        &self,
+        self: Arc<Self>,
         context: &BrowserServiceSessionRequestContext,
         command: runtime_collab::BrowserServiceSessionCommand,
-    ) -> Result<runtime_collab::BrowserServiceSessionReply, String>;
+    ) -> ItemAnswering;
     /// Answer an item's use ([`runtime_collab::BrowserServiceSessionCommand::UseItem`]),
     /// later: whoever keeps the vault is asked outside this process, and the connection
     /// that asked is not kept waiting on its dispatch. Everything the service decides is an
@@ -287,6 +288,15 @@ pub trait BrowserServiceSessionServices: Send + Sync {
 pub type ItemAnswering = std::pin::Pin<
     Box<
         dyn std::future::Future<Output = Result<runtime_collab::BrowserServiceSessionReply, String>>
+            + Send
+            + 'static,
+    >,
+>;
+
+/// The answer to a Files clipboard command, as [`FileClipboardServices::command`] hands it back.
+pub type ClipboardAnswering = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<runtime_collab::file_clipboard::Reply, String>>
             + Send
             + 'static,
     >,
@@ -369,12 +379,13 @@ impl FileClipboardContext {
     }
 }
 pub trait FileClipboardServices: Send + Sync {
-    /// Perform a bounded command under the sealed local admission.
+    /// Perform a bounded command under the sealed local admission. Awaited, never waited for on
+    /// a thread: the clipboard may be the seat's, asked over a link the asking thread carries.
     fn command(
-        &self,
+        self: Arc<Self>,
         context: &FileClipboardContext,
         command: runtime_collab::file_clipboard::Command,
-    ) -> Result<runtime_collab::file_clipboard::Reply, String>;
+    ) -> ClipboardAnswering;
     fn disconnect(&self, peer: u64);
 }
 
@@ -472,6 +483,8 @@ pub struct ResourceRequestContext {
     record: Option<String>,
     /// Why the caller may not found the route's record in a workspace this device governs.
     founding_refusal: Option<String>,
+    /// The kind of the record the route's channel opened, as the app joined it.
+    kind: Option<String>,
 }
 
 impl ResourceRequestContext {
@@ -488,7 +501,21 @@ impl ResourceRequestContext {
             opened_for: None,
             record: None,
             founding_refusal: None,
+            kind: None,
         }
+    }
+
+    /// The context of a route whose channel opened a record of `kind`.
+    #[must_use]
+    pub fn of_kind(mut self, kind: Option<String>) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// The kind of the record the route's channel opened, when the app named it.
+    #[must_use]
+    pub fn kind(&self) -> Option<&str> {
+        self.kind.as_deref()
     }
 
     /// The context of a route whose caller may not found its record where this device governs
@@ -588,7 +615,7 @@ impl ResourceRequestContext {
 
 /// The store's answer to one resource command, once it has it.
 pub type ResourceAnswer = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<tilo_resource_store::wire::Reply, String>>>,
+    Box<dyn std::future::Future<Output = Result<tilo_resource_store::wire::Reply, String>> + Send>,
 >;
 
 /// The device's one store, as apps write and read their resources in it: an app holds no store
@@ -675,8 +702,6 @@ pub struct ProcessServices {
     /// The session's persistent search index; without it apps' content is findable only while
     /// they run.
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
-    /// What the session hears of a record changing, so search reads it again.
-    pub document_index_changes: Option<Arc<dyn DocumentIndexChanges>>,
     /// The device content store content puts go to; without it that api is not offered.
     pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
@@ -754,7 +779,6 @@ impl ProcessServices {
         "providers",
         "continuations",
         "search_index",
-        "document_index_changes",
         "content_store",
         "workspace_control",
         "settings",

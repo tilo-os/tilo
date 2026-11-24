@@ -13,7 +13,11 @@ use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
-use key_group::{ContentKeys, KeyGroup, MemberKey};
+use key_group::{KeyGroup, MemberKey};
+
+/// The content keys a fixture's device seals its records under
+/// ([`GroupKeys`]): what a test that builds its own documents hands the service.
+pub use key_group::ContentKeys;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::{
@@ -179,6 +183,15 @@ pub fn governor() -> (SigningKey, DeviceCert) {
 #[must_use]
 pub fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
     device_cert(&SigningKey::from_bytes(&[1; 32]), "home", capabilities)
+}
+
+/// A person's device certificate, as a guest's browser makes one.
+pub fn guest_device() -> (SigningKey, DeviceCert) {
+    device_cert(
+        &SigningKey::from_bytes(&rand::random()),
+        "guest",
+        DeviceCapabilities::member(),
+    )
 }
 
 /// A new device of `root`'s person, labelled `label` and certified with
@@ -537,7 +550,8 @@ pub async fn test_host_with_grants(
             sink: None,
         },
         grants,
-        Vec::new(),
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
     )
     .await
 }
@@ -554,7 +568,16 @@ pub async fn test_host_in_the_clear(
     key: &SigningKey,
     cert: &DeviceCert,
 ) -> TestHost {
-    host_on(state_root, key, cert, None, None, Vec::new()).await
+    host_on(
+        state_root,
+        key,
+        cert,
+        None,
+        None,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )
+    .await
 }
 
 /// [`test_host`] whose device holds `keys`: the same keys open
@@ -576,33 +599,34 @@ pub async fn test_host_holding(
         cert,
         DeviceKeyGroups { keys, sink: None },
         None,
-        Vec::new(),
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
     )
     .await
 }
 
-/// [`test_host`] whose device's native apps kept files of their own below `homes`
-/// ([`crate::service::ServiceConfig::app_files`]).
+/// [`test_host_holding`] whose service opens with the language runtime `tilolang` mounted, as
+/// the daemon's program opens the one it links: the types and verbs of the tilolang apps the
+/// build carries are declared on it, so a member's write of one of their records is judged.
 ///
 /// # Panics
 ///
 /// The endpoint cannot bind or the host cannot open.
-pub async fn test_host_with_app_files(
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn test_host_holding_mounting(
     state_root: &Path,
     key: &SigningKey,
     cert: &DeviceCert,
-    homes: Vec<std::path::PathBuf>,
+    keys: Arc<TestGroupKeys>,
+    tilolang: crate::tl_records::Tilolang,
 ) -> TestHost {
     host_on(
         state_root,
         key,
         cert,
-        DeviceKeyGroups {
-            keys: Arc::<TestGroupKeys>::default(),
-            sink: None,
-        },
+        DeviceKeyGroups { keys, sink: None },
         None,
-        homes,
+        Some(tilolang),
     )
     .await
 }
@@ -630,7 +654,16 @@ pub async fn test_host_keyed(
         Arc::new(tilo_workspace_keys::NoSealChecks),
     )
     .expect("the device's key service opens");
-    let host = host_on(state_root, key, cert, keys.groups(), None, Vec::new()).await;
+    let host = host_on(
+        state_root,
+        key,
+        cert,
+        keys.groups(),
+        None,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )
+    .await;
     (host, keys)
 }
 
@@ -642,7 +675,7 @@ async fn host_on(
     cert: &DeviceCert,
     channels: impl Into<Option<DeviceKeyGroups>>,
     grants: Option<usize>,
-    app_files: Vec<std::path::PathBuf>,
+    #[cfg(not(target_arch = "wasm32"))] tilolang: Option<crate::tl_records::Tilolang>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
@@ -657,7 +690,8 @@ async fn host_on(
         WorkspaceService::open(
             ServiceConfig {
                 max_workspace_grants: grants,
-                app_files,
+                #[cfg(not(target_arch = "wasm32"))]
+                tilolang,
                 // Each device knows only the app surfaces named to it: tests run side by side in one
                 // process, and a surface one of them names must not change what another's stores
                 // admit.
@@ -741,7 +775,8 @@ pub async fn admit_view_reader(
     let now = tilo_clock::wall();
     let mut candidate = workspace.peer().clone();
     candidate
-        .admit_certificate(member.clone(), key, now)
+        .governance_mut()
+        .admit_member_device(member, key, now)
         .expect("the workspace admits the certificate");
     let collaboration = workspace.collaboration().clone();
     workspace
@@ -924,41 +959,181 @@ pub async fn entry_join_as(
         .unwrap();
     let service = workspaces.join_service();
     let endpoint = device_cert.device_public_key;
+    let request_id = [seed.wrapping_add(100); 32];
     let JoinTransportResponse::Challenge(answer) = service
         .handle(
             endpoint,
             JoinTransportRequest::Challenge(JoinChallengeRequest {
-                signed_invitation: issued.signed_invitation,
+                signed_invitation: issued.signed_invitation.clone(),
                 device_cert: device_cert.clone(),
-                request_id: [seed.wrapping_add(100); 32],
+                request_id,
             }),
         )
         .await
     else {
         panic!("no challenge");
     };
+    // The device signs its own admission, as a joining device does.
+    let redemption = tilo_peer_state::join::verify_connection_redemption(
+        &issued.signed_invitation,
+        device_cert,
+        request_id,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let admission = tilo_peer_state::own_admission::own_admission(
+        workspace,
+        &answer.governance,
+        &redemption,
+        None,
+        device,
+        tilo_clock::wall(),
+    )
+    .unwrap();
     let proof = sign_join_proof(answer.challenge, device).unwrap();
-    let complete = JoinTransportRequest::Complete(JoinCompleteRequest { proof });
+    let complete = JoinTransportRequest::Complete(JoinCompleteRequest { proof, admission });
     let response = service.handle(endpoint, complete.clone()).await;
     drop(service);
     (complete, response)
 }
 
-/// Admit `key`, a key its person made, to `workspace`, as redeeming its
-/// person's invitation there admits it: listed as one of the person's
-/// devices, its grant kept beside the workspace's governance.
-///
-/// # Panics
-///
-/// The workspace is not held here, or refuses the key.
-pub async fn enter_key(workspaces: &Workspaces, workspace: &str, key: &DeviceCert) {
-    workspaces
-        .admit_entering(workspace, key, tilo_clock::unix_now_ns())
-        .await
-        .expect("the workspace admits the key");
-}
-
 impl Workspaces {
+    /// `cert`'s device asking for `entry` on its session, as a device does: where the host
+    /// answers that it may come in once it signs its own admission, it signs it with `key`
+    /// ([`tilo_peer_state::own_admission::sign_entry`]) and asks again. The host's last answer.
+    ///
+    /// # Panics
+    ///
+    /// The device cannot sign what the host answered.
+    pub async fn enter_signed(
+        &self,
+        (key, cert): (&SigningKey, &DeviceCert),
+        entry: tilo_server_protocol::entering::Entry,
+    ) -> tilo_server_protocol::entering::Entered {
+        use crate::handshake::Admit;
+        use tilo_server_protocol::entering::{Entered, Through};
+        let answered = Admit::enter(self, cert, entry.clone()).await;
+        let Entered::Sign {
+            governance,
+            through,
+        } = answered
+        else {
+            return answered;
+        };
+        let invitation = match &through {
+            Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
+            Through::Entry => None,
+        };
+        let entering = &entry.entering;
+        let admission = tilo_peer_state::own_admission::sign_entry(
+            &entering.workspace,
+            &governance,
+            (invitation, entering.request_id),
+            Some(entering.name.as_str()),
+            (cert, key),
+            tilo_clock::wall(),
+        )
+        .await
+        .unwrap();
+        let mut signed = entry;
+        signed.entering.through = through;
+        signed.entering.admission = admission;
+        Admit::enter(self, cert, signed).await
+    }
+
+    /// Admit the device `cert` certifies with `invitation`, under the request
+    /// `request_id`, as a device entering on its session is: it signs its own
+    /// admission with `key` on the workspace's member list, named `name`
+    /// ([`tilo_peer_state::own_admission`]), and the workspace takes it in,
+    /// with the owner's pre-admission `token` where the invitation was issued
+    /// under one. The caller vouches that the device proved it holds its key
+    /// on the connection that carries the redemption.
+    ///
+    /// # Panics
+    ///
+    /// The invitation names no workspace held here, or does not admit the
+    /// device.
+    pub async fn admit_proven(
+        &self,
+        invitation: Vec<u8>,
+        (cert, key): (DeviceCert, &SigningKey),
+        request_id: [u8; 32],
+        name: &str,
+        token: Option<&[u8]>,
+    ) -> tilo_server_protocol::workspaces::JoinReply {
+        // A device that cannot sign itself in under the invitation is refused
+        // for the reason every receiver would refuse it: it sends nothing.
+        let admission = match self
+            .own_admission_of(&invitation, (&cert, key), request_id, name)
+            .await
+        {
+            Ok(admission) => admission,
+            Err(refused) => return tilo_server_protocol::workspaces::JoinReply::Refused(refused),
+        };
+        self.redeem_on_connection(
+            super::pages::Presented {
+                invitation,
+                cert,
+                request_id,
+            },
+            admission,
+            name,
+            token,
+        )
+        .await
+    }
+
+    /// The admission `key`'s device, `cert`'s, signs itself for `invitation`
+    /// on the member list the host holds now: what a joining device sends
+    /// with its redemption.
+    ///
+    /// # Panics
+    ///
+    /// The invitation names no workspace held here.
+    ///
+    /// # Errors
+    ///
+    /// The device could not sign itself in under the invitation, as every
+    /// receiver would refuse it.
+    pub async fn own_admission_of(
+        &self,
+        invitation: &[u8],
+        (cert, key): (&DeviceCert, &SigningKey),
+        request_id: [u8; 32],
+        name: &str,
+    ) -> Result<Vec<Vec<u8>>, String> {
+        use tilo_peer_state::join_log::GovernanceMessages as _;
+        let now = tilo_clock::unix_now_ns();
+        let workspace = tilo_peer_state::join_log::invitation_workspace(invitation, now)
+            .unwrap()
+            .to_string();
+        let governance = self
+            .workspace(&workspace)
+            .await
+            .unwrap()
+            .lock()
+            .await
+            .peer()
+            .governance_messages()
+            .unwrap();
+        let redemption = tilo_peer_state::join::verify_connection_redemption(
+            invitation,
+            cert,
+            request_id,
+            &tilo_user_identity::RevocationList::new(),
+            now,
+        )?;
+        tilo_peer_state::own_admission::own_admission(
+            &workspace,
+            &governance,
+            &redemption,
+            Some(name),
+            key,
+            tilo_clock::wall(),
+        )
+    }
+
     /// Name `workspace`'s person, not a device, as the founder of the copy
     /// held here: the copy of a Servers workspace an earlier build founded
     /// alike on each of its person's devices.
@@ -1071,6 +1246,24 @@ pub async fn invitation(
     tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation)
 }
 
+/// The membership a replica holding nothing but `workspace`'s membership log, as `workspaces`
+/// sends it to a peer, replays: none of the workspace's records and none of its keys.
+///
+/// # Panics
+/// `workspaces` does not hold `workspace`.
+pub async fn membership_log_alone(
+    workspaces: &Workspaces,
+    workspace: &str,
+) -> tilo_action_policy::WorkspacePolicy {
+    let state = workspaces.workspace(workspace).await.unwrap();
+    let message = state.lock().await.peer().workspace_message();
+    let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = message else {
+        panic!("a workspace sends its log whole: {message:?}");
+    };
+    let log = tilo_peer_state::workspace::candidate(None, &changes).unwrap();
+    tilo_peer_state::members::replay(&log, workspace)
+}
+
 /// The runs a test's broker was asked to start, each of which ran to its end at once.
 #[derive(Default)]
 pub struct Started(pub Mutex<Vec<crate::apps::triggers::Firing>>);
@@ -1154,4 +1347,83 @@ impl crate::work::AgentEngine for ActsAsScout {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
         Box::pin(async move { agent == "scout" })
     }
+}
+
+/// Link `key`'s device, `cert`'s, to `host`'s workspace `workspace` from a copy of the workspace
+/// whose member list does not list it, as a member's further device reaches it: the host admits
+/// the dial to sign the device's own row and nothing else, ends that link once the row is in, and
+/// the device dials again and catches up as the member device it now is. Answers the link that
+/// runs, which ends with the returned handle.
+///
+/// # Panics
+///
+/// The host refused either dial, or the device never caught up.
+#[cfg(test)]
+pub async fn list_itself_on_link(
+    host: &TestHost,
+    workspace: &str,
+    (key, cert): (&SigningKey, &DeviceCert),
+) -> tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>> {
+    let home = tilo_test_relay::relay().await;
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+        .relay_mode(iroh::RelayMode::Custom(home.relays()))
+        .bind()
+        .await
+        .unwrap();
+    let workspaces = host.workspaces();
+    let host_device = workspaces.host_device();
+    let host_cert = workspaces.device_cert().clone();
+    let dialer = Arc::new(tilo_server_client::link::Dialer::from_endpoint(
+        tilo_server_client::ServerAddress::at(host.node_addr()),
+        endpoint,
+    ));
+    let copy = workspaces
+        .state(workspace)
+        .await
+        .expect("the host holds the workspace");
+    let link =
+        tilo_peer_state::direct::DirectSync::new(copy, key.clone()).with_certificate(cert.clone());
+    let dial = || async {
+        let transport = dialer
+            .link(tilo_server_client::link::Purpose::Records)
+            .await
+            .expect("the host answers a records link");
+        transport
+            .prove_member(cert, key, &host_cert)
+            .await
+            .expect("the host proves the device");
+        link.dial_over(Arc::new(transport), host_device).await
+    };
+    let listing_itself = dial()
+        .await
+        .expect("the host admits the device to list itself");
+    let ended = tilo_test_env::within(
+        "the host ends the link once the device's own row is in",
+        listing_itself.run(&link),
+    )
+    .await;
+    assert_eq!(
+        ended,
+        Err(tilo_server_protocol::refusal::Refusal::Listed),
+        "the link the device listed itself on ends, telling it so"
+    );
+    let dialed = dial()
+        .await
+        .expect("the host admits the listed device as a member device");
+    let mut caught_up = link.caught_up();
+    let running = {
+        let link = link.clone();
+        let dialer = Arc::clone(&dialer);
+        tokio::spawn(async move {
+            let ran = dialed.run(&link).await;
+            drop(dialer);
+            ran
+        })
+    };
+    tilo_test_env::within("the listed device catches up with the host", async {
+        caught_up.wait_for(|caught| *caught).await.unwrap();
+    })
+    .await;
+    running
 }

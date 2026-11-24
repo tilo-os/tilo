@@ -226,7 +226,7 @@ impl JoinedChannel {
         if let Some(waiting) = self.committed_arrival_wait(&request) {
             waiting.await;
         }
-        self.committed_document_dispatch(&request)
+        self.committed_document_dispatch(&request).await
     }
 }
 
@@ -626,16 +626,12 @@ impl JoinedChannel {
         ) {
             return awaited;
         }
-        // The service may be the seat's to ask: off the broker's event loop, which carries that
-        // ask.
+        // The service may be the seat's to ask, over a link this event loop carries: awaited,
+        // so the loop keeps carrying it.
         let services = self.state.services.clone();
         let bytes = zeroize::Zeroizing::new(bytes.to_vec());
         Ok(Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                delegate_browser_service_session_command(&services, &context, &bytes)
-            })
-            .await
-            .map_err(|error| BrokerError::failed(error.to_string()))?
+            delegate_browser_service_session_command(&services, &context, &bytes).await
         }))
     }
 

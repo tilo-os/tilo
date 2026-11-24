@@ -51,14 +51,7 @@ async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redee
     server.shutdown().await;
 }
 
-/// A person's device certificate, as a guest's browser makes one.
-pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
-    device_cert(
-        &SigningKey::from_bytes(&rand::random()),
-        "guest",
-        DeviceCapabilities::member(),
-    )
-}
+pub(crate) use super::fixtures::guest_device;
 
 #[tokio::test]
 async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_refused_alone() {
@@ -84,13 +77,13 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
             )
             .await
             .unwrap();
-        let (_, device_cert) = guest_device();
+        let (device_key, device_cert) = guest_device();
         people.push(device_cert.user_public_key);
         // The last guest presents someone else's token.
         let token = if index == 5 { [1; 8] } else { token };
         redemptions.push((
             issued.signed_invitation,
-            device_cert,
+            (device_key, device_cert),
             format!("Guest {index}"),
             token,
         ));
@@ -101,13 +94,13 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
         .unwrap()
         .generation;
     let answers = n0_future::join_all(redemptions.into_iter().map(
-        |(invitation, device_cert, name, token)| {
+        |(invitation, (device_key, device_cert), name, token)| {
             let workspaces = workspaces.clone();
             async move {
                 workspaces
                     .admit_proven(
                         invitation,
-                        device_cert,
+                        (device_cert, &device_key),
                         rand::random(),
                         &name,
                         Some(token.as_slice()),
@@ -183,12 +176,12 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
     server.shutdown().await;
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
-    for (index, (issued, (_, device_cert))) in issued.iter().zip(&guests).enumerate() {
+    for (index, (issued, (device_key, device_cert))) in issued.iter().zip(&guests).enumerate() {
         let token = u8::try_from(index + 1).unwrap();
         let answer = workspaces
             .admit_proven(
                 issued.signed_invitation.clone(),
-                device_cert.clone(),
+                (device_cert.clone(), device_key),
                 rand::random(),
                 &format!("Guest {index}"),
                 Some(&[token; 8][..]),
@@ -251,7 +244,13 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
     );
 
     assert!(
-        !workspaces.enter(&created.workspace, &page).await.unwrap(),
+        !workspaces
+            .enter(
+                &created.workspace,
+                (&page, &SigningKey::from_bytes(&[9; 32]))
+            )
+            .await
+            .unwrap(),
         "the device is admitted already"
     );
     assert!(
@@ -1331,7 +1330,10 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
     let response = service
         .handle(
             endpoint,
-            JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
+            JoinTransportRequest::Complete(JoinCompleteRequest {
+                proof,
+                admission: Vec::new(),
+            }),
         )
         .await;
     assert!(
@@ -1587,13 +1589,20 @@ pub(crate) async fn admitted_member(
     cert: &DeviceCert,
     seed: u8,
 ) -> (DeviceCert, u16) {
+    let (_, member) = further_device(cert, seed);
+    admit_view_reader(workspaces, workspace, key, &member).await;
+    (member, u16::from(seed) << 8 | 0x11)
+}
+
+/// A further device of `cert`'s person, keyed by `seed`, which no workspace
+/// lists yet.
+pub(crate) fn further_device(cert: &DeviceCert, seed: u8) -> (SigningKey, DeviceCert) {
     let member_key = SigningKey::from_bytes(&[seed; 32]);
     let mut member = cert.clone();
     member.device_public_key = member_key.verifying_key().to_bytes();
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    admit_view_reader(workspaces, workspace, key, &member).await;
-    (member, u16::from(seed) << 8 | 0x11)
+    (member_key, member)
 }
 
 /// `member`'s change to `workspace`'s document opening two unconfined terminals
@@ -1929,7 +1938,10 @@ async fn a_join_the_host_completed_before_the_workspace_moved_on_is_finished_thr
     let JoinTransportResponse::MembershipComplete(current) = service
         .handle(
             endpoint,
-            JoinTransportRequest::MembershipComplete(MembershipCompleteRequest { proof }),
+            JoinTransportRequest::MembershipComplete(MembershipCompleteRequest {
+                proof,
+                admission: Vec::new(),
+            }),
         )
         .await
     else {
@@ -2118,7 +2130,10 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
     let JoinTransportResponse::MembershipComplete(current) = service
         .handle(
             endpoint,
-            JoinTransportRequest::MembershipComplete(MembershipCompleteRequest { proof }),
+            JoinTransportRequest::MembershipComplete(MembershipCompleteRequest {
+                proof,
+                admission: Vec::new(),
+            }),
         )
         .await
     else {

@@ -334,7 +334,11 @@ impl Core {
                 return Ok(Rc::clone(listing));
             }
             // An action that writes the collection while it walks it walks what it read.
-            let listing = listing_of(&**self.store.borrow(), coll).map_err(|e| e.to_string())?;
+            let listing = if self.frames.borrow().run().is_some_and(|run| run.journaled) {
+                self.journaled_listing(coll)?
+            } else {
+                listing_of(&**self.store.borrow(), coll).map_err(|e| e.to_string())?
+            };
             let _ = pin.set(Rc::clone(&listing));
             return Ok(listing);
         }
@@ -351,6 +355,48 @@ impl Core {
             vs.listings.push((Rc::clone(coll), Rc::clone(&listing)));
         }
         Ok(listing)
+    }
+
+    /// The listing of `coll` in a run that journals its reads: the ids its items held when the
+    /// run first read it, which a replay reads back from the journal. A collection is read where
+    /// its items are, not when the field is: a filter the store answers journals the items it
+    /// kept, never every item of the collection.
+    fn journaled_listing(&self, coll: &Rc<CollRef>) -> Result<Rc<Listing>, String> {
+        let read = self.journaled_read(|| {
+            let listing = listing_of(&**self.store.borrow(), coll)
+                .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+            Ok(Value::List(
+                listing
+                    .items()
+                    .into_iter()
+                    .map(|id| Value::Text(id.as_ref().to_owned()))
+                    .collect(),
+            ))
+        });
+        let ids = match read {
+            Ok(Value::List(ids)) => ids,
+            Ok(other) => {
+                return Err(format!(
+                    "the run diverged from its journal: expected the items of a collection, read {}",
+                    other.kind_name()
+                ));
+            }
+            Err(crate::engine::HostFail::Trap(why)) => return Err(why),
+            Err(crate::engine::HostFail::Suspend) => {
+                return Err("a collection's read stopped the run".to_owned());
+            }
+        };
+        let ids: Vec<Rc<str>> = ids
+            .into_iter()
+            .map(|id| match id {
+                Value::Text(id) => Ok(Rc::from(id)),
+                other => Err(format!(
+                    "the run diverged from its journal: expected an item's id, read {}",
+                    other.kind_name()
+                )),
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Rc::new(Listing::from_items(ids)))
     }
 
     /// Record, in a view's frame, what one read of `coll`, of `len` items, saw.

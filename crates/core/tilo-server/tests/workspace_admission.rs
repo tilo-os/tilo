@@ -64,7 +64,7 @@ async fn home_host() -> HomeHost {
     };
     let laptop = host.owner.enrol("laptop", DeviceCapabilities::primary());
     let laptop_key = laptop.device_pubkey();
-    hold_workspace(&host.server, OWNERS, &[&laptop.cert]).await;
+    hold_workspace(&host.server, OWNERS, &[&laptop]).await;
     let laptop = Linked::open(&host.server, &laptop, OWNERS)
         .await
         .expect("the owner's first device enters the owner's workspace");

@@ -144,8 +144,9 @@ pub struct SavedNetwork {
     #[serde(rename = "$address")]
     pub address: tilo_resource::Handle<crate::SavedNetworkRow>,
     pub name: String,
-    /// `NetworkManager`'s id of the profile, which its address names.
-    pub id: String,
+    /// `NetworkManager`'s id of the profile, which its address carries and which the network's
+    /// per-profile actions take: a view reads it here, since `id` is the resource's own.
+    pub profile: String,
     pub kind: SavedKind,
     /// It joins by itself when it is in reach.
     pub autoconnect: bool,
@@ -164,6 +165,30 @@ pub struct SavedNetwork {
     pub ipv4: Option<SavedIpv4>,
     /// Whether a wake packet over it wakes this device; `None` when the device could not read it.
     pub wake: Option<NetworkWake>,
+    /// Who a work or school network knows this device as; `None` when the network is not one.
+    pub enterprise: Option<SavedEnterprise>,
+}
+
+/// Who a work or school network knows this device as, and the certificate it checks the network
+/// with.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct SavedEnterprise {
+    /// The identity the network knows this device as.
+    pub identity: String,
+    /// The certificate that verifies the network, as a path; empty when it is not checked.
+    pub ca_certificate: String,
+}
+
+impl From<&os_actions::network_settings::EnterpriseIdentity> for SavedEnterprise {
+    fn from(identity: &os_actions::network_settings::EnterpriseIdentity) -> Self {
+        Self {
+            identity: identity.identity.clone(),
+            ca_certificate: identity.ca_certificate.clone(),
+        }
+    }
 }
 
 /// Whether a saved network wakes this device from sleep, as the device reports it.
@@ -591,7 +616,7 @@ impl From<&os_actions::SavedNetworkProfile> for SavedNetwork {
     fn from(profile: &os_actions::SavedNetworkProfile) -> Self {
         Self {
             name: profile.name.clone(),
-            id: profile.uuid.clone(),
+            profile: profile.uuid.clone(),
             kind: SavedKind::from(profile.kind.as_str()),
             autoconnect: profile.autoconnect,
             last_used: profile.last_used,

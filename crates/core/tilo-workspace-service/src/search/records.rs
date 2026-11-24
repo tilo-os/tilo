@@ -9,9 +9,9 @@
 //! messages, a conversation or an agent, and one that deletes a message has it gone from search
 //! with it.
 //!
-//! What is read is what this device holds ([`DocumentSource`]): a workspace it does not keep, a
-//! sealed record whose keys are not here, and a record it may not read are all nothing to index —
-//! the device's appetite decides, not a list of apps.
+//! What is read is what this device's store holds ([`StoreReader`]): a workspace it does not
+//! keep, a record whose keys are not here, and a record it may not read are all nothing to index
+//! — the device's appetite decides, not a list of apps.
 //!
 //! A tilolang app keeps its resources in the workspace's resource store, which places them in
 //! whichever of the app's documents it chooses. A write to one of them has that document's
@@ -32,7 +32,6 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, Weak};
 
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::workspace_documents::{DeviceDocuments, DocumentRead};
 use tilo_resource::search_index::{IndexEntry, IndexState, Publisher};
 
 use super::{AppContentIndex, IndexKey};
@@ -40,43 +39,6 @@ use super::{AppContentIndex, IndexKey};
 /// The argument an app's binary is started with to read one of its records for search: it reads
 /// the record on its input and answers its entries on its output.
 pub const INDEX_FLAG: &str = "--index";
-
-/// What the indexer reads: the workspaces this device holds, and the documents within them.
-pub trait DocumentSource: Send + Sync + 'static {
-    /// The workspaces this device holds.
-    fn workspaces(&self) -> Vec<String>;
-
-    /// Every document `workspace` holds, by its app and route.
-    ///
-    /// # Errors
-    /// The workspace is not held here, or its documents cannot be listed.
-    fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String>;
-
-    /// What `workspace` holds of `app`'s `record` now, or `None` while the keys that open it
-    /// are not here.
-    ///
-    /// # Errors
-    /// The record cannot be read now.
-    fn record(&self, workspace: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String>;
-}
-
-/// The documents of the workspaces this device holds, as its own roles read them.
-impl<T: DeviceDocuments + 'static> DocumentSource for T {
-    fn workspaces(&self) -> Vec<String> {
-        DeviceDocuments::workspaces(self)
-    }
-
-    fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        self.listing(workspace)
-    }
-
-    fn record(&self, workspace: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
-        match self.read(workspace, app, record, None)? {
-            DocumentRead::Whole { bytes, .. } => Ok(Some(bytes)),
-            _ => Ok(None),
-        }
-    }
-}
 
 /// What an app answers search about one of its records: the app's own model types, read from the
 /// document, as its window reads them.
@@ -89,9 +51,26 @@ pub trait RecordReader: Send + Sync + 'static {
     fn entries(&self, app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, Unread>;
 }
 
-/// What a tilolang app's resources in a workspace say to search, read from the workspace's
-/// resource store: the entries of one of its store documents.
+/// What the workspaces' stores hold, as search reads them: a tilolang app's resources, read
+/// through its package as a window of the app publishes them, and an app's own records, whose
+/// documents its own reader reads ([`RecordReader`]).
 pub trait StoreReader: Send + Sync + 'static {
+    /// The workspaces this device holds.
+    fn workspaces(&self) -> Vec<String>;
+
+    /// Every record of an app's own kind `workspace`'s store holds, by its app and id.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String>;
+
+    /// The document `app`'s record `record` of `workspace` is, `None` while the store holds
+    /// nothing of it.
+    ///
+    /// # Errors
+    /// The record cannot be read now.
+    fn record(&self, workspace: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String>;
+
     /// Whether `app` keeps its resources in the workspace's store and is read here through a
     /// package of it this device installed or this build carries: a tilolang app.
     fn reads(&self, app: &str) -> bool;
@@ -118,7 +97,6 @@ type Record = (String, String, String);
 
 /// The records whose content search offers, read from the records themselves.
 pub struct RecordIndex {
-    source: Arc<dyn DocumentSource>,
     reader: Arc<dyn RecordReader>,
     /// What the tilolang apps' resources say, read from the workspace's store.
     stores: Arc<dyn StoreReader>,
@@ -138,18 +116,16 @@ pub struct RecordIndex {
 }
 
 impl RecordIndex {
-    /// Index what `source` holds, reading each record through `reader` (a tilolang app's
+    /// Index what `stores` hold, reading each app's record through `reader` (a tilolang app's
     /// resources through `stores`) and publishing to `content`, from a worker of its own: what
     /// this device holds is read at once, and each record [`Self::changed`] names after.
     pub fn start(
-        source: Arc<dyn DocumentSource>,
         reader: Arc<dyn RecordReader>,
         stores: Arc<dyn StoreReader>,
         content: Arc<AppContentIndex>,
     ) -> Arc<Self> {
         let (wake, woken) = std::sync::mpsc::channel();
         let index = Arc::new(Self {
-            source,
             reader,
             stores,
             content,
@@ -183,11 +159,11 @@ impl RecordIndex {
     /// Queue every record of each workspace this device holds that was not read whole yet, so
     /// search finds it before anything changes.
     fn sweep(&self) {
-        for workspace in self.source.workspaces() {
+        for workspace in self.stores.workspaces() {
             if self.swept.lock_recover().contains(&workspace) {
                 continue;
             }
-            match self.source.records(&workspace) {
+            match self.stores.records(&workspace) {
                 Ok(records) => {
                     self.swept.lock_recover().insert(workspace.clone());
                     let mut queued = self.queued.lock_recover();
@@ -237,12 +213,17 @@ impl RecordIndex {
                 stored.insert((workspace, app, record));
                 continue;
             }
-            // An app's own document of the workspace that no installed package of the language
-            // reads holds nothing search reads.
+            // A write of the store names the document it wrote: an app's record is the content
+            // document of its resource, and a document of resources holds none.
+            let record = match tilo_resource_store::content_resource(&record) {
+                Some((_, id)) => id.to_owned(),
+                None if collab_types::is_store_document(&record) => continue,
+                None => record,
+            };
             if record.is_empty() {
                 continue;
             }
-            let doc = match self.source.record(&workspace, &app, &record) {
+            let doc = match self.stores.record(&workspace, &app, &record) {
                 Ok(Some(doc)) => doc,
                 // Its keys are not here yet: it is read again with the next write there.
                 Ok(None) => {
@@ -321,12 +302,6 @@ impl RecordIndex {
     }
 }
 
-impl tilo_broker_core::services::DocumentIndexChanges for RecordIndex {
-    fn changed(&self, workspace: &str, app: &str, record: &str) {
-        Self::changed(self, workspace, app, record);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -336,7 +311,7 @@ mod tests {
     use tilo_lock::MutexRecover as _;
     use tilo_resource::search_index::IndexEntry;
 
-    use super::{DocumentSource, RecordIndex, RecordReader, StoreReader, Unread};
+    use super::{RecordIndex, RecordReader, StoreReader, Unread};
     use crate::search::{AppContentIndex, IndexSearch};
 
     const WORKSPACE: &str = "w-team";
@@ -358,24 +333,6 @@ mod tests {
             resource: format!("notes/{n}/{i}"),
             title: format!("word{n:02}x{i:02}"),
             ..IndexEntry::default()
-        }
-    }
-
-    /// A device whose workspaces hold no record of their own: what it holds is its store's
-    /// documents.
-    struct Documents;
-
-    impl DocumentSource for Documents {
-        fn workspaces(&self) -> Vec<String> {
-            vec![WORKSPACE.to_owned()]
-        }
-
-        fn records(&self, _: &str) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
-        }
-
-        fn record(&self, _: &str, _: &str, _: &str) -> Result<Option<Vec<u8>>, String> {
-            Ok(None)
         }
     }
 
@@ -425,7 +382,21 @@ mod tests {
         }
     }
 
+    /// A device whose workspace holds no record of an app's own: what it holds is its store's
+    /// documents.
     impl StoreReader for Store {
+        fn workspaces(&self) -> Vec<String> {
+            vec![WORKSPACE.to_owned()]
+        }
+
+        fn records(&self, _: &str) -> Result<Vec<(String, String)>, String> {
+            Ok(Vec::new())
+        }
+
+        fn record(&self, _: &str, _: &str, _: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(None)
+        }
+
         fn reads(&self, app: &str) -> bool {
             app == NOTES
         }
@@ -454,7 +425,6 @@ mod tests {
         let content = Arc::new(AppContentIndex::in_memory());
         // An index no worker drives: the test reads a pass at a time, and counts them.
         let index = RecordIndex {
-            source: Arc::new(Documents),
             reader: Arc::new(Records),
             stores: Arc::clone(&store) as Arc<dyn StoreReader>,
             content: Arc::clone(&content),

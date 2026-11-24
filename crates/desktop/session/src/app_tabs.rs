@@ -91,9 +91,9 @@ fn on_outputs(at: Rect, outputs: Vec<tilo_compositor::OutputInfo>) -> Rect {
     at + ui::vello::kurbo::Vec2::new(x, y)
 }
 
-/// The longest frame an app may send: a paint stream and a marker inventory both fit, and nothing
-/// else comes close.
-const MAX_FRAME_BYTES: usize = 1024 * 1024;
+/// The longest frame an app may send: a paint payload in parts, a marker inventory and a whole
+/// accessibility tree all fit, as the toolkit's own frame bound says.
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 /// The longest address an app may ask to open in a new tab: as long as the shell's own link opening
 /// takes.
@@ -352,6 +352,38 @@ impl AppTabs {
         write_target_presses(desktop, compositor, &self.links);
     }
 
+    /// Write what a client of the session's AT-SPI export asked of an app window's node to the
+    /// window that drew the tree, which answers as its own assistive client's action. A window
+    /// whose connection is gone is asked nothing.
+    pub(crate) fn deliver_accessibility_now(
+        &self,
+        desktop: &ShellDesktop,
+        compositor: &Compositor,
+        windows: &Rc<RefCell<crate::a11y::WindowExports>>,
+    ) {
+        let actions = windows.borrow_mut().take_actions();
+        for action in actions {
+            // The connection the window sent its tree on, which is the window's own even when
+            // its process hosts several windows.
+            let Some(connection) = windows.borrow().connection_of(action.instance) else {
+                continue;
+            };
+            let Some(link) = self.links.get(&connection) else {
+                continue;
+            };
+            tell(
+                &link.writer,
+                &FloatingSurfaceHostMessage::AccessibilityAction {
+                    request: action.request,
+                    // In its place among the window's own input: what the person typed before
+                    // the action is read before it.
+                    after_input: input_before(desktop, compositor, action.instance),
+                },
+                &link.app,
+            );
+        }
+    }
+
     /// End the loop's wait when an app connects, so its window's first ask is
     /// answered on the pass that follows.
     ///
@@ -437,6 +469,7 @@ impl AppTabs {
         self.socket.take();
         let mut redials = Vec::new();
         {
+            let mut windows = shared.windows.borrow_mut();
             let mut answered = Answers {
                 desktop,
                 apps,
@@ -448,6 +481,7 @@ impl AppTabs {
                 cards: &self.cards,
                 launches: &self.launches,
                 pages: &shared.pages,
+                windows: &mut windows,
                 redials: &mut redials,
             };
             for arrived in self.requests.try_iter() {
@@ -900,6 +934,9 @@ struct Answers<'a> {
     launches: &'a Launches,
     /// The windows whose apps hand their page over as a paint stream.
     pages: &'a Rc<RefCell<PageTracks>>,
+    /// The windows' trees, as assistive technology reads them, and the actions clients asked of
+    /// them: what the session's AT-SPI export publishes.
+    windows: &'a mut crate::a11y::WindowExports,
     /// The windows, by app and tab, whose workspace the person asked to dial again this pass.
     redials: &'a mut Vec<(String, Option<u64>)>,
 }
@@ -1074,6 +1111,9 @@ impl Answers<'_> {
                     if let Some(tab) = link.instance {
                         self.launches.notes().forget(tab);
                     }
+                    // The window's tree went with the connection a client of the export read it
+                    // through.
+                    self.windows.remove_connection(connection);
                 }
                 // The cards it presented, and the windows the shell stood
                 // them in, go with it.
@@ -1143,6 +1183,10 @@ impl Answers<'_> {
                 target, background, ..
             } => self.answer_open_beside(&app, target, background, own),
             FloatingSurfaceClientMessage::CloseTab { .. } => {
+                // The tab's window goes: assistive technology stops finding it.
+                if let Some(tab) = own {
+                    self.windows.remove(tab);
+                }
                 self.desktop.with_policy(|policy| policy.close_tab_of(&app));
             }
             FloatingSurfaceClientMessage::RetryWorkspace { .. } => {
@@ -1181,6 +1225,28 @@ impl Answers<'_> {
                     Some(tab) => self.desktop.with_policy(|policy| {
                         policy.handle().declare_targets(tab, connection, targets);
                     }),
+                    None => refuse(&reply, &app, &name, NO_WINDOW),
+                }
+            }
+            FloatingSurfaceClientMessage::AccessibilityTree {
+                tree, name: window, ..
+            } => {
+                // What assistive technology reads of the window, published by the session for
+                // it: only the window a connection speaks for may say it, so a window of this
+                // app is never another window's tree.
+                let speaks_for = self
+                    .links
+                    .get(&connection)
+                    .and_then(|link| link.instance.or(link.named));
+                // The tab of the window, when it is on the shell: `own` resolved it for this
+                // app, so a window of one app never says another app's tree. A window that
+                // sends its tree before the shell mapped it is attributed to the instance this
+                // very ask names, and its tab joins on the next pass; it is not lost until its
+                // tree changes again.
+                let attributed =
+                    own.or_else(|| speaks_for.filter(|named| instance == Some(*named)));
+                match attributed {
+                    Some(tab) => self.windows.set(tab, connection, window, tree),
                     None => refuse(&reply, &app, &name, NO_WINDOW),
                 }
             }
@@ -1600,6 +1666,7 @@ fn whole(value: f64) -> i32 {
 fn instance_of(message: &FloatingSurfaceClientMessage) -> Option<u64> {
     match message {
         FloatingSurfaceClientMessage::WindowTargets { instance, .. }
+        | FloatingSurfaceClientMessage::AccessibilityTree { instance, .. }
         | FloatingSurfaceClientMessage::Toolbar { instance, .. }
         | FloatingSurfaceClientMessage::WindowOffer { instance, .. }
         | FloatingSurfaceClientMessage::EditLocation { instance }

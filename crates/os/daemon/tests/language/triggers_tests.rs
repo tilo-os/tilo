@@ -20,6 +20,29 @@ use tilo_workspace_service::workspaces::fixtures::{
 
 use super::{Device, Write, mount, write};
 
+/// Let the installed app `app` write and change the records it keeps in `workspace`, as the
+/// person whose device `cert` names grants it: what a workspace grants an app it runs, so its
+/// origin's writes are its own rather than one person's.
+async fn let_app_write(
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    workspace: &str,
+    app: &str,
+    cert: &tilo_user_identity::DeviceCert,
+) {
+    let grant = tilo_action_policy::Grant::new(
+        format!("{app}-keeps-its-records"),
+        tilo_action_policy::Grantee::app(app),
+        tilo_action_policy::TreePath::workspace(workspace),
+        tilo_action_policy::KindSet::UNDOABLE,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
+    );
+    workspaces
+        .put_workspace_grants(workspace, cert, [23; 32], vec![grant])
+        .await
+        .unwrap();
+}
+
 /// An app's write of a record a saved shortcut watches fires it once, on the device that wrote
 /// it; looking again at the same record fires nothing more. A write whose resource the
 /// trigger's filter does not match, by the fields the write left it with, fires nothing.
@@ -356,12 +379,28 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         (&key, &cert),
     )
     .await;
-    // The workspace's membership holds Scout as an agent acting for its owner: a direct
-    // conversation's `people` names the agent, and it reads the conversation as the person it
-    // works for.
+    // The workspace's record of its agents holds Scout acting for its owner: a direct
+    // conversation the owner's `people` names the agent in is the owner's agent's, and it reads
+    // the conversation as the person it works for.
     let owner = hex::encode(cert.user_public_key);
     workspaces
-        .add_agent(&workspace, MemberId::person(owner.clone()), "scout", &owner)
+        .author_agents(&workspace, |doc| {
+            use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
+            let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                .as_author(&owner);
+            made.apply(
+                WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    avatar: None,
+                    name: tilo_resource::NonBlank::parse("Scout").unwrap(),
+                    id: Some("scout".into()),
+                    model: None,
+                    mcp_client: None,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+            std::mem::swap(doc, made.doc_mut());
+            Ok(())
+        })
         .await
         .expect("the owner adds their agent");
     let started = Arc::new(Started::default());
@@ -710,6 +749,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         workspaces.join_keys(&workspace).await,
         "the workspace's keys open what its records are kept in"
     );
+    let_app_write(workspaces, &workspace, MAIL, &cert).await;
     save_signed(
         workspaces,
         &workspace,
@@ -860,6 +900,194 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
     assert!(
         now.is_empty(),
         "a copy of what the account sent fires nothing: {now:?}"
+    );
+    host.shutdown().await;
+}
+
+/// An agent's own mail asks nothing of it: the message it sent, as its account's server keeps
+/// it, and a copy of a message the workspace already holds are no mail that arrived. A message
+/// the origin writes into the inbox is, and fires once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
+async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
+    use tilo_action_policy::Actor as Who;
+    use tilo_app_id::AppId;
+    use tilo_resource_store::Stamp;
+    use tilo_workspace_service::agents::triggered;
+
+    const MAIL: &str = "so.tilo.mail";
+    const THREAD: &str = "tl.so.tilo.mail.Thread";
+    const MESSAGE: &str = "tl.so.tilo.mail.Message";
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(tilo_workspace_service::workspaces::fixtures::TestGroupKeys::default());
+    let (key, cert) = tilo_workspace_service::workspaces::fixtures::governor();
+    let host = tilo_workspace_service::workspaces::fixtures::test_host_holding(
+        dir.path(),
+        &key,
+        &cert,
+        keys,
+    )
+    .await;
+    let workspaces = host.workspaces();
+    mount(workspaces);
+    workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    workspaces.run_agents(Arc::new(ActsAsScout));
+    // Mail is a package the daemon does not run itself: a test that writes its records compiles
+    // its sources and declares the surface they make.
+    let mail_package = tilolang_workspace::records::Packages::compile(&[
+        (
+            concat!(
+                include_str!("../../../../../apps/tl/contacts/app.tl"),
+                "\n",
+                include_str!("../../../../../apps/tl/contacts/identities.tl")
+            ),
+            include_str!("../../../../../apps/tl/contacts/app.ids"),
+        ),
+        (
+            include_str!("../../../../../apps/tl/mail/app.tl"),
+            include_str!("../../../../../apps/tl/mail/app.ids"),
+        ),
+    ])
+    .expect("Mail's sources compile");
+    declare_app(
+        &host,
+        MAIL,
+        &mail_package
+            .surface(MAIL)
+            .expect("Mail declares its surface"),
+    );
+    let workspace = workspaces.create("Mail").await.unwrap().workspace;
+    assert!(
+        workspaces.join_keys(&workspace).await,
+        "the workspace's keys open what its records are kept in"
+    );
+    let_app_write(workspaces, &workspace, MAIL, &cert).await;
+    save_signed(
+        workspaces,
+        &workspace,
+        triggered::triggers("scout", "Scout"),
+        (&key, &cert),
+    )
+    .await;
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    let mut writes = workspaces.document_writes();
+
+    let mail = Who::App(AppId::new(MAIL));
+    // `by` writes the resource `id` of `kind` in `parent` with `fields`, stamped with `verb`.
+    let put = async |kind: &str,
+                     id: &str,
+                     parent: Option<&str>,
+                     verb: &str,
+                     by: &Who,
+                     fields: Vec<(&str, &str)>| {
+        write(
+            workspaces,
+            &workspace,
+            &cert,
+            MAIL,
+            Write {
+                kind,
+                id,
+                parent,
+                verb,
+                by,
+                readers: "*",
+                fields: fields
+                    .into_iter()
+                    .map(|(name, value)| (name, value.to_owned()))
+                    .collect(),
+                sets: Vec::new(),
+                edits: Vec::new(),
+            },
+        )
+        .await;
+    };
+
+    put(
+        THREAD,
+        "thread-1",
+        None,
+        Stamp::ORIGIN_VERB,
+        &mail,
+        Vec::new(),
+    )
+    .await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
+    assert!(
+        now.is_empty(),
+        "a conversation arriving asks nothing: {now:?}"
+    );
+
+    // A message the workspace's mailbox received asks the agent once.
+    put(
+        MESSAGE,
+        "arrived",
+        Some("thread-1"),
+        Stamp::ORIGIN_VERB,
+        &mail,
+        vec![
+            ("mailbox", "inbox"),
+            ("subject", "Hello"),
+            ("from", "ada@example.org"),
+            ("account", "my-mail"),
+        ],
+    )
+    .await;
+    let firings = super::fired(&mut runner, &mut writes, &started).await;
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    // What the message says is the trigger's input: who wrote it, what about, the account it
+    // came to, and the conversation it is in.
+    let event: DocumentEvent =
+        serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
+    let after = event.after.as_ref().expect("the message the change made");
+    assert_eq!(after["subject"], "Hello");
+    assert_eq!(after["from"], "ada@example.org");
+    assert_eq!(after["account"], "my-mail");
+    assert_eq!(after["$in"]["$id"], "thread-1");
+
+    // A copy of a message the workspace already holds, its fields synced: no message arrived.
+    put(
+        MESSAGE,
+        "arrived",
+        Some("thread-1"),
+        Stamp::ORIGIN_VERB,
+        &mail,
+        vec![("mailbox", "inbox"), ("subject", "Hello again")],
+    )
+    .await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
+    assert!(
+        now.is_empty(),
+        "a copy of a message already held fires nothing: {now:?}"
+    );
+
+    // The agent's own message, as its account's server keeps it in the sent mailbox: no mail
+    // that arrived.
+    put(
+        MESSAGE,
+        "sent-1",
+        Some("thread-1"),
+        Stamp::ORIGIN_VERB,
+        &mail,
+        vec![("mailbox", "sent"), ("subject", "Re: Hello")],
+    )
+    .await;
+    let now = super::fired(&mut runner, &mut writes, &started).await;
+    assert!(
+        now.is_empty(),
+        "the agent's own sent mail fires nothing: {now:?}"
     );
     host.shutdown().await;
 }

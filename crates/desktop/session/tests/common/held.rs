@@ -281,6 +281,8 @@ pub fn this_computer_with_an_identity(
     // directory: the session's renewal resolves them from the environment,
     // and nothing may delete them while it runs.
     let root = home.root().join("system");
+    // Named before the person is made: their root is sealed with the device key kept there.
+    home.env().set("TILO_IDENTITY_ROOT", &root);
     tilo_identity::sources::test_trust::install();
     let identity_dir =
         tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity"));
@@ -290,7 +292,6 @@ pub fn this_computer_with_an_identity(
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    home.env().set("TILO_IDENTITY_ROOT", &root);
     let person = tilo_identity::store::list_identities(&identity_dir)
         .expect("this computer's identities")
         .into_iter()

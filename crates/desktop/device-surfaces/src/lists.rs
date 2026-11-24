@@ -356,7 +356,7 @@ pub enum TrayEffect {
     /// Open or close the running application's tray item `key`: its window, or its menu when the
     /// item is one
     #[effect(kind = "outside")]
-    #[effect(row, label = "session-tray-open")]
+    #[effect(label = "session-tray-open")]
     OpenTrayItem { key: String },
 }
 

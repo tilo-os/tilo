@@ -628,6 +628,13 @@ const READER_WRITES: [&str; 5] = [
 /// the workspace may change in it ([`READER_WRITES`]).
 #[must_use]
 pub fn only_reader_writes_differ(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
+    only_keys_differ(before, after, &READER_WRITES)
+}
+
+/// Whether `after` differs from `before` only under the root keys `keys`
+/// and the membership operations' own keys.
+#[must_use]
+pub fn only_keys_differ(before: Option<&AutoCommit>, after: &AutoCommit, keys: &[&str]) -> bool {
     use automerge::{Prop, patches::PatchAction};
     let mut after = after.clone();
     let from = before
@@ -652,9 +659,7 @@ pub fn only_reader_writes_differ(before: Option<&AutoCommit>, after: &AutoCommit
                 _ => None,
             },
         };
-        key.is_some_and(|key| {
-            READER_WRITES.contains(&key) || crate::members::op::keyed(key).is_some()
-        })
+        key.is_some_and(|key| keys.contains(&key) || crate::members::op::keyed(key).is_some())
     })
 }
 

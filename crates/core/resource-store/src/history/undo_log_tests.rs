@@ -80,3 +80,38 @@ fn a_change_no_step_closed_over_stays_out_of_every_step() {
     let next = history.next_undo_in(&doc, &author, WINDOW).unwrap();
     assert_eq!(next.after, open);
 }
+
+/// A change is committed as `acting` made it, as an action's change is.
+fn commit_as(doc: &mut AutoCommit, acting: &tilo_actions::Acting) {
+    let message = tilo_actions::ActionContext {
+        invoker: Some(tilo_actions::ActionInvoker::admitted(acting)),
+        ..tilo_actions::ActionContext::default()
+    }
+    .change_message()
+    .expect("the action's change has a message");
+    doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
+}
+
+/// A step an agent made for the person is theirs to take back, and one made for someone else is
+/// not: the person's undo walks past another person's agent's work as it walks past that person's.
+#[test]
+fn a_step_an_agent_made_for_the_person_is_theirs_to_take_back() {
+    let person = MemberId::person("ada");
+    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![7_u8; 32]));
+    doc.put(ROOT, "word", "theirs".to_owned()).unwrap();
+    commit_as(
+        &mut doc,
+        &tilo_actions::Acting::agent("scout").acting_for(tilo_actions::Acting::person("ada")),
+    );
+    let history = UndoLog::new(&mut doc);
+    assert!(
+        history.next_undo_as(&doc, Some(&person)).is_some(),
+        "the agent worked for them, so its step is theirs"
+    );
+    assert!(
+        history
+            .next_undo_as(&doc, Some(&MemberId::person("bo")))
+            .is_none(),
+        "and it is no one else's"
+    );
+}

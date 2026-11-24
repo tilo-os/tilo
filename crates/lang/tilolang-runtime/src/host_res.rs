@@ -715,6 +715,25 @@ impl Core {
             let field = self.text(fh)?;
             let (_, f) = self.lookup_field(&target, &field)?;
             let author = self.module_of_frame()?;
+            // A collection reads as one, as outside a journaled run, and is listed where the run
+            // first reads its items: what the journal keeps of it is the items it listed then
+            // ([`Core::coll_listing`]), and a filter the store answers lists only the items it
+            // kept, so a stroke among ten thousand marks never lists them all.
+            if f.kind == FieldKind::Collection && !crate::foreign::is_foreign(&target) {
+                let item = match inner_ty(&f.ty) {
+                    Some(Ty::Union(_)) => String::new(),
+                    _ => self.item_type(&f.ty)?.id.clone(),
+                };
+                return Ok(Value::Coll(Rc::new(CollRef {
+                    target: Rc::new(target),
+                    field: f.id.clone(),
+                    item,
+                    author: Some(author),
+                    filter: None,
+                    order: None,
+                    pinned: crate::value::Pinned(Some(std::cell::OnceCell::new())),
+                })));
+            }
             let value =
                 self.journaled_read(|| Ok(self.read_value(&target, &f, Some(&author))?))?;
             return Ok(whole_map(f.kind, value));

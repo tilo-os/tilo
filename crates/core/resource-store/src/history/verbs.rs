@@ -90,6 +90,10 @@ pub enum HistoryEdit {
         version: String,
         #[param("Only these item ids")]
         ids: Option<Vec<String>>,
+        /// Only the step this change id from history is part of, taken back as one step of a
+        /// restore to `version`: a restore writes one change for each step since.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<String>,
     },
     /// Restore precisely the reviewed paths as a new undoable change, only if the live causal
     /// frontier still matches. Empty selection never restores everything.
@@ -153,38 +157,226 @@ impl HistoryEdit {
             Self::Undo { step: Some(_), .. } => (HistoryOp::Undo, 1),
             Self::Undo { steps, .. } => (HistoryOp::Undo, steps.unwrap_or(0)),
             Self::Redo { steps } => (HistoryOp::Redo, steps.unwrap_or(1)),
+            Self::Restore { step: Some(_), .. } => (HistoryOp::Restore, 1),
             Self::Restore { .. } | Self::RestoreReviewed { .. } => (HistoryOp::Restore, 0),
             Self::Checkpoint { name } => (HistoryOp::Checkpoint { name: name.clone() }, 0),
         };
-        let of = match self {
+        // The one step it moves, when it moves one: a gesture's changes share one description,
+        // and the newest names the step.
+        let moves = match self {
             Self::Undo {
-                invocation: None,
-                to: None,
+                step: Some(step), ..
+            }
+            | Self::Restore {
+                step: Some(step), ..
+            } => steps::resolve(doc, step)
+                .ok()
+                .and_then(|heads| match heads[..] {
+                    [hash] => version_of_hash(doc, &hash),
+                    _ => None,
+                }),
+            Self::Undo {
+                invocation,
                 by,
+                to: None,
+                step: None,
                 ..
             } if steps == 1 => {
-                let scope = by.as_ref().map_or_else(
-                    || Scope::invoking(doc),
-                    |author| Scope::Invoker(author.clone()),
-                );
-                // A gesture's changes share one description; the newest
-                // names the step.
-                steps::undo_preview(doc, &scope, 1)
-                    .first()
-                    .and_then(|version| version.context.as_ref())
-                    .and_then(named_step)
+                let scope = undo_scope(doc, invocation.as_ref(), by.as_ref());
+                steps::undo_preview(doc, &scope, 1).into_iter().next()
             }
             Self::Redo { .. } if steps == 1 => {
                 let scope = Scope::invoking(doc);
                 steps::undos_in_effect(doc, &|version| scope.owns(version), 1)
-                    .first()
-                    .and_then(|version| version.context.as_ref())
-                    .and_then(named_step)
+                    .into_iter()
+                    .next()
             }
             _ => None,
         };
-        tilo_actions::Described::new(tilo_actions::Did::history(op, steps, of))
+        let mut did = tilo_actions::Did::history(op, steps, None);
+        if let (tilo_actions::Did::History(step), Some(version)) = (&mut did, &moves) {
+            let context = version.context.as_ref();
+            step.of = context.and_then(named_step).map(Box::new);
+            step.undoes = Some(invocation_of(version));
+            step.verb = context.map(verb_of).unwrap_or_default();
+        }
+        tilo_actions::Described::new(did)
     }
+
+    /// The edits this one is, one for each step it moves, newest first, when it moves steps of
+    /// their own: an undo of several steps is an undo of each, a redo of several a redo of each,
+    /// and a restore to a version an undo of every step since, so every change it writes moves
+    /// one invocation and names it ([`tilo_actions::Action::steps`]). `None` for an edit that is
+    /// one change whatever it moves (a checkpoint, a restore of some items, a reviewed restore),
+    /// and for one that moves nothing, which applies to say why.
+    #[must_use]
+    pub fn steps(&self, doc: &AutoCommit) -> Option<Vec<Self>> {
+        let one =
+            |step: &[Version], invocation: Option<String>, by: Option<tilo_actions::Actor>| {
+                Some(Self::Undo {
+                    steps: None,
+                    invocation,
+                    by,
+                    to: None,
+                    step: Some(step.first()?.hash.to_string()),
+                })
+            };
+        let edits: Vec<Self> = match self {
+            Self::Undo {
+                steps,
+                invocation,
+                by,
+                to,
+                step: None,
+            } => {
+                let scope = undo_scope(doc, invocation.as_ref(), by.as_ref());
+                let default = if invocation.is_some() { usize::MAX } else { 1 };
+                let limit = if to.is_some() {
+                    usize::MAX
+                } else {
+                    limit(*steps, default)
+                };
+                let mut moved = steps::steps_in_effect(doc, &|version| scope.owns(version), limit);
+                if let Some(to) = to {
+                    let since = since(doc, to)?;
+                    moved.retain(|step| step.iter().all(|version| since.contains(&version.hash)));
+                }
+                moved
+                    .iter()
+                    .map(|step| one(step, invocation.clone(), by.clone()))
+                    .collect::<Option<_>>()?
+            }
+            Self::Redo { steps } => {
+                // An undo is the changes one move wrote together: a redo brings back each of
+                // them, its whole move as it was undone.
+                let scope = Scope::invoking(doc);
+                let undos = steps::undos_in_effect(doc, &|version| scope.owns(version), usize::MAX);
+                let mut moves = 0_usize;
+                let mut count = 0_usize;
+                let mut last: Option<&Version> = None;
+                for undo in &undos {
+                    if !last.is_some_and(|last| together(last, undo)) {
+                        if moves == limit(*steps, 1) {
+                            break;
+                        }
+                        moves = moves.saturating_add(1);
+                    }
+                    count = count.saturating_add(1);
+                    last = Some(undo);
+                }
+                vec![Self::Redo { steps: Some(1) }; count]
+            }
+            Self::Restore {
+                version,
+                ids: None,
+                step: None,
+            } => {
+                let heads = steps::resolve(doc, version).ok()?;
+                // One that matches the version already applies to say so.
+                if steps::matches(doc, &heads) {
+                    return None;
+                }
+                let since = since(doc, version)?;
+                let mut moved = steps::steps_in_effect(doc, &|_| true, usize::MAX);
+                moved.retain(|step| step.iter().all(|version| since.contains(&version.hash)));
+                let mut edits: Vec<Self> = moved
+                    .iter()
+                    .map(|step| {
+                        Some(Self::Restore {
+                            version: version.clone(),
+                            ids: None,
+                            step: Some(step.first()?.hash.to_string()),
+                        })
+                    })
+                    .collect::<Option<_>>()?;
+                // A step made before the version and undone since stood then: taking back the
+                // steps since leaves it undone, so the restore brings the rest of the version
+                // back after them.
+                if steps::undid_from_before(doc, &since) {
+                    edits.push(self.clone());
+                }
+                if edits.is_empty() {
+                    return None;
+                }
+                edits
+            }
+            _ => return None,
+        };
+        (!edits.is_empty()).then_some(edits)
+    }
+}
+
+/// Whether two changes are of one move: written together, one for each step it moved.
+fn together(last: &Version, next: &Version) -> bool {
+    let gesture = |version: &Version| version.context.as_ref()?.gesture;
+    gesture(last).is_some() && gesture(last) == gesture(next)
+}
+
+/// Whose steps an undo naming `invocation` or `by` takes back: that agent session's, that
+/// author's, else the invoker's own.
+fn undo_scope(
+    doc: &AutoCommit,
+    invocation: Option<&String>,
+    by: Option<&tilo_actions::Actor>,
+) -> Scope {
+    match (invocation, by) {
+        (Some(invocation), _) => Scope::Session(invocation.clone()),
+        (None, Some(author)) => Scope::Invoker(author.clone()),
+        (None, None) => Scope::invoking(doc),
+    }
+}
+
+/// The changes made after the version `version` names; `None` when it names none.
+fn since(doc: &AutoCommit, version: &str) -> Option<HashSet<ChangeHash>> {
+    let heads = steps::resolve(doc, version).ok()?;
+    Some(
+        doc.committed_document()
+            .get_changes(&heads)
+            .iter()
+            .map(automerge::Change::hash)
+            .collect(),
+    )
+}
+
+/// The version the change `hash` is.
+fn version_of_hash(doc: &AutoCommit, hash: &ChangeHash) -> Option<Version> {
+    let document = doc.committed_document();
+    let meta = document.get_change_meta_by_hash(hash)?;
+    Some(tilo_resource::history::version_of(document, &meta))
+}
+
+/// The invocation the change `version` is one change of: the one the action API admitted, else
+/// the gesture it is a keystroke of, else the change itself.
+fn invocation_of(version: &Version) -> String {
+    let context = version.context.as_ref();
+    context
+        .and_then(|context| context.source_invocation.as_ref())
+        .map(ToString::to_string)
+        .or_else(|| {
+            context
+                .and_then(|context| context.gesture.as_ref())
+                .map(|gesture| gesture.0.to_string())
+        })
+        .unwrap_or_else(|| version.hash.to_string())
+}
+
+/// The verb the change `context` describes was invoked as: an undo's or redo's, the verb of the
+/// invocation it moved.
+fn verb_of(context: &tilo_actions::ActionContext) -> String {
+    let verb = |did: &tilo_actions::Did| match did {
+        tilo_actions::Did::Verb(call) => Some(call.action.action.clone()),
+        tilo_actions::Did::History(step) if !step.verb.is_empty() => Some(step.verb.clone()),
+        _ => None,
+    };
+    context
+        .what
+        .as_ref()
+        .and_then(verb)
+        .or_else(|| {
+            let recorded = context.action.as_ref()?;
+            verb(&tilo_actions::Described::from_encoded(recorded, None)?.what)
+        })
+        .unwrap_or_default()
 }
 
 /// What a step is called: an undo or redo is called by the step it moved.
@@ -372,11 +564,18 @@ fn part_action(edit: &PartEdit) -> Result<PartHistoryEditAction, String> {
             steps: *steps,
             part,
         },
-        HistoryEdit::Restore { version, ids } => PartHistoryEditAction::Restore {
+        HistoryEdit::Restore {
+            version,
+            ids,
+            step: None,
+        } => PartHistoryEditAction::Restore {
             version: version.clone(),
             ids: ids.clone(),
             part,
         },
+        HistoryEdit::Restore { step: Some(_), .. } => {
+            return Err("one step is restored in a whole document's history, not a part's".into());
+        }
         HistoryEdit::Checkpoint { name } => PartHistoryEditAction::Checkpoint {
             name: name.clone(),
             part,
@@ -460,7 +659,11 @@ impl From<PartHistoryEditAction> for PartEdit {
             },
             PartHistoryEditAction::Restore { version, ids, part } => Self {
                 part,
-                edit: HistoryEdit::Restore { version, ids },
+                edit: HistoryEdit::Restore {
+                    version,
+                    ids,
+                    step: None,
+                },
             },
             PartHistoryEditAction::Checkpoint { name, part } => Self {
                 part,
@@ -831,7 +1034,11 @@ fn entry(
         recorded(context, &mut entry);
     }
     entry.insert("sentence".into(), sentence(version, words).into());
-    if context.and_then(|context| context.group.as_ref()).is_none() {
+    // A group names who acted; a move through history is the person's own, named by them.
+    if context
+        .and_then(|context| context.group.as_ref())
+        .is_none_or(|group| tilo_actions::context::history_move(&group.kind).is_some())
+    {
         entry.insert("by".into(), by(version).into());
     }
     entry.insert("time_ms".into(), version.time_ms.into());
@@ -1048,17 +1255,21 @@ pub fn history_with(
         let own_checkpoints = steps::checkpoints(document);
         // The framework making a document, a part as much as the record, is nobody's
         // change: History shows none of it, so this neither lists nor counts it.
-        let listed: Vec<(i64, Value)> = versions
+        let shown: Vec<&Version> = versions
             .iter()
             .filter(|version| !steps::is_schema_genesis(version) && !is_document_making(version))
             .filter(|version| reads_version(version, reader.as_ref()))
-            .map(|version| {
-                let mut listed = entry(document, version, &undone, &own_checkpoints, words);
+            .collect();
+        let listed: Vec<(i64, Value)> = moves(&shown)
+            .into_iter()
+            .map(|changes| {
+                let mut listed = listed_move(document, &changes, &undone, &own_checkpoints, words);
+                let time_ms = changes.last().map_or(0, |version| version.time_ms);
                 if let (Some((resource, index)), Value::Object(fields)) = (part, &mut listed) {
                     fields.insert("resource".into(), resource.into());
                     fields.insert("part".into(), index.into());
                 }
-                (version.time_ms, listed)
+                (time_ms, listed)
             })
             .collect();
         total = total.saturating_add(listed.len());
@@ -1090,6 +1301,84 @@ pub fn history_with(
             "version": version_name(&checkpoint.heads),
         })).collect::<Vec<_>>(),
     })
+}
+
+/// The versions as History lists them, oldest first: each on its own, but the changes one move
+/// through history wrote together (an undo of several steps, a restore), one for each step it
+/// moved, as the one move.
+fn moves<'a>(versions: &[&'a Version]) -> Vec<Vec<&'a Version>> {
+    let mut listed: Vec<Vec<&Version>> = Vec::new();
+    for version in versions {
+        if let Some(last) = listed.last_mut()
+            && let Some(before) = last.last()
+            && moved_history(before)
+            && moved_history(version)
+            && together(before, version)
+        {
+            last.push(version);
+            continue;
+        }
+        listed.push(vec![version]);
+    }
+    listed
+}
+
+/// The move through history `version` is a change of, by the group it was written in.
+fn history_move(version: &Version) -> Option<tilo_actions::HistoryOp> {
+    tilo_actions::context::history_move(&version.context.as_ref()?.group.as_ref()?.kind)
+}
+
+/// Whether `version` is a change of a move through history.
+fn moved_history(version: &Version) -> bool {
+    history_move(version).is_some()
+}
+
+/// The entry History lists for `changes`, a move's changes, oldest first: the one change's own,
+/// or for several the newest's, saying how many steps the move took and every change it took
+/// back or brought back.
+fn listed_move(
+    doc: &AutoCommit,
+    changes: &[&Version],
+    undone: &HashSet<String>,
+    checkpoints: &[Checkpoint],
+    words: &dyn HistoryWords,
+) -> Value {
+    let Some(newest) = changes.last() else {
+        return Value::Null;
+    };
+    if changes.len() == 1 {
+        return entry(doc, newest, undone, checkpoints, words);
+    }
+    let op = history_move(newest).unwrap_or(tilo_actions::HistoryOp::Undo);
+    let mut whole = (*newest).clone();
+    if let Some(context) = whole.context.as_mut() {
+        let steps = u32::try_from(changes.len()).unwrap_or(u32::MAX);
+        context.what = Some(tilo_actions::Did::history(op, steps, None));
+    }
+    let mut listed = entry(doc, &whole, undone, checkpoints, words);
+    if let Value::Object(fields) = &mut listed {
+        for key in ["takes_back", "brings_back"] {
+            let moved: Vec<Value> = changes
+                .iter()
+                .rev()
+                .filter_map(|change| {
+                    let mut one = entry(doc, change, undone, checkpoints, words);
+                    one.as_object_mut()?.remove(key)
+                })
+                .flat_map(|moved| moved.as_array().cloned().unwrap_or_default())
+                .collect();
+            if !moved.is_empty() {
+                fields.insert(key.into(), moved.into());
+            }
+        }
+        let each: Vec<Value> = changes
+            .iter()
+            .rev()
+            .map(|change| steps::short(&change.hash).into())
+            .collect();
+        fields.insert("changes".into(), each.into());
+    }
+    listed
 }
 
 /// Whether `reader` reads `version`: one its change marks as read by some
@@ -1153,8 +1442,11 @@ fn is_document_making(version: &Version) -> bool {
     version
         .message
         .as_deref()
-        .and_then(tilo_actions::framework::FrameworkChange::from_change_message)
-        .is_some_and(|change| {
+        .and_then(tilo_actions::stamp::Label::of)
+        .is_some_and(|label| {
+            let tilo_actions::stamp::Label::Framework(change) = label else {
+                return false;
+            };
             matches!(
                 change,
                 tilo_actions::framework::FrameworkChange::Genesis
@@ -1392,7 +1684,13 @@ impl HistoryEdit {
                 )
                 .map(drop)
             }
-            Self::Restore { version, ids } => steps::resolve(doc, version).and_then(|heads| {
+            Self::Restore {
+                step: Some(step), ..
+            } => steps::resolve(doc, step).and_then(|heads| match heads[..] {
+                [hash] => steps::restore_step(doc, &hash, words),
+                _ => Err(format!("`{step}` names no one change")),
+            }),
+            Self::Restore { version, ids, .. } => steps::resolve(doc, version).and_then(|heads| {
                 steps::restore(doc, &heads, ids.as_deref().unwrap_or_default()).map(drop)
             }),
             Self::RestoreReviewed { review } => review.apply(doc),

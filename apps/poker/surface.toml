@@ -69,6 +69,10 @@ kind = "undoable"
 id = "rebuy"
 kind = "undoable"
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
 [[resources.types]]
 name = "Award"
 fields = [

@@ -39,7 +39,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
             &alice,
             alice_server_dev,
             &[WorkspaceId::from_u128(1)],
-            &[&alice_ws_member.cert],
+            &[&alice_ws_member],
         ))
         .await;
 
@@ -77,7 +77,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
             revocations: revs,
         };
         let server = crate::common::start_server(cfg, identity).await.unwrap();
-        hold_workspace(&server, WorkspaceId::from_u128(9), &[&good_dev.cert]).await;
+        hold_workspace(&server, WorkspaceId::from_u128(9), &[&good_dev]).await;
 
         // The revoked device dials the same link — refused.
         let rejected = Linked::open(&server, &bad_dev, WorkspaceId::from_u128(9)).await;

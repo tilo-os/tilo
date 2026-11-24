@@ -147,6 +147,10 @@ pub struct Options {
     /// link when the caller hands none; without either, it starts on a fresh shell and keeps
     /// nothing.
     pub records: Option<tilo_session_client::device_records::DeviceRecords>,
+    /// The one stream of changes of the workspaces' records on this device, which the roles that
+    /// follow records (the activity, the content index, the person's mentions) read again on.
+    /// Without one, the session follows no workspace's records (most tests).
+    pub record_changes: Option<crate::platform::records::Changes>,
     /// Whether the session takes part in the peer network: who is here in each workspace,
     /// over Iroh. Off, this desktop has no members but its own person; the workspaces it makes
     /// are still founded on its own workspace service, so what it lays out comes back after a
@@ -413,6 +417,7 @@ impl Default for Options {
             power: None,
             state: None,
             records: None,
+            record_changes: None,
             collab: true,
             fabric: None,
             vpn: None,

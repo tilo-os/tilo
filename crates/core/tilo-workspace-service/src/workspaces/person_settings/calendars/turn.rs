@@ -128,7 +128,7 @@ impl Workspaces {
         }
         let asker = using.acting();
         let reach = Asking::of(
-            self.vault_for(&using.workspace, &asker),
+            self.vault_for(&using.workspace, &asker).serving(request),
             &using.agent,
             self.inner.models.mail_reach(),
         );

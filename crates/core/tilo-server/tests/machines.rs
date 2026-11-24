@@ -74,7 +74,7 @@ async fn take_in(hosted: &Hosted, workspace: &str, device: &TestDevice) {
     hosted
         .host
         .workspaces()
-        .enter(workspace, &device.cert)
+        .enter(workspace, (&device.cert, &device.sk))
         .await
         .expect("the workspace takes the person's device in");
 }

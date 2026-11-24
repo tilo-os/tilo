@@ -343,7 +343,7 @@ impl JoinedChannel {
         .serving(self.state.delivered_to(self.peer_id))
         .opened_for(self.opened_for());
         if let Some(record) = record {
-            context = context.on_record(record);
+            context = context.on_record(record).of_kind(self.resource_type.clone());
         }
         if matches!(
             command,
@@ -746,7 +746,7 @@ pub(super) fn live_activity_capability(
     }
 }
 
-pub(super) fn delegate_browser_service_session_command(
+pub(super) async fn delegate_browser_service_session_command(
     services: &ProcessServices,
     context: &crate::apps::services::BrowserServiceSessionRequestContext,
     bytes: &[u8],
@@ -770,8 +770,9 @@ pub(super) fn delegate_browser_service_session_command(
     service
         .authorize_command(context, &command)
         .map_err(|_| refused())?;
-    let reply = service
+    let reply = Arc::clone(service)
         .command(context, command.clone())
+        .await
         .map_err(|_| refused())?;
     context.revalidate().map_err(|_| refused())?;
     service
@@ -996,6 +997,7 @@ pub(super) async fn drive_connection(
                     && let Ok(mut windows) = state.window_instances.lock()
                 {
                     windows.insert(peer_id, instance);
+                    state.windows_changed();
                 }
                 state.note_windowless(peer_id, local_media.as_deref());
                 local_media

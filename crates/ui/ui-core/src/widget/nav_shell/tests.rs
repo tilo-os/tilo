@@ -550,6 +550,57 @@ tilo_test_env::scenario! {
         assert!(geometry(&h).inspector_column.width() > 0.0);
     }
 
+    phase a_view_chooses_the_narrow_form_and_opens_it;
+    {
+        // A view that asks for a drawer: the inspector comes in from the trailing edge over
+        // the content rather than up from the foot, and the view opens it.
+        let shell = NavShell::new()
+            .content(Probe::boxed("content").0)
+            .inspector(Probe::boxed("inspector").0)
+            .inspector_collapse(InspectorCollapse::Drawer);
+        let mut h = harness(shell, 600, 800, Theme::dark());
+        settle(&mut h, 600, 800);
+        let g = geometry(&h);
+        assert_eq!(g.inspector, InspectorPlacement::Drawer);
+        assert_eq!(g.inspector_column, Rect::ZERO, "closed until the view opens it");
+        assert_eq!(g.sheet_covered, 0.0, "a drawer covers no page foot");
+
+        h.root_mut::<NavShell>().set_inspector_open(true);
+        settle(&mut h, 600, 800);
+        let g = geometry(&h);
+        assert!(
+            g.inspector_column.x1 <= 600.0 && g.inspector_column.x1 > 590.0,
+            "against the trailing edge, one gutter in: {:?}",
+            g.inspector_column
+        );
+        assert!(
+            g.inspector_column.x0 > 0.0 && g.inspector_column.width() > 0.0,
+            "a panel over the content, not a column taken from it"
+        );
+        assert_eq!(
+            child_rect(&h, "content").map(|r| r.x1),
+            Some(600.0),
+            "the content keeps the whole window"
+        );
+
+        // And a view that asks for the sidebar as a drawer gets one even where the content's
+        // kind would have made it a screen of the push stack.
+        let list = NavShell::new()
+            .content_kind(ContentKind::List)
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(Probe::boxed("content").0)
+            .sidebar_collapse(SidebarCollapse::Drawer);
+        let mut h = harness(list, 400, 700, Theme::dark());
+        settle(&mut h, 400, 700);
+        assert_eq!(geometry(&h).sidebar, SidebarPlacement::Drawer);
+        h.root_mut::<NavShell>().set_sidebar_open(true);
+        settle(&mut h, 400, 700);
+        assert!(
+            geometry(&h).sidebar_column.width() > 0.0,
+            "the view opened the drawer"
+        );
+    }
+
     // The overview column follows what it lists, up to its cap: the width the
     // detail has past the measure it reads at is the list's, so a long row fits
     // whole while the page beside it still reads as a page.

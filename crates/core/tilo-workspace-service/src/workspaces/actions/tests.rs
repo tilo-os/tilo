@@ -313,7 +313,7 @@ pub(super) async fn admit_device(
     let reply = workspaces
         .admit_proven(
             issued.signed_invitation,
-            cert.clone(),
+            (cert.clone(), &key),
             rand::random(),
             &format!("Person {seed}"),
             Some(token.as_slice()),
@@ -1279,9 +1279,15 @@ async fn an_invitation_at_the_owners_place_makes_its_opener_the_owner() {
     assert_eq!(issued["administrator"], json!(true));
     let signed = hex::decode(issued["invitation"].as_str().unwrap()).unwrap();
 
-    let (_, newcomer) = guest_device();
+    let (newcomer_key, newcomer) = guest_device();
     let admitted = workspaces
-        .admit_proven(signed, newcomer.clone(), rand::random(), "Ada", None)
+        .admit_proven(
+            signed,
+            (newcomer.clone(), &newcomer_key),
+            rand::random(),
+            "Ada",
+            None,
+        )
         .await;
     assert!(
         matches!(admitted, JoinReply::Admitted { .. }),
@@ -2933,12 +2939,11 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
 }
 
 /// Two devices that redeem one invitation at once: `workspace/members#admit` takes the workspace
-/// and checks the invitation's spent mark under it, so exactly one is admitted, with its
-/// membership kept in the change that admits it, and the other is told in words that the
+/// and checks the invitation's spent mark under it, so exactly one is admitted, its membership
+/// read from the member list that admits it, and the other is told in words that the
 /// invitation was already redeemed. Nothing of the other is written.
 #[tokio::test]
 async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
-    use crate::workspaces::membership::{self, Membership};
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -2953,12 +2958,18 @@ async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
     .await
     .unwrap();
     let signed = hex::decode(issued["invitation"].as_str().unwrap()).unwrap();
-    let (_, ada) = guest_device();
-    let (_, bo) = guest_device();
+    let (ada_key, ada) = guest_device();
+    let (bo_key, bo) = guest_device();
 
     let (first, second) = tokio::join!(
-        workspaces.admit_proven(signed.clone(), ada.clone(), rand::random(), "Ada", None),
-        workspaces.admit_proven(signed, bo.clone(), rand::random(), "Bo", None),
+        workspaces.admit_proven(
+            signed.clone(),
+            (ada.clone(), &ada_key),
+            rand::random(),
+            "Ada",
+            None,
+        ),
+        workspaces.admit_proven(signed, (bo.clone(), &bo_key), rand::random(), "Bo", None),
     );
 
     let (winner, loser, refused) = match (&first, &second) {
@@ -2984,26 +2995,35 @@ async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
         !people.contains(&hex::encode(loser.user_public_key)),
         "{listed}"
     );
+    // Each person's membership reads from the member list itself: the role the admission gave
+    // them, and nothing for the device that was refused.
     let kept = |cert: &DeviceCert| {
-        let record = membership::member_record(&cert.user_public_key);
-        let workspace = &workspace;
+        let reads = workspaces.resource_reads();
+        let caller = caller(&owner);
+        let address = tilo_actions::remote::ResourceAddress {
+            workspace: workspace.clone(),
+            app: tilo_server_protocol::workspaces::MEMBERSHIP_APP.to_owned(),
+            record: tilo_server_protocol::workspaces::member_record(&cert.user_public_key),
+        };
         async move {
-            crate::workspaces::person_workspace::read_on::<Membership>(
-                workspaces,
-                workspace,
-                (membership::APP, record.as_str()),
-            )
+            tokio::task::spawn_blocking(move || {
+                tilo_actions::remote::ResourceReads::read(&*reads, &caller, &address)
+            })
             .await
+            .expect("the read ran")
+            .expect("the owner reads the workspace's memberships")
+            .readable()
+            .expect("a membership reads")
         }
     };
     assert_eq!(
-        kept(winner).await.unwrap().role.as_deref(),
-        Some("editor"),
-        "the admitted person's membership is kept with their admission"
+        kept(winner).await["role"],
+        "editor",
+        "the admitted person's membership is their role on the member list"
     );
     assert_eq!(
-        kept(loser).await.unwrap().role,
-        None,
+        kept(loser).await,
+        Value::Null,
         "nothing of the refused device is written"
     );
     server.shutdown().await;

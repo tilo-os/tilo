@@ -82,7 +82,7 @@ async fn extra_protocol_and_server_share_one_endpoint() {
 
     // The workspaces' links and the two extra protocols share the one endpoint.
     let workspace_id = tilo_server::WorkspaceId::from_u128(12);
-    hold_workspace(&server, workspace_id, &[&device.cert]).await;
+    hold_workspace(&server, workspace_id, &[&device]).await;
 
     let client = test_server::direct_endpoint().await;
     let connection = client.connect(server.node_addr(), TEST_ALPN).await.unwrap();

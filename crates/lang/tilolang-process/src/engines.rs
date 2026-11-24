@@ -41,6 +41,8 @@ pub fn register_all() {
             crate::db_engine::register();
             crate::containers_engine::register();
             crate::files_engine::register();
+            // Maps' kept areas are this device's pictures, which a window may already have drawn.
+            tilo_maps_engine::register();
         }
         #[cfg(all(
             feature = "app-launch",
@@ -202,13 +204,9 @@ pub struct Caller<'a> {
 /// The app's engine runs no such job, the device could not be told, or the engine refused it.
 pub fn start(caller: &Caller<'_>, op: &str, input: &str) -> Result<String, String> {
     let declared = engine::job_op(caller.app, op)?;
-    start_placed(
-        caller,
-        op,
-        input,
-        declared.needs,
-        |job, moved| engine::begin(caller.app, job, op, input, moved),
-    )
+    start_placed(caller, op, input, declared.needs, |job, moved| {
+        engine::begin(caller.app, job, op, input, moved)
+    })
 }
 
 /// `engine.start` for `caller` of an engine this process opened from its runtime bundle: the job

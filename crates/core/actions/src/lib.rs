@@ -342,8 +342,8 @@ pub mod terminal_text;
 pub mod tree;
 
 pub use action::{
-    Action, ActionError, ActionId, Declined, Doc, EncodedAction, ExecutionLocus, MAX_TEXT_BYTES,
-    OperationKind, RECALL_SUMMARY_BYTES, asks_first, codes, undo_takes_back,
+    Action, ActionError, ActionId, ActionStep, Declined, Doc, EncodedAction, ExecutionLocus,
+    MAX_TEXT_BYTES, OperationKind, RECALL_SUMMARY_BYTES, asks_first, codes, undo_takes_back,
 };
 pub use agent_disclosure::hidden_from_agents;
 pub use api::{

@@ -851,6 +851,12 @@ impl App {
         if self.accessibility.focus_trap_active {
             return false;
         }
+        // No control: the tree ends the keyboard's place in an editor (a bound editor the view
+        // rebuilt for another record, or a view asking for none).
+        if id.is_empty() {
+            self.set_focused_node(None);
+            return true;
+        }
         let target = self.focusable_order.iter().copied().find(|&node| {
             self.inspect_node(node, |widget| widget.test_id() == Some(id.as_str()))
                 .unwrap_or(false)
@@ -1081,6 +1087,16 @@ impl App {
             modal_rect,
             self.accessibility.focus_trap_active,
         )
+    }
+
+    /// Tell the export the window's scale, as the window system reports it: the
+    /// tree the session publishes carries bounds in physical pixels, as AT-SPI
+    /// reads them.
+    #[cfg(feature = "native")]
+    pub(crate) fn set_a11y_export_scale(&mut self, scale: f64) {
+        if scale.is_finite() && scale > 0.0 {
+            self.accessibility.export_scale = scale;
+        }
     }
 
     /// `scale` is the window scale factor so bounds land in physical pixels

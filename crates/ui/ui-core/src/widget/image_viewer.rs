@@ -196,6 +196,12 @@ impl Widget for ImageViewer {
 
     crate::rect_geometry!();
 
+    /// It fills its slot from its style alone, and the picture's zoom and pan are drawn inside
+    /// it: it asks for a layout only until it has one.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,

@@ -35,10 +35,10 @@ use tilo_workspace_service::agents::{Model, ServerAgents};
 use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::service::local_caller;
 use tilo_workspace_service::work::Order;
-use tilo_workspace_service::workspaces::fixtures::invited;
 use tilo_workspace_service::workspaces::fixtures::{
     Started, TestGroupKeys, device_cert, governor, test_host_holding,
 };
+use tilo_workspace_service::workspaces::fixtures::{invitation, invited, membership_log_alone};
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
 
 use super::mount;
@@ -553,6 +553,192 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         Some(bea_person.as_str()),
         "for Bea"
     );
+    bea.shutdown().await;
+    ada.shutdown().await;
+}
+
+/// An agent is the pair of its id and the person its certificate chains to: Bea, an editor, stops
+/// the agent she made and lets it go on again without administering the workspace. Cy, another
+/// editor, may write a stop and an answer for an agent of the same id, but they are his own, for
+/// his own agent of that id, and reach Bea's not at all; nor does what Bea answered reach his.
+/// Every replica decides it alike, one holding nothing but the workspace's membership log as
+/// well: nothing of it reads the workspace's record of its agents.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_its_person_answers_for_or_stops_an_agent() {
+    use tilo_action_policy::{
+        Acting, ActionKind, Answer, Authority, Context, TreePath, WorkspacePolicy,
+    };
+    let states = [(); 3].map(|()| tempfile::tempdir().unwrap());
+    let keys = Arc::new(TestGroupKeys::default());
+    let bea_root = SigningKey::from_bytes(&[0xbe; 32]);
+    let cy_root = SigningKey::from_bytes(&[0xc7; 32]);
+    let (bea_key, bea_cert) = device_cert(&bea_root, "bea-laptop", DeviceCapabilities::member());
+    let (cy_key, cy_cert) = device_cert(&cy_root, "cy-laptop", DeviceCapabilities::member());
+    let (ada_key, ada_cert) = governor();
+    let ada = test_host_holding(states[0].path(), &ada_key, &ada_cert, Arc::clone(&keys)).await;
+    let (ada, (bea_key, bea_cert), created, beas_invitation) =
+        invited(ada, &ada_cert, "Team", 0x62, (bea_key, bea_cert)).await;
+    let workspace = created.workspace;
+    let cys_invitation = invitation(&ada, &ada_cert, &workspace, 0x63, &cy_cert).await;
+    let join = |state: &std::path::Path, key: SigningKey, cert: DeviceCert| {
+        let keys = Arc::clone(&keys);
+        let state = state.to_owned();
+        async move {
+            let host = test_host_holding(&state, &key, &cert, keys).await;
+            host.workspaces().set_member_device(Arc::new(MemberDevice {
+                cert,
+                signer: Arc::new(key),
+            }));
+            host
+        }
+    };
+    let bea = join(states[1].path(), bea_key, bea_cert.clone()).await;
+    let cy = join(states[2].path(), cy_key, cy_cert.clone()).await;
+    bea.workspaces()
+        .join_member(&beas_invitation)
+        .await
+        .unwrap();
+    cy.workspaces().join_member(&cys_invitation).await.unwrap();
+    let (beas, cys) = (bea.workspaces(), cy.workspaces());
+    let (bea_person, cy_person) = (
+        hex::encode(bea_cert.user_public_key),
+        hex::encode(cy_cert.user_public_key),
+    );
+
+    ask_agents(
+        beas,
+        &workspace,
+        &bea_cert,
+        WORKSPACE_AGENT_CREATE,
+        json!({ "name": "Scout", "id": SCOUT }),
+    )
+    .await
+    .expect("Bea makes her own agent");
+
+    // What the agent `SCOUT` acting for `person` may do in Chat, by `policy`.
+    let chat = TreePath::workspace(&workspace).app(CHAT);
+    let cx = || Context::at_time(tilo_clock::wall());
+    let decides = |policy: &WorkspacePolicy, person: &str| {
+        let acting = Acting::handed_agent(SCOUT, person);
+        let preset = acting.handed_preset(&workspace);
+        [ActionKind::Read, ActionKind::Undoable].map(|kind| {
+            Authority::of_acting(&acting, policy, &preset)
+                .decide(&chat, kind, &cx())
+                .answer
+        })
+    };
+    let member = |change| {
+        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member { change }
+    };
+
+    // Bea keeps her agent from changing anything in Chat. A `SCOUT` certified by Cy's root is
+    // another agent: nothing Bea answers for hers reaches it.
+    let unanswered = beas.policy_of(&workspace).await.unwrap();
+    beas.commit_own_change(
+        &workspace,
+        member(tilo_action_policy::Change::Grant(
+            tilo_action_policy::agent_answers::grant(
+                &workspace,
+                SCOUT,
+                (
+                    &tilo_action_policy::agent_answers::AnswerScope::app(CHAT),
+                    ActionKind::Undoable,
+                ),
+                Answer::Deny,
+                tilo_action_policy::Grantee::person(bea_person.clone()),
+            ),
+        )),
+        None,
+    )
+    .await
+    .expect("Bea answers for her agent");
+    let before = beas.policy_of(&workspace).await.unwrap();
+    assert_ne!(decides(&unanswered, &bea_person)[1], Answer::Deny);
+    assert_eq!(
+        decides(&before, &bea_person)[1],
+        Answer::Deny,
+        "Bea's agent changes nothing in Chat"
+    );
+    assert_eq!(
+        decides(&before, &cy_person),
+        decides(&unanswered, &cy_person),
+        "Cy's agent of that id is decided as if Bea had answered nothing"
+    );
+    let cys_stop = tilo_action_policy::agent_answers::stop_grant(
+        &workspace,
+        SCOUT,
+        tilo_action_policy::Grantee::person(cy_person.clone()),
+    );
+    let cys_answer = tilo_action_policy::agent_answers::grant(
+        &workspace,
+        SCOUT,
+        (
+            &tilo_action_policy::agent_answers::AnswerScope::app(CHAT),
+            ActionKind::Undoable,
+        ),
+        Answer::Allow,
+        tilo_action_policy::Grantee::person(cy_person.clone()),
+    );
+    // What Cy's device, and a replica holding its membership log alone, decided before he wrote.
+    let cys_before = [
+        cys.policy_of(&workspace).await.unwrap(),
+        membership_log_alone(cys, &workspace).await,
+    ];
+    for change in [cys_stop, cys_answer] {
+        cys.commit_own_change(
+            &workspace,
+            member(tilo_action_policy::Change::Grant(change)),
+            None,
+        )
+        .await
+        .expect("Cy's say about his own agent of that id is his");
+    }
+    let cys_after = [
+        cys.policy_of(&workspace).await.unwrap(),
+        membership_log_alone(cys, &workspace).await,
+    ];
+    for (policy, earlier) in cys_after.iter().zip(&cys_before) {
+        assert!(policy.stops(SCOUT, &cy_person, &cx()), "Cy stopped his own");
+        assert!(
+            !policy.stops(SCOUT, &bea_person, &cx()),
+            "and not Bea's: her agent is not his to stop"
+        );
+        assert_eq!(
+            decides(policy, &bea_person),
+            decides(earlier, &bea_person),
+            "Bea's agent is decided as before Cy wrote anything"
+        );
+        assert_eq!(
+            decides(policy, &cy_person),
+            [Answer::Deny; 2],
+            "a `{SCOUT}` certified by Cy's root is his, and stopped"
+        );
+    }
+
+    beas.answer_stop(&workspace, SCOUT)
+        .await
+        .expect("Bea stops her own agent");
+    for policy in [
+        beas.policy_of(&workspace).await.unwrap(),
+        membership_log_alone(beas, &workspace).await,
+    ] {
+        assert!(policy.stops(SCOUT, &bea_person, &cx()), "Bea stopped hers");
+        assert_eq!(decides(&policy, &bea_person), [Answer::Deny; 2]);
+    }
+    beas.answer_go_on(&workspace, SCOUT)
+        .await
+        .expect("and lets it go on");
+    let policy = beas.policy_of(&workspace).await.unwrap();
+    assert!(!policy.stops(SCOUT, &bea_person, &cx()));
+    assert_eq!(decides(&policy, &bea_person), decides(&before, &bea_person));
+    assert!(
+        !membership_log_alone(beas, &workspace)
+            .await
+            .stops(SCOUT, &bea_person, &cx()),
+        "a replica holding the membership log alone lets it go on too"
+    );
+
+    cy.shutdown().await;
     bea.shutdown().await;
     ada.shutdown().await;
 }

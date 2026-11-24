@@ -305,6 +305,135 @@ fn a_hosted_windows_control_pressed_by_what_it_does_reaches_the_app() {
     );
 }
 
+/// A hosted window's accessibility tree reaches the session's export — its window's name, its
+/// nodes' roles, the focus — and an action a client of the export takes on one of its nodes goes
+/// back to the window that drew it, as the window's own assistive client's action would.
+#[test]
+fn a_hosted_windows_tree_reaches_the_export_and_a_clients_action_reaches_the_app() {
+    use ui::accesskit::{Action, ActionRequest, Node, NodeId, Role, TreeId, TreeInfo, TreeUpdate};
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_windowed(&mut home);
+    let handed = home.home().join("started");
+    let launcher = launcher_recording_pid(&home, &handed);
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let started: Arc<Launches> = Arc::new(Launches::default());
+    let mut session = session_on(apps.clone(), Arc::clone(&started));
+
+    apps.open(&Launch::Package {
+        app: APP.to_owned(),
+        open: None,
+    })
+    .expect("the app is opened");
+    let (pid, instance) =
+        crate::common::wait_for(&mut session, "the window's process starts", |_| {
+            fs::read_to_string(&handed).ok().and_then(|text| {
+                let line = text.lines().find(|line| !line.trim().is_empty())?;
+                let (pid, instance) = line.trim().split_once(' ')?;
+                Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
+            })
+        });
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(a_window_of(instance, pid)).unwrap());
+    crate::common::until(
+        &mut session,
+        "the app's window is on the shell",
+        |session| tabs_of(session, APP).contains(&instance),
+    );
+
+    // The window sends the session what assistive technology reads of it, as it draws it.
+    let mut connection: UnixStream = ServiceLinks::new(Arc::clone(&started))
+        .shell_ui(APP, instance, Some(pid))
+        .expect("the window's shell-ui connection")
+        .into();
+    let mut window = Node::new(Role::Window);
+    window.set_label("Tasks");
+    window.set_children(vec![NodeId(1)]);
+    let mut button = Node::new(Role::Button);
+    button.set_label("Done");
+    button.add_action(Action::Click);
+    let tree = TreeUpdate {
+        nodes: vec![(NodeId(0), window), (NodeId(1), button)],
+        tree: Some(TreeInfo::new(NodeId(0))),
+        tree_id: TreeId::ROOT,
+        focus: NodeId(1),
+    };
+    for frame in [
+        FloatingSurfaceClientMessage::Hello {
+            version: FLOATING_SURFACE_PROTOCOL_VERSION,
+        },
+        FloatingSurfaceClientMessage::AccessibilityTree {
+            tree,
+            name: "Tasks".to_owned(),
+            instance: Some(instance),
+        },
+    ] {
+        let mut bytes = serde_json::to_vec(&frame).unwrap();
+        bytes.push(b'\n');
+        connection.write_all(&bytes).unwrap();
+    }
+    connection.flush().unwrap();
+
+    // The session exports the window a screen reader finds: its name, its roles and the node it
+    // focuses.
+    crate::common::until(&mut session, "the window's tree is exported", |session| {
+        session.a11y_windows().into_iter().any(|(_, name, tree)| {
+            name == "Tasks"
+                && tree.focus == NodeId(1)
+                && tree.nodes.iter().any(|(id, node)| {
+                    *id == NodeId(1) && node.role() == Role::Button && node.label() == Some("Done")
+                })
+        })
+    });
+    let (place, _, tree) = session
+        .a11y_windows()
+        .into_iter()
+        .find(|(_, name, _)| name == "Tasks")
+        .expect("the window the app drew");
+    let root = tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == NodeId(0))
+        .map(|(_, node)| node)
+        .expect("the window's root");
+    assert_eq!(root.role(), Role::Window, "the app's window is a window");
+    assert_eq!(
+        tree.focus,
+        NodeId(1),
+        "the node the window focuses is the client's focus"
+    );
+
+    // A client activates the button through the export: the window that drew it hears the action.
+    assert!(
+        session.a11y_perform(place, NodeId(1), &ui::a11y::Action::Activate),
+        "the export takes the activation"
+    );
+    let asked = ActionRequest {
+        action: Action::Click,
+        target_tree: TreeId::ROOT,
+        target_node: NodeId(1),
+        data: None,
+    };
+    let told = host_frames(&mut session, &mut connection, |told| {
+        told.iter().any(|message| {
+            matches!(
+                message,
+                FloatingSurfaceHostMessage::AccessibilityAction { request, .. }
+                    if request == &asked
+            )
+        })
+    });
+    assert!(
+        told.iter().any(|message| matches!(
+            message,
+            FloatingSurfaceHostMessage::AccessibilityAction { request, .. } if request == &asked
+        )),
+        "the app is told what the client asked of its node: {told:?}"
+    );
+}
+
 /// A route an app draws itself stands in the shell's card: the card holds a block of the size the
 /// app asked for, and the app is told to stand its card's window exactly there, while its own
 /// window is not on screen.

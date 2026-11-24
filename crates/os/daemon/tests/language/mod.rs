@@ -6,6 +6,7 @@ mod hosted_own_agent_tests;
 mod moderation_history_tests;
 mod own_agent_tests;
 mod record_roots_tests;
+mod resource_writes_tests;
 mod served_notices_tests;
 mod task_work_tests;
 mod triggers_tests;

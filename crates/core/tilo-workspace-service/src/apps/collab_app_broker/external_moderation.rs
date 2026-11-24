@@ -26,6 +26,9 @@ struct Context {
     state: Weak<AppBrokerState>,
     request: Request,
     document: super::NativeDocumentReadContext,
+    /// The broker's runtime, which the committed report's read is awaited on: the checks run on
+    /// the moderation's own thread, never on the broker's.
+    runtime: tokio::runtime::Handle,
 }
 impl Context {
     #[allow(
@@ -84,7 +87,9 @@ impl Context {
             .committed_read_budget
             .try_reserve()
             .ok_or("committed document capture capacity exhausted")?;
-        let captured = service.capture(&self.document, None, MAX_DOCUMENT_BYTES)?;
+        let captured = self
+            .runtime
+            .block_on(service.capture(&self.document, None, MAX_DOCUMENT_BYTES))?;
         let NativeDocumentRead::Captured { body, .. } = captured else {
             return Err("external moderation committed report unavailable".into());
         };
@@ -317,10 +322,9 @@ pub(super) fn is_envelope(bytes: &[u8]) -> bool {
     })
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the context moves into the worker thread and the state is a borrow; no guard outlives its use"
-)]
+/// Start the moderation `bytes` asks for, continuing the invocation `parent`: its request checked
+/// here, and everything that reads the workspace (the committed report among it) or the registry
+/// on a thread of its own, never on the broker's, whose event loop may carry what it reads.
 pub(super) fn start(
     channel: &JoinedChannel,
     bytes: &[u8],
@@ -342,9 +346,38 @@ pub(super) fn start(
         state: Arc::downgrade(&channel.state),
         document: channel.document_read_context()?,
         request,
+        runtime: tokio::runtime::Handle::try_current()
+            .map_err(|_| "external moderation needs the broker's runtime")?,
     };
+    let (send, receive) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("tilo-external-moderation".into())
+        .spawn(move || {
+            // A moderation worker's panic is a terminal refusal of this run alone: it
+            // unwinds to this panic boundary, where outside one a release build's panic
+            // hook ends the whole process.
+            let reply = tilo_rt::panic_boundary::isolate(|| moderate(&context))
+                .unwrap_or_else(|_| {
+                    Err("external moderation worker panicked; outcome unobserved".into())
+                });
+            let _ = send.send(reply);
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(receive)
+}
+
+/// The moderation `context` asks for, on its own thread: decided again, then answered from the
+/// registry when it ran already, refused while it runs, or run and kept.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the registry's guard is let go before the run; the state is read until the end"
+)]
+fn moderate(context: &Context) -> Reply {
     context.recheck()?;
-    let state = &channel.state;
+    let state = context
+        .state
+        .upgrade()
+        .ok_or("external moderation broker retired")?;
     let id = context.original.request().wire_id;
     let retained: HashSet<_> = state
         .pending_invocations
@@ -353,7 +386,7 @@ pub(super) fn start(
         .keys()
         .copied()
         .collect();
-    let cached = {
+    {
         let mut registry = state
             .external_moderation_jobs
             .lock()
@@ -367,49 +400,25 @@ pub(super) fn start(
                     "external moderation already executing; observe the original invocation".into(),
                 );
             }
-            Some(Entry::Complete(reply)) => Some(reply.clone()),
+            Some(Entry::Complete(reply)) => return reply.clone(),
             None => {
                 if registry.0.len() >= 256 {
                     return Err("external moderation retained execution limit reached".into());
                 }
                 registry.0.insert(id, Entry::Running);
-                None
             }
         }
-    };
-    let (send, receive) = tokio::sync::oneshot::channel();
-    if let Some(reply) = cached {
-        let _ = send.send(reply);
-        return Ok(receive);
     }
-    let state = Arc::downgrade(state);
-    let spawned = std::thread::Builder::new()
-        .name("tilo-external-moderation".into())
-        .spawn(move || {
-            // A moderation worker's panic is a terminal refusal of this run alone: it
-            // unwinds to this panic boundary, where outside one a release build's panic
-            // hook ends the whole process.
-            let reply = tilo_rt::panic_boundary::isolate(|| context.run()).unwrap_or_else(|_| {
-                Err("external moderation worker panicked; outcome unobserved".into())
-            });
-            if let Some(state) = state.upgrade()
-                && let Ok(mut registry) = state.external_moderation_jobs.lock()
-            {
-                registry.0.insert(id, Entry::Complete(reply.clone()));
-            }
-            let _ = send.send(reply);
-        });
-    if let Err(error) = spawned {
-        channel
-            .state
-            .external_moderation_jobs
-            .lock()
-            .map_err(|_| "moderation registry unavailable")?
-            .0
-            .insert(id, Entry::Complete(Err(error.to_string())));
-        return Err(error.to_string());
+    drop(state);
+    let reply = tilo_rt::panic_boundary::isolate(|| context.run()).unwrap_or_else(|_| {
+        Err("external moderation worker panicked; outcome unobserved".into())
+    });
+    if let Some(state) = context.state.upgrade()
+        && let Ok(mut registry) = state.external_moderation_jobs.lock()
+    {
+        registry.0.insert(id, Entry::Complete(reply.clone()));
     }
-    Ok(receive)
+    reply
 }
 
 #[cfg(test)]

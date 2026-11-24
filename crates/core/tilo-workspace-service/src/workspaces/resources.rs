@@ -97,11 +97,14 @@ pub(super) struct Resources {
     live: Option<(crate::live::LiveRows, String)>,
     /// The store's [`Store::live_revision`] the rows were last shown at.
     live_shown: Option<u64>,
+    /// The changes larger than one frame whose segments have not all come yet, by author.
+    transfers: tilo_peer_state::document_frame::Transfers,
 }
 
 /// The workspace's one read decision, for the store of the workspace: a person reads as
-/// themselves, an agent of the member list as the person it acts for where its preset, narrowed
-/// to that person's reach, reads the resource, and anyone else reads none of it.
+/// themselves, an agent a person's record names as that person's own agent, reading as them
+/// where its preset, narrowed to their reach, reads the resource, and anyone else reads none of
+/// it.
 #[cfg(any(feature = "apps", feature = "agents"))]
 struct PolicyReaders(std::sync::RwLock<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>);
 
@@ -120,6 +123,7 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
     fn reader_of(
         &self,
         actor: &tilo_actions::Actor,
+        writer: Option<&str>,
         kind: &str,
         id: &str,
     ) -> Option<tilo_action_policy::PersonId> {
@@ -134,7 +138,7 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
         match actor.member_id()? {
             MemberId::Person(person) => Some(person.clone()),
             MemberId::Agent(agent) => {
-                let member = policy.agents.get(agent.as_str())?;
+                let person = writer?;
                 let workspace = TreePath::workspace(&policy.workspace);
                 // A tilolang record's kind names its app: `tl.<app>.<Type>`.
                 let node = kind
@@ -150,7 +154,7 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
                                 .resource(id.to_owned())
                         },
                     );
-                let acting = Acting::handed_agent(agent.as_str(), member.for_person.as_str());
+                let acting = Acting::handed_agent(agent.as_str(), person);
                 let preset = acting.handed_preset(&policy.workspace);
                 let reads = Policy::of_acting(&acting, &policy, &preset)
                     .decide(
@@ -160,7 +164,7 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
                     )
                     .answer
                     == Answer::Allow;
-                reads.then(|| tilo_action_policy::PersonId::from(member.for_person.as_str()))
+                reads.then(|| tilo_action_policy::PersonId::from(person))
             }
             MemberId::Bot(_) => None,
         }
@@ -239,6 +243,7 @@ impl Resources {
             workspace: id.to_string(),
             live: None,
             live_shown: None,
+            transfers: tilo_peer_state::document_frame::Transfers::default(),
         }
     }
 
@@ -743,6 +748,18 @@ impl GovernedWorkspace {
         surfaces: &collab_types::app_surface::Surfaces,
     ) -> std::sync::MutexGuard<'a, Store> {
         let named = surfaces.registered();
+        // The system's own kind, which no app declares: a reference to another workspace's
+        // record, whichever app's it is.
+        {
+            let mut store = self.resources.store_mut();
+            if store
+                .schema()
+                .get(tilo_resource_store::reference::KIND)
+                .is_none()
+            {
+                store.declare(tilo_resource_store::reference::schema());
+            }
+        }
         if self.resources.declared != named {
             self.resources.declared = named;
             {
@@ -825,14 +842,10 @@ impl GovernedWorkspace {
                     .to_vec()
             }
         };
-        let mutation = match collab_types::DocumentFrame::decode(&payload)
-            .map_err(|error| error.to_string())?
-        {
-            collab_types::DocumentFrame::Whole(mutation) => mutation,
-            // A store document is far smaller than one frame holds.
-            collab_types::DocumentFrame::Segment(_) => {
-                return Err("a resource document's write came in segments".into());
-            }
+        // A change larger than one frame comes as segments, each a write of its own: the store
+        // takes it once the last is here.
+        let Some(mutation) = self.resources.transfers.take(author, &payload)? else {
+            return Ok(false);
         };
         let (changes, named_in_document) = changes_of(mutation)?;
         let readers = known
@@ -880,7 +893,7 @@ impl GovernedWorkspace {
         device: &super::MemberDevice,
         app: &str,
         write: &tilo_resource_store::Written,
-    ) -> Result<collab_types::SignedOp, String> {
+    ) -> Result<Vec<collab_types::SignedOp>, String> {
         let now = tilo_clock::wall();
         let named = (collab_types::is_store_document(&write.doc)
             && write.readers != collab_types::EVERY_MEMBER)
@@ -951,23 +964,28 @@ impl GovernedWorkspace {
             },
         )
         .map_err(|error| error.to_string())?;
-        // A store's change of one record is one change, and its record names its kinds by it:
-        // one frame holds it.
-        let [mut envelope] = <[_; 1]>::try_from(envelopes)
-            .map_err(|_| "a resource change is larger than one frame".to_owned())?;
-        // The write names the version of the app the workspace runs, as a change of its record
-        // names it: a change that names none — as a record this device writes on its own would —
-        // is held in a workspace that runs a version, and waits for a version nobody ever names.
-        envelope.surface = peer.running_surface(app);
-        if envelope.encryption.is_some() && !founding {
-            let kinds =
-                std::iter::once((write.change.hash().0, self.resources.written_kinds(write)))
-                    .filter(|(_, kinds)| !kinds.is_empty())
-                    .collect();
-            peer.name_record_kinds((app, &write.doc), &mut envelope, &kinds);
-        }
-        collab_types::sign_op(&mut envelope, &*device.signer).map_err(|error| error.to_string())?;
-        Ok(envelope)
+        // A change larger than one frame is drafted as segments, each a write of its own, and
+        // each names the kinds the change writes.
+        let kinds: collab_types::claim::RecordKinds =
+            std::iter::once((write.change.hash().0, self.resources.written_kinds(write)))
+                .filter(|(_, kinds)| !kinds.is_empty())
+                .collect();
+        envelopes
+            .into_iter()
+            .map(|mut envelope| {
+                // The write names the version of the app the workspace runs, as a change of its
+                // record names it: a change that names none — as a record this device writes on
+                // its own would — is held in a workspace that runs a version, and waits for a
+                // version nobody ever names.
+                envelope.surface = peer.running_surface(app);
+                if envelope.encryption.is_some() && !founding {
+                    peer.name_record_kinds((app, &write.doc), &mut envelope, &kinds);
+                }
+                collab_types::sign_op(&mut envelope, &*device.signer)
+                    .map_err(|error| error.to_string())?;
+                Ok(envelope)
+            })
+            .collect()
     }
 }
 
@@ -1013,6 +1031,132 @@ impl Workspaces {
         for (doc, bytes) in documents {
             store.load(&doc, &bytes).unwrap();
         }
+    }
+}
+
+/// What a test reads of a workspace's store and the replica beside it: the documents the store
+/// placed, what its index holds of them, and the writes the replica keeps of them.
+///
+/// A test outside this package reads a member's write back through these, as it reads any other
+/// answer of the service: the store's own lock and projection stay here.
+#[cfg(all(feature = "test-support", feature = "apps"))]
+impl Workspaces {
+    /// How many of `workspace`'s documents the store read into memory: what a start that read
+    /// the index's snapshots leaves at none.
+    pub async fn store_in_memory(&self, workspace: &str) -> usize {
+        let Ok(state) = self.workspace(workspace).await else {
+            return 0;
+        };
+        let mut governed = state.lock().await;
+        governed
+            .store_with_surfaces(&self.inner.host.surfaces)
+            .in_memory()
+    }
+
+    /// How many queries an app holds open on `workspace`'s store.
+    pub async fn store_queries_opened(&self, workspace: &str) -> usize {
+        let Ok(state) = self.workspace(workspace).await else {
+            return 0;
+        };
+        let governed = state.lock().await;
+        governed.resources.opened.len()
+    }
+
+    /// Hold `query` open for the app `context` names, in its workspace, as
+    /// [`Self::open_resources`] does: what a test of the pages a write sends reads.
+    ///
+    /// # Errors
+    /// As [`Self::open_resources`].
+    pub async fn open_resource_query(
+        &self,
+        context: &crate::apps::services::ResourceRequestContext,
+        query: tilo_resource_store::Query,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page>, String> {
+        self.open_resources(context, query).await
+    }
+
+    /// Whether `workspace`'s replica holds document `doc` of `app`: what the store placed and
+    /// what the member's device wrote there.
+    pub async fn peer_holds(&self, workspace: &str, app: &str, doc: &str) -> bool {
+        let Ok(state) = self.workspace(workspace).await else {
+            return false;
+        };
+        let governed = state.lock().await;
+        governed.peer().holds_document(app, doc)
+    }
+
+    /// The kinds the replica's sealed writes of `doc`, `app`'s, claim, each write's as one set:
+    /// what a member without the document's key decides the edit after the first write by.
+    pub async fn sealed_claims(
+        &self,
+        workspace: &str,
+        app: &str,
+        doc: &str,
+    ) -> Vec<std::collections::BTreeSet<String>> {
+        let Ok(state) = self.workspace(workspace).await else {
+            return Vec::new();
+        };
+        let governed = state.lock().await;
+        governed
+            .peer()
+            .publication()
+            .sealed_history(app, doc)
+            .iter()
+            .flat_map(|op| op.claims.iter())
+            .filter_map(|claim| collab_types::claim::whole_edit_kinds(&claim.action))
+            .collect()
+    }
+
+    /// Take the member's write `envelope` of `doc`, `app`'s, into `workspace`'s store, `author`
+    /// the device that wrote it: whether any change of it took effect, as
+    /// [`Self::absorb_member_write`] takes a whole body.
+    ///
+    /// # Errors
+    /// The write does not open or decode, or the store cannot keep it.
+    pub async fn take_member_write(
+        &self,
+        workspace: &str,
+        (app, doc): (&str, &str),
+        author: [u8; 32],
+        envelope: &collab_types::SignedOp,
+    ) -> Result<bool, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        drop(governed.store_with_surfaces(&self.inner.host.surfaces));
+        governed
+            .take_resources(author, (app, doc), envelope, None)
+            .await
+    }
+
+    /// Hold `workspace` as a write holds it from the moment it is drafted until its change is
+    /// kept, until the answer is dropped: what a test that reads a page while a write holds the
+    /// workspace holds.
+    ///
+    /// # Errors
+    /// This device holds no such workspace.
+    pub async fn hold_workspace(&self, workspace: &str) -> Result<impl Send, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(state.lock_owned().await)
+    }
+
+    /// Keep `commit`, a signed body this device's own roles wrote, and carry it, answering from
+    /// where the frames of `workspace_id` stand.
+    ///
+    /// # Errors
+    /// The body does not decode, or the document could not be kept.
+    pub fn carry_document(
+        &self,
+        workspace_id: tilo_server_protocol::WorkspaceId,
+        author: [u8; 32],
+        commit: &crate::workspace_documents::HostCommit,
+    ) -> Result<u64, String> {
+        self.inner.records.carry(workspace_id, author, commit)
     }
 }
 
@@ -1173,27 +1317,19 @@ impl Workspaces {
         device: &super::MemberDevice,
         app: &str,
         write: &tilo_resource_store::Written,
-    ) -> Result<collab_types::SignedOp, String> {
+    ) -> Result<Vec<collab_types::SignedOp>, String> {
         use neighbour_wire::NeighbourMsg;
 
         let document = &write.doc;
         let author = device.device();
         let now = tilo_clock::wall();
         governed.may_start(author, (app, document), now)?;
-        let envelope = governed
+        let envelopes = governed
             .draft_resource_document(candidate, device, app, write)
             .await?;
         let named = (collab_types::is_store_document(document)
             && write.readers != collab_types::EVERY_MEMBER)
             .then_some(write.readers.as_str());
-        let message = NeighbourMsg::AppDocument {
-            peer: neighbour_wire::peer_handle(&author),
-            app_id: app.to_owned(),
-            cluster_id: governed.workspace().to_owned(),
-            document_id: document.clone(),
-            envelope: Box::new(envelope.clone()),
-            readers: named.map(str::to_owned),
-        };
         let device_keys = governed
             .device
             .as_ref()
@@ -1208,13 +1344,27 @@ impl Workspaces {
             Some(write.readers.clone()),
         )
         .await?;
-        let taken = candidate
-            .receive_from(
-                tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
-                message,
-                now,
-            )
-            .map_err(|error| error.to_string())?;
+        let mut taken = None;
+        for envelope in &envelopes {
+            let message = NeighbourMsg::AppDocument {
+                peer: neighbour_wire::peer_handle(&author),
+                app_id: app.to_owned(),
+                cluster_id: governed.workspace().to_owned(),
+                document_id: document.clone(),
+                envelope: Box::new(envelope.clone()),
+                readers: named.map(str::to_owned),
+            };
+            taken = Some(
+                candidate
+                    .receive_from(
+                        tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
+                        message,
+                        now,
+                    )
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        let taken = taken.ok_or("a resource change was drafted as no write")?;
         let opened = candidate
             .publication()
             .opened_document(app, document, &mut keys.open())?
@@ -1236,7 +1386,7 @@ impl Workspaces {
         {
             return Err("the staged resource change did not pass document admission".into());
         }
-        Ok(envelope)
+        Ok(envelopes)
     }
 
     #[cfg(any(feature = "apps", feature = "agents"))]
@@ -1246,7 +1396,7 @@ impl Workspaces {
         device: &super::MemberDevice,
         app: &str,
         write: &tilo_resource_store::Written,
-        envelope: &collab_types::SignedOp,
+        envelopes: &[collab_types::SignedOp],
         compact: bool,
     ) -> Result<(), String> {
         let author = device.device();
@@ -1257,39 +1407,46 @@ impl Workspaces {
         let named = (collab_types::is_store_document(document)
             && write.readers != collab_types::EVERY_MEMBER)
             .then_some(write.readers.as_str());
-        let message = self.retain_local_document(
-            governed.workspace_id(),
-            author,
-            app,
-            document,
-            named,
-            envelope,
-        )?;
-        let neighbour_wire::NeighbourMsg::AppDocument {
-            envelope, readers, ..
-        } = &message
-        else {
-            return Err("a resource write must name its document".into());
-        };
-        if !governed
-            .take_resources(author, (app, document), envelope, readers.as_deref())
-            .await?
-        {
-            return Err("the retained resource change did not reach the store".into());
+        for (index, envelope) in envelopes.iter().enumerate() {
+            // The store takes the change with its last segment.
+            let last = index.saturating_add(1) == envelopes.len();
+            let message = self.retain_local_document(
+                governed.workspace_id(),
+                author,
+                app,
+                document,
+                named,
+                envelope,
+            )?;
+            let neighbour_wire::NeighbourMsg::AppDocument {
+                envelope, readers, ..
+            } = &message
+            else {
+                return Err("a resource write must name its document".into());
+            };
+            if governed
+                .take_resources(author, (app, document), envelope, readers.as_deref())
+                .await?
+                != last
+            {
+                return Err("the retained resource change did not reach the store".into());
+            }
+            if governed.member.is_some() {
+                self.follow_member_document(governed, author, &message);
+                self.forward_member_document(governed.workspace_id(), message);
+            } else {
+                self.follow_write(
+                    governed,
+                    author,
+                    message.clone(),
+                    (app.to_owned(), document.clone()),
+                    compact && last,
+                )
+                .await;
+            }
         }
         if governed.member.is_some() {
-            self.follow_member_document(governed, author, &message);
-            self.forward_member_document(governed.workspace_id(), message);
             self.wrote(governed.workspace(), app, document);
-        } else {
-            self.follow_write(
-                governed,
-                author,
-                message.clone(),
-                (app.to_owned(), document.clone()),
-                compact,
-            )
-            .await;
         }
         Ok(())
     }
@@ -1355,7 +1512,7 @@ impl Workspaces {
     /// what search reads of one document at a time, from the store the workspace is read
     /// through, without its lock. `None` when this server does not know what the workspace is
     /// read through yet.
-    #[cfg(feature = "agents")]
+    #[cfg(any(feature = "apps", feature = "agents"))]
     pub(crate) fn held_resources(
         &self,
         workspace: &str,
@@ -1510,18 +1667,26 @@ impl Workspaces {
         };
         if let tilo_resource_store::wire::Command::RecordChanges { after, from, .. } = &command {
             return self
-                .opened_record_changes(workspace, (context.app_id(), opened()?), after, *from)
+                .opened_record_changes(
+                    workspace,
+                    (context.app_id(), context.kind(), opened()?),
+                    after,
+                    *from,
+                )
                 .await;
         }
         if matches!(command, tilo_resource_store::wire::Command::Records) {
             return self
                 .app_records(workspace, context.app_id())
+                .await
                 .map(tilo_resource_store::wire::Reply::Ids);
         }
         let device = self.member_identity()?;
         let writing = command.writes();
         // What a view's caller writes outside an invocation: each write's resource type and verb.
         let mut unserved = Vec::new();
+        // Who the app writes as outside an invocation it serves.
+        let mut acting = None;
         if writing {
             let caller = context.caller();
             if caller.workspace() != Some(workspace)
@@ -1540,6 +1705,7 @@ impl Workspaces {
                 || tilo_actions::Actor::Member(tilo_actions::MemberId::person(person)),
                 |viewer| viewer.acting().by.clone(),
             );
+            acting = Some(otherwise.clone());
             // The device the write is made on is where a resource it makes live is live.
             let written_on = (
                 hex::encode(device.device()),
@@ -1553,22 +1719,25 @@ impl Workspaces {
                 &mut unserved,
             );
         }
-        if let tilo_resource_store::wire::Command::RecordChange {
-            changes,
-            more,
-            commit,
-            ..
-        } = &command
-        {
+        if let tilo_resource_store::wire::Command::RecordChange { changes, more, .. } = &command {
             // The broker gathers a write's runs and hands the store the write whole.
             if *more {
                 return Err("the record's changes reach this device only as a whole write".into());
             }
+            // A change's label names whoever made it: the caller writing, or the invoker of an
+            // invocation the app serves for them. One naming nobody is its signer's own.
+            let names_caller = |stamp: &tilo_resource_store::Stamp| match stamp.invoked_by() {
+                None => true,
+                Some(named) => {
+                    acting.as_ref() == Some(&named)
+                        || context.invoker_of(&stamp.invocation) == Some(&named)
+                }
+            };
             self.opened_record_change(
                 workspace,
-                (context.app_id(), opened()?),
+                (context.app_id(), context.kind(), opened()?),
                 &changes.0,
-                commit.as_ref(),
+                &names_caller,
                 context.founding_refusal(),
             )
             .await?;
@@ -1727,6 +1896,23 @@ impl Workspaces {
                 Ok(writes) => (writes, None),
                 Err(refused) => (refused.written, Some(refused.error.to_string())),
             };
+        self.keep_writes(governed, device, app, writes, refusal)
+            .await
+    }
+
+    /// Admit `writes`, drafted against `governed`'s store, and keep them in order as `device`'s
+    /// writes for `app`: the store applies each as it is kept, and every holder is sent it. A
+    /// `refusal` of a step after them is answered once they are kept.
+    #[cfg(feature = "apps")]
+    async fn keep_writes(
+        &self,
+        mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
+        device: std::sync::Arc<super::MemberDevice>,
+        app: &str,
+        writes: Vec<tilo_resource_store::Written>,
+        refusal: Option<String>,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        use tilo_resource_store::wire::Reply;
         let app = app.to_owned();
         let mut candidate = governed.peer().clone();
         let mut documents = BTreeSet::new();
@@ -1759,7 +1945,7 @@ impl Workspaces {
         // A cancelled caller never starts the next frame of a batch.
         tokio::spawn(async move {
             let result = async {
-                for (index, (write, envelope)) in writes.iter().zip(&requests).enumerate() {
+                for (index, (write, envelopes)) in writes.iter().zip(&requests).enumerate() {
                     if complete.is_closed() {
                         return Err("the resource writer was cancelled".into());
                     }
@@ -1769,7 +1955,7 @@ impl Workspaces {
                             &device,
                             &app,
                             write,
-                            envelope,
+                            envelopes,
                             // Compaction can consume a sequence the batch already drafted.
                             index.saturating_add(1) == requests.len(),
                         )
@@ -1982,6 +2168,19 @@ fn may_write_as_viewer(
     app: &str,
     unserved: &[(String, String)],
 ) -> Result<(), String> {
+    caller_may(governed, viewer, app, unserved)
+        .map_err(|verb| format!("the view's caller may not {verb} here: the write was refused"))
+}
+
+/// Refuse the writes `unserved` (each a resource type and verb of `app`) that `viewer` may not
+/// make in `governed`'s workspace, as its grants decide: the verb refused.
+#[cfg(feature = "apps")]
+fn caller_may(
+    governed: &GovernedWorkspace,
+    viewer: &tilo_actions::remote::Caller,
+    app: &str,
+    unserved: &[(String, String)],
+) -> Result<(), String> {
     if unserved.is_empty() {
         return Ok(());
     }
@@ -2000,9 +2199,7 @@ fn may_write_as_viewer(
         let node = node.action(verb.as_str());
         let decided = authority.decide(&node, tilo_action_policy::ActionKind::Undoable, &cx);
         if decided.answer != tilo_action_policy::Answer::Allow {
-            return Err(format!(
-                "the view's caller may not {verb} here: the write was refused"
-            ));
+            return Err(verb.clone());
         }
     }
     Ok(())

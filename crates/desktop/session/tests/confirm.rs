@@ -91,7 +91,7 @@ fn network() -> Network {
         saved: vec![SavedNetwork {
             address: tilo_resource::Handle::new("saved-network:uuid-home"),
             name: "Home".to_owned(),
-            id: "uuid-home".to_owned(),
+            profile: "uuid-home".to_owned(),
             kind: SavedKind::Wifi,
             ..SavedNetwork::default()
         }],
@@ -132,10 +132,12 @@ fn session(calls: &Rc<RefCell<Vec<Call>>>) -> Session {
             ..Options::default()
         },
     );
-    session.compositor().set_key_repeat(tilo_compositor::KeyRepeat {
-        delay: Duration::from_secs(1),
-        rate: 0,
-    });
+    session
+        .compositor()
+        .set_key_repeat(tilo_compositor::KeyRepeat {
+            delay: Duration::from_secs(1),
+            rate: 0,
+        });
     session
 }
 
@@ -182,20 +184,21 @@ fn until_gone(session: &mut Session, name: &str) {
 
 /// Run frames until the service carried out `call`.
 #[track_caller]
-fn until_called(session: &mut Session, calls: &Rc<RefCell<Vec<Call>>>, resource: &str, action: &str) {
-    crate::common::wait_for(
-        session,
-        format!("{action} on {resource}"),
-        |session| {
-            session.settle_services();
-            session.step(REFRESH).expect("step");
-            calls
-                .borrow()
-                .iter()
-                .any(|(held, done)| held == resource && done == action)
-                .then_some(())
-        },
-    );
+fn until_called(
+    session: &mut Session,
+    calls: &Rc<RefCell<Vec<Call>>>,
+    resource: &str,
+    action: &str,
+) {
+    crate::common::wait_for(session, format!("{action} on {resource}"), |session| {
+        session.settle_services();
+        session.step(REFRESH).expect("step");
+        calls
+            .borrow()
+            .iter()
+            .any(|(held, done)| held == resource && done == action)
+            .then_some(())
+    });
 }
 
 #[test]
@@ -270,10 +273,7 @@ fn forgetting_a_bluetooth_accessory_asks_first_and_declining_runs_nothing() {
     until_called(&mut session, &calls, "bluetooth-accessory:AA-BB", "forget");
     assert_eq!(
         calls.borrow().as_slice(),
-        &[(
-            "bluetooth-accessory:AA-BB".to_owned(),
-            "forget".to_owned()
-        )],
+        &[("bluetooth-accessory:AA-BB".to_owned(), "forget".to_owned())],
         "the accessory the press named is the one forgotten"
     );
 }

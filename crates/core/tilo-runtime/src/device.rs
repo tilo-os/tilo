@@ -24,11 +24,11 @@ pub(crate) mod account;
 mod accounts;
 #[cfg(target_os = "linux")]
 mod agent_tools;
+#[cfg(test)]
+mod app_listing_tests;
 /// The project checks this device approved: its work, kept as its jobs.
 #[cfg(unix)]
 pub(crate) mod approved_checks;
-#[cfg(test)]
-mod app_listing_tests;
 mod asked;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
 pub mod capabilities;
@@ -109,6 +109,7 @@ pub(crate) mod vault_release;
 pub mod wake;
 pub mod wifi;
 mod window_follow;
+mod window_notes;
 pub mod workspaces;
 
 use std::sync::Arc;

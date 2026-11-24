@@ -695,3 +695,72 @@ fn lay_out(map: &mut Map) {
     )
     .expect("the map lays out");
 }
+
+/// The camera comes to rest after a move of the person's and says where they left it: the place
+/// at its middle, its zoom and the degrees at what it shows at its edges. A camera the view set
+/// is no move of the person's, and reports nothing.
+#[test]
+fn the_camera_reports_where_the_person_left_it_when_it_comes_to_rest() {
+    let queue: crate::Intents<Fired> = crate::Intents::default();
+    let mut map = Map::new();
+    map.rest = Event::View(Intent::new(&queue, CANVAS, "rest"));
+    // The view opens the map on Munich.
+    map.set_camera(MapCamera {
+        origin: mercator_project(48.1374, 11.5755) - Vec2::new(400.0, 300.0),
+        zoom: 2.0,
+    });
+    let mut host = laid_out(map);
+    let _ = host.wait_until(crate::time::Duration::from_millis(300), |_| false);
+    assert!(
+        reported(&queue).is_empty(),
+        "a centre the view set is not a rest of the person's"
+    );
+    // A wheel over free space pans the lens; once it stands still it reports where it looks.
+    host.dispatch_to_root(&WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+        phase: winit::event::TouchPhase::Moved,
+    });
+    let _ = host.wait_until(crate::time::Duration::from_millis(600), |_| false);
+    let fired = reported(&queue);
+    let rest = fired
+        .iter()
+        .find(|fired| fired.event == "rest")
+        .unwrap_or_else(|| panic!("the camera at rest reports where it looks: {fired:?}"));
+    let Some(Value::List(values)) = &rest.value else {
+        panic!("a rest carries its place: {fired:?}");
+    };
+    let floats: Vec<f64> = values
+        .iter()
+        .map(|value| match value {
+            Value::Float(number) => *number,
+            other => panic!("a rest is read as numbers: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        floats.len(),
+        7,
+        "a place, a zoom and four edges: {floats:?}"
+    );
+    let map = host
+        .root_widget_mut()
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<Map>())
+        .expect("the root is the map");
+    let camera = map.camera();
+    let (latitude, longitude) =
+        mercator_unproject(camera.to_canvas(Point::ORIGIN, Point::new(400.0, 300.0)));
+    assert!(
+        (floats[0] - latitude).abs() < 1e-6 && (floats[1] - longitude).abs() < 1e-6,
+        "the place at the middle is the one it shows: {floats:?} for {latitude}, {longitude}"
+    );
+    assert!((floats[2] - camera.zoom).abs() < 1e-9, "its own zoom");
+    assert!(
+        floats[3] > floats[4] && floats[5] > floats[6],
+        "the northern edge is above the southern, the eastern east of the western: {floats:?}"
+    );
+    assert!(
+        (floats[0] - 48.1374).abs() < 0.2 && (floats[1] - 11.5755).abs() < 0.2,
+        "one notch of a wheel over Munich stays over Munich: {floats:?}"
+    );
+}

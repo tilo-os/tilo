@@ -6,8 +6,8 @@
 //! language compiles its actions and types against.
 
 pub use tilo_actions::surface::{
-    FieldSurface, FieldType, NamedType, ParamSurface, ReturnsSurface, Surface, TypeCase, TypeField,
-    TypeSet, VerbSurface,
+    CONTENT_VERBS, FieldSurface, FieldType, MIGRATE_VERB, NamedType, ParamSurface, ReturnsSurface,
+    Surface, TYPE_VERB, TypeCase, TypeField, TypeSet, VerbSurface,
 };
 
 pub mod file;
@@ -96,6 +96,54 @@ fn verb_of(decl: &Declaration, types: &mut TypeSet) -> VerbSurface {
     }
 }
 
+/// A verb the framework writes under on a record of `shape`: its id, and the units of the
+/// record a change of it may write. It takes no parameters and answers nothing.
+fn framework_verb(id: &str, writes: Vec<String>) -> VerbSurface {
+    VerbSurface {
+        id: id.to_owned(),
+        name: String::new(),
+        label: String::new(),
+        description: None,
+        kind: crate::ActionKind::Undoable,
+        destructive: false,
+        incoming_message: false,
+        params: Vec::new(),
+        returns: None,
+        writes,
+        field: None,
+    }
+}
+
+/// The units a change of `shape` may write: the record itself, and each field kept as its own
+/// storage unit (`tilo_resource::footprint`), a unit collection by any of its items.
+fn units_of(shape: Shape) -> Vec<String> {
+    let mut units = vec![tilo_actions::surface::RESOURCE_UNIT.to_owned()];
+    if let Shape::Record(fields) = shape {
+        for field in fields.iter().filter(|field| field.unit) {
+            let unit = match field.shape {
+                Shape::Collection(_) | Shape::Keyed(_) => format!("{}.*", field.key),
+                _ => field.key.to_owned(),
+            };
+            if !units.contains(&unit) {
+                units.push(unit);
+            }
+        }
+    }
+    units
+}
+
+/// Whether `shape` holds something a person changes directly, with no finer action: a field
+/// that is not read-only, beneath fields that are not either. A record whose every field is
+/// read-only changes only by its verbs.
+fn edits_content(shape: Shape) -> bool {
+    match shape {
+        Shape::Record(fields) => fields
+            .iter()
+            .any(|field| !field.readonly && edits_content(field.shape)),
+        Shape::Collection(_) | Shape::Keyed(_) | Shape::Map(_) | Shape::Value => true,
+    }
+}
+
 fn stored(shape: Shape) -> &'static str {
     match shape {
         // A map is published as the value it is written as.
@@ -137,14 +185,16 @@ fn fields_of(shape: Shape, prefix: &str, types: &mut TypeSet, out: &mut Vec<Fiel
 /// The surface of `R`, from its declarations and stored shape.
 #[must_use]
 pub fn surface_of<R: Resource>() -> Surface {
-    surface_in(vocabulary::<R>(), R::VERSION)
+    surface_in(vocabulary::<R>(), R::VERSION, R::MIGRATES)
 }
 
-/// [`surface_of`] the resource `vocabulary`, stored at `version`.
-fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
+/// [`surface_of`] the resource `vocabulary`, stored at `version`, with migrations when
+/// `migrates` says the type registers one.
+fn surface_in(vocabulary: &crate::Vocabulary, version: u32, migrates: bool) -> Surface {
     let mut fields = Vec::new();
     let mut types = TypeSet::new();
-    if let Some(shape) = (vocabulary.shape)() {
+    let shape = (vocabulary.shape)();
+    if let Some(shape) = shape {
         fields_of(shape, "", &mut types, &mut fields);
     }
     for (path, schema) in (vocabulary.op_schemas)() {
@@ -155,6 +205,16 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
     let mut verbs = Vec::new();
     for decl in vocabulary.declarations().iter() {
         verbs.push(verb_of(decl, &mut types));
+    }
+    // The content the framework writes itself: direct edits with no finer action, and the
+    // migrations a record's type registers. A kind whose every field is read-only has neither.
+    if let Some(shape) = shape {
+        if edits_content(shape) {
+            verbs.push(framework_verb(TYPE_VERB, units_of(shape)));
+        }
+        if migrates {
+            verbs.push(framework_verb(MIGRATE_VERB, units_of(shape)));
+        }
     }
     Surface {
         kind: vocabulary.kind.to_owned(),

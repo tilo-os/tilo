@@ -65,8 +65,13 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 "os/dev/vm.sh: the VM harness does not deliver the external AT-SPI client into the guest"])
 
     def audit_update(self, update, *, source="crates/ui/ui-core/src/app.rs", cargo='accesskit_winit = "0.34.0"'):
+        # Every graph this contract reads needs the tree's serde wire: the Linux
+        # endpoint is the session, and the window sends its tree to it.
+        if "accesskit = " not in cargo:
+            cargo = cargo + '\naccesskit = { version = "0.25.0", features = ["serde"] }\n'
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            repository = SCRIPT.parents[2]
             files = {
                 "crates/ui/ui-core/Cargo.toml": cargo,
                 source: "\n".join([
@@ -93,11 +98,15 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 "drop(native_accessibility);",
                 "drop(display);",
             ])
-            repository = SCRIPT.parents[2]
             for name in (
                 "apps/tl/files/tilo-app.toml",
                 "apps/tl/photos/tilo-app.toml",
                 "apps/tl/settings/tilo-app.toml",
+                "crates/ui/ui-core/src/app/window_targets.rs",
+                "crates/ui/ui-core/src/app/floating.rs",
+                "crates/ui/ui-core/src/floating_surface/wire.rs",
+                "crates/desktop/session/src/a11y.rs",
+                "crates/desktop/session/src/app_tabs.rs",
                 "tools/atspi_external_client.py",
                 "os/dev/vm.sh",
                 "os/Containerfile",
@@ -156,6 +165,20 @@ class AtspiEndpointContractTests(unittest.TestCase):
                     ]),
                 ),
             )
+        with self.subTest(phase='a per-process Linux publisher is rejected'):
+            self.assertTrue(any(
+                "the toolkit enables accesskit_unix" in error
+                for error in self.audit_update(
+                    self.NATIVE_UPDATE,
+                    cargo="\n".join([
+                        "[features]",
+                        'default = ["native"]',
+                        'native = ["dep:accesskit_winit"]',
+                        "[dependencies]",
+                        'accesskit_winit = { version = "0.34.0", optional = true, features = ["accesskit_unix"] }',
+                    ]),
+                )
+            ))
         with self.subTest(phase="a window of its own's tree carries the app's shared tree"):
             self.assertEqual(self.audit_update(
                 "adapter.update_if_active(|| part_bar::window_tree_update(app_ref, bar, scale));\n"

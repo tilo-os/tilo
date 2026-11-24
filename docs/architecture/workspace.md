@@ -421,9 +421,12 @@ change graph cannot be served in part.
 
 **A resource exists once; workspaces reference it.** Bringing a resource into
 a workspace adds a reference and moves no bytes; edits through either
-workspace are edits to the one document. The reference grants access, and
-removing it stops future changes from flowing; it cannot un-share what a
-device already synced. "Duplicate here" is a different verb: it forks a new
+workspace are edits to the one document. The reference is a resource of the
+system's own kind in the workspace's store, naming the resource's workspace,
+app and id; it grants nothing. The resource opens where it lives, for whoever
+may read it there, and a member who may not sees the reference as unavailable.
+Removing the reference leaves the resource as it is. Moving a resource to
+another workspace is the store's `move`. "Duplicate here" is a different verb: it forks a new
 resource with a provenance link. Bringing something in is a search result:
 search lists resources from the person's other workspaces, labelled with
 where they live, and activating one brings it here.

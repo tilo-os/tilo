@@ -129,6 +129,17 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
     {
         collab_types::app_surface::register_package(&used, &surface);
     }
+    // The platform's packages it and the packages it is made with use (the workspace's members,
+    // `use tilo.workspace`), described before the bundle links, as an app's own window holds
+    // them: its scenario reads `workspace.members` like any of its actions does.
+    let uses: Vec<String> = bundle
+        .imports
+        .iter()
+        .flat_map(|import| import.meta.uses.iter())
+        .chain(&bundle.meta.uses)
+        .cloned()
+        .collect();
+    tilolang_tilo::platform_apps::load(&host, &uses);
     let package = host
         .load_bundle(&bundle)
         .map_err(|error| format!("{}: {error}", app.app_id))?;

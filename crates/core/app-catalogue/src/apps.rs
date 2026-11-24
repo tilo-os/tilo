@@ -47,6 +47,9 @@ pub struct InstalledApp {
     /// The signed manifest as it was decoded when the app was read, which the fields above are a
     /// normalized view of.
     pub manifest: tilo_app_package::manifest::Manifest,
+    /// `[package.dev]` when this is a development build: the device whose developer built it and
+    /// the app it builds. The shell shows it as a dev build, under its own id.
+    pub dev: Option<tilo_app_package::manifest::DevBuild>,
 }
 
 impl InstalledApp {
@@ -78,13 +81,33 @@ impl InstalledApp {
         } else {
             manifest.package_id.clone()
         };
+        let dev = manifest.dev.clone();
+        let base_name = manifest
+            .name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| package_store::display_name_for_package_id(&app_id));
+        // A shell shows an app by this label: a development build says so, so it is never taken
+        // for the installed app of the same name.
+        let display_name = if dev.is_some() {
+            format!("{base_name} (dev build)")
+        } else {
+            base_name
+        };
+        // A shell shows the name in the person's language when the manifest has one: a
+        // development build's names carry the marking too.
+        let manifest_names = &manifest.localized_names;
+        let localized_names: std::collections::BTreeMap<String, String> = if dev.is_some() {
+            manifest_names
+                .iter()
+                .map(|(tag, name)| (tag.clone(), format!("{name} (dev build)")))
+                .collect()
+        } else {
+            manifest_names.clone()
+        };
         Some(Self {
-            display_name: manifest
-                .name
-                .clone()
-                .filter(|n| !n.trim().is_empty())
-                .unwrap_or_else(|| package_store::display_name_for_package_id(&app_id)),
-            localized_names: manifest.localized_names.clone(),
+            display_name,
+            localized_names,
             keywords: manifest.keywords.clone(),
             category: manifest.category.clone().filter(|c| !c.trim().is_empty()),
             app_id: AppId::new(app_id),
@@ -103,6 +126,7 @@ impl InstalledApp {
             opens_resource_kinds,
             offers,
             manifest: signed,
+            dev,
         })
     }
 
@@ -634,6 +658,36 @@ mod tests {
         assert_eq!(app.name_in(&locales(&["es", "de"])), "Notizen");
         assert_eq!(app.name_in(&locales(&["en-US", "en"])), "Notes");
         assert_eq!(app.name_in(&[]), "Notes");
+    }
+
+    #[test]
+    fn a_development_build_is_shown_as_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let device = [7_u8; 32];
+        let id = tilo_app_package::dev_app_id("so.tilo.notes", &device);
+        let app = app_of(
+            tmp.path(),
+            &manifest(
+                &format!(
+                    "id = \"{id}\"\nname = \"Notes\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
+                     [package.names]\nde = \"Notizen\"\n\
+                     [package.dev]\ndevice = \"ed25519:{}\"\nof = \"so.tilo.notes\"",
+                    "07".repeat(32)
+                ),
+                "[entrypoint]\nbin = \"bin/notes\"\ntype = \"gui\"\n",
+            ),
+        );
+        assert_eq!(app.app_id.as_str(), id, "a dev build runs as its own id");
+        assert_eq!(
+            app.dev.as_ref().map(|dev| dev.of.as_str()),
+            Some("so.tilo.notes")
+        );
+        assert_eq!(app.display_name, "Notes (dev build)");
+        assert_eq!(
+            app.name_for("de"),
+            "Notizen (dev build)",
+            "a localized name says so too"
+        );
     }
 
     /// A package that names itself by region (`de-DE`, as a tilolang app's catalogue does) reads

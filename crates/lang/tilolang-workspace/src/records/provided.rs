@@ -23,9 +23,9 @@ use tilo_actions::remote::{
     RESOURCE_PROVIDER, pending,
 };
 use tilo_actions::{ActionContext, ActionFailure, ActionInvoker, OperationKind};
-use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{RecordCall, built_in, built_in_apps, member, runs_elsewhere, with_tl_record};
+use tilo_workspace_service::workspaces::DocumentRoute;
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::providers::Reach;
 
@@ -417,24 +417,6 @@ mod tests {
         }
     }
 
-    /// The owner's agent `scout`, a member of `workspace` a conversation can be had with.
-    async fn add_scout(
-        workspaces: &Workspaces,
-        workspace: &str,
-        owner: &tilo_user_identity::DeviceCert,
-    ) {
-        let person = hex::encode(owner.user_public_key);
-        workspaces
-            .add_agent(
-                workspace,
-                tilo_actions::MemberId::person(person.clone()),
-                "scout",
-                &person,
-            )
-            .await
-            .expect("the owner adds their agent");
-    }
-
     /// The `write_to` tl Chat offers `caller`, asked to tell `who` the words `body`.
     async fn write_to(
         records: &BuiltInRecords,
@@ -550,7 +532,6 @@ mod tests {
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
-        add_scout(&workspaces, &workspace, &owner).await;
 
         let chat = workspaces
             .providers()
@@ -595,7 +576,6 @@ mod tests {
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
-        add_scout(&workspaces, &workspace, &owner).await;
         let person = hex::encode(owner.user_public_key);
         let records = records(&workspaces);
         let ada = Caller::authenticated(owner.user_public_key, owner.device_public_key)
@@ -715,7 +695,6 @@ mod tests {
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
-        add_scout(&workspaces, &workspace, &owner).await;
         let records = records(&workspaces);
 
         let cy_root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);

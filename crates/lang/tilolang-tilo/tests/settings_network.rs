@@ -35,7 +35,7 @@ const NETWORK: &str = r#"{
   "saved": [
     {
       "name": "Cafe",
-      "id": "uuid-cafe",
+      "profile": "uuid-cafe",
       "kind": "wifi",
       "autoconnect": true,
       "last-used": null,
@@ -310,5 +310,168 @@ fn an_open_network_this_device_keeps_waits_for_the_person() {
     assert!(
         words.iter().any(|text| text == "Stop joining by itself"),
         "and the person may stop it: {words:?}"
+    );
+}
+
+/// This device's `network` reading: a work or school network it keeps and is joined to, with the
+/// identity and certificate it joins it as, and a cafe it keeps that asks for no password.
+const KEPT: &str = r#"{
+  "wifi": {
+    "available": true,
+    "on": true,
+    "hardware-blocked": false,
+    "networks": [
+      {"name": "Home", "signal": 3, "secure": true, "known": true, "connected": true},
+      {"name": "Cafe", "signal": 2, "secure": false, "known": true, "connected": false}
+    ]
+  },
+  "wired": null,
+  "mobile": {"available": false, "on": false, "profile": null},
+  "airplane-mode": false,
+  "connectivity": "full",
+  "link": null,
+  "saved": [
+    {
+      "$address": "saved-network:uuid-home",
+      "name": "Home",
+      "profile": "uuid-home",
+      "kind": "wifi",
+      "autoconnect": true,
+      "last-used": null,
+      "priority": 0,
+      "metered": "automatic",
+      "proxy": null,
+      "hidden": false,
+      "open": false,
+      "ipv4": null,
+      "wake": null,
+      "enterprise": {
+        "identity": "ada@campus.example",
+        "ca-certificate": "/etc/pki/campus.pem"
+      }
+    },
+    {
+      "$address": "saved-network:uuid-cafe",
+      "name": "Cafe",
+      "profile": "uuid-cafe",
+      "kind": "wifi",
+      "autoconnect": true,
+      "last-used": null,
+      "priority": 0,
+      "metered": "automatic",
+      "proxy": null,
+      "hidden": false,
+      "open": true,
+      "ipv4": null,
+      "wake": null,
+      "enterprise": null
+    }
+  ],
+  "ask-before-open-networks": false,
+  "pending": [],
+  "problem": null
+}"#;
+
+/// A work or school network this device keeps says who it knows the device as, and its page
+/// changes that identity and the certificate it is checked with together: the certificate the
+/// device already has travels with the identity typed, so changing one never drops the other.
+#[test]
+fn a_kept_work_network_is_edited_with_its_identity_and_certificate() {
+    let pane = Pane::new(KEPT);
+    let mut view = pane.open();
+    open_row(&mut view, "Home");
+    let words = shown(&view);
+    assert!(
+        words.iter().any(|text| text == "Work or school identity"),
+        "the page says who the network knows this device as: {words:?}"
+    );
+    assert!(
+        words.iter().any(|text| text == "ada@campus.example"),
+        "and which identity it joins as: {words:?}"
+    );
+
+    let field = view
+        .tree()
+        .of_kind("ui.TextInput")
+        .into_iter()
+        .find(|node| {
+            node.props.get("placeholder") == Some(&Value::text("The identity the network knows"))
+        })
+        .expect("the identity field")
+        .key
+        .clone();
+    view.edit(&field, &Value::text("ada@lab.example"))
+        .expect("the identity typed");
+    view.press(&button(view.tree(), "Apply identity"))
+        .expect("the identity is applied");
+    let asked = pane.sent.asked("set-enterprise-identity");
+    assert_eq!(asked["profile"], serde_json::json!("uuid-home"));
+    assert_eq!(asked["identity"], serde_json::json!("ada@lab.example"));
+    assert_eq!(
+        asked["ca_certificate"],
+        serde_json::json!("/etc/pki/campus.pem"),
+        "the certificate the device keeps stays with the identity typed: {asked:?}"
+    );
+}
+
+/// A Wi-Fi network this device keeps hands its password to the person's other devices through the
+/// kept network's own `share-with-devices`, and a network that asks for no password has none to
+/// share, so its page offers none.
+#[test]
+fn a_kept_wifi_network_shares_its_password_with_the_persons_devices() {
+    let pane = Pane::new(KEPT);
+    let mut view = pane.open();
+    open_row(&mut view, "Known networks");
+    open_row(&mut view, "Home");
+    assert!(
+        shown(&view)
+            .iter()
+            .any(|text| text == "Share with my devices"),
+        "a network kept with a password can be shared: {:?}",
+        shown(&view)
+    );
+    view.press(&button(view.tree(), "Share"))
+        .expect("the network is shared");
+    let sent = pane.sent.0.borrow();
+    let Invocation::Action {
+        app, name, target, ..
+    } = sent.last().expect("the pane asks the device to share it")
+    else {
+        panic!("a verb of the device: {:?}", sent.last());
+    };
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        ("so.tilo.device", "share-with-devices"),
+        "the kept network's own verb, as the device publishes it"
+    );
+    assert_eq!(
+        target.as_ref().map(ResourceRef::id_string).as_deref(),
+        Some("saved-network:uuid-home"),
+        "asked on the network kept, not on the radio"
+    );
+    drop(sent);
+
+    // The devices took the password, and the row says so rather than asking again.
+    view.poll_patches().expect("the pane draws the change");
+    assert!(
+        shown(&view)
+            .iter()
+            .any(|text| text == "Shared with your other devices"),
+        "the row says the password was shared: {:?}",
+        shown(&view)
+    );
+
+    // The cafe asks for no password: there is nothing to hand to another device.
+    open_row(&mut view, "Back");
+    open_row(&mut view, "Known networks");
+    open_row(&mut view, "Cafe");
+    let words = shown(&view);
+    assert!(
+        words.iter().any(|text| text == "What this device keeps"),
+        "the cafe's page shows what is kept of it: {words:?}"
+    );
+    assert!(
+        !words.iter().any(|text| text == "Share with my devices"),
+        "an open network has no password to share: {words:?}"
     );
 }

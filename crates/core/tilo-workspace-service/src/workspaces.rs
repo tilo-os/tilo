@@ -20,6 +20,9 @@
 mod actions;
 /// The invitation actions a member asks a workspace for, beside its `invite`.
 pub use actions::{CANCEL_INVITATION, INVITATIONS};
+/// The route a workspace's record is addressed at, as this service's record reads take it: a
+/// program answers with its app's route without naming the store's own crates.
+pub use tilo_peer_state::document_frame::DocumentRoute;
 mod admissions;
 mod admitting;
 #[cfg(feature = "agents")]
@@ -112,7 +115,7 @@ mod packaged_model;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use packaged_model::keep_surface;
 #[cfg(not(target_arch = "wasm32"))]
-pub use packaged_model::{PackagedAction, package_surface};
+pub use packaged_model::package_surface;
 mod pages;
 mod peer_parts;
 mod reads;
@@ -204,9 +207,6 @@ use publication::{Change, SinceBase, starts_over, withdraws};
 #[cfg(test)]
 use publication::{MAX_PUBLICATION_TAIL, MIN_PUBLICATION_TAIL_BYTES, based};
 mod document_format;
-// What native apps kept in files on this device, taken into the workspaces it holds once.
-#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-pub mod profile_import;
 mod record_authority;
 mod resources;
 pub use resources::RecordFailure;
@@ -1039,10 +1039,6 @@ pub(crate) struct WorkspaceServices {
     /// The tokens this host's fetch proxy takes, which the host mints for a
     /// page that asks it ([`tilo_server_protocol::workspaces::FETCH_GRANT`]).
     pub(crate) fetch_grants: Arc<crate::fetch_grants::Grants>,
-    /// Where this device's native apps kept their files, which its workspaces take in once
-    /// ([`crate::service::ServiceConfig::app_files`]).
-    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    pub(crate) app_files: Arc<profile_import::AppFiles>,
 }
 
 impl WorkspaceServices {
@@ -1115,6 +1111,10 @@ struct WorkspacesInner {
     link_remotes: std::sync::Mutex<
         std::collections::BTreeMap<WorkspaceId, std::collections::BTreeSet<[u8; 32]>>,
     >,
+    /// The links whose device signs its own row onto the workspace's member
+    /// list before it is a member device's, by workspace and device
+    /// ([`tilo_peer_state::direct::LinkScope::lists_itself`]).
+    listing_themselves: std::sync::Mutex<std::collections::BTreeSet<(WorkspaceId, [u8; 32])>>,
     /// The agent sessions this device serves, present on it while each connection lasts.
     agent_sessions: personal::AgentSessions,
     /// What the workspaces kept here hold, read and written in process.
@@ -1160,6 +1160,12 @@ struct WorkspacesInner {
     #[cfg(any(test, feature = "test-support"))]
     icloud_sign_in:
         std::sync::RwLock<Option<std::sync::Arc<dyn account_credentials::icloud::ICloudAuth>>>,
+    /// What controls this device's cloud mounts, when a test stands a service of its
+    /// own in ([`Workspaces::cloud_control_through`]); the device's files service otherwise.
+    #[cfg(any(test, feature = "test-support"))]
+    cloud_control: std::sync::RwLock<
+        Option<std::sync::Arc<dyn crate::workspaces::person_settings::cloud_control::CloudControl>>,
+    >,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -1608,6 +1614,7 @@ impl Workspaces {
                 icloud_calendars_at: std::sync::RwLock::new(None),
                 #[cfg(any(test, feature = "test-support"))]
                 cloud_sign_in: std::sync::RwLock::new(None),
+                cloud_control: std::sync::RwLock::new(None),
                 #[cfg(any(test, feature = "test-support"))]
                 icloud_sign_in: std::sync::RwLock::new(None),
                 draining: std::sync::atomic::AtomicBool::new(false),
@@ -1615,6 +1622,7 @@ impl Workspaces {
                 store,
                 direct,
                 link_remotes: std::sync::Mutex::default(),
+                listing_themselves: std::sync::Mutex::default(),
                 agent_sessions: personal::AgentSessions::default(),
                 records,
                 member: member::Members::default(),
@@ -1712,8 +1720,6 @@ impl Workspaces {
         // What its links admitted is re-checked whenever what admission reads
         // narrows: a device that no longer reaches the workspace is let go.
         this.watch_link_access();
-        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        this.import_app_files_soon();
         Ok(this)
     }
 
@@ -2099,8 +2105,15 @@ impl Workspaces {
     /// the records of the tilolang apps built into the build, offer the styles the device's
     /// installed packages declare, and write rich text through it. Called once, as the service
     /// is configured.
+    ///
+    /// A built-in tilolang app's record is written with no package installed, so its types and
+    /// verbs are named here, as an installed app's surface names them: the store judges its
+    /// writes by them from the moment the runtime is mounted.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn provide_tilolang(&self, tilolang: crate::tl_records::Tilolang) {
+        for (app, bytes) in tilolang.records.surfaces() {
+            keep_surface(&self.inner.host.surfaces, &app, &bytes);
+        }
         let _ = self.inner.tilolang.set(tilolang);
     }
 
@@ -2665,6 +2678,21 @@ impl Workspaces {
     async fn absorb(&self, workspace: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
         self.absorb_carried(workspace, author, body, Carried::Kept)
             .await
+    }
+
+    /// [`Self::absorb`] for a test that hands a member's device's write to the host as the
+    /// workspace's link does.
+    ///
+    /// # Errors
+    /// As [`Self::absorb`].
+    #[cfg(feature = "test-support")]
+    pub async fn absorb_member_write(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        body: &[u8],
+    ) -> Result<(), String> {
+        self.absorb(workspace, author, body).await
     }
 
     /// Take in the record write `body` of `author`. A record the workspace lacks

@@ -15,17 +15,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ROOT, ReadDoc};
+use automerge::{AutoCommit, ChangeHash};
 use tilo_app_id::AppId;
 use tilo_lock::MutexRecover as _;
 use tilo_sort::CompactSort as _;
 
 use super::{
-    DocumentCheckout, DocumentId, DocumentRef, INDEX, ResourceOpenError, ResourceType,
-    add_reference, commit_genesis, genesis, genesis_actor, home, identity, init_scoped, references,
-    str_at, validate_identity, workspace_scope,
+    DocumentCheckout, DocumentId, ResourceOpenError, ResourceType, content_genesis,
 };
-use crate::document::fields::{META, ObjectAt, StringAt, object_at, string_at};
 
 mod actions;
 mod arrival;
@@ -39,27 +36,19 @@ mod memory_workspace;
 mod opening;
 pub use memory_workspace::MemoryWorkspace;
 pub use opening::ResourceOpening;
-pub mod bootstrap;
 mod history_access;
-mod identity_stamp;
-pub mod index;
 mod mutation_merge;
 mod replication;
 pub mod sync;
 
 pub use actions::{ResourceActions, ToolkitActions};
 pub use history_access::HistoryUnavailable;
-pub use identity_stamp::ReplicaIdentityStamp;
 pub use sync::{DocumentSync, Outbound};
 
 /// The scope of the person's own resources, `(app, personal)`: theirs and not a workspace's, so
 /// their own workspace's route carries them.
 pub use collab_types::document::PERSONAL_SCOPE;
 
-/// Upper bound for the records an app learns from one workspace index at once: the index is
-/// replicated input, not a request to allocate one local document per entry.
-pub const MAX_DISCOVERED_RESOURCES: usize = 64;
-const MAX_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_RESOURCES * 4;
 
 /// How long a flush waits for the workspace to take what the store wrote.
 const FLUSH_WAIT: crate::time::Duration = crate::time::Duration::from_secs(10);
@@ -554,7 +543,6 @@ impl ResourceSet {
                 .insert(want.id.clone(), WorkspaceAnswer::HoldsNone);
             return Ok(None);
         };
-        validate_identity(&doc, want, &self.home)?;
         doc.set_actor(self.writer.clone());
         self.answered.borrow_mut().remove(&want.id);
         Ok(Some(doc))
@@ -576,15 +564,14 @@ impl ResourceSet {
         Ok(true)
     }
 
-    /// A new document for `want`, stamped with its identity: a record the workspace holds none of.
+    /// A new document for `want`, a record the workspace holds none of: its derived founding
+    /// alone ([`content_genesis`]). Its identity is the store's, which founds it with the first
+    /// change it is sent.
     fn founded(&self, want: &DocumentCheckout) -> Result<AutoCommit, ResourceOpenError> {
-        let mut doc = AutoCommit::new().with_actor(self.writer.clone());
         // It is held from now on.
         self.answered.borrow_mut().remove(&want.id);
-        let scope = (!self.home.is_empty()).then_some(self.home.as_str());
-        if !init_scoped(&mut doc, &want.id, &want.kind, &self.home, scope) {
-            return Err(ResourceOpenError::IdentityMismatch);
-        }
+        let mut doc = AutoCommit::new().with_actor(self.writer.clone());
+        content_genesis(&mut doc, want, |_| Ok(()))?;
         Ok(doc)
     }
 
@@ -597,7 +584,7 @@ impl ResourceSet {
         }
         let fresh = !self.open.contains_key(&want.id);
         if fresh {
-            let (mut doc, stored) = match self.read(want) {
+            let (doc, stored) = match self.read(want) {
                 Ok(Some(mut doc)) => {
                     let heads = doc.get_heads();
                     (doc, Some(heads))
@@ -611,12 +598,6 @@ impl ResourceSet {
                     return false;
                 }
             };
-            for (target, relation) in &want.references {
-                add_reference(
-                    &mut doc,
-                    &DocumentRef::new(target.id.clone(), relation.clone()),
-                );
-            }
             self.open
                 .insert(want.id.clone(), Parked::new(doc, want.kind.clone(), stored));
         }
@@ -639,11 +620,7 @@ impl ResourceSet {
             if slot.kind != want.kind {
                 return Err(ResourceOpenError::IdentityMismatch);
             }
-            validate_identity(
-                slot.doc.as_ref().ok_or(ResourceOpenError::Busy)?,
-                want,
-                &self.home,
-            )?;
+            slot.doc.as_ref().ok_or(ResourceOpenError::Busy)?;
             return Ok(ResourceOpenOutcome::AlreadyOpen);
         }
         if self.open_from_workspace(want)? {
@@ -967,11 +944,6 @@ impl ResourceOwners {
     }
 }
 
-/// Whether `id` is the record a window of the app started for itself.
-fn window_default(id: &DocumentId) -> bool {
-    DocumentId::window_default_of_storage_key(&id.storage_key()).as_ref() == Some(id)
-}
-
 /// Whether `name` may name an app or a workspace: a non-empty name with nothing that would make
 /// it another one's on the wire or in a path.
 fn valid_name(name: &str) -> bool {
@@ -1138,19 +1110,12 @@ pub enum WorkspaceAnswer {
 #[derive(Clone)]
 pub struct ResourceAdmission {
     checkout: DocumentCheckout,
-    workspace: String,
 }
 
 impl ResourceAdmission {
-    pub fn matches(&self, doc: &AutoCommit, checkout: &DocumentCheckout) -> bool {
-        if &self.checkout != checkout {
-            return false;
-        }
-        if checkout.id.is_package_primary() {
-            // Primary documents carry no minted identity; see `admission`.
-            return validate_identity(doc, checkout, &self.workspace).is_ok();
-        }
-        identity(doc).as_ref() == Some(checkout)
+    /// Whether a write to `checkout` is one to the record this store opened.
+    pub fn matches(&self, checkout: &DocumentCheckout) -> bool {
+        &self.checkout == checkout
     }
 }
 
@@ -1187,19 +1152,17 @@ impl ResourceReservation {
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), ResourceOpenError> {
-        let (workspace, writer) = {
+        let writer = {
             let set = self.store.0.borrow();
             set.pending
                 .get(&self.checkout.id)
                 .filter(|p| p.generation == self.generation)
                 .ok_or(ResourceOpenError::Busy)?;
-            (set.home.clone(), set.writer.clone())
+            set.writer.clone()
         };
         let mut doc = AutoCommit::new().with_actor(writer);
-        genesis(&mut doc, &self.checkout, &workspace, initialize)?;
+        content_genesis(&mut doc, &self.checkout, initialize)?;
         seed(&mut doc).map_err(ResourceOpenError::Initialization)?;
-        validate_identity(&doc, &self.checkout, &workspace)?;
-        commit_genesis(&mut doc);
         let mut set = self.store.set_mut();
         if set
             .pending
@@ -1329,10 +1292,13 @@ impl ResourceStore {
         checkout: &DocumentCheckout,
     ) -> Result<crate::RouteSpec, ResourceOpenError> {
         let set = self.0.try_borrow().map_err(|_| ResourceOpenError::Busy)?;
-        let doc = set
-            .peek(&checkout.id)
+        let slot = set
+            .open
+            .get(&checkout.id)
             .ok_or(ResourceOpenError::MissingResource)?;
-        validate_identity(doc, checkout, &set.home)?;
+        if slot.kind != checkout.kind {
+            return Err(ResourceOpenError::IdentityMismatch);
+        }
         set.wire_route(&checkout.id)
     }
 
@@ -1360,9 +1326,7 @@ impl ResourceStore {
             {
                 return Err(ResourceOpenError::IdentityMismatch);
             }
-            if let Some(doc) = set.peek(&checkout.id) {
-                validate_identity(doc, checkout, &set.home)?;
-            } else {
+            if set.peek(&checkout.id).is_none() {
                 return set.wire_route(&checkout.id);
             }
         }
@@ -1540,56 +1504,6 @@ impl ResourceStore {
             .collect();
         open.compact_sort();
         open
-    }
-
-    /// Every record of `kind` this app keeps in this workspace, sorted by id, each with the name
-    /// the workspace's index gives it: the window default records the app's windows started and
-    /// the records the index names, so a document a window on another device made, or an agent
-    /// made, is listed too. A record that does not read as one of `kind` is left out and logged.
-    pub fn workspace_resources(
-        &self,
-        kind: &ResourceType,
-    ) -> Vec<(DocumentId, AutoCommit, Option<String>)> {
-        let Ok(set) = self.0.try_borrow() else {
-            return Vec::new();
-        };
-        let held = set.whole_documents();
-        let index = held
-            .iter()
-            .find(|(id, _)| id.is_package_primary())
-            .map(|(_, doc)| doc);
-        let named: BTreeMap<DocumentId, Option<String>> = index
-            .map(|index| {
-                index::discoverable_references(index)
-                    .into_iter()
-                    .filter(|checkout| &checkout.kind == kind)
-                    .map(|checkout| {
-                        let name = index::name_of(index, &checkout.id);
-                        (checkout.id, name)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut found: Vec<(DocumentId, AutoCommit, Option<String>)> = held
-            .iter()
-            .filter(|(id, _)| window_default(id) || named.contains_key(id))
-            .filter(|(id, doc)| {
-                identity(doc).is_some_and(|found| &found.kind == kind && &found.id == id)
-            })
-            .map(|(id, doc)| (id.clone(), doc.clone(), named.get(id).cloned().flatten()))
-            .collect();
-        found.compact_sort_by(|a, b| a.0.cmp(&b.0));
-        found
-    }
-
-    /// Every window default record of `kind` this app keeps in this workspace, sorted by id: what
-    /// an app's windows started, so a closed window's document is reached again.
-    pub fn window_resources(&self, kind: &ResourceType) -> Vec<(DocumentId, AutoCommit)> {
-        self.workspace_resources(kind)
-            .into_iter()
-            .filter(|(id, _, _)| window_default(id))
-            .map(|(id, doc, _)| (id, doc))
-            .collect()
     }
 
     /// Open Existing only; a missing document is never implicitly initialized. In a store whose
@@ -1793,8 +1707,12 @@ impl ResourceStore {
             .open
             .get(&want.id)
             .ok_or(ResourceOpenError::MissingResource)?;
-        let doc = slot.doc.as_ref().ok_or(ResourceOpenError::Busy)?;
-        validate_identity(doc, want, &set.home)
+        slot.doc.as_ref().ok_or(ResourceOpenError::Busy)?;
+        if slot.kind == want.kind {
+            Ok(())
+        } else {
+            Err(ResourceOpenError::IdentityMismatch)
+        }
     }
 
     /// Open `want` if it is not open already. Returns whether this opened it.
@@ -1820,17 +1738,12 @@ impl ResourceStore {
             .open
             .get(&checkout.id)
             .ok_or(ResourceOpenError::MissingResource)?;
-        let doc = slot.doc.as_ref().ok_or(ResourceOpenError::Busy)?;
-        if checkout.id.is_package_primary() {
-            // A package-primary document carries no minted `id`/`kind` in its metadata, so it is
-            // admitted by the same rule that opened it.
-            validate_identity(doc, checkout, &set.home)?;
-        } else if identity(doc).as_ref() != Some(checkout) {
+        slot.doc.as_ref().ok_or(ResourceOpenError::Busy)?;
+        if slot.kind != checkout.kind {
             return Err(ResourceOpenError::IdentityMismatch);
         }
         Ok(ResourceAdmission {
             checkout: checkout.clone(),
-            workspace: set.home.clone(),
         })
     }
 
@@ -2025,21 +1938,6 @@ impl ResourceStore {
             return Err(ResourceOpenError::Busy);
         }
         Ok(read(document, parked.history.revision()))
-    }
-
-    /// Capture the exact operational identity before admitting remote bytes.
-    ///
-    /// # Errors
-    /// The record is not open here or does not read as itself.
-    pub fn replica_identity_stamp(
-        &self,
-        checkout: &DocumentCheckout,
-    ) -> Result<ReplicaIdentityStamp, String> {
-        let workspace = self.home();
-        self.read_checked(&checkout.id, |doc| {
-            ReplicaIdentityStamp::capture(doc, checkout, &workspace)
-        })
-        .map_err(|error| error.to_string())?
     }
 
     /// Withdraw from the open record `id` the changes `refused` names, which the workspace
@@ -2418,79 +2316,6 @@ impl ResourceStore {
 }
 
 impl ResourceSet {
-    /// Every document of this store's app in its workspace, whole, as the workspace holds them,
-    /// the open ones as they stand here.
-    fn whole_documents(&self) -> Vec<(DocumentId, AutoCommit)> {
-        let mut found: BTreeMap<DocumentId, AutoCommit> = self
-            .open
-            .iter()
-            .filter_map(|(id, parked)| Some((id.clone(), parked.doc.clone()?)))
-            .collect();
-        let (Some(port), Ok(cluster)) = (&self.port, self.cluster()) else {
-            return found.into_iter().collect();
-        };
-        let workspace = cluster.to_string();
-        // What does not fit one answer comes as `Later`, and is asked for again.
-        let mut asks: Vec<DocumentAsk> = self
-            .listing()
-            .into_iter()
-            .filter(|id| !found.contains_key(id))
-            .map(|id| DocumentAsk {
-                id: id.route().to_owned(),
-                since: None,
-            })
-            .collect();
-        while !asks.is_empty() {
-            let read = match port.read(self.app_id.as_str(), &workspace, Some(asks)) {
-                // A record on its way is left out until it comes, and the readers are woken then.
-                Ok(read) if read.iter().any(|(_, read)| *read == DocumentRead::Pending) => {
-                    let _woken = self.await_port();
-                    read
-                }
-                Ok(read) => read,
-                Err(error) => {
-                    tracing::warn!(app = %self.app_id, workspace = %self.home, %error, "the workspace's records were not read");
-                    break;
-                }
-            };
-            let answered = read.len();
-            asks = Vec::new();
-            for (route, read) in read {
-                let Some(id) = DocumentId::from_route(&route) else {
-                    continue;
-                };
-                let loaded = match read {
-                    DocumentRead::Whole { bytes, hint, .. } => {
-                        tilo_automerge::shared::load_hinted(&bytes, hint.as_deref())
-                    }
-                    DocumentRead::Later => {
-                        asks.push(DocumentAsk {
-                            id: route,
-                            since: None,
-                        });
-                        continue;
-                    }
-                    _ => continue,
-                };
-                match loaded {
-                    Ok(doc) => {
-                        found.insert(id, doc);
-                    }
-                    Err(error) => {
-                        tracing::warn!(record = %id, %error, "a workspace's record does not read; left out");
-                    }
-                }
-            }
-            // An answer that carried none of what it was asked cannot be asked again.
-            if asks.len() == answered {
-                tracing::warn!(app = %self.app_id, workspace = %self.home, "the workspace answered none of the records asked of it");
-                break;
-            }
-        }
-        found.into_iter().collect()
-    }
-
-    /// The ids of the documents of this store's app the workspace holds, and those open here.
     fn listing(&self) -> Vec<DocumentId> {
         let mut ids: BTreeSet<DocumentId> = self
             .open

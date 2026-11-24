@@ -21,16 +21,17 @@
 //!   code once all of its modules are.
 //!
 //! With the `wasmtime` feature, which every shipped build has, the engine is tiered
-//! ([`EngineKind::Tiered`], `engine/tiering.rs`): a module runs on wasmi, the interpreter, from
-//! the moment it is loaded, while Cranelift compiles it on a thread of its own, and calls move
-//! to the compiled module between calls once it is ready. Compiled modules are kept on disk
-//! ([`keep_compiled_in`]), so a module compiled once starts compiled. Without the feature the
-//! engine is wasmi alone. A process can also run on one engine only, wasmi, Cranelift or Winch,
-//! to compare them (docs/tilolang-engines.md). What differs between engines is
-//! behind [`Backend`]: making a module, linking the imports, instantiating with the limits, and one
-//! call. Caching, pooling, profiling, import dispatch and how errors are reported are written
-//! once, here, so a call gives the same result on every engine, and the same before and after
-//! a module moves to compiled code.
+//! ([`EngineKind::Tiered`], `engine/tiering.rs`): a module the device daemon compiled ahead of
+//! time runs on that compiled module from its first call, and a module the daemon did not
+//! compile runs on wasmi, the interpreter. This process has no compiler: it links wasmtime's
+//! runtime alone, and the artifact arrives beside the module (`adopt_precompiled`,
+//! `tilo-wasm-aot`). Without the feature the engine is wasmi alone. A build with the `compile`
+//! feature adds Cranelift and Winch, to compare engines (docs/tilolang-engines.md); no shipped
+//! runtime is built with it. What differs between engines is behind [`Backend`]: making a
+//! module, linking the imports, instantiating with the limits, and one call. Caching, pooling,
+//! profiling, import dispatch and how errors are reported are written once, here, so a call
+//! gives the same result on every engine, and the same before and after a module moves to
+//! compiled code.
 
 #[cfg(all(test, all(feature = "wasmtime", not(target_arch = "wasm32"))))]
 mod tests;
@@ -281,26 +282,6 @@ pub fn configured() -> EngineConfig {
     process().config
 }
 
-/// Keep the modules the tiered engine compiles in `dir`, and start modules found there on
-/// compiled code: a process calls it once, before its first runtime loads a module, with a
-/// directory that is its own (a tilolang host keeps them in its storage). Without it compiled
-/// modules last as long as the process. Other engines keep nothing on disk.
-///
-/// # Errors
-///
-/// The tiered engine already read its cache from another directory, or the process's engine
-/// could not be made.
-pub fn keep_compiled_in(dir: PathBuf) -> Result<(), String> {
-    match shared()? {
-        #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
-        Shared::Tiered(t) => t.top.keep_in(dir),
-        _ => {
-            drop(dir);
-            Ok(())
-        }
-    }
-}
-
 /// Where the time of the calls into wasm went, while a profile is on
 /// ([`Engine::profile`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -486,14 +467,6 @@ impl<B: Backend> Compiler<B> {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(hash, module);
     }
-
-    #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
-    fn drop_module(&self, hash: &ModuleHash) {
-        self.modules
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(hash);
-    }
 }
 
 enum Shared {
@@ -504,7 +477,8 @@ enum Shared {
     Tiered(Box<Tiers>),
 }
 
-/// The tiered engine's two tiers: wasmi, which runs a module at once, and Cranelift.
+/// The tiered engine's two tiers: wasmi, which runs a module with no compiled artifact, and
+/// the device daemon's compiled modules.
 #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 struct Tiers {
     base: Compiler<wasmi_backend::Wasmi>,
@@ -516,7 +490,7 @@ impl Tiers {
     fn new(translation: Translation) -> Result<Self, String> {
         Ok(Self {
             base: Compiler::new(wasmi_backend::Wasmi::new(translation)),
-            top: tiering::Tiering::new()?,
+            top: tiering::Tiering::new(wasmtime_backend::Wasmtime::runtime()?),
         })
     }
 }
@@ -535,7 +509,7 @@ impl Process {
             )))),
             #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
             EngineKind::Cranelift | EngineKind::Winch => {
-                wasmtime_backend::Wasmtime::new(config.kind)
+                wasmtime_backend::Wasmtime::compiling(config.kind)
                     .map(|backend| Shared::Wasmtime(Compiler::new(backend)))
             }
             #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
@@ -567,6 +541,77 @@ fn process() -> &'static Process {
 
 fn shared() -> Result<&'static Shared, String> {
     process().engine.as_ref().map_err(Clone::clone)
+}
+
+/// Use the artifact the device daemon compiled for `module`, which arrived beside its bytes on
+/// the daemon's own channel: from the module's first call it runs compiled.
+///
+/// The artifact must be the one made for these bytes, for this wasmtime version, configuration
+/// and target: the sealed entry is checked against `module` here, and wasmtime checks the
+/// configuration again as it deserializes. An artifact of anything else is refused and the
+/// module runs on the interpreter; it is never compiled here.
+///
+/// Returns the module's hash.
+///
+/// # Errors
+///
+/// The entry was not made for `module`, or its body is damaged.
+pub fn adopt_precompiled(module: &[u8], entry: &[u8]) -> Result<ModuleHash, String> {
+    #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
+    {
+        let serialized = tilo_wasm_aot::open_for(entry, module)?.to_vec();
+        let hash = ModuleHash::of_bytes(module);
+        precompiled()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(hash.clone(), serialized);
+        return Ok(hash);
+    }
+    #[cfg(not(all(feature = "wasmtime", not(target_arch = "wasm32"))))]
+    {
+        let _ = entry;
+        Ok(ModuleHash::of_bytes(module))
+    }
+}
+
+/// The serialized modules the daemon handed this process, by the digest of the module they were
+/// made for, kept until a runtime loads that module.
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
+fn precompiled() -> &'static Mutex<HashMap<ModuleHash, Vec<u8>>> {
+    static PRECOMPILED: OnceLock<Mutex<HashMap<ModuleHash, Vec<u8>>>> = OnceLock::new();
+    PRECOMPILED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The serialized module handed for `hash`, if one was.
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
+fn precompiled_for(hash: &ModuleHash) -> Option<Vec<u8>> {
+    precompiled()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(hash)
+        .cloned()
+}
+
+/// The directory this process reads the device's compiled modules from, when it was given one.
+static COMPILED_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// The device's compiled modules are in `dir`, from now on: a runtime started for an app or a
+/// host reads the machine code its daemon compiled for each module it loads, by the module's
+/// content, instead of running it on the interpreter. The directory is the daemon's own, granted
+/// read-only; nothing here writes to it and nothing is compiled from it.
+///
+/// A process calls it once, before its first runtime loads a module. Without it modules run on
+/// the interpreter, as in the browser and in a test that hands no artifact.
+pub fn compiled_from(dir: PathBuf) {
+    *COMPILED_DIR.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir);
+}
+
+/// The directory the device's compiled modules are read from, if this process was given one.
+fn compiled_dir() -> Option<PathBuf> {
+    COMPILED_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 // ---- one runtime's engine --------------------------------------------------------------------
@@ -697,13 +742,6 @@ impl<B: Backend> Pools<B> {
         self.modules.borrow().contains_key(hash)
     }
 
-    /// Drop the module and its idle instances; one still running is dropped when its call
-    /// ends.
-    #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
-    fn remove(&self, hash: &ModuleHash) {
-        self.modules.borrow_mut().remove(hash);
-    }
-
     fn exports(&self, module: &ModuleHash) -> Vec<String> {
         self.modules
             .borrow()
@@ -801,23 +839,33 @@ impl TieredPools {
                 parts.iter().map(|(part, _)| part.clone()).collect(),
             );
         }
-        // Compiled earlier, in this process or (from the disk cache) in an earlier one: it
-        // starts compiled.
+        // The daemon compiled every part of it: it starts on compiled code. The artifacts were
+        // handed to the process (`adopt_precompiled`), or are read from the device's cache
+        // (`compiled_from`); either way this is a lookup, never a compile.
         let started = tilo_clock::now();
+        let dir = compiled_dir();
         let ready: Option<Vec<_>> = parts
             .iter()
-            .map(|(part, _)| self.tiering.ready(part))
+            .map(|(part, bytes)| self.tiering.adopt(part, bytes, dir.as_deref()))
             .collect();
         if let Some(modules) = ready {
-            let adopted = self.top.adopt(hash, modules, limits);
-            compiled_in(started.elapsed());
-            return adopted;
+            match self.top.adopt(hash, modules, limits) {
+                Ok(()) => {
+                    compiled_in(started.elapsed());
+                    return Ok(());
+                }
+                // The compiled modules could not be instantiated together: the set runs on the
+                // interpreter, as it did before any artifact, and why is kept.
+                Err(error) => {
+                    for (part, _) in parts {
+                        self.tiering.reject(part, error.to_string());
+                    }
+                }
+            }
         }
-        self.base.compile(hash, parts, limits, compiled_in)?;
-        for (part, bytes) in parts {
-            self.tiering.request(part, bytes);
-        }
-        Ok(())
+        // No artifact for some part: the module runs on the interpreter, as it does in the
+        // browser and as it does for a module written at run time. Nothing compiles it here.
+        self.base.compile(hash, parts, limits, compiled_in)
     }
 
     /// The modules `hash` is made of: a linked set's, or the module itself.
@@ -831,28 +879,6 @@ impl TieredPools {
 
     fn has(&self, hash: &ModuleHash) -> bool {
         self.top.has(hash) || self.base.has(hash)
-    }
-
-    /// Move the module to its compiled code if that is ready. This happens between calls
-    /// into it: a call still running on wasmi keeps its instance, which is dropped when it
-    /// ends.
-    fn tier_up(&self, hash: &ModuleHash, limits: &EngineLimits) {
-        // A set whose compiled modules did not instantiate stays on wasmi (`reject`).
-        if self.top.has(hash) || !self.base.has(hash) || self.tiering.failure(hash).is_some() {
-            return;
-        }
-        let Some(modules) = self
-            .parts(hash)
-            .iter()
-            .map(|part| self.tiering.compiled(part))
-            .collect::<Option<Vec<_>>>()
-        else {
-            return;
-        };
-        match self.top.adopt(hash, modules, limits) {
-            Ok(()) => self.base.remove(hash),
-            Err(error) => self.tiering.reject(hash, error.to_string()),
-        }
     }
 
     fn tier(&self, hash: &ModuleHash) -> Option<EngineKind> {
@@ -885,7 +911,6 @@ impl TieredPools {
         limits: &EngineLimits,
         cx: Cx,
     ) -> Result<Option<Wasm>, CallError> {
-        self.tier_up(hash, limits);
         if self.top.has(hash) {
             self.top.call(hash, export, args, limits, cx)
         } else {
@@ -978,23 +1003,9 @@ impl Engine {
         }
     }
 
-    /// Wait until the tiered engine's compile of the module has ended, so that its next call
-    /// runs compiled (or, if the compile failed, stays on wasmi): for benchmarks and tests.
-    /// The compile thread ends the wait when it finishes the module, either way. Returns at
-    /// once on another engine or for a module not being compiled.
-    pub fn settle_compile(&self, module: &ModuleHash) {
-        #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
-        if let Pooled::Tiered(pools) = &self.pooled {
-            for part in pools.parts(module) {
-                pools.tiering.settle(&part);
-            }
-        }
-        #[cfg(not(all(feature = "wasmtime", not(target_arch = "wasm32"))))]
-        let _ = module;
-    }
-
-    /// Why the tiered engine could not compile the module, which then stays on wasmi; `None`
-    /// while it compiles, once it compiled, and on any other engine.
+    /// Why the artifact the daemon compiled for the module could not be used, which left it on
+    /// wasmi; `None` when it was, on a module whose daemon compiled none, and on any other
+    /// engine.
     #[must_use]
     pub fn compile_failure(&self, module: &ModuleHash) -> Option<String> {
         match &self.pooled {
@@ -1037,9 +1048,10 @@ impl Engine {
         }
     }
 
-    /// Compile (or fetch from the cache) the module with these bytes, whose imports `host`
-    /// answers: the `tl` table and, when it names one, the imports of its own ABI
-    /// ([`Host::guest_abi`]).
+    /// Load the module with these bytes, whose imports `host` answers: the `tl` table and, when
+    /// it names one, the imports of its own ABI ([`Host::guest_abi`]). A module the device's
+    /// daemon compiled runs on that code; one it did not runs on the interpreter. Nothing is
+    /// compiled here.
     pub fn compile(&self, bytes: &[u8]) -> Result<ModuleHash, CallError> {
         let hash = ModuleHash::of_bytes(bytes);
         let parts = [(hash.clone(), bytes)];
@@ -1049,7 +1061,7 @@ impl Engine {
         Ok(hash)
     }
 
-    /// Compile (or fetch from the cache) `modules` as one linked set, called like one module:
+    /// Load `modules` as one linked set, called like one module:
     /// an instance of the set instantiates the first module with the imports the engine links,
     /// then each after it with every import answered by the export of that name of the latest
     /// module before it that has one, as the page links a split bundle (its modules import by

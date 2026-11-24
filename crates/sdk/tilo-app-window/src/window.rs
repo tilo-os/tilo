@@ -294,6 +294,12 @@ pub struct AppWindow {
     input: bool,
     /// The bound control the keyboard focus was in, as last sent, by key in the composed tree.
     focus: Option<String>,
+    /// The record and field the control holding the keyboard edits, by the control's key in the
+    /// composed tree, as last seen: when the same editor edits another record (a deck's next
+    /// slide), the person has left the field they were typing in.
+    focus_binding: Option<(String, (String, String))>,
+    /// The keyboard is asked to leave the field it is in, at the next rebuild.
+    blur_request: bool,
     /// Whether an input method composes in the focused control, as last sent.
     composing: bool,
     /// The modifier keys held now, as the last window event said.
@@ -508,6 +514,8 @@ impl AppWindow {
             failed: None,
             input: false,
             focus: None,
+            focus_binding: None,
+            blur_request: false,
             composing: false,
             held: wire::Held::default(),
             held_sent: wire::Held::default(),
@@ -859,6 +867,9 @@ impl AppWindow {
         reason = "one arm per message of one closed protocol"
     )]
     fn apply(&mut self, messages: Vec<ToUi>) -> Result<(), String> {
+        // What the keyboard's editor holds before this batch: the record a change in it is
+        // measured against.
+        self.leave_editor_whose_record_changed();
         let mut content = false;
         // Rows the app sent for a list: its selection then names rows it did not hold yet.
         let mut arrived = false;
@@ -958,6 +969,13 @@ impl AppWindow {
                     let opened = self.opened.take().is_some();
                     self.send_typed_into(opened);
                 }
+                // The app asks where the keyboard goes: a control by its key in the composed tree,
+                // or no control at all (the `blur()` a view applies), which the tree reads as an
+                // empty request.
+                ToUi::Focus { key } => {
+                    self.focus_request = Some(key.unwrap_or_default());
+                    self.structure_dirty = true;
+                }
             }
         }
         self.check_budget()?;
@@ -970,6 +988,7 @@ impl AppWindow {
         }
         self.send_typed_into(opened_for_input);
         self.keep_page_focus();
+        self.leave_editor_whose_record_changed();
         if self.fired <= self.took {
             self.opened = None;
         }
@@ -1887,6 +1906,40 @@ impl AppWindow {
             at: now.as_deref().map(level_of),
         });
         self.focus = now;
+    }
+
+    /// The record and field the bound control `field` edits, by its key in the composed tree.
+    fn field_binding(&self, field: &str) -> Option<(String, String)> {
+        let (level, key) = level_of(field);
+        let tree = match level {
+            Level::Root => self.root.as_ref(),
+            Level::Detail => self.detail.as_ref(),
+        }?;
+        let node = node_at(&tree.tree, &key)?;
+        let (target, field) = node.binding.as_ref()?.field()?;
+        Some((target.to_owned(), field.to_owned()))
+    }
+
+    /// The editor holding the keyboard now edits another record than it did: an editor the view
+    /// rebuilt for another one (a deck's next slide) gives the keyboard up, as closing it did, so
+    /// what the person types next never lands in a record they did not choose.
+    fn leave_editor_whose_record_changed(&mut self) {
+        let Some(now) = self.focused_field() else {
+            self.focus_binding = None;
+            return;
+        };
+        let binding = self.field_binding(&now);
+        let left = matches!(
+            (&self.focus_binding, &binding),
+            (Some((key, before)), Some(after)) if key == &now && before != after
+        );
+        self.focus_binding = binding.map(|binding| (now, binding));
+        if left {
+            self.blur_request = true;
+            self.structure_dirty = true;
+            self.focus = None;
+            self.out.push(ToApp::Focus { at: None });
+        }
     }
 
     fn event(&mut self, event: UiEvent) {
@@ -3870,6 +3923,11 @@ impl ui::widget::Decorator for AppWindow {
     }
 
     fn take_focus_request(&mut self) -> Option<String> {
+        // No field: the view ended the keyboard's place in an editor (`blur()`), or the editor
+        // now edits another record.
+        if std::mem::take(&mut self.blur_request) {
+            return Some(String::new());
+        }
         let request = self
             .focus_request
             .take()

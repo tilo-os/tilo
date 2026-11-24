@@ -20,11 +20,10 @@ view quick_settings() {
 /// itself, or beside the caret that asked for it (`device.overlays.place`). A panel measured a room
 /// takes that height and scrolls inside it.
 view quick_settings_panel(fill_height: Bool) {
-    ui.FloatingPanel(
-        width: if not space.compact { 360.0 },
-        fill: space.compact,
-        fill_height: fill_height,
-    ) {
+    // The panel's room is the display's: what it holds is told whether this is a phone, since
+    // each section's own slot is only the panel's width.
+    let phone = space.compact
+    ui.FloatingPanel(width: if not phone { 360.0 }, fill: phone, fill_height: fill_height) {
         header: {
             row(gap: .related, align: .center, wrap: true) {
                 ui.Text("Quick settings", role: .heading)
@@ -52,7 +51,7 @@ view quick_settings_panel(fill_height: Bool) {
                     levels()
                     // What runs now — the song playing, the call, the timer — stands here: its
                     // resource's own `live` view, which the shell composes from the index.
-                    live_section()
+                    live_section(phone)
                     sound_section()
                     network_section()
                     bluetooth_section()

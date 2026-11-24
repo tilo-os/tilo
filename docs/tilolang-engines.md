@@ -1,12 +1,18 @@
 # tilolang engines: tiered, wasmi, Cranelift and Winch
 
-tilolang apps run on the tiered engine (`crates/lang/tilolang-runtime/DECISIONS.md`, "Tiered"):
-a module starts on wasmi, an interpreter, while Cranelift, wasmtime's optimizing compiler,
-compiles it on a thread of its own; the next call after the compile finishes runs the compiled
-module, and the compiled module is kept on disk so the next start is compiled at once. A
-process can also run on one engine alone, wasmi, Cranelift or Winch (wasmtime's baseline
-compiler), to compare them on your own machine. wasmtime is the runtime's `wasmtime` feature,
-on by default; a build without it runs wasmi alone.
+A device's daemon compiles each tilolang module ahead of time, for that device, and keeps the
+serialized module in a cache keyed by the module's digest, the wasmtime version, the engine
+configuration and the target. A tilolang process links wasmtime's runtime alone: a module the
+daemon compiled runs on that machine code from its first call, and a module it did not (one
+written at run time, or a device whose daemon could not compile it yet) runs on wasmi, an
+interpreter. Nothing is compiled in the process
+(`crates/lang/tilolang-runtime/DECISIONS.md`, "Tiered"). A build with the `compile` feature
+adds wasmtime's Cranelift and Winch to compare engines on your own machine; no shipped runtime
+is built with it.
+
+The measurements below were taken before the daemon compiled modules and before the process
+lost its compiler: they describe the tiers as they were, not the two paths now. wasmtime is the
+runtime's `wasmtime` feature, on by default; a build without it runs wasmi alone.
 
 ## Running the comparison
 
@@ -176,9 +182,11 @@ implementation per engine (`engine/wasmi_backend.rs`, `engine/wasmtime_backend.r
   its duration.
 
 `configure(EngineConfig { kind, translation })` picks the engine once per process, before the
-first runtime; `keep_compiled_in(dir)` says where the tiered engine keeps compiled modules.
+first runtime. The device's daemon compiles modules (`tilo-wasm-aot`) and a runtime reads its
+artifacts: `adopt_precompiled(module, entry)` for an artifact handed over the daemon's channel,
+and `compiled_from(dir)` for the daemon's cache directory.
 
 The tiered engine (`engine/tiering.rs`) uses both backends: each runtime holds a wasmi pool and
-a Cranelift pool per module, and a call checks out an instance from the Cranelift pool once the
-process's compile thread has the compiled module, dropping the wasmi ones. A call running when
-the compile finishes ends on wasmi; nothing waits.
+a deserialize-only wasmtime pool per module, and a module the daemon compiled starts on the
+compiled pool. A module it did not compile, and every browser, runs on wasmi. Nothing compiles
+in the process; a `compile` build (benchmarks only) can still compile with Cranelift or Winch.

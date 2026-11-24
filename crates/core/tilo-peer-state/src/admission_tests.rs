@@ -1148,6 +1148,80 @@ pub(crate) fn add_member_with(
     (device, cert, root.verifying_key().to_bytes())
 }
 
+/// An invitation to `base`'s workspace as an editor, which its owner's device
+/// `key` signs at `now`.
+fn editor_invitation(base: &StatePeer, key: &SigningKey, now: SystemTime) -> Vec<u8> {
+    use crate::join::{InviteGrant, Role, issue_invitation};
+    issue_invitation(
+        InviteGrant {
+            workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
+            issuer: base.owner_certificates()[0].clone(),
+            role: Role::Editor,
+            nonce: [70; 16],
+            recipient_user_public_key: None,
+            invitee_name: None,
+            expires_at_ns: unix_ns(now).saturating_add(10_000_000_000),
+            transport: vec![],
+        },
+        key,
+    )
+    .unwrap()
+}
+
+/// The redemption of `signed` by the device seeded `device_seed` of the person
+/// whose root is seeded `root_seed`, proving the challenge of `request` and
+/// `nonce`.
+fn redemption(
+    signed: &[u8],
+    (root_seed, device_seed): (u8, u8),
+    (request, nonce): (u8, u8),
+    now: SystemTime,
+) -> crate::join::VerifiedRedemption {
+    use crate::join::{
+        JoinChallenge, decode_and_verify_invitation, sign_join_proof, verify_join_proof,
+    };
+    let now_ns = unix_ns(now);
+    let root = SigningKey::from_bytes(&[root_seed; 32]);
+    let device = SigningKey::from_bytes(&[device_seed; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: format!("concurrent-{device_seed}"),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    let join = decode_and_verify_invitation(
+        signed,
+        Some(cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        &cert,
+        [request; 32],
+        [nonce; 32],
+        now_ns.saturating_add(1_000_000_000),
+        now_ns,
+    )
+    .unwrap();
+    let proof = sign_join_proof(challenge.clone(), &device).unwrap();
+    verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns).unwrap()
+}
+
+fn unix_ns(at: SystemTime) -> u64 {
+    at.duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .try_into()
+        .unwrap()
+}
+
 pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -1496,66 +1570,10 @@ tilo_test_env::scenario! {
 
     phase concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation;
     {
-        use crate::join::{
-            InviteGrant, JoinChallenge, Role, decode_and_verify_invitation, issue_invitation,
-            sign_join_proof, verify_join_proof,
-        };
         let (base, authority_key, _, _, now) = seeded();
-        let now_ns: u64 = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .try_into()
-            .unwrap();
-        let signed = issue_invitation(
-            InviteGrant {
-                workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
-                issuer: base.owner_certificates()[0].clone(),
-                role: Role::Editor,
-                nonce: [70; 16],
-                recipient_user_public_key: None,
-                invitee_name: None,
-                expires_at_ns: now_ns.saturating_add(10_000_000_000),
-                transport: vec![],
-            },
-            &authority_key,
-        )
-        .unwrap();
-        let redeem = |root_seed: u8, device_seed: u8, request: u8, challenge_nonce: u8| {
-            let root = SigningKey::from_bytes(&[root_seed; 32]);
-            let device = SigningKey::from_bytes(&[device_seed; 32]);
-            let mut cert = DeviceCert {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_public_key: device.verifying_key().to_bytes(),
-                device_label: format!("concurrent-{device_seed}"),
-                capabilities: DeviceCapabilities::member(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-                issuer: None,
-            };
-            sign_device_cert(&mut cert, &root).unwrap();
-            let join = decode_and_verify_invitation(
-                &signed,
-                Some(cert.user_public_key),
-                &RevocationList::new(),
-                now_ns,
-            )
-            .unwrap();
-            let challenge = JoinChallenge::new(
-                &join,
-                &cert,
-                [request; 32],
-                [challenge_nonce; 32],
-                now_ns + 1_000_000_000,
-                now_ns,
-            )
-            .unwrap();
-            let proof = sign_join_proof(challenge.clone(), &device).unwrap();
-            verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns).unwrap()
-        };
-        let first = redeem(71, 72, 73, 74);
-        let second = redeem(75, 76, 77, 78);
+        let signed = editor_invitation(&base, &authority_key, now);
+        let first = redemption(&signed, (71, 72), (73, 74), now);
+        let second = redemption(&signed, (75, 76), (77, 78), now);
         let mut left = base.clone();
         let mut right = base.clone();
         assert!(
@@ -1596,82 +1614,58 @@ tilo_test_env::scenario! {
     }
 
     phase concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first;
-    // Two key holders may redeem one invitation at once, each before it holds
-    // the other's receipt. An invitation admits one person: every receiver keeps
-    // the redemption that reached it first and refuses the other, whichever of
-    // the two arrives first.
+    // Two devices of one person may each redeem one invitation at once, each
+    // admitted by a key holder before it holds the other's receipt. An
+    // invitation admits one person once: every receiver keeps the redemption
+    // that reached it first and refuses the other, whichever of the two
+    // arrives first.
     {
-        let (base, authority_key, _, bc, now) = seeded();
-        let NeighbourMsg::SyncResp { changes, workspace } = base.workspace_message() else {
-            panic!("unexpected fixture shape")
-        };
-        let mut document = crate::workspace::candidate(None, &changes).unwrap();
-        let base_heads = document.get_heads();
-        let mut left = document.fork();
-        let mut right = document.fork();
-        let invitation_receipts = left.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
-        let invite_id = [97; 32];
-        let receipt = |device_public_key, request_id| crate::state::RedemptionReceipt {
-            invite_id,
-            user_public_key: [98; 32],
-            device_public_key,
-            request_id,
-            role: crate::join::Role::Viewer,
-        };
-        let logged = |receipt| crate::state::StoredReceipt {
-            receipt,
-            invitation: vec![],
-        };
-        let logged = |receipt| logged(receipt).encode().unwrap();
-        left.set_actor(automerge::ActorId::from(vec![98; 32]));
-        left.put(
-            &invitation_receipts,
-            hex::encode(invite_id),
-            automerge::ScalarValue::Bytes(logged(receipt([99; 32], [100; 32]))),
-        )
-        .unwrap();
-        left.commit_edit("fixture", "fixture", &bc.user_public_key);
-        right.set_actor(automerge::ActorId::from(vec![101; 32]));
-        right
-            .put(
-                &invitation_receipts,
-                hex::encode(invite_id),
-                automerge::ScalarValue::Bytes(logged(receipt([102; 32], [103; 32]))),
-            )
-            .unwrap();
-        right.commit_edit("fixture", "fixture", &bc.user_public_key);
-        let message = |mut branch: AutoCommit| NeighbourMsg::SyncResp {
-            changes: branch
-                .get_changes(&base_heads)
-                .into_iter()
-                .map(|change| change.raw_bytes().to_vec())
-                .collect(),
-            workspace: workspace.clone(),
-        };
-        let from = TransportOrigin::ServerDelta(authority_key.verifying_key().to_bytes());
-        let receive = |first: NeighbourMsg, second: NeighbourMsg| {
+        let (base, authority_key, _, _, now) = seeded();
+        let signed = editor_invitation(&base, &authority_key, now);
+        let mut left = base.clone();
+        let mut right = base.clone();
+        assert!(
+            left.governance_mut()
+                .admit_invited_member(&redemption(&signed, (98, 99), (100, 101), now), &authority_key, now)
+                .unwrap()
+        );
+        assert!(
+            right
+                .governance_mut()
+                .admit_invited_member(&redemption(&signed, (98, 102), (103, 104), now), &authority_key, now)
+                .unwrap()
+        );
+        let invite_id = hex::encode(blake3::hash(&signed).as_bytes());
+        let authority = base.owner_certificates()[0].device_public_key;
+        let receive = |first: &StatePeer, second: &StatePeer| {
             let mut receiver = base.clone();
-            receiver.receive_from(from, first, now).unwrap();
+            receiver
+                .receive_from(
+                    TransportOrigin::ServerDelta(authority),
+                    first.workspace_message(),
+                    now,
+                )
+                .unwrap();
             let refused = receiver
-                .receive_from(from, second, now)
+                .receive_from(
+                    TransportOrigin::ServerDelta(authority),
+                    second.workspace_message(),
+                    now,
+                )
                 .unwrap_err()
                 .to_string();
             assert!(
-                refused.contains("conflicting redemption"),
+                refused.contains("conflicting redemption") || refused.contains("duplicate seq"),
                 "the second redemption of one invitation must be refused: {refused}"
             );
-            let held = receiver.workspace_message();
-            let NeighbourMsg::SyncResp { changes, .. } = held else {
+            let NeighbourMsg::SyncResp { changes, .. } = receiver.workspace_message() else {
                 panic!("workspace message is a SyncResp")
             };
             crate::workspace::candidate(None, &changes).unwrap()
         };
-        for redemption in [
-            receive(message(left.clone()), message(right.clone())),
-            receive(message(right), message(left)),
-        ] {
+        for redemption in [receive(&left, &right), receive(&right, &left)] {
             let held = crate::workspace::invitation_receipts(&redemption).unwrap();
-            assert_eq!(held[&hex::encode(invite_id)].len(), 1);
+            assert_eq!(held[&invite_id].len(), 1);
         }
     }
 
@@ -1985,14 +1979,14 @@ tilo_test_env::scenario! {
         let before = governor.durable().unwrap();
         assert!(
             governor
-                .admit_certificate(cert.clone(), &stranger, now)
+                .governance_mut().admit_member_device(&cert, &stranger, now)
                 .is_err()
         );
         assert_eq!(before, governor.durable().unwrap());
         let rows = governor.rows();
         let floors = governor.replay_floors();
-        assert!(governor.admit_certificate(cert.clone(), &a, now).unwrap());
-        assert!(!governor.admit_certificate(cert.clone(), &a, now).unwrap());
+        assert!(governor.governance_mut().admit_member_device(&cert, &a, now).unwrap());
+        assert!(!governor.governance_mut().admit_member_device(&cert, &a, now).unwrap());
         assert_eq!(rows, governor.rows());
         assert_eq!(floors, governor.replay_floors());
         let outcome = existing
@@ -2044,7 +2038,7 @@ tilo_test_env::scenario! {
         let other_root = SigningKey::from_bytes(&[9; 32]);
         cert.user_public_key = other_root.verifying_key().to_bytes();
         sign_device_cert(&mut cert, &other_root).unwrap();
-        assert!(governor.admit_certificate(cert, &a, now).is_err());
+        assert!(governor.governance_mut().admit_member_device(&cert, &a, now).is_err());
     }
 
     phase a_members_further_device_is_admitted_and_a_strangers_is_not;
@@ -2053,7 +2047,7 @@ tilo_test_env::scenario! {
         let (_, mut cert, _) = add_member_with(&mut governor, &a, now, 0x45, 0x46);
         cert.device_public_key = SigningKey::from_bytes(&[0x47; 32]).verifying_key().to_bytes();
         sign_device_cert(&mut cert, &SigningKey::from_bytes(&[0x45; 32])).unwrap();
-        assert!(governor.admit_certificate(cert.clone(), &a, now).unwrap());
+        assert!(governor.governance_mut().admit_member_device(&cert, &a, now).unwrap());
         assert!(governor.permissions(cert.device_public_key, now).is_ok());
 
         let stranger = SigningKey::from_bytes(&[0x48; 32]);
@@ -2062,7 +2056,7 @@ tilo_test_env::scenario! {
             .verifying_key()
             .to_bytes();
         sign_device_cert(&mut cert, &stranger).unwrap();
-        let refused = governor.admit_certificate(cert.clone(), &a, now).unwrap_err();
+        let refused = governor.governance_mut().admit_member_device(&cert, &a, now).unwrap_err();
         assert!(refused.contains("not a member"), "{refused}");
         assert!(governor.permissions(cert.device_public_key, now).is_err());
     }
@@ -2082,7 +2076,7 @@ tilo_test_env::scenario! {
                 .unwrap(),
         );
         sign_device_cert(&mut cert, &root).unwrap();
-        governor.admit_certificate(cert.clone(), &a, now).unwrap();
+        governor.governance_mut().admit_member_device(&cert, &a, now).unwrap();
         let mut existing = governor.clone();
         assert!(existing.permissions(cert.device_public_key, now).is_ok());
         let later = now + Duration::from_secs(2);
@@ -2102,7 +2096,7 @@ tilo_test_env::scenario! {
             .unwrap();
         next.device_public_key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
         sign_device_cert(&mut next, &root).unwrap();
-        assert!(governor.admit_certificate(next.clone(), &a, later).unwrap());
+        assert!(governor.governance_mut().admit_member_device(&next, &a, later).unwrap());
         assert!(
             existing
                 .receive(
@@ -2285,7 +2279,7 @@ tilo_test_env::scenario! {
         let mut valid = source.owner_certificates()[0].clone();
         valid.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
         sign_device_cert(&mut valid, &root).unwrap();
-        source.admit_certificate(valid, &a, now).unwrap();
+        source.governance_mut().admit_member_device(&valid, &a, now).unwrap();
         let NeighbourMsg::SyncResp { changes, workspace } = source.workspace_message() else {
             panic!("unexpected fixture shape")
         };

@@ -73,6 +73,10 @@ pub const CHOOSE_FOLDER_ACTION: &str = "$choose-folder";
 /// where the person says, under the name `n`. Its arguments are `a` and the name.
 pub const SAVE_ACTION: &str = "$save";
 
+/// The action of `blur()`: the field the keyboard is in ends its edit, as closing its editor
+/// does. The host tells the window through [`crate::ViewEvent::EndEdit`].
+pub const BLUR_ACTION: &str = "$blur";
+
 /// The action of `join_call(r)` and its kin: a step of the person's own in the system's call held
 /// on `r`. Its arguments are `r`, the step's name (`join`, `leave`, `mute`, `deafen`, `camera`,
 /// `screen`) and whether it turns its switch on.
@@ -470,6 +474,19 @@ impl Core {
         }))
     }
 
+    /// `blur()`: an action that, run, tells the window the field the keyboard is in ends its
+    /// edit. Views only.
+    fn act_blur(&self) -> HResult<Option<Wasm>> {
+        self.with_view(|_| Ok(()))?;
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: BLUR_ACTION.to_owned(),
+            args: Vec::new(),
+            author,
+            from: None,
+        }))
+    }
+
     /// `a.made_from(r)`: the action `a`, invoked made from the resource `r`: what the resources
     /// it makes record as what they were made from (`created(r)?.from`), as a block a scenario
     /// runs `made from r { ... }` says of its changes.
@@ -798,6 +815,7 @@ impl Core {
             Imp::ActChoose => self.act_choose(a, CHOOSE_ACTION),
             Imp::ActChooseFolder => self.act_choose(a, CHOOSE_FOLDER_ACTION),
             Imp::ActSave => self.act_save(a),
+            Imp::ActBlur => self.act_blur(),
             Imp::ActMadeFrom => self.act_made_from(a),
             Imp::ActMany => self.act_many(a),
             Imp::ActOpen => self.act_open(a),

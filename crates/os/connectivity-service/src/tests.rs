@@ -183,7 +183,7 @@ fn network(name: &str, known: bool, secure: bool, connected: bool) -> WifiNetwor
 fn saved(name: &str, id: &str, autoconnect: bool) -> SavedNetwork {
     SavedNetwork {
         name: name.into(),
-        id: id.into(),
+        profile: id.into(),
         kind: SavedKind::Wifi,
         autoconnect,
         ..SavedNetwork::default()
@@ -272,11 +272,11 @@ fn apply_network(network: &mut Network, change: &Change) {
             }
         }
         Change::Forget { profile } => {
-            network.saved.retain(|saved| saved.id != *profile);
+            network.saved.retain(|saved| saved.profile != *profile);
         }
         Change::Autoconnect { profile, on } => {
             for saved in &mut network.saved {
-                if saved.id == *profile {
+                if saved.profile == *profile {
                     saved.autoconnect = *on;
                 }
             }
@@ -290,7 +290,7 @@ fn apply_network(network: &mut Network, change: &Change) {
         }
         Change::Proxy { profile, server } => {
             for saved in &mut network.saved {
-                if saved.id == *profile {
+                if saved.profile == *profile {
                     saved.proxy.clone_from(server);
                 }
             }
@@ -307,7 +307,7 @@ fn apply_network(network: &mut Network, change: &Change) {
         }
         Change::Wake { profile, on } => {
             for saved in &mut network.saved {
-                if saved.id == *profile {
+                if saved.profile == *profile {
                     saved.wake = Some(crate::model::NetworkWake {
                         on: *on,
                         ..crate::model::NetworkWake::default()
@@ -860,7 +860,7 @@ fn the_wired_link_and_saved_networks_are_controlled_from_their_resources() {
         "a network with no proxy is given one by its own action"
     );
     let saved = &read(&service, NETWORK)["saved"];
-    assert_eq!(saved[0]["id"], json!("uuid-home"));
+    assert_eq!(saved[0]["profile"], json!("uuid-home"));
     assert_eq!(saved[0]["proxy"], json!("proxy.local:3128"));
     assert_eq!(saved[0]["metered"], json!("metered"));
     assert_eq!(saved[0]["priority"], json!(10));
@@ -1354,7 +1354,7 @@ fn laptop_with_open_network() -> Arc<Fake> {
             },
             saved: vec![SavedNetwork {
                 name: "Cafe".into(),
-                id: "uuid-cafe".into(),
+                profile: "uuid-cafe".into(),
                 kind: SavedKind::Wifi,
                 autoconnect: true,
                 open: true,
@@ -1411,7 +1411,7 @@ fn an_open_network_waits_for_the_person_while_the_device_asks() {
         let mut readings = fake.readings.lock().expect("readings");
         readings.network.saved.push(SavedNetwork {
             name: "Hotel".into(),
-            id: "uuid-hotel".into(),
+            profile: "uuid-hotel".into(),
             kind: SavedKind::Wifi,
             autoconnect: true,
             open: true,

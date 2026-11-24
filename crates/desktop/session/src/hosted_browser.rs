@@ -1197,9 +1197,9 @@ fn take_identity(material: &Material) -> Result<(), String> {
     }
     // The person the workspace belongs to, as a record this device holds of them: the server hands
     // over their public key, and every part of the session that presents this device's person in a
-    // workspace reads that person from this login's identity records. The record carries no root:
-    // what signs here is the device certificate the server issued.
-    let directory = tilo_identity::store::identity_dir_from_env()
+    // workspace reads that person from this login's identity records, the account's own store. The
+    // record carries no root: what signs here is the device certificate the server issued.
+    let directory = tilo_identity::store::account_identity_dir_from_env()
         .map_err(|error| format!("this device's identity directory is not known: {error}"))?;
     let record = tilo_identity::store::public_member_record(
         tilo_identity::store::UNNAMED_DISPLAY_NAME,

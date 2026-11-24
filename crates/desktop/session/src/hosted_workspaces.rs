@@ -25,9 +25,9 @@ use tilo_actions::remote::{
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
+use tilo_session_actions::SessionActions;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
-use tilo_session_actions::SessionActions;
 use tilo_workspace_service::service::WorkspaceService;
 
 use crate::engine::Engine;
@@ -186,11 +186,10 @@ impl HostedWorkspaces {
 
     /// A host one of the workspaces this device holds is placed on.
     fn any_host(&self) -> Option<Arc<ServerAddress>> {
-        self.0
-            .engine
-            .workspaces()
-            .into_iter()
-            .find_map(|id| self.placed(&id.to_string()).map(|placed| self.host(&placed)))
+        self.0.engine.workspaces().into_iter().find_map(|id| {
+            self.placed(&id.to_string())
+                .map(|placed| self.host(&placed))
+        })
     }
 }
 
@@ -422,7 +421,11 @@ mod tests {
     }
 
     /// A device certified under `root` as `label`, signing with `key`.
-    fn certified(root: &ed25519_dalek::SigningKey, key: &ed25519_dalek::SigningKey, label: &str) -> DeviceCert {
+    fn certified(
+        root: &ed25519_dalek::SigningKey,
+        key: &ed25519_dalek::SigningKey,
+        label: &str,
+    ) -> DeviceCert {
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
@@ -477,7 +480,10 @@ mod tests {
             .unwrap();
             let workspaces = server.workspaces().unwrap().clone();
             let workspace = workspaces.create("Browser").await.unwrap().workspace;
-            workspaces.enter(&workspace, &host).await.unwrap();
+            workspaces
+                .enter(&workspace, (&host, &host_key))
+                .await
+                .unwrap();
             (server, workspaces, workspace)
         });
 
@@ -485,7 +491,7 @@ mod tests {
         let vm_key = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
         let vm = certified(&root, &vm_key, "The VM");
         runtime
-            .block_on(workspaces.enter(&workspace, &vm))
+            .block_on(workspaces.enter(&workspace, (&vm, &vm_key)))
             .unwrap();
         let vm_state = tempfile::tempdir().unwrap();
         let engine = Arc::new(

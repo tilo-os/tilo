@@ -134,7 +134,7 @@ async fn through_the_entry(
     let admitted = workspaces
         .admit_proven(
             issued.signed_invitation,
-            cert,
+            (cert, &key),
             rand::random(),
             name,
             Some(token.as_bytes()),

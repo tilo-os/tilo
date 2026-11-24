@@ -247,7 +247,7 @@ mod tests {
     async fn enters(
         workspaces: &Workspaces,
         workspace: &str,
-        device: &DeviceCert,
+        (key, device): (&SigningKey, &DeviceCert),
         request_id: [u8; 32],
     ) -> JoinReply {
         let issued = workspaces
@@ -261,7 +261,7 @@ mod tests {
         workspaces
             .admit_proven(
                 issued.signed_invitation,
-                device.clone(),
+                (device.clone(), key),
                 rand::random(),
                 &device.device_label,
                 None,
@@ -303,9 +303,15 @@ mod tests {
     /// A browser that never held an identity makes one and accepts: a fresh
     /// person's device, redeeming the link's invitation.
     async fn accept(workspaces: &Workspaces, invitation: Vec<u8>) -> ([u8; 32], JoinReply) {
-        let (_, newcomer) = guest_device();
+        let (newcomer_key, newcomer) = guest_device();
         let reply = workspaces
-            .admit_proven(invitation, newcomer.clone(), rand::random(), "Ada", None)
+            .admit_proven(
+                invitation,
+                (newcomer.clone(), &newcomer_key),
+                rand::random(),
+                "Ada",
+                None,
+            )
             .await;
         (newcomer.user_public_key, reply)
     }
@@ -417,12 +423,12 @@ mod tests {
 
         // A key of theirs enters the workspace, then asks for an owner link,
         // as the command line does.
-        let (_, key) = device_cert(
+        let (signer, key) = device_cert(
             &root,
             "Quinten's key",
             DeviceCapabilities::server_key_grant(),
         );
-        let admitted = enters(workspaces, &workspace, &key, [2; 32]).await;
+        let admitted = enters(workspaces, &workspace, (&signer, &key), [2; 32]).await;
         assert!(
             matches!(admitted, JoinReply::Admitted { .. }),
             "{admitted:?}"
@@ -435,8 +441,8 @@ mod tests {
         assert_eq!(from.name, "", "the workspace knew no name for them yet");
 
         // A device of theirs joins, as their page does, going by their name.
-        let (_, page) = device_cert(&root, "Quinten", DeviceCapabilities::member());
-        let admitted = enters(workspaces, &workspace, &page, [6; 32]).await;
+        let (page_key, page) = device_cert(&root, "Quinten", DeviceCapabilities::member());
+        let admitted = enters(workspaces, &workspace, (&page_key, &page), [6; 32]).await;
         assert!(
             matches!(admitted, JoinReply::Admitted { .. }),
             "{admitted:?}"
@@ -467,9 +473,14 @@ mod tests {
         let server = site(dir.path(), &holder).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Tilo").await.unwrap().workspace;
-        let (_, sibling) = governor_with(DeviceCapabilities::member());
+        let (sibling_key, sibling) = governor_with(DeviceCapabilities::member());
         assert_eq!(sibling.user_public_key, holder.1.user_public_key);
         assert_ne!(sibling.device_public_key, holder.1.device_public_key);
+        // The sibling lists itself, as a further device of the person does.
+        workspaces
+            .enter(&workspace, (&sibling, &sibling_key))
+            .await
+            .unwrap();
 
         let issued = owner_link_asked_for_by(workspaces, &workspace, &sibling, [4; 32]).await;
         assert!(
@@ -494,11 +505,11 @@ mod tests {
             .issue_owner_invitation(&lounge, &host.1, invitation(Role::Editor), None)
             .await
             .unwrap();
-        let (_, owner) = guest_device();
+        let (owner_key, owner) = guest_device();
         let admitted = workspaces
             .admit_proven(
                 owner_link.signed_invitation,
-                owner.clone(),
+                (owner.clone(), &owner_key),
                 rand::random(),
                 "Ada",
                 None,
@@ -512,11 +523,11 @@ mod tests {
             .issue(&lounge, &owner, invitation(Role::Editor))
             .await
             .unwrap();
-        let (_, member) = guest_device();
+        let (member_key, member) = guest_device();
         let admitted = workspaces
             .admit_proven(
                 invite.signed_invitation,
-                member.clone(),
+                (member.clone(), &member_key),
                 rand::random(),
                 "Grace",
                 None,
@@ -622,13 +633,13 @@ mod tests {
             .issue(&elsewhere, &cert, invitation(Role::Editor))
             .await
             .unwrap();
-        let (_, newcomer) = guest_device();
+        let (newcomer_key, newcomer) = guest_device();
         let join = EntryJoin {
             user_public_key: hex::encode(newcomer.user_public_key),
             display_name: "Ada".into(),
         };
         assert!(
-            walk_in_as(workspaces, &home, &join, &newcomer)
+            walk_in_as(workspaces, &home, &join, (&newcomer_key, &newcomer))
                 .await
                 .is_err(),
             "a stranger is turned away from the home"
@@ -636,14 +647,14 @@ mod tests {
         let reply = workspaces
             .admit_proven(
                 issued.signed_invitation,
-                newcomer.clone(),
+                (newcomer.clone(), &newcomer_key),
                 rand::random(),
                 "Ada",
                 None,
             )
             .await;
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
-        let reply = walk_in_as(workspaces, &home, &join, &newcomer)
+        let reply = walk_in_as(workspaces, &home, &join, (&newcomer_key, &newcomer))
             .await
             .unwrap();
         assert!(
@@ -675,12 +686,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let (_, newcomer) = guest_device();
+        let (newcomer_key, newcomer) = guest_device();
         let join = EntryJoin {
             user_public_key: hex::encode(newcomer.user_public_key),
             display_name: "Ada".into(),
         };
-        let reply = walk_in_as(workspaces, &workspace, &join, &newcomer)
+        let reply = walk_in_as(workspaces, &workspace, &join, (&newcomer_key, &newcomer))
             .await
             .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");

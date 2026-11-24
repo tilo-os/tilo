@@ -34,12 +34,11 @@ const HUE_STRIP_WIDTH: f64 = 16.0;
 const SV_CURSOR_RADIUS: f64 = 6.0;
 const PREVIEW_SIZE: f64 = 40.0;
 const SLIDER_HEIGHT: f64 = 24.0;
-/// A channel slider's name and value stand beside its track: the columns they take at
-/// the picker's leading and trailing edges, and the step between a column and the track
-/// (the knob overhangs into it).
-const SLIDER_LABEL_WIDTH: f64 = token(SPACE.s8);
-const SLIDER_VALUE_WIDTH: f64 = token(SPACE.s8);
+/// A channel slider's name and value stand beside its track: the step between a column and
+/// the track (the knob overhangs into it), and the narrowest either column gets before the
+/// words are measured.
 const SLIDER_SIDE_GAP: f64 = token(SPACE.s3);
+const SLIDER_COLUMN_MIN: f64 = token(SPACE.s8);
 const SLIDER_GAP: f64 = 4.0;
 const COMPONENT_GAP: f64 = 8.0;
 /// A spacing or metric token as a layout length. Layout runs without a
@@ -157,6 +156,13 @@ pub struct ColorPicker {
     cancel_rect: Rect,
     done_rect: Rect,
     interaction: crate::interaction::InteractionEnvironment,
+    /// The columns before and after each channel's track: as wide as the widest channel
+    /// name and value it shows, measured in the theme and language of its last layout so
+    /// no word is shortened while the picker has room.
+    label_column: f64,
+    value_column: f64,
+    /// The style the channel names and values are drawn and measured in.
+    caption_style: Option<crate::text_render::TextStyle>,
 
     dirty: bool,
 }
@@ -200,6 +206,9 @@ impl ColorPicker {
             cancel_rect: Rect::ZERO,
             done_rect: Rect::ZERO,
             interaction: crate::interaction::InteractionEnvironment::default(),
+            label_column: SLIDER_COLUMN_MIN,
+            value_column: SLIDER_COLUMN_MIN,
+            caption_style: None,
         };
         let hex = s.hex_string();
         s.hex_input.set_text(&hex);
@@ -367,8 +376,8 @@ impl ColorPicker {
         // The channel sliders: the shared `Slider` face, between the column that names
         // the channel and the column that reads it, the knob overhanging into the steps
         // on either side and never past the picker's edge.
-        let track_x0 = x0 + SLIDER_LABEL_WIDTH + SLIDER_SIDE_GAP;
-        let track_x1 = (x1 - SLIDER_VALUE_WIDTH - SLIDER_SIDE_GAP).max(track_x0);
+        let track_x0 = x0 + self.label_column + SLIDER_SIDE_GAP;
+        let track_x1 = (x1 - self.value_column - SLIDER_SIDE_GAP).max(track_x0);
         let mut top = block_bottom + COMPONENT_GAP;
         for slot in [&mut layout.r, &mut layout.g, &mut layout.b] {
             *slot = Rect::new(track_x0, top, track_x1, top + SLIDER_HEIGHT);
@@ -869,7 +878,7 @@ impl ColorPicker {
         Rect::new(
             self.rect.x0,
             slider.y0,
-            self.rect.x0 + SLIDER_LABEL_WIDTH,
+            self.rect.x0 + self.label_column,
             slider.y1,
         )
     }
@@ -877,11 +886,32 @@ impl ColorPicker {
     /// The column after a channel's track, where the channel's value stands.
     fn slider_value_column(&self, slider: Rect) -> Rect {
         Rect::new(
-            self.rect.x1 - SLIDER_VALUE_WIDTH,
+            self.rect.x1 - self.value_column,
             slider.y0,
             self.rect.x1,
             slider.y1,
         )
+    }
+
+    /// Size the columns beside the channel tracks from the words they hold: the widest of
+    /// the three channel names and the widest reading, as the theme and the window's
+    /// language write them. A name is never shortened while the picker has room for it.
+    fn measure_columns(&mut self, text: &mut TextRenderer) {
+        let Some(style) = self.caption_style.clone() else {
+            return;
+        };
+        let names = [
+            "widget-colour-red",
+            "widget-colour-green",
+            "widget-colour-blue",
+        ];
+        let label = names
+            .into_iter()
+            .map(|name| text.measure_style(&widget_text(name), None, &style).0)
+            .fold(0.0_f32, f32::max);
+        let value = text.measure_style("255", None, &style.numeric()).0;
+        self.label_column = f64::from(label).max(SLIDER_COLUMN_MIN).ceil();
+        self.value_column = f64::from(value).max(SLIDER_COLUMN_MIN).ceil();
     }
 
     fn draw_preview_and_sliders(
@@ -909,7 +939,10 @@ impl ColorPicker {
             &preview_shape,
         );
 
-        let style = theme.text(TextRole::Caption);
+        let style = self
+            .caption_style
+            .clone()
+            .unwrap_or_else(|| theme.text(TextRole::Caption));
         let (_, line) = text_renderer.measure_style("Ag", None, &style);
         for (slider, channel, target, name) in [
             (
@@ -996,9 +1029,10 @@ impl Widget for ColorPicker {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.caption_style = Some(theme.text(TextRole::Caption));
         let style = Style {
             size: Size::from_lengths(
                 crate::num::f32_of_f64(PICKER_WIDTH),
@@ -1018,8 +1052,11 @@ impl Widget for ColorPicker {
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
-        _text: &mut crate::text_render::TextRenderer,
+        text: &mut crate::text_render::TextRenderer,
     ) -> bool {
+        // The columns beside the channel tracks take the words they hold, as the theme
+        // and the window's language set them and this pass can measure them.
+        self.measure_columns(text);
         let Ok(layout) = taffy.layout(node) else {
             return false;
         };
@@ -2093,6 +2130,76 @@ mod tests {
                 );
             }
 
+            fn every_channel_name_is_drawn_whole_in_each_language() {
+                use crate::tokens::TextRole;
+
+                /// Puts the thread back in the language the other cases write in.
+                struct Speaking;
+                impl Drop for Speaking {
+                    fn drop(&mut self) {
+                        crate::i18n::set_person_locale(None);
+                        crate::i18n::I18nManager::set_locale("en-US");
+                    }
+                }
+
+                let _restore = Speaking;
+                for language in ["en-US", "de-DE"] {
+                    crate::i18n::set_person_locale(Some(language));
+                    crate::i18n::I18nManager::register_widget_messages();
+                    if language == "de-DE" {
+                        crate::i18n::I18nManager::add_resource(
+                            language,
+                            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/de-DE.ftl"))
+                                .to_owned(),
+                        );
+                    }
+                    crate::i18n::I18nManager::set_locale(language);
+                    if language == "de-DE" {
+                        assert_eq!(
+                            widget_text("widget-colour-green"),
+                            "Grün",
+                            "the window speaks German before its columns are measured"
+                        );
+                    }
+
+                    let mut picker = ColorPicker::new(Color::from_rgb8(0x12, 0x34, 0x56));
+                    let (width, height) = picker.preferred_size();
+                    let theme = Theme::dark();
+                    let style = theme.text(TextRole::Caption);
+                    let mut text = TextRenderer::new();
+                    crate::widget::layout::lay_out_detached(
+                        &mut picker,
+                        Rect::new(0.0, 0.0, width, height),
+                        &theme,
+                        &mut text,
+                    )
+                    .expect("the picker lays out");
+
+                    for (slider, key) in [
+                        (picker.r_slider_rect, "widget-colour-red"),
+                        (picker.g_slider_rect, "widget-colour-green"),
+                        (picker.b_slider_rect, "widget-colour-blue"),
+                    ] {
+                        let words = widget_text(key);
+                        let column = picker.slider_name_column(slider).width();
+                        let measured = f64::from(text.measure_style(&words, None, &style).0);
+                        assert!(
+                            column + 0.5 >= measured,
+                            "{words} ({measured} wide) keeps its own column ({column}) in {language}"
+                        );
+                        assert_eq!(
+                            text.elide_to_width_style(
+                                &words,
+                                crate::num::f32_of_f64(column),
+                                &style
+                            ),
+                            words,
+                            "{words} is drawn whole in {language}"
+                        );
+                    }
+                }
+            }
+
             fn a_reader_steps_a_channel_without_a_pointer() {
                 use crate::a11y::Action;
                 let mut p = laid_out(ColorPicker::new(Color::from_rgb8(0x12, 0x34, 0x56)));
@@ -2111,6 +2218,7 @@ mod tests {
             each_slider_is_named_and_reads_its_value();
             each_name_and_value_stand_beside_its_slider_inside_the_picker();
             every_caption_name_and_value_is_painted();
+            every_channel_name_is_drawn_whole_in_each_language();
             a_reader_steps_a_channel_without_a_pointer();
         }
 

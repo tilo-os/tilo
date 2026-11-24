@@ -3,8 +3,10 @@ use std::rc::Rc;
 use super::*;
 use std::path::Path;
 
+use automerge::{ObjType, ROOT, ReadDoc};
+
 use crate::resource::{
-    BlobRef, add_blob_reference, blob_references, children_resource_id, genesis_actor_of, init,
+    children_resource_id, commit_genesis, genesis, genesis_actor_of, home, identity, init,
 };
 
 const APP: &str = "so.tilo.test-documents";
@@ -73,30 +75,6 @@ tilo_test_env::scenario! {
 
     phase record_identities_keys_and_homes_are_stable_and_distinct;
     {
-        {
-            let mut doc = AutoCommit::new();
-            let blob = BlobRef {
-                hash: "ab".repeat(32),
-                len: 1234,
-                mime: "application/pdf".into(),
-                relation: "source".into(),
-            };
-            assert!(add_blob_reference(&mut doc, &blob));
-            assert!(
-                !add_blob_reference(&mut doc, &blob),
-                "a reference is a fact"
-            );
-            assert!(!add_blob_reference(
-                &mut doc,
-                &BlobRef {
-                    hash: "not-a-hash".into(),
-                    ..blob.clone()
-                }
-            ));
-            let reloaded = AutoCommit::load(&doc.save()).expect("reload");
-            assert_eq!(blob_references(&reloaded), vec![blob]);
-        }
-
         {
             #[cfg(windows)]
             let (root, expected) = ("C:/work", r"file:C:\work\report.odt");
@@ -175,15 +153,6 @@ tilo_test_env::scenario! {
             assert!(DocumentId::parse(derived.as_str()).is_some(), "{derived}");
         }
 
-        {
-            let mut workspace_doc = AutoCommit::new();
-            let origin = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("book"));
-            index::reference(&mut workspace_doc, &origin.id, &origin.kind);
-            let copy = index::duplicate(&mut workspace_doc, &origin);
-            assert_ne!(copy.id, origin.id, "copying mints a new identity");
-            assert!(index::holds(&workspace_doc, &copy.id));
-            assert!(index::holds(&workspace_doc, &origin.id));
-        }
     }
 }
 
@@ -595,23 +564,11 @@ tilo_test_env::scenario! {
             .initialize(|_| Ok(()))
             .unwrap();
         store.try_open_resource(&primary).unwrap();
-        // A primary document has no minted id/kind, so `identity` is None; admission must still
-        // accept the actual opened primary record.
+        // Admission takes a write to the record the store opened, and no other.
         let admission = store.admission(&primary).unwrap();
-        assert_eq!(
-            store.with(&primary.id, |doc| admission.matches(doc, &primary)),
-            Some(true)
-        );
+        assert!(admission.matches(&primary));
         let minted = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("primary"));
-        let mut foreign = AutoCommit::new();
-        assert!(init_scoped(
-            &mut foreign,
-            &minted.id,
-            &minted.kind,
-            "primary-workspace",
-            Some("primary-workspace")
-        ));
-        assert!(!admission.matches(&foreign, &primary));
+        assert!(!admission.matches(&minted));
     }
 
     phase malformed_primaries_are_refused;
@@ -631,60 +588,6 @@ tilo_test_env::scenario! {
             Err(ResourceOpenError::IdentityMismatch)
         ));
     }
-}
-
-/// A record the workspace's own document names is listed with the name the index gives it,
-/// though no window of this device started it: what a window on another device, or an agent,
-/// published is reached again.
-#[test]
-fn a_record_the_index_names_is_listed_with_its_name_though_no_window_started_it() {
-    let port = Rc::new(MemoryWorkspace::default());
-    let workspace = "22222222-2222-4222-8222-222222222222";
-    let kind = ResourceType::new("markup");
-    let started = DocumentCheckout::new(DocumentId::window_default(7), kind.clone());
-    let published = DocumentCheckout::new(
-        DocumentId::derived("annotations", &DocumentId::minted()),
-        kind.clone(),
-    );
-    {
-        let mut owners = ResourceOwners::writing(port.clone());
-        let store = owners.open(APP, workspace).unwrap();
-        store.open_resource(&started);
-        store.create_resource(&published).unwrap();
-        let primary = DocumentCheckout::package_primary(ResourceType::new("index"));
-        store.create_resource(&primary).unwrap();
-        store.with(&primary.id, |index_doc| {
-            assert!(index::reference(index_doc, &published.id, &kind));
-            assert!(index::set_name(
-                index_doc,
-                &published.id,
-                Some("application.pdf")
-            ));
-            index_doc.commit();
-        });
-        store.flush().expect("saved");
-    }
-    let mut owners = ResourceOwners::reading(port);
-    let store = owners.open(APP, workspace).unwrap();
-    let listed = store.workspace_resources(&kind);
-    assert_eq!(
-        listed
-            .iter()
-            .map(|(id, _, name)| (id.clone(), name.clone()))
-            .collect::<Vec<_>>(),
-        [
-            (published.id.clone(), Some("application.pdf".to_owned())),
-            (started.id.clone(), None),
-        ],
-        "both are listed, and the index's name comes with the one it names"
-    );
-    assert!(
-        store
-            .window_resources(&kind)
-            .iter()
-            .all(|(id, _)| id == &started.id),
-        "a name in the index does not make a record one a window started"
-    );
 }
 
 /// A record the workspace holds none of is asked for once, however often a list opens it, and
@@ -716,80 +619,6 @@ fn a_record_not_there_costs_one_question() {
         Ok(ResourceOpenOutcome::Loaded)
     ));
     assert_eq!(port.reads.get(), before + 1);
-}
-
-/// A workspace whose answers carry one document each, as a read of large documents does: the rest
-/// of each answer is `Later`.
-struct OneAtATime(Rc<MemoryWorkspace>, Cell<usize>);
-
-impl DocumentPort for OneAtATime {
-    fn read(
-        &self,
-        app: &str,
-        workspace: &str,
-        reads: Option<Vec<DocumentAsk>>,
-    ) -> Result<Vec<(String, DocumentRead)>, String> {
-        let mut read = self.0.read(app, workspace, reads.clone())?;
-        if reads.is_some() {
-            self.1.set(self.1.get() + 1);
-            for (_, later) in read.iter_mut().skip(1) {
-                *later = DocumentRead::Later;
-            }
-        }
-        Ok(read)
-    }
-
-    fn write(
-        &self,
-        app: &str,
-        workspace: &str,
-        id: &str,
-        changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
-    ) -> Written {
-        self.0.write(app, workspace, id, changes, founding, readers)
-    }
-}
-
-/// A listing names what the workspace holds, and the records that did not fit one answer are
-/// asked for again until every one is read.
-#[test]
-fn records_that_do_not_fit_one_answer_are_read_in_the_next() {
-    let memory = Rc::new(MemoryWorkspace::default());
-    let workspace = workspace_id();
-    let kind = ResourceType::new("note");
-    let notes: Vec<DocumentCheckout> = (1..=3)
-        .map(|tab| DocumentCheckout::new(DocumentId::window_default(tab), kind.clone()))
-        .collect();
-    {
-        let mut owners = ResourceOwners::writing(memory.clone());
-        let store = owners.open(APP, &workspace).unwrap();
-        for note in &notes {
-            store.open_resource(note);
-        }
-        store.flush().expect("saved");
-    }
-    assert!(
-        memory
-            .read(APP, &workspace, None)
-            .unwrap()
-            .iter()
-            .all(|(_, read)| matches!(read, DocumentRead::Held)),
-        "a listing carries no documents"
-    );
-    let port = Rc::new(OneAtATime(memory, Cell::new(0)));
-    let mut owners = ResourceOwners::reading(port.clone());
-    let store = owners.open(APP, &workspace).unwrap();
-    let listed: Vec<DocumentId> = store
-        .workspace_resources(&kind)
-        .into_iter()
-        .map(|(id, _, _)| id)
-        .collect();
-    let mut expected: Vec<DocumentId> = notes.iter().map(|note| note.id.clone()).collect();
-    expected.sort();
-    assert_eq!(listed, expected);
-    assert_eq!(port.1.get(), 3, "each answer carried one record");
 }
 
 mod undo_without_the_toolkit {

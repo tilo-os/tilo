@@ -390,7 +390,8 @@ fn cert_under_root(
     capabilities: DeviceCapabilities,
     now: u64,
 ) -> DeviceCert {
-    let dir = tilo_identity::store::identity_dir_from_env().expect("this account's identity");
+    let dir =
+        tilo_identity::store::account_identity_dir_from_env().expect("this account's identity");
     let record = tilo_identity::store::resolve_active_identity(&dir).expect("the person's record");
     let root = tilo_identity::store::load_from_path(record).expect("the person's root");
     let mut cert = DeviceCert {

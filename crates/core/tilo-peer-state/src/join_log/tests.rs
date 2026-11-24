@@ -213,6 +213,7 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
         .unwrap();
     let complete = JoinCompleteRequest {
         proof: sign_join_proof(challenge, &guest_key).unwrap(),
+        admission: Vec::new(),
     };
     assert!(
         log.redeem(&workspace, [9; 32], &complete.proof, now_ns)
@@ -228,15 +229,25 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
         )
         .unwrap();
     let proof_digest = request_digest(&complete.proof).unwrap();
+    // The guest's device signs its own admission, naming its person.
+    let admission = crate::own_admission::own_admission(
+        peer.workspace_id(),
+        &[postcard::to_stdvec(&peer.workspace_message()).unwrap()],
+        &redemption,
+        Some("Calm Owl"),
+        &guest_key,
+        now,
+    )
+    .unwrap();
     let joins = [Redeeming {
         remote_endpoint: guest_cert.device_public_key,
         request_id: [44; 32],
         proof_digest,
         redemption: &redemption,
-        name: Some("Calm Owl"),
+        admission: &admission,
     }];
     let mut candidate = peer.clone();
-    let refusals = log.admit(&mut candidate, &joins, &authority_key, now_ns);
+    let refusals = log.admit(&mut candidate, &joins, now_ns);
     assert!(refusals.iter().all(Option::is_none), "{refusals:?}");
     let guest_member = candidate
         .governance()
@@ -382,15 +393,24 @@ fn joined(
     let redemption = log
         .redeem(workspace, cert.device_public_key, &proof, now_ns)
         .unwrap();
+    let admission = crate::own_admission::own_admission(
+        workspace.peer.workspace_id(),
+        &[postcard::to_stdvec(&workspace.peer.workspace_message()).unwrap()],
+        &redemption,
+        Some(name),
+        key,
+        system_time(now_ns),
+    )
+    .unwrap();
     let joins = [Redeeming {
         remote_endpoint: cert.device_public_key,
         request_id: [seed.wrapping_add(2); 32],
         proof_digest: request_digest(&proof).unwrap(),
         redemption: &redemption,
-        name: Some(name),
+        admission: &admission,
     }];
     let mut candidate = (*workspace.peer).clone();
-    let refusals = log.admit(&mut candidate, &joins, authority_key, now_ns);
+    let refusals = log.admit(&mut candidate, &joins, now_ns);
     assert!(refusals.iter().all(Option::is_none), "{refusals:?}");
     candidate
 }
@@ -686,9 +706,9 @@ impl Client {
         sign_device_cert(&mut page_cert, &editor_root).unwrap();
         assert!(
             peer.governance_mut()
-                .admit_member_device(&page_cert, &owner_key, now)
+                .admit_member_device(&page_cert, &page_key, now)
                 .unwrap(),
-            "the workspace admits a member's further device"
+            "a member's further device lists itself"
         );
         let host = peer.owner_certificates()[0].clone();
         Self {
@@ -757,7 +777,10 @@ fn a_page_joins_over_the_endpoint_its_device_delegated() {
         .membership_complete(
             &client.workspace(),
             endpoint,
-            &MembershipCompleteRequest { proof },
+            &MembershipCompleteRequest {
+                proof,
+                admission: Vec::new(),
+            },
             client.now_ns,
         )
         .unwrap();
@@ -788,7 +811,10 @@ fn a_device_joins_over_its_own_key() {
         .membership_complete(
             &client.workspace(),
             endpoint,
-            &MembershipCompleteRequest { proof },
+            &MembershipCompleteRequest {
+                proof,
+                admission: Vec::new(),
+            },
             client.now_ns,
         )
         .unwrap();

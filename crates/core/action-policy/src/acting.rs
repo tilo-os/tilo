@@ -86,7 +86,7 @@ impl<'a> Authority<'a> {
                     }
                     MemberId::Agent(_) | MemberId::Bot(_) => {
                         others.push(
-                            software_party(member, policy, granted)
+                            software_party(member, node.acted_for_person(), policy, granted)
                                 .with_grants(answers.iter().copied()),
                         );
                     }
@@ -94,8 +94,9 @@ impl<'a> Authority<'a> {
                 // A visitor holds what the workspace opens to any key, and nothing else.
                 Actor::Visitor(_) => others.push(policy.party_of(Grantee::AnyKey)),
                 Actor::Automation(_) if owned => {}
-                // An app acting by itself holds no person's grants.
-                Actor::Automation(_) | Actor::App(_) => others.push(Party::default()),
+                // An app acting by itself holds the grants naming it, never a person's.
+                Actor::Automation(_) => others.push(Party::default()),
+                Actor::App(app) => others.push(policy.party_of(Grantee::app(app.as_str()))),
             }
         }
         let mut parts = person_parts.into_iter().chain(others);
@@ -119,13 +120,22 @@ pub fn granted_to(member: &MemberId) -> Grantee {
     }
 }
 
-/// An agent's or bot's own grants.
+/// An agent's or bot's own grants: the workspace's naming it, and those its
+/// acting carries (`granted`, what its certificate's delegation gives it). An
+/// agent is the pair of its id and the person it acts for (`person`, whom its
+/// certificate chains to): only that person's grants and answers in the
+/// workspace reach it, and one acting for nobody holds none of them.
 fn software_party<'a>(
     member: &MemberId,
+    person: Option<&str>,
     policy: &'a WorkspacePolicy,
     granted: &'a [Grant],
 ) -> Party<'a> {
-    policy.party_of(granted_to(member)).with_grants(granted)
+    let party = match member {
+        MemberId::Agent(agent) => policy.party_of_agent(agent, person.unwrap_or_default()),
+        member => policy.party_of(granted_to(member)),
+    };
+    party.with_grants(granted)
 }
 
 /// One invocation, as admission weighs it.
@@ -213,8 +223,8 @@ pub fn admit_invocation(
 mod tests {
     use super::*;
     use crate::{
-        Acting, ActionKind, Answer, Context, Grant, KindSet, Role, SESSION_ANSWER_PREFIX, Verdict,
-        roles,
+        Acting, ActionKind, Answer, Context, Grant, Grantee, KindSet, Role, SESSION_ANSWER_PREFIX,
+        Verdict, roles,
     };
 
     const WORKSPACE: &str = "w";
@@ -299,6 +309,29 @@ mod tests {
             );
         }
 
+        phase an_app_acting_by_itself_is_decided_by_the_grants_naming_it;
+        {
+            let app = Acting::by_app("so.tilo.notes");
+            assert_eq!(
+                answer(&app, &policy(), &[], ActionKind::Undoable),
+                Answer::Deny,
+                "an app holds no person's grants, the owner's included"
+            );
+            let mut policy = policy();
+            policy.grants.push(Grant::new(
+                "notes-keeps-its-records",
+                Grantee::app("so.tilo.notes"),
+                TreePath::workspace(WORKSPACE).app("so.tilo.notes"),
+                KindSet::UNDOABLE,
+                Answer::Allow,
+                Grantee::person("owner"),
+            ));
+            assert_eq!(
+                answer(&app, &policy, &[], ActionKind::Undoable),
+                Answer::Allow
+            );
+        }
+
         phase an_agent_needs_its_own_grants_as_well_as_its_persons;
         {
             let mut policy = policy();
@@ -308,7 +341,7 @@ mod tests {
                 TreePath::workspace(WORKSPACE),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
-                Grantee::person("owner"),
+                Grantee::person("editor"),
             ));
             let acting = Acting::agent("scribe").acting_for(Acting::person("editor"));
             assert_eq!(
@@ -333,7 +366,7 @@ mod tests {
                 TreePath::workspace(WORKSPACE),
                 KindSet::READ_UNDOABLE,
                 Answer::Ask,
-                Grantee::person("owner"),
+                Grantee::person("editor"),
             ));
             policy.grants.push(Grant::new(
                 format!("{SESSION_ANSWER_PREFIX}{session}:app:so.tilo.notes:undoable"),

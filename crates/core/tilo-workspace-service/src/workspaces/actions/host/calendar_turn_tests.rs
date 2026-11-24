@@ -6,6 +6,7 @@
 //! rule of its names the read; and no turn changes a calendar, so the
 //! calendar server is asked to read and nothing else, and writes to nobody.
 
+use crate::workspaces::actions::host::turn_use_tests::narrowing;
 use tilo_action_policy::{ActionKind, Answer, KindSet, Rule, TreePath};
 
 use super::super::super::tests::{admit, governed};
@@ -14,27 +15,6 @@ use super::super::turn_use_tests::{
 };
 use super::*;
 use crate::workspaces::hosted_use::HostedTurn;
-
-/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
-fn narrowing(
-    workspace: &str,
-    caller: &Caller,
-    rules: &[Rule],
-) -> tilo_action_policy::WorkspacePolicy {
-    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
-    let agent = caller.acting().agent_id().unwrap_or_default();
-    for (index, rule) in rules.iter().enumerate() {
-        policy.grants.push(tilo_action_policy::Grant::new(
-            format!("test-narrowing:{index}"),
-            tilo_action_policy::Grantee::agent(agent.to_owned()),
-            rule.node.clone(),
-            rule.kinds,
-            rule.answer,
-            tilo_action_policy::Grantee::person("owner"),
-        ));
-    }
-    policy
-}
 
 const SCOUT: &str = "scout";
 

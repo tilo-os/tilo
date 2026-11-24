@@ -278,16 +278,7 @@ impl StatePeer {
     ) -> Result<(), String> {
         use crate::members::{self, SignedMembershipOp};
         let workspace = self.core.workspace.clone();
-        // A holder that is no member admits through invitations under the
-        // certificate its signed address carries.
-        let device = key.device_public_key();
-        let cert = match self.certificate(&device, now) {
-            Ok(cert) => cert.clone(),
-            Err(error) => match (&command, self.holder_certificate(&device)) {
-                (members::MembershipOpCommand::Admit { .. }, Some(cert)) => cert,
-                _ => return Err(error.to_string()),
-            },
-        };
+        let cert = self.signing_certificate(doc, &key.device_public_key(), now)?;
         let op = SignedMembershipOp::signed(
             &cert,
             key,
@@ -300,6 +291,29 @@ impl StatePeer {
         }
         members::put_op(doc, &op)?;
         Ok(())
+    }
+
+    /// The certificate `device` signs a membership operation of `doc` as: the
+    /// one the workspace holds of it, or, for a device enrolling itself, the
+    /// one its own row in `doc` carries, which the change being signed wrote.
+    /// Every receiver judges what the operation names by its author all the
+    /// same.
+    fn signing_certificate(
+        &self,
+        doc: &CachedDocument,
+        device: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        match self.certificate(device, now) {
+            Ok(cert) => Ok(cert.clone()),
+            Err(error) => doc
+                .identities()
+                .get(&hex::encode(device))
+                .and_then(|identity| identity.as_ref().ok())
+                .map(|identity| identity.device_cert.clone())
+                .filter(|cert| cert.device_public_key == *device)
+                .ok_or_else(|| error.to_string()),
+        }
     }
 
     /// Record the governance rows `doc` moved as this device's operation, so
@@ -318,16 +332,7 @@ impl StatePeer {
             return Ok(());
         }
         rows.sort_unstable();
-        // A member's device signs as the certificate the workspace holds of
-        // it; a holder that is no member, as the device its signed entry
-        // names. Every receiver judges the row the operation names by the
-        // operation's author all the same.
-        let cert = match self.certificate(&key.device_public_key(), now) {
-            Ok(cert) => cert.clone(),
-            Err(error) => self
-                .holder_certificate(&key.device_public_key())
-                .ok_or_else(|| error.to_string())?,
-        };
+        let cert = self.signing_certificate(doc, &key.device_public_key(), now)?;
         let op = SignedMembershipOp::signed(
             &cert,
             key,

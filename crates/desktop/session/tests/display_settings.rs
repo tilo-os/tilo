@@ -750,18 +750,20 @@ fn the_mode_scale_and_rotation_chosen_in_settings_are_back_after_a_restart() {
 fn the_keyboard_types_in_the_next_input_source_and_keeps_the_choice() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
-    settings_store::update_section(
-        settings_store::hardware::INPUT_SECTION,
-        serde_json::Map::from_iter([
-            (
-                "keyboard_layout".to_owned(),
-                serde_json::Value::String("us".into()),
-            ),
-            (
-                "keyboard_layouts".to_owned(),
-                serde_json::json!(["us", "de"]),
-            ),
-        ]),
+    // The sources are chosen on a device whose session is not running, as `tilo` chooses them
+    // there: kept for the session that follows, which types in the source the person chose.
+    let input =
+        settings_store::placement::address(settings_store::hardware::INPUT_SECTION, None, "").id;
+    settings_store::outside::set_on_this_device(
+        &input,
+        &settings_store::workspace::verb("keyboard_layout"),
+        &serde_json::json!("us"),
+    )
+    .expect("the person's chosen source is kept");
+    settings_store::outside::set_on_this_device(
+        &input,
+        &settings_store::workspace::verb("keyboard_layouts"),
+        &serde_json::json!(["us", "de"]),
     )
     .expect("the person's sources are kept");
     let mut session = crate::common::headless_on(

@@ -426,14 +426,16 @@ fn agent_read(verdict: &tilo_action_policy::Verdict<'_>, narrowed: bool) -> Answ
     theirs.min(own)
 }
 
-/// Whether `policy` bounds the agent `agent`: a grant names it, other than a leave its person
-/// gave for one use of a vault item ([`super::hosted_use::is_use_leave`]). It then takes only
-/// what those grants name.
+/// Whether its person narrowed the agent `agent` in `policy`: an answer they gave it stands
+/// there ([`tilo_action_policy::agent_answers`]). It then takes only what those answers name,
+/// and is never asked for what they do not.
 fn policy_narrows(policy: &tilo_action_policy::WorkspacePolicy, agent: &str) -> bool {
     let named = tilo_action_policy::Grantee::agent(agent.to_owned());
     let now = Context::at_time(tilo_clock::wall());
     policy.grants.iter().any(|grant| {
-        grant.grantee == named && grant.is_live(&now) && !super::hosted_use::is_use_leave(grant)
+        grant.grantee == named
+            && grant.is_live(&now)
+            && tilo_action_policy::agent_answers::is_answer(grant)
     })
 }
 

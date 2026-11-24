@@ -384,9 +384,18 @@ pub enum WallpaperTarget {
 pub type WallpaperChannel = Receiver<Result<(), String>>;
 
 pub fn send_set_wallpaper(file: File, target: WallpaperTarget) -> WallpaperChannel {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "portal-client"))]
     {
         crate::xdg::set_wallpaper(file, target)
+    }
+    #[cfg(all(target_os = "linux", not(feature = "portal-client")))]
+    {
+        let _ = (file, target);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(Err(
+            "setting the wallpaper needs the desktop portal client".to_string()
+        ));
+        rx
     }
     #[cfg(not(target_os = "linux"))]
     {

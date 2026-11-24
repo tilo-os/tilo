@@ -11,6 +11,8 @@
 
 use serde_json::{Map, Value};
 use tilo_actions::ApiError;
+use tilo_broker_core::route::CrdtRoute;
+use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect;
 use tilo_service::Started;
 
@@ -55,6 +57,53 @@ pub(crate) fn follow_daemon(
                 Ok(_) => tokio::time::sleep(ASK_AGAIN).await,
                 Err(error) => {
                     tracing::warn!(%error, "what is live in the workspaces did not read; asking again");
+                    after = None;
+                    tokio::time::sleep(ASK_AGAIN).await;
+                }
+            }
+        }
+    });
+}
+
+/// What each window this device's apps hold, by the window instance the shell launched it for:
+/// the session notes beside each window the record its app shows.
+pub(crate) type WindowRoutes = std::sync::Arc<std::sync::Mutex<Vec<(u64, CrdtRoute)>>>;
+
+/// Follow what each window this device's apps hold, as the daemon's broker names it, into
+/// `routes` from now on: the daemon keeps the broker the windows connect to, so the session reads
+/// which record each window shows there and notes it beside the window itself.
+pub(crate) fn follow_window_notes(
+    daemon: &tilo_session_client::daemon_documents::DaemonShell,
+    person: [u8; 32],
+    routes: WindowRoutes,
+) {
+    let daemon = daemon.clone();
+    let workspace = collab_types::person_workspace(&person).to_string();
+    daemon.runtime().clone().spawn(async move {
+        let mut after: Option<String> = None;
+        loop {
+            let read = tilo_actions::remote::ResourceReadRequest {
+                workspace: workspace.clone(),
+                app: tilo_desktop_model::commands::APP_ID.to_owned(),
+                record: tilo_workspace_service::window_notes::RESOURCE.to_owned(),
+                joined: false,
+                wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
+                after: after.clone(),
+                answer: tilo_actions::remote::ReadAnswer::Document,
+            };
+            let taken = daemon.read(read).await.and_then(|readings| {
+                let reading = serde_json::to_vec(&readings["records"][0]["value"])
+                    .map_err(|error| error.to_string())?;
+                let notes =
+                    tilo_workspace_service::window_notes::WindowNotes::take_reading(&reading)?;
+                *routes.lock_recover() = notes.routes();
+                Ok(readings["revision"].as_str().map(str::to_owned))
+            });
+            match taken {
+                Ok(revision) if revision.is_some() && revision != after => after = revision,
+                Ok(_) => tokio::time::sleep(ASK_AGAIN).await,
+                Err(error) => {
+                    tracing::warn!(%error, "what the windows here hold did not read; asking again");
                     after = None;
                     tokio::time::sleep(ASK_AGAIN).await;
                 }

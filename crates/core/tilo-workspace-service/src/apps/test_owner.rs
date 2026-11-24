@@ -193,7 +193,9 @@ impl SessionOwner {
         let certificate = self.second_device();
         let now = tilo_clock::wall();
         let mut candidate = self.peer.clone();
-        candidate.admit_certificate(certificate, &self.key, now)?;
+        candidate
+            .governance_mut()
+            .admit_member_device(&certificate, &self.key, now)?;
         self.commit(candidate)
     }
 

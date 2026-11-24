@@ -21,7 +21,7 @@ media = { package = "tilo-media", path = "../tilo-media", default-features = fal
 # A still is written as the PNG the window shows.
 thumbnail = { package = "tilo-thumbnail", path = "../thumbnail" }
 # The frame's GPU pipeline and the host clock a source waits by.
-ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", default-features = false }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-actions = { path = "../../core/actions" }

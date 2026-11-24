@@ -3,11 +3,7 @@
 use crate::StatePeer;
 use crate::admission_tests::seeded;
 use crate::join::WorkspaceId;
-use crate::join::{
-    InviteGrant, JoinChallenge, MembershipChallengeRequest, MembershipCompleteRequest, Role,
-    issue_invitation, sign_join_proof, sign_membership_proof,
-};
-use crate::join_log::{Governed, JoinLog};
+use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
@@ -230,90 +226,4 @@ tilo_test_env::scenario! {
         sign_device_cert(&mut wider, &root).unwrap();
         assert!(peer.governance().renewal_of(&wider, now).is_err());
     }
-}
-
-/// The membership exchange is how a member brings its renewal: challenged
-/// as the device it renews, it is held in the old one's place before the
-/// governor answers, and the answer is the workspace with the member's role.
-#[test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the governed workspace reads the peer through each step of the decision"
-)]
-fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member() {
-    let Fixture {
-        mut peer,
-        authority,
-        device,
-        renewed,
-        now,
-        ..
-    } = fixture();
-    let now_ns = ns(now);
-    let messages = || Ok(vec![b"governance".to_vec()]);
-    let mut log = JoinLog::default();
-    let challenge = {
-        let server_cert = peer.owner_certificates()[0].clone();
-        let workspace = Governed {
-            peer: (&peer).into(),
-            host: &server_cert,
-            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-            generation: 1,
-            governance_messages: Some(&messages),
-        };
-        log.membership_challenge(
-            &workspace,
-            renewed.device_public_key,
-            MembershipChallengeRequest {
-                workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-                device_cert: renewed.clone(),
-                request_id: [60; 32],
-                delegation: None,
-            },
-            [61; 32],
-            now_ns,
-        )
-        .unwrap()
-    };
-    let request = MembershipCompleteRequest {
-        proof: collab_types::signer::answered_now(sign_membership_proof(challenge, &device))
-            .unwrap()
-            .unwrap(),
-    };
-    let renewal = {
-        let server_cert = peer.owner_certificates()[0].clone();
-        let workspace = Governed {
-            peer: (&peer).into(),
-            host: &server_cert,
-            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-            generation: 1,
-            governance_messages: Some(&messages),
-        };
-        log.membership_renewal(&workspace, renewed.device_public_key, &request, now_ns)
-            .unwrap()
-    };
-    assert_eq!(renewal.as_ref(), Some(&renewed));
-    peer.governance_mut()
-        .renew_member_certificate(&renewed, &authority, now)
-        .unwrap();
-    let server_cert = peer.owner_certificates()[0].clone();
-    let workspace = Governed {
-        peer: (&peer).into(),
-        host: &server_cert,
-        workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-        generation: 2,
-        governance_messages: Some(&messages),
-    };
-    assert_eq!(
-        log.membership_renewal(&workspace, renewed.device_public_key, &request, now_ns)
-            .unwrap(),
-        None,
-        "the workspace holds it now"
-    );
-    let bootstrap = log
-        .membership_complete(&workspace, renewed.device_public_key, &request, now_ns)
-        .unwrap();
-    assert_eq!(bootstrap.device_cert, renewed);
-    assert_eq!(bootstrap.role, Role::Editor);
-    assert!(bootstrap.certified_roster.contains(&renewed));
 }

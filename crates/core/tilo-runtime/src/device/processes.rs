@@ -314,6 +314,10 @@ pub struct Processes {
     jobs: OnceLock<Arc<super::jobs::DeviceJobs>>,
     /// Where each engine job this device admitted runs, until it ends.
     engines: Mutex<engines::Engines>,
+    /// The device's one wasm compiler: the cache of modules compiled ahead of time for this
+    /// device, under the person's data directory. `None` when it cannot be made, and each
+    /// module then runs on the interpreter in the process that gets it.
+    compiler: OnceLock<Option<tilo_wasm_aot::Cache>>,
 }
 
 impl Processes {
@@ -358,7 +362,73 @@ impl Processes {
             attests: OnceLock::new(),
             jobs: OnceLock::new(),
             engines: Mutex::default(),
+            compiler: OnceLock::new(),
         })
+    }
+
+    /// The device's compiled modules, on the one compiler, made the first time a module is
+    /// handed to a process.
+    fn compiler(&self) -> Option<&tilo_wasm_aot::Cache> {
+        self.compiler
+            .get_or_init(|| {
+                let dir = self.data_home.join("tilolang-compiled");
+                match tilo_wasm_aot::Cache::at(dir) {
+                    Ok(cache) => Some(cache),
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "this device compiles no tilolang module: every module runs on the \
+                             interpreter in its process"
+                        );
+                        None
+                    }
+                }
+            })
+            .as_ref()
+    }
+
+    /// Fill in the machine code the process `module` runs: each part compiled here, for this
+    /// device, when the cache does not hold it yet, so the process deserializes it instead of
+    /// compiling anything itself. A part that does not compile is left without an entry, and
+    /// runs on the interpreter there. Parts are compiled side by side.
+    fn compile(&self, module: &mut runtime_portal::process_link::Module) {
+        let parts: Vec<&[u8]> = std::iter::once(&module.wasm)
+            .chain(module.imports.iter())
+            .map(Vec::as_slice)
+            .collect();
+        if parts.is_empty() {
+            return;
+        }
+        let Some(compiler) = self.compiler() else {
+            return;
+        };
+        let began = std::time::Instant::now();
+        let entries: Vec<Vec<u8>> = compiler
+            .ensure_all(&parts)
+            .into_iter()
+            .enumerate()
+            .map(|(index, entry)| match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    tracing::warn!(
+                        part = index,
+                        %error,
+                        "a tilolang module is not compiled for this device: it runs interpreted"
+                    );
+                    Vec::new()
+                }
+            })
+            .collect();
+        // A part that did not compile leaves an empty place so the rest stay aligned; nothing
+        // compiled at all leaves the bundle as the session handed it over.
+        if entries.iter().any(|entry| !entry.is_empty()) {
+            module.compiled = entries;
+        }
+        tracing::debug!(
+            parts = parts.len(),
+            took_us = began.elapsed().as_micros(),
+            "a tilolang module was compiled for this device"
+        );
     }
 
     /// Record each process this device starts in `attests` from now on: the daemon's launch
@@ -815,7 +885,9 @@ impl Processes {
             runtime: verified.runtime,
             app_runtime: verified.app_runtime,
         };
-        let module = self.module_for(&instance.app, verified.module, &key);
+        let mut module = self.module_for(&instance.app, verified.module, &key);
+        // The machine code this device runs it as, compiled here before the process sees it.
+        self.compile(&mut module);
         // A package the app uses that is installed as an app is another app: its instance reads
         // that app's records from where it keeps them.
         let uses_packages = !module.imports.is_empty();
@@ -963,7 +1035,9 @@ impl Processes {
                     .to_owned(),
             ));
         }
-        let module = self.module_for(app, verified.module, key).encode();
+        let mut module = self.module_for(app, verified.module, key);
+        self.compile(&mut module);
+        let module = module.encode();
         let hashed = hash(&module);
         if hashed == build.module {
             return Ok(false);

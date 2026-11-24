@@ -544,6 +544,33 @@ fn push_gstreamer_plugins(argv: &mut Vec<String>, root: &Path, mount: &Path) {
     ]);
 }
 
+/// Where a sandbox sees the device's compiled modules.
+pub const COMPILED_MOUNT: &str = "/run/tilo/compiled";
+
+/// Bind the device's compiled modules read-only and name them for the process
+/// ([`runtime_portal::process_link::COMPILED_ENV`]): a tilolang module the daemon compiled runs
+/// on that machine code instead of being interpreted. Nothing is bound when the daemon has
+/// compiled none, and the process then interprets its modules. The store is the daemon's, and
+/// read-only here: a process cannot write what it loads.
+pub(crate) fn push_compiled_modules(argv: &mut Vec<String>) {
+    let Some(dir) = tilo_paths::data_dir().map(|data| data.join("tilolang-compiled")) else {
+        return;
+    };
+    if !dir.is_dir() {
+        return;
+    }
+    argv.extend([
+        "--ro-bind".to_string(),
+        dir.display().to_string(),
+        COMPILED_MOUNT.to_string(),
+    ]);
+    argv.extend([
+        "--setenv".to_string(),
+        runtime_portal::process_link::COMPILED_ENV.to_string(),
+        COMPILED_MOUNT.to_string(),
+    ]);
+}
+
 pub(crate) fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     let Some((runtime_root, runtime_version)) = runtime else {
         return;
@@ -608,6 +635,8 @@ pub fn build_bwrap_argv_for_entry(
 
     let payload_mount = payload_mount_for(&manifest.package_id);
     push_bind(&mut argv, "--ro-bind", payload_root, &payload_mount);
+    // The machine code the device's daemon compiled for this app's modules.
+    push_compiled_modules(&mut argv);
 
     // TILO_PACKAGE_ID picks a per-app fallback state dir in standalone mode.
     argv.push("--setenv".to_string());
@@ -1044,6 +1073,7 @@ mod tests {
             opens_secondary: false,
             continuity: crate::manifest::ContinuityContract::default(),
             capabilities: Vec::new(),
+            dev: None,
         }
     }
 

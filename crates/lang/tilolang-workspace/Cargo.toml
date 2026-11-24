@@ -12,10 +12,9 @@ path = "src/lib.rs"
 
 [dependencies]
 tilolang-tilo = { version = "0.1.0", path = "../tilolang-tilo" }
-# The service whose records these are: its store, its policy and its lifecycle.
+# The service whose records these are: its store, its policy, its lifecycle, and the route a
+# record read is addressed at.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service" }
-# The route a workspace's record is addressed at, which a record read named in an action takes.
-tilo-peer-state = { path = "../../core/tilo-peer-state" }
 # The module a device installed, which search reads an app's record through.
 runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
 # The member, resource or message a record's rich text names.

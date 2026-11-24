@@ -1611,7 +1611,7 @@ mod native_process_tests {
             assert!(matches!(prepared.target, LaunchTarget::PrimaryNew));
         }
 
-        phase workspace_record_windows_share_one_record_and_see_the_per_window_ones;
+        phase workspace_record_windows_share_one_record;
         {
             use crate::application_test_support as probe;
             use automerge::{ReadDoc, transaction::Transactable};
@@ -1665,17 +1665,6 @@ mod native_process_tests {
                 .unwrap();
             assert!(created.context.record().id.is_package_primary());
             assert!(matches!(created.target, LaunchTarget::PrimaryNew));
-            let windows = created.context.window_resources();
-            assert_eq!(
-                windows
-                    .iter()
-                    .map(|(id, doc)| (id.clone(), note(doc)))
-                    .collect::<Vec<_>>(),
-                [
-                    (DocumentId::window_default(41), Some("first".into())),
-                    (DocumentId::window_default(42), Some("second".into())),
-                ]
-            );
             created
                 .context
                 .initialize_new_resource(|doc| {
@@ -1695,7 +1684,6 @@ mod native_process_tests {
                 reopened.context.read_resource(note).unwrap(),
                 Some("shared".into())
             );
-            assert_eq!(reopened.context.window_resources().len(), 2);
             drop(reopened);
             drop(second);
             let mut old = launch(&per_window, 41);
@@ -1704,7 +1692,6 @@ mod native_process_tests {
                 .unwrap();
             assert!(matches!(old.target, LaunchTarget::Record { .. }));
             assert_eq!(old.context.read_resource(note).unwrap(), Some("first".into()));
-            assert!(old.context.window_resources().is_empty());
         }
 
         phase a_live_primary_kind_mismatch_reports_the_original_error_and_preserves_data;

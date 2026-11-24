@@ -412,6 +412,16 @@
               "type": "text"
             }
           ]
+        },
+        {
+          "id": "type",
+          "kind": "undoable",
+          "params": []
+        },
+        {
+          "id": "migrate",
+          "kind": "undoable",
+          "params": []
         }
       ],
       "fields": [

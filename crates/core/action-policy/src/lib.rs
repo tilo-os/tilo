@@ -89,4 +89,4 @@ pub use person::{PersonId, PersonIdError};
 pub use policy_edit::{PolicyEdit, PresetMutationError, sort_presets, until_secs};
 pub use readers::ReaderRule;
 pub use roles::{Preset, PresetError, Rule};
-pub use workspace::{AgentMember, Change, PersonGrants, Refusal, WorkspacePolicy};
+pub use workspace::{Change, PersonGrants, Refusal, WorkspacePolicy};

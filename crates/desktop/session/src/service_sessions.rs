@@ -111,6 +111,26 @@ impl ServiceSessions {
     }
 }
 
+impl ServiceSessions {
+    /// [`BrowserServiceSessionServices::command`], on this thread.
+    fn command_now(&self, context: &Context, command: Command) -> Result<Reply, String> {
+        self.authorize_command(context, &command)?;
+        if !command.valid() {
+            return Err("Invalid account credentials request".into());
+        }
+        if command == (Command::LendsItems {}) {
+            // Answered by what this session is: it says so before its server can be asked.
+            return Ok(Reply::ItemsLent {
+                lent: self.items.lends(context.workspace_id()),
+            });
+        }
+        // An item's use ([`BrowserServiceSessionServices::item_use`]), an account's password and
+        // a website session ([`BrowserServiceSessionServices::answered_later`]) are waited for,
+        // and never here.
+        Err("This is not answered on the connection's dispatch".into())
+    }
+}
+
 impl BrowserServiceSessionServices for ServiceSessions {
     fn authorize(&self, context: &Context) -> Result<(), String> {
         self.authorize_selection(context, false)
@@ -125,20 +145,14 @@ impl BrowserServiceSessionServices for ServiceSessions {
         self.authorize_selection(context, matches!(command, Command::Forget { .. }))
     }
 
-    fn command(&self, context: &Context, command: Command) -> Result<Reply, String> {
-        self.authorize_command(context, &command)?;
-        if !command.valid() {
-            return Err("Invalid account credentials request".into());
-        }
-        if command == (Command::LendsItems {}) {
-            // Answered by what this session is: it says so before its server can be asked.
-            return Ok(Reply::ItemsLent {
-                lent: self.items.lends(context.workspace_id()),
-            });
-        }
-        // An item's use ([`Self::item_use`]), an account's password and a website session
-        // ([`Self::answered_later`]) are waited for, and never here.
-        Err("This is not answered on the connection's dispatch".into())
+    /// Decided on the blocking pool: the workspace's selected identity is read from disk.
+    fn command(self: Arc<Self>, context: &Context, command: Command) -> ItemAnswering {
+        let context = context.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || self.command_now(&context, command))
+                .await
+                .map_err(|error| error.to_string())?
+        })
     }
 
     fn answered_later(&self, context: &Context, command: Command) -> ItemAnswering {

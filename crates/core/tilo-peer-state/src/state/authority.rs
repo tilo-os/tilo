@@ -257,22 +257,6 @@ impl StatePeer {
             .map_err(|error| error.to_string())
     }
 
-    /// A device that may admit a member's further device: a current member's,
-    /// or one of the workspace's key-holding holders, which keeps the
-    /// workspace's keys without being a member.
-    pub(super) fn require_admitting_writer(
-        &self,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        if self.require_member_writer(key, now).is_ok()
-            || self.holder_certificate(&key.device_public_key()).is_some()
-        {
-            return Ok(());
-        }
-        self.require_member_writer(key, now)
-    }
-
     /// `device`'s certificate when it is one of the owner's devices, current
     /// at `now`: the owner's own device publishes the records they wrote, from
     /// any device their root certifies, so no one device of theirs is needed
@@ -1104,17 +1088,6 @@ impl StatePeer {
         self.core.certificate_typed(source, now).map_err(Into::into)
     }
 
-    /// The certificate of `source` as the workspace names it among its
-    /// holders, by the address it signed: a holder that is no member, which
-    /// writes the redemptions of invitations it answers and nothing else
-    /// ([`crate::workspace::SenderAccess::Holder`]).
-    pub(super) fn holder_certificate(&self, source: &[u8; 32]) -> Option<DeviceCert> {
-        let doc = self.core.workspace_doc.as_deref()?;
-        crate::state::keeping_devices_of(doc)
-            .into_iter()
-            .find(|hint| hint.host.device_public_key == *source)
-            .map(|hint| hint.host)
-    }
     /// `source`'s role in the workspace now, capped for a delegate's device.
     ///
     /// # Errors

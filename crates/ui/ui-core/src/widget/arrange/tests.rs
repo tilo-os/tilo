@@ -303,9 +303,13 @@ tilo_test_env::scenario! {
         let mut drawer = split().collapse(Collapse::Drawer);
         solve(&mut drawer, &theme, 300.0);
         assert!(drawer.layout().hidden(1));
-        drawer.layout_mut().set_drawer_open(true);
+        drawer.set_drawer_open(true);
         solve(&mut drawer, &theme, 300.0);
         assert!(!drawer.layout().hidden(1));
+        assert!(drawer.drawer_open());
+        drawer.set_drawer_open(false);
+        solve(&mut drawer, &theme, 300.0);
+        assert!(drawer.layout().hidden(1), "the view closed it again");
     }
 }
 

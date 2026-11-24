@@ -37,7 +37,7 @@ impl TotpEngine {
         Self
     }
 
-    fn op_parse(&self, input: &str) -> Result<String, String> {
+    fn op_parse(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             uri: String,
@@ -55,7 +55,7 @@ impl TotpEngine {
         .to_string())
     }
 
-    fn op_scan(&self, input: &str) -> Result<String, String> {
+    fn op_scan(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             address: String,
@@ -67,7 +67,7 @@ impl TotpEngine {
         Ok(json!({ "uri": uri }).to_string())
     }
 
-    fn op_check(&self, input: &str) -> Result<String, String> {
+    fn op_check(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             secret: String,
@@ -86,9 +86,9 @@ impl TotpEngine {
     /// The ask's or the picture's refusal, and every op this engine does not run.
     pub fn call(&self, op: &str, input: &str) -> Result<String, String> {
         match op {
-            "parse" => self.op_parse(input),
-            "scan" => self.op_scan(input),
-            "check" => self.op_check(input),
+            "parse" => Self::op_parse(input),
+            "scan" => Self::op_scan(input),
+            "check" => Self::op_check(input),
             other => Err(format!("`{other}` is no op this engine runs")),
         }
     }

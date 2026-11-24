@@ -603,6 +603,10 @@ pub(super) struct AccessibilityRuntime {
     /// The refreshes that rebuilt [`Self::semantic_tree`] rather than
     /// finding nothing changed.
     pub(super) semantic_tree_builds: u64,
+    /// Physical pixels per logical pixel, as the window reports it: the scale
+    /// its tree is built at for the session's export, whose bounds an
+    /// assistive client reads in physical pixels.
+    pub(super) export_scale: f64,
 }
 
 impl AccessibilityRuntime {
@@ -632,6 +636,7 @@ impl AccessibilityRuntime {
             semantic_tree_stale: true,
             semantic_tree_marks: 0,
             semantic_tree_builds: 0,
+            export_scale: 1.0,
         }
     }
 }

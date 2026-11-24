@@ -121,7 +121,41 @@ tilo_test_env::scenario! {
             None,
         );
         let roster = vec![owner.clone(), member.clone()];
-        let changes = crate::seed_workspace(WORKSPACE, &owner, &roster).unwrap();
+        // The owner lets the member in: the governance lists the device that
+        // takes it in under a person holding a role.
+        let owner_key = SigningKey::from_bytes(&[12; 32]);
+        let mut governor = StatePeer::new(
+            WORKSPACE,
+            owner.clone(),
+            roster.clone(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        governor
+            .install_seed(
+                SeedState {
+                    workspace_changes: crate::seed_workspace(WORKSPACE, &owner, &roster).unwrap(),
+                    documents: Vec::new(),
+                },
+                &owner_key,
+                now,
+            )
+            .unwrap();
+        governor
+            .governance_mut()
+            .declare_member(
+                member.user_public_key,
+                crate::join::Role::Editor,
+                false,
+                None,
+                &owner_key,
+                now,
+            )
+            .unwrap();
+        let NeighbourMsg::SyncResp { changes, .. } = governor.workspace_message() else {
+            panic!("the workspace's governance is a SyncResp")
+        };
         let mut peer = StatePeer::joined(
             WORKSPACE,
             member.clone(),

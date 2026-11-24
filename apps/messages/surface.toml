@@ -185,6 +185,14 @@ params = [
   { name = "account", type = "text", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
+
 [[resources.types]]
 name = "AccountSync"
 fields = [
@@ -335,6 +343,14 @@ params = [
   { name = "person", type = "text", required = true, schema = { type = "string" } },
   { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
 
 [[resources.types]]
 name = "Endpoint"

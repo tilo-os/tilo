@@ -745,7 +745,10 @@ async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_p
     // An agent of theirs, certified for this workspace, joins as its own device.
     let workspace = *uuid::Uuid::parse_str(&f.work).unwrap().as_bytes();
     let agent = flow::agent_device(&f.root, "claude-code", AgentScope::Workspace(workspace));
-    workspaces.enter(&f.work, &agent.cert).await.unwrap();
+    workspaces
+        .enter(&f.work, (&agent.cert, &agent.key))
+        .await
+        .unwrap();
     let agent_session = flow::session(&f.host, &agent, &f.server_device.cert);
     flow::join(&agent_session, &f.work, "Work").await;
     let agent_device = f.client(&agent_session, &agent, "claude-code");

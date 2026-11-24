@@ -214,6 +214,10 @@ impl<'a> Validator<'a> {
             | ToUi::Kept(_)
             | ToUi::History(_)
             | ToUi::Took { .. } => Ok(()),
+            ToUi::Focus { key } => match key {
+                Some(key) => self.key(key),
+                None => Ok(()),
+            },
             ToUi::Actions(catalogue) => {
                 self.carried(catalogue.len(), "over the limit of bytes in a catalogue")
             }

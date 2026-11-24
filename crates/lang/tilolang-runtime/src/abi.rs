@@ -428,6 +428,7 @@ imports! {
     (ActChoose, "act_choose", "ii", "i"),
     (ActChooseFolder, "act_choose_folder", "ii", "i"),
     (ActSave, "act_save", "ii", "i"),
+    (ActBlur, "act_blur", "", "i"),
     // A PDF, read by the device's engine.
     (PdfPages, "pdf_pages", "i", "i"),
     (PdfOutline, "pdf_outline", "i", "i"),

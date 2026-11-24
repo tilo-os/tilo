@@ -278,7 +278,7 @@ pub type PatchConnection = tilo_socket::Stream;
 pub fn patch_connection(handed: Descriptor) -> std::io::Result<PatchConnection> {
     #[cfg(unix)]
     {
-        tilo_render_protocol::channel::Channel::from_socket(handed.into())
+        tilo_render_protocol::channel::Channel::from_socket(handed)
     }
     #[cfg(windows)]
     {
@@ -313,7 +313,7 @@ pub(crate) fn patch_transport(
     {
         let watched = std::os::fd::AsFd::as_fd(&connection).try_clone_to_owned()?;
         let transport = tilo_render_protocol::patch::unix::ChannelTransport::new(connection)?;
-        Ok((Box::new(transport), watched.into()))
+        Ok((Box::new(transport), watched))
     }
     #[cfg(windows)]
     {
@@ -1094,7 +1094,7 @@ impl TilolangProcess {
             hosted.speak(&language);
         }
         let mut hosted = match opening.identity.take() {
-            Some(identity) => hosted.holding_identity(identity.into()),
+            Some(identity) => hosted.holding_identity(identity),
             None => hosted,
         };
         // What a window was asked to show: an instance that shows nothing opens on nothing.
@@ -1395,17 +1395,35 @@ fn arrived_early(
 fn module_bundle(fd: &Descriptor, len: u64) -> Result<Bundle, AdmitError> {
     let module_error = |error: &dyn std::fmt::Display| AdmitError::Module(error.to_string());
     let len = usize::try_from(len).map_err(|error| module_error(&error))?;
-    // The mapping opens the file for itself: it takes a descriptor of its own, so the one the
-    // session handed stays the instance's to close.
-    let sealed: std::os::fd::OwnedFd = fd.try_clone().map_err(|error| module_error(&error))?.into();
-    let mapping = tilo_shm::Mapping::map_sealed(&sealed, true, len, len)
-        .map_err(|error| module_error(&error))?;
+    let mapping =
+        tilo_shm::Mapping::map_sealed(fd, true, len, len).map_err(|error| module_error(&error))?;
     let bytes = mapping
         .get(0, len)
         .ok_or_else(|| AdmitError::Module("the module is shorter than it says".to_owned()))?;
     let module = Module::decode(bytes).map_err(|error| module_error(&error))?;
+    adopt_compiled(&module);
     Bundle::from_parts(module.wasm, module.ids, &module.imports)
         .map_err(|error| module_error(&error))
+}
+
+/// Take the machine code the device daemon compiled for each part, before the module is
+/// loaded: from then on the part runs compiled. An entry that is not the one made for its
+/// part, or that this build cannot deserialize, is refused and the part runs on the
+/// interpreter; nothing is compiled here.
+fn adopt_compiled(module: &Module) {
+    let parts = std::iter::once(&module.wasm).chain(module.imports.iter());
+    for (part, entry) in parts.zip(&module.compiled) {
+        // A part the daemon could not compile has no entry: it runs on the interpreter.
+        if entry.is_empty() {
+            continue;
+        }
+        if let Err(why) = tilolang_tilo::runtime::engine::adopt_precompiled(part, entry) {
+            tracing::warn!(
+                %why,
+                "a compiled module the daemon made was not used: the module runs on the interpreter"
+            );
+        }
+    }
 }
 
 /// Whether a running instance's window let go of its patch connection.

@@ -488,7 +488,8 @@ async fn read_sibling(recv: &mut RecvStream) -> Option<SiblingFrame> {
 
 /// The root this computer keeps, as a test holds it to mint what a pairing mints.
 fn root_signer() -> tilo_identity::store::SigningIdentity {
-    let dir = tilo_identity::store::identity_dir_from_env().expect("this account's identity");
+    let dir =
+        tilo_identity::store::account_identity_dir_from_env().expect("this account's identity");
     let record = tilo_identity::store::resolve_active_identity(&dir).expect("the person's record");
     tilo_identity::store::load_from_path(record).expect("the person's root")
 }

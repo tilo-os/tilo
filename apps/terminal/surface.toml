@@ -316,6 +316,10 @@ params = [
   { name = "variable", type = "text", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
 [[resources.types]]
 name = "MachineSecret"
 fields = [

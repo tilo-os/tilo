@@ -3,8 +3,7 @@
 use super::{
     BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity, Grantee, PeerCore,
     PeerGovernanceMut, ROOT, RevocationList, Role, Shared, StatePeer, SystemTime, VecDeque,
-    VerifiedCertificate, administrator_grant_id, err, held, now_ns, process_default, supersedes,
-    workspace,
+    VerifiedCertificate, administrator_grant_id, err, held, now_ns, process_default,
 };
 use collab_types::signer::DeviceSigner;
 use tilo_action_policy::Change;
@@ -29,12 +28,13 @@ impl StatePeer {
         Self::with_roster(workspace, owner_device, roster, revocations, now)
     }
 
-    /// A replica of a workspace joined through `admitter`, a key holder of
-    /// the workspace, which must be valid at `now`, and
-    /// the workspace's `roster` as its governance admitted it. The admitter
-    /// is the replica's origin, and the person of its owner only until the
-    /// workspace's governance arrives and names the owner the replica holds
-    /// to ([`Self::from_join`]). A roster
+    /// A replica of a workspace joined through `admitter`, a holder of the
+    /// workspace, which must be valid at `now`, and the workspace's `roster`
+    /// as its governance admitted it. The admitter is the replica's origin and
+    /// nothing more: the replica names no owner until the workspace's
+    /// governance arrives and names the owner it holds to
+    /// ([`Self::from_join`]), so the device that answered the join is given
+    /// no say over the workspace by answering it. A roster
     /// certificate is the workspace's evidence, checked by its signature alone:
     /// a guest certified for an hour stays in the roster after its hour, as
     /// on the host, and its expiry is checked whenever it is used. Building
@@ -51,7 +51,9 @@ impl StatePeer {
             .into_iter()
             .map(|certificate| VerifiedCertificate::historical_typed(certificate).map_err(err))
             .collect::<Result<Vec<_>, _>>()?;
-        Self::with_roster(workspace, admitter, roster, revocations, now_ns(now))
+        let mut peer = Self::with_roster(workspace, admitter, roster, revocations, now_ns(now))?;
+        peer.core.owner = [0; 32];
+        Ok(peer)
     }
 
     fn with_roster(
@@ -99,73 +101,6 @@ impl StatePeer {
             governance_now: None,
             copied: std::collections::BTreeMap::new(),
         })
-    }
-    /// Add a root-certified device to existing governed history, as a device
-    /// of its owner or of a member the signed member list names and has not
-    /// blocked ([`crate::PeerGovernanceMut::admit_member_device`]'s rule). Any
-    /// member's device that may write governance records it: the person's
-    /// root signed the certificate, which gives the device only what that
-    /// person already holds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not a member's device, the certificate's
-    /// person is not a member, the certificate is invalid, revoked or
-    /// conflicts with a recorded one, or governance cannot be updated.
-    pub fn admit_certificate(
-        &mut self,
-        cert: DeviceCert,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.require_member_writer(key, now)?;
-        tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-        if self.core.revocations.refuses(&cert) {
-            return Err("device revoked".into());
-        }
-        if let Some(old) = self.core.certificates.get(&cert.device_public_key)
-            && old.as_ref() != &cert
-            && !supersedes(old.as_ref(), &cert)
-        {
-            return Err("certificate conflict".into());
-        }
-        let doc = self
-            .core
-            .workspace_doc
-            .clone()
-            .ok_or("workspace governance missing")?;
-        if cert.user_public_key != self.core.owner
-            && doc
-                .workspace_policy(&self.core.workspace)
-                .active_role(&hex::encode(cert.user_public_key))
-                .is_none()
-        {
-            return Err("the device's person is not a member".into());
-        }
-        let id = hex::encode(cert.device_public_key);
-        if workspace::governance_of(Some(&doc))
-            .identities
-            .get(&id)
-            .and_then(|bytes| {
-                tilo_failure::ignored!(
-                    "an identity row that does not decode is not that certificate",
-                    GovernedIdentity::decode(bytes).ok()
-                )
-            })
-            .is_some_and(|old| old.device_cert == cert)
-        {
-            return Ok(false);
-        }
-        let identity = GovernedIdentity {
-            device_cert: cert,
-            revocations: vec![],
-            admission: None,
-            admissions: vec![],
-            delegate: None,
-            workspace_delegations: Vec::new(),
-            removed: false,
-        };
-        self.put_identity(doc, &identity, key, now)
     }
     /// Write `identity`'s governed row and roster name into `doc`, this
     /// workspace's governance, as the pinned authority `key`, and take the change

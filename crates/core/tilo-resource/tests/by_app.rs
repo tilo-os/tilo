@@ -53,7 +53,12 @@ fn a_by_app_verb_is_declared_and_published_to_no_caller() {
     // What an app that is not running is known by names it to nobody
     // either, and nor does the value `apply` takes.
     let surface = Visits::surface();
-    let verbs: Vec<&str> = surface.verbs.iter().map(|verb| verb.id.as_str()).collect();
+    let verbs: Vec<&str> = surface
+        .verbs
+        .iter()
+        .map(|verb| verb.id.as_str())
+        .filter(|id| !tilo_resource::surface::CONTENT_VERBS.contains(id))
+        .collect();
     assert_eq!(verbs, ["star"]);
     let schema = Visits::action_schema().unwrap().to_string();
     assert!(schema.contains("\"star\""), "{schema}");

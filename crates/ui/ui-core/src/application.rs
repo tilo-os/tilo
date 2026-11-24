@@ -786,15 +786,6 @@ impl ProcessContext {
     pub fn records(&self) -> &ResourceStore {
         &self.records
     }
-    /// The per-window records this app's windows kept in this workspace before it [kept one record per
-    /// workspace](ApplicationDefinition::keeps_workspace_resource), read-only and sorted by id
-    /// ([`ResourceStore::window_resources`]).
-    pub fn window_resources(&self) -> Vec<(DocumentId, AutoCommit)> {
-        if !self.record.id.is_package_primary() {
-            return Vec::new();
-        }
-        self.records.window_resources(&self.record.kind)
-    }
     /// The application this context was prepared for.
     pub fn app_id(&self) -> &str {
         &self.app_id
@@ -1137,12 +1128,18 @@ impl ApplicationDefinition {
         };
         let entry = context.wake_scope.enter();
         let result = (self.create)(context, target, restore).and_then(|mut component| {
-            if !Rc::ptr_eq(&construction, &component.context.construction)
-                || !(records.is_ready(&record.id) || records.is_opening(&record.id))
-            {
-                return Err(mismatch(
-                    "a component of another construction, or its record neither open nor opening",
-                ));
+            if !Rc::ptr_eq(&construction, &component.context.construction) {
+                return Err(mismatch("a component of another construction"));
+            }
+            if !(records.is_ready(&record.id) || records.is_opening(&record.id)) {
+                // Which record, and what the store says of it: a launch refused here otherwise
+                // names nothing to look for.
+                tracing::warn!(
+                    record = record.id.as_str(),
+                    status = ?records.save_status(&record.id),
+                    "the window's record is neither open nor opening"
+                );
+                return Err(mismatch("its record neither open nor opening"));
             }
             if let Some(saved) = local.filter(|_| !records.is_opening(&record.id)) {
                 component

@@ -261,14 +261,6 @@ fn session_with_lists(lists: tilo_session::AppLists) -> Session {
     })
 }
 
-/// A session that keeps this device's shell under `state` , the way one with a state directory does.
-fn session_keeping(state: &std::path::Path) -> Session {
-    crate::common::headless(Options {
-        state: Some(state.to_path_buf()),
-        ..Options::default()
-    })
-}
-
 /// Connect a client and open a toplevel of `app_id` , drawn at the size it was configured to, and
 /// wait until it is mapped.
 fn mapped(session: &mut Session, app_id: &str) -> TestClient {
@@ -2423,12 +2415,12 @@ fn leaving_another_workspace_keeps_the_person_where_they_are() {
 #[test]
 fn the_next_session_comes_up_where_this_one_was() {
     let _settled = ui::motion::testing::settled();
-    // A workspace's layout is the workspace's own record, which a device holds once it has an
-    // identity: this session is on a device set up as it is at its first login.
-    let mut device = tilo_test_env::TestHome::new().expect("a home");
-    let state = crate::common::device_in(&mut device);
+    // A workspace's layout is the workspace's own record, which the device's daemon keeps: this
+    // test is a computer whose daemon serves one session after another.
+    let device = crate::common::device_daemon(crate::common::device_home(), None);
+    let state = tempfile::tempdir().expect("a state directory");
     let home = {
-        let mut session = session_keeping(&state);
+        let mut session = device.session(state.path());
         session.step(Duration::from_millis(1)).unwrap();
         add_strip(&session, "Second");
         invoke(&mut session, CHROME_RESOURCE, "new-workspace");
@@ -2449,7 +2441,7 @@ fn the_next_session_comes_up_where_this_one_was() {
         kept
     };
 
-    let mut second = session_keeping(&state);
+    let mut second = device.session(state.path());
     // The workspaces' layouts are the workspaces' own records, which reach this session after
     // its first pass: the shell it shows is the one they hold once they arrive.
     let came_back = crate::common::wait_maybe(&mut second, |session| {

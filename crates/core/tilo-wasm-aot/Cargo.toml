@@ -1,0 +1,36 @@
+[package]
+name = "tilo-wasm-aot"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+description = "Wasmtime modules compiled ahead of time for a device: the engine configuration the compiler and the runtime share, the cache keyed by module, wasmtime version, configuration and target, and the sealed artifact a runtime deserializes."
+repository.workspace = true
+homepage.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The runtime only: deserializing a compiled module needs no compiler. `compile` adds
+# Cranelift, and only the device daemon and the tests that produce artifacts turn it on.
+wasmtime = { version = "50.0.0", default-features = false, features = [
+    "runtime",
+    "std",
+] }
+# An entry is named by the module's digest and checked against it before it is loaded.
+blake3.workspace = true
+# Compiled modules are written beside their place in the cache, then renamed into it.
+tempfile.workspace = true
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# A module for the tests to compile, written as WAT.
+wat = "1"
+
+[features]
+# Compile modules to machine code. Only the device daemon links this: the runtimes that
+# execute them link wasmtime's runtime alone and deserialize what it produced.
+compile = ["wasmtime/cranelift"]
+
+[lints]
+workspace = true

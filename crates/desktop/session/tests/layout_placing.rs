@@ -25,14 +25,8 @@ use std::time::Duration;
 use tilo_session_core::layout;
 
 use tilo_actions::{ActionAddress, OperationKind, ResourceSpec, ResourceViewSpec};
-use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilo_session_core::surfaces::Published;
-
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-/// The person at this device, by their root identity (hex).
-const ADA: &str = "abababababababababababababababababababababababababababababababab";
 
 /// A tilolang-style app resource: a mailbox shown through an `inbox` view (primary) and a `reader`
 /// view, published under `app` . Its `open` is a view operation, as every resource's opener is, and
@@ -105,25 +99,42 @@ impl Published for Mailbox {
     }
 }
 
-/// What a session here is started with: a device that holds its workspaces, as a person's own does.
+thread_local! {
+    /// This computer: its device daemon, holding its workspaces. A layout is a workspace's own
+    /// record, which the daemon keeps and signs, so a session reaches its layout, and takes a step
+    /// of it back, only as its daemon's shell.
+    static DEVICE: crate::common::Device =
+        crate::common::device_daemon(crate::common::device_home(), None);
+    /// Where a session of this computer keeps its own services' files.
+    static STATE: tempfile::TempDir = tempfile::tempdir().expect("a state directory");
+}
+
+/// What a session here is started with: this computer's, whose workspaces its daemon holds.
 fn options() -> Options {
     Options {
-        person: ADA.to_owned(),
-        state: Some(crate::common::device_state()),
+        state: Some(STATE.with(|state| state.path().to_path_buf())),
         collab: false,
         ..Options::default()
     }
 }
 
-/// A session on a device that holds its workspaces, as a person's own device does: the layout it
-/// shows is a workspace's, and what the layout does to it is that workspace's layout.
+/// A session on this computer, as its daemon's shell: the layout it shows is a workspace's, and
+/// what the layout does to it is that workspace's layout.
 fn session() -> Session {
-    crate::common::headless_on(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options())
+    DEVICE.with(|device| device.session_with(options()))
 }
 
-/// The person at this device, as the session's own identity reads it: the identity it holds names them.
+/// The person at this device: the daemon's person, whose session it starts.
 fn person() -> String {
-    tilo_session::identity::own_person(&options())
+    DEVICE.with(|device| device.person.clone())
+}
+
+/// The workspace in front, by its id.
+fn workspace_in_front(session: &Session) -> Option<String> {
+    session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+    })
 }
 
 fn step(session: &mut Session) {
@@ -321,13 +332,11 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
 
 /// A session whose search reads `index` : the one index the palette and an agent's `tilo` tool find
 /// things through, with `app` 's entries in it.
-fn session_searching(index: std::sync::Arc<tilo_workspace_service::search::AppContentIndex>) -> Session {
-    crate::common::headless_on(
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        Options {
-            person: ADA.to_owned(),
-            state: Some(crate::common::device_state()),
-            collab: false,
+fn session_searching(
+    index: std::sync::Arc<tilo_workspace_service::search::AppContentIndex>,
+) -> Session {
+    DEVICE.with(|device| {
+        device.session_with(Options {
             search: tilo_session::SearchOptions {
                 // Searched as the device's daemon searches it for the person, who may read all
                 // of it.
@@ -339,9 +348,9 @@ fn session_searching(index: std::sync::Arc<tilo_workspace_service::search::AppCo
                 )),
                 ..tilo_session::SearchOptions::default()
             },
-            ..Options::default()
-        },
-    )
+            ..options()
+        })
+    })
 }
 
 /// Publish the mailbox into the index the session searches, as an app does: the entry opens the
@@ -393,16 +402,13 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
     let _settled = ui::motion::testing::settled();
     let index = std::sync::Arc::new(tilo_workspace_service::search::AppContentIndex::in_memory());
     let mut session = session_searching(index.clone());
-    step(&mut session);
+    // The workspace in front is the device's once the daemon's list reaches this session: the id
+    // a search entry is read under is that workspace's, never the shell's own before it.
+    let seeded = workspace_in_front(&session);
+    let workspace = crate::common::wait_for(&mut session, "the device's workspace", |session| {
+        workspace_in_front(session).filter(|now| Some(now.as_str()) != seeded.as_deref())
+    });
     let (app, _) = with_mailbox(&mut session);
-    // The id of the workspace in front: where search reads its entries.
-    let workspace = session
-        .handle()
-        .read(|tree| {
-            tree.active_workspace()
-                .map(|workspace| workspace.id().to_string())
-        })
-        .expect("a workspace is in front");
     index_mailbox(&index, &app, &workspace);
 
     session

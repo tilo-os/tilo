@@ -430,10 +430,9 @@ impl PeerWorkspaceMut<'_> {
     ///
     /// # Errors
     ///
-    /// `device` is neither the exact current certificate of a device that
-    /// may change this workspace nor one of its holders, as its signed
-    /// address names it, or the row cannot be written. A holder that is no
-    /// member writes this row of its own and nothing else.
+    /// `device` is not the exact current certificate of a device that may
+    /// change this workspace, or the row cannot be written. A holder that is
+    /// no member writes nothing, this row included.
     pub fn report_copy(
         mut self,
         device: &tilo_user_identity::DeviceCert,
@@ -449,14 +448,7 @@ impl PeerWorkspaceMut<'_> {
         if held_rows(workspace).get(&device.device_public_key) == Some(held) {
             return Ok(false);
         }
-        if self
-            .peer
-            .holder_certificate(&device.device_public_key)
-            .as_ref()
-            != Some(device)
-        {
-            self.check_writer(device, now)?;
-        }
+        self.check_writer(device, now)?;
         let json =
             serde_json::to_string(&StoredCopy::from(held)).map_err(|error| error.to_string())?;
 

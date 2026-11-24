@@ -42,8 +42,7 @@ pub const MAX_FORMER_IDS: usize = 8;
 ///   identity, and do.
 /// - **Identical bytes are not the same file.** Nothing here is derived from
 ///   content, so two files with the same bytes never share edits by accident.
-///   Content that *should* be shared by bytes is a blob reference instead
-///   (`ui::resource::add_blob_reference`).
+///   Content that *should* be shared by bytes is a blob reference instead.
 ///
 /// The prefix is part of the id, not a tag beside it: the id travels on the
 /// wire and names a file on disk, so it must be self-describing.
@@ -533,6 +532,7 @@ fn normalise(path: &Path) -> PathBuf {
 pub mod derived;
 pub mod fields;
 mod file_identity;
+pub mod founding;
 pub mod identity;
 pub use file_identity::DOCUMENT_ID_XATTR;
 

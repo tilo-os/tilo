@@ -260,7 +260,19 @@ view tinted_row(item: Item, tint: Text) {
 
     impl Rows {
         fn new(n: usize) -> Self {
+            Self::with(n, false)
+        }
+
+        /// Rows whose app runs on the machine code the device's daemon compiled for it.
+        fn compiled(n: usize) -> Self {
+            Self::with(n, true)
+        }
+
+        fn with(n: usize, compiled: bool) -> Self {
             let app = App::compile(SOURCE, &[]);
+            if compiled {
+                crate::common::adopt_compiled(&app.compiled.wasm);
+            }
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
             let module = app.load(&rt);
             let bag = rt.create("Bag").unwrap();
@@ -837,14 +849,18 @@ view deck(d: Deck) {
         );
     }
 
-    /// The tiered engine starts a module on wasmi and moves it to compiled code between calls,
-    /// once its compile ended. A view opened before that follows its collection the same after
-    /// it, and a view opened after it is the same view: an insert is one row, and a list builds
-    /// the row it is asked for and no other.
+    /// Rows on the machine code the device's daemon compiled answer exactly as interpreted
+    /// ones do: a view opened before and after carries the same rows and renders the same tree.
     #[test]
     fn a_views_rows_follow_their_collection_once_the_module_runs_compiled() {
-        let rows = Rows::new(30);
+        let rows = Rows::compiled(30);
         let engine = rows.rt.engine();
+        assert_eq!(
+            engine.tier(&rows.module),
+            Some(EngineKind::Cranelift),
+            "{:?}",
+            engine.compile_failure(&rows.module)
+        );
         let mut view = rows.view("handed");
         let opened = view.stats();
         assert_eq!(
@@ -852,23 +868,10 @@ view deck(d: Deck) {
             "the view, the one it hands to, a row per item"
         );
 
-        // The compile ended: the next call into the module moves it to its compiled code.
-        engine.settle_compile(&rows.module);
         let built = rows.rt.items_built();
         rows.call(
             "add",
             vec![Value::resource(&rows.bag), Value::text("one more")],
-        );
-        let compiled = if engine.kind() == EngineKind::Tiered {
-            EngineKind::Cranelift
-        } else {
-            engine.kind()
-        };
-        assert_eq!(
-            engine.tier(&rows.module),
-            Some(compiled),
-            "{:?}",
-            engine.compile_failure(&rows.module)
         );
         let patches = view.poll_patches().unwrap();
         assert_eq!(

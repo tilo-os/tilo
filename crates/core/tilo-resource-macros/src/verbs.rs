@@ -169,7 +169,10 @@ fn set_option(options: &mut ResourceOptions, meta: &Meta) -> syn::Result<()> {
                 // The roles a workspace's governance gives its members
                 // (`tilo_action_policy::Role::key`).
                 let role = |word: &str| {
-                    matches!(word, "viewer" | "commenter" | "editor" | "moderator" | "owner")
+                    matches!(
+                        word,
+                        "viewer" | "commenter" | "editor" | "moderator" | "owner"
+                    )
                 };
                 let well_formed = match words.as_slice() {
                     ["author"] => true,
@@ -2000,6 +2003,15 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     });
+    // A type that registers a migration declares the framework's `migrate` verb in its
+    // surface; one that registers none does not.
+    let migrates = if options.migrate.is_some() {
+        quote! {
+            const MIGRATES: bool = true;
+        }
+    } else {
+        quote!()
+    };
     let load = options.load.as_ref().map_or_else(
         || quote!(),
         |path| {
@@ -2436,6 +2448,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             const APP_ID: &'static str = #app_id;
             const RESOURCE_TABLE: ::core::option::Option<&'static #krate::table::ModelTable> =
                 ::core::option::Option::Some(<Self as #krate::Model>::TABLE);
+            #migrates
             type State = #self_ty;
             type Action = #krate::Stamped<#action_enum>;
 

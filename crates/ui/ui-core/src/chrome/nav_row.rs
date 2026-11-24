@@ -889,28 +889,34 @@ pub fn paint_nav_row(
     let colors = &tokens.colors;
     let ground = colors.surfaces.content;
     // A hover on its way in or out is drawn as much of the tint as the pointer has brought it:
-    // the fill the row lands on, laid over the ground in one layer at its share.
-    let hover_partial = face.state.hover && face.hover < 1.0;
+    // the lift the row lands on, as far along as the motion is, in the same rounded row.
+    let hover_partial =
+        face.state.hover && face.hover < 1.0 && !face.state.active && !face.state.pressed;
     if hover_partial {
-        scene.push_layer(
+        let step = theme.tokens.response.hover;
+        let fill = colors.lift_tinted_on(ground, step.lift * face.hover, step.tint * face.hover);
+        let radius = f64::from(tokens.radii.item).min(layout.selection.height() / 2.0);
+        let corners = vello::kurbo::RoundedRectRadii::new(radius, radius, radius, radius);
+        scene.fill(
             Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            face.hover,
             transform,
-            &layout.selection,
+            fill,
+            None,
+            &RoundedRect::from_rect(layout.selection, corners),
         );
     }
     paint_row_selection(
         scene,
         transform,
         layout.selection,
-        face.state,
+        SelectionState::new(
+            face.state.active,
+            face.state.hover && !hover_partial,
+            face.state.pressed,
+        ),
         ground,
         theme,
     );
-    if hover_partial {
-        scene.pop_layer();
-    }
     if face.focused {
         paint_focus(scene, transform, theme, layout.selection);
     }

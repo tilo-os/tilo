@@ -21,6 +21,10 @@ collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../co
 # The accounts a profile keeps are one CRDT document: the page reads one
 # without a toolkit (`browser_accounts.rs`).
 automerge.workspace = true
+# The page's release build carries no tracing calls: a first visit pays no
+# diagnostics it cannot read. `release_max_level_off` applies where debug
+# assertions are off, so development and qualification builds keep them.
+tracing = { workspace = true, features = ["release_max_level_off"] }
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-actions = { version = "0.1.0", path = "../actions" }

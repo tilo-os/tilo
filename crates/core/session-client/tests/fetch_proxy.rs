@@ -106,7 +106,7 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
     let plain = plain.replace("localhost", "127.0.0.1");
     // The page's workspace, placed on the host with the browser's device in
     // it: the workspace whose roster lets the page ask for the token.
-    place(&host.server, &laptop.cert).await;
+    place(&host.server, (&laptop.cert, &laptop.key)).await;
     let peer = start_peer(
         host.iroh(),
         laptop.cert.clone(),

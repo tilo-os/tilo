@@ -143,12 +143,16 @@ pub fn position(
 /// # Errors
 /// A part is changed without an operation naming it, or by an author whose role
 /// does not permit it.
+///
+/// With `keeps_checkpoints`, the sender keeps the workspace's checkpoints, which
+/// it writes as it publishes them with no operation naming them
+/// ([`GovernanceRow::Checkpoints`]).
 pub fn admit_operations(
     before: Option<&AutoCommit>,
     candidate: &AutoCommit,
     changes: &[Vec<u8>],
     workspace: &str,
-    now_ns: u64,
+    (now_ns, keeps_checkpoints): (u64, bool),
 ) -> Result<(), MembershipRefusal> {
     // A workspace this device does not hold yet is its governor's to send: the
     // operations of a first answer from anyone else govern nothing here.
@@ -156,38 +160,77 @@ pub fn admit_operations(
         return Err(MembershipRefusal::NotMembership);
     };
     let (at, after) = position(before, changes)?;
-    let mut held_rows = super::changed_rows(Some(before), Some(candidate), false);
+    let written: Vec<automerge::Change> = changes
+        .iter()
+        .filter_map(|bytes| automerge::Change::try_from(bytes.as_slice()).ok())
+        .collect();
+    let mut held_rows = super::changed_rows_by(before, candidate, &written, false);
+    if keeps_checkpoints {
+        held_rows.retain(|row| *row != GovernanceRow::Checkpoints);
+    }
     held_rows.sort_unstable();
+    // What the batch wrote, read where it wrote it: a change to a workspace of
+    // many costs what it wrote, not a reading of every member's row.
+    let governance = written_rows((&at, &after), &written)
+        .unwrap_or_else(|| (governance_of(Some(&at)), governance_of(Some(&after))));
     let mut declared: Vec<GovernanceRow> = Vec::new();
     let mut admitted = false;
-    for op in added_ops(Some(before), candidate) {
+    for op in added_ops(before, candidate, &written) {
         let rows: &[GovernanceRow] = match &op.command {
             MembershipOpCommand::Governance { rows } => rows,
             // An admission writes the device it admits, and names that row
             // itself: each admission of a batch writes its own device.
-            MembershipOpCommand::Admit { .. } => {
+            MembershipOpCommand::Admit { person, .. } => {
+                // An admission is written by the person it admits, the
+                // invitation its authority, or by a member: a device whose
+                // person holds no role signs nobody else in.
+                if *person != op.author.user_public_key
+                    && crate::workspace::policy_of(&at, workspace)
+                        .active_role(&op.person())
+                        .is_none()
+                {
+                    return Err(MembershipRefusal::Refused(
+                        "an admission is its own person's or a member's to write".into(),
+                    ));
+                }
                 if held_rows.contains(&GovernanceRow::Identities) {
                     let identities = [GovernanceRow::Identities];
-                    rows_permitted(workspace, (&at, &after), &op, &identities, now_ns)?;
+                    rows_permitted(
+                        workspace,
+                        (&at, &after),
+                        (&governance.0, &governance.1),
+                        &op,
+                        &identities,
+                        now_ns,
+                    )?;
                     admitted = true;
                 }
                 continue;
             }
             MembershipOpCommand::Project { .. } => continue,
         };
+        // A batch carries every change its writer made since the receiver's
+        // heads: several of them may name one part, each judged under its
+        // own author.
         for row in rows {
-            if declared.contains(row) {
-                return Err(MembershipRefusal::Refused(format!(
-                    "{} is changed twice",
-                    row_name(*row)
-                )));
+            if !declared.contains(row) {
+                declared.push(*row);
             }
-            declared.push(*row);
         }
-        rows_permitted(workspace, (&at, &after), &op, rows, now_ns)?;
+        rows_permitted(
+            workspace,
+            (&at, &after),
+            (&governance.0, &governance.1),
+            &op,
+            rows,
+            now_ns,
+        )?;
     }
     if admitted && !declared.contains(&GovernanceRow::Identities) {
         declared.push(GovernanceRow::Identities);
+    }
+    if keeps_checkpoints {
+        declared.retain(|row| *row != GovernanceRow::Checkpoints);
     }
     declared.sort_unstable();
     if declared != held_rows {
@@ -196,20 +239,166 @@ pub fn admit_operations(
     Ok(())
 }
 
-/// The operations `candidate` adds to the ones `before` holds.
-fn added_ops(before: Option<&AutoCommit>, candidate: &AutoCommit) -> Vec<SignedMembershipOp> {
-    let held = before.map_or_else(BTreeMap::new, crate::members::ops);
-    crate::members::ops(candidate)
-        .into_iter()
-        .filter(|(id, _)| !held.contains_key(id))
+/// The operations `candidate`, `before` with `written` on it, adds to the
+/// ones `before` holds: each one kept under a key `written` wrote that
+/// `before` does not hold.
+fn added_ops(
+    before: &AutoCommit,
+    candidate: &AutoCommit,
+    written: &[automerge::Change],
+) -> Vec<SignedMembershipOp> {
+    let Some(touched) = super::rows::touched(candidate, written) else {
+        let held = crate::members::ops(before);
+        return crate::members::ops(candidate)
+            .into_iter()
+            .filter(|(id, _)| !held.contains_key(id))
+            .map(|(_, op)| std::sync::Arc::unwrap_or_clone(op))
+            .collect();
+    };
+    touched
+        .keys()
+        .filter(|key| crate::members::op::keyed(key).is_some())
+        .filter(|key| values(before, &[], key).is_empty())
+        .flat_map(|key| values(candidate, &[], key))
+        .filter_map(|bytes| {
+            tilo_failure::ignored!(
+                "an operation that does not prove its author, or cannot be keyed by its own \
+                 id, governs nothing",
+                SignedMembershipOp::verified_stored(&bytes).ok()
+            )
+        })
         .map(|(_, op)| std::sync::Arc::unwrap_or_clone(op))
         .collect()
+}
+
+/// The byte values `doc` keeps under `key` of the map at `path` (the document
+/// itself when empty), every one two writers put there at once.
+pub(super) fn values(doc: &AutoCommit, path: &[&str], key: &str) -> Vec<Vec<u8>> {
+    use automerge::ReadDoc as _;
+    let mut object = automerge::ROOT;
+    for step in path {
+        match doc.get(&object, *step) {
+            Ok(Some((automerge::Value::Object(_), child))) => object = child,
+            _ => return Vec::new(),
+        }
+    }
+    doc.get_all(&object, key)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(value, _)| match value {
+            automerge::Value::Scalar(value) => match value.as_ref() {
+                automerge::ScalarValue::Bytes(bytes) => Some(bytes.clone()),
+                automerge::ScalarValue::Str(text) => Some(text.as_bytes().to_vec()),
+                _ => None,
+            },
+            automerge::Value::Object(_) => None,
+        })
+        .collect()
+}
+
+/// The scalar that wins under `entry` of the map `doc` keeps at `key`.
+pub(super) fn winner(doc: &AutoCommit, key: &str, entry: &str) -> Option<automerge::ScalarValue> {
+    use automerge::ReadDoc as _;
+    let (automerge::Value::Object(_), map) = doc.get(automerge::ROOT, key).ok().flatten()? else {
+        return None;
+    };
+    match doc.get(&map, entry).ok().flatten()? {
+        (automerge::Value::Scalar(value), _) => Some(value.into_owned()),
+        _ => None,
+    }
+}
+
+/// [`governance_of`] `at` and `after`, `at` with `written` on it, of only
+/// what `written` changed: the device rows, names, sandbox entries and
+/// receipts it wrote, the invitation parts it wrote and those its receipts
+/// name. Every other entry reads the same in both, so each check comparing
+/// the two decides as it does over the whole governance. `None` when
+/// `written` rewrote one of those maps whole, or wrote where this reading
+/// cannot place.
+fn written_rows(
+    (at, after): (&AutoCommit, &AutoCommit),
+    written: &[automerge::Change],
+) -> Option<(WorkspaceGovernance, WorkspaceGovernance)> {
+    use crate::state::invitation_receipts::{PARTS_KEY, RECEIPTS_KEY, part_key};
+    let touched = super::rows::touched(after, written)?;
+    let entries = |key: &str| -> Option<Vec<String>> {
+        match touched.get(key) {
+            None => Some(Vec::new()),
+            Some(super::rows::Wrote::Entries(entries)) => Some(entries.iter().cloned().collect()),
+            Some(super::rows::Wrote::Whole) => None,
+        }
+    };
+    let (identities, peers, sandbox, receipts) = (
+        entries("peer_identities_v1")?,
+        entries("peers")?,
+        entries("sandbox")?,
+        entries(RECEIPTS_KEY)?,
+    );
+    let mut parts: std::collections::BTreeSet<String> = entries(PARTS_KEY)?.into_iter().collect();
+    for invite in &receipts {
+        for doc in [at, after] {
+            for bytes in values(doc, &[RECEIPTS_KEY], invite) {
+                let logged = tilo_failure::ignored!(
+                    "a receipt that does not decode shares no part",
+                    crate::state::StoredReceipt::decode(&bytes).ok()
+                );
+                parts.extend(
+                    logged
+                        .iter()
+                        .flat_map(|logged| logged.shared().map(part_key)),
+                );
+            }
+        }
+    }
+    let read = |doc: &AutoCommit| {
+        let mut governance = WorkspaceGovernance::absent();
+        let winner = |key: &str, entry: &str| match winner(doc, key, entry)? {
+            automerge::ScalarValue::Bytes(bytes) => Some(bytes),
+            automerge::ScalarValue::Str(text) => Some(text.as_bytes().to_vec()),
+            _ => None,
+        };
+        for device in &identities {
+            if let Some(bytes) = winner("peer_identities_v1", device) {
+                governance.identities.insert(device.clone(), bytes);
+            }
+        }
+        for key in &peers {
+            if let Some(name) = winner("peers", key).and_then(|bytes| {
+                tilo_failure::ignored!(
+                    "a name that is not text names nobody",
+                    String::from_utf8(bytes).ok()
+                )
+            }) {
+                governance.peers.insert(key.clone(), name);
+            }
+        }
+        for id in &sandbox {
+            if let Some(bytes) = winner("sandbox", id) {
+                governance.sandbox.insert(id.clone(), bytes);
+            }
+        }
+        for invite in &receipts {
+            let kept = values(doc, &[RECEIPTS_KEY], invite);
+            if !kept.is_empty() {
+                governance.invitation_receipts.insert(invite.clone(), kept);
+            }
+        }
+        for part in &parts {
+            let kept = values(doc, &[PARTS_KEY], part);
+            if !kept.is_empty() {
+                governance.invitation_parts.insert(part.clone(), kept);
+            }
+        }
+        governance
+    };
+    Some((read(at), read(after)))
 }
 
 /// Whether `op`'s author may change `rows`, from `at` to `after`.
 fn rows_permitted(
     workspace: &str,
     (at, after): (&AutoCommit, &AutoCommit),
+    (before, written): (&WorkspaceGovernance, &WorkspaceGovernance),
     op: &SignedMembershipOp,
     rows: &[GovernanceRow],
     now_ns: u64,
@@ -221,7 +410,6 @@ fn rows_permitted(
     let authority = held.person_on_device(&actor, foreign);
     let cx = Context::at(op.at_ns / 1_000_000);
     let writer = (actor.as_str(), &authority, &cx);
-    let (before, written) = (governance_of(Some(at)), governance_of(Some(after)));
     for row in rows {
         if let Some(action) = row.action() {
             held.check_action(&authority, action, &cx, false)
@@ -235,16 +423,16 @@ fn rows_permitted(
         }
         match row {
             GovernanceRow::Settings => settings(workspace, at, after, &held, writer)?,
-            GovernanceRow::Sandbox => sandbox(&before, &written, &held, writer)?,
+            GovernanceRow::Sandbox => sandbox(before, written, &held, writer)?,
             GovernanceRow::Standing => standing(workspace, at, after)?,
             GovernanceRow::Identities => {
                 let invited = redemptions(
                     workspace,
                     (&held, &wanted),
-                    (&before, &written),
+                    (before, written),
                     (op.at_ns, now_ns),
                 )?;
-                identities(&held, &wanted, &invited, writer, (&before, &written))?;
+                identities(&held, &wanted, &invited, writer, (before, written))?;
             }
             _ => {
                 return Err(MembershipRefusal::Refused(format!(
@@ -649,14 +837,17 @@ fn identities(
         let redeemed = invited
             .get(&person)
             .is_some_and(|(_, redeemer)| redeemer == device);
-        // A device certified by a member's root is that member's: any
-        // key holder writes it in when it first asks.
+        // A device certified by a member's root is that member's: the
+        // device writes itself in when it first asks, or a member does.
         let further = !before.identities.contains_key(device)
             && held.role_of(&person).is_some()
             && identity.admission.is_none()
             && identity.admissions.is_empty()
             && identity.delegate.is_none();
-        if person != actor && !redeemed && !further && !may(governance::ADD_MEMBER) {
+        // A device row of someone else is written only by a member: one
+        // holding no role writes its own device's row and nothing else.
+        let member = held.role_of(actor).is_some();
+        if person != actor && !((redeemed || further) && member) && !may(governance::ADD_MEMBER) {
             return Err(MembershipRefusal::Refused(format!(
                 "device {device} is not the writer's to admit"
             )));

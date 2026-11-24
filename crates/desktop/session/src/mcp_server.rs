@@ -2315,6 +2315,7 @@ fn session_packages(
                 wasm: wasm.to_vec(),
                 ids: String::new(),
                 imports: Vec::new(),
+                ..Module::default()
             })
         })
         .collect()

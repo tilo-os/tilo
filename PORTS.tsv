@@ -167,7 +167,7 @@ workspace_actions::hosted_agent_turns::asks::a_cause_asks_the_agent_on_the_host_
 workspace_actions::hosted_agent_turns::asks::a_persons_stop_reaches_a_turn_that_is_going	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_taken_runs_once	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::reminders::a_reminder_due_while_its_server_was_down_starts_its_turn_once_the_server_is_up_again	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::asks::reminders::a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_persons_page_closed	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::asks::reminders::a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_persons_page_closed	ok	daemon-turns	it: hosted_turns::a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
 workspace_actions::hosted_agent_turns::asks::reminders::a_server_killed_as_an_answer_ended_starts_with_the_answer_ended_and_owes_no_turn	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::reminders::after_a_kill_a_start_asks_its_model_for_an_ended_turn_at_most_once	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::reminders::meeting_rundown::a_rundown_before_a_meeting_is_told_with_every_device_off	ok	daemon-turns	
@@ -183,14 +183,14 @@ workspace_actions::hosted_agent_turns::asks::reminders::tells::a_turn_a_reminder
 workspace_actions::hosted_agent_turns::asks::reminders::told_as::an_event_told_as_a_brief_raises_a_briefs_notice_and_one_that_says_nothing_is_told_as_before	failed	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::reminders::told_as::an_events_brief_reaches_its_own_person_and_nobody_else	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::reminders::told_as::how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_all	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::asks::reminders::told_as::what_breaks_do_not_disturb_stays_its_persons_own_to_say_above_the_word	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::asks::reminders::told_as::what_breaks_do_not_disturb_stays_its_persons_own_to_say_above_the_word	ok	daemon-turns	crates/core/tilo-workspace-service/src/workspaces/actions/host/told_tests.rs::a_thing_may_break_do_not_disturb_only_where_its_person_let_its_kind_through
 workspace_actions::hosted_agent_turns::asks::sub_agents::a_note_reaches_a_working_sub_agent_at_its_next_step_and_its_person_writes_into_it	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::a_sub_agent_works_in_a_conversation_of_its_own_and_reads_what_its_chain_may	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::a_sub_agents_write_is_kept_under_its_own_name	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::asks_again::a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::asks_again::a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::asks_again::a_refusal_that_is_the_keys_fault_is_not_asked_again	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::asks::sub_agents::its_person_asks_for_a_sub_agent_and_the_server_starts_it	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::asks::sub_agents::its_person_asks_for_a_sub_agent_and_the_server_starts_it	ok	daemon-turns	none: Chat's ask-agent and its sub-agent cause went with tl Chat (872b16ba698); a sub-agent starts through a turn's `sub-agents/team#start-sub-agent` tool
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_goes_on::a_long_answer_goes_on_below_its_newest_message_after_a_server_stopped	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_goes_on::a_stop_that_names_a_following_message_of_a_long_answer_ends_its_turn	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_goes_on::a_stop_that_names_the_first_message_of_a_long_answer_ends_its_turn	ok	daemon-turns	
@@ -200,7 +200,7 @@ workspace_actions::hosted_agent_turns::asks::sub_agents::reply_goes_on::an_answe
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_goes_on::the_thinking_and_the_steps_of_a_long_answer_stay_with_its_first_message	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_grows::a_reply_grows_while_its_model_writes_it	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_grows::a_reply_that_grew_on_a_server_that_stopped_gets_its_answer_below	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::asks::sub_agents::reply_grows::a_reply_whose_end_chat_refused_is_not_taken_for_answered	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::asks::sub_agents::reply_grows::a_reply_whose_end_chat_refused_is_not_taken_for_answered	not ported	daemon-turns	needs the workspace's roster to change mid-answer (a guest's role drops to viewer while the answer is written); a role is written only through signed operations
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_grows::a_stop_ends_the_models_call_and_the_reply_keeps_what_came	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_grows::a_sub_agents_reply_grows_in_its_own_conversation	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_grows::an_answer_that_breaks_off_keeps_what_came_and_says_why	ok	daemon-turns	
@@ -212,8 +212,8 @@ workspace_actions::hosted_agent_turns::asks::sub_agents::reply_thinks::what_a_mo
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_times::four_hundred_words_reach_a_device_while_they_are_written	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::several_sub_agents_work_at_once_and_a_stop_ends_the_one_it_names	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::share_ends::a_person_ends_from_any_device_the_share_their_agent_made_and_nobody_else_does	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::asks::sub_agents::skills::a_hosted_agent_uses_the_same_workspace_skills_actions	failed	daemon-turns	
-workspace_actions::hosted_agent_turns::asks::sub_agents::skills::workspace_skills_are_shared_and_use_the_members_role	failed	daemon-turns	it: hosted_turns::workspace_skills_are_shared_and_a_viewers_write_is_refused
+workspace_actions::hosted_agent_turns::asks::sub_agents::skills::a_hosted_agent_uses_the_same_workspace_skills_actions	ok	daemon-turns	it: hosted_turns::a_hosted_agent_uses_the_same_workspace_skills_actions
+workspace_actions::hosted_agent_turns::asks::sub_agents::skills::workspace_skills_are_shared_and_use_the_members_role	ok	daemon-turns	it: hosted_turns::workspace_skills_are_shared_and_a_viewers_write_is_refused
 workspace_actions::hosted_agent_turns::asks::sub_agents::teams::a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::teams::a_sub_agent_of_a_sub_agent_does_nothing_its_starter_may_not	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::teams::a_team_is_answered_to_any_members_turn_of_the_agent	failed	daemon-turns	
@@ -241,11 +241,11 @@ workspace_actions::hosted_agent_turns::issue_work::a_task_stops_at_its_budget_wi
 workspace_actions::hosted_agent_turns::issue_work::a_task_whose_sessions_were_lost_stops_and_says_so	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::issue_work::an_agent_refused_files_starts_its_task_and_is_told_its_folder_was_not_made	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::issue_work::an_issues_turn_read_before_its_answer_is_not_begun_again	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::learning::a_hosted_turn_keeps_what_its_keeper_tells_it_and_only_her_turns_know_it	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::learning::a_hosted_turn_keeps_what_its_keeper_tells_it_and_only_her_turns_know_it	ok	daemon-turns	crates/core/tilo-workspace-service/src/agents/learned.rs::tests::an_agent_learns_uses_and_forgets_a_fact_only_for_the_person_it_is_about
 workspace_actions::hosted_agent_turns::learning::a_turn_started_for_the_keeper_is_hers_and_one_started_for_another_member_is_not	failed	daemon-turns	
 workspace_actions::hosted_agent_turns::learning::asked_what_it_knows_a_hosted_turn_answers_from_the_list_and_changes_it_on_her_word	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::a_find_asks_what_its_caller_may_read_only_for_the_answers_it_returns	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::search::a_find_reads_no_folder_document_and_no_file_once_the_folder_is_indexed	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::search::a_find_reads_no_folder_document_and_no_file_once_the_folder_is_indexed	no longer exists	daemon-turns	the counters the test measured a settled find by (search_files_read, search_files_chunks_read) went with the one dispatch in 9605b85ed7f, and the find keeps none
 workspace_actions::hosted_agent_turns::search::a_page_search_finds_a_title_prefix_in_an_issue	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::a_page_search_finds_a_word_in_an_issues_body	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::a_turn_finds_what_was_said_in_its_conversation_by_words_and_by_time	ok	daemon-turns	
@@ -277,7 +277,7 @@ workspace_actions::hosted_agent_turns::search::chat_read_direct::sweep::what_a_m
 workspace_actions::hosted_agent_turns::search::chat_read_direct::what_chats_window_does_not_list_is_neither_found_nor_read	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::chat_read_direct::what_is_said_later_in_a_direct_conversation_stays_kept_from_agents_of_others	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::many_hits::a_search_with_many_hits_in_one_conversation_reads_each_level_of_its_listing_once	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::search::step_notes::a_note_holds_no_tool_back_and_the_reply_still_says_each_step_in_order	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::search::step_notes::a_note_holds_no_tool_back_and_the_reply_still_says_each_step_in_order	ok	daemon-turns	none: the note a step wrote into the reply was removed by 414f566a1a7; a turn's steps are its invocation record, and each step's cost is logged (agents/steps.rs)
 workspace_actions::hosted_agent_turns::search::step_timing::every_tool_step_of_a_turn_says_what_it_cost_and_nothing_it_was_asked	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::step_timing::logged_calls::a_call_that_succeeds_is_logged_without_what_it_wrote_or_its_tool_answered	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::step_timing::logged_calls::a_refused_call_is_logged_by_its_tool_and_its_arguments_names_and_sizes	ok	daemon-turns	

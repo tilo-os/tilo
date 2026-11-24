@@ -386,9 +386,7 @@ fn apps(socket: &PathBuf) -> Joined {
         let first_record = opened(&first, &channel())
             .await
             .expect("an app the session launched opens its workspace's record");
-        let second_record = opened(&second, &channel())
-            .await
-            .expect("so does another");
+        let second_record = opened(&second, &channel()).await.expect("so does another");
         write(&first_record, "from-the-first", "hello").await;
         let heard = record(&second_record).await;
         write(&second_record, "from-the-second", "there").await;
@@ -475,16 +473,21 @@ fn settings_lists_the_desktop_shortcuts_over_the_sessions_api() {
 fn the_settings_app_the_app_lists_allow_reaches_every_section() {
     let person = person();
     // A section the session keeps and no app reads as a shared one: what only the device's own
-    // settings app may see.
-    let mut power = serde_json::Map::new();
-    power.insert("probe".to_owned(), serde_json::json!("system"));
-    settings_store::update_section(settings_store::power::SECTION, power)
-        .expect("the session keeps the power settings");
+    // settings app may see. It is set on a device whose session is not running, as `tilo` sets it
+    // there: kept for the session that follows, and left at once for what the device's processes
+    // read. A device whose session never ran has not named its key yet, so its sections stand
+    // where the settings outside the session make them: `devices//settings/power`.
+    settings_store::outside::set_on_this_device(
+        &settings_store::placement::address(settings_store::power::SECTION, None, "").id,
+        &settings_store::workspace::verb("blank_minutes"),
+        &serde_json::json!(7),
+    )
+    .expect("the session keeps the power settings");
 
     let settings = settings_of(&person.keys, SETTINGS, &[(SETTINGS, true)]);
     let notes = settings_of(&person.keys, APP, &[(APP, false)]);
     assert_eq!(
-        settings["power"]["probe"], "system",
+        settings["power"]["blank_minutes"], 7,
         "the device's settings app reads the whole document: {settings}"
     );
     assert!(

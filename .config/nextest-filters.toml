@@ -29,3 +29,11 @@ push_only = """
 flows = """
 test(/^flow_[a-z0-9_]+::/) or test(/::flow_[a-z0-9_]+::/)
 """
+
+# The tests that hold optimised builds to a budget: the app-open budget counts the work an open
+# takes on the session, launcher and tilolang runtime built as a person runs them. The
+# `app-open-budget` check in t.toml builds those and runs them; every run that names no filter of
+# its own leaves them out, so the `test` family builds no optimised program.
+budgets = """
+package(tilo-session) and binary(it) and test(app_open_budget::)
+"""

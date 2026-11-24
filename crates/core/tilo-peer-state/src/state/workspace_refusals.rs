@@ -91,7 +91,7 @@ impl ChangeRefused {
             Refusal::Full => RefusalReason::Full,
             Refusal::Invalid(_) => RefusalReason::Malformed,
             Refusal::Conflict => RefusalReason::Conflict,
-            Refusal::Other(_) => RefusalReason::Other,
+            Refusal::Other(_) | Refusal::Listed => RefusalReason::Other,
         }
     }
 }

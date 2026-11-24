@@ -31,6 +31,8 @@ fn a_window_opens_with_its_content_at_rest() {
 /// The content named again is no change; a new name brings the content it shows in.
 #[test]
 fn a_new_content_key_brings_the_content_it_shows_in() {
+    // A person chose the pane: the content eases in on the press's motion.
+    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
     let mut shell = NavShell::from_props("window", props(Some("appearance")));
     let now = crate::motion::frame_now();
     assert!(shell.set_props(props(Some("appearance"))));
@@ -56,7 +58,8 @@ fn a_new_content_key_brings_the_content_it_shows_in() {
     );
 }
 
-/// A person who asked for less motion is shown the content at once.
+/// A person who asked for less motion is shown the content at once, and so is a pane an action
+/// opened: a key or an agent lands, as every control of the theme does.
 #[test]
 fn a_still_window_shows_the_content_at_once() {
     let mut theme = Theme::dark();
@@ -68,5 +71,20 @@ fn a_still_window_shows_the_content_at_once() {
     let now = crate::motion::frame_now();
     let shell = h.root::<NavShell>();
     assert!(!shell.content_fade.is_moving(now));
+    assert_eq!(shell.content_fade.progress(now), 1.0);
+}
+
+/// A pane an action opened — a search row, an agent — lands at once: the theme's motions land
+/// for anything that is not the pointer, and the content is there when the next frame draws.
+#[test]
+fn an_action_lands_the_content_at_once() {
+    let mut shell = NavShell::from_props("window", props(Some("appearance")));
+    crate::motion::note_source(crate::tokens::MotionSource::Action);
+    assert!(shell.set_props(props(Some("sound"))));
+    let now = crate::motion::frame_now();
+    assert!(
+        !shell.content_fade.is_moving(now),
+        "an action lands the content at once"
+    );
     assert_eq!(shell.content_fade.progress(now), 1.0);
 }

@@ -15,6 +15,8 @@
 
 /// The sign-ins of the accounts and providers, as entries of the workspace's vault.
 pub(in crate::workspaces) mod kept_sign_ins;
+/// The device's cloud-storage mounts: what the accounts' sync actions tell them.
+pub(in crate::workspaces) mod cloud_control;
 pub(in crate::workspaces) mod oauth_grant;
 mod sending;
 /// Signing in on a provider's own page: a Nextcloud server's login flow.
@@ -282,6 +284,35 @@ impl Workspaces {
         *prover = Arc::new(Finding(proving, find));
     }
 
+    /// Control this device's cloud mounts through `cloud` from now on: a
+    /// test's service stands in for the files service that mounts them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn cloud_control_through(&self, cloud: std::sync::Arc<dyn cloud_control::CloudControl>) {
+        *self
+            .inner
+            .cloud_control
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cloud);
+    }
+
+    /// What controls this device's cloud mounts: a test's service, else the
+    /// files service that mounts them here.
+    pub(in crate::workspaces) fn cloud_control(
+        &self,
+    ) -> std::sync::Arc<dyn cloud_control::CloudControl> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(cloud) = self
+            .inner
+            .cloud_control
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return cloud;
+        }
+        std::sync::Arc::new(cloud_control::DeviceCloud::here())
+    }
+
     /// Keep iCloud accounts' calendars through `server_url` from now on: a
     /// test's calendar server stands in for iCloud's own.
     #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
@@ -383,6 +414,12 @@ impl Workspaces {
                 | person_accounts::CANCEL_SIGN_IN
         ) {
             return sign_in::accounts_sign_in(self, reach.person, &here, request).await;
+        }
+        // An account added from an entry of the workspace's vault is that entry's use,
+        // decided at the vault as well: the same path a provider's key takes.
+        if action == person_accounts::ADD_MAIL_WITH_ITEM {
+            return Box::pin(self.vault_use_invoke(workspace_id, caller, certificate, request))
+                .await;
         }
         // What changes the accounts the workspace keeps is answered before
         // the rest: finding servers, adding an account, signing one in again,
@@ -531,6 +568,7 @@ pub(super) fn mail_effect(action: &str) -> tilo_action_policy::ActionKind {
         | person_accounts::SEARCH
         | person_accounts::ARRIVED
         | person_accounts::FIND_SERVERS
+        | person_accounts::SIGN_INS
         | person_accounts::BEGIN_SEND
         | person_accounts::SEND_PIECE => ActionKind::Read,
         person_accounts::SEND => ActionKind::Outside,
@@ -843,7 +881,7 @@ async fn account_with_secret(
         .ok_or_else(|| "That account is not kept here".to_owned())?;
     // It reads with the entry it names, while its settings name the servers
     // that entry belongs to.
-    let secret = sign_in::mail_secret(signing.vault, &account, signing.by).await?;
+    let secret = sign_in::mail_secret(signing.vault, signing.root, &account, signing.by).await?;
     Ok((account, secret))
 }
 

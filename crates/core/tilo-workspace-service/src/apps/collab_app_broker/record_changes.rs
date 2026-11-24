@@ -123,8 +123,7 @@ impl JoinedChannel {
     }
 
     /// `answer`, the store's answer to this channel's own change of `route`'s record: once it is
-    /// written, every other window open on the record is told it changed, and search reads it
-    /// again.
+    /// written, every other window open on the record is told it changed.
     pub(super) fn telling_record_changed(
         &self,
         answer: crate::apps::services::ResourceAnswer,
@@ -135,9 +134,6 @@ impl JoinedChannel {
             let reply = answer.await?;
             if matches!(reply, Reply::Written) {
                 state.record_changed(&route, writer);
-                if let Some(index) = &state.services.document_index_changes {
-                    index.changed(&route.cluster_id, &route.app_id, &route.document_id);
-                }
             }
             Ok(reply)
         })
@@ -151,6 +147,19 @@ impl AppBrokerState {
         if route.cluster_id.is_empty() {
             return;
         }
+        // A change of the store names the document it wrote: an app's record is the content
+        // document of its resource, and the windows open on the record are the ones told.
+        let record;
+        let route = match tilo_resource_store::content_resource(&route.document_id) {
+            Some((_, id)) => {
+                record = CrdtRoute {
+                    document_id: id.to_owned(),
+                    ..route.clone()
+                };
+                &record
+            }
+            None => route,
+        };
         self.wake_committed_reads(route);
         let Ok(mut channels) = self.channels.lock() else {
             return;
@@ -159,6 +168,9 @@ impl AppBrokerState {
             .iter_mut()
             .filter(|(key, _)| route.delivers_to(&CrdtRoute::from_channel_key(key)))
             .map(|(_, subscribers)| subscribers);
-        subscriptions::context_frame(channels, except, &ContextUpdate::RecordChanged);
+        // A window that went away is no longer shown by this record.
+        if subscriptions::context_frame(channels, except, &ContextUpdate::RecordChanged) {
+            self.windows_changed();
+        }
     }
 }

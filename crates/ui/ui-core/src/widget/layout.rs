@@ -2626,6 +2626,27 @@ pub(crate) fn lay_out_detached(
         )?;
     }
     widget.apply_layout(&taffy, child, rect.origin());
+    // A widget that came to rest only once it knew the room it stands in (a map centring its
+    // camera on the viewport it just learned) asks for another pass: a window's frame loop runs
+    // it, so a fixture that lays out once does too, and its places stand where the first frame
+    // draws them.
+    if widget.layout_needs_measure() {
+        unsafe {
+            bindings.rebuild(widget, &taffy, child, &nodes);
+            compute_widget_layout(
+                &mut taffy,
+                root,
+                Size {
+                    width: AvailableSpace::Definite(w),
+                    height: AvailableSpace::Definite(h),
+                },
+                &nodes,
+                &bindings,
+                text,
+            )?;
+        }
+        widget.apply_layout(&taffy, child, rect.origin());
+    }
     Ok(())
 }
 

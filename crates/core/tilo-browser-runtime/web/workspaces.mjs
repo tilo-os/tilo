@@ -653,8 +653,8 @@ export function keepOwnedHost({origin, userPublicKey}, memberships = globalThis.
 /**
  * Remember that this browser is in `workspace` at the host at `origin` as
  * `userPublicKey`, whose root it holds (joined through an invitation, or a
- * workspace it created on a host it owns), so a later visit reconnects
- * (`hostToReconnect`). The workspace kept is the first this person entered
+ * workspace it created on a host it owns), so a later visit reconnects.
+ * The workspace kept is the first this person entered
  * at that host, the one its entry let them into (`listedAt` names the host's
  * listed workspace by it): joining another of the host's workspaces, by an
  * invitation or by making one, adds that one to the entered workspaces
@@ -673,17 +673,6 @@ export function ownedHosts(userPublicKey, memberships = globalThis.localStorage)
   return Object.values(readMemberships(memberships))
     .filter(kept => kept?.owner && kept.origin && kept.userPublicKey === userPublicKey)
     .map(kept => kept.origin);
-}
-
-/**
- * What this browser kept for the host at `origin` that the root of
- * `userPublicKey` it holds can reconnect with, or `null`: a host it set up
- * or joined as that person. Never a device paired to a person kept
- * elsewhere, which holds no root of theirs.
- */
-export function hostToReconnect(origin, userPublicKey, memberships = globalThis.localStorage) {
-  const kept = keptMembership({host: {origin}}, memberships);
-  return kept && !kept.paired && kept.userPublicKey === userPublicKey ? kept : null;
 }
 
 /**

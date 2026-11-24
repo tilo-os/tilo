@@ -28,40 +28,6 @@ pub struct ResourceEnv<R: Resource> {
     pub(crate) effects: Effects<R>,
 }
 
-/// One of the documents the app's workspace holds, as the app's windows show
-/// them ([`ResourceEnv::window_documents`]).
-pub struct WindowDocument<R: Resource> {
-    /// The record it is.
-    pub record: ui_core::resource::DocumentId,
-    /// What it holds, as last kept.
-    pub state: Rc<R::State>,
-    /// What the workspace's index calls it, when it names it: a document an
-    /// app window on another device or an agent in a hosted workspace made
-    /// is one no window here named.
-    pub name: Option<String>,
-    /// When it last changed, in milliseconds since the epoch; `0` when no
-    /// change of it says.
-    pub changed_ms: u64,
-}
-
-impl<R: Resource> WindowDocument<R> {
-    /// The launch argument naming it, for [`ResourceEnv::open_here`].
-    pub fn uri(&self) -> String {
-        self.record.uri()
-    }
-}
-
-impl<R: Resource> Clone for WindowDocument<R> {
-    fn clone(&self) -> Self {
-        Self {
-            record: self.record.clone(),
-            state: Rc::clone(&self.state),
-            name: self.name.clone(),
-            changed_ms: self.changed_ms,
-        }
-    }
-}
-
 impl<R: Resource> Clone for ResourceEnv<R> {
     fn clone(&self) -> Self {
         let Shared {
@@ -161,56 +127,6 @@ impl<R: Resource> ResourceEnv<R> {
     /// capture.
     pub fn opener(&self) -> Option<super::OpenHere> {
         self.run.opener.clone()
-    }
-
-    /// The documents this app's workspace holds, each as last kept, the most
-    /// recently changed first, without the one this window shows: what an app
-    /// whose windows each show a document of their own
-    /// ([`ResourceApp::WINDOW_RESOURCE`](super::ResourceApp::WINDOW_RESOURCE))
-    /// lists, so a document is reached again wherever it was made — in a
-    /// window here that was closed, a window on another device, or by an
-    /// agent in a hosted workspace (one the workspace names in its index,
-    /// through [`WindowDocument::name`]). Open one here with
-    /// [`Self::open_here`] naming [`WindowDocument::uri`]. Reads every one of
-    /// them, so ask when the list is shown, not on every frame. Empty in a
-    /// past version and where the window keeps no records in a workspace.
-    pub fn window_documents(&self) -> Vec<WindowDocument<R>> {
-        if self.is_past() {
-            return Vec::new();
-        }
-        let Some(store) = self.storage.workspace_store() else {
-            return Vec::new();
-        };
-        let kind = ui_core::resource::ResourceType::new(R::KIND);
-        let shown = self.run.launched.record.as_ref();
-        let mut documents: Vec<WindowDocument<R>> = store
-            .workspace_resources(&kind)
-            .into_iter()
-            .filter(|(record, _, _)| Some(record) != shown)
-            .filter_map(|(record, mut doc, name)| {
-                let changed_s = doc
-                    .get_heads()
-                    .iter()
-                    .filter_map(|head| doc.get_change_by_hash(head).map(|change| change.timestamp()))
-                    .max()
-                    .unwrap_or(0);
-                let state = tilo_resource::Reader::<R>::read(&doc)
-                    .map_err(|error| {
-                        tracing::warn!(record = %record, %error, "window document unreadable; left out");
-                    })
-                    .ok()?
-                    .state()
-                    .clone();
-                Some(WindowDocument {
-                    record,
-                    state,
-                    name,
-                    changed_ms: u64::try_from(changed_s).unwrap_or(0).saturating_mul(1000),
-                })
-            })
-            .collect();
-        documents.sort_by_key(|document| std::cmp::Reverse(document.changed_ms));
-        documents
     }
 
     /// The names of the members, for showing the ids actions record

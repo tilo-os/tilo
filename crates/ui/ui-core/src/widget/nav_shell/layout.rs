@@ -224,7 +224,12 @@ impl NavGeometry {
     pub(super) fn floating(&self, column: Column) -> bool {
         match column {
             Column::Sidebar => self.sidebar == SidebarPlacement::Drawer,
-            Column::Inspector => self.inspector == InspectorPlacement::Sheet,
+            Column::Inspector => {
+                matches!(
+                    self.inspector,
+                    InspectorPlacement::Sheet | InspectorPlacement::Drawer
+                )
+            }
             Column::Overview | Column::Content => false,
         }
     }
@@ -350,10 +355,16 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         SidebarPlacement::None
     } else if docks {
         SidebarPlacement::Docked
-    } else if inputs.kind.is_content_primary() {
-        SidebarPlacement::Drawer
     } else {
-        SidebarPlacement::Screen
+        match inputs.sidebar_collapse {
+            super::SidebarCollapse::Auto if inputs.kind.is_content_primary() => {
+                SidebarPlacement::Drawer
+            }
+            super::SidebarCollapse::Drawer => SidebarPlacement::Drawer,
+            super::SidebarCollapse::Auto | super::SidebarCollapse::Screen => {
+                SidebarPlacement::Screen
+            }
+        }
     };
     let sw = if g.sidebar == SidebarPlacement::Docked && !rail_sidebar {
         preferred.min(w - beside_need).max(narrowest)
@@ -386,7 +397,10 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else if reaches(w - docked_target, between + iw, held.inspector_docked, band) {
         InspectorPlacement::Docked
     } else {
-        InspectorPlacement::Sheet
+        match inputs.inspector_collapse {
+            super::InspectorCollapse::Drawer => InspectorPlacement::Drawer,
+            super::InspectorCollapse::Sheet => InspectorPlacement::Sheet,
+        }
     };
     let inspector_layout = inspector_layout_of(g.inspector);
     let inspector_open = inputs.inspector.is_open(inspector_layout);
@@ -449,7 +463,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
 
     let in_row = |column: Column| match column {
         Column::Sidebar => g.sidebar != SidebarPlacement::Drawer,
-        Column::Inspector => g.inspector != InspectorPlacement::Sheet,
+        Column::Inspector => g.inspector == InspectorPlacement::Docked,
         Column::Overview | Column::Content => true,
     };
     let shell_row = (inputs.has_sidebar && !inputs.toggle_in_bar)
@@ -598,6 +612,21 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                     h,
                 );
                 inspector_header = header_of(g.inspector_column, Column::Inspector);
+            }
+        }
+        InspectorPlacement::Drawer => {
+            // The inspector's own drawer, in from the trailing edge, at the docked panel's
+            // width: it slides over the content rather than taking a column from it.
+            if inspector_reveal > 0.0 {
+                let dw = iw.min(w);
+                let x1 = w - m.gap + (dw + m.gap) * (1.0 - inspector_reveal);
+                let x0 = (x1 - dw).max(0.0);
+                g.inspector_column = Rect::new(x0, drawer_top, x1, drawer_bottom);
+                (inspector_header, inspector_body) = drawer_split(
+                    g.inspector_column,
+                    drawer_hh,
+                    inputs.header_wanted(Column::Inspector),
+                );
             }
         }
         InspectorPlacement::Sheet => {

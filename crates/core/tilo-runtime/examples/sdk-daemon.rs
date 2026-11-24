@@ -53,6 +53,20 @@ fn run() -> Result<ExitCode> {
         .split_first()
         .context("usage: sdk-daemon <tilo-runtime> -- <command...>")?;
 
+    // The runtime directory this run names is where the daemon's and its clients' sockets are,
+    // when it exists: made now, before either looks, so neither finds it missing and falls back
+    // to another place while a program started later finds it made.
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|runtime| runtime.is_absolute())
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&runtime)
+            .with_context(|| format!("making the runtime directory {}", runtime.display()))?;
+    }
     let base = std::env::var_os("TMPDIR").map_or_else(|| "/tmp".into(), std::path::PathBuf::from);
     let root = tempfile::Builder::new()
         .prefix("tilo-sdk-")

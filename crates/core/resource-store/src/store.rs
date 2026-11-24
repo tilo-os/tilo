@@ -89,7 +89,8 @@ fn content_id(readers: &str, kind: &str, id: &str) -> String {
 
 /// The kind and id of the resource whose content the document `doc` holds ([`content_id`]);
 /// `None` for a document of resources.
-fn content_resource(doc: &str) -> Option<(&str, &str)> {
+#[must_use]
+pub fn content_resource(doc: &str) -> Option<(&str, &str)> {
     let (_, rest) = doc.strip_suffix("~0")?.split_once('/')?;
     // A kind names no `/`; an id may.
     rest.split_once('/')
@@ -1162,6 +1163,49 @@ impl Store {
         Ok((doc.length(ROOT) > 0).then_some((doc, ROOT)))
     }
 
+    /// The document holding the content of the resource `id` of `kind`, as it stands: what a
+    /// process showing the record reads its changes from. `None` while nothing was written to
+    /// it.
+    ///
+    /// # Errors
+    /// When there is no such resource, or its content document cannot be read.
+    pub fn content_document(
+        &mut self,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<&Automerge>, StoreError> {
+        let (doc_id, _) = self.content_of(kind, id)?;
+        Ok(self.existing(&doc_id)?.map(|doc| &*doc))
+    }
+
+    /// `changes`, made to the content of the resource `id` of `kind` by the process that shows
+    /// it, as the writes that keep them, in order: each is judged and applied as any write is,
+    /// and keeps its hash, so the process's copy and the store hold the same changes.
+    ///
+    /// # Errors
+    /// When there is no such resource.
+    pub fn content_writes(
+        &self,
+        kind: &str,
+        id: &str,
+        changes: Vec<AmChange>,
+    ) -> Result<Vec<Written>, StoreError> {
+        let (doc, readers) = self.content_of(kind, id)?;
+        Ok(changes
+            .into_iter()
+            .map(|change| Written {
+                doc: doc.clone(),
+                readers: readers.clone(),
+                change,
+            })
+            .collect())
+    }
+
+    /// The ids of the resources of `kind` the store holds, whoever may read them.
+    pub fn ids_of<'a>(&'a self, kind: &str) -> impl Iterator<Item = &'a str> + 'a {
+        self.index.ids_of(kind)
+    }
+
     /// Edits the content of the resource `id` of `kind` in one change: `edit` is given the map
     /// at its root. Answers what `edit` answered and the change, `None` when it changed nothing.
     ///
@@ -2161,6 +2205,29 @@ impl Store {
             .unwrap_or_default();
             crate::admit::as_claimed(&read, received.claimed.as_ref())
                 .map_err(Refusal::Misclaimed)?;
+        }
+        // A record's derived founding names no verb: it is admitted only as the change its kind
+        // and id derive, the one every holder makes alike.
+        if let Some((kind, id)) = content_resource(doc_id)
+            && matches!(
+                Stamp::read(received.change.message().unwrap_or_default()),
+                Some((
+                    tilo_actions::stamp::Label::Framework(tilo_actions::FrameworkChange::Genesis),
+                    _
+                ))
+            )
+        {
+            let derived = std::iter::once(&self.schema)
+                .chain(schema)
+                .find_map(|schema| schema.get(kind))
+                .and_then(|ty| collab_types::document::founding::structure(kind, id, &ty.founding));
+            return if derived.is_some_and(|derived| derived.hash() == received.change.hash()) {
+                Ok(())
+            } else {
+                Err(Refusal::Undeclared(format!(
+                    "a founding of `{id}` that is not the one its kind derives"
+                )))
+            };
         }
         let index = &self.index;
         let stamp = Stamp::of(&received.change);

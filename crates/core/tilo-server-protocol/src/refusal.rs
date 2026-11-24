@@ -48,9 +48,13 @@ pub enum Refusal {
     /// keeps the entry as an announced revocation, which its root signed, so it
     /// refuses its own key everywhere it is due rather than only at the link
     /// that said it. A key lost, stolen or compromised is not told this: the
-    /// entry names why, and the reason is the person's. Kept last: a refusal's
-    /// variant index is its wire form.
+    /// entry names why, and the reason is the person's. A refusal's variant
+    /// index is its wire form: new variants go after the last.
     Revoked(Box<RevocationEntry>),
+    /// The dialling device signed its own row onto the workspace's member
+    /// list on a link that carried only that: the row is in, and the device
+    /// dials again as the member device it now is.
+    Listed,
 }
 
 /// A person's own workspace keeps as much as the host keeps for them, so the
@@ -93,6 +97,7 @@ impl Refusal {
             Self::Invalid(_) => "invalid_request",
             Self::Conflict => "conflict",
             Self::Other(_) => "refused",
+            Self::Listed => "listed",
         }
     }
 
@@ -105,9 +110,12 @@ impl Refusal {
             Self::NotAllowed(_) => PLAIN_NOT_ALLOWED.into(),
             Self::NotAMember(_) | Self::Revoked(_) | Self::NotAdmitted => PLAIN_NOT_A_MEMBER.into(),
             Self::WorkspaceDeleted => PLAIN_DELETED.into(),
-            Self::NotReady | Self::Offline | Self::Invalid(_) | Self::Conflict | Self::Other(_) => {
-                PLAIN_REFUSED.into()
-            }
+            Self::NotReady
+            | Self::Offline
+            | Self::Invalid(_)
+            | Self::Conflict
+            | Self::Other(_)
+            | Self::Listed => PLAIN_REFUSED.into(),
         }
     }
 }
@@ -131,6 +139,7 @@ impl std::fmt::Display for Refusal {
             Self::Invalid(detail) => write!(f, "invalid request: {detail}"),
             Self::Conflict => f.write_str("operation id already committed with different content"),
             Self::Other(detail) => f.write_str(detail),
+            Self::Listed => f.write_str("the device is on the member list now: dial again"),
         }
     }
 }

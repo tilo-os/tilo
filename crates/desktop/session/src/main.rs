@@ -108,14 +108,11 @@ fn main() -> std::process::ExitCode {
             }
         }
     }
-    // The desktop's tilolang surfaces start compiled once Cranelift compiled them in an earlier
-    // session.
-    if let Some(cache) = tilo_paths::xdg::cache_home()
-        && let Err(error) = tilolang_tilo::runtime::engine::keep_compiled_in(
-            cache.join("tilo").join("tilolang-compiled"),
-        )
-    {
-        eprintln!("tilo-session: compiled tilolang modules are not kept: {error}");
+    // The desktop's tilolang surfaces run on the machine code the device's daemon compiled for
+    // them, read from its cache; a module it did not compile runs on the interpreter. The
+    // session compiles nothing.
+    if let Some(data) = tilo_paths::data_dir() {
+        tilolang_tilo::runtime::engine::compiled_from(data.join("tilolang-compiled"));
     }
     if let Some(done) = first_boot(ours, host_desktop) {
         return done;
@@ -1136,6 +1133,8 @@ fn device_options(
     Options {
         config,
         search: search_options(),
+        // The workspaces' records, followed as they change once the session holds the engine.
+        record_changes: Some(tilo_session::platform::records::Changes::default()),
         lists: tilo_session::Lists::of_device(),
         // The apps this session starts reach its services over the socket the launcher hands them,
         // in this session's runtime directory.
@@ -1300,6 +1299,8 @@ fn services(
     // The App Store's device work, which it asks the session for by name (`engine.call`): what
     // its sources offer and the changes a person asks for.
     tilo_store_engine::register();
+    // Maps' device work: the areas a person keeps for offline use, listed and removed here.
+    tilo_maps_engine::register();
     // The database engine the Database Client asks by name: its drivers stay off the app's side,
     // and the app reads the JSON answers into its own records.
     tilolang_tilo::engine::register(
@@ -1419,11 +1420,10 @@ fn search_options() -> tilo_session::SearchOptions {
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
-        // The records the workspaces hold, read from the engine once
-        // the session holds it.
-        records: Some(tilo_session::Records::new()),
         // No test source is mounted on a device: its search is over its own sources alone.
         extra_sources: Vec::new(),
+        // References are read and written through the daemon's link, once the session holds it.
+        references: None,
     }
 }
 

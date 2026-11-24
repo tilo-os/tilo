@@ -122,6 +122,7 @@ impl super::AppBrokerState {
         if let Ok(mut windows) = self.window_instances.lock() {
             windows.insert(peer_id, instance);
         }
+        self.windows_changed();
     }
 
     /// Whether a local app window has exactly `route`'s record open.
@@ -135,20 +136,25 @@ impl super::AppBrokerState {
 }
 
 /// Send one session-local context frame to every context subscriber of
-/// `channels` but `except`.
+/// `channels` but `except`. Answers whether a subscriber that went away was
+/// let go, so what the windows here hold was re-read by its caller.
 pub(super) fn context_frame<'a>(
     channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
     except: u64,
     env: &ContextUpdate,
-) {
+) -> bool {
+    let mut pruned = false;
     for subs in channels {
+        let before = subs.context.len();
         subs.context.retain(|sub| {
             if sub.peer_id == except {
                 return true;
             }
             sub.tx.send(env.clone()).is_ok()
         });
+        pruned |= subs.context.len() != before;
     }
+    pruned
 }
 
 impl super::InvocationEnvelope {}

@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-"""Audit that every graphical Tilo app uses the production AT-SPI endpoint.
+"""Audit that every graphical Tilo app uses the production accessibility endpoint.
 
-Accessibility metadata in an app crate is not an endpoint.  The single
-production endpoint is ``ui::App``: on Linux its winit AccessKit adapter owns
-the AT-SPI provider, delivers actions back to the event loop, and is torn down
-before the window.  Every graphical binary must therefore enter through the
-standard ``ui::launch`` lifecycle (or its small direct-App equivalent).  The
-source check is paired with the installed-image D-Bus smoke to catch apps that
-bypass the shared endpoint.
+Accessibility metadata in an app crate is not an endpoint.  On Linux there is
+one exporter: the session.  A window sends its AccessKit tree over its
+authenticated shell-ui connection to the session
+(``FloatingSurfaceClientMessage::AccessibilityTree``), which publishes every
+surface and every window over AT-SPI2 and writes what a client asks back to
+the window (``FloatingSurfaceHostMessage::AccessibilityAction``).  No app
+process holds a bus, so nothing may re-enable ``accesskit_unix`` in the
+toolkit.
+
+On Windows, macOS, iOS and Android there is no session: a window's winit
+AccessKit adapter publishes to the platform service from the process that
+draws it, and actions come back through the event loop.  Every graphical
+binary must therefore enter through the standard ``ui::launch`` lifecycle (or
+its small direct-App equivalent).  The source check is paired with the
+installed-image D-Bus smoke to catch apps that bypass the shared endpoint.
 """
 
 from __future__ import annotations
@@ -164,6 +172,83 @@ def audit(root: Path = ROOT) -> list[str]:
     )
     if not re.search(tree_update, app) and not window_tree_reaches_adapter(app):
         errors.append("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates")
+
+    # Linux: one publisher, the session's. A window sends its tree over the
+    # shell-ui protocol it already speaks for its frames and controls, and the
+    # session exports it; no app process may hold a bus again.
+    if re.search(r"accesskit_unix", adapter.group(0)):
+        errors.append(
+            "crates/ui/ui-core/Cargo.toml: the toolkit enables accesskit_unix, "
+            "which gives every app process its own AT-SPI publisher; the session is the one exporter"
+        )
+    if not re.search(
+        r'^accesskit\s*=\s*\{[^}]*"serde"', cargo, re.MULTILINE
+    ):
+        errors.append(
+            "crates/ui/ui-core/Cargo.toml: accesskit lacks the serde feature, "
+            "so a window's tree cannot travel to the session"
+        )
+    window_targets = (
+        root / "crates/ui/ui-core/src/app/window_targets.rs"
+    ).read_text(encoding="utf-8")
+    send_tree = function_body(window_targets, "send_accessibility_tree") or ""
+    if not (
+        re.search(r"build_a11y_tree_update\(scale\)", send_tree)
+        and "AccessibilityTree" in send_tree
+    ):
+        errors.append(
+            "crates/ui/ui-core/src/app/window_targets.rs: the window does not send "
+            "its accessibility tree to the session over its shell-ui connection"
+        )
+    floating = (root / "crates/ui/ui-core/src/app/floating.rs").read_text(
+        encoding="utf-8"
+    )
+    if not re.search(r"self\.send_accessibility_tree\(client, instance\)", floating):
+        errors.append(
+            "crates/ui/ui-core/src/app/floating.rs: the window never sends its "
+            "accessibility tree on its shell-ui connection"
+        )
+    request = function_body(floating, "perform_accessibility_request") or ""
+    if "dispatch_a11y_action" not in request:
+        errors.append(
+            "crates/ui/ui-core/src/app/floating.rs: an action a client of the "
+            "export asks does not reach the window's assistive action path"
+        )
+    wire = (root / "crates/ui/ui-core/src/floating_surface/wire.rs").read_text(
+        encoding="utf-8"
+    )
+    for variant, direction in (
+        ("AccessibilityTree", "a window's tree to the session"),
+        ("AccessibilityAction", "a client's action back to the window"),
+    ):
+        if variant not in wire:
+            errors.append(
+                f"crates/ui/ui-core/src/floating_surface/wire.rs: the shell-ui "
+                f"protocol lacks {variant} ({direction})"
+            )
+    session_a11y = (root / "crates/desktop/session/src/a11y.rs").read_text(
+        encoding="utf-8"
+    )
+    if not (
+        "pub(crate) struct WindowExports" in session_a11y
+        and "accesskit_unix::Adapter::new" in session_a11y
+        and "push_action" in session_a11y
+    ):
+        errors.append(
+            "crates/desktop/session/src/a11y.rs: the session does not publish app "
+            "windows over AT-SPI and route clients' actions to them"
+        )
+    session_tabs = (root / "crates/desktop/session/src/app_tabs.rs").read_text(
+        encoding="utf-8"
+    )
+    if not (
+        "FloatingSurfaceClientMessage::AccessibilityTree" in session_tabs
+        and "deliver_accessibility_now" in session_tabs
+    ):
+        errors.append(
+            "crates/desktop/session/src/app_tabs.rs: the shell-ui service does not "
+            "take windows' trees or write clients' actions back to them"
+        )
 
     bridge = (root / "crates/ui/ui-core/src/accesskit_bridge.rs").read_text(encoding="utf-8")
     for needle, purpose in (

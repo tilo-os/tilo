@@ -11,7 +11,6 @@ use std::collections::{BTreeMap, HashMap};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Size as TaffySize, Style, TaffyTree};
 use vello::kurbo::{Affine, Line, Point, Rect};
-use winit::event::WindowEvent;
 
 use super::anchors::{self, Window};
 use super::coach::{MAX_SHOWINGS, Phase};
@@ -25,8 +24,6 @@ use crate::tokens::EffectiveMotion;
 use crate::widget::floating_surface::PopoverSide;
 use crate::widget::{TaffyTreeExt, Widget};
 
-/// How long after the last typed key the person counts as typing.
-const TYPING_PAUSE: Duration = Duration::from_secs(3);
 /// How long after search closes a window that appears counts as opened from it.
 const OPENED_FROM_SEARCH: Duration = Duration::from_secs(3);
 /// How far below the top of the area the search hint stands: where search comes down.
@@ -66,6 +63,8 @@ pub struct ControlHintsProps {
     pub busy: bool,
     /// The person is in a call or follows someone: no hint begins, and one on screen goes.
     pub engaged: bool,
+    /// The person is typing (the device's `input.typing`): no hint begins until they pause.
+    pub typing: bool,
     /// A hint was learned: carries its name.
     #[component(event(value = String))]
     pub learn: Event,
@@ -88,6 +87,7 @@ impl Default for ControlHintsProps {
             searching: false,
             busy: false,
             engaged: false,
+            typing: false,
             learn: Event::None,
             show: Event::None,
             withdraw: Event::None,
@@ -136,8 +136,8 @@ pub struct ControlHints {
     learn: Event,
     show: Event,
     withdraw: Event,
-    /// The person typed until then: no hint begins meanwhile.
-    typing_until: Option<Instant>,
+    /// The person is typing: no hint begins meanwhile.
+    typing: bool,
     /// Search closed then, with this many windows on screen: one more soon after is opened from it.
     search_closed: Option<(Instant, usize)>,
     /// How many windows the last frame showed.
@@ -170,7 +170,7 @@ impl Described for ControlHints {
             learn: props.learn,
             show: props.show,
             withdraw: props.withdraw,
-            typing_until: None,
+            typing: props.typing,
             search_closed: None,
             windows: 0,
             motion: EffectiveMotion::default(),
@@ -200,6 +200,7 @@ impl Described for ControlHints {
         self.searching = props.searching;
         self.busy = props.busy;
         self.engaged = props.engaged;
+        self.typing = props.typing;
         self.learn = props.learn;
         self.show = props.show;
         self.withdraw = props.withdraw;
@@ -258,13 +259,13 @@ impl ControlHints {
         self.reported = now;
     }
 
-    /// Why no hint may begin at `now`, if anything.
-    fn quiet(&self, now: Instant) -> Option<Quiet> {
+    /// Why no hint may begin, if anything.
+    fn quiet(&self) -> Option<Quiet> {
         if self.engaged {
             Some(Quiet::Following)
         } else if self.busy || self.searching {
             Some(Quiet::Busy)
-        } else if self.typing_until.is_some_and(|until| now < until) {
+        } else if self.typing {
             Some(Quiet::Typing)
         } else {
             None
@@ -275,10 +276,10 @@ impl ControlHints {
     /// as they draw: hints are on, one is on screen or still to learn and unseen, and the person
     /// is not typing. Reading that walks the windows' content, so it stops once every hint is
     /// learned or has had its showing.
-    fn wants_ink(&self, now: Instant) -> bool {
+    fn wants_ink(&self) -> bool {
         let coach = self.layer.coach();
         let learned = coach.learned();
-        let typing = self.typing_until.is_some_and(|until| now < until);
+        let typing = self.typing;
         learned.enabled
             && (coach.current().is_some()
                 || (!typing
@@ -350,7 +351,7 @@ impl ControlHints {
             )
         };
         let keys = self.search_keys.clone();
-        let quiet = self.quiet(now);
+        let quiet = self.quiet();
         self.layer.update(
             now,
             &holds,
@@ -532,26 +533,6 @@ impl Widget for ControlHints {
 
     crate::rect_geometry!();
 
-    /// A key that types text, or text an input method committed, holds new hints back until the
-    /// person pauses. Shortcuts do not count, and nothing here takes the event.
-    fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
-        use winit::event::{ElementState, Ime};
-        let typed = match event {
-            WindowEvent::KeyboardInput { event, .. } => {
-                event.state == ElementState::Pressed
-                    && event
-                        .text
-                        .as_deref()
-                        .is_some_and(|text| !text.is_empty() && !text.chars().any(char::is_control))
-            }
-            WindowEvent::Ime(Ime::Commit(text)) => !text.is_empty(),
-            _ => false,
-        };
-        if typed {
-            self.typing_until = crate::motion::frame_now().checked_add(TYPING_PAUSE);
-        }
-    }
-
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
@@ -573,7 +554,7 @@ impl Widget for ControlHints {
         self.painted = [self.layer.painted_rect(), self.painted[0]];
         self.said = self.layer.access_node();
         self.report();
-        let reads = self.wants_ink(now);
+        let reads = self.wants_ink();
         if reads && !self.reading_ink {
             self.ink_frame.set(true);
         }
@@ -598,11 +579,7 @@ impl Widget for ControlHints {
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         let now = crate::motion::frame_now();
-        let pause = self.typing_until.filter(|until| *until > now);
-        match (self.layer.next_wake(now, self.motion), pause) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        self.layer.next_wake(now, self.motion)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

@@ -286,17 +286,12 @@ impl WasmPeer {
                 .await?)?,
             // A workspace made under the id the page chose, as `create` makes one
             // under an id the server chooses: the same id asked again places the one
-            // already made and admits this device, so a page that asks again after
-            // no answer makes no second workspace.
+            // already made, so a page that asks again after no answer makes no
+            // second workspace. The device enters it on its entry, as any other.
             "place" => one(self
                 .workspaces_request(WorkspacesRequest::Place {
                     workspace: id.clone(),
                     name: args.name.clone(),
-                })
-                .await?)?,
-            "enter" => one(self
-                .workspaces_request(WorkspacesRequest::Enter {
-                    workspace: id.clone(),
                 })
                 .await?)?,
             // The person's workspaces as their host lists them, the same question the CLI's peer

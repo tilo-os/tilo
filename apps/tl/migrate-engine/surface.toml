@@ -10,11 +10,13 @@ fields = []
 [[resources.verbs]]
 id = "sources"
 kind = "outside"
+returns = { schema = {} }
 params = []
 
 [[resources.verbs]]
 id = "connect"
 kind = "outside"
+returns = { schema = {} }
 
 [[resources.verbs.params]]
 name = "source"
@@ -39,6 +41,7 @@ type = "text"
 [[resources.verbs]]
 id = "review"
 kind = "outside"
+returns = { schema = {} }
 
 [[resources.verbs.params]]
 name = "source"
@@ -78,6 +81,7 @@ type = "text"
 [[resources.verbs]]
 id = "choose"
 kind = "outside"
+returns = { schema = {} }
 
 [[resources.verbs.params]]
 name = "source"
@@ -117,6 +121,7 @@ type = "text"
 [[resources.verbs]]
 id = "start"
 kind = "outside"
+returns = { schema = {} }
 
 [[resources.verbs.params]]
 name = "source"
@@ -146,6 +151,7 @@ type = "text"
 [[resources.verbs]]
 id = "stop"
 kind = "outside"
+returns = { schema = {} }
 
 [[resources.verbs.params]]
 name = "source"
@@ -160,6 +166,7 @@ type = "text"
 [[resources.verbs]]
 id = "status"
 kind = "outside"
+returns = { schema = {} }
 
 [[resources.verbs.params]]
 name = "source"
@@ -174,6 +181,7 @@ type = "text"
 [[resources.verbs]]
 id = "undo"
 kind = "outside"
+returns = { schema = {} }
 
 [[resources.verbs.params]]
 name = "run"

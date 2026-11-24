@@ -145,9 +145,7 @@ fn offered_within(value: &Value, pressed: &ui::platform::Shortcut) -> Option<Str
             .as_deref()
             .filter(|key| ui::platform::Shortcut::from(*key).same_press(pressed))
             .map(|_| offered.event.clone()),
-        Value::List(items) => items
-            .iter()
-            .find_map(|item| offered_within(item, pressed)),
+        Value::List(items) => items.iter().find_map(|item| offered_within(item, pressed)),
         Value::Opt(Some(inner)) => offered_within(inner, pressed),
         _ => None,
     }

@@ -80,6 +80,29 @@ pub unsafe fn entry<T: Copy>(library: &str, symbol: &str) -> Result<T, LoadError
 /// The entry every app engine exports: the one that answers [`EngineApi`].
 pub const ENTRY: &str = "tilo_engine_entry";
 
+/// The entry every connector engine exports: the one that answers
+/// [`ConnectorApi`].
+pub const CONNECTOR_ENTRY: &str = "tilo_connector_entry";
+
+/// One outside origin's connector, as its library exports it.
+///
+/// A connector is the one place a tilolang app's origin reaches its service:
+/// it holds the network and the credentials the process that runs the app's
+/// instances has none of. The system runs it in a process of its own, which
+/// the launcher starts with the origin's name (`TILO_TILOLANG_CONNECTOR`) and
+/// the socket its instances attach over. Its library is not linked into the
+/// runtime: the process the connector runs as opens it the first time it is
+/// started as that origin, so no other process maps it.
+#[derive(Clone, Copy)]
+pub struct ConnectorApi {
+    /// The origin this connector serves, as the launcher names it, and no
+    /// other's.
+    pub origin: &'static str,
+    /// Run the connector on the socket the launcher handed this process, until
+    /// the session closes it.
+    pub run: fn() -> Result<(), String>,
+}
+
 /// What a job op needs beyond the engine's code, as its engine declares it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Needs {
@@ -373,7 +396,29 @@ pub struct EngineApi {
 pub unsafe fn engine(library: &str) -> Result<EngineApi, LoadError> {
     // SAFETY: the caller guarantees the library is an engine of this runtime,
     // and its entry answers its `EngineApi`.
-    let entry: fn() -> &'static EngineApi = unsafe { entry::<fn() -> &'static EngineApi>(library, ENTRY)? };
+    let entry: fn() -> &'static EngineApi =
+        unsafe { entry::<fn() -> &'static EngineApi>(library, ENTRY)? };
+    Ok(*entry())
+}
+
+/// The connector library `library` (its file name, as in the runtime bundle)
+/// answers, opening the library the first time.
+///
+/// # Errors
+///
+/// [`LoadError`] when the library does not open, has no [`CONNECTOR_ENTRY`], or
+/// names no origin this build reads.
+///
+/// # Safety
+///
+/// The library must be a connector built with this runtime: one that exports
+/// [`CONNECTOR_ENTRY`] answering a [`ConnectorApi`] whose calls share this
+/// build's types.
+pub unsafe fn connector(library: &str) -> Result<ConnectorApi, LoadError> {
+    // SAFETY: the caller guarantees the library is a connector of this
+    // runtime, and its entry answers its `ConnectorApi`.
+    let entry: fn() -> &'static ConnectorApi =
+        unsafe { entry::<fn() -> &'static ConnectorApi>(library, CONNECTOR_ENTRY)? };
     Ok(*entry())
 }
 
@@ -499,6 +544,24 @@ mod tests {
         let no_entry = unsafe { engine("libc.so.6") };
         assert!(
             matches!(&no_entry, Err(LoadError::Missing { symbol, .. }) if symbol == ENTRY),
+            "{:?}",
+            no_entry.err()
+        );
+    }
+
+    #[test]
+    fn a_connector_that_is_not_shipped_says_so_and_crashes_nothing() {
+        // SAFETY: nothing is called through the result.
+        let missing = unsafe { connector("libtilo_no_such_connector.so") };
+        assert!(
+            matches!(&missing, Err(LoadError::Open { library, .. }) if library == "libtilo_no_such_connector.so"),
+            "{:?}",
+            missing.err()
+        );
+        // SAFETY: as above; the library opens but names no connector.
+        let no_entry = unsafe { connector("libc.so.6") };
+        assert!(
+            matches!(&no_entry, Err(LoadError::Missing { symbol, .. }) if symbol == CONNECTOR_ENTRY),
             "{:?}",
             no_entry.err()
         );

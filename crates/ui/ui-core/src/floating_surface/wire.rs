@@ -24,11 +24,13 @@ pub struct PaintPart {
 }
 
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
+/// The longest frame either end writes: a paint payload in parts, a marker inventory, and a
+/// whole accessibility tree, which is what a window content of ten thousand controls exports.
 #[cfg(unix)]
-pub(crate) const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
-/// Backpressure bound for a non-reading shell peer.
+pub(crate) const MAX_PROTOCOL_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// Backpressure bound for a non-reading shell peer: a whole tree and the other asks of a pass.
 #[cfg(unix)]
-pub(crate) const MAX_OUTGOING_QUEUE_BYTES: usize = 4 * MAX_PROTOCOL_FRAME_BYTES;
+pub(crate) const MAX_OUTGOING_QUEUE_BYTES: usize = 2 * MAX_PROTOCOL_FRAME_BYTES;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -327,6 +329,19 @@ pub enum FloatingSurfaceClientMessage {
         targets: Vec<crate::window_targets::WindowTarget>,
         instance: Option<u64>,
     },
+    /// What assistive technology reads of this window, as the window's own
+    /// tree says it (`crate::accesskit::TreeUpdate`): its name, its nodes, the
+    /// node it focuses and the actions each answers. Sent whenever the tree
+    /// changed, never per frame. The session publishes it for the window over
+    /// AT-SPI ([`crate::accesskit`]), and sends back what a client asks of it
+    /// ([`FloatingSurfaceHostMessage::AccessibilityAction`]). `instance` names
+    /// the tab, as for [`Self::WindowTargets`].
+    AccessibilityTree {
+        tree: crate::accesskit::TreeUpdate,
+        /// The window's name, as its title says it.
+        name: String,
+        instance: Option<u64>,
+    },
     /// The app under the pointer could not scroll sideways with this wheel
     /// event: the shell pans the window strip under it by `travel` logical
     /// pixels, positive toward later windows, by the same rules it applies
@@ -546,6 +561,16 @@ pub enum FloatingSurfaceHostMessage {
         /// pressed: the press runs once the window has handled that input, so it comes after
         /// what the person typed before it and before what they type after. Absent when the
         /// shell names none, which runs the press at once.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_input: Option<u32>,
+    },
+    /// A client of the session's AT-SPI export invoked `request` on a node of
+    /// this window's tree ([`FloatingSurfaceClientMessage::AccessibilityTree`]):
+    /// the same action an assistive technology's press, focus or edit takes in
+    /// the window, found and run the same way. `after_input` as
+    /// [`Self::PressTarget`]'s.
+    AccessibilityAction {
+        request: crate::accesskit::ActionRequest,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_input: Option<u32>,
     },

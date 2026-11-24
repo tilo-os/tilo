@@ -80,7 +80,9 @@ view player_bar(p: Player) {
 ```
 
 - Size classes in `rem`: `compact` (< 30rem), `medium` (< 52rem), `expanded` (< 75rem), `wide`.
-  Large text moves a window into a narrower class, which is right.
+  The boundaries are one token (`tilo_ui_graph::layout`), which the shell's layout reads too, so
+  an app and the shell agree on when a window is compact. Large text moves a window into a
+  narrower class, which is right.
 - The toolkit's own rule for a sidebar follows from the classes: a window stands its sidebar beside
   the content only while the pane beside it keeps the class the content's kind asks for there
   (`ui::widget::ContentKind::beside_sidebar_class`) — a column of text is no phone's screen, so it
@@ -94,9 +96,10 @@ view player_bar(p: Player) {
   little hysteresis so a window resized right at one doesn't flicker.
 - Each view sees its own container's space: a card in a grid cell sees the cell, a row of a list
   sees the row's slot. A view call that takes only values is a boundary of its own and is given
-  the room it was placed in; one that takes view state is expanded where it is called (a template,
-  like a view taking a `View`), so what it reads is its caller's space — a sheet drawn in a list's
-  row reads the row's, and the page above it reads the room the pages area has. Layout tells each
+  the room it was placed in; until layout says where that is, it reads its caller's room, as the
+  caller's changes. One that takes view state is expanded where it is called (a template, like a
+  view taking a `View`), so what it reads is its caller's space — a sheet drawn in a list's row
+  reads the row's, and the page above it reads the room the pages area has. Layout tells each
   the size it gave it, as it gives it — a window being dragged, a rail folded away, a sidebar made
   wider — so a view that fits something to the room it has (`fit width`, a page whole on screen)
   computes from what it reads and follows live, and nothing polls for it.
@@ -204,3 +207,21 @@ view album_page(a: Album) {
 ```
 
 Side by side on a wide window, stacked on a narrow one, with no breakpoints.
+
+A `split` whose panes do not both fit `collapse`s: `.stack` (the default) puts the secondary
+under the primary, `.navigate` shows one at a time with Back, and `.drawer` keeps the secondary
+closed until the view opens it:
+
+```
+view editor(d: Deck) {
+    state rail_open: Bool = false
+    split(collapse: .drawer, drawer: rail_open) {
+        primary(min: 18rem) { canvas(d) }
+        secondary(min: 14rem) { rail(d) }
+    }
+}
+```
+
+`drawer:` takes a view state: an action, a key or a button that sets it opens or closes the
+secondary pane, through the same split widget Rust apps use, and the panes move at the
+container's `motion:` (reduced motion lands at once).

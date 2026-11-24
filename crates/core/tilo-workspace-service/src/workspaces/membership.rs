@@ -1,20 +1,16 @@
-//! What a workspace keeps of who is in it, as records of the workspace itself: each member's
-//! membership ([`Membership`]: the role they hold and when the workspace was made), which its
-//! members read as the workspace's grants allow, and what its owner alone keeps of it
+//! What a workspace's owner alone keeps of it, as a record of the workspace itself
 //! ([`Ownership`]: what they labelled it with, and whether keys reaching it alone run commands in
 //! its machine unasked), which no role but the owner's reads or changes
-//! ([`tilo_action_policy::roles::OWNER_ONLY_APP`]). A grant is decided per record, so the two
-//! are two records: a reader filters no field.
+//! ([`tilo_action_policy::roles::OWNER_ONLY_APP`]). A member's membership, the role they hold
+//! and when the workspace was made, is no record: it reads from the workspace's member list
+//! ([`tilo_server_protocol::workspaces::MEMBERSHIP_APP`]).
 //!
-//! A host that holds the workspace keeps both, whether or not it holds its owner's own
-//! workspace. Every listing of a person's workspaces joins each entry with them.
+//! A host that holds the workspace keeps it, whether or not it holds its owner's own workspace.
+//! Every listing of a person's workspaces joins each entry with both.
 
 use std::collections::BTreeMap;
 
 use tilo_resource::{Model, Refusal, resource};
-
-/// The app whose records the members' memberships are.
-pub const APP: &str = tilo_server_protocol::workspaces::MEMBERSHIP_APP;
 
 /// The record of what the workspace's owner alone keeps of it.
 pub const OWNERSHIP: (&str, &str) = tilo_server_protocol::workspaces::OWNERSHIP;
@@ -23,37 +19,6 @@ pub const OWNERSHIP: (&str, &str) = tilo_server_protocol::workspaces::OWNERSHIP;
 const MAX_LABELS: usize = 64;
 /// The longest name or value of a label, bytes.
 const MAX_LABEL: usize = 256;
-
-/// The record of `person`'s membership of the workspace.
-#[must_use]
-pub fn member_record(person: &[u8; 32]) -> String {
-    tilo_server_protocol::workspaces::member_record(person)
-}
-
-/// One member's membership of the workspace.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Membership {
-    /// The role they hold there.
-    pub role: Option<String>,
-    /// When the workspace was made, ms since the epoch.
-    pub made_at_ms: Option<i64>,
-}
-
-#[resource(kind = "tilo.membership", read_content = tilo_resource::read::fields)]
-impl Membership {
-    /// Keep that the member holds `role`, in a workspace made at `made_at_ms`.
-    #[action(housekeeping)]
-    pub fn keep_role(&mut self, role: String, made_at_ms: i64) -> Result<(), Refusal> {
-        if role.trim().is_empty() {
-            return Err(Refusal::new("a membership names its role"));
-        }
-        self.role = Some(role);
-        if self.made_at_ms.is_none() {
-            self.made_at_ms = Some(made_at_ms);
-        }
-        Ok(())
-    }
-}
 
 /// What the workspace's owner alone keeps of it.
 #[derive(Model, Default, Debug, Clone, PartialEq)]

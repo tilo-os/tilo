@@ -342,9 +342,9 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
         )
         .await
         .expect("the owner adds Bob as an editor");
-    for cert in [&ada_cert, &bob_cert] {
+    for (cert, key) in [(&ada_cert, &ada_key), (&bob_cert, &bob_key)] {
         hosted
-            .enter(&workspace, cert)
+            .enter(&workspace, (cert, key))
             .await
             .expect("a member's device enters the workspace");
     }
@@ -711,11 +711,11 @@ async fn a_member_removed_while_their_link_is_down_finds_no_workspace_when_it_re
         )
         .await
         .expect("the owner adds Bob as an editor");
-    for cert in [&ada_cert, &bob_cert] {
+    for (cert, key) in [(&ada_cert, &ada_key), (&bob_cert, &bob_key)] {
         hosted
-            .enter(&workspace, cert)
+            .enter(&workspace, (cert, key))
             .await
-            .expect("a member's device enters the workspace");
+            .expect("a member's device lists itself in the workspace");
     }
     let site = Site {
         server,
@@ -836,9 +836,9 @@ async fn a_file_only_a_mount_keeps_reaches_the_workspaces_server() {
         .clone();
     let workspace = hosted.create("Studio").await.unwrap().workspace;
     hosted
-        .enter(&workspace, &ada_cert)
+        .enter(&workspace, (&ada_cert, &ada_key))
         .await
-        .expect("Ada's laptop enters the workspace");
+        .expect("Ada's laptop lists itself in the workspace");
     let site = Site {
         server,
         cert: server_cert.clone(),

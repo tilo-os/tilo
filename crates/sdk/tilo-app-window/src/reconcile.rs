@@ -1220,6 +1220,8 @@ impl Reconciler {
         if let Some(ratio) = number(node, "ratio") {
             split = split.ratio(ratio);
         }
+        // `drawer: state`: the view decides whether the collapsed secondary pane stands open.
+        split.set_drawer_open(flag(node, "drawer"));
         if token(node, "collapse") == Some("navigate") {
             self.navigation = Some(split.navigation());
         }
@@ -1825,6 +1827,19 @@ impl Reconciler {
             }
             "form" | "field" => self.update_holder(widget, old_node, new_node),
             "checkbox" | "date" => (!same_shell(old_node, new_node)).then(|| self.build(new_node)),
+            // A split whose drawer opened or closed: the same container keeps its panes (and
+            // what they hold) and moves them, instead of a fresh shell landing at once.
+            "split" if same_shell_but(old_node, new_node, "drawer") => {
+                let Some(split) = widget
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<Split>())
+                else {
+                    return Some(self.build(new_node));
+                };
+                split.set_drawer_open(flag(new_node, "drawer"));
+                let kept = self.reconcile_children(widget, old_node, new_node);
+                (!kept).then(|| self.build(new_node))
+            }
             "scroll" if same_shell(old_node, new_node) => {
                 let Some(scroll) = widget
                     .as_any_mut()
@@ -2412,6 +2427,44 @@ mod tests {
         let new = stack("s", vec![node("divider", "a")]);
         let updated = reconciler.update(built, &old, &new);
         assert_ne!(identities(&updated), before);
+    }
+
+    #[test]
+    fn a_split_s_drawer_opens_and_closes_from_the_view_state() {
+        fn drawer(open: bool) -> UiNode {
+            let mut split = node("split", "sp");
+            split
+                .props
+                .insert("collapse".to_owned(), Value::text("drawer"));
+            if open {
+                split.props.insert("drawer".to_owned(), Value::Bool(true));
+            }
+            split.children = vec![node("primary", "p"), node("secondary", "q")];
+            split
+        }
+        let mut reconciler = reconciler();
+        let built = reconciler.build(&drawer(true));
+        let open = built
+            .as_any()
+            .and_then(|any| any.downcast_ref::<Split>())
+            .expect("a split");
+        assert!(open.drawer_open(), "the view opened the drawer");
+        // Closing it keeps the same container: the panes and what holds them stay.
+        let closed = reconciler.update(built, &drawer(true), &drawer(false));
+        let closed = closed
+            .as_any()
+            .and_then(|any| any.downcast_ref::<Split>())
+            .expect("still a split");
+        assert!(!closed.drawer_open(), "the view closed the drawer");
+        // A drawer the view opens starts closed and opens through the same path.
+        let shut = reconciler.build(&drawer(false));
+        let opened = reconciler.update(shut, &drawer(false), &drawer(true));
+        assert!(
+            opened
+                .as_any()
+                .and_then(|any| any.downcast_ref::<Split>())
+                .is_some_and(Split::drawer_open)
+        );
     }
 
     #[test]

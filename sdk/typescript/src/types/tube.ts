@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@b4f09b8acd372be4";
+export const SURFACE = "so.tilo.tube@c3855a677fd393b4";
 
 /** The arguments of `subscribe`. */
 export interface SubscribeArgs {
@@ -255,8 +255,10 @@ export interface Video extends tilo.Resource {
   forget(): Promise<void>;
   /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks the service for where the video's bytes play from again, after the player could not show them: the address the client holds is the service's alone to write, and the answer it gives now is what the player opens. */
-  retry_playback(): Promise<void>;
+  /** Asks the service for where the video's bytes play from again, after the player could not show them: the address the client holds is the service's alone to write, and the answer it gives now is what the player opens. The session moves to where the stream stopped, so the fresh address continues there. */
+  retry_playback(args: {
+    at: number;
+  }): Promise<void>;
   /** Asks the service for the video's comments again, for what people said since the page opened. */
   refresh_comments(): Promise<void>;
 }
@@ -453,6 +455,20 @@ export const PAIREDDEVICE_ACTIONS = [] as const;
 /** The `tl.so.tilo.tube.PairedDevice` kind at `path`. */
 export function pairedDevice(ws: tilo.Workspace, path: string): PairedDevice {
   return resourceProxy(ws, path, SURFACE, PAIREDDEVICE_ACTIONS) as unknown as PairedDevice;
+}
+
+/** GrayjayStarted — `tl.so.tilo.tube.GrayjayStarted`. */
+export interface GrayjayStarted extends tilo.Resource {
+  xtg3ig6h: string;  // job
+}
+
+/** The actions `GrayjayStarted` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const GRAYJAYSTARTED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.GrayjayStarted` kind at `path`. */
+export function grayjayStarted(ws: tilo.Workspace, path: string): GrayjayStarted {
+  return resourceProxy(ws, path, SURFACE, GRAYJAYSTARTED_ACTIONS) as unknown as GrayjayStarted;
 }
 
 /** GrayjayPairAsk — `tl.so.tilo.tube.GrayjayPairAsk`. */

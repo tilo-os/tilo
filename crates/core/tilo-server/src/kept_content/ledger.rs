@@ -17,13 +17,14 @@ use serde::{Deserialize, Serialize};
 /// The directory, under the content store's, the ledgers sit in.
 pub(super) const DIRECTORY: &str = "kept";
 
-/// One piece of content the host kept: its address, the device whose answer it
+/// One piece of content the host kept: its address, the member whose answer it
 /// came from, how many bytes it is, and when it came, milliseconds since the
 /// Unix epoch.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct Entry {
     pub(super) hash: String,
-    /// The device that answered with it, lowercase hex.
+    /// The member that answered with it, lowercase hex: the person the device
+    /// belongs to, or the device itself for one that belongs to nobody.
     pub(super) member: String,
     pub(super) bytes: u64,
     pub(super) at: u64,

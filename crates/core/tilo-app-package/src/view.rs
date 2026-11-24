@@ -61,6 +61,9 @@ pub struct ManifestView {
     /// (a service connection, say) is decided by the launcher; declaring it
     /// is only the ceiling.
     pub capabilities: Vec<String>,
+    /// `[package.dev]` when this is a development build: the device that built it and the app it
+    /// is a build of. What a shell shows as the dev marking.
+    pub dev: Option<crate::manifest::DevBuild>,
 }
 
 impl ManifestView {
@@ -156,6 +159,7 @@ impl TryFrom<Manifest> for ManifestView {
             .collect();
         Ok(ManifestView {
             package_id: package.id,
+            dev: package.dev,
             name: package.name,
             localized_names,
             keywords,

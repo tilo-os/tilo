@@ -745,6 +745,9 @@ impl Instance {
                 ViewEvent::CopyLink { target, app } => self.copy_link(&target, &app),
                 // Export is the system's too: the resource is written out here as a file.
                 ViewEvent::Export { target, .. } => self.export(&target),
+                // A view ended the keyboard's place in an editor: the window lets the field go,
+                // as closing the editor does.
+                ViewEvent::EndEdit => self.out.push(ToUi::Focus { key: None }),
                 ViewEvent::Seen { count } => {
                     self.seen_offer = true;
                     self.out.push(ToUi::Notice {

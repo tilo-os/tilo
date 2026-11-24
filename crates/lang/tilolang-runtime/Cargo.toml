@@ -26,6 +26,8 @@ blake3.workspace = true
 tilolang = { version = "0.1.0", path = "../tilolang" }
 # What an app is called: the one id type every crate naming one shares.
 tilo-app-id.workspace = true
+# The width classes a view is laid out in: one token with the toolkit's layout.
+tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
 # `RichText` values and fields are tilo-doc's rich text: one rich-text model for every app.
 tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc" }
 # A document as the Markdown an editor shows and writes, and the bounded reader of the archives
@@ -73,10 +75,8 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Engine construction, the call's limits, the refuel and the one text of a failure: shared with
 # every other wasm host in the tree.
 tilo-wasm-host = { version = "0.1.0", path = "../../core/tilo-wasm-host", default-features = false }
-# Why a module stays on wasmi or was not kept on disk.
+# Why a module stays on wasmi or why its artifact was not used.
 tracing.workspace = true
-# Compiled modules are written beside their place in the disk cache, then renamed into it.
-tempfile.workspace = true
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # What a file is called, and the most it may hold: one reading of a file's media type and size,
 # shared with the window that hands a dropped file over.
@@ -89,27 +89,33 @@ spellcheck = { package = "tilo-spellcheck", version = "0.1.0", path = "../../ui/
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native targets only: wasmtime maps executable memory, which no browser has.
-# The compiled tier: apps start on wasmi while Cranelift compiles their modules, then run
-# compiled (`engine/tiering.rs`). Winch is there to compare engines (`tilolang bench --engine`,
-# docs/tilolang-engines.md).
+# The compiled tier's runtime: the process deserializes the modules the device daemon compiled
+# for it and runs them. It links no compiler; `compile` adds one for benchmarks and tests.
 wasmtime = { version = "50.0.0", optional = true, default-features = false, features = [
-    "cranelift",
     "runtime",
     "std",
-    "winch",
 ] }
+# The daemon's ahead-of-time compiled modules: the engine configuration both sides share, and
+# the sealed artifact this runtime checks and deserializes.
+tilo-wasm-aot = { version = "0.1.0", path = "../../core/tilo-wasm-aot", optional = true }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [features]
 # Every shipped build runs the tiered engine; without the feature, wasmi alone.
 default = ["wasmtime"]
-wasmtime = ["dep:wasmtime"]
+wasmtime = ["dep:wasmtime", "dep:tilo-wasm-aot"]
+# A compiler in this process, for comparing engines and for benchmarks: no shipped runtime is
+# built with it. Modules normally come compiled from the device daemon.
+compile = ["wasmtime", "wasmtime/cranelift", "wasmtime/winch", "tilo-wasm-aot/compile"]
 
 [dev-dependencies]
 # The database engine the Database Client asks by name, driven end to end by its test. No version:
 # the crate is not published, and Cargo leaves a versionless dev-dependency out of the package.
 tilo-db = { path = "../../engines/tilo-db" }
+# The compiler the tests use to produce the artifacts a device's daemon would.
+tilo-wasm-aot = { path = "../../core/tilo-wasm-aot", features = ["compile"] }
+tempfile.workspace = true
 # A scenario's cases are the phases of one test (`scenario!`).
 tilo-test-env = { path = "../../../tools/test-env" }
 # The platform's packages (the device, the session) an app compiles against in its test.

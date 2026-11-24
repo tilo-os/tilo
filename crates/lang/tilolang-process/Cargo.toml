@@ -38,6 +38,7 @@ app-launch = [
     "dep:tilo-tiles",
     "dep:code-engine",
     "dep:accounts",
+    "dep:tilo-maps-engine",
 ]
 # The toolkit and `libstd` linked from the Tilo runtime's one shared library, as every thin app
 # links them: the runtime bundle's build, and `tilolang dev`'s, whose window maps a rebuild of this
@@ -109,6 +110,8 @@ tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metr
 uuid.workspace = true
 # The device's network, which an app's `web.get` and `web.post` reach once per request.
 tilo-tiles = { version = "0.1.0", path = "../../engines/tilo-tiles", optional = true }
+# Maps' device work: the areas it keeps for offline use, answered for `so.tilo.maps`.
+tilo-maps-engine = { version = "0.1.0", path = "../../engines/maps-engine", optional = true }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false, features = ["blocking"] }
 # The mail origin, reaching the connector process the system runs for the app.
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
@@ -142,8 +145,10 @@ tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
 ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 # An app's windows (`app-launch`): the toolkit's framework, the app window's half of each window,
-# what a window keeps of the person's own data, and later builds `tilolang dev` publishes.
-ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true }
+# what a window keeps of the person's own data, and later builds `tilolang dev` publishes. The
+# app process is not the native runner: the session runs the window's host, and this process
+# reaches every host service through a connection, never a portal of its own.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true, default-features = false }
 tilo-app-window = { path = "../../sdk/tilo-app-window", optional = true }
 tilo-failure = { path = "../../platform/tilo-failure", optional = true }
 # The device's own folders, watched the way the platform watches them: inotify, FSEvents or
@@ -151,14 +156,20 @@ tilo-failure = { path = "../../platform/tilo-failure", optional = true }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 notify.workspace = true
 tilo-app-module = { version = "0.1.0", path = "../tilo-app-module", optional = true }
-# YouTube as an outside origin: its connector, and a window without a session keeping a video
-# site's resources in step with it, in native code with the network.
-tilolang-youtube = { path = "../../integrations/tilolang-youtube", optional = true }
+# YouTube as an outside origin: the connector role the process runs when the launcher starts it
+# as one, and a window without a session reaching that connector. YouTube's client lives in the
+# connector's engine library, so this process links none of it.
+tilolang-youtube = { path = "../../integrations/tilolang-youtube", default-features = false, features = [
+    "connector",
+], optional = true }
 # YouTube's Grayjay link: the Noise handshake and exchanges with a Grayjay device, whose key is
 # the app's own secret in the platform's store.
-# A music catalogue as an outside origin: its connector, and a window without a session keeping
-# a package's songs in step with it, in native code with the network.
-tilolang-music = { path = "../../integrations/tilolang-music", optional = true }
+# A music catalogue as an outside origin: the connector role the process runs when the launcher
+# starts it as one, and a window without a session reaching that connector. The catalogue's
+# clients live in the connector's engine library, so this process links none of them.
+tilolang-music = { path = "../../integrations/tilolang-music", default-features = false, features = [
+    "connector",
+], optional = true }
 runtime-dylib = { path = "../../sdk/runtime-dylib", optional = true }
 
 [dev-dependencies]
@@ -186,8 +197,9 @@ tilo-workspace-service = { path = "../../core/tilo-workspace-service", features 
 tempfile.workspace = true
 # The replies the test's broker awaits from the instance's action directory.
 tokio = { workspace = true, features = ["sync"] }
-# An app's windows as the framework runs them, in the headless frame harness.
-ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+# An app's windows as the framework runs them, in the headless frame harness. The tests host
+# them the way the session does, so they take the toolkit without the native runner.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", default-features = false, features = ["test-support"] }
 # The headless test host the tests open the app in, as a person's device hosts it.
 tilo-app-test-host = { path = "../../sdk/tilo-app-test-host" }
 # Mail's engine, and the stand-in IMAP and SMTP servers Mail's windows run against.

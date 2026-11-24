@@ -478,7 +478,7 @@ tilo_test_env::scenario! {
         // Nor does admitting its certificate as an ordinary device.
         assert!(
             !governor
-                .admit_certificate(cert, &authority, withdrawn)
+                .governance_mut().admit_member_device(&cert, &authority, withdrawn)
                 .unwrap()
         );
         assert!(governor.permissions(device, withdrawn).is_err());
@@ -502,7 +502,7 @@ tilo_test_env::scenario! {
         let (_, plain) = agent(&person, 12);
         assert!(
             governor
-                .admit_certificate(plain.clone(), &authority, now)
+                .governance_mut().admit_member_device(&plain, &authority, now)
                 .unwrap()
         );
         assert!(

@@ -69,7 +69,13 @@ fn redemption(
     let redeemed =
         join::verify_join_proof(&proof, &challenge, device, &RevocationList::new(), ns(now))
             .unwrap();
-    (verified, join::JoinCompleteRequest { proof }, redeemed)
+    // The enrolment installs the bootstrap this test builds: no answering
+    // device takes an admission in.
+    let complete = join::JoinCompleteRequest {
+        proof,
+        admission: Vec::new(),
+    };
+    (verified, complete, redeemed)
 }
 
 /// `author`'s chat message `text`, signed as its write `seq`, after

@@ -8,6 +8,8 @@ version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "438a7081a65b95c668db56591a4fef9bc5dad275f448bd6223fc6949d823db38"
 dependencies = [
+ "enumn",
+ "serde",
  "uuid",
 ]
 
@@ -3591,6 +3593,17 @@ name = "enumflags2_derive"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "enumn"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f9ed6b3789237c8a0c1c505af1c7eb2c560df6186f01b098c3a1064ea532f38"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -15783,6 +15796,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-browser-engine"
+version = "0.1.0"
+dependencies = [
+ "host-fs",
+ "percent-encoding",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-engine-loader",
+ "tilo-net",
+ "tilo-paths",
+ "tilo-rt",
+ "tilo-test-http",
+ "tokio",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [
@@ -15817,6 +15849,7 @@ dependencies = [
  "tilo-workspace-join",
  "tilo-workspace-keys",
  "tokio",
+ "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "workspace-hack",
@@ -16622,6 +16655,7 @@ dependencies = [
  "jiff",
  "libc",
  "os-actions",
+ "package-actions",
  "rand 0.10.3",
  "rustix 1.1.6",
  "serde_json",
@@ -16632,10 +16666,12 @@ dependencies = [
  "tilo-actions",
  "tilo-agent-session",
  "tilo-app-id",
+ "tilo-app-package",
  "tilo-automation",
  "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-collab-types",
+ "tilo-collaboration",
  "tilo-device-identity",
  "tilo-failure",
  "tilo-files",
@@ -18018,6 +18054,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-maps-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-location",
+ "tilo-rt",
+ "tilo-tiles",
+ "tilolang-tilo",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-mcp"
 version = "0.1.0"
 dependencies = [
@@ -18350,6 +18399,16 @@ version = "0.1.0"
 dependencies = [
  "poker-model-wasm",
  "remote-model-wasm",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-music-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-engine-loader",
+ "tilolang-music",
  "workspace-hack",
 ]
 
@@ -19620,6 +19679,7 @@ dependencies = [
  "tilo-ui",
  "tilo-unlock-protocol",
  "tilo-user-identity",
+ "tilo-wasm-aot",
  "tilo-wire-frame",
  "tilo-workspace-keys",
  "tilo-workspace-service",
@@ -20261,6 +20321,7 @@ dependencies = [
  "tilo-liveness",
  "tilo-location",
  "tilo-lock",
+ "tilo-maps-engine",
  "tilo-mcp",
  "tilo-media",
  "tilo-media-controls",
@@ -20929,10 +20990,14 @@ dependencies = [
 name = "tilo-theme-painter-wasm"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
  "tilo-lock",
  "tilo-theme-sdk",
+ "tilo-wasm-aot",
  "tilo-wasm-host",
+ "tracing",
  "wasmi",
+ "wasmtime",
  "wat",
  "workspace-hack",
 ]
@@ -20973,6 +21038,8 @@ name = "tilo-tiles"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "serde",
+ "serde_json",
  "tilo-net",
  "tilo-paths",
  "tracing",
@@ -21172,6 +21239,7 @@ dependencies = [
  "tilo-ui-paint",
  "tilo-vello",
  "tilo-vello-encoding",
+ "tilo-wasm-aot",
  "tilo-webview",
  "tilo-wgpu",
  "tilo-winit",
@@ -21516,6 +21584,17 @@ dependencies = [
  "tilo-image-codec",
  "tilo-paths",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-wasm-aot"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "tempfile",
+ "wasmtime",
+ "wat",
  "workspace-hack",
 ]
 
@@ -21912,6 +21991,7 @@ dependencies = [
  "tilo-files",
  "tilo-formats",
  "tilo-fs",
+ "tilo-fs-client",
  "tilo-fs-protocol",
  "tilo-history",
  "tilo-identity",
@@ -21920,7 +22000,6 @@ dependencies = [
  "tilo-lock",
  "tilo-mail-session",
  "tilo-mcp",
- "tilo-model-engine",
  "tilo-model-gateway",
  "tilo-neighbour-wire",
  "tilo-net",
@@ -21976,6 +22055,16 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "x11rb",
+]
+
+[[package]]
+name = "tilo-youtube-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-engine-loader",
+ "tilolang-youtube",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -22219,6 +22308,7 @@ dependencies = [
  "tilo-formats",
  "tilo-history",
  "tilo-image-codec",
+ "tilo-maps-engine",
  "tilo-media",
  "tilo-net",
  "tilo-network-client",
@@ -22307,7 +22397,9 @@ dependencies = [
  "tilo-sheet",
  "tilo-spellcheck",
  "tilo-test-env",
+ "tilo-ui-graph",
  "tilo-wake",
+ "tilo-wasm-aot",
  "tilo-wasm-host",
  "tilolang",
  "tilolang-grayjay",
@@ -22434,7 +22526,6 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-failure",
  "tilo-lock",
- "tilo-peer-state",
  "tilo-reference",
  "tilo-resource",
  "tilo-runtime-portal",
@@ -25941,6 +26032,7 @@ dependencies = [
 name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
+ "accesskit",
  "adblock",
  "aead 0.5.2",
  "aead 0.6.1",

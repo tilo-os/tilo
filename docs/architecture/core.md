@@ -223,9 +223,10 @@ direct message, a task assigned to it, a change to some resource, a time, or
 the weather in Bangalore. A watched event says what happened to the resource,
 created, edited or removed, read by the store from the recorded change beside
 its id; no app works it out for itself. A new agent comes with the triggers a member would
-expect (mentions, direct messages, assigned tasks), and its person changes them
-like any automation's. A trigger starts a turn, and the agent answers where it
-was triggered: in the chat, on the task, in the note. There is no separate
+expect (mentions, direct messages, assigned tasks, mail that arrives in the workspace's
+mailbox), and its person changes them like any automation's. A trigger starts a turn, and the
+agent answers where it was triggered: in the chat, on the task, in the note, or in the mail
+conversation the message arrived in. There is no separate
 record of asking. A turn is an invocation of the agent's answer action, so its
 state, steps and output are that invocation record's, and its cause is the
 address of the change that triggered it. Its triggers are an ordinary shortcut
@@ -1033,6 +1034,10 @@ workspace vault, despite their names.
   own workspace from its ticket and certificate, and reads the list of the
   person's workspaces from it, so that list never names the own workspace
   itself.
+  Which servers keep a workspace is recorded in that workspace, the own one
+  included: a server keeping the person's own workspace reads that there. Only
+  the person's own devices, their own servers included, hold its keys; a server
+  of anyone else stores its sealed frames and writes nothing.
 
 ### What goes
 
@@ -1219,9 +1224,17 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   accepted only when the called action declares it, read from the registry and
   never from the call, and only from the device that keeps that record; history
   still names the caller, and every projection shows the declared effects.
+  A rule that asks first is answered only by a confirmation the call carries:
+  the person's attested press on the system's confirm view, or the CLI's own
+  prompt on a connection that is the person. Making the call is not the answer,
+  in any store, and an app or agent cannot set it.
   A device placed for one record alone, such as a hosted Browser's environment,
   carries that confinement in its certificate: the placing host, for the person,
-  certifies it for that one record, short-lived and refused once stopped. Every
+  certifies it for that one record, short-lived and refused once stopped. The
+  host signs with its own device key: as one of the person's devices, or under
+  a placement grant the person gave that device for named records, revoked like
+  any grant. No separate key signs in the person's place, and a host with
+  neither refuses to place. Every
   replica admits its writes to that record and nothing else, with no member row
   and no keys, and history names the person. It never enters a workspace or
   redeems an invitation.

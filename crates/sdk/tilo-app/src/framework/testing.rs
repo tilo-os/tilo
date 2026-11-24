@@ -13,12 +13,11 @@ use ui_core::application::{ApplicationOwner, ComponentRunnerInputs};
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{MemberId, Role};
-use ui_core::resource::DocumentId;
 
 use tilo_resource::Resource;
 
 use super::app::{ResourceApp, definition, prepare_on, role_permissions};
-use super::headless::{AUTHOR, INSTANCE, Kept, operation, surface_of};
+use super::headless::{AUTHOR, INSTANCE, Kept, surface_of};
 use super::root::ResourceRoot;
 
 pub use super::headless::{
@@ -227,32 +226,6 @@ pub fn live_window_in_workspace<A: ResourceApp>(
     let (component, content, inputs) = live_window_component::<A>(&mut host, profile.path())?;
     let harness = FrameHarness::from_component(component, (1024, 768), inputs)?;
     Ok((harness, content))
-}
-
-/// The record window `instance` of `A` kept in the test workspace while `A` kept
-/// one per window: stamped with that window's default identity, initialized
-/// as `A` creates a record, then edited with `actions`. Open the app over
-/// such records with [`HeadlessApp::with_window_resources`].
-pub fn window_resource<A: ResourceApp>(
-    instance: u64,
-    actions: &[<A::Resource as Resource>::Action],
-) -> Result<tilo_resource::Doc, LaunchError> {
-    let mut doc = tilo_resource::Doc::new();
-    let kind = definition::<A>().resource_type.clone();
-    if !ui_core::resource::init_scoped(
-        &mut doc,
-        &DocumentId::window_default(instance),
-        &kind,
-        TEST_WORKSPACE,
-        Some(TEST_WORKSPACE),
-    ) {
-        return Err(operation("the window record could not be stamped"));
-    }
-    <A::Resource as Resource>::initialize(&mut doc).map_err(operation)?;
-    for action in actions {
-        tilo_actions::Action::apply(action, &mut doc).map_err(operation)?;
-    }
-    Ok(doc)
 }
 
 /// [`drive_live_window`] with the window shown in a region of a host's

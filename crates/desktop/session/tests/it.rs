@@ -81,6 +81,8 @@ mod collab;
 mod confirm;
 #[path = "controllers.rs"]
 mod controllers;
+#[path = "daemon_start.rs"]
+mod daemon_start;
 #[path = "delete_workspace.rs"]
 mod delete_workspace;
 #[path = "desktop_services.rs"]
@@ -197,14 +199,16 @@ mod panel_services;
 mod part_view;
 #[path = "people.rs"]
 mod people;
+#[path = "people_cards.rs"]
+mod people_cards;
 #[path = "person_workspace.rs"]
 mod person_workspace;
 #[path = "placed_apps.rs"]
 mod placed_apps;
-#[path = "portal_link.rs"]
-mod portal_link;
 #[path = "poker_between_devices.rs"]
 mod poker_between_devices;
+#[path = "portal_link.rs"]
+mod portal_link;
 #[path = "power.rs"]
 mod power;
 #[path = "primary_display.rs"]
@@ -315,6 +319,8 @@ mod window_layout;
 mod window_menu;
 #[path = "window_menu_probe.rs"]
 mod window_menu_probe;
+#[path = "window_notes.rs"]
+mod window_notes;
 #[path = "window_share_live.rs"]
 mod window_share_live;
 #[path = "windows_compat.rs"]

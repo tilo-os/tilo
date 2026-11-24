@@ -11,11 +11,12 @@
 //! The look is the theme's: the surface is [`SurfaceLevel::Window`], the handle a floating
 //! surface of the hover toolbar's, the title a label in the theme's secondary ink.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use vello::kurbo::{Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
+use winit::event::WindowEvent;
 
 use crate::component::{Component, Described};
 
@@ -60,6 +61,10 @@ pub struct PlaceProps {
 /// pin this much over the point it was put at, so the view's own top is at the point.
 pub const PLACE_BAND: f64 = crate::tokens::Metrics::BASE.panel_row_height as f64;
 
+/// What a place's handle is keyed by, after the place's own key: a resource dragged from a key
+/// ending so is a place being moved by its handle.
+pub(crate) const HANDLE_KEY: &str = "\u{1f}handle";
+
 /// See the module docs.
 pub struct CanvasPlace {
     /// The place's menu around its view and its handle, so a right-click on either opens it.
@@ -69,6 +74,14 @@ pub struct CanvasPlace {
     carries: String,
     /// The commands its menu offers, as the props last gave them.
     items: Rc<RefCell<Vec<MenuItemProps>>>,
+    /// Where its ground was last drawn: the band over it is what the place is taken by.
+    ground_at: Rc<Cell<Rect>>,
+    /// The band its handle shows in, as last drawn.
+    band: Rect,
+    /// The pointer rests on the band.
+    on_band: bool,
+    /// Where the place stands for the shell's control hints, as a window does.
+    anchor: crate::control_hints::anchors::WindowAnchor,
 }
 
 fn empty() -> Element {
@@ -101,7 +114,7 @@ impl Described for CanvasPlace {
             .with_wrap_mode(crate::text_render::TextWrapMode::WordOrGlyph);
         let caption: Element = match carries {
             Some(resource) if !resource.is_empty() => Box::new(DragSource::new(
-                format!("{key}\u{1f}handle"),
+                format!("{key}{HANDLE_KEY}"),
                 Box::new(caption),
                 resource,
                 title.clone(),
@@ -115,7 +128,9 @@ impl Described for CanvasPlace {
             .push(controls.unwrap_or_else(empty));
         let mut part = Part::new(body.unwrap_or_else(empty));
         part.fit = Fit::fill(1.0);
+        let ground_at = Rc::new(Cell::new(Rect::ZERO));
         let ground = PlaceGround {
+            at: Rc::clone(&ground_at),
             name: name.clone(),
             column: Stack::stack()
                 .fill_width()
@@ -146,6 +161,10 @@ impl Described for CanvasPlace {
             name: title_of(props_name.as_deref()),
             carries: props_carries,
             items,
+            ground_at,
+            band: Rect::ZERO,
+            on_band: false,
+            anchor: crate::control_hints::anchors::WindowAnchor::new(),
         }
     }
 
@@ -182,12 +201,57 @@ impl Decorator for CanvasPlace {
     fn name(&self) -> &'static str {
         "Place"
     }
+
+    /// Resting on the band is where a place is taken to move it, as a window's bar is: the
+    /// shell's control hints hear it ([`crate::control_hints`]).
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let on = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                Some(self.band.contains(ctx.logical(position)))
+            }
+            WindowEvent::CursorLeft { .. } => Some(false),
+            _ => None,
+        };
+        if let Some(on) = on {
+            if on && !self.on_band {
+                crate::control_hints::performed::note(
+                    crate::control_hints::performed::Performed::HoveredWindowBar,
+                );
+            }
+            self.on_band = on;
+        }
+        Widget::handle_event(&mut self.menu, event, ctx);
+    }
+
+    /// The place, then where it stands for the shell's control hints: whole, its band as its bar,
+    /// and while a hint may show, where it shows text and controls, which a hint never covers.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
+    )]
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        let transform = ctx.parts().1;
+        Widget::draw(&mut self.menu, ctx);
+        let rect = Widget::get_rect(&self.menu);
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let ground = self.ground_at.get();
+        self.band = Rect::new(rect.x0, rect.y0, rect.x1, ground.y0.clamp(rect.y0, rect.y1));
+        let ink = crate::control_hints::anchors::wants_ink()
+            .then(|| crate::control_hints::ink::of(&*self).unwrap_or_else(|| vec![rect]));
+        self.anchor
+            .state(false, self.on_band, !self.carries.is_empty());
+        self.anchor.drawn(transform, rect, self.band, ink);
+    }
 }
 
 /// The place's ground: the window surface under its view, which is cut at the surface's rounded
 /// edge so nothing it holds is seen past it. It is the place as assistive technology reads it,
 /// named for what it shows: the place's surface, where it was put, its handle's band over it.
 struct PlaceGround {
+    /// Where it was last drawn, for the place around it.
+    at: Rc<Cell<Rect>>,
     name: Option<String>,
     column: Stack,
 }
@@ -227,6 +291,7 @@ impl Decorator for PlaceGround {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let rect = self.column.get_rect();
+        self.at.set(rect);
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }

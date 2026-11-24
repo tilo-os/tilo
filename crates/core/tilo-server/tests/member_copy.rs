@@ -18,7 +18,7 @@ async fn a_members_device_opens_the_workspaces_tree_from_its_server() {
     let server_device = ada.enrol("home-server", DeviceCapabilities::member());
     let laptop = ada.enrol("laptop", DeviceCapabilities::primary());
     let server_key = server_device.device_pubkey();
-    let server = spawn_server(&ada, server_device, &[WORKSPACE], &[&laptop.cert]).await;
+    let server = spawn_server(&ada, server_device, &[WORKSPACE], &[&laptop]).await;
     let hosted = server
         .server
         .workspaces()

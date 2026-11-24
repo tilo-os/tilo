@@ -20,7 +20,7 @@ use crate::store::Store;
 use crate::value::Value;
 
 use Imp::{
-    Abort, ActAnswer, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder,
+    Abort, ActAnswer, ActBlur, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder,
     ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen, ActUndo, Actions,
     ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, Base64Decode,
     Blake3, BytesLength, CallFn, CallInputs, CallMembers, CanvasCombine, CanvasCompare, CanvasDiff,
@@ -740,9 +740,8 @@ impl Core {
             | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | UiBindStateAt
             | StateGet | StateAt | ArgAt | ActSet | ActThen | ActAnswer | ActMadeFrom | ActMany
             | ActOpen | ActUndo | ChangeView | UiActions | UiAction | ActChoose
-            | ActChooseFolder | ActSave | ActCall | ActCallInput | ActCallVolume | ActRunLine => {
-                self.ui_import(imp, a)
-            }
+            | ActChooseFolder | ActSave | ActBlur | ActCall | ActCallInput | ActCallVolume
+            | ActRunLine => self.ui_import(imp, a),
             EventValue | EventPart | EventPress | Actions | Lenses | CallMembers | CallInputs
             | Invoked | LinesRun | Delivery | Reach | MetaOf | Versions | VersionChange | Links
             | RunChanges | Unreadable | Unseen | FirstUnseen | SeenBy | Mentions | Steps

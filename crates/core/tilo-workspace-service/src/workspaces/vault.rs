@@ -800,7 +800,11 @@ impl<'a> VaultAt<'a> {
     pub(crate) async fn keep_account(&self, account: &accounts::Account) -> Result<(), String> {
         match self {
             Self::Workspace(workspaces, workspace, acting, call) => {
-                let by = workspaces.acting_or_own(*acting);
+                // Who acted, as they acted: the write keeps the call it serves under them, and
+                // names whom the device's own writes name only where it serves none.
+                let by = acting
+                    .cloned()
+                    .unwrap_or_else(|| workspaces.acting_or_own(None));
                 workspaces
                     .keep_workspace_account((workspace, &by, *call), account)
                     .await
@@ -827,7 +831,11 @@ impl<'a> VaultAt<'a> {
     ) -> Result<(), String> {
         match self {
             Self::Workspace(workspaces, workspace, acting, call) => {
-                let by = workspaces.acting_or_own(*acting);
+                // Who acted, as they acted: the write keeps the call it serves under them, and
+                // names whom the device's own writes name only where it serves none.
+                let by = acting
+                    .cloned()
+                    .unwrap_or_else(|| workspaces.acting_or_own(None));
                 workspaces
                     .keep_workspace_accounts((workspace, &by, *call), keep, remove)
                     .await

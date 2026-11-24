@@ -19,9 +19,7 @@
 //! it prints passed on to the device that asked as it prints it. A provider the
 //! device's embedder registered ([`Workspaces::provide`](super::Workspaces::provide))
 //! answers the requests that name it, once the workspace's grants admit the
-//! asking device to the action, and so does the move of what this device's
-//! apps kept in files into the workspace, run once
-//! ([`profile_import`](super::profile_import)). Every other app action reaches this device
+//! asking device to the action. Every other app action reaches this device
 //! through the session its members run, where the caller's certificate and the
 //! workspace's policy
 //! decide them ([`AppActionServer`](crate::app_serving::AppActionServer)).
@@ -548,105 +546,6 @@ fn settled_update(
     }
 }
 
-/// Whether `provider` is the import of this device's apps' files
-/// ([`super::profile_import::PROVIDER`]).
-#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-fn imports(provider: &str) -> bool {
-    provider == super::profile_import::PROVIDER
-}
-
-/// A device that runs no apps kept no app files, and publishes no import of them.
-#[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
-const fn imports(_: &str) -> bool {
-    false
-}
-
-#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-impl DeviceWork {
-    /// Answer `request`, a device's ask that this one move what its apps kept in files into the
-    /// workspace the caller asks in ([`super::profile_import::IMPORT`]), once the workspace's
-    /// grants admit the asking device to it: with what the move, run once, moved.
-    fn import_app_files(
-        self: &Arc<Self>,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        use super::profile_import::{IMPORT, PROVIDER};
-        let (Some(device), Some(workspace)) = (
-            caller.device_public_key().copied(),
-            caller.workspace().map(str::to_owned),
-        ) else {
-            return Pending::ready(Err(ActionCallError::NotPermitted));
-        };
-        if request.target.address.action != IMPORT {
-            return Pending::ready(Err(ActionCallError::UnknownAction));
-        }
-        let invocation = request.invocation;
-        {
-            let mut log = self.log.lock_recover();
-            match log.reserve(caller, request) {
-                Err(error) => return Pending::ready(Err(error)),
-                Ok(Reservation::Admitted) => {
-                    return Pending::ready(
-                        log.get(caller, &invocation)
-                            .map(InvocationState::receipt)
-                            .ok_or(ActionCallError::UnknownInvocation),
-                    );
-                }
-                Ok(Reservation::Reserved) => {}
-            }
-        }
-        let resource = request.target.address.resource.clone();
-        let work = Arc::clone(self);
-        let (completer, answer) = tilo_actions::remote::pending();
-        self.runtime.spawn(async move {
-            let moved = match work.turns.get().and_then(super::WeakWorkspaces::upgrade) {
-                None => Err(not_served()),
-                Some(workspaces) => {
-                    if workspaces
-                        .permits_action(device, &workspace, (PROVIDER, &resource, IMPORT))
-                        .await
-                    {
-                        workspaces
-                            .import_asked(&workspace, &resource)
-                            .await
-                            .map_err(|reason| ActionCallError::Refused { reason })
-                    } else {
-                        Err(ActionCallError::Refused {
-                            reason: format!(
-                                "your grants in this workspace do not let this device move \
-                                 {resource}'s files into it"
-                            ),
-                        })
-                    }
-                }
-            };
-            let moved = match moved {
-                Ok(moved) => moved,
-                Err(error) => {
-                    work.log.lock_recover().abandon(&invocation);
-                    completer.complete(Err(error));
-                    return;
-                }
-            };
-            let state = InvocationState::new(
-                invocation,
-                InvocationUpdate::Succeeded {
-                    invocation,
-                    output: ActionOutput {
-                        value: Some(moved),
-                        resources: Vec::new(),
-                    },
-                },
-            );
-            let receipt = state.receipt();
-            work.log.lock_recover().complete(&invocation, state);
-            completer.complete(Ok(receipt));
-        });
-        answer
-    }
-}
-
 /// The turn `request`, asked by `requester`, asks this device to take.
 fn turn_of(request: &InvokeRequest, requester: [u8; 32]) -> Result<Turn, ActionCallError> {
     tilo_actions::appearance::refuse_here(request)?;
@@ -930,7 +829,6 @@ impl ActionProvider for Answers {
             || provider == WORK_PROVIDER
             // The calls that wait for a person's yes, read and answered from their records.
             || provider == tilo_actions::remote::workspace_invocations::PROVIDER
-            || imports(provider)
             || self.work.providers.serves(provider)
             || self.apps().is_some()
     }
@@ -1366,10 +1264,6 @@ impl Answers {
         }
         if request.target.provider == WORK_PROVIDER {
             return self.work.take(caller, &request);
-        }
-        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        if imports(&request.target.provider) {
-            return self.work.import_app_files(caller, &request);
         }
         if self.work.providers.serves(&request.target.provider) {
             return self

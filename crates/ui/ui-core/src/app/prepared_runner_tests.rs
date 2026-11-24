@@ -999,6 +999,24 @@ fn request_another_resource(component: &AppComponent) -> crate::resource::Docume
     record
 }
 
+/// An app the session runs with no window has no frame to mount the component its window asked
+/// for: its wake mounts it, so it serves and publishes over the record it asked to show (the
+/// record a window opened before it arrived).
+#[test]
+fn an_app_with_no_window_shows_the_record_its_component_asked_for_on_a_wake() {
+    let host = ProbeHarness::new();
+    let component = editable_component(&host, 35);
+    let wanted = request_another_resource(&component);
+    let mut app = App::from_component(component, runner_inputs()).unwrap();
+    app.wake_unshown();
+    let shown = crate::bound_dispatch::callback_binding(&*app.root_widget).unwrap();
+    assert_eq!(
+        shown.checkout.id, wanted,
+        "the wake mounted the asked-for record"
+    );
+    app.close_components();
+}
+
 #[test]
 fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
     {

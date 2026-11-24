@@ -393,7 +393,9 @@ template view over_band(body: View) {
     layers(fill) {
         body
         // What is live and stands as a card, over the windows and under a banner rising.
-        live_cards()
+        // The band is the display's width, which the cards' own view cannot see: a phone takes
+        // one card across under the bar.
+        live_cards(phone: space.compact, fill)
         banners_over()
     }
 }

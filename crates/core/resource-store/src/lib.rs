@@ -30,6 +30,7 @@ mod index;
 mod port;
 mod query;
 mod ranked;
+pub mod reference;
 mod schema;
 mod snapshot;
 pub mod store;
@@ -45,11 +46,11 @@ pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};
 pub use port::{LocalPort, Port};
 pub use query::{Absent, Cursor, Filter, Order, Page, Query, Sort};
 pub use schema::{
-    Expected, FIELD_EDIT, Field, FieldKind, HISTORY_VERBS, MAX_MARK_ARGS, Schema, Type, Verb,
-    Writes,
+    Expected, FIELD_EDIT, Field, FieldKind, HISTORY_VERBS, MAX_MARK_ARGS, MOVE_VERB, Schema, Type,
+    Verb, Writes,
 };
 pub use store::{
     CHANGED, CREATED, Live, PastChild, RecordReader, Resource, Source, Store, StoreError, UPDATED,
-    Written, Wrote,
+    Written, Wrote, content_resource,
 };
 pub use value::{Cell, Value};

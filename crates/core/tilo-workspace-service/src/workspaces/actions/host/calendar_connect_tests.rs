@@ -12,6 +12,7 @@
 use super::super::super::turn_use_tests::{approved, asked_by, asks, dispatched, fact};
 use super::super::super::vault_tests::ask as of_her_vault;
 use super::*;
+use crate::workspaces::actions::host::turn_use_tests::narrowing;
 use crate::workspaces::hosted_use::Connected;
 use tilo_actions::remote::asked::AskedFacts;
 
@@ -523,25 +524,4 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
         hers.server.requests().is_empty(),
         "no calendar server was asked for any of them"
     );
-}
-
-/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
-fn narrowing(
-    workspace: &str,
-    caller: &Caller,
-    rules: &[Rule],
-) -> tilo_action_policy::WorkspacePolicy {
-    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
-    let agent = caller.acting().agent_id().unwrap_or_default();
-    for (index, rule) in rules.iter().enumerate() {
-        policy.grants.push(tilo_action_policy::Grant::new(
-            format!("test-narrowing:{index}"),
-            tilo_action_policy::Grantee::agent(agent.to_owned()),
-            rule.node.clone(),
-            rule.kinds,
-            rule.answer,
-            tilo_action_policy::Grantee::person("owner"),
-        ));
-    }
-    policy
 }

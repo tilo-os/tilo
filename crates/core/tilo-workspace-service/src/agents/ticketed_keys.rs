@@ -201,6 +201,13 @@ impl TicketedAgentKeys {
                 tracing::warn!(%workspace, agent = %agent.id.0, %error, "a redeemed ticket's certificate is not the agent's person's grant");
                 return;
             }
+            // The key lists itself on this device's copy, signing its own row and grant there,
+            // and every holder takes the row in as it syncs: its person approved it, and that is
+            // the one step it takes.
+            if let Err(error) = workspaces.enter(&place, (&cert, &key)).await {
+                tracing::warn!(%workspace, agent = %agent.id.0, %error, "an agent's approved key did not list itself");
+                return;
+            }
             if let Err(error) = workspaces.run_agent_on(&place, &agent.id.0, &cert).await {
                 tracing::warn!(%workspace, agent = %agent.id.0, %error, "the certificate of an agent's key was not kept");
             }

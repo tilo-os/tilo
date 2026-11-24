@@ -123,6 +123,47 @@ fn carried(versions: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// The changes the last move through history wrote, oldest first: what each did (`undo`,
+/// `redo`, `restore`), and the verb and invocation it moved.
+fn last_move(app: &TestApp<BoardApp>) -> Vec<(String, String, String)> {
+    use tilo_app::tilo_actions::{Did, HistoryOp, entry_of};
+    app.read_document(|doc| {
+        let document = doc.committed_document();
+        let entries: Vec<_> = document
+            .get_changes(&[])
+            .iter()
+            .filter_map(|change| entry_of(document, change.hash()))
+            .collect();
+        let group = entries
+            .iter()
+            .rev()
+            .find_map(|entry| {
+                entry
+                    .group
+                    .as_ref()
+                    .filter(|group| group.kind.starts_with("history:"))
+            })
+            .map(|group| group.id.clone());
+        entries
+            .iter()
+            .filter(|entry| entry.group.as_ref().map(|group| &group.id) == group.as_ref())
+            .map(|entry| match &entry.what {
+                Some(Did::History(step)) => (
+                    match step.op {
+                        HistoryOp::Undo => "undo",
+                        HistoryOp::Redo => "redo",
+                        _ => "restore",
+                    }
+                    .to_owned(),
+                    step.verb.clone(),
+                    step.undoes.clone().unwrap_or_default(),
+                ),
+                other => panic!("a move through history writes history steps: {other:?}"),
+            })
+            .collect()
+    })
+}
+
 fn history(app: &mut TestApp<BoardApp>) -> Value {
     app.call("history", json!({}))
         .unwrap()
@@ -176,6 +217,12 @@ tilo_test_env::scenario! {
         let undone = undone["undone"].as_array().unwrap();
         assert_eq!(undone.len(), 2, "{undone:?}");
         assert_eq!(undone[0]["what"]["args"]["text"], "eggs", "{undone:?}");
+        // Each step is taken back by a change of its own, newest first, naming the invocation
+        // it took back and that invocation's verb.
+        let moved = last_move(&app);
+        assert_eq!(moved.len(), 2, "{moved:?}");
+        assert!(moved.iter().all(|(op, verb, _)| op == "undo" && verb == "add"), "{moved:?}");
+        assert_ne!(moved[0].2, moved[1].2, "one invocation each: {moved:?}");
 
         // A redo brings back one undo, however many steps it took.
         let redone = app.call("redo", json!({})).unwrap().unwrap();
@@ -183,8 +230,11 @@ tilo_test_env::scenario! {
         assert_eq!(redone["redone"].as_array().unwrap().len(), 2, "{redone}");
         let nothing = refusal(app.call("redo", json!({})));
         assert!(nothing.contains("nothing to redo"), "{nothing}");
+        let moved = last_move(&app);
+        assert_eq!(moved.len(), 2, "{moved:?}");
+        assert!(moved.iter().all(|(op, _, _)| op == "redo"), "{moved:?}");
 
-        // The undo is itself a step: it is listed and attributed.
+        // The undo is itself a step: it is listed and attributed, as the one move it was.
         let listed = history(&mut app);
         let undos: Vec<&Value> = listed["versions"]
             .as_array()
@@ -195,6 +245,67 @@ tilo_test_env::scenario! {
         assert_eq!(undos.len(), 1, "{listed}");
         assert_eq!(undos[0]["what"]["steps"], 2, "{listed}");
         assert_eq!(undos[0]["sentence"], "Undid 2 steps", "{listed}");
+        assert_eq!(undos[0]["changes"].as_array().map(Vec::len), Some(2), "{listed}");
+
+        // Undoing the redo takes the whole move back again, as one step.
+        app.call("undo", json!({})).unwrap();
+        assert_eq!(cards(&app), Vec::<String>::new());
+        assert_eq!(app.state().title, "Plan");
+    }
+
+    phase a_restore_takes_back_each_step_since_and_brings_back_what_stood_then;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.call("add", json!({"text": "milk"})).unwrap();
+        app.call("add", json!({"text": "tea"})).unwrap();
+        app.call("checkpoint", json!({"name": "shopping"})).unwrap();
+        app.call("add", json!({"text": "eggs"})).unwrap();
+        app.call("rename", json!({"title": "Plan"})).unwrap();
+        // A step that stood at the checkpoint, undone after it.
+        let tea = history(&mut app)["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|version| version["what"]["args"]["text"] == "tea")
+            .and_then(|version| version["change"].as_str())
+            .unwrap()
+            .to_owned();
+        app.call("undo", json!({"step": tea})).unwrap();
+        app.call("add", json!({"text": "bread"})).unwrap();
+        assert_eq!(cards(&app), ["milk", "eggs", "bread"]);
+
+        app.call("restore", json!({"version": "shopping"})).unwrap();
+        // The card undone since comes back where a restore to the version has always put it.
+        assert_eq!(cards(&app), ["tea", "milk"]);
+        assert_eq!(app.state().title, "");
+
+        // One change for each invocation since the checkpoint, newest first, each naming the
+        // invocation and its verb; then what stood at the checkpoint and was undone since.
+        let moved = last_move(&app);
+        assert!(moved.iter().all(|(op, _, _)| op == "restore"), "{moved:?}");
+        let (each, rest) = moved.split_at(moved.len().saturating_sub(1));
+        let verbs: Vec<&str> = each.iter().map(|(_, verb, _)| verb.as_str()).collect();
+        assert_eq!(verbs, ["add", "rename", "add"], "{moved:?}");
+        let mut invocations: Vec<&str> = each
+            .iter()
+            .map(|(_, _, invocation)| invocation.as_str())
+            .collect();
+        invocations.dedup();
+        assert_eq!(invocations.len(), 3, "{moved:?}");
+        assert!(rest.iter().all(|(_, verb, _)| verb.is_empty()), "{moved:?}");
+
+        // The restore is one step the caller can undo, and redo does not bring back.
+        let nothing = refusal(app.call("redo", json!({})));
+        assert!(nothing.contains("nothing to redo"), "{nothing}");
+
+        // History lists it as the one restore it was.
+        let listed = history(&mut app);
+        let last = listed["versions"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(last["what"]["op"], "restore", "{listed}");
+        assert_eq!(last["changes"].as_array().map(Vec::len), Some(moved.len()), "{listed}");
+        app.call("undo", json!({})).unwrap();
+        assert_eq!(cards(&app), ["milk", "eggs", "bread"]);
+        assert_eq!(app.state().title, "Plan");
     }
 
     phase ctrl_z_takes_back_only_what_was_done_on_this_device;

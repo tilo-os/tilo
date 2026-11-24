@@ -103,6 +103,11 @@ people-doing = What you are doing
 people-availability = How available you are
 people-pair-device = Add a device
 people-settings = Open your settings
+people-agent = Ask this of an agent
+people-colour = Your colour
+people-host-action = Do this about you
+people-control-hints = Show control hints
+people-draft = Keep what you typed
 # The invitations into a workspace, the sheet they are made in, and adding a device.
 so-tilo-session-invite-invitations = List invitations
 so-tilo-session-invite-issue-invitation = Make an invitation link

@@ -451,7 +451,10 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         },
     );
     let mut writes = adas.document_writes();
-    runner.arm().await;
+    // A shortcut is armed by following its save, as the daemon does: Bea's trigger reaches the
+    // server's copy of the workspace after the runner starts, and arms it when it does.
+    let mut governance = adas.governance_changes();
+    let mut changed = true;
     let bea_who = tilo_actions::Acting::person(bea_person.clone()).by;
     chat_writes(
         beas,
@@ -471,6 +474,12 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         let mut since = Vec::new();
         while let Ok(write) = writes.try_recv() {
             since.push(write);
+        }
+        while governance.try_recv().is_ok() {
+            changed = true;
+        }
+        if std::mem::take(&mut changed) {
+            runner.arm().await;
         }
         runner.pass(since).await;
         if let Some(firing) = started.0.lock().unwrap().first().cloned() {

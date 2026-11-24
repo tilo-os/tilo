@@ -191,23 +191,25 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
     if app_id.trim().is_empty() || app_id.len() > 4096 {
         return Err(invalid("invalid application ID"));
     }
-    let mut next = arguments.next();
     let mut workspace = None;
-    if next.as_deref().and_then(std::ffi::OsStr::to_str) == Some("--workspace") {
-        workspace = Some(
-            arguments
-                .next()
-                .and_then(|arg| arg.into_string().ok())
-                .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok())
-                .ok_or_else(|| invalid("--workspace requires a workspace id"))?,
-        );
-        next = arguments.next();
-    }
-    if next.is_some() {
-        return Err(invalid(
-            "--run-app APP_ID [--workspace WORKSPACE] starts an app this computer has installed; \
-             it takes no program",
-        ));
+    while let Some(argument) = arguments.next() {
+        match argument.to_str() {
+            Some("--workspace") if workspace.is_none() => {
+                workspace = Some(
+                    arguments
+                        .next()
+                        .and_then(|arg| arg.into_string().ok())
+                        .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok())
+                        .ok_or_else(|| invalid("--workspace requires a workspace id"))?,
+                );
+            }
+            _ => {
+                return Err(invalid(
+                    "--run-app APP_ID [--workspace WORKSPACE] starts an app this computer has \
+                     installed; it takes no program",
+                ));
+            }
+        }
     }
     Ok(Mode::RunApp { app_id, workspace })
 }

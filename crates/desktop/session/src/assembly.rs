@@ -106,6 +106,11 @@ pub(crate) struct Shared {
     /// Every hosted surface's and service's published side: the session's
     /// action host.
     pub(crate) published: tilo_session_core::surfaces::Surfaces,
+    /// The windows apps draw in processes of their own, as their processes sent
+    /// them for the session's AT-SPI export, and the actions clients asked of
+    /// them: written by the shell-ui service, read by the loop.
+    #[cfg(target_os = "linux")]
+    pub(crate) windows: Rc<RefCell<crate::a11y::WindowExports>>,
     /// Published actions keys and gestures asked for, waiting for the API.
     pub(crate) invocations: crate::keys::Invocations,
     /// Chords pressed that run a saved shortcut, waiting for the automation
@@ -375,6 +380,10 @@ pub(crate) struct Shared {
     /// pass: the session's reading of it, and the record noted beside the window
     /// in its workspace's layout.
     pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
+    /// The records the device's broker says each window's app holds, by window instance, as the
+    /// session follows them on its shell link ([`crate::live_list::follow_window_notes`]): what a
+    /// window's note names. A cache of the daemon's reading, never state of this session's.
+    pub(crate) window_routes: crate::live_list::WindowRoutes,
     /// The engine revision, and the workspaces the session showed, the session's
     /// copy of each workspace's people was last taken from: what nothing new
     /// of a workspace's governance, and no workspace the session did not show

@@ -627,7 +627,8 @@ mod external_moderation_rpc_tests {
             context: &NativeDocumentReadContext,
             _: Option<[u8; 32]>,
             maximum: usize,
-        ) -> Result<NativeDocumentRead, String> {
+        ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
+        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
             self.authorize(context)?;
             if self.0.len() > maximum {
                 return Err("report exceeds bound".into());
@@ -637,7 +638,8 @@ mod external_moderation_rpc_tests {
                 heads: Vec::new(),
                 body: Box::new(ReportDocument(self.0.clone())),
             })
-        }
+        })()))
+    }
     }
 
     fn committed_report(note: &str, case: Option<&str>) -> Arc<dyn NativeDocumentReads> {

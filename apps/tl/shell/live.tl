@@ -7,13 +7,15 @@
 // this machine plays or runs that no resource holds (a player heard over MPRIS, an app's
 // activity) is drawn here from what the session reads of it, and its controls go back through
 // the session.
-view live_pill() {
+view live_pill(phone: Bool, wide: Bool) {
     // What the person kept off this bar stays in quick settings.
     let rows = device.live.rows.filter(r -> not r.collapsed)
-    // Only a wide bar has room for what is live itself, its name and its play button.
-    let roomy = space.width_class == .wide
+    // The pill's own slot is only as wide as what it shows: the bar's width (`phone`, `wide`)
+    // says how much room there is. Only a wide bar has room for what is live itself, its name
+    // and its play button.
+    let roomy = wide
     if let newest = rows.last() {
-        if space.compact {
+        if phone {
             // A phone's bar has room for one control: it pulls what went live last out as a
             // card, dropped from under the bar, and folds it back.
             ui.Button(
@@ -66,7 +68,7 @@ fn live_name(r: device.LiveItem) -> Text {
 }
 
 /// Quick settings' section of what is live, the one live longest first: nothing while nothing is.
-view live_section() {
+view live_section(phone: Bool) {
     let rows = device.live.rows
     if not rows.is_empty() {
         stack(gap: .related) {
@@ -75,7 +77,7 @@ view live_section() {
                 ui.Card {
                     stack(gap: .tight) {
                         live_row(r, compact: false)
-                        live_card_controls(r)
+                        live_card_controls(r, phone)
                     }
                 }
             }
@@ -104,7 +106,7 @@ view live_row(r: device.LiveItem, compact: Bool) {
 
 /// A live card's own controls in quick settings: whether the bar shows it, and, for what an app
 /// here runs that offers no end of its own, putting it away.
-view live_card_controls(r: device.LiveItem) {
+view live_card_controls(r: device.LiveItem, phone: Bool) {
     row(gap: .tight, align: .center) {
         ui.Button(
             if r.collapsed { "Show on the bar" } else { "Keep off the bar" },
@@ -114,7 +116,7 @@ view live_card_controls(r: device.LiveItem) {
         ) {
             on press: device.keep_off_bar(device.live, key: r.key, off: not r.collapsed)
         }
-        if not space.compact {
+        if not phone {
             ui.Button(
                 if r.card { "Back to the bar" } else { "Show as a card" },
                 icon: if r.card { .minimize_2 } else { .maximize_2 },
@@ -200,44 +202,59 @@ fn live_on_bar() -> Bool {
 
 /// The cards over the windows: what is live and stands as a card (`r.card`, which its app asks for
 /// or the person pulls out of the pill), docked in a column in the corner of the display this
-/// device's person chose (`shell.cards_corner`, the person's own), the one touched last nearest the corner. A
-/// phone-width display has room for one card only, the one the person pulled out of the pill,
-/// dropped full width from under the bar. The column changes at the shared pace, so a card that
-/// comes slides in and one that goes slides out. A card stands on the display in use only.
-view live_cards() {
+/// device's person chose (`shell.cards_corner`, the person's own), the one touched last nearest the
+/// corner. A phone-width display (`phone`, which the band says, since this view's own room is only
+/// what it holds) has room for one card only, the one the person pulled out of the pill, dropped
+/// full width from under the bar. The column changes at the shared pace, so a card that comes
+/// slides in and one that goes slides out. A card stands on the display in use only.
+view live_cards(phone: Bool) {
     let cards = device.live.rows.filter(r -> r.card)
     // They stand on the display the person works on, as the bar's pill does in full; another
     // display's compact bar keeps to a glance.
     if not cards.is_empty() and on_primary() {
-        if space.compact {
+        if phone {
             if let r = cards.find(r -> r.expanded) {
-                stack(at: .top, fill, padding: .group, motion: .standard) {
-                    live_card(r)
+                // Across the phone under the bar, as tall as what it holds.
+                stack(fill, align: .stretch, padding: .group, motion: .standard) {
+                    live_card(r, phone)
                 }
             }
         } else {
-            // One room, the band under the bar, holds every card: a docked card stands in the
-            // column at the chosen corner, and a card the person moved stands where they left
-            // it, in the same room it is dragged in.
             let corner = shell.cards_corner
             let top = corner == .top_leading or corner == .top_trailing
-            stack(
-                fill,
-                padding: .group,
-                gap: .related,
-                align: if corner == .top_leading or corner == .bottom_leading {
-                    .start
-                } else { .end },
-                motion: .standard,
-            ) {
-                if not top {
-                    spacer()
+            layers(fill) {
+                // A docked card stands in the column at the chosen corner of the band under the
+                // bar.
+                stack(
+                    at: if corner == .top_leading {
+                        .top_leading
+                    } else if corner == .top_trailing {
+                        .top_trailing
+                    } else if corner == .bottom_leading {
+                        .bottom_leading
+                    } else { .bottom_trailing },
+                    fill,
+                    padding: .group,
+                    gap: .related,
+                    align: if corner == .top_leading or corner == .bottom_leading {
+                        .start
+                    } else { .end },
+                    motion: .standard,
+                ) {
+                    for r in cards
+                        .filter(r -> r.x == .none)
+                        .sort_by(
+                            r -> if top { r.place } else { 0 - r.place },
+                        ) {
+                        live_card(r, phone)
+                    }
                 }
-                for r in cards.sort_by(r -> if top { r.place } else { 0 - r.place }) {
-                    live_card(r)
-                }
-                if top {
-                    spacer()
+                // A card the person moved stands where they left it, in the whole band: the room
+                // it is dragged in.
+                stack(fill, padding: .group) {
+                    for r in cards.filter(r -> r.x != .none) {
+                        live_card(r, phone)
+                    }
                 }
             }
         }
@@ -247,13 +264,13 @@ view live_cards() {
 /// One live thing as a card over the windows: its app's glyph and name, a way back into the bar's
 /// pill and its end; then what it is — its resource's own `view live`, or what the session reads of
 /// it, where it is along its length and its controls.
-view live_card(r: device.LiveItem) {
+view live_card(r: device.LiveItem, phone: Bool) {
     ui.FloatingPanel(
-        width: if not space.compact { 320.0 },
-        fill: space.compact,
+        width: if not phone { 320.0 },
+        fill: phone,
         label: "{live_name(r)} card",
-        x: if not space.compact { r.x?.to_float() },
-        y: if not space.compact { r.y?.to_float() },
+        x: if not phone { r.x?.to_float() },
+        y: if not phone { r.y?.to_float() },
     ) {
         on moved(at): device.move_live(device.live, r.key, at)
         header: {
@@ -281,7 +298,7 @@ view live_card(r: device.LiveItem) {
                         truncate,
                     )
                 }
-                if not space.compact {
+                if not phone {
                     // Where this device's cards stand: a corner of each display, or back in it
                     // for a card the person moved.
                     ui.MenuButton(

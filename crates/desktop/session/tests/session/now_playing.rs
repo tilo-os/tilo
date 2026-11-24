@@ -520,13 +520,22 @@ fn the_lock_screen_reads_in_the_persons_language() {
     let dir = shots_dir();
     let said = |value: &serde_json::Value| value["title"] == "Glasslight";
     let english = lock_frame(playing_song(), said);
-    settings_store::appearance::LANGUAGE
-        .set(Some("de-DE".to_owned()))
-        .expect("the person's language is saved");
+    // The frame is drawn outside any session, so the language is chosen the way `tilo` chooses it
+    // on such a device: kept for the session that follows and left at once for the device's own
+    // processes, which this one reads.
+    settings_store::outside::set_on_this_device(
+        "settings/appearance",
+        &settings_store::workspace::verb("language"),
+        &serde_json::json!("de-DE"),
+    )
+    .expect("the person's language is saved");
     let german = lock_frame(playing_song(), said);
-    settings_store::appearance::LANGUAGE
-        .set(None)
-        .expect("the language is the system's again");
+    settings_store::outside::set_on_this_device(
+        "settings/appearance",
+        &settings_store::workspace::verb("language"),
+        &serde_json::Value::Null,
+    )
+    .expect("the language is the system's again");
     let (width, height) = (german.width, german.height);
     let reads = changed(&english.rgba, &german.rgba, width, 0, height);
     assert!(

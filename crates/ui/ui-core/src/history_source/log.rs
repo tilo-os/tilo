@@ -389,7 +389,11 @@ impl HistoryLog {
             let framework = logged
                 .message
                 .as_deref()
-                .and_then(tilo_actions::FrameworkChange::from_change_message);
+                .and_then(tilo_actions::stamp::Label::of)
+                .and_then(|label| match label {
+                    tilo_actions::stamp::Label::Framework(change) => Some(change),
+                    _ => None,
+                });
             let genesis = genesis_actor.as_deref() == Some(logged.actor.as_str())
                 || reading.store_genesis
                 || framework == Some(tilo_actions::FrameworkChange::Genesis);

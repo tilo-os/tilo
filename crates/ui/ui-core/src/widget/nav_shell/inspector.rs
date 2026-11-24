@@ -67,7 +67,7 @@ impl InspectorLink {
 
 pub(super) fn inspector_layout_of(inspector: InspectorPlacement) -> SplitLayout {
     match inspector {
-        InspectorPlacement::Sheet => SplitLayout::Overlay,
+        InspectorPlacement::Sheet | InspectorPlacement::Drawer => SplitLayout::Overlay,
         InspectorPlacement::Docked | InspectorPlacement::None => SplitLayout::Docked,
     }
 }

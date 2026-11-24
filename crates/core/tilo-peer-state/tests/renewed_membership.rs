@@ -303,7 +303,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         &governor,
         first.device_public_key,
         JoinTransportRequest::Challenge(join::JoinChallengeRequest {
-            signed_invitation: issued.signed_invitation,
+            signed_invitation: issued.signed_invitation.clone(),
             device_cert: first.clone(),
             request_id: [95; 32],
         }),
@@ -311,8 +311,26 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     ) else {
         panic!("the governor challenges the slot");
     };
+    let redemption = join::verify_connection_redemption(
+        &issued.signed_invitation,
+        &first,
+        [95; 32],
+        &RevocationList::new(),
+        joined_ns,
+    )
+    .unwrap();
+    let admission = tilo_peer_state::own_admission::own_admission(
+        WORKSPACE,
+        &challenge.governance,
+        &redemption,
+        None,
+        &slot_key,
+        joined_at,
+    )
+    .unwrap();
     let complete = join::JoinCompleteRequest {
         proof: join::sign_join_proof(challenge.challenge, &slot_key).unwrap(),
+        admission,
     };
     let member_path = directory.path().join("member.json");
     let member = open_file(&member_path).unwrap();
@@ -382,6 +400,16 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
                 &slot_key,
             ))
             .unwrap()
+            .unwrap(),
+            // The device signs its own row under the renewed certificate: no
+            // answering device writes it in its place.
+            admission: tilo_peer_state::own_admission::further_device_row(
+                WORKSPACE,
+                &challenge.governance,
+                &renewed,
+                &slot_key,
+                later,
+            )
             .unwrap(),
         }),
         later,

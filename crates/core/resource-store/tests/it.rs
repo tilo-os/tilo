@@ -1008,6 +1008,7 @@ mod store {
                 ],
                 nested: Vec::new(),
                 live: None,
+                founding: Vec::new(),
             }],
             ..Schema::default()
         });
@@ -1045,6 +1046,7 @@ mod store {
             ],
             nested: Vec::new(),
             live: None,
+            founding: Vec::new(),
         }
     }
 
@@ -1137,6 +1139,7 @@ mod store {
                     .to_vec(),
                 nested: Vec::new(),
                 live: Some(vec![Filter::Is("state".to_owned(), "playing".into())]),
+                founding: Vec::new(),
             }],
             ..Schema::default()
         });
@@ -1970,37 +1973,17 @@ mod store {
 
     /// `write` is stamped as `undo`, and says which changes of its document it took back: each
     /// one of the invocation `invocation`.
-    fn takes_back(store: &Store, write: &Written, undo: &Stamp, invocation: &str) {
-        use automerge::ReadDoc as _;
+    /// Asserts `write` is stamped as `undo`, which history reads as an undo of the one invocation
+    /// `invocation` and its verb `verb`.
+    fn takes_back(write: &Written, undo: &Stamp, invocation: &str, verb: &str) {
         let stamp = Stamp::of(&write.change).expect("the undo is stamped");
-        let context = stamp
-            .context
-            .clone()
-            .expect("the undo says what it took back");
-        assert_eq!(
-            &Stamp {
-                context: None,
-                ..stamp
-            },
-            undo
-        );
-        let Some(tilo_actions::Did::History(step)) = &context.what else {
-            panic!("the undo is a step through history: {context:?}");
+        assert_eq!(&stamp, undo);
+        let Some(tilo_actions::Did::History(step)) = stamp.action_context().what else {
+            panic!("the undo is a step through history: {stamp:?}");
         };
         assert_eq!(step.op, tilo_actions::HistoryOp::Undo);
-        assert!(!step.takes_back.is_empty(), "{step:?}");
-        for hash in &step.takes_back {
-            let taken = store
-                .document(&write.doc)
-                .unwrap()
-                .get_change_by_hash(&hash.parse().unwrap())
-                .and_then(|change| Stamp::of(&change))
-                .expect("what it took back is a change of its document");
-            assert_eq!(
-                taken.invocation, invocation,
-                "only that invocation's changes"
-            );
-        }
+        assert_eq!(step.undoes.as_deref(), Some(invocation));
+        assert_eq!(step.verb, verb);
     }
 
     #[test]
@@ -2077,8 +2060,9 @@ mod store {
         let (doc, root) = store.content(ISSUE, "a").unwrap().unwrap();
         let note = doc.get(&root, "note").unwrap().unwrap().0.to_string();
         assert_eq!(note, "\"first\"");
+        // Each is stamped as the undo, one invocation per change.
         for write in &written {
-            takes_back(&store, write, &undo, "i2");
+            takes_back(write, &undo, "i2", "rename");
         }
 
         // Undoing the undo takes the rename back again.
@@ -2566,6 +2550,7 @@ mod store {
                 ],
                 nested: Vec::new(),
                 live: None,
+                founding: Vec::new(),
             }],
             ..Schema::default()
         };
@@ -2692,6 +2677,7 @@ mod store {
                 .collect(),
             nested: BTreeSet::new(),
             marks: false,
+            moves: false,
         };
         let schema = Schema {
             types: vec![ty(ISSUE), ty("Comment")],

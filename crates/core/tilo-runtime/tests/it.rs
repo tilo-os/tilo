@@ -53,6 +53,8 @@ mod agent_turns;
 mod agent_windows;
 #[path = "api_admin.rs"]
 mod api_admin;
+#[path = "api_beside_import.rs"]
+mod api_beside_import;
 #[path = "api_hosted.rs"]
 mod api_hosted;
 #[path = "api_key.rs"]
@@ -103,6 +105,8 @@ mod hosted_terminal_fresh_tab;
 mod hosted_turns;
 #[path = "hosted_web_call.rs"]
 mod hosted_web_call;
+#[path = "import_rate.rs"]
+mod import_rate;
 #[path = "invocations.rs"]
 mod invocations;
 #[path = "joining.rs"]
@@ -131,6 +135,8 @@ mod shared_workspace;
 mod shell_link;
 #[path = "terminal_streams.rs"]
 mod terminal_streams;
+#[path = "throughput.rs"]
+mod throughput;
 #[path = "tracker.rs"]
 mod tracker;
 #[path = "workspace_list.rs"]

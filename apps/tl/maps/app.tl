@@ -174,29 +174,59 @@ type Recent (title: query) {
 
 /// An area of the map this device keeps for offline use: its bounds, the zoom levels whose tiles
 /// it keeps, and how far saving it has come.
-type OfflineArea (title: name) {
+type KeptArea (title: name) {
     name: Text
+    /// What the tiles engine knows it by: its footprint and zoom levels, so saving the same box
+    /// twice refreshes it rather than listing it twice.
+    key: Text = ""
     north: Float = 0.0
     south: Float = 0.0
     east: Float = 0.0
     west: Float = 0.0
     least_zoom: Int = 10
     most_zoom: Int = 15
-    /// The tiles the area holds, as the map counts them.
+    /// The tiles the area holds.
     tiles: Int = 0
     /// How many of them are kept on the device.
     done: Int = 0
     /// Whether the person stopped its download; the tiles kept so far stay on the device.
     stopped: Bool = false
+    /// The job keeping it, while one runs.
+    job: Text = ""
 
     search {
         sort name a_z
     }
 }
 
-/// The workspace's map: the places it knows, the searches it made, the directions it found and
-/// the areas this device keeps offline. People, agents and other apps read and change it through
-/// this package's actions.
+/// The areas this device keeps offline. They are the device's, not the workspace's: the pictures
+/// are on this computer, so what is listed is what it holds.
+type KeptAreas {
+    kept: Collection<KeptArea>
+}
+
+/// What the tiles engine is asked to keep: a box on the map at the zoom levels its tiles are kept
+/// at, from the address the map's imagery comes from.
+type SaveAreaAsk {
+    id: Text
+    name: Text
+    north: Float
+    south: Float
+    east: Float
+    west: Float
+    least_zoom: Int
+    most_zoom: Int
+    basemap: Text
+}
+
+/// What the tiles engine is asked to give up.
+type ForgetAreaAsk {
+    id: Text
+}
+
+/// The workspace's map: the places it knows, the searches it made and the directions it found.
+/// People, agents and other apps read and change it through this package's actions. The areas a
+/// device keeps offline are the device's own (the `kept` root).
 type Atlas {
     /// Every place the map knows: the ones the person kept, and the ones a search found.
     places: Collection<Place>
@@ -220,17 +250,17 @@ type Atlas {
     query: Text = ""
     /// What the map is doing, or why what was asked did not happen.
     status: Text = ""
-    /// The place the map opens on, and returns to.
-    centre_latitude: Float = 0.0
-    centre_longitude: Float = 0.0
-    /// How close the map opens: the tile service's own zoom levels.
-    centre_zoom: Float = 3.0
+    /// The place the map opens on, and returns to. A new map opens on Munich, a city with
+    /// streets to look at, rather than on an empty ocean.
+    centre_latitude: Float = 48.1371
+    centre_longitude: Float = 11.5754
+    /// How close the map opens: the camera's zoom, where 1 draws a world pixel as a screen pixel.
+    /// [`tile_zoom`] reads it as the level of imagery it shows.
+    centre_zoom: Float = 5.3
     /// Whether the traffic layer is on.
     traffic: Bool = false
     /// Whether the person is following a route: the live card says the turn ahead.
     navigating: Bool = false
-    /// The areas this device keeps for offline use.
-    offline: Collection<OfflineArea>
 
     // Live while a route is followed: the bar and the lock screen of every device show its
     // `live` view until the person ends it.
@@ -243,6 +273,8 @@ type Atlas {
 }
 
 root atlas: Atlas
+
+device root kept: KeptAreas
 
 /// Marks every place a search found as no longer found, and forgets the ones nobody kept.
 // The map's data, kept as the person works with it.
@@ -314,6 +346,51 @@ fn known_place(a: Atlas, name: Text) -> Option<Place> {
     a.places.find(p -> p.name.lower() == name.lower() or p.key != "" and p.key == name)
 }
 
+/// A distance bar's reading: how far it stands for, and how many logical pixels across it is.
+type Scale {
+    label: Text = ""
+    pixels: Float = 0.0
+}
+
+/// How far a bar `max_px` across stands for, at `latitude` and the camera's `zoom`: the largest
+/// round distance that fits in it. One screen pixel covers the projection's own metres, so the
+/// bar is right at every zoom.
+fn scale_of(latitude: Float, zoom: Float, max_px: Float) -> Scale {
+    let around = 40075016.686 * (latitude.clamp(-85.0, 85.0) * 3.14159265 / 180.0).cos()
+    let metres_per_pixel = around / (1048576.0 * zoom.max(0.001))
+    let most = metres_per_pixel * max_px
+    let steps = [
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+        20.0,
+        50.0,
+        100.0,
+        200.0,
+        500.0,
+        1000.0,
+        2000.0,
+        5000.0,
+        10000.0,
+        20000.0,
+        50000.0,
+        100000.0,
+    ]
+    let chosen = steps.at(0) ?? 1.0
+    for step in steps {
+        if step <= most {
+            chosen = step
+        }
+    }
+    Scale(
+        label: if chosen >= 1000.0 {
+            "{number_text(chosen / 1000.0)} km"
+        } else { "{number_text(chosen)} m" },
+        pixels: chosen / metres_per_pixel,
+    )
+}
+
 /// How far something is, as a person reads it.
 fn distance_text(metres: Float) -> Text {
     if metres < 950.0 {
@@ -361,6 +438,11 @@ fn mode_name(mode: TravelMode) -> Text {
         .bike => "Cycle",
         .foot => "Walk",
     }
+}
+
+/// The keys a travel mode answers to where the directions are: public transport is `t`.
+fn mode_keys(mode: TravelMode) -> List<Text> {
+    if mode == .transit { ["t"] } else { [] }
 }
 
 /// How directions travel, in the order the panel offers them.
@@ -1007,7 +1089,7 @@ action open_place(a: Atlas, place: Text) (
     if let known = known_place(a, place) {
         a.centre_latitude = known.latitude
         a.centre_longitude = known.longitude
-        a.centre_zoom = 15.0
+        a.centre_zoom = 8.0
         a.status = known.name
     } else {
         a.status = "That place is no longer on the map."
@@ -1026,7 +1108,7 @@ action show_point(a: Atlas, latitude: Float, longitude: Float) (
     }
     a.centre_latitude = latitude
     a.centre_longitude = longitude
-    a.centre_zoom = 15.0
+    a.centre_zoom = 8.0
     a.status = ""
 }
 
@@ -1047,7 +1129,7 @@ action locate(a: Atlas) (
                 } else {
                     a.centre_latitude = lat
                     a.centre_longitude = lon
-                    a.centre_zoom = 15.0
+                    a.centre_zoom = 8.0
                     a.status = "Located"
                     take_in(
                         a,
@@ -1072,12 +1154,24 @@ action locate(a: Atlas) (
     }
 }
 
-/// Zooms the map a level in or out.
-action zoom_map(a: Atlas, direction: Float, zoom: Float = a.centre_zoom + direction) (
-    icon: .plus,
-    label: "Zoom the map",
-) {
-    a.centre_zoom = zoom.max(2.0).min(19.0)
+/// The level of imagery the camera's `zoom` shows, as the tile service's own levels: one screen
+/// pixel of a tile's own is a camera zoom of 1 at level 12.
+fn tile_zoom(zoom: Float) -> Int {
+    (12.0 + zoom.max(0.001).log2()).round()
+}
+
+/// The closest and furthest the map draws in and back: the tile service's own levels 3 to 19.
+fn closest_zoom() -> Float {
+    2.0.pow(19.0 - 12.0)
+}
+
+fn furthest_zoom() -> Float {
+    2.0.pow(3.0 - 12.0)
+}
+
+/// Zooms the map a level in or out: a level of imagery is the camera's zoom doubled or halved.
+action zoom_map(a: Atlas, direction: Float) (icon: .plus, label: "Zoom the map") {
+    a.centre_zoom = (a.centre_zoom * 2.0.pow(direction)).max(furthest_zoom()).min(closest_zoom())
 }
 
 /// How the map's directions travel.
@@ -1163,7 +1257,8 @@ action directions(a: Atlas, from_words: Text, to_words: Text) uses web, time (
     }
     if a.mode == .transit {
         a.status = "Finding departures…"
-        let transit_address = "https://api.transitous.org/api/v1/plan?numItineraries=4&fromPlace={from.latitude},{from.longitude}&toPlace={to.latitude},{to.longitude}"
+        let moment = now + Duration(a.transit_time.offset_min * 60)
+        let transit_address = "https://api.transitous.org/api/v1/plan?numItineraries=4&fromPlace={from.latitude},{from.longitude}&toPlace={to.latitude},{to.longitude}&time={moment.iso()}"
         if a.transit_time.arrive_by {
             transit_address = "{transit_address}&arriveBy=true"
         }
@@ -1220,7 +1315,7 @@ action directions(a: Atlas, from_words: Text, to_words: Text) uses web, time (
         a.status = "Route to {to.name}: {distance_text(first.distance_m)}, {duration_text(first.duration_s)}"
         a.centre_latitude = first.to_latitude
         a.centre_longitude = first.to_longitude
-        a.centre_zoom = 13.0
+        a.centre_zoom = 2.0
     }
 }
 
@@ -1231,7 +1326,8 @@ action plan_transit(a: Atlas, from: Place, to: Place) uses web, time (
     did: "changed the map",
 ) {
     a.status = "Finding departures…"
-    let address = "https://api.transitous.org/api/v1/plan?numItineraries=4&fromPlace={from.latitude},{from.longitude}&toPlace={to.latitude},{to.longitude}"
+    let moment = now + Duration(a.transit_time.offset_min * 60)
+    let address = "https://api.transitous.org/api/v1/plan?numItineraries=4&fromPlace={from.latitude},{from.longitude}&toPlace={to.latitude},{to.longitude}&time={moment.iso()}"
     if a.transit_time.arrive_by {
         address = "{address}&arriveBy=true"
     }
@@ -1275,7 +1371,7 @@ action accept_route(a: Atlas, routes: List<Route>, from_name: Text, to_name: Tex
         a.status = "Route to {to_name}: {distance_text(first.distance_m)}, {duration_text(first.duration_s)}"
         a.centre_latitude = first.to_latitude
         a.centre_longitude = first.to_longitude
-        a.centre_zoom = 13.0
+        a.centre_zoom = 2.0
     }
 }
 
@@ -1285,6 +1381,49 @@ action another_route(a: Atlas, at: Int = a.route_at + 1) (icon: .route, label: "
         a.route_at = if at < a.routes.len() { at } else { 0 }
         a.status = "Route {a.route_at + 1} of {a.routes.len()}"
     }
+}
+
+/// Shows everything the map holds: the route it draws, or every place it knows.
+action fit_map(a: Atlas) (icon: .maximize, label: "Fit the map") {
+    let points: List<Float> = []
+    if let route = shown_route(a) {
+        points = route.geometry
+    } else {
+        for place in a.places.filter(p -> p.saved or p.found) {
+            points = points + [place.latitude, place.longitude]
+        }
+    }
+    if points.is_empty() {
+        a.status = "Nothing on the map to show."
+        return
+    }
+    let north = -90.0
+    let south = 90.0
+    let east = -180.0
+    let west = 180.0
+    // A route's geometry is latitude then longitude, in turn.
+    for i in points.map((value, i) -> i).filter(i -> i % 2 == 0) {
+        let latitude = points.at(i) ?? 0.0
+        let longitude = points.at(i + 1) ?? 0.0
+        north = north.max(latitude)
+        south = south.min(latitude)
+        east = east.max(longitude)
+        west = west.min(longitude)
+    }
+    let middle_latitude = (north + south) / 2.0
+    let middle_longitude = (east + west) / 2.0
+    let tall = (north - south).abs() * 111320.0
+    let wide = (east - west).abs()
+        * 111320.0
+        * (middle_latitude.clamp(-85.0, 85.0) * 3.14159265 / 180.0).cos()
+    let across = tall.max(wide).max(300.0)
+    let around = 40075016.686 * (middle_latitude.clamp(-85.0, 85.0) * 3.14159265 / 180.0).cos()
+    a.centre_latitude = middle_latitude
+    a.centre_longitude = middle_longitude
+    a.centre_zoom = (around / (1048576.0 * (across / 600.0)))
+        .max(furthest_zoom())
+        .min(closest_zoom())
+    a.status = ""
 }
 
 /// Takes the route away.
@@ -1424,36 +1563,61 @@ action toggle_traffic(a: Atlas, traffic: Bool = not a.traffic) (
     a.traffic = traffic
 }
 
-/// Saves what the map shows for offline use: its box and the zoom levels whose tiles it keeps.
-// Offline maps.
-action download_view(a: Atlas, least_zoom: Int = 10, most_zoom: Int = 15) (
+// Offline maps: keeping the imagery of an area on this device, so a trip with no network still
+// shows it. The tiles are the device's work (`engine.call` and `engine.start` on the app's own
+// engine), and what a device keeps is listed as its own resource.
+/// The address the map's imagery comes from: the basemap's own `%z`, `%x` and `%y` stand for a
+/// tile's level, column and row.
+fn basemap() -> Text {
+    "https://tile.openstreetmap.org/%z/%x/%y.png"
+}
+
+/// The key an area is known by: where it is and the zoom levels it keeps.
+fn area_key(
+    north: Float,
+    south: Float,
+    east: Float,
+    west: Float,
+    least_zoom: Int,
+    most_zoom: Int,
+) -> Text {
+    "region:{south}:{west}:{north}:{east}:z{least_zoom}-{most_zoom}"
+}
+
+/// Saves what the map shows for offline use: the box on screen and the zoom levels whose tiles it
+/// keeps. A caller names the box itself where it has one (a press, an agent): without one it is
+/// the place the map is centred on.
+action download_view(
+    a: Atlas,
+    north: Float = a.centre_latitude + 0.02,
+    south: Float = a.centre_latitude - 0.02,
+    east: Float = a.centre_longitude + 0.03,
+    west: Float = a.centre_longitude - 0.03,
+    least_zoom: Int = 10,
+    most_zoom: Int = 15,
+) (
     icon: .cloud_download,
     label: "Download this view",
     did: "saved what the map shows for offline use",
 ) {
     let name = if a.query == "" { "This view" } else { a.query }
-    let north = a.centre_latitude + 0.02
-    let south = a.centre_latitude - 0.02
-    let east = a.centre_longitude + 0.03
-    let west = a.centre_longitude - 0.03
-    let area = OfflineArea(
-        name: name,
-        north: north,
-        south: south,
-        east: east,
-        west: west,
-        least_zoom: least_zoom,
-        most_zoom: most_zoom,
-        tiles: count_tiles(north, south, east, west, least_zoom, most_zoom),
+    let made = kept.kept.insert(
+        KeptArea(
+            name: name,
+            key: area_key(north, south, east, west, least_zoom, most_zoom),
+            north: north,
+            south: south,
+            east: east,
+            west: west,
+            least_zoom: least_zoom,
+            most_zoom: most_zoom,
+        ),
     )
-    for old in a.offline.filter(o -> o.name.lower() == name.lower()) {
-        a.offline.remove(old)
-    }
-    a.offline.insert(area)
-    a.status = "Downloading {area.tiles} tiles for {name}…"
+    keep_area(a, made)
 }
 
-/// Saves the area `query` names for offline use, with the zoom levels whose tiles it keeps.
+/// Saves the area around the place `query` names for offline use, with the zoom levels whose tiles
+/// it keeps.
 action download_place(a: Atlas, query: Text, least_zoom: Int = 10, most_zoom: Int = 15) uses web (
     icon: .cloud_download,
     label: "Download {query}",
@@ -1467,84 +1631,90 @@ action download_place(a: Atlas, query: Text, least_zoom: Int = 10, most_zoom: In
         return
     }
     if let first = found.found.first() {
-        let name = first.name
         let north = first.latitude + 0.05
         let south = first.latitude - 0.05
         let east = first.longitude + 0.07
         let west = first.longitude - 0.07
-        let area = OfflineArea(
-            name: name,
-            north: north,
-            south: south,
-            east: east,
-            west: west,
-            least_zoom: least_zoom,
-            most_zoom: most_zoom,
-            tiles: count_tiles(north, south, east, west, least_zoom, most_zoom),
+        let made = kept.kept.insert(
+            KeptArea(
+                name: first.name,
+                key: area_key(north, south, east, west, least_zoom, most_zoom),
+                north: north,
+                south: south,
+                east: east,
+                west: west,
+                least_zoom: least_zoom,
+                most_zoom: most_zoom,
+            ),
         )
-        for old in a.offline.filter(o -> o.name.lower() == name.lower()) {
-            a.offline.remove(old)
-        }
-        a.offline.insert(area)
-        a.status = "Downloading {area.tiles} tiles for {name}…"
+        keep_area(a, made)
     } else {
         a.status = "No place is called “{query}”."
     }
 }
 
-/// How many tiles an area holds at the zoom levels it keeps.
-fn count_tiles(
-    north: Float,
-    south: Float,
-    east: Float,
-    west: Float,
-    least_zoom: Int,
-    most_zoom: Int,
-) -> Int {
-    if least_zoom > most_zoom {
-        0
-    } else {
-        let columns = columns_at(least_zoom)
-        let across = longitude_tile(east, columns) - longitude_tile(west, columns) + 1
-        let down = latitude_tile(south, columns) - latitude_tile(north, columns) + 1
-        across.max(1) * down.max(1)
-            + count_tiles(north, south, east, west, least_zoom + 1, most_zoom)
+/// Keeps `area` on this device, replacing an area of the same footprint or name, and starts its
+/// download.
+action keep_area(a: Atlas, area: KeptArea) {
+    for old in kept.kept.filter(
+        k -> k.id() != area.id() and (k.key == area.key or k.name.lower() == area.name.lower()),
+    ) {
+        if old.job != "" { engine.cancel(old.job) }
+        let _ = engine.call("forget-area", json.encode(ForgetAreaAsk(id: old.key)))
+        kept.kept.remove(old)
+    }
+    save_area(a, area)
+}
+
+/// Starts keeping `area`'s tiles, as a job whose record says how far it has come. A tile already
+/// kept is not fetched again, so this also continues a stopped area.
+action save_area(a: Atlas, area: KeptArea) {
+    if area.job != "" { engine.cancel(area.job) }
+    let ask = SaveAreaAsk(
+        id: area.key,
+        name: area.name,
+        north: area.north,
+        south: area.south,
+        east: area.east,
+        west: area.west,
+        least_zoom: area.least_zoom,
+        most_zoom: area.most_zoom,
+        basemap: basemap(),
+    )
+    match engine.start("save-area", json.encode(ask), done: j -> area_saved(a, area, j)) {
+        .ok(job) => {
+            area.job = job
+            area.stopped = false
+            a.status = "Downloading {area.name}…"
+        }
+        .err(why) => {
+            a.status = why
+        }
     }
 }
 
-/// How many tiles the world is across at zoom level `z`.
-fn columns_at(z: Int) -> Int {
-    if z <= 0 { 1 } else { 2 * columns_at(z - 1) }
-}
-
-/// The tile column a longitude stands in.
-fn longitude_tile(longitude: Float, columns: Int) -> Int {
-    ((longitude + 180.0) / 360.0 * columns.to_float()).floor()
-}
-
-/// The tile row a latitude stands in.
-fn latitude_tile(latitude: Float, columns: Int) -> Int {
-    let clamped = latitude.max(-85.0511).min(85.0511)
-    let sine = (clamped * 3.14159265 / 180.0).sin()
-    let share = 0.5 - ((1.0 + sine) / (1.0 - sine)).ln() / (4.0 * 3.14159265)
-    (share * columns.to_float()).floor()
-}
-
-/// Says how far saving an area has come, as the map reports it.
-action note_saved(a: Atlas, area: Text, at: List<Int>) (did: "changed the map") {
-    if let held = a.offline.find(o -> o.name == area and not o.stopped) {
-        held.done = at.at(0) ?? 0
-        let total = at.at(1) ?? 0
-        if held.done >= total {
-            held.tiles = total
-            a.status = "Offline area ready ({total} tiles)"
+/// What an area's download ended with: what it kept, or that the person stopped it.
+action area_saved(a: Atlas, area: KeptArea, j: host.Job) {
+    if let held = kept.kept.find(k -> k.key == area.key) {
+        held.done = j.done
+        if j.total > 0 {
+            held.tiles = j.total
+        }
+        held.job = ""
+        if j.state == .done {
+            a.status = "Offline area ready ({held.tiles} tiles)"
+        } else if j.state == .cancelled {
+            a.status = "Stopped {held.name}; {held.done} tiles stay available offline"
+        } else {
+            a.status = "The download of {held.name} did not finish"
         }
     }
 }
 
 /// Stops an area's download: the tiles kept so far stay available offline.
 action stop_offline_area(a: Atlas, area: Text) (icon: .x, label: "Stop downloading") {
-    if let held = a.offline.find(o -> o.name == area) {
+    if let held = kept.kept.find(k -> k.name == area) {
+        if held.job != "" { engine.cancel(held.job) }
         held.stopped = true
         a.status = "Stopped {area}; {held.done} tiles stay available offline"
     }
@@ -1555,20 +1725,22 @@ action continue_offline_area(a: Atlas, area: Text) (
     icon: .cloud_download,
     label: "Download it again",
 ) {
-    if let held = a.offline.find(o -> o.name == area) {
+    if let held = kept.kept.find(k -> k.name == area) {
         held.stopped = false
-        a.status = "Downloading the rest of {area}…"
+        save_area(a, held)
     }
 }
 
-/// Takes an area this device saved away.
+/// Takes an area this device saved away, and the tiles of it no other kept area needs.
 destructive action delete_offline_area(a: Atlas, area: Text) (
     icon: .trash_2,
     label: "Delete offline area",
     did: "changed the map",
 ) {
-    if let held = a.offline.find(o -> o.name == area) {
-        a.offline.remove(held)
+    if let held = kept.kept.find(k -> k.name == area) {
+        if held.job != "" { engine.cancel(held.job) }
+        let _ = engine.call("forget-area", json.encode(ForgetAreaAsk(id: held.key)))
+        kept.kept.remove(held)
         a.status = "Removed {area}"
     } else {
         a.status = "That offline area is not on this device"
@@ -1581,9 +1753,11 @@ destructive action clear_offline_areas(a: Atlas) (
     label: "Clear offline maps",
     did: "cleared the offline maps",
 ) {
-    for held in a.offline {
-        a.offline.remove(held)
+    for held in kept.kept {
+        if held.job != "" { engine.cancel(held.job) }
+        kept.kept.remove(held)
     }
+    let _ = engine.call("clear-saved", "")
     a.status = "Cleared the offline maps"
 }
 
@@ -1646,7 +1820,7 @@ action open_link(a: Atlas, link: Text) -> host.Resource uses web, time (
                 } else {
                     a.centre_latitude = lat
                     a.centre_longitude = lon
-                    a.centre_zoom = 15.0
+                    a.centre_zoom = 8.0
                     a.status = ""
                 }
             }
@@ -1686,6 +1860,17 @@ view map(a: Atlas) {
     state show_places: Bool = true
     state least_zoom: Int = 10
     state most_zoom: Int = 15
+    // Where the camera rests: its latitude, longitude and zoom, and the map's northern, southern,
+    // eastern and western edges, as the map reports them when a move of the person's ends.
+    state seen: List<Float> = [
+        a.centre_latitude,
+        a.centre_longitude,
+        a.centre_zoom,
+        a.centre_latitude + 0.02,
+        a.centre_latitude - 0.02,
+        a.centre_longitude + 0.03,
+        a.centre_longitude - 0.03,
+    ]
     layers(fill) {
         split(side: .leading) {
             primary(min: 20rem) {
@@ -1695,7 +1880,7 @@ view map(a: Atlas) {
             }
             secondary(min: 22rem) {
                 layers(fill) {
-                    map_pane(a, chosen)
+                    map_pane(a, chosen, seen)
                     map_controls(a, chosen, sheet, least_zoom, most_zoom)
                     if a.status != "" {
                         stack(at: .top, fill, padding: .related) {
@@ -1717,12 +1902,12 @@ view map(a: Atlas) {
                             place_card(picked, chosen)
                         }
                     }
-                    footer(a)
+                    footer(a, seen.at(0) ?? a.centre_latitude, seen.at(2) ?? a.centre_zoom)
                 }
             }
         }
         if sheet == "offline" {
-            offline_sheet(a, sheet, least_zoom, most_zoom)
+            offline_sheet(a, sheet, least_zoom, most_zoom, seen)
         } else if sheet == "info" {
             info_dialog(sheet)
         }
@@ -1730,7 +1915,7 @@ view map(a: Atlas) {
 }
 
 /// The map itself: the world's imagery, its markers, the route, and the areas kept offline.
-view map_pane(a: Atlas, chosen: State<Text>) {
+view map_pane(a: Atlas, chosen: State<Text>, seen: State<List<Float>>) {
     ui.Map(
         name: "Map",
         world: true,
@@ -1738,11 +1923,11 @@ view map_pane(a: Atlas, chosen: State<Text>) {
         latitude: a.centre_latitude,
         longitude: a.centre_longitude,
         zoom: a.centre_zoom,
-        basemap: "https://tile.openstreetmap.org/%z/%x/%y.png",
+        basemap: basemap(),
         hint: "Search for a place to see it on the map",
     ) {
         on marker(name: Text): set(chosen, name).then(open_place(atlas, name))
-        on saved(area: Text, at: List<Int>): note_saved(a, area, at)
+        on rest(at: List<Float>): set(seen, at)
         markers: {
             for place in a.places.filter(p -> p.saved or p.found) {
                 ui.MapMarker(
@@ -1803,19 +1988,6 @@ view map_pane(a: Atlas, chosen: State<Text>) {
         tracks: {
             if let route = shown_route(a) {
                 ui.MapTrack(name: route.to_name, points: route.geometry, tone: .route, width: 4.0)
-            }
-        }
-        areas: {
-            for area in a.offline.filter(o -> not o.stopped) {
-                ui.MapArea(
-                    name: area.name,
-                    north: area.north,
-                    south: area.south,
-                    east: area.east,
-                    west: area.west,
-                    least_zoom: area.least_zoom,
-                    most_zoom: area.most_zoom,
-                )
             }
         }
     }
@@ -2044,10 +2216,10 @@ view map_controls(
     most_zoom: State<Int>,
 ) {
     stack(at: .trailing, padding: .related, gap: .tight) {
-        ui.Button("Zoom in", icon: .plus, icon_only: true) {
+        ui.Button("Zoom in", icon: .plus, icon_only: true, keys: ["+", "="]) {
             on press: zoom_map(a, 1.0)
         }
-        ui.Button("Zoom out", icon: .minus, icon_only: true) {
+        ui.Button("Zoom out", icon: .minus, icon_only: true, keys: ["-", "_"]) {
             on press: zoom_map(a, -1.0)
         }
         ui.Button("Use my location", icon: .locate_fixed, icon_only: true) {
@@ -2064,6 +2236,7 @@ view map_controls(
             icon: .cloud_download,
             icon_only: true,
             toggled: sheet == "offline",
+            keys: ["m"],
         ) {
             on press: set(sheet, if sheet == "offline" { "" } else { "offline" })
         }
@@ -2073,15 +2246,23 @@ view map_controls(
     }
 }
 
-/// What the map is: its credits and the zoom it shows.
-view footer(a: Atlas) {
+/// What the map is: its credits, how far the bar at its own scale stands for, and the zoom it
+/// shows. The scale is read where the camera rests, so it follows the person's own pan and zoom.
+view footer(a: Atlas, latitude: Float, zoom: Float) {
+    let scale = scale_of(latitude, zoom, 96.0)
     stack(at: .bottom, fill, padding: .related) {
         row(distribute: .between, align: .center) {
             ui.Text("© OpenStreetMap contributors", role: .caption, secondary: true)
             if a.traffic {
                 ui.Text("No traffic data", role: .caption, secondary: true)
             }
-            ui.Text("Zoom {a.centre_zoom.round()}", role: .caption, secondary: true, numeric: true)
+            ui.Text(scale.label, role: .caption, secondary: true, numeric: true)
+            ui.Text(
+                "Zoom {tile_zoom(a.centre_zoom)}",
+                role: .caption,
+                secondary: true,
+                numeric: true,
+            )
         }
     }
 }
@@ -2090,13 +2271,40 @@ view footer(a: Atlas) {
 /// transport offers.
 view directions_panel(a: Atlas) {
     state showing: Bool = false
+    state from_words: Text = ""
+    state to_words: Text = ""
     ui.DisclosureRow(title: "Directions", icon: .route, expanded: showing) {
         on toggle(open: Bool): set(showing, open)
         row(gap: .tight) {
             for mode in modes() {
-                ui.Button(mode_name(mode), icon: .route, toggled: a.mode == mode, role: .plain) {
+                ui.Button(
+                    mode_name(mode),
+                    icon: .route,
+                    toggled: a.mode == mode,
+                    role: .plain,
+                    keys: mode_keys(mode),
+                ) {
                     on press: set_mode(a, mode)
                 }
+            }
+        }
+        row(gap: .tight, align: .center) {
+            ui.TextInput(bind: from_words, placeholder: "From", fill)
+            ui.Button("Swap from and to", icon: .arrow_up_down, icon_only: true, role: .plain) {
+                on press: {
+                    let held = from_words
+                    set(from_words, to_words)
+                    set(to_words, held)
+                }
+            }
+            ui.TextInput(bind: to_words, placeholder: "To", fill)
+        }
+        row(gap: .tight) {
+            ui.Button("Get directions", icon: .route, role: .primary, keys: ["d"]) {
+                on press: directions(a, from_words, to_words)
+            }
+            ui.Button("Fit the map", icon: .maximize, role: .plain, keys: ["f"]) {
+                on press: fit_map(a)
             }
         }
         if let route = shown_route(a) {
@@ -2215,12 +2423,24 @@ view leg_row(leg: Leg) {
 }
 
 /// The offline maps: save what the map shows or a place for later, and what this device kept.
-view offline_sheet(a: Atlas, sheet: State<Text>, least_zoom: State<Int>, most_zoom: State<Int>) {
+view offline_sheet(
+    a: Atlas,
+    sheet: State<Text>,
+    least_zoom: State<Int>,
+    most_zoom: State<Int>,
+    seen: State<List<Float>>,
+) {
     state place: Text = ""
     ui.FloatingPanel(width: 380.0) {
         row(distribute: .between, align: .center) {
             ui.Text("Offline maps", role: .heading)
-            ui.Button("Close offline maps", icon: .x, icon_only: true, role: .plain) {
+            ui.Button(
+                "Close offline maps",
+                icon: .x,
+                icon_only: true,
+                role: .plain,
+                keys: ["Escape"],
+            ) {
                 on press: set(sheet, "")
             }
         }
@@ -2234,7 +2454,15 @@ view offline_sheet(a: Atlas, sheet: State<Text>, least_zoom: State<Int>, most_zo
             }
         }
         ui.Button("Download this view", icon: .cloud_download, role: .primary) {
-            on press: download_view(a, least_zoom, most_zoom)
+            on press: download_view(
+                a,
+                seen.at(3) ?? a.centre_latitude + 0.02,
+                seen.at(4) ?? a.centre_latitude - 0.02,
+                seen.at(5) ?? a.centre_longitude + 0.03,
+                seen.at(6) ?? a.centre_longitude - 0.03,
+                least_zoom,
+                most_zoom,
+            )
         }
         row(gap: .tight, align: .center) {
             ui.TextInput(bind: place, placeholder: "Search for a city or a place", fill)
@@ -2242,7 +2470,7 @@ view offline_sheet(a: Atlas, sheet: State<Text>, least_zoom: State<Int>, most_zo
                 on press: download_place(a, place, least_zoom, most_zoom)
             }
         }
-        if a.offline.is_empty() {
+        if kept.kept.is_empty() {
             ui.EmptyState(
                 "Search for a place, or download what the map shows now.",
                 icon: .cloud_download,
@@ -2251,7 +2479,7 @@ view offline_sheet(a: Atlas, sheet: State<Text>, least_zoom: State<Int>, most_zo
         } else {
             stack(gap: .tight) {
                 ui.Text("Downloaded areas", role: .subheading)
-                for area in a.offline {
+                for area in kept.kept {
                     area_row(a, area)
                 }
                 ui.Button("Clear offline maps", icon: .trash_2, role: .plain) {
@@ -2263,22 +2491,21 @@ view offline_sheet(a: Atlas, sheet: State<Text>, least_zoom: State<Int>, most_zo
 }
 
 /// One area this device keeps, and how far saving it has come.
-view area_row(a: Atlas, area: OfflineArea) {
+view area_row(a: Atlas, area: KeptArea) {
+    let saved = if let j = engine.job(area.job) { j.done } else { area.done }
+    let told = if let j = engine.job(area.job) { j.total } else { 0 }
+    let done = saved.max(area.done)
+    let total = if told > 0 { told } else { area.tiles }
     stack(gap: .tight) {
         row(distribute: .between, align: .center) {
             ui.Text(area.name, role: .body)
             row(gap: .tight) {
-                ui.Text(
-                    "{area.done} of {area.tiles} tiles",
-                    role: .caption,
-                    numeric: true,
-                    secondary: true,
-                )
+                ui.Text("{done} of {total} tiles", role: .caption, numeric: true, secondary: true)
                 if area.stopped {
                     ui.Button("Download it again", icon: .cloud_download) {
                         on press: continue_offline_area(a, area.name)
                     }
-                } else if area.done < area.tiles {
+                } else if area.job != "" and done < total {
                     ui.Button("Stop downloading", icon: .x) {
                         on press: stop_offline_area(a, area.name)
                     }
@@ -2288,8 +2515,8 @@ view area_row(a: Atlas, area: OfflineArea) {
                 }
             }
         }
-        if area.tiles > 0 {
-            ui.ProgressBar(area.done.to_float() / area.tiles.to_float())
+        if total > 0 {
+            ui.ProgressBar(done.to_float() / total.to_float())
         }
         if area.stopped {
             ui.Text(
@@ -2377,7 +2604,12 @@ view place(p: Place) {
             ui.Fact(text: category_name(p.category), icon: p.category.icon())
         }
         row(gap: .tight) {
-            ui.Button(if p.saved { "Saved" } else { "Save" }, icon: .star, toggled: p.saved) {
+            ui.Button(
+                if p.saved { "Saved" } else { "Save" },
+                icon: .star,
+                toggled: p.saved,
+                keys: ["s"],
+            ) {
                 on press: save_place(p)
             }
             ui.Button("Directions", icon: .route) {

@@ -24,6 +24,16 @@ async fn admit(
     owner: &DeviceCert,
     seed: u8,
 ) -> DeviceCert {
+    keyed_admit(workspaces, workspace, owner, seed).await.1
+}
+
+/// [`admit`], with the admitted device's key.
+async fn keyed_admit(
+    workspaces: &Workspaces,
+    workspace: &str,
+    owner: &DeviceCert,
+    seed: u8,
+) -> (SigningKey, DeviceCert) {
     let token = [seed; 8];
     let issued = workspaces
         .pre_admit(
@@ -37,18 +47,18 @@ async fn admit(
         )
         .await
         .unwrap();
-    let (_, cert) = guest_device();
+    let (key, cert) = guest_device();
     let reply = workspaces
         .admit_proven(
             issued.signed_invitation,
-            cert.clone(),
+            (cert.clone(), &key),
             rand::random(),
             &format!("Person {seed}"),
             Some(token.as_slice()),
         )
         .await;
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
-    cert
+    (key, cert)
 }
 
 async fn grant(
@@ -953,9 +963,9 @@ async fn read_wait_list(
 /// A new device asks to join with `invitation`, its key proved on the connection its entry
 /// rides.
 async fn ask_to_join(workspaces: &Workspaces, invitation: Vec<u8>) -> JoinReply {
-    let (_, guest) = guest_device();
+    let (guest_key, guest) = guest_device();
     workspaces
-        .admit_proven(invitation, guest, rand::random(), "Bo", None)
+        .admit_proven(invitation, (guest, &guest_key), rand::random(), "Bo", None)
         .await
 }
 
@@ -1018,11 +1028,19 @@ async fn an_invitation_asked_without_a_name_names_the_inviter_as_the_workspace_s
 /// A device of `person`'s root, labelled `label`: one they hold themselves,
 /// or a key made to act for them.
 fn device_of(person: &SigningKey, label: &str, capabilities: DeviceCapabilities) -> DeviceCert {
+    keyed_device_of(person, label, capabilities).1
+}
+
+/// [`device_of`], with the device's key.
+fn keyed_device_of(
+    person: &SigningKey,
+    label: &str,
+    capabilities: DeviceCapabilities,
+) -> (SigningKey, DeviceCert) {
+    let key = SigningKey::from_bytes(&rand::random());
     let mut cert = DeviceCert {
         user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: SigningKey::from_bytes(&rand::random())
-            .verifying_key()
-            .to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
         device_label: label.into(),
         capabilities,
         issued_at_ns: 1,
@@ -1031,7 +1049,7 @@ fn device_of(person: &SigningKey, label: &str, capabilities: DeviceCapabilities)
         issuer: None,
     };
     sign_device_cert(&mut cert, person).unwrap();
-    cert
+    (key, cert)
 }
 
 /// Someone a deployment's operator declares an owner of a workspace nobody is
@@ -1107,11 +1125,12 @@ async fn a_declared_owner_carries_the_name_they_were_declared_with() {
         )
         .await
         .unwrap();
-    let device = device_of(&person, "Quinten's laptop", DeviceCapabilities::member());
+    let (device_key, device) =
+        keyed_device_of(&person, "Quinten's laptop", DeviceCapabilities::member());
     let reply = workspaces
         .admit_proven(
             issued.signed_invitation,
-            device.clone(),
+            (device.clone(), &device_key),
             rand::random(),
             "Quin's laptop",
             Some(token.as_slice()),
@@ -1254,18 +1273,29 @@ async fn what_a_workspace_lets_a_member_this_server_carries_out() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let (ada_key, ada) = keyed_admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     for action in governance::ALL {
         grant(workspaces, &workspace, &owner, &ada, action).await;
     }
 
-    // A device of a member enters as theirs: the owner's and Ada's are in already. Someone the
-    // workspace does not have comes in by an invitation, never this way.
-    assert!(!workspaces.enter(&workspace, &owner).await.unwrap());
-    assert!(!workspaces.enter(&workspace, &ada).await.unwrap());
-    let (_, stranger) = guest_device();
-    assert!(workspaces.enter(&workspace, &stranger).await.is_err());
+    // A device of a member enters as theirs, signing its own row: the owner's and Ada's are in
+    // already, so they sign nothing. Someone the workspace does not have comes in by an
+    // invitation, never this way.
+    assert!(!workspaces.enter(&workspace, (&owner, &key)).await.unwrap());
+    assert!(
+        !workspaces
+            .enter(&workspace, (&ada, &ada_key))
+            .await
+            .unwrap()
+    );
+    let (stranger_key, stranger) = guest_device();
+    assert!(
+        workspaces
+            .enter(&workspace, (&stranger, &stranger_key))
+            .await
+            .is_err()
+    );
     // A Viewer the owner added by their root, before any device of theirs arrived, enters from
     // one and holds no more there than a Viewer does.
     let cy = SigningKey::from_bytes(&rand::random());
@@ -1282,8 +1312,13 @@ async fn what_a_workspace_lets_a_member_this_server_carries_out() {
         )
         .await
         .unwrap();
-    let phone = device_of(&cy, "Cy's phone", DeviceCapabilities::member());
-    assert!(workspaces.enter(&workspace, &phone).await.unwrap());
+    let (phone_key, phone) = keyed_device_of(&cy, "Cy's phone", DeviceCapabilities::member());
+    assert!(
+        workspaces
+            .enter(&workspace, (&phone, &phone_key))
+            .await
+            .unwrap()
+    );
     assert!(
         workspaces
             .issue(&workspace, &phone, invitation(34, Role::Viewer))
@@ -1334,8 +1369,13 @@ async fn what_a_workspace_lets_a_member_this_server_carries_out() {
 
     // A workspace the server does not hold decides nothing, so no one enters it.
     let elsewhere = tilo_server_protocol::WorkspaceId::new().to_string();
-    for device in [&owner, &ada] {
-        assert!(workspaces.enter(&elsewhere, device).await.is_err());
+    for (device, signer) in [(&owner, &key), (&ada, &ada_key)] {
+        assert!(
+            workspaces
+                .enter(&elsewhere, (device, signer))
+                .await
+                .is_err()
+        );
     }
     server.shutdown().await;
 }
@@ -1361,7 +1401,12 @@ async fn an_expired_certificate_administers_nothing_even_the_owners() {
             .is_err()
     );
     assert!(workspaces.pending(&workspace, &expired).await.is_err());
-    assert!(workspaces.enter(&workspace, &expired).await.is_err());
+    assert!(
+        workspaces
+            .enter(&workspace, (&expired, &key))
+            .await
+            .is_err()
+    );
     workspaces.pending(&workspace, &owner).await.unwrap();
     server.shutdown().await;
 }

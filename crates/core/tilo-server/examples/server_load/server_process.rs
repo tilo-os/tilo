@@ -25,6 +25,10 @@ use crate::workload::Fleet;
 /// Bounds a server process that does not answer: only a hang reaches it.
 const ANSWER: Duration = Duration::from_secs(120);
 
+/// A member of a workspace: its certificate and its device's secret key, for a member lists
+/// itself, signing its own row.
+pub type Member = (DeviceCert, [u8; 32]);
+
 /// What the server process needs to start: its identity and its workspaces.
 #[derive(Serialize, Deserialize)]
 pub struct Setup {
@@ -32,8 +36,8 @@ pub struct Setup {
     pub user_public_key: [u8; 32],
     pub server_secret_key: [u8; 32],
     pub server_cert: DeviceCert,
-    /// Each workspace's id and the certificates of its members.
-    pub workspaces: Vec<(collab_types::WorkspaceId, Vec<DeviceCert>)>,
+    /// Each workspace's id and its members.
+    pub workspaces: Vec<(collab_types::WorkspaceId, Vec<Member>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -249,9 +253,10 @@ async fn serve_server() -> anyhow::Result<()> {
             .create_workspace("Load", Some(&workspace))
             .await
             .map_err(anyhow::Error::msg)?;
-        for member in &members {
+        for (member, secret) in &members {
+            let key = ed25519_dalek::SigningKey::from_bytes(secret);
             workspaces
-                .enter(&workspace, member)
+                .enter(&workspace, (member, &key))
                 .await
                 .map_err(anyhow::Error::msg)?;
         }

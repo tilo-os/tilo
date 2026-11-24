@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 37
+version = 38
 version_const = "crates/ui/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -48,6 +48,8 @@ Value = "serde_json::Value: any JSON value"
 Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 ScopeDecl = "tilo_resource::ScopeDecl: an object of `anchor` (the resource or part searched) and `label`, both text"
 Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) and that set's parameters, each a name and a number"
+TreeUpdate = "accesskit::TreeUpdate: the tree a window exports for assistive technology: its tree id, its nodes and the node it focuses, as accesskit writes them"
+ActionRequest = "accesskit::ActionRequest: one assistive action a client takes on a node (action, tree, node and any data), as accesskit writes it"
 
 [schema]
 "Acting" = "struct"
@@ -144,6 +146,10 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FindOptions.mode" = "FindMode optional"
 "FindOptions.whole_word" = "bool optional"
 "FloatingSurfaceClientMessage" = "enum internal tag=type"
+"FloatingSurfaceClientMessage::accessibility_tree" = "struct"
+"FloatingSurfaceClientMessage::accessibility_tree.instance" = "Option<u64> optional"
+"FloatingSurfaceClientMessage::accessibility_tree.name" = "String"
+"FloatingSurfaceClientMessage::accessibility_tree.tree" = "TreeUpdate"
 "FloatingSurfaceClientMessage::action_markers" = "struct"
 "FloatingSurfaceClientMessage::action_markers.markers" = "Vec<PaintedActionMarker>"
 "FloatingSurfaceClientMessage::allow_host_shell" = "unit"
@@ -239,6 +245,9 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceClientMessage::window_targets.instance" = "Option<u64> optional"
 "FloatingSurfaceClientMessage::window_targets.targets" = "Vec<WindowTarget>"
 "FloatingSurfaceHostMessage" = "enum internal tag=type"
+"FloatingSurfaceHostMessage::accessibility_action" = "struct"
+"FloatingSurfaceHostMessage::accessibility_action.after_input" = "Option<u32> optional"
+"FloatingSurfaceHostMessage::accessibility_action.request" = "ActionRequest"
 "FloatingSurfaceHostMessage::activate_test_id" = "struct"
 "FloatingSurfaceHostMessage::activate_test_id.test_id" = "String"
 "FloatingSurfaceHostMessage::adopted" = "struct"

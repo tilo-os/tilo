@@ -74,7 +74,8 @@ impl NativeDocumentReads for Service {
         context: &NativeDocumentReadContext,
         known: Option<[u8; 32]>,
         _: usize,
-    ) -> Result<NativeDocumentRead, String> {
+    ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
+        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
         self.authorize(context)?;
         self.whole.fetch_add(1, Ordering::AcqRel);
         if self.pending.load(Ordering::Acquire) {
@@ -89,16 +90,18 @@ impl NativeDocumentReads for Service {
             heads: vec![tip],
             body: Box::new(Bytes(vec![1; self.bytes])),
         })
+    })()))
     }
     fn capture_since(
         &self,
         context: &NativeDocumentReadContext,
         held: &HeldRevision,
         maximum: usize,
-    ) -> Result<NativeDocumentRead, String> {
+    ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
         if !self.changes {
             return self.capture(context, Some(held.revision), maximum);
         }
+        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
         self.authorize(context)?;
         self.since.fetch_add(1, Ordering::AcqRel);
         if self.pending.load(Ordering::Acquire) {
@@ -119,6 +122,7 @@ impl NativeDocumentReads for Service {
             base,
             body: Box::new(Bytes(vec![2; self.bytes])),
         })
+    })()))
     }
 }
 
@@ -192,7 +196,10 @@ impl Channel {
             budget: &self.budget,
             ids: &self.ids,
         };
-        open_read(&mut self.slot, reading, known, held).map(|(reply, _)| reply)
+        let slot = std::cell::RefCell::new(std::mem::take(&mut self.slot));
+        let read = futures::executor::block_on(open_read(&slot, reading, known, held));
+        self.slot = slot.into_inner();
+        read.map(|(reply, _)| reply)
     }
     /// Read every remaining piece after `first`, and the last token.
     fn read_rest(&mut self, first: &Reply) -> Result<(u64, Vec<u8>, [u8; 16]), String> {

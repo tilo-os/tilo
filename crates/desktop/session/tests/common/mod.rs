@@ -747,10 +747,17 @@ pub fn device_daemon(home: tilo_test_env::TestHome, name: Option<&str>) -> Devic
     let within = tilo_test_env::hang_bound();
     let daemon =
         tilo_runtime::daemon::Running::start(profile.path()).expect("the device's daemon starts");
+    // The directory the daemon keeps its sockets in: a profile named apart keeps them beside
+    // itself, not inside it, so the endpoint it listens on says where they are.
+    let sockets = daemon
+        .native_socket()
+        .parent()
+        .expect("the daemon's endpoint is in its sockets directory")
+        .to_path_buf();
     // This computer's person is founded by its daemon, as the first set-up on a machine founds
     // them: their root stays with this account, their certificate names this device, and their
     // services start once it does.
-    tilo_api::daemon::DaemonPlace::at(profile.path(), profile.path())
+    tilo_api::daemon::DaemonPlace::at(&sockets, profile.path())
         .found(&tilo_api::daemon::Founding {
             name: name.map(str::to_owned),
             ..tilo_api::daemon::Founding::default()
@@ -826,6 +833,20 @@ impl Device {
     /// The daemon makes no link, or the session does not start.
     #[track_caller]
     pub fn session(&self, state: &Path) -> Session {
+        self.session_with(Options {
+            collab: false,
+            state: Some(state.to_path_buf()),
+            ..Options::default()
+        })
+    }
+
+    /// [`Self::session`] started with `options`: the session is this device's person's, on the
+    /// link its daemon makes for it.
+    ///
+    /// # Panics
+    /// The daemon makes no link, or the session does not start.
+    #[track_caller]
+    pub fn session_with(&self, options: Options) -> Session {
         let link = self
             .daemon
             .link_shell(tilo_test_env::hang_bound())
@@ -835,9 +856,7 @@ impl Device {
                 presentation: ui::headless::fixture_runner_inputs,
                 person: self.person.clone(),
                 shell_link: Some(link),
-                collab: false,
-                state: Some(state.to_path_buf()),
-                ..Options::default()
+                ..options
             },
             &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         )

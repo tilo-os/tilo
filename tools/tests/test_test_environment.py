@@ -300,7 +300,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"],
                                  "swtpm": ["swtpm"], "pdf-sandbox": ["pdf-sandbox"],
-                                 "property-cases": ["property-cases"]})
+                                 "property-cases": ["property-cases"],
+                                 "throughput": ["throughput"]})
         for script in scripts.values():
             self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
@@ -334,7 +335,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-auth) or package(tilo-rollback) or "
                                  "package(tilo-test-env)": "swtpm",
                                  "package(tilo-pdf) or "
-                                 "package(tilo-thumbnail)": "pdf-sandbox"})
+                                 "package(tilo-thumbnail)": "pdf-sandbox",
+                                 "package(tilo-runtime) and binary(it) and "
+                                 "test(throughput::)": "throughput"})
 
     def test_the_deep_profile_gives_its_tests_more_property_cases(self) -> None:
         # t.toml's `test-deep` tests its packages with more proptest cases, through a profile of

@@ -5,8 +5,8 @@
 //! Its type is the one its owner declares for it ([`Declared`]): the list of a workspace's
 //! agents (the workspace's), its emoji (Chat's), its contact directory (Contacts'), the person's
 //! settings and their list of workspaces in the workspace whose only member is them (the
-//! settings' and the identity's), and every app's index of
-//! the workspace (the index's own). The workspace's grants on the owner's node decide the call,
+//! settings' and the identity's). Any app's record also moves to another workspace by the
+//! system's `move` ([`Workspaces::move_record`]). The workspace's grants on the owner's node decide the call,
 //! as a window of the app decides a click. What the action changed is written into the
 //! workspace as this device's write, signed and sealed as the device, so every app of the
 //! workspace and the person's other devices take it as any other.
@@ -71,15 +71,12 @@ struct Declared {
 enum Founding {
     /// A workspace resource of the app, with its identity.
     Identified,
-    /// An app's own resource of the workspace: its index.
-    Primary,
     /// The person's own, made from its type alone.
     Typed,
 }
 
 impl Declared {
     fn all() -> Vec<Self> {
-        use collaboration::resource::index;
         let workspace = |kind: tilo_resource::ResourceKind, app: &'static str| Self {
             app: Some(app),
             id: collab_types::workspace_document_id(kind.kind()),
@@ -108,12 +105,6 @@ impl Declared {
                 kind: tilo_user_identity::workspace_list::kind(),
                 founding: Founding::Typed,
             },
-            Self {
-                app: None,
-                id: String::new(),
-                kind: index::kind(),
-                founding: Founding::Primary,
-            },
         ]
     }
 
@@ -140,11 +131,8 @@ impl Declared {
                 );
                 Ok(doc)
             }
-            Founding::Identified | Founding::Primary => {
-                let id = match self.founding {
-                    Founding::Primary => DocumentId::package_primary(),
-                    _ => DocumentId::parse(&self.id).ok_or("the resource has no id")?,
-                };
+            Founding::Identified => {
+                let id = DocumentId::parse(&self.id).ok_or("the resource has no id")?;
                 let checkout = DocumentCheckout::new(id, ResourceType::new(self.kind.kind()));
                 let mut doc = automerge::AutoCommit::new();
                 collaboration::resource::genesis(&mut doc, &checkout, workspace, initialize)
@@ -181,15 +169,36 @@ impl ResourceActions {
         };
         let (app, id) = tilo_actions::remote::resource_parts(&request.target.provider)
             .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
+        let workspace = caller
+            .workspace()
+            .ok_or_else(|| invalid("a resource's action is asked in the workspace that keeps it"))?
+            .to_owned();
+        // Any app's record moves to another workspace of the caller's: the store judges each
+        // side of it as the caller's write there.
+        if request.target.address.action == tilo_resource_store::MOVE_VERB {
+            let argument = |name: &str| match &request.argument {
+                InvokeArgument::Json(arguments) => arguments
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                _ => None,
+            };
+            let (Some(to), Some(target)) = (argument("to"), argument("target")) else {
+                return Err(invalid(
+                    "a move names the workspace it goes `to` and its `target` id there",
+                ));
+            };
+            self.workspaces
+                .move_record((&workspace, &to), (app, id, &target), caller)
+                .await
+                .map_err(|error| failed("refused", error))?;
+            return Ok(ActionOutput::default());
+        }
         let declared = self
             .declared
             .iter()
             .find(|declared| declared.names(app, id))
             .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
-        let workspace = caller
-            .workspace()
-            .ok_or_else(|| invalid("a resource's action is asked in the workspace that keeps it"))?
-            .to_owned();
         let workspace_id =
             WorkspaceId::parse(&workspace).ok_or_else(|| invalid("that is not a workspace"))?;
         let arguments = match &request.argument {

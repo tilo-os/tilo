@@ -63,6 +63,9 @@ const MAX_SAID_CHARS: usize = 240;
 /// The longest name of an argument a listing spells out.
 const MAX_ARGUMENT_NAME_BYTES: usize = 64;
 
+/// Why a command a grant of the workspace's denies the agent is not called, nor put to its
+/// person.
+const POLICY_DENIES: &str = "The workspace policy denies this action for the agent";
 const TOO_LARGE_TO_ASK: &str = "Those arguments are larger than a question shows whole, so your person cannot be asked about this call";
 const CONNECTED: &str = "That service is connected already: it is in the list of connections";
 
@@ -369,7 +372,10 @@ impl Workspaces {
                 let by = Calling::Agent(&using.name);
                 done(
                     connections::refresh(
-                        (&root, self.vault_for(&using.workspace, &asker)),
+                        (
+                            &root,
+                            self.vault_for(&using.workspace, &asker).serving(request),
+                        ),
                         &reach,
                         &named.connection,
                         by,
@@ -414,7 +420,10 @@ impl Workspaces {
             let by = Calling::Agent(&using.name);
             return done(
                 connections::call(
-                    (root, self.vault_for(&using.workspace, &asker)),
+                    (
+                        root,
+                        self.vault_for(&using.workspace, &asker).serving(request),
+                    ),
                     reach,
                     by,
                     call,
@@ -426,7 +435,12 @@ impl Workspaces {
         // What a grant lets stand is read at every call, so a grant taken back covers nothing
         // from that moment.
         let node = call_node(using, &call.connection, (&call.command, &found.digest));
-        let leave = if self.granted(&using.workspace, &using.agent, &node).await {
+        let granted = self
+            .granted_answer(&using.workspace, &using.agent, &node)
+            .await;
+        let leave = if granted == Some(Answer::Deny) {
+            return Err(refused(POLICY_DENIES.to_owned()));
+        } else if granted == Some(Answer::Allow) {
             Leave::Always
         } else {
             // What a question could not show whole is refused before anybody is asked.

@@ -169,3 +169,41 @@ fn a_painter_stays_inside_its_memory_and_answers_are_bounded() {
     );
     assert!(!declines.is_broken());
 }
+
+#[test]
+fn a_set_runs_on_the_machine_code_the_device_daemon_compiled_for_it() {
+    let params = wire::params_answer(&[tilo_theme_sdk::ParamSpec::new(
+        "levels",
+        Some(4.0),
+        2.0..=16.0,
+    )]);
+    let painted = tilo_theme_sdk::PaintedPart::new(tilo_theme_sdk::PartScene::new());
+    let answer = wire::paint_answer(Some(&painted));
+    let module = canned(&params, &answer);
+
+    let dir = tempfile::tempdir().unwrap();
+    let cache = tilo_wasm_aot::Cache::at(dir.path()).unwrap();
+    let entry = cache.ensure(&module).unwrap();
+
+    // The guest itself, so a refusal names what the compiled path saw.
+    #[cfg(not(target_arch = "wasm32"))]
+    compiled::Guest::new(&module, &entry).expect("the compiled guest starts");
+    let compiled = load_with(&module, Some(&entry)).unwrap();
+    assert!(
+        matches!(&*compiled.guest.lock_recover(), Exec::Compiled(_)),
+        "the set must run on the daemon's compiled module, not fall back to the interpreter"
+    );
+    let interpreted = load(&module).unwrap();
+    assert_eq!(compiled.params(), interpreted.params());
+    let paint = |painter: &WasmPainter| {
+        painter.paint(
+            tilo_theme_sdk::Part::ButtonContainer,
+            Size::new(120.0, 40.0),
+            tilo_theme_sdk::PartState::default(),
+            0.0,
+            &tilo_theme_sdk::PartTokens::default(),
+        )
+    };
+    assert_eq!(paint(&compiled).is_some(), paint(&interpreted).is_some());
+    assert!(!compiled.is_broken());
+}

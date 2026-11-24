@@ -84,6 +84,22 @@ pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
 /// Say which of an account's services the person uses ([`SetServices`]),
 /// answering the accounts as [`MailAccounts`].
 pub const SET_SERVICES: &str = "set-services";
+/// Read the logins the workspace's vault keeps that belong to mail servers, as
+/// a [`MailSignIns`]: their names, sign-in names and servers, never their
+/// secrets. What a person picks from when they add an account from Passwords.
+pub const SIGN_INS: &str = "sign-ins";
+/// Say whether a cloud-storage account's files stay in sync or are copied into
+/// the workspace once ([`SetFilesMode`]), answering the accounts as
+/// [`MailAccounts`].
+pub const SET_FILES_MODE: &str = "set-files-mode";
+/// Sync a cloud-storage account now, cutting a failure's wait short and trying
+/// an account whose mount could not start ([`SyncControl`]).
+pub const SYNC_NOW: &str = "sync-now";
+/// Stop a cloud-storage account's background sync and uploads until it is
+/// resumed; reads still fetch on demand ([`SyncControl`]).
+pub const PAUSE_SYNC: &str = "pause-sync";
+/// Resume a paused cloud-storage account and sync it now ([`SyncControl`]).
+pub const RESUME_SYNC: &str = "resume-sync";
 /// Begin connecting a cloud-storage account ([`BeginCloudSignIn`]),
 /// answering where the person's browser goes ([`SignInStep`]). A sign-in
 /// the provider shows a code for, or iCloud's, is finished with
@@ -190,13 +206,14 @@ pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
             (&[KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
         }
         (RESOURCE, RECONNECT | CHECK) => (&[KEEP_USES], &[REPORT_SYNC]),
-        // Turning an iCloud account's calendars on signs in to its calendar server with the
-        // mail account's password, and keeps that sign-in.
+        // Turning an account's calendars on keeps the calendar server's sign-in in the
+        // vault and uses the mail account's; turning them off forgets the calendar's.
         (RESOURCE, SET_SERVICES) => (
             &[KEEP_SEALED, KEEP_USES, REMOVE_SEALED],
             &[SAVE_ACCOUNT, REMOVE_ACCOUNT],
         ),
         (RESOURCE, SET_CALENDARS) => (&[REMOVE_SEALED], &[SAVE_ACCOUNT, REMOVE_ACCOUNT]),
+        (RESOURCE, SET_FILES_MODE) => (&[], &[SAVE_ACCOUNT]),
         (RESOURCE, FETCH | READ | SEARCH | SEND | MARK | SAVE_DRAFT | ARRIVED)
         | (
             calendars::RESOURCE,
@@ -507,6 +524,11 @@ pub struct BeginSignIn {
     /// where it is empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// The address the person signs in with, when the provider's page is
+    /// asked for a mailbox: what Google's and Microsoft's pages sign in to,
+    /// shown to them on that page and kept as the account's address.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub address: String,
     /// The account this signs in to again, when its sign-in stopped working;
     /// empty for a new account.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -614,6 +636,48 @@ impl SetServices {
             files: self.files,
         }
     }
+}
+
+/// One login of the workspace's vault that belongs to a mail server, as
+/// [`SIGN_INS`] lists it: where it signs in, never what it signs in with.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailSignIn {
+    /// The item's reference, as [`ADD_MAIL_WITH_ITEM`] names it.
+    pub id: String,
+    /// What Passwords shows the entry as.
+    pub title: String,
+    /// The name it signs in with.
+    pub username: String,
+    /// The servers it belongs to, each `imap://<host>:<port>` or
+    /// `smtp://<host>:<port>`.
+    pub places: Vec<String>,
+}
+
+/// Every login of the workspace's vault that belongs to a mail server
+/// ([`SIGN_INS`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailSignIns {
+    pub sign_ins: Vec<MailSignIn>,
+}
+
+/// Whether one cloud-storage account's files stay in sync or are copied into
+/// the workspace once ([`SET_FILES_MODE`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetFilesMode {
+    pub account: String,
+    /// `sync` or `import`.
+    pub mode: String,
+}
+
+/// One cloud-storage account whose sync is controlled ([`SYNC_NOW`],
+/// [`PAUSE_SYNC`], [`RESUME_SYNC`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncControl {
+    pub account: String,
 }
 
 /// A mail account to add. The password travels here and nowhere back: the

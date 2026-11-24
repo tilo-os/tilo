@@ -10,12 +10,11 @@
 //! here, and nothing is waited for. A chain's head names whichever of the chain's parts is the
 //! newest and holds no document of its own: what the service holds of the chain says which.
 
-use futures::executor::block_on;
 use tilo_peer_state::PeerDocumentReadError;
 
 use super::collab_app_broker::{
     AwaitingDocument, ChainHeadAnswer, DocumentBytes, NativeDocumentRead,
-    NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
+    NativeDocumentReadContext, NativeDocumentReads, ReadAnswering, ResourceRead,
 };
 #[cfg(test)]
 use crate::device_documents::on_its_own;
@@ -23,9 +22,8 @@ use crate::workspaces::Workspaces;
 
 /// What the workspaces a service holds answer a resource read with.
 ///
-/// A read waits on the service's state from the calling thread, as the broker's read API is
-/// synchronous: the service's own tasks must be driven by a runtime with a worker of its own, never
-/// by the thread that calls here.
+/// A read of a record's document is awaited by whoever asks (the broker's event loop), never
+/// waited for on its thread: the service's state may wait on what that same loop carries.
 #[derive(Clone)]
 pub struct ServiceReads {
     workspaces: Workspaces,
@@ -124,6 +122,42 @@ impl NativeDocumentReads for ServiceReads {
         context: &NativeDocumentReadContext,
         known_revision: Option<[u8; 32]>,
         maximum: usize,
+    ) -> ReadAnswering<'_, NativeDocumentRead> {
+        let context = context.clone();
+        Box::pin(async move { self.captured(&context, known_revision, maximum).await })
+    }
+
+    fn unchanged(
+        &self,
+        context: &NativeDocumentReadContext,
+        known_revision: Option<[u8; 32]>,
+    ) -> ReadAnswering<'_, Option<bool>> {
+        let context = context.clone();
+        Box::pin(async move { self.held_unchanged(&context, known_revision).await })
+    }
+
+    fn next_change(
+        &self,
+        _context: &NativeDocumentReadContext,
+        _after: u64,
+    ) -> Result<Option<u64>, String> {
+        // The service holds every record its workspaces have whole, so what it answers changes by
+        // what is written to a record — announced — or by this device's access to it and to its
+        // keys, which is announced too. Time alone changes nothing here: a grant and a certificate
+        // ending are the workspace's and the reader's, which the broker registers with the policy
+        // clock itself. A held read on one of these records therefore waits for a signal rather
+        // than re-checking on a clock.
+        Ok(None)
+    }
+}
+
+impl ServiceReads {
+    /// [`NativeDocumentReads::capture`].
+    async fn captured(
+        &self,
+        context: &NativeDocumentReadContext,
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
         context.revalidate()?;
         let route = context.route();
@@ -131,7 +165,7 @@ impl NativeDocumentReads for ServiceReads {
         let workspaces = self
             .workspaces()
             .ok_or("this device's workspace service holds no workspaces")?;
-        let answer = block_on(async {
+        let answer = async {
             let (workspace, app, resource) = (
                 route.cluster_id.as_str(),
                 route.app_id.as_str(),
@@ -170,12 +204,14 @@ impl NativeDocumentReads for ServiceReads {
                 heads: capture.heads().iter().map(|head| head.0).collect(),
                 body: Box::new(Captured(capture.into_bytes())),
             })
-        })?;
+        }
+        .await?;
         context.revalidate()?;
         Ok(answer)
     }
 
-    fn unchanged(
+    /// [`NativeDocumentReads::unchanged`].
+    async fn held_unchanged(
         &self,
         context: &NativeDocumentReadContext,
         known_revision: Option<[u8; 32]>,
@@ -190,11 +226,13 @@ impl NativeDocumentReads for ServiceReads {
             // A resource the service holds nothing of is new here: the broker captures.
             return Ok(None);
         }
-        let revision = block_on(workspaces.resource_revision(
-            &route.cluster_id,
-            (&route.app_id, &route.document_id),
-            reader,
-        ));
+        let revision = workspaces
+            .resource_revision(
+                &route.cluster_id,
+                (&route.app_id, &route.document_id),
+                reader,
+            )
+            .await;
         match revision {
             Ok(revision) => Ok(revision.map(|revision| Some(revision) == known_revision)),
             // A read the service cannot decide without capturing: the broker captures instead.
@@ -203,20 +241,6 @@ impl NativeDocumentReads for ServiceReads {
                 Ok(None)
             }
         }
-    }
-
-    fn next_change(
-        &self,
-        _context: &NativeDocumentReadContext,
-        _after: u64,
-    ) -> Result<Option<u64>, String> {
-        // The service holds every record its workspaces have whole, so what it answers changes by
-        // what is written to a record — announced — or by this device's access to it and to its
-        // keys, which is announced too. Time alone changes nothing here: a grant and a certificate
-        // ending are the workspace's and the reader's, which the broker registers with the policy
-        // clock itself. A held read on one of these records therefore waits for a signal rather
-        // than re-checking on a clock.
-        Ok(None)
     }
 }
 

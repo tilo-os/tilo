@@ -97,17 +97,6 @@ view places(g: Gallery) {
                                 dashed: true,
                             )
                         }
-                        areas: {
-                            ui.MapArea(
-                                name: "Kept offline",
-                                north: 52.55,
-                                south: 52.49,
-                                east: 13.45,
-                                west: 13.33,
-                                least_zoom: 10,
-                                most_zoom: 15,
-                            )
-                        }
                     }
                 }
             }

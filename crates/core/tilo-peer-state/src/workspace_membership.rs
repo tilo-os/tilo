@@ -617,16 +617,7 @@ fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), Str
         | Change::Unrestrict { person }
         | Change::SetRole { person, .. }
         | Change::SetMemberCustomRole { person, .. }
-        | Change::TransferOwnership { person }
-        | Change::AddAgent {
-            for_person: person, ..
-        } => {
-            if let Change::AddAgent { agent, .. } = change {
-                valid_agent_id(agent)?;
-            }
-            person
-        }
-        Change::RemoveAgent { agent, .. } => return valid_agent_id(agent),
+        | Change::TransferOwnership { person } => person,
         Change::RetiredSetMemberRoles { .. } => {
             return Err("roles are assigned one at a time".into());
         }

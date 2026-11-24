@@ -219,11 +219,30 @@ async fn admit_by_invitation(
     else {
         panic!("the invitation is challenged");
     };
+    // The machine signs its own admission on the governance the challenge carried.
+    let redemption = tilo_peer_state::join::verify_connection_redemption(
+        &answer.challenge.signed_invitation,
+        cert,
+        answer.challenge.request_id,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .expect("the invitation admits the machine");
+    let admission = tilo_peer_state::own_admission::sign_own_admission(
+        workspace,
+        &answer.governance,
+        &redemption,
+        None,
+        key,
+        tilo_clock::wall(),
+    )
+    .await
+    .expect("the machine signs its own admission");
     let proof = sign_join_proof(answer.challenge, key).expect("the machine signs the challenge");
     let admitted = service
         .handle(
             device,
-            JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
+            JoinTransportRequest::Complete(JoinCompleteRequest { proof, admission }),
         )
         .await;
     assert!(
@@ -267,9 +286,9 @@ async fn flow_every_device_manages_every_other() {
             .await
             .unwrap();
     }
-    for cert in [&laptop_cert, &phone_cert] {
+    for (cert, key) in [(&laptop_cert, &laptop_key), (&phone_cert, &phone_key)] {
         hosted
-            .enter(&person, cert)
+            .enter(&person, (cert, key))
             .await
             .expect("a device of the person enters their own workspace");
     }
@@ -535,9 +554,9 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
             .await
             .unwrap();
     }
-    for cert in [&laptop_cert, &phone_cert] {
+    for (cert, key) in [(&laptop_cert, &laptop_key), (&phone_cert, &phone_key)] {
         hosted
-            .enter(&person, cert)
+            .enter(&person, (cert, key))
             .await
             .expect("a device of the person enters their own workspace");
     }
@@ -942,7 +961,7 @@ async fn detaching_a_server_revokes_its_administrators_and_refuses_its_writes() 
             .unwrap();
     }
     hosted
-        .enter(&person, &laptop_cert)
+        .enter(&person, (&laptop_cert, &laptop_key))
         .await
         .expect("a device of the person enters their own workspace");
     let studio = hosted.create("Studio").await.unwrap().workspace;
@@ -1146,7 +1165,7 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (server_key, server_cert) = enrol(&root, "the-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let (_, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
+    let (phone_key, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = tilo_server::daemon::Server::start_with_relay_mode(
         tilo_server::ServerConfig::loopback(state.path().join("server")),
@@ -1172,7 +1191,7 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
             .unwrap();
     }
     hosted
-        .enter(&person, &laptop_cert)
+        .enter(&person, (&laptop_cert, &laptop_key))
         .await
         .expect("a device of the person enters their own workspace");
     let studio = hosted.create("Studio").await.unwrap().workspace;
@@ -1241,7 +1260,7 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
     // The owner's other devices write: a device of theirs enters the studio and says where its
     // copy stands.
     hosted
-        .enter(&studio, &phone_cert)
+        .enter(&studio, (&phone_cert, &phone_key))
         .await
         .expect("a device of the owner enters the studio");
     let mut governed = hosted
@@ -1303,7 +1322,7 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
             .unwrap();
     }
     hosted
-        .enter(&person, &laptop_cert)
+        .enter(&person, (&laptop_cert, &laptop_key))
         .await
         .expect("a device of the person enters their own workspace");
     let studio = hosted.create("Studio").await.unwrap().workspace;
@@ -1359,7 +1378,7 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
     // It reconnects with the certificate the studio still holds, as a server does: it is refused in
     // words, and the roster stays as the removal left it.
     let refused = hosted
-        .enter(&studio, &laptop_cert)
+        .enter(&studio, (&laptop_cert, &laptop_key))
         .await
         .expect_err("a removed server enters the studio no more by asking");
     assert!(
@@ -1445,7 +1464,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (server_key, server_cert) = enrol(&root, "the-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let (_, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
+    let (phone_key, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = tilo_server::daemon::Server::start_with_relay_mode(
         tilo_server::ServerConfig::loopback(state.path().join("server")),
@@ -1471,7 +1490,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
             .unwrap();
     }
     hosted
-        .enter(&person, &laptop_cert)
+        .enter(&person, (&laptop_cert, &laptop_key))
         .await
         .expect("a device of the person enters their own workspace");
     let studio = hosted.create("Studio").await.unwrap().workspace;
@@ -1561,7 +1580,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
     // The certificate the studio still holds gets it no way back in, through its own entry or the
     // join exchange.
     let refused = hosted
-        .enter(&studio, &laptop_cert)
+        .enter(&studio, (&laptop_cert, &laptop_key))
         .await
         .expect_err("a removed machine enters the studio no more by asking");
     assert!(
@@ -1605,7 +1624,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         "the host that admitted the machine still writes"
     );
     hosted
-        .enter(&studio, &phone_cert)
+        .enter(&studio, (&phone_cert, &phone_key))
         .await
         .expect("a device of the owner enters the studio");
     assert!(

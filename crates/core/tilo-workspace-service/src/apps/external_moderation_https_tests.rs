@@ -440,7 +440,8 @@ mod https_completion {
             context: &NativeDocumentReadContext,
             _: Option<[u8; 32]>,
             maximum: usize,
-        ) -> Result<NativeDocumentRead, String> {
+        ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
+        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
             self.authorize(context)?;
             let bytes = std::fs::read(&self.0).map_err(|error| error.to_string())?;
             if bytes.len() > maximum {
@@ -451,7 +452,8 @@ mod https_completion {
                 heads: Vec::new(),
                 body: Box::new(ReportDocument(bytes)),
             })
-        }
+        })()))
+    }
     }
 
     fn approved_operation(

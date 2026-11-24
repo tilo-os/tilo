@@ -19,6 +19,11 @@ pub const FIELD_EDIT: &str = "edit";
 /// ([`MAX_MARK_ARGS`]).
 pub const HISTORY_VERBS: [&str; 3] = ["checkpoint", "describe", "link"];
 
+/// The verb that takes a resource from one workspace to another: the destination's founding of it
+/// and the source's removal, each judged by whether its caller may write that kind there. Every
+/// schema has it, as it has the verbs of history.
+pub const MOVE_VERB: &str = "move";
+
 /// The most bytes the arguments of a history verb's change take, as JSON.
 pub const MAX_MARK_ARGS: usize = 4096;
 
@@ -30,6 +35,11 @@ static HISTORY: std::sync::LazyLock<Vec<Verb>> = std::sync::LazyLock::new(|| {
             marks: true,
             ..Verb::default()
         })
+        .chain(std::iter::once(Verb {
+            name: MOVE_VERB.to_owned(),
+            moves: true,
+            ..Verb::default()
+        }))
         .collect()
 });
 
@@ -55,6 +65,8 @@ pub struct Verb {
     pub nested: BTreeSet<String>,
     /// A verb of history ([`HISTORY_VERBS`]): its change has no operations.
     pub marks: bool,
+    /// The move ([`MOVE_VERB`]): it founds, fills and removes a resource of any declared kind.
+    pub moves: bool,
 }
 
 /// What a verb writes in a resource of one kind.
@@ -79,6 +91,9 @@ pub struct Type {
     /// every one of which holds of a live resource ([`crate::Store::live`]). `None` for a type
     /// that never is.
     pub live: Option<Vec<crate::query::Filter>>,
+    /// The containers at the root of a resource's content that its fields keep their items in,
+    /// by field: what its derived founding makes ([`collab_types::document::founding`]).
+    pub founding: Vec<(String, automerge::ObjType)>,
 }
 
 /// One indexed field of a resource type.
@@ -220,6 +235,7 @@ impl Schema {
                 if ty.name == own_name {
                     ty_of.nested.extend(held_records(surface));
                     ty_of.live.clone_from(&live);
+                    ty_of.founding = founding(surface);
                 }
                 ty_of
             })
@@ -254,14 +270,13 @@ impl Schema {
                     name: verb.id.clone(),
                     writes,
                     nested,
-                    marks: false,
+                    ..Verb::default()
                 }
             })
             .chain(std::iter::once(Verb {
                 name: FIELD_EDIT.to_owned(),
                 writes: writes_of(surface, own, &|_, _| true, true),
-                nested: BTreeSet::new(),
-                marks: false,
+                ..Verb::default()
             }))
             .collect();
         Self {
@@ -284,7 +299,8 @@ impl Schema {
     /// Every declared verb that names `name`: the verb of that name, and each family of verbs
     /// declared by a prefix ending in `*` (`set-*`, a typed setter per field of a kind whose
     /// fields another table lists) that `name` starts with.
-    /// The verbs of history ([`HISTORY_VERBS`]) are declared in every schema.
+    /// The verbs of history ([`HISTORY_VERBS`]) and the move ([`MOVE_VERB`]) are declared in
+    /// every schema.
     pub fn verbs_naming<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Verb> + 'a {
         self.verbs.iter().chain(HISTORY.iter()).filter(move |verb| {
             verb.name == name
@@ -390,6 +406,29 @@ fn own_type(surface: &Surface) -> NamedType {
             .collect(),
         cases: Vec::new(),
     }
+}
+
+/// The containers at the root of `surface`'s record that its top-level fields keep their items
+/// in, by field name: a collection or map in a map, a list or set in a list, a record of its own
+/// in a map.
+fn founding(surface: &Surface) -> Vec<(String, automerge::ObjType)> {
+    let mut containers: Vec<(String, automerge::ObjType)> = surface
+        .fields
+        .iter()
+        .filter(|field| !field.path.contains('.'))
+        .filter_map(|field| {
+            let container = match &field.ty {
+                FieldType::Collection(_) | FieldType::Map(_) => automerge::ObjType::Map,
+                FieldType::List(_) | FieldType::Set(_) => automerge::ObjType::List,
+                FieldType::Named(_) if field.stored == "record" => automerge::ObjType::Map,
+                _ => return None,
+            };
+            Some((field.path.clone(), container))
+        })
+        .collect();
+    containers.sort_by(|a, b| a.0.cmp(&b.0));
+    containers.dedup_by(|a, b| a.0 == b.0);
+    containers
 }
 
 /// The kinds and fields a verb of `surface` writes: everything `own`, the surface's type, holds
@@ -515,6 +554,7 @@ impl Type {
             fields,
             nested,
             live: None,
+            founding: Vec::new(),
         }
     }
 

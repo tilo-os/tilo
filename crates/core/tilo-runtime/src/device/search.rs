@@ -16,7 +16,6 @@ use std::sync::{Arc, OnceLock};
 use tilo_actions::remote::{ResourceAddress, ResourceReads as _};
 use tilo_desktop_model::WorkspaceId;
 use tilo_workspace_service::apps::services::SearchIndexServices;
-use tilo_workspace_service::device_documents::ServiceDocuments;
 use tilo_workspace_service::search::records::{RecordIndex, RecordReader, StoreReader};
 use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 use tilo_workspace_service::workspaces::{RecordReads, Workspaces};
@@ -44,7 +43,6 @@ impl DeviceSearch {
     ) -> Arc<Self> {
         let index = AppContentIndex::persistent(root.join(INDEX_DIR));
         let records = RecordIndex::start(
-            Arc::new(ServiceDocuments::of(copies.clone())),
             reader,
             Arc::new(InstalledPackages::new(copies, person)),
             Arc::clone(&index),
@@ -127,6 +125,18 @@ impl InstalledPackages {
 }
 
 impl StoreReader for InstalledPackages {
+    fn workspaces(&self) -> Vec<String> {
+        self.copies.stored_workspaces()
+    }
+
+    fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+        self.copies.stored_records(workspace)
+    }
+
+    fn record(&self, workspace: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
+        self.copies.stored_record(workspace, app, record)
+    }
+
     /// An installed tilolang app, or one built into this build that the daemon runs for a
     /// workspace with no package of it installed.
     fn reads(&self, app: &str) -> bool {

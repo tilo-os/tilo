@@ -635,11 +635,11 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
             .await
             .expect("the person makes the workspace on their server");
         workspaces
-            .enter(&workspace, &agent.cert)
+            .enter(&workspace, (&agent.cert, &agent.sk))
             .await
             .expect("the agent's device enters it");
         workspaces
-            .enter(&workspace, &laptop.cert)
+            .enter(&workspace, (&laptop.cert, &laptop.sk))
             .await
             .expect("the person's own device enters it");
     }
@@ -768,7 +768,7 @@ async fn an_open_of_browser_is_refused_in_words_where_the_host_runs_no_browser()
     let user = TestUser::fresh("Ada");
     let host = user.enrol("home", DeviceCapabilities::member());
     let agent = user.enrol("agent", DeviceCapabilities::member());
-    let server = Box::pin(spawn_server(&user, host, &[WS], &[&agent.cert])).await;
+    let server = Box::pin(spawn_server(&user, host, &[WS], &[&agent])).await;
     let linked = member_link(&server.server, &agent).await;
     let remote = asking(&linked, WS_NAME).await;
     let caller = linked.caller(user.user_pk);
@@ -806,15 +806,13 @@ async fn an_open_of_browser_is_refused_in_words_where_the_host_runs_no_browser()
 impl Fixture {
     /// `key` enters the workspace, as a key its person made for it does.
     async fn list_environment_and(&self, key: &TestDevice) {
-        tilo_workspace_service::workspaces::fixtures::enter_key(
-            self.server
-                .server
-                .workspaces()
-                .expect("the server holds workspaces"),
-            WS_NAME,
-            &key.cert,
-        )
-        .await;
+        self.server
+            .server
+            .workspaces()
+            .expect("the server holds workspaces")
+            .enter(WS_NAME, (&key.cert, &key.sk))
+            .await
+            .expect("the key lists itself");
     }
 }
 

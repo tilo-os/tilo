@@ -635,9 +635,17 @@ impl Instance {
     }
 
     /// Keep the package's types with an origin in step with `origin`'s service, and hand it the
-    /// outside effects of its capabilities.
+    /// outside effects of its capabilities. One origin of each name stands: a window whose view is
+    /// built again hands the origin it already has, and never a second one that would ask the
+    /// service for the same effects beside it.
     pub fn add_origin(&mut self, origin: crate::origin::SharedOrigin) {
-        self.origins.borrow_mut().push(origin);
+        let name = origin.borrow().name().to_owned();
+        let mut origins = self.origins.borrow_mut();
+        if let Some(held) = origins.iter_mut().find(|held| held.borrow().name() == name) {
+            *held = origin;
+        } else {
+            origins.push(origin);
+        }
     }
 
     /// Poll each origin: what the services said is written and handed to the API.

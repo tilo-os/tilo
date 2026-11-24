@@ -126,7 +126,7 @@ async fn person_with_a_server() -> Fixture {
     desktop
         .host
         .workspaces()
-        .enter(&admin, &phone.cert)
+        .enter(&admin, (&phone.cert, &phone.sk))
         .await
         .expect("the workspace takes the person's other device in");
     join_person_workspace(&desktop, &nas, &server).await;

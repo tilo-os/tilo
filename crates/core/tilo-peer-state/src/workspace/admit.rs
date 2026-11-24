@@ -25,12 +25,11 @@ pub enum SenderAccess {
     /// decide it again (the shell's network check, `peer_workspace_allows`). Every
     /// other check still applies.
     TransportAuthorized,
-    /// The sender is a device of `person`, who is no member, named among the
-    /// workspace's holders by its own signed address: a server of another
-    /// person keeping the workspace. It writes the redemptions of
-    /// invitations it answers and its own copy's row, and nothing else
-    /// ([`holder_writes`]).
-    Holder { person: [u8; 32] },
+    /// The sender holds no role in the workspace: a device enrolling
+    /// itself, or a holder that is no member and so carries what members
+    /// signed without writing anything of its own. What it may write is its
+    /// own admission and nothing else ([`enrolling_writes`]).
+    Enrolling,
 }
 
 /// The sender of a batch, as the receiver's transport authenticated it.
@@ -45,30 +44,21 @@ pub struct Writer<'a> {
 impl Writer<'_> {
     fn person(&self) -> Option<&[u8; 32]> {
         match &self.access {
-            SenderAccess::Member { person, .. } | SenderAccess::Holder { person } => Some(person),
-            SenderAccess::TransportAuthorized => None,
+            SenderAccess::Member { person, .. } => Some(person),
+            SenderAccess::TransportAuthorized | SenderAccess::Enrolling => None,
         }
-    }
-
-    /// Whether the sender is a device of `owner`: the workspace's governance is
-    /// theirs to write, from any device their root certifies. The receiver
-    /// knows the owner from what it joined through, never from the batch,
-    /// so a first answer cannot make its sender the owner.
-    fn governs(&self, owner: &[u8; 32]) -> bool {
-        matches!(self.access, SenderAccess::Member { person, .. } if person == *owner)
     }
 
     /// Whether the sender keeps the workspace's history for its members: a
     /// device of its owner, or of one of `administrators`, from a device of
-    /// their own. They relay what members recorded and send the workspace's
-    /// compacted base; only the owner's devices write its governance beyond
-    /// the operations every receiver judges ([`Self::governs`]).
+    /// their own, each holding that role on the signed member list. They
+    /// relay what members recorded and send the workspace's compacted base.
     fn keeps_history(&self, owner: &[u8; 32], administrators: &[[u8; 32]]) -> bool {
-        self.governs(owner)
-            || matches!(
-                self.access,
-                SenderAccess::Member { person, foreign: false } if administrators.contains(&person)
-            )
+        matches!(
+            self.access,
+            SenderAccess::Member { person, foreign: false }
+                if person == *owner || administrators.contains(&person)
+        )
     }
 }
 
@@ -85,6 +75,11 @@ pub struct WorkspaceAdmission<'a> {
     /// The workspace's administrators, by root, as the governance held
     /// names them ([`Writer::keeps_history`]).
     pub administrators: &'a [[u8; 32]],
+    /// The devices whose place on the signed member list, or among the
+    /// workspace's holders, anchors a first governance this replica takes in
+    /// with nothing held before it: its own device and the device it was
+    /// joined through ([`first_member_list`]).
+    pub anchors: &'a [[u8; 32]],
     /// The instant the batch is judged at, in nanoseconds since the Unix
     /// epoch: grant expiry, and the certificate a saved shortcut's proof
     /// carries. Not whole seconds: a certificate issued earlier in this
@@ -104,8 +99,7 @@ pub struct AdmittedWorkspace {
 /// Why a batch was refused. Display strings are the peer-state messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceRefusal {
-    /// The sender is not the workspace's owner and nothing is held to check
-    /// its membership against.
+    /// Nothing is held to check the sender's membership against.
     RulesMissing,
     /// The sender may not change the workspace.
     WriteForbidden,
@@ -243,10 +237,14 @@ impl From<WorkspaceRefusal> for AdmissionFailure {
 /// Admit `changes` to `input.before`: build the candidate and run every check a
 /// workspace document must pass, in one place for every receiver.
 ///
-/// 1. The sender may make undoable changes on the workspace, unless it is the
-///    owner's device (who may grant itself anything) — [`SenderAccess`].
-/// 2. The batch decodes under the shared incoming limits ([`super::candidate`]).
-/// 3. Then [`check_candidate`].
+/// 1. With nothing held, the batch is a first governance ([`first_member_list`]).
+/// 2. A sender holding no role writes only its own admission
+///    ([`enrolling_writes`]).
+/// 3. Otherwise the sender may make undoable changes on the workspace, or
+///    only what one who reads it writes ([`may_write`]); every governance
+///    change is an operation its author's role permits, the owner's included.
+/// 4. The batch decodes under the shared incoming limits ([`super::candidate`]).
+/// 5. Then [`checked`].
 ///
 /// # Errors
 ///
@@ -256,14 +254,16 @@ pub fn admit_workspace_changes(
     input: WorkspaceAdmission<'_>,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedWorkspace, AdmissionFailure> {
-    if matches!(input.source.access, SenderAccess::Holder { .. }) {
-        return holder_writes(&input, changes);
+    if input.before.is_none() {
+        return first_member_list(&input, changes);
     }
-    let governs = input.source.governs(input.owner);
+    if matches!(input.source.access, SenderAccess::Enrolling) {
+        return enrolling_writes(&input, changes);
+    }
     let keeps = input
         .source
         .keeps_history(input.owner, input.administrators);
-    let writes = governs || may_write(input.before, input.workspace, &input.source, input.now_ns)?;
+    let writes = may_write(input.before, input.workspace, &input.source, input.now_ns)?;
     match super::base::lineage(input.before, changes) {
         super::base::Lineage::Same { changes, replaced } => {
             // Changes waiting in the document that the batch shows to be of
@@ -279,23 +279,36 @@ pub fn admit_workspace_changes(
             // operations say it changes, each of them its author's to make: a
             // membership change replays under its writer's grants
             // ([`super::membership`]), and a governance change is the row its
-            // operation names, judged by its author's role.
+            // operation names, judged by its author's role. The owner's
+            // devices write theirs the same way.
             let grown = crate::members::growth(input.before, &candidate)
                 .map_err(WorkspaceRefusal::Membership)?;
-            let governed = if grown > 0 && !governs {
+            let governed = if grown > 0 {
                 super::membership::admit_operations(
                     input.before,
                     &candidate,
                     &changes,
                     input.workspace,
-                    input.now_ns,
+                    (input.now_ns, keeps_checkpoints(&input)),
                 )
                 .map_err(membership)?;
                 true
-            } else if !governs && !super::governance_unchanged(input.before, &candidate) {
+            } else if !super::governance_unchanged(input.before, &candidate) {
                 // A change to the workspace's governance is an operation's: a
-                // batch that changes it without one changes nothing.
-                return Err(WorkspaceRefusal::GovernanceWriter.into());
+                // batch that changes it without one changes nothing, but for
+                // the checkpoints a keeper publishes as it publishes them.
+                let written: Vec<automerge::Change> = changes
+                    .iter()
+                    .filter_map(|bytes| automerge::Change::try_from(bytes.as_slice()).ok())
+                    .collect();
+                let checkpoints = input.before.is_some_and(|before| {
+                    super::changed_rows_by(before, &candidate, &written, true)
+                        == [super::GovernanceRow::Checkpoints]
+                });
+                if !(checkpoints && keeps_checkpoints(&input)) {
+                    return Err(WorkspaceRefusal::GovernanceWriter.into());
+                }
+                true
             } else {
                 false
             };
@@ -309,7 +322,7 @@ pub fn admit_workspace_changes(
             let candidate = super::candidate_on(*base, &changes)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
-            checked_as(&input, &candidate, false)?;
+            checked(&input, &candidate, false)?;
             Ok(AdmittedWorkspace {
                 candidate,
                 rebased: true,
@@ -320,31 +333,105 @@ pub fn admit_workspace_changes(
     }
 }
 
-/// What a holder that is no member may write: the row saying where its own
-/// copy stands ([`crate::state::HELD_COPIES_KEY`]), and the redemptions of
-/// invitations, each admitting the person its signed invitation names
-/// ([`super::membership::admit_operations`]), and the device rows of a
-/// member's further device or key, which any key holder writes in
-/// ([`super::membership::admit_operations`] checks the row's person is a
-/// member's); nothing else. Each is a rule every device computes alike: the
-/// row is about the holder itself, and a redemption or device row carries
-/// what decides it. Whether the sender is a holder is read where the batch
-/// was written (its dependencies), from the signed holder entries there, so
-/// every receiver decides it alike whenever the batch reaches it. Adding
-/// people otherwise, every change of a role, windows and layout stay a
-/// member's.
-fn holder_writes(
+/// The workspace's governance as this replica first takes it in, with nothing
+/// held to judge it against: whoever sends it, every membership operation it
+/// holds proves its author, it names this workspace and an owner, and the
+/// membership those operations replay to lists one of `input.anchors` (this
+/// replica's own device, or the device it joined through) as a device of a
+/// person holding a role, or among the workspace's holders by its signed
+/// address. A document founded anywhere else names none of them, so it
+/// governs nothing here.
+fn first_member_list(
+    input: &WorkspaceAdmission<'_>,
+    changes: &[Vec<u8>],
+) -> Result<AdmittedWorkspace, AdmissionFailure> {
+    let (candidate, rebased) = match super::base::lineage(None, changes) {
+        super::base::Lineage::Same { changes, .. } => (super::candidate(None, &changes)?, false),
+        super::base::Lineage::Newer { base, changes } => {
+            (super::candidate_on(*base, &changes)?, true)
+        }
+        super::base::Lineage::Refounded => return Err(WorkspaceRefusal::Refounded.into()),
+    };
+    let declared = uuid::Uuid::parse_str(input.workspace)
+        .map_err(|_| WorkspaceRefusal::DeclaredWorkspaceMismatch)?;
+    if super::declared_workspace_mismatches(&candidate, declared) {
+        return Err(WorkspaceRefusal::DeclaredWorkspaceMismatch.into());
+    }
+    crate::members::growth(None, &candidate).map_err(WorkspaceRefusal::Membership)?;
+    let policy = super::policy_of(&candidate, input.workspace);
+    if policy.owner().is_none() {
+        return Err(WorkspaceRefusal::RulesMissing.into());
+    }
+    // Each anchor's own row, and only the certificate it holds: the rows are
+    // read once, whole, as the replica takes them in.
+    let listed = |device: &[u8; 32]| {
+        let Some(automerge::ScalarValue::Bytes(bytes)) =
+            super::membership::winner(&candidate, "peer_identities_v1", &hex::encode(device))
+        else {
+            return false;
+        };
+        tilo_failure::ignored!(
+            "a device row that does not decode lists no device",
+            crate::state::GovernedIdentity::certificate_of(&bytes).ok()
+        )
+        .is_some_and(|cert| {
+            cert.device_public_key == *device
+                && policy
+                    .active_role(&hex::encode(cert.user_public_key))
+                    .is_some()
+        })
+    };
+    let holders = crate::state::keeping_devices_of(&candidate);
+    let held_by = |device: &[u8; 32]| {
+        holders
+            .iter()
+            .any(|hint| hint.host.device_public_key == *device)
+    };
+    if !input
+        .anchors
+        .iter()
+        .any(|device| listed(device) || held_by(device))
+    {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    }
+    Ok(AdmittedWorkspace { candidate, rebased })
+}
+
+/// What a governance batch from a sender holding no role may change: the
+/// device rows and display names an admission writes, the invitation it
+/// redeems, the membership operations it signs, and the grant a key its person
+/// made for an agent or a program is admitted under.
+const OWN_ADMISSION_KEYS: [&str; 6] = [
+    "peers",
+    "peer_identities_v1",
+    crate::state::invitation_receipts::RECEIPTS_KEY,
+    crate::state::invitation_receipts::PARTS_KEY,
+    crate::members::MEMBERS_KEY,
+    collab_types::workspace_grant::WORKSPACE_GRANTS_KEY,
+];
+
+/// What a sender holding no role may write: its own admission, signed by its
+/// own device and nothing else. That is the redemption of an invitation
+/// naming its person (`Admit { person }` of the author's own person, the
+/// invitation its authority), or the device row of a further device of a
+/// person the list names, written by that device (`Governance { rows:
+/// [Identities] }`, admissible because its certificate chains to a root the
+/// list names). Each added operation is authored by the sending device under
+/// one certificate, and the only device row and name it writes are its own,
+/// the row holding that certificate; every other part of the workspace stays
+/// as held. [`super::membership::admit_operations`] then judges the
+/// operations as for any writer. A holder that is no member carries what
+/// members signed, each frame under its author, and writes nothing of its
+/// own: its own copy's row, an admission of someone else or any record is
+/// refused.
+fn enrolling_writes(
     input: &WorkspaceAdmission<'_>,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedWorkspace, AdmissionFailure> {
     let before = input.before.ok_or(WorkspaceRefusal::RulesMissing)?;
-    let at = super::membership::dependency_state(before, changes).map_err(membership)?;
-    let named = crate::state::keeping_devices_of(&at)
-        .iter()
-        .any(|hint| hex::encode(hint.host.device_public_key) == input.source.key);
-    if !named {
-        return Err(WorkspaceRefusal::WriteForbidden.into());
-    }
+    let mut sender = [0; 32];
+    hex::decode_to_slice(input.source.key, &mut sender)
+        .map_err(|_| WorkspaceRefusal::WriteForbidden)?;
     let super::base::Lineage::Same { changes, replaced } =
         super::base::lineage(Some(before), changes)
     else {
@@ -352,28 +439,22 @@ fn holder_writes(
     };
     let pruned = super::base::pruned(Some(before), replaced);
     let candidate = super::candidate(Some(pruned.as_ref().unwrap_or(before)), &changes)?;
-    if only_own_copy_row(before, &candidate, input.source.key) {
-        checked(input, &candidate, false)?;
-        return Ok(AdmittedWorkspace {
-            candidate,
-            rebased: false,
-        });
+    if !super::only_keys_differ(Some(before), &candidate, &OWN_ADMISSION_KEYS) {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
     }
-    let held = crate::members::ops(before);
-    let only_admissions = crate::members::ops(&candidate)
+    // Read only where the batch wrote, never the workspace's every row: a
+    // device listing itself costs what it wrote however many are listed.
+    let written: Vec<automerge::Change> = changes
         .iter()
-        .filter(|(id, _)| !held.contains_key(*id))
-        .all(|(_, op)| match &op.command {
-            crate::members::MembershipOpCommand::Admit { .. } => true,
-            // A member's further device is a device row and nothing else.
-            crate::members::MembershipOpCommand::Governance { rows } => {
-                *rows == [super::GovernanceRow::Identities]
-            }
-            crate::members::MembershipOpCommand::Project { .. } => false,
-        });
+        .filter_map(|bytes| automerge::Change::try_from(bytes.as_slice()).ok())
+        .collect();
+    let touched =
+        super::rows::touched(&candidate, &written).ok_or(WorkspaceRefusal::WriteForbidden)?;
+    let author = own_operations((before, &candidate), &touched, sender)?;
+    only_own_rows((before, &candidate), &touched, sender, &author)?;
     let grown =
         crate::members::growth(Some(before), &candidate).map_err(WorkspaceRefusal::Membership)?;
-    if !only_admissions || grown == 0 {
+    if grown == 0 {
         return Err(WorkspaceRefusal::WriteForbidden.into());
     }
     super::membership::admit_operations(
@@ -381,7 +462,7 @@ fn holder_writes(
         &candidate,
         &changes,
         input.workspace,
-        input.now_ns,
+        (input.now_ns, false),
     )
     .map_err(membership)?;
     checked(input, &candidate, true)?;
@@ -391,36 +472,166 @@ fn holder_writes(
     })
 }
 
-/// Whether all `after` changes of `before` is the row of `own` (a device
-/// key, hex) among the held copies, and the map holding the rows when
-/// `before` had none.
-fn only_own_copy_row(before: &AutoCommit, after: &AutoCommit, own: &str) -> bool {
-    use automerge::patches::PatchAction;
-    use automerge::{ObjType, Prop, ReadDoc as _, Value};
-    let rows = crate::state::HELD_COPIES_KEY;
-    let had_rows = before.get(automerge::ROOT, rows).ok().flatten().is_some();
-    let from = before.clone().get_heads();
-    let mut after = after.clone();
-    let to = after.get_heads();
-    let patches = after.diff(&from, &to);
-    !patches.is_empty()
-        && patches
-            .iter()
-            .all(|patch| match (patch.path.as_slice(), &patch.action) {
-                (
-                    [],
-                    PatchAction::PutMap {
-                        key,
-                        value: (Value::Object(ObjType::Map), _),
-                        conflict: false,
-                    },
-                ) => key == rows && !had_rows,
-                (
-                    [(_, Prop::Map(map))],
-                    PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key },
-                ) => map == rows && key == own,
-                _ => false,
+/// The membership operations `candidate` adds to `before` where the batch
+/// touched it, all `sender`'s own: its admission of its own person, or its own
+/// device row. Answers their author.
+fn own_operations(
+    (before, candidate): (&AutoCommit, &AutoCommit),
+    touched: &std::collections::BTreeMap<String, super::rows::Wrote>,
+    sender: [u8; 32],
+) -> Result<tilo_user_identity::DeviceCert, AdmissionFailure> {
+    let added: Vec<_> = touched
+        .keys()
+        .filter(|key| crate::members::op::keyed(key).is_some())
+        .filter(|key| super::membership::values(before, &[], key).is_empty())
+        .flat_map(|key| super::membership::values(candidate, &[], key))
+        .filter_map(|bytes| {
+            tilo_failure::ignored!(
+                "an operation that does not prove its author governs nothing",
+                crate::members::SignedMembershipOp::verified_stored(&bytes).ok()
+            )
+            .map(|(_, op)| op)
+        })
+        .collect();
+    let Some(first) = added.first() else {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    };
+    let author = first.author.clone();
+    let own = added.iter().all(|op| {
+        op.author == author
+            && op.author.device_public_key == sender
+            && match &op.command {
+                crate::members::MembershipOpCommand::Admit { person, .. } => {
+                    *person == op.author.user_public_key
+                }
+                crate::members::MembershipOpCommand::Governance { rows } => {
+                    *rows == [super::GovernanceRow::Identities]
+                }
+                crate::members::MembershipOpCommand::Project { .. } => false,
+            }
+    });
+    if !own {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    }
+    Ok(author)
+}
+
+/// Whether the rows the batch changed are `sender`'s own: the only device row
+/// it writes holds the certificate its operations are signed under, and the
+/// names it writes are its own person's, and the only grant it records is the
+/// one its own certificate is admitted under.
+fn only_own_rows(
+    (before, candidate): (&AutoCommit, &AutoCommit),
+    touched: &std::collections::BTreeMap<String, super::rows::Wrote>,
+    sender: [u8; 32],
+    author: &tilo_user_identity::DeviceCert,
+) -> Result<(), AdmissionFailure> {
+    let own_key = hex::encode(sender);
+    let person_key = hex::encode(author.user_public_key);
+    let identity_of =
+        |key: &str| match super::membership::winner(candidate, "peer_identities_v1", key) {
+            Some(automerge::ScalarValue::Bytes(bytes)) => tilo_failure::ignored!(
+                "a device row that does not decode is no device's own",
+                crate::state::GovernedIdentity::decode(&bytes).ok()
+            ),
+            _ => None,
+        };
+    // The entries the batch changed of one of the maps an admission writes; a
+    // map rewritten whole is no device's own row.
+    let entries = |key: &str| -> Result<Vec<String>, AdmissionFailure> {
+        match touched.get(key) {
+            None => Ok(Vec::new()),
+            Some(super::rows::Wrote::Entries(entries)) => Ok(entries
+                .iter()
+                .filter(|entry| {
+                    super::membership::winner(before, key, entry)
+                        != super::membership::winner(candidate, key, entry)
+                })
+                .cloned()
+                .collect()),
+            Some(super::rows::Wrote::Whole) => Err(WorkspaceRefusal::WriteForbidden.into()),
+        }
+    };
+    // The only device row it writes is its own, holding the certificate its
+    // operations are signed under; it takes no row away.
+    let rows = entries("peer_identities_v1")?.into_iter().any(|device| {
+        device != own_key
+            || identity_of(&device).is_none_or(|identity| identity.device_cert != *author)
+    });
+    // A person's name is kept beside each device of theirs: naming
+    // themselves, a device names every device of its own person, and none of
+    // anyone else's.
+    let names = entries("peers")?.into_iter().any(|key| {
+        key != own_key
+            && key != person_key
+            && identity_of(&key).is_none_or(|identity| {
+                identity.device_cert.user_public_key != author.user_public_key
             })
+    });
+    if rows || names {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    }
+    own_grant((before, candidate), touched, author)
+}
+
+/// Whether the grants the batch wrote are only `author`'s own: the entry its
+/// key is listed under, naming that key and its person under the scope its
+/// certificate grants, unrevoked, and written over no revocation. The first
+/// grant a workspace records makes the map they are kept in.
+fn own_grant(
+    (before, candidate): (&AutoCommit, &AutoCommit),
+    touched: &std::collections::BTreeMap<String, super::rows::Wrote>,
+    author: &tilo_user_identity::DeviceCert,
+) -> Result<(), AdmissionFailure> {
+    use automerge::ReadDoc as _;
+    use collab_types::workspace_grant::{WORKSPACE_GRANTS_KEY, WorkspaceGrant};
+    let grants = |doc: &AutoCommit| match doc.get(automerge::ROOT, WORKSPACE_GRANTS_KEY) {
+        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), grants))) => Some(grants),
+        _ => None,
+    };
+    let written: Vec<String> = match touched.get(WORKSPACE_GRANTS_KEY) {
+        None => return Ok(()),
+        Some(super::rows::Wrote::Entries(entries)) => entries.iter().cloned().collect(),
+        Some(super::rows::Wrote::Whole) => match (grants(before), grants(candidate)) {
+            (None, Some(made)) => candidate.keys(&made).collect(),
+            _ => return Err(WorkspaceRefusal::WriteForbidden.into()),
+        },
+    };
+    let read = |doc: &AutoCommit, entry: &str| match super::membership::winner(
+        doc,
+        WORKSPACE_GRANTS_KEY,
+        entry,
+    ) {
+        Some(automerge::ScalarValue::Str(json)) => tilo_failure::ignored!(
+            "a grant that does not decode is no key's own",
+            serde_json::from_str::<WorkspaceGrant>(&json).ok()
+        ),
+        _ => None,
+    };
+    let id = WorkspaceGrant::id_of(&author.device_public_key);
+    let Some(scope) = author
+        .capabilities
+        .agent
+        .map(|scope| scope.workspace_name())
+    else {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    };
+    let own = written.iter().all(|entry| {
+        *entry == id
+            && read(candidate, entry).is_some_and(|grant| {
+                grant.id == id
+                    && grant.device == hex::encode(author.device_public_key)
+                    && grant.person == hex::encode(author.user_public_key)
+                    && grant.scope == scope
+                    && grant.revoked_ms.is_none()
+            })
+            && super::membership::winner(before, WORKSPACE_GRANTS_KEY, entry)
+                .is_none_or(|_| read(before, entry).is_some_and(|grant| grant.revoked_ms.is_none()))
+    });
+    if !own {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    }
+    Ok(())
 }
 
 fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure {
@@ -453,7 +664,7 @@ fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure
 /// # Errors
 ///
 /// The first [`WorkspaceRefusal`] that applies.
-fn checked_as(
+fn checked(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
     governed: bool,
@@ -465,15 +676,15 @@ fn checked_as(
         owner,
         administrators,
         now_ns,
+        ..
     } = *input;
-    let governs = source.governs(owner);
     let keeps = source.keeps_history(owner, administrators);
     let declared = uuid::Uuid::parse_str(workspace)
         .map_err(|_| WorkspaceRefusal::DeclaredWorkspaceMismatch)?;
     if super::declared_workspace_mismatches(candidate, declared) {
         return Err(WorkspaceRefusal::DeclaredWorkspaceMismatch);
     }
-    if !governs && !governed && !super::governance_unchanged(before, candidate) {
+    if !governed && !super::governance_unchanged(before, candidate) {
         return Err(WorkspaceRefusal::GovernanceWriter);
     }
     if !keeps {
@@ -514,16 +725,6 @@ fn checked_as(
     crate::removals::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
     crate::standing::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
     crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)
-}
-
-/// [`checked_as`] where the receiver carries nothing over: every batch but a
-/// newer base taken in by a receiver that keeps its delegations.
-fn checked(
-    input: &WorkspaceAdmission<'_>,
-    candidate: &AutoCommit,
-    governed: bool,
-) -> Result<(), WorkspaceRefusal> {
-    checked_as(input, candidate, governed)
 }
 
 /// A shortcut a batch adds or changes names, as who saved it, no one or the
@@ -569,18 +770,44 @@ fn saved_shortcuts_proven(
     Ok(())
 }
 
-/// Whether a sender that is not the workspace's owner may make undoable
-/// changes on the workspace (`true`), or only read it and so record its own
+/// Whether a sender may make undoable changes on the workspace (`true`), or only read it and so record its own
 /// effect receipts and give its own shares (`false`), decided against the
 /// policy already held — never the one the batch brings.
+/// Whether the sender's role holds the workspace's settings, so it keeps the
+/// workspace's checkpoints (coverage, durability receipts and import floors).
+/// Those move with every checkpoint a keeper of the workspace publishes, so
+/// they are written as it publishes, with no operation recorded for each;
+/// what they say is judged as for every writer: coverage and durability never
+/// rewind ([`checked`]).
+fn keeps_checkpoints(input: &WorkspaceAdmission<'_>) -> bool {
+    let (Some(before), SenderAccess::Member { person, foreign }) =
+        (input.before, input.source.access)
+    else {
+        return false;
+    };
+    let policy = crate::workspace::policy_of(before, input.workspace);
+    let person = hex::encode(person);
+    let authority = policy.person_on_device(&person, foreign);
+    policy
+        .check_action(
+            &authority,
+            tilo_action_policy::roles::governance::SETTINGS,
+            &Context::at_secs(input.now_ns / 1_000_000_000),
+            false,
+        )
+        .is_ok()
+}
+
 fn may_write(
     before: Option<&AutoCommit>,
     workspace: &str,
     source: &Writer<'_>,
     now_ns: u64,
 ) -> Result<bool, WorkspaceRefusal> {
-    let SenderAccess::Member { person, foreign } = source.access else {
-        return Ok(true);
+    let (person, foreign) = match source.access {
+        SenderAccess::Member { person, foreign } => (person, foreign),
+        SenderAccess::TransportAuthorized => return Ok(true),
+        SenderAccess::Enrolling => return Ok(false),
     };
     let before = before.ok_or(WorkspaceRefusal::RulesMissing)?;
     let policy = crate::workspace::policy_of(before, workspace);

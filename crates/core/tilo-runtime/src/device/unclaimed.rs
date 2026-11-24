@@ -216,7 +216,7 @@ impl ThisDevice {
             }),
             None,
         );
-        match super::packages::PackageCache::this_device(&self.key.verifying_key().to_bytes()) {
+        match super::packages::PackageCache::this_device(&self.key) {
             Ok(cache) => return answers.with_packages(cache),
             Err(why) => tracing::warn!(%why, "this device keeps no packages"),
         }

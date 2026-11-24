@@ -305,17 +305,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     else {
         panic!("no workspace");
     };
-    let entered = workspaces(
-        &ada,
-        WorkspacesRequest::Enter {
-            workspace: acme.workspace.clone(),
-        },
-    )
-    .await;
-    assert!(
-        matches!(entered, WorkspacesReply::Workspace(_)),
-        "{entered:?}"
-    );
+    // Ada's page enters it as any device of hers does, signing its own row there.
     ada.send(Cmd::Join(acme.workspace_id)).unwrap();
     ready(&[&ada]).await;
 

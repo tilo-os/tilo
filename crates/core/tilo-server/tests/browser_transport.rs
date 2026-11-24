@@ -64,7 +64,7 @@ async fn certified_devices_use_only_the_injected_packet_relay() {
         server.node_addr().relay_urls().collect::<Vec<_>>(),
         vec![&url]
     );
-    hold_workspace(&server, workspace_id, &[&a.cert, &b.cert]).await;
+    hold_workspace(&server, workspace_id, &[&a, &b]).await;
 
     // No IP addresses are passed to either device, as in a real browser: each
     // dials the relay and nothing else.

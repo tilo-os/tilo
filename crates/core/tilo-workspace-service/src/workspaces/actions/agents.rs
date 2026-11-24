@@ -99,6 +99,9 @@ pub(crate) fn acts_for_its_person(caller: &Caller) -> bool {
 pub(crate) struct AgentGrants {
     /// The agent; `None` may do nothing here.
     agent: Option<String>,
+    /// The person the agent acts for, as its certificate chains to: an agent is the pair, and
+    /// only its person's grants reach it.
+    person: String,
     workspace: String,
     policy: Option<Arc<WorkspacePolicy>>,
     granted: Vec<Grant>,
@@ -107,6 +110,7 @@ pub(crate) struct AgentGrants {
 impl AgentGrants {
     const NONE: Self = Self {
         agent: None,
+        person: String::new(),
         workspace: String::new(),
         policy: None,
         granted: Vec::new(),
@@ -124,7 +128,7 @@ impl AgentGrants {
             .as_deref()
             .map_or_else(
                 || Party::new(vec![Grantee::agent(agent)], &[]),
-                |policy| policy.party_of(Grantee::agent(agent)),
+                |policy| policy.party_of_agent(agent, &self.person),
             )
             .with_grants(&self.granted)
             .decide(&node, operation.effect, &cx)
@@ -145,6 +149,7 @@ impl Workspaces {
         let Some(agent) = acting.agent_id() else {
             return AgentGrants::NONE;
         };
+        let person = acting.acted_for_person().unwrap_or_default().to_owned();
         let governed = match workspace_id {
             Some(id) => self.held(id).await,
             None => None,
@@ -152,6 +157,7 @@ impl Workspaces {
         let (Some(governed), Some(device)) = (governed, caller.device_public_key()) else {
             return AgentGrants {
                 agent: Some(agent.to_owned()),
+                person,
                 workspace: String::new(),
                 policy: None,
                 granted: [acting.handed_preset(""), caller.granted()].concat(),
@@ -171,6 +177,7 @@ impl Workspaces {
         granted.extend(caller.granted());
         AgentGrants {
             agent: Some(agent.to_owned()),
+            person,
             workspace,
             policy: Some(member.policy),
             granted,

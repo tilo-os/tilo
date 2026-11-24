@@ -103,9 +103,36 @@ pub enum InspectorPlacement {
     #[default]
     None,
     Docked,
+    /// Too narrow to dock: a drawer in from the window's trailing edge, over the content (the
+    /// inspector's own counterpart of a sidebar drawer).
+    Drawer,
     /// Too narrow to dock: a sheet up from the window's foot, over the
     /// content's lower part ([`crate::widget::BottomSheet`]).
     Sheet,
+}
+
+/// How a sidebar stands in a window too narrow to dock it, when the app says (rather than the
+/// shell deciding from the content's kind).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SidebarCollapse {
+    /// The shell's own rule: a drawer for content that is the window's point, else a screen of
+    /// the push stack.
+    #[default]
+    Auto,
+    /// A drawer over the content, opened from the bar's toggle.
+    Drawer,
+    /// The first screen of the push stack, with Back.
+    Screen,
+}
+
+/// How an inspector stands in a window too narrow to dock it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InspectorCollapse {
+    /// A sheet up from the window's foot (the shell's own rule).
+    #[default]
+    Sheet,
+    /// A drawer in from the window's trailing edge, over the content.
+    Drawer,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -449,6 +476,10 @@ struct Inputs {
     /// The docked sidebar width a person dragged to, authored at 1×.
     user_sidebar: Option<f64>,
     adaptive: Option<AdaptiveSidebar>,
+    /// How the sidebar stands when the window is too narrow to dock it.
+    sidebar_collapse: SidebarCollapse,
+    /// How the inspector stands when the window is too narrow to dock it.
+    inspector_collapse: InspectorCollapse,
     sidebar: FlapState,
     inspector: FlapState,
     sheet: crate::widget::BottomSheet,
@@ -525,6 +556,8 @@ impl Default for Inputs {
             toolbar_in_bar: false,
             user_sidebar: None,
             adaptive: None,
+            sidebar_collapse: SidebarCollapse::Auto,
+            inspector_collapse: InspectorCollapse::Sheet,
             sidebar: FlapState::open_when_docked(),
             inspector: FlapState::open_when_docked(),
             sheet: crate::widget::BottomSheet::new(),
@@ -680,6 +713,10 @@ pub struct NavShell {
     pane_binding: Option<LocalBinding<NavPane>>,
     sidebar_state: Option<OpenBinding>,
     inspector_state: Option<OpenBinding>,
+    /// The open state a view last asked for, per column: applied when the view asks for another,
+    /// never reasserted over the person's own toggle.
+    sidebar_open_asked: Option<bool>,
+    inspector_open_asked: Option<bool>,
     content_back: Option<ContentBack>,
     /// The content pane the person last worked in; a collapse to narrow
     /// keeps it in front.
@@ -845,6 +882,8 @@ impl NavShell {
             pane_binding: None,
             sidebar_state: None,
             inspector_state: None,
+            sidebar_open_asked: None,
+            inspector_open_asked: None,
             content_back: None,
             active_hint: None,
             chose_in: None,
@@ -1051,6 +1090,77 @@ impl NavShell {
         self.inputs.borrow_mut().kind = kind;
         self.parts_changed();
         self
+    }
+
+    /// How the sidebar stands in a window too narrow to dock it: the shell's own rule
+    /// ([`SidebarCollapse::Auto`]), a drawer over the content, or a screen of the push stack.
+    #[must_use]
+    pub fn sidebar_collapse(mut self, collapse: SidebarCollapse) -> Self {
+        self.inputs.borrow_mut().sidebar_collapse = collapse;
+        self.parts_changed();
+        self
+    }
+
+    /// How the inspector stands in a window too narrow to dock it: a sheet up from the window's
+    /// foot ([`InspectorCollapse::Sheet`]) or a drawer in from its trailing edge
+    /// ([`InspectorCollapse::Drawer`]).
+    #[must_use]
+    pub fn inspector_collapse(mut self, collapse: InspectorCollapse) -> Self {
+        self.inputs.borrow_mut().inspector_collapse = collapse;
+        self.parts_changed();
+        self
+    }
+
+    /// Show or hide the sidebar, as a view asks: the docked column and the overlay drawer open
+    /// or close together, at the shell's motion (reduced motion lands at once).
+    pub fn set_sidebar_open(&mut self, open: bool) {
+        if !self.has_sidebar() {
+            return;
+        }
+        self.inputs
+            .borrow_mut()
+            .sidebar
+            .from_input(crate::tokens::MotionSource::Action);
+        self.inputs.borrow_mut().sidebar.set_open(open);
+        self.after_flap_change();
+    }
+
+    /// Show or hide the inspector, as a view asks: the docked column, the sheet and the drawer
+    /// open or close together, at the shell's motion (reduced motion lands at once).
+    pub fn set_inspector_open(&mut self, open: bool) {
+        if !self.has_inspector() {
+            return;
+        }
+        self.inputs
+            .borrow_mut()
+            .inspector
+            .from_input(crate::tokens::MotionSource::Action);
+        self.inputs.borrow_mut().inspector.set_open(open);
+        self.after_flap_change();
+    }
+
+    /// The open state a view asks for the sidebar (`sidebar_open`): applied when the view asks
+    /// for a different one, never reasserted over the person's own toggle.
+    pub fn show_sidebar_from_view(&mut self, open: Option<bool>) {
+        if self.sidebar_open_asked == open {
+            return;
+        }
+        self.sidebar_open_asked = open;
+        if let Some(open) = open {
+            self.set_sidebar_open(open);
+        }
+    }
+
+    /// The open state a view asks for the inspector (`inspector_open`): applied when the view
+    /// asks for a different one, never reasserted over the person's own toggle.
+    pub fn show_inspector_from_view(&mut self, open: Option<bool>) {
+        if self.inspector_open_asked == open {
+            return;
+        }
+        self.inspector_open_asked = open;
+        if let Some(open) = open {
+            self.set_inspector_open(open);
+        }
     }
 
     /// How wide the pane beside the sidebar stands: the window without the columns that dock
@@ -1535,6 +1645,10 @@ impl NavShell {
         self.inputs.borrow().has_sidebar
     }
 
+    pub fn has_inspector(&self) -> bool {
+        self.inputs.borrow().has_inspector
+    }
+
     pub fn has_overview(&self) -> bool {
         self.inputs.borrow().has_overview
     }
@@ -2017,7 +2131,9 @@ impl NavShell {
                 _ => theme.in_region(crate::surface::Region::Sidebar),
             },
             Some(Column::Inspector) => match self.geometry.inspector {
-                InspectorPlacement::Sheet => theme.on_ground(crate::chrome::panel_ground(theme)),
+                InspectorPlacement::Sheet | InspectorPlacement::Drawer => {
+                    theme.on_ground(crate::chrome::panel_ground(theme))
+                }
                 _ => theme.in_region(crate::surface::Region::Inspector),
             },
             Some(Column::Overview | Column::Content) | None => theme.clone(),
@@ -3373,6 +3489,7 @@ impl Widget for NavShell {
         self.animating
             || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
+            || self.content_fade.is_moving(crate::motion::frame_now())
             || self.painted_parts().any(Widget::needs_animation_frame)
     }
 
@@ -3861,12 +3978,16 @@ impl NavShell {
             return true;
         }
         if let Some(column) = g.open_drawer()
-            && column == Column::Sidebar
+            && (column == Column::Sidebar || g.inspector == InspectorPlacement::Drawer)
             && !g.column(column).contains(p)
             && !g.window_row_contains(p)
             && !g.band.contains(p)
         {
-            self.toggle_sidebar();
+            if column == Column::Inspector {
+                self.toggle_inspector();
+            } else {
+                self.toggle_sidebar();
+            }
             return true;
         }
         // A press anywhere is the person moving on from the choice they made in a list; the

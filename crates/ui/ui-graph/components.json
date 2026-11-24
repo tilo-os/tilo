@@ -56,6 +56,11 @@
           "name": "engaged",
           "doc": "The person is in a call or follows someone: no hint begins, and one on screen goes.",
           "type": "bool"
+        },
+        {
+          "name": "typing",
+          "doc": "The person is typing (the device's `input.typing`): no hint begins until they pause.",
+          "type": "bool"
         }
       ],
       "events": [
@@ -4384,14 +4389,6 @@
             "component": "MapMarker"
           },
           "many": true
-        },
-        {
-          "name": "areas",
-          "doc": "The areas of the map this device keeps for offline use: every tile of them at its zoom levels loads and stays on the device, so what a person saved shows when nothing reaches the network. The map asks for them a few at a time, behind what it shows.",
-          "accepts": {
-            "component": "MapArea"
-          },
-          "many": true
         }
       ],
       "events": [
@@ -4449,6 +4446,13 @@
           }
         },
         {
+          "name": "rest",
+          "doc": "The camera came to rest where the person left it: carries the place at its middle as its latitude then its longitude, the zoom it shows, and what it shows at its edges as its northern, southern, eastern and western degrees, in that order. Reported once each time a pan, pinch, wheel or key move ends, and never for a move the view itself set, so a view that saves what the person sees knows where they are looking.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
           "name": "at",
           "doc": "The pointer pressed the map's empty surface and let go there, a click: carries the place under it, its latitude then its longitude, for a map centred on a place.",
           "value": {
@@ -4459,14 +4463,6 @@
           "name": "marker",
           "doc": "The pointer pressed a marker and let go there, a click: carries the name the marker was given (`MapMarker`'s `name`), or its key where it has none. The view opens what the marker is; the map reports nothing of its own for that press.",
           "value": "text"
-        },
-        {
-          "name": "saved",
-          "doc": "How far an area it keeps offline has come: carries the area's name (its key where it has none), and how many of its tiles are done of how many. Reported as the tiles are asked for, a few frames apart, and once more when every one is done.",
-          "value": "text",
-          "at": {
-            "list": "int"
-          }
         }
       ],
       "semantics": {
@@ -4971,6 +4967,47 @@
           "name": "nothing_listed",
           "doc": "Nothing at all to list: what `content` gives is the window's empty state, in place of the overview, the content and the inspector.",
           "type": "bool"
+        },
+        {
+          "name": "sidebar_collapse",
+          "doc": "How the sidebar stands in a window too narrow to dock it: the shell's own rule (`auto`), a drawer over the content (`drawer`), or a screen of the push stack (`screen`).",
+          "type": {
+            "choice": {
+              "name": "SidebarCollapse",
+              "cases": [
+                "auto",
+                "drawer",
+                "screen"
+              ]
+            }
+          }
+        },
+        {
+          "name": "inspector_collapse",
+          "doc": "How the inspector stands in a window too narrow to dock it: a sheet up from the window's foot (`sheet`, the default) or a drawer in from its trailing edge (`drawer`).",
+          "type": {
+            "choice": {
+              "name": "InspectorCollapse",
+              "cases": [
+                "sheet",
+                "drawer"
+              ]
+            }
+          }
+        },
+        {
+          "name": "sidebar_open",
+          "doc": "Whether the view asks for the sidebar open (`true`) or closed (`false`). Applied when it changes; the person's own toggle stands until the view asks for another state.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "inspector_open",
+          "doc": "Whether the view asks for the inspector open or closed. Applied when it changes; the person's own toggle stands until the view asks for another state.",
+          "type": {
+            "option": "bool"
+          }
         }
       ],
       "parts": [
@@ -10818,61 +10855,6 @@
       ],
       "semantics": {
         "role": "Image",
-        "label": "name"
-      }
-    },
-    {
-      "name": "MapArea",
-      "doc": "An area of the map this device keeps for offline use: its bounds in degrees, and the zoom levels whose tiles it keeps.",
-      "props": [
-        {
-          "name": "name",
-          "doc": "What it is called, for assistive technology.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "north",
-          "doc": "The latitude of the area's northern edge, in degrees.",
-          "type": "float",
-          "required": true
-        },
-        {
-          "name": "south",
-          "doc": "The latitude of the area's southern edge, in degrees.",
-          "type": "float",
-          "required": true
-        },
-        {
-          "name": "east",
-          "doc": "The longitude of the area's eastern edge, in degrees.",
-          "type": "float",
-          "required": true
-        },
-        {
-          "name": "west",
-          "doc": "The longitude of the area's western edge, in degrees.",
-          "type": "float",
-          "required": true
-        },
-        {
-          "name": "least_zoom",
-          "doc": "The furthest zoom level out whose tiles it keeps, as the basemap's own `%z`.",
-          "type": {
-            "option": "int"
-          }
-        },
-        {
-          "name": "most_zoom",
-          "doc": "The closest zoom level in whose tiles it keeps, as the basemap's own `%z`.",
-          "type": {
-            "option": "int"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Group",
         "label": "name"
       }
     },

@@ -1,14 +1,18 @@
-//! The session's own surfaces published to assistive technology.
+//! Every window of the desktop published to assistive technology, by the session.
 //!
-//! Every surface the session paints into its compositor — the shell, the bar,
-//! the switcher, the banners, the roster, the sheets and the setup browser —
-//! has no application window of its own, so the toolkit's window adapter
-//! cannot carry it: this module owns one AccessKit Unix adapter per surface
-//! instead. Each appears as a window of the session's AT-SPI application and
-//! shows the surface's own semantic tree — the same tree a Tilo app publishes
-//! for its window, built by the same bridge — so what a screen reader reads of
-//! the desktop is what it reads of an app. A surface the shell's own screen
-//! stands in for reads as nothing, as it draws nothing.
+//! There is one AT-SPI application on a Tilo desktop: this one. A surface the
+//! session paints into its compositor — the shell, the bar, the switcher, the
+//! banners, the roster, the sheets and the setup browser — has no application
+//! window of its own, so the toolkit's window adapter cannot carry it: this
+//! module owns one AccessKit Unix adapter per surface. A window an app draws in
+//! a process of its own has no adapter there either: the window sends the tree
+//! assistive technology reads of it over the `shell-ui` connection it already
+//! speaks for its frames and controls
+//! ([`ui::floating_surface::FloatingSurfaceClientMessage::AccessibilityTree`]),
+//! and this module publishes it as another window of the session's application
+//! ([`WindowExports`]). So what a screen reader reads of the desktop is what it
+//! reads of an app, and no app process holds an accessibility bus. A surface the
+//! shell's own screen stands in for reads as nothing, as it draws nothing.
 //!
 //! The adapter calls its handlers from its own thread and the surfaces belong
 //! to the loop, so every callback only leaves a [`Request`] in a mailbox and
@@ -16,10 +20,10 @@
 //! [`Accessibility::step`]. An idle desktop therefore answers an assistive
 //! client without waiting for input, which is the endpoint's contract.
 //!
-//! The controls it finds and presses are the shell's own chrome and those of
-//! the windows in processes of their own, whose apps describe their content
-//! over their `shell-ui` connection ([`ui::window_targets`]) and take a
-//! press as an assistive technology's activation does.
+//! An action a client takes on an app window's node is not run here: it is
+//! left in [`WindowExports`] and the shell-ui service writes it to the window
+//! ([`ui::floating_surface::FloatingSurfaceHostMessage::AccessibilityAction`]),
+//! which runs it exactly as its own assistive client's action.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -38,13 +42,128 @@ use crate::Session;
 
 /// What an assistive client asks of the loop.
 enum Request {
-    /// Assistive technology became active on the surface at `place` : it needs that surface's
+    /// Assistive technology became active on the window at `place` : it needs that window's
     /// complete tree.
-    Tree(usize),
-    /// A client invoked an action on one exported node of the surface at `place` .
-    Action(usize, ActionRequest),
-    /// The surface's last assistive client disconnected.
-    Deactivated(usize),
+    Tree(Place),
+    /// A client invoked an action on one exported node of the window at `place` .
+    Action(Place, ActionRequest),
+    /// The window's last assistive client disconnected.
+    Deactivated(Place),
+}
+
+/// Where the session publishes a window: a surface it draws here, or a window an app draws in a
+/// process of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Place {
+    /// The `place`-th surface the session's own API offers.
+    Surface(usize),
+    /// The window of the app instance (its tab), whose tree its process sent.
+    App(u64),
+}
+
+/// The place an app window's export is published at, beyond every surface's, so a caller of
+/// [`Session::a11y_windows`] names either without knowing which it is.
+const APP_PLACE_BASE: usize = 1 << 32;
+
+impl Place {
+    /// The number [`Session::a11y_windows`] hands a caller for this window.
+    pub(crate) fn exported(self) -> usize {
+        match self {
+            Self::Surface(place) => place,
+            Self::App(instance) => APP_PLACE_BASE
+                .saturating_add(usize::try_from(instance).unwrap_or(usize::MAX - APP_PLACE_BASE)),
+        }
+    }
+
+    /// The window `exported` names, as [`Self::exported`] numbered it.
+    pub(crate) fn from_exported(exported: usize) -> Self {
+        match exported.checked_sub(APP_PLACE_BASE) {
+            Some(instance) => Self::App(u64::try_from(instance).unwrap_or(u64::MAX)),
+            None => Self::Surface(exported),
+        }
+    }
+}
+
+/// One window an app draws in a process of its own, as assistive technology reads it: the tree
+/// the window sent over its `shell-ui` connection, the name its title gives it, and the
+/// connection an action goes back on.
+pub(crate) struct AppWindow {
+    pub(crate) name: String,
+    pub(crate) tree: TreeUpdate,
+    /// The shell-ui connection the window speaks on: where a client's action goes.
+    pub(crate) connection: u64,
+    /// Moves with every tree the window sends.
+    pub(crate) revision: u64,
+}
+
+/// An action a client of the export asked of one app window's node, waiting for the pass that
+/// writes it to the window.
+pub(crate) struct AppAction {
+    pub(crate) instance: u64,
+    pub(crate) request: ActionRequest,
+}
+
+/// Every app window published over AT-SPI, by the instance (tab) it is, and the actions clients
+/// asked of them: written by the shell-ui service as the windows send their trees, read by the
+/// loop's [`Accessibility`], and drained back to the windows by the shell-ui service.
+#[derive(Default)]
+pub(crate) struct WindowExports {
+    windows: BTreeMap<u64, AppWindow>,
+    actions: Vec<AppAction>,
+}
+
+impl WindowExports {
+    /// The window `instance` says what assistive technology reads of it now: `tree`, named
+    /// `name`, on the shell-ui connection `connection`.
+    pub(crate) fn set(&mut self, instance: u64, connection: u64, name: String, tree: TreeUpdate) {
+        let revision = self
+            .windows
+            .get(&instance)
+            .map_or(0, |window| window.revision.wrapping_add(1));
+        self.windows.insert(
+            instance,
+            AppWindow {
+                name,
+                tree,
+                connection,
+                revision,
+            },
+        );
+    }
+
+    /// The window `instance` went: its connection closed or its tab did.
+    pub(crate) fn remove(&mut self, instance: u64) {
+        self.windows.remove(&instance);
+    }
+
+    /// Every window that spoke on `connection` went with it.
+    pub(crate) fn remove_connection(&mut self, connection: u64) {
+        self.windows
+            .retain(|_, window| window.connection != connection);
+    }
+
+    /// A client acted on a node of the window `instance`: the window runs it on its own loop.
+    pub(crate) fn push_action(&mut self, instance: u64, request: ActionRequest) {
+        self.actions.push(AppAction { instance, request });
+    }
+
+    /// What clients asked since the last pass, oldest first.
+    pub(crate) fn take_actions(&mut self) -> Vec<AppAction> {
+        std::mem::take(&mut self.actions)
+    }
+
+    /// Every window, by the instance it is.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (u64, &AppWindow)> {
+        self.windows
+            .iter()
+            .map(|(instance, window)| (*instance, window))
+    }
+
+    /// The shell-ui connection the window `instance` sent its tree on: where an action asked of
+    /// its nodes goes.
+    pub(crate) fn connection_of(&self, instance: u64) -> Option<u64> {
+        self.windows.get(&instance).map(|window| window.connection)
+    }
 }
 
 /// One surface's road from the adapter's thread to the loop: the place the adapter publishes, the
@@ -53,7 +172,7 @@ enum Request {
 /// without waiting for unrelated input.
 #[derive(Clone)]
 struct Mailbox {
-    place: usize,
+    place: Place,
     requests: Sender<Request>,
     wake: Option<Wake>,
 }
@@ -126,7 +245,7 @@ impl Exported {
     }
 }
 
-/// Every hosted surface published to assistive technology, one adapter each.
+/// Every hosted surface and every app window published to assistive technology, one adapter each.
 pub(crate) struct Accessibility {
     requests: Receiver<Request>,
     /// What each adapter sends through; the loop keeps one to reach itself from a surface's own
@@ -138,6 +257,9 @@ pub(crate) struct Accessibility {
     aside: Vec<Shared>,
     /// The adapters by the place of the surface they publish on the app wire.
     windows: BTreeMap<usize, Exported>,
+    /// The adapters of windows apps draw in processes of their own, by the instance (tab) whose
+    /// tree the window sent over its shell-ui connection.
+    apps: BTreeMap<u64, Exported>,
 }
 
 impl Accessibility {
@@ -151,12 +273,22 @@ impl Accessibility {
             wake,
             aside,
             windows: BTreeMap::new(),
+            apps: BTreeMap::new(),
         }
     }
 
-    /// Answer what assistive clients asked, publish every surface offering now whose tree moved,
-    /// and mark the window holding the keyboard focused.
-    pub(crate) fn step(&mut self, surfaces: &Surfaces) {
+    /// Answer what assistive clients asked, publish every surface and every app window offering
+    /// now whose tree moved, and mark the window holding the keyboard focused.
+    ///
+    /// `exports` is what the windows in processes of their own sent, keyed by their instance, and
+    /// `focused_app` the instance the desktop works in; an action a client asked of such a window
+    /// is left in `exports` for the shell-ui service to write to it.
+    pub(crate) fn step(
+        &mut self,
+        surfaces: &Surfaces,
+        exports: &mut WindowExports,
+        focused_app: Option<u64>,
+    ) {
         let asked = {
             let mut asked = Vec::new();
             while let Ok(request) = self.requests.try_recv() {
@@ -165,7 +297,7 @@ impl Accessibility {
             asked
         };
         for request in asked {
-            self.answer(surfaces, request);
+            self.answer(surfaces, exports, request);
         }
         let offering: Vec<(usize, Shared)> = surfaces
             .offering()
@@ -180,18 +312,26 @@ impl Accessibility {
             .find(|(_, surface)| surface.borrow().wants_keyboard())
             .map(|(place, _)| *place);
         self.publish(offering, focused);
+        // A surface over the windows takes the keys from the window in front; with none up, the
+        // app window the desktop works in holds the focus.
+        self.publish_apps(exports, focused.is_none().then_some(focused_app).flatten());
     }
 
-    /// Carry out one request against the live surfaces.
-    fn answer(&mut self, surfaces: &Surfaces, request: Request) {
+    /// Carry out one request against the live surfaces and app windows.
+    fn answer(&mut self, surfaces: &Surfaces, exports: &mut WindowExports, request: Request) {
         match request {
             Request::Tree(place) => {
-                if let Some(window) = self.windows.get_mut(&place) {
+                if let Some(window) = self.exported_mut(place) {
                     window.wanted = true;
                     window.live = true;
                 }
             }
-            Request::Action(place, request) => {
+            Request::Action(Place::App(instance), request) => {
+                // The window runs it on its own loop, exactly as its own assistive client would:
+                // the session is the bus, not the actor.
+                exports.push_action(instance, request);
+            }
+            Request::Action(Place::Surface(place), request) => {
                 let Some(action) = accesskit_action_to_ours(request.action, request.data.as_ref())
                 else {
                     return;
@@ -204,11 +344,19 @@ impl Accessibility {
                 }
             }
             Request::Deactivated(place) => {
-                if let Some(window) = self.windows.get_mut(&place) {
+                if let Some(window) = self.exported_mut(place) {
                     window.live = false;
                     window.wanted = false;
                 }
             }
+        }
+    }
+
+    /// The adapter publishing the window at `place`, once it is one.
+    fn exported_mut(&mut self, place: Place) -> Option<&mut Exported> {
+        match place {
+            Place::Surface(place) => self.windows.get_mut(&place),
+            Place::App(instance) => self.apps.get_mut(&instance),
         }
     }
 
@@ -272,7 +420,7 @@ impl Accessibility {
             };
             let window = self.windows.entry(place).or_insert_with(|| {
                 let mailbox = Mailbox {
-                    place,
+                    place: Place::Surface(place),
                     requests: sender.clone(),
                     wake: Some(Arc::clone(&wake)),
                 };
@@ -298,6 +446,60 @@ impl Accessibility {
             window.adapter.update_if_active(|| tree);
             window.seen = revision;
             window.wanted = false;
+        }
+    }
+
+    /// Publish every app window that sent a tree now: one adapter each, named as the window names
+    /// itself, focused when the desktop works in it. A window whose app stopped sending, or whose
+    /// connection closed, goes with its last tree.
+    fn publish_apps(&mut self, exports: &WindowExports, focused: Option<u64>) {
+        if !self.apps.is_empty() {
+            self.apps
+                .retain(|instance, _| exports.windows.contains_key(instance));
+        }
+        let sender = self.sender.clone();
+        let wake = Arc::clone(&self.wake);
+        for (instance, window) in &exports.windows {
+            let hosts_keyboard = focused == Some(*instance);
+            if let Some(exported) = self.apps.get_mut(instance) {
+                exported.focus(hosts_keyboard);
+            }
+            let reads = self.apps.get(instance).is_some_and(|exported| {
+                exported.wanted || (exported.live && exported.seen != Some(window.revision))
+            });
+            if self.apps.contains_key(instance) && !reads {
+                continue;
+            }
+            let mut tree = window.tree.clone();
+            ui::accesskit_bridge::name_window(&mut tree, &window.name);
+            let exported = self.apps.entry(*instance).or_insert_with(|| {
+                let mailbox = Mailbox {
+                    place: Place::App(*instance),
+                    requests: sender.clone(),
+                    wake: Some(Arc::clone(&wake)),
+                };
+                Exported {
+                    adapter: accesskit_unix::Adapter::new(
+                        Activation {
+                            mailbox: mailbox.clone(),
+                        },
+                        Actions {
+                            mailbox: mailbox.clone(),
+                        },
+                        Deactivation { mailbox },
+                    ),
+                    focused: false,
+                    live: false,
+                    seen: None,
+                    wanted: false,
+                }
+            });
+            exported.focus(hosts_keyboard);
+            // Only a client attached to the window makes this build anything: an adapter nobody
+            // activated keeps the closure unrun.
+            exported.adapter.update_if_active(|| tree);
+            exported.seen = Some(window.revision);
+            exported.wanted = false;
         }
     }
 }
@@ -401,7 +603,7 @@ mod tests {
             surfaces.add(Rc::clone(&stood_aside));
             let mut export = export(vec![Rc::clone(&stood_aside)]);
 
-            export.step(&surfaces);
+            export.step(&surfaces, &mut WindowExports::default(), None);
 
             assert!(
                 export.windows.contains_key(&0),
@@ -422,7 +624,7 @@ mod tests {
             surfaces.add(face("Question", true));
             let mut export = export(Vec::new());
 
-            export.step(&surfaces);
+            export.step(&surfaces, &mut WindowExports::default(), None);
 
             assert!(
                 export.windows.get(&1).is_some_and(|window| window.focused),
@@ -444,7 +646,7 @@ mod tests {
         let woken = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&woken);
         let mailbox = Mailbox {
-            place: 7,
+            place: Place::Surface(7),
             requests: sender,
             wake: Some(Arc::new(move || {
                 counted.fetch_add(1, Ordering::SeqCst);
@@ -471,18 +673,18 @@ mod tests {
         Deactivation { mailbox }.deactivate_accessibility();
 
         match requests.try_recv().expect("the activation request") {
-            Request::Tree(place) => assert_eq!(place, 7),
+            Request::Tree(place) => assert_eq!(place, Place::Surface(7)),
             _ => panic!("the activation asked for a tree"),
         }
         match requests.try_recv().expect("the action request") {
             Request::Action(place, request) => {
-                assert_eq!(place, 7);
+                assert_eq!(place, Place::Surface(7));
                 assert_eq!(request.target_node, NodeId(4));
             }
             _ => panic!("the action reached the loop"),
         }
         match requests.try_recv().expect("the deactivation request") {
-            Request::Deactivated(place) => assert_eq!(place, 7),
+            Request::Deactivated(place) => assert_eq!(place, Place::Surface(7)),
             _ => panic!("the deactivation reached the loop"),
         }
         assert_eq!(

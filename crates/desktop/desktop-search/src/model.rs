@@ -135,12 +135,22 @@ pub enum Target {
 }
 
 impl Target {
-    /// The place the person asked the window to go with the modifier
-    /// `held` as they chose: the row said what it would be. An app opens
+    /// What the row does with the modifier `held` as it is chosen: what an
+    /// alternate the row offers for it runs instead, else the place the
+    /// person asked the window to go. An app opens
     /// as a tab here or a window beside; an item a row opens, in a window
     /// of its own beside the app's.
-    pub(crate) fn place_by(&mut self, held: Option<ui::search::ActivationModifier>) {
+    pub fn place_by(&mut self, held: Option<ui::search::ActivationModifier>) {
         use ui::search::ActivationModifier;
+        if let (Self::Invoke(invoke), Some(held)) = (&mut *self, held)
+            && let Some((_, instead)) = invoke
+                .alternates
+                .iter()
+                .find(|(alternate, _)| alternate.modifier == held)
+        {
+            **invoke = instead.clone();
+            return;
+        }
         match (self, held) {
             (Self::Launch { place, .. }, Some(asked)) => {
                 *place = match asked {
@@ -207,9 +217,8 @@ pub const BROWSE_RANK_RECENT: u8 = 2;
 /// The ways in: the apps they have, then the windows open.
 pub const BROWSE_RANK_APPS: u8 = 3;
 pub const BROWSE_RANK_WINDOWS: u8 = 4;
-/// What the other workspaces hold: their records, which one Enter brings
-/// into this one.
-pub const BROWSE_RANK_RECORDS: u8 = 5;
+/// The records of other workspaces brought into this one.
+pub const BROWSE_RANK_REFERENCES: u8 = 5;
 /// What a person can do from here: the workspace's own verbs and the
 /// session's, then the window in front's and the other workspaces'.
 pub const BROWSE_RANK_ACTIONS: u8 = 6;
@@ -274,6 +283,9 @@ pub struct InvokeTarget {
     pub place: LaunchPlace,
     /// The app's record the action is of, by route: empty for its own record of the workspace.
     pub record: String,
+    /// What the row does instead with a modifier down, each said in the words the row shows
+    /// while it is down: a second action on the same thing ("Bring here").
+    pub alternates: Vec<(ui::search::Alternate, InvokeTarget)>,
 }
 
 impl InvokeTarget {
@@ -308,7 +320,27 @@ impl InvokeTarget {
             descriptor: None,
             place: LaunchPlace::Focus,
             record: String::new(),
+            alternates: Vec::new(),
         }
+    }
+
+    /// With `instead` run when the row is chosen with `modifier` down, which the row says as
+    /// `label`.
+    #[must_use]
+    pub fn with_alternate(
+        mut self,
+        modifier: ui::search::ActivationModifier,
+        label: impl Into<String>,
+        instead: InvokeTarget,
+    ) -> Self {
+        self.alternates.push((
+            ui::search::Alternate {
+                modifier,
+                label: label.into(),
+            },
+            instead,
+        ));
+        self
     }
 
     /// Where choosing `place` in `workspace` lands: the `open` of its resource on its record, told

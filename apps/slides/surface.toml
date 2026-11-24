@@ -148,6 +148,10 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.verbs]]
 id = "read-deck"
 kind = "read"
 

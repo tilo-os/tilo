@@ -38,13 +38,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("new-phone", DeviceCapabilities::member());
 
-    let server = Box::pin(spawn_server(
-        &user,
-        server_dev,
-        &[WORKSPACE],
-        &[&a.cert, &b.cert],
-    ))
-    .await;
+    let server = Box::pin(spawn_server(&user, server_dev, &[WORKSPACE], &[&a, &b])).await;
     let workspaces = server
         .server
         .workspaces()

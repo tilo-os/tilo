@@ -359,8 +359,15 @@ impl Authority for TiloAuthority {
         // A grant written under an id the app had before (`previously:`) is the app's.
         let earlier = crate::schema::earlier_ids();
         if let Some(delegation) = &delegation {
+            // An agent is the pair of its id and its person: only that person's grants for it
+            // reach it, not another member's for an agent of the same id.
+            let theirs = workspace_grants.iter().filter(|grant| {
+                grant.grantee.agent_id().is_none() || grant.granted_by.person_id() == person
+            });
             policy = policy.bounded_by(
-                Party::new(vec![grantee(invoker)], workspace_grants).with_grants(delegation),
+                Party::new(vec![grantee(invoker)], &[])
+                    .with_grants(theirs)
+                    .with_grants(delegation),
             );
         }
         for (author, own) in &authors {

@@ -24,6 +24,12 @@ name = "tilo-runtime-unconfined-test"
 path = "src/bin/tilo-runtime-unconfined-test.rs"
 required-features = ["test-support"]
 
+# The native SDK app the process tests install as a development build (`tests/sdk_app.rs`). It
+# is no part of the daemon; the packages that ship install `tilo-runtime` alone.
+[[bin]]
+name = "tilo-sdk-app"
+path = "src/bin/tilo-sdk-app.rs"
+
 # The daemon's own features, as the program is built with them.
 [features]
 # NEVER SHIP THIS: the developer environment overrides of the daemon it runs
@@ -41,6 +47,9 @@ path = "tests/it.rs"
 
 [dependencies]
 tilo-runtime = { path = "../../core/tilo-runtime" }
+# The collaboration client the SDK app the process tests install uses, without the toolkit: an
+# app's own connection to its workspace.
+collaboration = { package = "tilo-collaboration", path = "../../core/collaboration", features = ["native", "broker-transport"] }
 tilo-actions = { path = "../../core/actions" }
 tilo-workspace-service = { path = "../../core/tilo-workspace-service" }
 # The language runtime the workspace service reads and changes tilolang apps' records through,
@@ -87,6 +96,11 @@ tilo-agent-session = { path = "../../core/agent-session" }
 tilo-automation = { path = "../../core/automation" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-device-identity = { path = "../../core/tilo-device-identity" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+# The development build the process tests install: its manifest, and the action they hand it to
+# the device with.
+tilo-app-package = { path = "../../core/tilo-app-package" }
+package-actions = { path = "../../core/package-actions" }
 tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"] }
 tilo-peer-state = { path = "../../core/tilo-peer-state" }
 tilo-resource = { path = "../../core/tilo-resource" }
@@ -102,7 +116,6 @@ collab-types = { package = "tilo-collab-types", path = "../../core/collab-types"
 tilo-identity = { path = "../../core/tilo-identity" }
 tilo-automerge-isolate.workspace = true
 tilo-paths.workspace = true
-ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 anyhow.workspace = true
 hex.workspace = true
 libc.workspace = true

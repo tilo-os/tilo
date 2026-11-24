@@ -21,10 +21,18 @@ use crate::wire::Command;
 /// as themselves, an agent as the person it acts for, and an agent whose grant does not reach the
 /// record reads none of it. The store decides no read itself.
 pub trait RecordReader: Send + Sync {
-    /// The person `actor` reads as for the record of `kind` and `id`: itself for a person, the
-    /// person an agent acts for, and `None` where it reads none of the record (no member, an
-    /// agent acting by itself, or a grant that does not reach it).
-    fn reader_of(&self, actor: &Actor, kind: &str, id: &str) -> Option<PersonId>;
+    /// The person `actor` reads as for the record of `kind` and `id`, which `writer` (a person)
+    /// made: itself for a person, the person an agent acts for, and `None` where it reads none
+    /// of the record (no member, an agent acting by itself, or a grant that does not reach it).
+    /// An agent is the pair of its id and the person it acts for, and a field names it by its id
+    /// alone: the agent a person's record names is their own.
+    fn reader_of(
+        &self,
+        actor: &Actor,
+        writer: Option<&str>,
+        kind: &str,
+        id: &str,
+    ) -> Option<PersonId>;
 }
 
 impl Store {
@@ -251,7 +259,9 @@ fn readers_by_rule(
                                 Some(person.as_str().to_ascii_lowercase())
                             }
                             _ => reader
-                                .and_then(|reader| reader.reader_of(&actor, kind, id))
+                                .and_then(|reader| {
+                                    reader.reader_of(&actor, author.person().as_deref(), kind, id)
+                                })
                                 .map(|person| person.as_str().to_ascii_lowercase()),
                         };
                         person.ok_or_else(|| {

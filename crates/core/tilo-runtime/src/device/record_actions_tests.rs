@@ -314,7 +314,7 @@ async fn a_member_device_makes_its_workspaces_built_in_records_offline_and_membe
         .await
         .expect("the owner adds Grace");
     hosted
-        .enter(&workspace, &grace_cert)
+        .enter(&workspace, (&grace_cert, &grace_key))
         .await
         .expect("Grace's device enters the workspace");
     let grace_login = login_to(&server, &workspace, (&grace_cert, &server_cert));
@@ -343,7 +343,7 @@ async fn a_member_device_makes_its_workspaces_built_in_records_offline_and_membe
     let (carol, _) = UserIdentity::generate("Carol", 1);
     let (carol_key, carol_cert) = enrol(&carol, "carol-laptop", DeviceCapabilities::primary());
     assert!(
-        hosted.enter(&workspace, &carol_cert).await.is_err(),
+        hosted.enter(&workspace, (&carol_cert, &carol_key)).await.is_err(),
         "the host lets no one in who is no member"
     );
     let carol_login = login_to(&server, &workspace, (&carol_cert, &server_cert));

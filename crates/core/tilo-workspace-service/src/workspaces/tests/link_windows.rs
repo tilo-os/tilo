@@ -8,7 +8,7 @@
 )]
 
 use super::*;
-use crate::workspaces::fixtures::TestHost;
+use crate::workspaces::fixtures::{TestHost, list_itself_on_link};
 use std::time::Duration;
 use tilo_server_client::LinkError;
 use tilo_server_client::link::{Dialer, Purpose};
@@ -447,51 +447,70 @@ async fn a_revoked_devices_link_ends_and_another_members_stays_up() {
     server.shutdown().await;
 }
 
-/// A member person's device is admitted on the link it dials, and stays on the
-/// workspace's member list: the one list its governance keeps.
+/// A member person's new device lists itself on the first link it dials: the
+/// host admits that link to carry the device's own row and nothing else, ends
+/// it once the row is in, and the workspace's member list, which its
+/// governance keeps and the host projects, lists the device from then on. The
+/// host writes no row for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_member_peoples_new_device_is_enrolled_on_its_first_link() {
+async fn a_member_peoples_new_device_lists_itself_on_its_first_link() {
+    use automerge::ReadDoc as _;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
-    let (member, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 3).await;
+    let (member_key, member) = further_device(&cert, 3);
     let link = workspaces
         .direct()
         .link(created.workspace_id)
         .expect("the server serves the workspace over a direct link");
     let reached = workspaces
-        .admit_link(member.device_public_key, &link)
-        .expect("the workspace's governance admits its member's device");
-    assert_eq!(
-        reached.reads, None,
-        "a member's device reaches the whole workspace"
-    );
+        .admit_link(member.device_public_key, Some(&member), &link)
+        .expect("the workspace lets its member's device list itself");
     assert!(
-        reached.own_frames_only,
-        "a member's device is no keeping host"
+        reached.lists_itself && !reached.key_access && reached.own_frames_only,
+        "a device the list does not list yet reaches its own row and nothing more: {reached:?}"
     );
-    tokio::time::timeout(
-        WAIT,
-        tilo_test_env::within("the member's device to be enrolled", async {
-            loop {
-                let held = runtime(&workspaces, created.workspace_id).await;
-                if held
-                    .lock()
-                    .await
-                    .members
-                    .member_devices
-                    .contains(&member.device_public_key)
-                {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+    let running = list_itself_on_link(&server, &created.workspace, (&member_key, &member)).await;
+    tilo_test_env::within("the member's device to be listed", async {
+        loop {
+            let held = runtime(&workspaces, created.workspace_id).await;
+            if held
+                .lock()
+                .await
+                .members
+                .member_devices
+                .contains(&member.device_public_key)
+            {
+                return;
             }
-        }),
-    )
-    .await
-    .expect("a member's first link enrols the device in the workspace's member list");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let state = workspaces.state(&created.workspace).await.unwrap();
+    let doc = state.admitted_workspace().unwrap();
+    let (_, identities) = doc
+        .get(automerge::ROOT, "peer_identities_v1")
+        .unwrap()
+        .expect("the workspace keeps its identities");
+    let (_, row) = doc
+        .get(&identities, hex::encode(member.device_public_key))
+        .unwrap()
+        .expect("the member list holds the device's row");
+    let automerge::ObjId::Id(_, written_by, _) = row else {
+        panic!("a row is a change of some device's");
+    };
+    let own = [
+        automerge::ActorId::from(member.device_public_key.to_vec()),
+        tilo_peer_state::workspace_host_actor(&member.device_public_key),
+    ];
+    assert!(
+        own.contains(&written_by),
+        "the device's row is its own signed change, not the host's"
+    );
+    running.abort();
     drop(workspaces);
     server.shutdown().await;
 }
@@ -530,7 +549,7 @@ async fn a_hosted_environments_link_reads_its_one_record() {
         .link(created.workspace_id)
         .expect("the server serves the workspace over a direct link");
     let reached = workspaces
-        .admit_link(browser.device_public_key, &link)
+        .admit_link(browser.device_public_key, None, &link)
         .expect("the server admits the environment it placed");
     assert_eq!(
         reached.reads,
@@ -584,7 +603,7 @@ async fn an_agent_outside_its_grant_is_refused() {
         .direct()
         .link(created.workspace_id)
         .expect("the server serves the workspace over a direct link");
-    match workspaces.admit_link(agent.device_public_key, &link) {
+    match workspaces.admit_link(agent.device_public_key, None, &link) {
         Err(tilo_server_protocol::refusal::Refusal::NotAMember(reason)) => assert!(
             reason.contains("delegated"),
             "the refusal says the agent is not delegated this workspace: {reason}"
@@ -597,34 +616,55 @@ async fn an_agent_outside_its_grant_is_refused() {
 }
 
 /// A guest's device admitted to `workspace` by its signed membership: a person
-/// the operator's policy does not list, whom the workspace's member list holds
-/// and whose certificate it admits, and whom `settle` adds to what the
-/// handshake trusts.
+/// the operator's policy does not list, invited by the workspace's owner
+/// `owner`, whose device signs its own admission, and whose person `settle`
+/// adds to what the handshake trusts. With `further`, the person is in the
+/// workspace already and the device lists itself as theirs.
 async fn admitted_guest(
     workspaces: &Workspaces,
     workspace: &str,
-    admin_key: &SigningKey,
-    root: &SigningKey,
+    owner: &DeviceCert,
+    (root, further): (&SigningKey, bool),
     label: &str,
 ) -> (DeviceCert, SigningKey) {
     let (member_key, member) =
         crate::workspaces::fixtures::device_cert(root, label, DeviceCapabilities::member());
-    // The workspace holds the guest as a person before it admits a device of
-    // theirs, as adding them by key does: the member list is what admits.
-    workspaces
-        .add_member(
-            workspace,
-            workspaces.device_cert(),
-            crate::workspaces::AddMemberRequest {
-                request_id: root.verifying_key().to_bytes(),
-                user_public_key: root.verifying_key().to_bytes(),
-                place: crate::workspaces::MemberPlace::Role(tilo_action_policy::Role::Viewer),
-                name: None,
-            },
-        )
-        .await
-        .expect("the workspace holds the guest as a member");
-    crate::workspaces::fixtures::admit_view_reader(workspaces, workspace, admin_key, &member).await;
+    if further {
+        workspaces
+            .enter(workspace, (&member, &member_key))
+            .await
+            .expect("the device lists itself");
+    } else {
+        let token = [0x47; 8];
+        let issued = workspaces
+            .pre_admit(
+                owner,
+                crate::workspaces::PreAdmitRequest {
+                    request_id: rand::random(),
+                    grant: crate::workspaces::tests::signed_pre_admission(workspace, &token),
+                    recipient_user_public_key: None,
+                    inviter_name: None,
+                },
+            )
+            .await
+            .expect("the owner invites the guest");
+        let reply = workspaces
+            .admit_proven(
+                issued.signed_invitation,
+                (member.clone(), &member_key),
+                rand::random(),
+                label,
+                Some(token.as_slice()),
+            )
+            .await;
+        assert!(
+            matches!(
+                reply,
+                tilo_server_protocol::workspaces::JoinReply::Admitted { .. }
+            ),
+            "{reply:?}"
+        );
+    }
     // What a settled governance decision does: the workspace's members reach
     // the host's handshake by their roots as well as its policy's own.
     let state = workspaces.workspace(workspace).await.unwrap();
@@ -675,8 +715,14 @@ async fn a_blocked_guest_link_ends_and_is_refused_until_the_operator_unblocks_it
     operator_record(&workspaces).await;
 
     let guest_root = SigningKey::from_bytes(&[0x51; 32]);
-    let (guest, guest_key) =
-        admitted_guest(&workspaces, &created.workspace, &key, &guest_root, "guest").await;
+    let (guest, guest_key) = admitted_guest(
+        &workspaces,
+        &created.workspace,
+        &cert,
+        (&guest_root, false),
+        "guest",
+    )
+    .await;
     let (guest_endpoint, guest_link) = dialled_and_running(
         &server,
         &workspaces,
@@ -761,8 +807,8 @@ async fn a_blocked_guest_link_ends_and_is_refused_until_the_operator_unblocks_it
     let (second, second_key) = admitted_guest(
         &workspaces,
         &created.workspace,
-        &key,
-        &guest_root,
+        &cert,
+        (&guest_root, true),
         "guest-2",
     )
     .await;

@@ -1336,10 +1336,6 @@ fn broker_services(
         search_index: BrokerService::unserved(
             "an app's search entries go to the device's daemon, which keeps the one index",
         ),
-        // A change to a workspace's record is noted for the roles that follow them.
-        document_index_changes: BrokerService::when(records.map(|records| {
-            records as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
-        })),
         // Content a record references is the device's daemon's: an app's content calls reach it
         // on the connection the router joins there, and this session keeps none of its own.
         content_store: BrokerService::unserved(
