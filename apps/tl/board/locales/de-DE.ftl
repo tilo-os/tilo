@@ -76,6 +76,7 @@ d-yjwm6mjf = Spalte umbenennen
 d-yjwm6mjf-title = Titel
 
 d-t5kjcxjq = Board
+    .w-new-card = Neue Karte
 
 d-ufycrk6s = Kartenkachel
     .w-move-to = Nach { $title } verschieben
