@@ -1517,6 +1517,15 @@ impl Session {
                 &options.person,
                 options.wake.handle(),
             )));
+        // What apps list rather than run here (the workspace's invocations), followed for the
+        // shell's views that list them.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::listings::Listings::new(
+                daemon.clone(),
+                handle.clone(),
+                options.wake.handle(),
+            )));
 
         // The person's other devices, and the files the studio and Files hand
         // them, as a resource the shell's quick settings, an agent and a script

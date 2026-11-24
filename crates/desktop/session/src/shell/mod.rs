@@ -142,6 +142,9 @@ pub(crate) struct Shell {
     reading: std::collections::BTreeMap<String, String>,
     /// How often each was read for the shell.
     reads: std::collections::BTreeMap<String, u64>,
+    /// The listings the shell's views list records of with a query, by the type they list
+    /// (`tilo.invocations#Invocation`), each with the resource the session publishes it as.
+    listings: std::collections::BTreeMap<String, &'static str>,
     /// The apps whose packages a view composed in a place read a type of before it was loaded, by
     /// app id: published with the packages the places show, and kept for the rest of the session (a
     /// view keeps drawing what it read once the card is there).
@@ -213,6 +216,7 @@ impl Shell {
             followed: None,
             reading: std::collections::BTreeMap::new(),
             reads: std::collections::BTreeMap::new(),
+            listings: std::collections::BTreeMap::new(),
             needed: std::collections::BTreeSet::new(),
             republish: false,
             rounds: 0,
@@ -390,6 +394,16 @@ impl Shell {
         Some((x0, y0, width.max(1), height.max(1)))
     }
 
+    /// Hand the shell each listing its views list records of, as the session follows it.
+    fn publish_listings(&self, services: &Services) {
+        for (ty, resource) in &self.listings {
+            if let Some(reading) = services.read(resource) {
+                self.link
+                    .publish_reading(tilolang_tilo::runtime::foreign::LISTING, ty, reading);
+            }
+        }
+    }
+
     /// Hand the shell the readings of the platform's resources its views read (the sound, the
     /// battery, the appearance setting), as `services` publish them, whenever what they publish may
     /// have moved.
@@ -407,6 +421,7 @@ impl Shell {
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
             self.link.publish_reading(resource, &ty, reading);
         }
+        self.publish_listings(services);
     }
 
     /// Hand the shell what its places show, from what `services` publish: the package of each app a
@@ -416,7 +431,23 @@ impl Shell {
     /// Each reading is read again only when its service says it moved, so a change costs the shell
     /// only the resources it touched.
     pub(crate) fn follow_places(&mut self, layout: &LayoutReading, services: &mut Services) {
-        let wanted = self.link.take_wanted();
+        let mut wanted = self.link.take_wanted();
+        // A view listing an app's records with a query: the session follows that listing from
+        // now on, and the shell is handed it each time it moves ([`Self::publish_listings`]).
+        let listed = self.listings.len();
+        wanted.retain(|id, ty| {
+            let listing = (id == tilolang_tilo::runtime::foreign::LISTING)
+                .then(|| tilolang_tilo::platform_apps::listing_of(ty))
+                .flatten();
+            let Some((app, _)) = listing else {
+                return true;
+            };
+            self.listings.insert(ty.clone(), app);
+            false
+        });
+        if self.listings.len() != listed {
+            self.publish_listings(services);
+        }
         // A view composed in a place read a resource of a type no loaded package declared: its
         // app's package is published like those a place shows, so the place draws it through that
         // app's own views.

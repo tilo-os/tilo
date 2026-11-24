@@ -39,6 +39,11 @@ pub const WORKSPACE_APP: &str = tilo_action_policy::agent_answers::WORKSPACE_APP
 /// not an installed app, so it has no first-party app id.
 pub const VISION_APP: &str = "so.tilo.vision";
 
+/// The app a workspace's invocations are read from: `use tilo.invocations`. A view lists them
+/// with a query (`query(invocations.Invocation, status: .waiting, person: me)`), which the host
+/// follows from the workspace ([`platform_listings`]).
+pub const INVOCATIONS_APP: &str = tilo_actions::remote::workspace_invocations::PROVIDER;
+
 /// The app the session's own resources are described as: `use so.tilo.session`.
 pub const SESSION_APP: &str = "so.tilo.session";
 /// What the session publishes, described as a package (`tilo_session::session_package`, which
@@ -241,6 +246,10 @@ struct Published {
     /// Its actions keep the ids its file declares (a tilolang package's description), rather
     /// than being named by its app.
     described: bool,
+    /// The types whose records a view lists with a query, each with the record of the app its
+    /// listing is read from (`{"items": [...]}`); their filters are the defaults of their
+    /// fields.
+    listed: &'static [(&'static str, &'static str)],
 }
 
 /// The apps the platform publishes to programs, one row each: where an app keeps the surface
@@ -254,6 +263,7 @@ const PUBLISHED: &[Published] = &[
         roots: DEVICE_ROOTS,
         files: &[include_str!("../../../desktop/session/device-surface.json")],
         described: false,
+        listed: &[],
     },
     Published {
         app: SETTINGS_APP,
@@ -267,6 +277,7 @@ const PUBLISHED: &[Published] = &[
             include_str!("../../../session/settings-service/agent-providers-surface.json"),
         ],
         described: false,
+        listed: &[],
     },
     Published {
         app: CONTACTS_APP,
@@ -277,6 +288,7 @@ const PUBLISHED: &[Published] = &[
             "../../../integrations/tilo-contact-directory/surface.json"
         )],
         described: false,
+        listed: &[],
     },
     Published {
         app: VISION_APP,
@@ -285,6 +297,7 @@ const PUBLISHED: &[Published] = &[
         roots: VISION_ROOTS,
         files: &[include_str!("../../../services/vision/surface.json")],
         described: false,
+        listed: &[],
     },
     Published {
         app: WORKSPACE_APP,
@@ -296,6 +309,7 @@ const PUBLISHED: &[Published] = &[
             "../../../core/tilo-workspace-service/workspace-surface.toml"
         )],
         described: false,
+        listed: &[],
     },
     Published {
         app: SESSION_APP,
@@ -304,6 +318,19 @@ const PUBLISHED: &[Published] = &[
         roots: &[],
         files: &[include_str!("../../../../apps/tl/session/surface.toml")],
         described: true,
+        listed: &[],
+    },
+    Published {
+        app: INVOCATIONS_APP,
+        title: "Invocations",
+        kinds: &[],
+        roots: &[],
+        // What a workspace's invocations read as, written beside the type they are read from.
+        files: &[include_str!(
+            "../../../core/actions/src/remote/invocations-surface.json"
+        )],
+        described: false,
+        listed: &[("Invocation", "")],
     },
 ];
 
@@ -329,6 +356,32 @@ pub fn platform_roots() -> Vec<(&'static str, String)> {
             })
         })
         .collect()
+}
+
+/// The types whose records a view lists with a query (`query(invocations.Invocation)`), each as
+/// the view's type names it (`tilo.invocations#Invocation`), with the app and the record its
+/// listing is read from: what the host follows for a view that lists them
+/// ([`tilolang_runtime::foreign::listing_of`]).
+#[must_use]
+pub fn platform_listings() -> Vec<(String, &'static str, &'static str)> {
+    PUBLISHED
+        .iter()
+        .flat_map(|published| {
+            published.listed.iter().map(move |(ty, record)| {
+                (format!("{}#{ty}", published.app), published.app, *record)
+            })
+        })
+        .collect()
+}
+
+/// The listing `ty` (`<app>#<Type>`) is read from, when a view lists its records with a query:
+/// the app and its record.
+#[must_use]
+pub fn listing_of(ty: &str) -> Option<(&'static str, &'static str)> {
+    platform_listings()
+        .into_iter()
+        .find(|(listed, _, _)| listed == ty)
+        .map(|(_, app, record)| (app, record))
 }
 
 /// The packages of the platform's apps, each read from the surface it publishes, its resources
@@ -380,6 +433,9 @@ fn package(published: &Published) -> Result<PackageMeta, String> {
     } else {
         package_of(published.app, published.title, &surfaces)
     };
+    if !published.listed.is_empty() {
+        tilolang::search::describe_defaults(&mut meta);
+    }
     for (name, ty, published_as) in published.roots {
         let Some(id) = meta
             .types

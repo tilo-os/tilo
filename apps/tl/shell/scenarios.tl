@@ -3126,40 +3126,24 @@ scenario "a press that needs a yes" {
         ),
     )
     stage(device.overlays, device.Overlays(here: "none"))
-    let a = root Asking
-    a.questions.insert(
-        Asked(
-            key: "studio/invocations/share-1",
-            workspace_name: "Studio",
-            name: "Share",
-            on: "Release planning",
-            verb: "share",
-            plural: "notes",
-            can_always: true,
-            by: "app",
-            by_name: "Notes",
-            author: "Tilo",
-            asked_at_ms: 2,
-            pressed_device: "laptop",
-            pressed_window: "p1",
+    stage([
+        waiting_record(
+            "studio",
+            "invocations/share-1",
+            "Share",
+            invocations.Asker(app: .some(invocations.AskingApp(app: "so.tilo.notes", title: "Notes", author: .some(invocations.Named(id: "tilo", name: "Tilo"))))),
+            2,
+            "",
+            .some("Release planning"),
+            [invocations.Fact(label: "With", value: "Mia Clayton"), invocations.Fact(label: "Access", value: "Can edit")],
+            [],
+            false,
+            "share",
+            .some("notes"),
+            .some(invocations.Pressed(device: "laptop", app: "so.tilo.notes", instance: "p1", resource: "")),
+            .none,
         ),
-    )
-    a.facts.insert(
-        AskedFact(
-            key: "studio/invocations/share-1/0",
-            question: "studio/invocations/share-1",
-            label: "With",
-            value: "Mia Clayton",
-        ),
-    )
-    a.facts.insert(
-        AskedFact(
-            key: "studio/invocations/share-1/1",
-            question: "studio/invocations/share-1",
-            label: "Access",
-            value: "Can edit",
-        ),
-    )
+    ])
 }
 
 /// What waits for the person in the notification centre: an agent's question with choices, a
@@ -3170,56 +3154,115 @@ scenario "questions waiting" {
     d.person = "Ada Lovelace"
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(device.overlays, device.Overlays(here: "centre"))
-    let a = root Asking
-    a.questions.insert(
-        Asked(
-            key: "studio/invocations/ask-1",
-            workspace_name: "Studio",
-            name: "Answer",
-            words: "Which calendar should the launch review go on?",
-            by: "agent",
-            by_name: "Scout",
-            asked_at_ms: 3,
-            conversation: "studio/chat/launch",
+    stage([
+        waiting_record(
+            "studio",
+            "invocations/ask-1",
+            "Answer",
+            invocations.Asker(agent: .some(invocations.Named(id: "scout", name: "Scout"))),
+            3,
+            "Which calendar should the launch review go on?",
+            .none,
+            [],
+            ["Team", "Launch reviews and retrospectives"],
+            false,
+            "",
+            .none,
+            .none,
+            .some("studio/chat/launch"),
         ),
-    )
-    a.choices.insert(
-        AskedChoice(key: "studio/invocations/ask-1/0", question: "studio/invocations/ask-1", index: 0, label: "Team"),
-    )
-    a.choices.insert(
-        AskedChoice(key: "studio/invocations/ask-1/1", question: "studio/invocations/ask-1", index: 1, label: "Launch reviews and retrospectives"),
-    )
-    a.questions.insert(
-        Asked(
-            key: "home/invocations/forget-1",
-            workspace_name: "The Clayton–Lovelace household and everything we keep together",
-            name: "Forget this device",
-            on: "Ada's old ThinkPad X1 Carbon (6th generation)",
-            destructive: true,
-            by: "device",
-            by_name: "Ada's phone",
-            asked_at_ms: 2,
+        waiting_record(
+            "home",
+            "invocations/forget-1",
+            "Forget this device",
+            invocations.Asker(device: .some(invocations.Named(id: "phone", name: "Ada's phone"))),
+            2,
+            "",
+            .some("Ada's old ThinkPad X1 Carbon (6th generation)"),
+            [],
+            [],
+            true,
+            "",
+            .none,
+            .none,
+            .none,
         ),
-    )
-    a.questions.insert(
-        Asked(
-            key: "studio/invocations/alarm-1",
-            workspace_name: "Studio",
-            name: "Set alarm",
-            on: "Stand-up",
-            verb: "set",
-            plural: "alarms",
-            can_always: true,
-            by: "app",
-            by_name: "Clocks",
-            author: "Mia Clayton",
-            asked_at_ms: 1,
-            pressed_device: "desktop",
-            pressed_window: "w9",
+        waiting_record(
+            "studio",
+            "invocations/alarm-1",
+            "Set alarm",
+            invocations.Asker(app: .some(invocations.AskingApp(app: "so.tilo.clocks", title: "Clocks", author: .some(invocations.Named(id: "mia", name: "Mia Clayton"))))),
+            1,
+            "",
+            .some("Stand-up"),
+            [invocations.Fact(label: "At", value: "09:30 every weekday")],
+            [],
+            false,
+            "set",
+            .some("alarms"),
+            .some(invocations.Pressed(device: "desktop", app: "so.tilo.clocks", instance: "w9", resource: "")),
+            .none,
         ),
-    )
-    a.facts.insert(
-        AskedFact(key: "studio/invocations/alarm-1/0", question: "studio/invocations/alarm-1", label: "At", value: "09:30 every weekday"),
+    ])
+}
+
+
+/// A call that waits for the person looking, as the workspace's invocations list it: its asked
+/// record `record` of `workspace`, the action `name`, who asks, since when, and what the card
+/// shows of it. Always is offered where it names what it lets the asker do.
+fn waiting_record(
+    workspace: Text,
+    record: Text,
+    name: Text,
+    by: invocations.Asker,
+    asked_at_ms: Int,
+    words: Text,
+    on: Option<Text>,
+    facts: List<invocations.Fact>,
+    choices: List<Text>,
+    destructive: Bool,
+    verb: Text,
+    plural: Option<Text>,
+    pressed: Option<invocations.Pressed>,
+    conversation: Option<Text>,
+) -> invocations.Invocation {
+    let names = workspace == "home"
+    return invocations.Invocation(
+        id: .some(record),
+        by: invocations.By(name: "Ada Lovelace", kind: "person"),
+        status: .waiting,
+        started_ms: asked_at_ms,
+        changes: 0,
+        undone: 0,
+        undoable: false,
+        recorded: true,
+        remembered: true,
+        person: .some(workspace.me),
+        asked: .some(
+            invocations.Asked(
+                record: invocations.AskedRecord(workspace: workspace, record: record),
+                workspace: workspace,
+                workspace_name: if names { "The Clayton–Lovelace household and everything we keep together" } else { "Studio" },
+                app: "",
+                action: "",
+                name: name,
+                asked_at_ms: asked_at_ms,
+                pressed: pressed,
+                offers: if verb != "" and plural.is_some() and not destructive { [.approve, .approve_and_grant, .decline] } else { [.approve, .decline] },
+                by: by,
+                words: words,
+                on: on,
+                facts: facts,
+                destructive: destructive,
+                choices: choices,
+                verb: verb,
+                plural: plural,
+                conversation: conversation,
+                takes: [],
+                many: false,
+                kind: "",
+            ),
+        ),
     )
 }
 

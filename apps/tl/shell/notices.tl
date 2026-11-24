@@ -40,7 +40,7 @@ view notices() {
                 if device.notifications.undo {
                     undo_band()
                 }
-                asking_list(root Asking)
+                asking_list()
                 if all.is_empty() {
                     if asked_count() == 0 {
                         ui.EmptyState("Nothing to catch up on", icon: .bell)

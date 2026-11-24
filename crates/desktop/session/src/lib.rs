@@ -220,6 +220,8 @@ pub mod firstboot;
 #[cfg(target_os = "linux")]
 mod followed_resource;
 #[cfg(target_os = "linux")]
+mod listings;
+#[cfg(target_os = "linux")]
 mod formats;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]

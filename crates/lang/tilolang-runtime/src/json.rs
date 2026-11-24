@@ -55,7 +55,11 @@ impl Core {
                     ));
                 }
                 let value = self.val_whole(a.h(1)?)?;
-                let json = encode(&self.registry.borrow(), &value).or_else(trap)?;
+                let mut json = encode(&self.registry.borrow(), &value).or_else(trap)?;
+                // Records staged as their app's listing stand where a listing holds them.
+                if crate::foreign::is_listing(&target) {
+                    json = serde_json::json!({ crate::foreign::LISTED: json });
+                }
                 self.take_reading(&target, json);
                 ret_void()
             }

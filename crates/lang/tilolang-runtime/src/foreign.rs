@@ -596,7 +596,7 @@ impl Foreign {
 /// What the listing of another app's records is named by in place of a record's id: a query
 /// over all of that app's records of a type (`query(invocations.Invocation, status: .waiting)`)
 /// reads the reading of `<app>#<Type>@*`, which the host follows from the app.
-pub const LISTING: &str = "*";
+pub const LISTING: &str = tilolang::host::LISTING;
 
 /// Where a listing's reading holds its records: `{"items": [...]}`.
 pub const LISTED: &str = "items";

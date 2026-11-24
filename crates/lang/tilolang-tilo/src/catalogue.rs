@@ -800,7 +800,8 @@ impl Reader<'_> {
         let (name, key) = match field.name.parse::<u32>() {
             Ok(0) => ("value".to_owned(), "value".to_owned()),
             Ok(index) => (format!("value{index}"), format!("value{index}")),
-            Err(_) => (field.name.replace('-', "_"), field.name.clone()),
+            // A service's camel-cased key (`workspaceName`) is named in snake case too.
+            Err(_) => (snake_case(&field.name.replace('-', "_")), field.name.clone()),
         };
         Some(FieldMeta {
             id: format!("{owner}.{key}"),

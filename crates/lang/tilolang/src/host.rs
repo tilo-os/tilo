@@ -20,6 +20,10 @@ pub const NOTICE_ACTIONS: &str = "notice-actions";
 pub const LINK_HOW_TYPE: &str = "host-link-how";
 /// The action a person answers an asked invocation with.
 pub const RESOLVE_ACTION: &str = "resolve";
+
+/// What another app's listing of its records of a type is named by in place of a record's id:
+/// what `query(T)` over that app's type reads, and what a scenario's `stage([...])` stands in.
+pub const LISTING: &str = "*";
 /// The action a person stops a running invocation with.
 pub const CANCEL_ACTION: &str = "cancel";
 /// The action a person runs an invocation again with, on the same arguments.

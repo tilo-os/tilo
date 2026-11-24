@@ -1099,6 +1099,38 @@ impl Checker<'_> {
             }
             return Ex::error();
         }
+        // `stage([invocations.Invocation(...), ...])`: the records stand in as their app's listing
+        // of them, which a view's `query(invocations.Invocation, ...)` reads.
+        if let [ast::Arg { name: None, value }] = args {
+            let listed = self.expr(value, None);
+            return match listed.ty.clone() {
+                Ty::List(item) if matches!(&*item, Ty::Record(key) if key.app != self.env.app) => {
+                    let Ty::Record(key) = *item else {
+                        return Ex::error();
+                    };
+                    let target = Ex::host(
+                        Imp::RefLit,
+                        vec![
+                            Ex::str(&key.app),
+                            Ex::str(&format!("{}#{}", key.app, key.name)),
+                            Ex::str(crate::host::LISTING),
+                        ],
+                        Ty::Record(key),
+                    );
+                    Ex::host(Imp::StageReading, vec![target, listed], Ty::Unit)
+                }
+                Ty::Error => Ex::error(),
+                other => {
+                    let shown = self.show(&other);
+                    self.err(
+                        "E020",
+                        span,
+                        format!("`stage(records)` stands a list of another app's records in as its listing of them; this is {shown}"),
+                    );
+                    Ex::error()
+                }
+            };
+        }
         let [
             ast::Arg {
                 name: None,
@@ -1113,7 +1145,7 @@ impl Checker<'_> {
             self.err(
                 "E022",
                 span,
-                "`stage` takes a resource of another app and its reading: `stage(device.sound, device.Sound(volume: 0.4))`",
+                "`stage` takes a resource of another app and its reading: `stage(device.sound, device.Sound(volume: 0.4))`, or a list of another app's records: `stage([invocations.Invocation(...)])`",
             );
             return Ex::error();
         };
