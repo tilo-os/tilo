@@ -149,6 +149,7 @@ messages-publish-signal-account = Added the Signal account { $item }
 messages-publish-sms-account = Added the SMS account { $item }
 messages-publish-whatsapp-account = Added the WhatsApp account { $item }
 messages-remove-account = Removed the account { $item }
+messages-report-sync = Noted how the account { $item } syncs
 messages-set-active-account = Switched to another account
 
 # The drafts a person has not sent yet.
@@ -169,6 +170,7 @@ messages-person-removed = Whether { $item } is in your contacts
 messages-person-phones = The phone numbers of { $item }
 messages-person-emails = The email addresses of { $item }
 messages-person-photo = The photo of { $item }
+messages-person-photo-size = The size of the photo of { $item }
 messages-endpoint-service = The service { $item } is reached on
 messages-endpoint-recipient = The address { $item } is reached at
 messages-endpoint-scope = The account { $item } is reached through
@@ -180,6 +182,12 @@ messages-listed-account-config = The connection settings of { $item }
 messages-listed-account-enabled = Whether { $item } is in use
 messages-listed-account-tint = The colour of { $item }
 messages-person-accounts-active = The account in use for a service
+messages-account-sync-device = The device that last synced the account { $item }
+messages-account-sync-health = Whether the account { $item } syncs
+messages-account-sync-attempted-ms = When the account { $item } last tried to sync
+messages-account-sync-succeeded-ms = When the account { $item } last synced
+messages-account-sync-signed-in-ms = When the account { $item } last signed in
+messages-account-sync-message = What the account { $item } said when it last synced
 messages-message-drafts-drafts = The unsent words kept for each conversation
 
 messages-conversation-with = Conversation with { $person }

@@ -149,6 +149,7 @@ messages-publish-signal-account = Das Signal-Konto { $item } hinzugefügt
 messages-publish-sms-account = Das SMS-Konto { $item } hinzugefügt
 messages-publish-whatsapp-account = Das WhatsApp-Konto { $item } hinzugefügt
 messages-remove-account = Das Konto { $item } entfernt
+messages-report-sync = Festgehalten, wie das Konto { $item } synchronisiert
 messages-set-active-account = Zu einem anderen Konto gewechselt
 
 # Die Entwürfe, die eine Person noch nicht gesendet hat.
@@ -169,6 +170,7 @@ messages-person-removed = Ob { $item } in deinen Kontakten ist
 messages-person-phones = Die Telefonnummern von { $item }
 messages-person-emails = Die E-Mail-Adressen von { $item }
 messages-person-photo = Das Foto von { $item }
+messages-person-photo-size = Die Größe des Fotos von { $item }
 messages-endpoint-service = Der Dienst, über den { $item } erreichbar ist
 messages-endpoint-recipient = Die Adresse, unter der { $item } erreichbar ist
 messages-endpoint-scope = Das Konto, über das { $item } erreichbar ist
@@ -180,6 +182,12 @@ messages-listed-account-config = Die Verbindungseinstellungen von { $item }
 messages-listed-account-enabled = Ob { $item } in Gebrauch ist
 messages-listed-account-tint = Die Farbe von { $item }
 messages-person-accounts-active = Das für einen Dienst verwendete Konto
+messages-account-sync-device = Das Gerät, das das Konto { $item } zuletzt synchronisiert hat
+messages-account-sync-health = Ob das Konto { $item } synchronisiert
+messages-account-sync-attempted-ms = Wann das Konto { $item } zuletzt zu synchronisieren versucht hat
+messages-account-sync-succeeded-ms = Wann das Konto { $item } zuletzt synchronisiert wurde
+messages-account-sync-signed-in-ms = Wann sich das Konto { $item } zuletzt angemeldet hat
+messages-account-sync-message = Was das Konto { $item } beim letzten Synchronisieren gemeldet hat
 messages-message-drafts-drafts = Die ungesendeten Worte, die je Unterhaltung aufbewahrt werden
 
 messages-conversation-with = Unterhaltung mit { $person }
