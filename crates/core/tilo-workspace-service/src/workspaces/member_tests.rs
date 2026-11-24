@@ -1316,6 +1316,11 @@ async fn a_member_copies_layout_write_is_read_back_and_survives_a_restart() {
     layout
         .put(automerge::ROOT, "front", "Moved")
         .expect("the layout's front moves");
+    // Committed as the desktop commits its own edits: a native change, its signer's.
+    layout.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+    );
     copies
         .own_write(
             &workspace,
