@@ -14,6 +14,8 @@
 
 import {hex, unhex as decodeHex} from './hex.mjs';
 import {isInvitedServer} from './site-host.mjs';
+import {memberText} from './json-text.mjs';
+import {deviceCodeOf, pairSecret} from './pairing.mjs';
 
 /** The one store the page keeps its person in: `device-key.mjs`, which holds
  * the tab's device key beside the person's root as the identity store's
@@ -291,13 +293,9 @@ export async function certifyDevice(options) {
 }
 
 /**
- * The host at `origin`, as this page pairs its person's devices through it: the runtime's
- * `PairingHost` over the address the host answers `hostInfo` with, kept for the page. A page
- * that lists what waits there, and answers one, proves it holds the person's root by signing
- * with it; the host checks.
- *
- * # Errors
- * The host was not reached, or names no endpoint to pair through.
+ * The host at `origin`, as this page signs its person's tabs in there: what calls its ticket
+ * actions (`ticketAction`), kept for the page. A page that lists what waits there, and signs one
+ * in, calls with the person's root; the host checks.
  */
 let approvalHosts;
 export async function approvalHost(origin, {fetch: fetcher} = {}) {
@@ -312,9 +310,19 @@ export async function approvalHost(origin, {fetch: fetcher} = {}) {
       });
       return {status: response.status, body: new Uint8Array(await response.arrayBuffer())};
     };
-    const info = JSON.parse(await runtime.hostInfo(post));
-    if (!info?.address) throw new IdentityError('no-endpoint', 'This host names no address to pair through.');
-    return new runtime.PairingHost(JSON.stringify(info.address));
+    /** Call the ticket action `action` with `body` (or its JSON text), signed with `root`: its
+     * answer as JSON text, as the host wrote it (a certificate's times are more than a number
+     * holds). */
+    const actText = async (action, body, root) => {
+      const text = typeof body === 'string' ? body : JSON.stringify(body);
+      const reply = await runtime.ticketAction(post, action, text, root);
+      const refused = JSON.parse(reply)?.refused;
+      if (typeof refused === 'string') throw new IdentityError('refused', refused);
+      return memberText(reply, 'value') ?? 'null';
+    };
+    /** The same, its answer read. */
+    const act = async (action, body, root) => JSON.parse(await actText(action, body, root));
+    return {runtime, act, actText};
   })();
   approvalHosts.set(origin, made);
   made.catch(() => { if (approvalHosts.get(origin) === made) approvalHosts.delete(origin); });
@@ -322,22 +330,67 @@ export async function approvalHost(origin, {fetch: fetcher} = {}) {
 }
 
 /**
- * The devices waiting at `host` that sign a browser in: those the host marks `signIn`, since a
- * tab's request is told from a device pairing by the ticket's direction and never guessed from
- * its shape. Each is `{digest, label, device, capability}` (`PairingHost.pending`).
+ * The tabs waiting at `host` to be signed in as devices of the person whose root is `root`: each
+ * `{digest, label, device, capability}`, `digest` being what `answerSignIn` names it by.
  */
 export async function signInsWaiting(host, root) {
-  const pending = JSON.parse(await host.pending(root));
-  return pending.filter(request => request?.signIn === true);
+  const listed = await host.act('pending', {user: root.userPublicKey}, root);
+  return (listed?.waiting ?? []).map(waiting => ({digest: waiting.secret, label: waiting.label,
+    device: waiting.device, capability: waiting.capability, signIn: true}));
 }
 
 /**
- * Approve (`approved`) or turn away the sign-in `digest` with `root`, the person's root: the host
- * answers the tab's certification request with the certificate it makes, and the tab is signed
- * in. Resolves the certificate, or null when turned away.
+ * Sign in (`approved`) the waiting tab `request` (as `signInsWaiting` lists it) with `root`, the
+ * person's root: it signs the tab's certificate, and the tab reads it when it looks next.
+ * Resolves the certificate (JSON), or null when turned away, which leaves the tab's ticket to
+ * run out.
  */
-export async function answerSignIn(host, root, digest, approved) {
-  return host.answer(root, digest, approved);
+export async function answerSignIn(host, root, request, approved) {
+  if (!approved) return null;
+  const cert = await host.runtime.signInCertificate(root, request.device, request.label);
+  // The certificate goes as the root signed it: its nanosecond times are more than a number holds.
+  await host.act('approve', `{"user":${JSON.stringify(root.userPublicKey)},"secret":${JSON.stringify(request.digest)},`
+    + `"cert":${cert},"label":${JSON.stringify(request.label ?? '')}}`, root);
+  return cert;
+}
+
+/**
+ * The pairing links a page holding the person's root (`root`) makes on the ticket actions of
+ * `host` (`approvalHost`), as `createIdentityActions` takes them (`pairing`): each a login ticket
+ * the host serves for a browser, which only this page answers. `peer` is this page's own
+ * certified peer, which signs its approval (`approveAsked`); `workspace()` names the workspace a
+ * device the link adds enters (`null`: none, and no link), `link(pair)` the address that carries
+ * the link's `pair` secret.
+ */
+export function deviceLinks({host, peer, root, workspace, name = () => null, link, origin = null,
+  site = globalThis.location?.origin ?? null}) {
+  return {
+    async issue() {
+      const entering = workspace();
+      if (!entering) return null;
+      const minted = await host.act('issue', {user: root.userPublicKey, workspace: entering, name: name(),
+        browser: true, site, host_origin: origin}, root);
+      return {id: minted.id, link: link(pairSecret(root.userPublicKey, minted.ticket))};
+    },
+    async follow(id) {
+      const status = await host.actText('follow', {id}, root);
+      const asked = memberText(status, 'asked');
+      if (asked === undefined) return null;
+      const {device_public_key: key, label} = JSON.parse(asked);
+      const device = hex(Uint8Array.from(key));
+      return {label, device, pairingCode: deviceCodeOf(device), asked};
+    },
+    async answer(id, request, approved) {
+      if (!approved) {
+        await host.act('answer', {id, declined: 'Your other device declined.'}, root);
+        return null;
+      }
+      // Signed over the question exactly as the host asked it, and handed back as signed.
+      const approval = await peer.approveAsked(root, request.asked);
+      await host.act('answer', `{"id":${JSON.stringify(id)},"approved":${approval}}`, root);
+      return approval;
+    },
+  };
 }
 
 /**

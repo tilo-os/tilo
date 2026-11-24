@@ -24,7 +24,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use tilo_server_protocol::web::{
-    LINK_ACTIONS_PATH, LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH, LINK_RECORDS_PATH, WebLink,
+    LINK_ACTIONS_PATH, LINK_LIVE_SESSION_PATH, LINK_RECORDS_PATH, WebLink,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -48,8 +48,6 @@ const DIAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// One thing a device asks its server, on a link of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Purpose {
-    /// Certification: each stream one request or approver command.
-    Certify,
     /// A workspace's live session.
     LiveSession,
     /// A workspace's records and governance: the streams of the link two
@@ -64,7 +62,6 @@ impl Purpose {
     #[must_use]
     pub const fn path(self) -> &'static str {
         match self {
-            Self::Certify => LINK_CERTIFY_PATH,
             Self::LiveSession => LINK_LIVE_SESSION_PATH,
             Self::Records => LINK_RECORDS_PATH,
             Self::Actions => LINK_ACTIONS_PATH,
@@ -75,7 +72,6 @@ impl Purpose {
     /// iroh is dialled by the live session itself, which owns its ALPN.
     const fn alpn(self) -> Option<&'static [u8]> {
         match self {
-            Self::Certify => Some(tilo_server_protocol::certify::CERTIFY_ALPN),
             Self::LiveSession => None,
             Self::Records => Some(tilo_server_protocol::transport::DIRECT_ALPN),
             Self::Actions => Some(tilo_server_protocol::transport::ACTIONS_ALPN),
@@ -258,9 +254,7 @@ where
     let now = tilo_clock::unix_now_ns();
     let peer = auth::verify_hello_ack(&ack, &expected_user, revocations, now, &client_nonce)
         .map_err(|error| error.to_string())?;
-    if expected_device
-        .is_some_and(|expected| peer.cert.device_public_key != expected)
-    {
+    if expected_device.is_some_and(|expected| peer.cert.device_public_key != expected) {
         return Err("the host proved another device than the one dialled".into());
     }
     let ack2 = crate::signer::signed_ack2(signer, &ack.server_nonce).await?;

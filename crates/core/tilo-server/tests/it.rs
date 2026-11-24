@@ -26,18 +26,16 @@ mod linux_turn;
 #[path = "machines.rs"]
 mod machines;
 
-#[path = "auth_reject.rs"]
-mod auth_reject;
 #[cfg(feature = "agents")]
 #[path = "agents_list.rs"]
 mod agents_list;
+#[path = "auth_reject.rs"]
+mod auth_reject;
 #[cfg(feature = "agents")]
 #[path = "bridged_avatar.rs"]
 mod bridged_avatar;
 #[path = "browser_transport.rs"]
 mod browser_transport;
-#[path = "device_certification.rs"]
-mod device_certification;
 #[path = "governed_workspace_access.rs"]
 mod governed_workspace_access;
 #[path = "governed_workspaces.rs"]

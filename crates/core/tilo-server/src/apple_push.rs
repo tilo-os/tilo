@@ -31,6 +31,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::web_push::PushSubscription;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use bytes::Bytes;
@@ -40,7 +41,6 @@ use ring::rand::SystemRandom;
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::person_telling::Told;
 use tilo_lock::MutexRecover as _;
-use tilo_server_protocol::certify::PushSubscription;
 
 use crate::workspaces::Workspaces;
 use crate::workspaces::push_addresses::{PushAddress, PushEnvironment};

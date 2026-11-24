@@ -2,14 +2,9 @@
 //! peer shares, native or in a browser.
 //!
 //! - [`frame`] — the length-prefixed frame codec every handshake and link uses;
-//! - [`certify`] — transport signed certification requests, check responses,
-//!   and carry approvals from root-holding devices and members; a device
-//!   without a certificate asks for one with [`certify::certify`];
-//! - [`certification`] — the certificates a person's root issues, and its
-//!   answer to a pending pairing;
-//! - [`pairing`] — the pairing ceremony a member's root answers, and the
-//!   certificates a person's root issues;
-//! - [`login`] — the pairing link, the signed-in device, and the workspace entry;
+//! - [`certification`] — the certificates a person's root issues;
+//! - [`pairing`] — the revocations a person's root signs;
+//! - [`login`] — the signed-in device, and the workspace entry;
 //! - [`sign_in`] — a device proving its person to a service that asks;
 //! - [`invite`] — joining a workspace another server governs;
 //! - [`signer`] — the device key as a signer, so a browser's
@@ -24,7 +19,7 @@
 //!   joining a workspace.
 //!
 //! The messages themselves are defined in [`tilo_server_protocol`]. Without
-//! the default `dial` feature the dialers (certification, the link) are left
+//! the default `dial` feature the dialers (the link) are left
 //! out and the signer boundary, the co-edit payloads and the frame codec remain.
 
 #![deny(rust_2018_idioms)]
@@ -38,8 +33,6 @@
 
 #[cfg(feature = "dial")]
 pub mod certification;
-#[cfg(feature = "dial")]
-pub mod certify;
 pub mod error;
 pub mod frame;
 pub mod host;
@@ -61,18 +54,9 @@ pub mod pairing;
 pub mod sign_in;
 pub mod signer;
 
-#[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
-pub use certify::{Approver, request_certification};
-#[cfg(feature = "dial")]
-pub use certify::{
-    CERTIFICATION_WAIT_NS, CertificationOutcome, KeptAsks, MemberApprover, MemberServer,
-    ask_member, request_certification_at,
-};
 pub use error::{CertifyError, LinkError};
 pub use host::{Carrier, ServerAddress};
 pub use https::{Answer, AnswerFuture, HttpClient, HttpFuture};
 pub use pairing::revoke_device;
-#[cfg(feature = "dial")]
-pub use pairing::{decide_pairing, next_pairings, pending_pairings};
 pub use sign_in::{encode, grant_holder, grant_label, key_client, sign_in_proof};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};

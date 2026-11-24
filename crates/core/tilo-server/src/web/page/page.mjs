@@ -835,8 +835,7 @@ function start() {
   // page, which holds the person's root, is where it happens. The page lists what waits for its
   // person (`identity.mjs`'s `signInsWaiting`, the host's `devices#pending` list) and asks about
   // one: the device's name and what certifying it makes it. The root signs, the host answers the
-  // tab's request, and the tab is signed in. A request the host does not mark as a sign-in is a
-  // device pairing, which is the person's own Tilo's to ask about, not this page's.
+  // tab's ticket, and the tab reads its certificate when it follows it.
   let signInAsked = null;
   let personHeld = null;
   let personAbsent = false;
@@ -885,7 +884,7 @@ function start() {
     try {
       const id = await siteModule('identity.mjs');
       const host = await id.approvalHost(peer);
-      await id.answerSignIn(host, personHeld, request.digest, approved);
+      await id.answerSignIn(host, personHeld, request, approved);
       signInAsked = null;
       if (bar) {
         bar.querySelector('p').textContent = approved

@@ -23,7 +23,6 @@ mod profiles;
 mod stand_in;
 #[cfg(test)]
 mod tests;
-mod tickets;
 mod tls;
 
 pub use fetch::FetchProxySetup;
@@ -131,7 +130,6 @@ impl Web {
                     };
                     runtime.spawn(teller.run());
                 }
-                self.context.certification.set_notifier(Arc::new(push));
             }
             Err(error) => {
                 tracing::warn!(%error, "this host tells nobody outside Tilo that a question waits");
@@ -253,8 +251,6 @@ struct Web {
     /// The site this host belongs to, when it knows one: where a browser that
     /// opened a link at the host's own address is sent.
     site: Option<Site>,
-    /// The tickets tabs hand their agents, and the questions their computers ask with them.
-    tickets: tickets::Tickets,
     /// The wait list the entry keeps for a workspace taking people by
     /// invitation, when whoever runs this host keeps one.
     wait_list: WaitListSlot,
@@ -271,32 +267,6 @@ impl Web {
     /// the host's own relay is not routable yet) is named as soon as it is.
     fn current_host_info(&self) -> ServerInfo {
         host_info_now(&self.server_info, self.endpoint.as_ref())
-    }
-
-    /// Queue the certification requests this host's sign-in tickets expect: a tab that pairs
-    /// with the invite its ticket named waits for the device that approved it to be answered.
-    fn serve_tab_requests(&self) {
-        self.context
-            .certification
-            .set_tab_requests(Arc::new(tickets::Expecting(self.tickets.clone())));
-    }
-
-    /// Serve the tickets a page's host makes for its agent: the page's calls for them and the
-    /// certify action a computer with no certificate calls, routed to the ticket whose secret its
-    /// call carries, and the device actions a certified device calls beside its workspaces' own.
-    fn serve_tickets(&self) {
-        if let Some(workspaces) = self.workspaces.as_ref() {
-            let service = workspaces.action_service();
-            service.admit_uncertified(
-                tilo_device_identity::login::SCOPE,
-                Arc::new(tickets::Router::new(self.tickets.clone(), {
-                    let server_info = self.server_info.clone();
-                    let endpoint = self.endpoint.clone();
-                    Arc::new(move || host_info_now(&server_info, endpoint.as_ref()))
-                })),
-            );
-            service.add_provider(Arc::new(tickets::Certified::new(self.tickets.clone())));
-        }
     }
 }
 
@@ -685,7 +655,6 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
         presence: live.authority(),
         page_errors: page_errors::PageErrors::default(),
         site: config.site.as_deref().and_then(Site::new),
-        tickets: tickets::Tickets::new(context.certification.clone()),
         wait_list: config.wait_list.clone(),
     });
     // The name each person gives themselves is kept with their profile, which the workspaces
@@ -700,8 +669,6 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
             let _ = workspaces.invitations_at(origin);
         }
     }
-    web.serve_tab_requests();
-    web.serve_tickets();
     web.serve_pushes(
         &state_root,
         config.site.as_deref(),
@@ -726,7 +693,6 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
         link_listener,
         link::Serving {
             server: context.server.clone(),
-            certification: context.certification.clone(),
             live_origin: live.relay(),
         },
     )));

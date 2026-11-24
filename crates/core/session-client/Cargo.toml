@@ -40,6 +40,8 @@ tilo-server-client = { path = "../tilo-server-client" }
 # The session client every device reaches its host with, over its link.
 # The action host another device of a workspace is, reached through the session.
 tilo-actions = { path = "../actions" }
+# The ticket actions a page calls before it holds a certificate.
+tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 # Another device's actions, asked through this session.
 tilo-session-actions = { path = "../session-actions" }
 # The signed hint a workspace's governance keeps of its host's address.
@@ -154,7 +156,6 @@ test-server = { path = "../../../tools/test-server" }
 # A refused commit reaches the app that made it, mounted headlessly.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 uuid.workspace = true
-tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 # The phone's own device, which joins the person's workspace in the laptop-phone-server flow, and
 # the laptop that prints its ticket.
 tilo-phone = { path = "../../../apps/phone" }

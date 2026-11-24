@@ -19,17 +19,18 @@
  *   their own; unlinking takes the account's picture away again.
  * - `pair-device`: let another device of the person in. Shows a sheet
  *   with a link, and its QR code, that opens this workspace there as a new
- *   device of this person. Each link names a fresh invite (`pairing.mjs`):
- *   it works once, for ten minutes, and only this page asks about a device
- *   that answers it, with what the server saw of that device and the code it
- *   shows. Approving signs its certificate with the root held here; the
- *   server the two share only relays the request and the certificate.
+ *   device of this person. Each link carries a fresh login ticket its host
+ *   serves (`pairing.mjs`): it works once, for ten minutes, and only this
+ *   page answers the device that logs in with it, after asking about it with
+ *   what the host saw of that device and the code it shows. Approving signs
+ *   its certificate with the root held here; the host only serves the ticket
+ *   and hands on the certificate.
  *
  * The name the person chooses (their profile, signed by the root) goes to
  * every server they joined through: each of their devices, paired or signed
  * in, comes up with it (`syncProfile`).
  */
-import {forInvites, openInvites} from './pairing.mjs';
+import {LINK_TTL_MS} from './pairing.mjs';
 import {fetchProfile, fitDisplayName, IdentityError, publishProfile} from './identity.mjs';
 
 /** Not offered: the desktop's own card asks it, to keep the person's status. */
@@ -112,8 +113,11 @@ const PAIR_POLL_MS = 3000;
  * between things (no input for a moment, nothing held down), so the ask
  * never lands mid-sentence or mid-drag. `searchChord` is how this page
  * opens search, said in the ask so the person can find it later.
- * `pairing` is the server side of pairing: `link(invite)`, `pending()` and
- * `answer(digest, approved)`. `showPairLink({link, expiresAt, copy})` shows
+ * `pairing` is the host side of pairing, on its ticket actions: `issue()`
+ * resolves to `{id, link}` for a new login ticket (`null` with no workspace
+ * to pair to), `follow(id)` to the device that logged in with it (`{label,
+ * device, pairingCode}`, or `null` while none did), and `answer(id,
+ * request, approved)` approves or declines it. `showPairLink({link, expiresAt, copy})` shows
  * a new pairing link (`copy()` puts it on the clipboard, resolving whether
  * it could); `askPairing(request, decide)` asks the person about a device
  * that answered it, and `decide(approved)` answers, resolving to
@@ -128,7 +132,6 @@ export function createIdentityActions({
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
-  invites = openInvites({now}),
   profiled = () => {}, showAgentSetup = null, setupDue = () => false,
 }) {
   let mount;
@@ -188,37 +191,33 @@ export function createIdentityActions({
     mount.offerHostAction({action, title, body});
   };
   const tryCopy = link => Promise.resolve().then(() => copy(link)).then(() => true, () => false);
-  // What shows each open invite: its sheet, then the ask about the device
-  // that answered it. Either closes once the invite is spent or expired.
-  const shown = new Map();
-  const asked = new Set();
-  const closeInvite = id => {
-    shown.get(id)?.close();
-    shown.delete(id);
-    asked.delete(id);
+  // The login tickets this page's pairing links carry, by the id the host follows each by: open
+  // until they expire, each shown by its sheet, then by the ask about the device that logged in.
+  const tickets = new Map();
+  const closeTicket = id => {
+    tickets.get(id)?.shown?.close();
+    tickets.delete(id);
   };
   let stopPairing = null;
-  // An answer spends the invite, approved or not: the host takes no second
-  // request naming it.
-  const decide = request => async approved => {
-    await pairing.answer(request.digest, approved);
-    invites.spend(request.invite);
-    shown.delete(request.invite);
-    asked.delete(request.invite);
+  // An answer spends the ticket, approved or not: the host takes no second device with it.
+  const decide = (id, request) => async approved => {
+    await pairing.answer(id, request, approved);
+    tickets.delete(id);
     return {approved, label: request.label};
   };
-  // Devices waiting to be paired, asked for while one of this page's
-  // invites is open; only one that answers such an invite is asked about.
+  // The device that logged in with one of this page's tickets, looked for while one is open;
+  // each ticket's is asked about once.
   const askPending = async () => {
-    for (const id of invites.prune()) closeInvite(id);
-    if (!invites.size) { stopPairing?.(); stopPairing = null; void pairing.close?.(); return; }
-    let pending;
-    try { pending = await pairing.pending(); } catch (error) { onError(error); return; }
-    for (const request of forInvites(pending, invites)) {
-      if (asked.has(request.invite)) continue;
-      asked.add(request.invite);
-      shown.get(request.invite)?.close();
-      shown.set(request.invite, askPairing(request, decide(request)));
+    for (const [id, ticket] of [...tickets]) if (ticket.expiresAt <= now()) closeTicket(id);
+    if (!tickets.size) { stopPairing?.(); stopPairing = null; return; }
+    for (const [id, ticket] of [...tickets]) {
+      if (ticket.asked) continue;
+      let request;
+      try { request = await pairing.follow(id); } catch (error) { onError(error); continue; }
+      if (!request || tickets.get(id) !== ticket || ticket.asked) continue;
+      ticket.asked = true;
+      ticket.shown?.close();
+      ticket.shown = askPairing(request, decide(id, request));
     }
   };
   // What the person did: separate actions.
@@ -323,14 +322,13 @@ export function createIdentityActions({
           const named = fitDisplayName(name() ?? '');
           if (value?.keep && named) await keepProfile(named, photos?.current() ?? null, 'status');
         } else if (id === PAIR.id && pairing) {
-          const invite = invites.open();
-          const link = pairing.link(invite.id);
-          if (!link) {
-            invites.spend(invite.id);
-            throw new IdentityError('no-workspace', 'Join a workspace before pairing a device to it');
-          }
+          const issued = await pairing.issue();
+          if (!issued) throw new IdentityError('no-workspace', 'Join a workspace before pairing a device to it');
+          const {id: ticketId, link} = issued;
+          const ticket = {expiresAt: now() + LINK_TTL_MS, asked: false, shown: null};
+          tickets.set(ticketId, ticket);
           // The sheet's Copy is a click, a gesture the clipboard honours.
-          shown.set(invite.id, showPairLink({link, expiresAt: invite.expiresAt, copy: () => tryCopy(link)}));
+          ticket.shown = showPairLink({link, expiresAt: ticket.expiresAt, copy: () => tryCopy(link)});
           stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
           await askPending();
         } else if (id === REVOKE_DEVICE && typeof value?.key === 'string') {

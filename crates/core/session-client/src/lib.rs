@@ -69,7 +69,7 @@ pub use presence::OwnPresence;
 pub use saying::saying;
 #[cfg(not(target_arch = "wasm32"))]
 pub use session::{Lent, MemberLinks, start_session_lent};
-pub use session::{PeerConfig, SessionMemberServer, member_server, start_session};
+pub use session::{PeerConfig, start_session};
 pub use states::{SyncState, WorkspaceState};
 pub use tilo_live::presence::Call as InCall;
 pub use tilo_live::presence::{LiveCall, LiveCaller};

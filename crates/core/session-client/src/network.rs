@@ -506,13 +506,6 @@ pub enum Cmd {
         tilo_server_protocol::entering::Entering,
         Answer<Result<tilo_server_protocol::entering::Entered, tilo_server_client::LinkError>>,
     ),
-    /// Ask the host a member's root-signed approver command (pairing, agents' questions).
-    AskMember(
-        Box<tilo_server_protocol::certify::MemberApproval>,
-        Answer<
-            Result<tilo_server_protocol::certify::ApproverReply, tilo_server_client::CertifyError>,
-        >,
-    ),
     /// Announce a revocation this device's person's root signed to every workspace this session is
     /// admitted to.
     Revoke(tilo_user_identity::RevocationEntry),

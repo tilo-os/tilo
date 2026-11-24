@@ -28,18 +28,17 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::certification::answer_pairing;
-use tilo_server_client::certify::certify;
-use tilo_server_client::{Carrier, MemberApprover, ServerAddress, pending_pairings};
+use tilo_server_client::{Carrier, ServerAddress};
 use tilo_session_client::MemoryPeerStore;
+use tilo_session_client::session::TicketLink;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, UserIdentity,
     sign_revocation_entry,
 };
 
 use crate::support::{
-    Device, HostSettings, TestHost, WORKSPACE, approve_one_over, enrol, holds, in_workspace, place,
-    ready, route, say, start_host_serving, start_page, start_peer, wait_for,
+    Device, HostSettings, TestHost, WORKSPACE, enrol, holds, in_workspace, place, ready, route,
+    say, start_host_serving, start_page, start_peer, wait_for,
 };
 
 /// Each scenario, once per carrier.
@@ -75,7 +74,7 @@ macro_rules! over_each_carrier {
 
 over_each_carrier!(
     a_root_holding_device_certifies_a_new_one,
-    the_persons_root_pairs_a_new_device,
+    the_persons_page_signs_a_new_device_in,
     documents_sync_both_ways_until_the_device_is_revoked,
     a_removed_device_is_told_that_it_was_removed,
     the_workspace_admits_the_device_and_its_live_session_carries_it,
@@ -119,37 +118,113 @@ impl Ada {
         }
     }
 
-    /// A new device of Ada's, reaching the host as `host` says, certified by
-    /// her root through the host: it shows its pairing code, and the laptop
-    /// compares it and approves, dialling the host the same way.
+    /// A new device of Ada's, reaching the host as `host` says, signed in by her root: the tab
+    /// asks the host for a sign-in ticket naming her, over the link it reaches the host's actions
+    /// on, and her laptop, dialling the host the same way, lists it and signs it in.
     async fn certified(&self, host: &ServerAddress) -> (SigningKey, DeviceCert, DeviceCert) {
-        let user = self.root.verifying_key().to_bytes();
         let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
-        let certifying = tokio::spawn({
-            let host = host.clone();
-            let key = key.clone();
-            async move {
-                certify(
-                    &host,
-                    user,
-                    "Browser on Ada's layout",
-                    [0; 16],
-                    &key,
-                    |code| {
-                        let _ = code_tx.send(code.to_owned());
-                    },
-                )
-                .await
-            }
-        });
-        let shown = tilo_test_env::within("the pairing code", code_rx)
+        let laptop = TicketLink::new(host.clone());
+        let signed = self
+            .signed_in(
+                host,
+                &key,
+                "Browser on Ada's layout",
+                (&laptop, &self.laptop),
+            )
+            .await;
+        laptop.close().await;
+        (key, signed.0, signed.1)
+    }
+
+    /// The tab whose key is `key`, listed as `label`, reaching the host as `host` says, signed
+    /// in by `by`, a device of Ada's that holds her root, over its own ticket link: its
+    /// certificate and the certificate of the host it entered through.
+    async fn signed_in(
+        &self,
+        host: &ServerAddress,
+        key: &SigningKey,
+        label: &str,
+        (link, by): (&TicketLink, &Device),
+    ) -> (DeviceCert, DeviceCert) {
+        let user = self.root.verifying_key().to_bytes();
+        let tab = TicketLink::new(host.clone());
+        let minted = self
+            .ask(
+                &tab,
+                key,
+                "issue",
+                json!({"direction": "sign-in", "user": hex::encode(user), "label": label}),
+            )
             .await
             .unwrap();
-        let approved = approve_one_over(host, &self.root, &self.laptop).await;
-        assert_eq!(approved, shown, "the person compares codes");
-        let (cert, server_cert, _) = certifying.await.unwrap().unwrap();
-        (key, cert, server_cert)
+        let device = hex::encode(key.verifying_key().to_bytes());
+        let listed = self
+            .ask(link, &by.key, "pending", json!({ "as": by.cert }))
+            .await
+            .unwrap();
+        let waiting = listed["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|waiting| waiting["device"] == device.as_str())
+            .expect("the tab waits for Ada's root")
+            .clone();
+        assert_eq!(waiting["label"], label);
+        let tab_key = tilo_device_identity::login::Tab {
+            device_public_key: device.clone(),
+            label: label.to_owned(),
+            agent: None,
+        };
+        let mut cert = tab_key
+            .certificate(user, tilo_clock::unix_now_ns())
+            .unwrap();
+        tilo_user_identity::sign_device_cert(&mut cert, &self.root).unwrap();
+        self.ask(
+            link,
+            &by.key,
+            "approve",
+            json!({"secret": waiting["secret"], "cert": cert, "as": by.cert, "label": by.cert.device_label}),
+        )
+        .await
+        .unwrap();
+        let followed = self
+            .ask(&tab, key, "follow", json!({ "id": minted["id"] }))
+            .await
+            .unwrap();
+        tab.close().await;
+        assert_eq!(followed["claimed"]["user"], hex::encode(user));
+        let certified: DeviceCert =
+            serde_json::from_str(followed["certified"].as_str().unwrap()).unwrap();
+        let host_cert: DeviceCert =
+            serde_json::from_str(followed["hostCert"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            certified, cert,
+            "the tab reads the certificate the root signed"
+        );
+        (certified, host_cert)
+    }
+
+    /// Call a ticket action over `link` as the key `key`.
+    async fn ask(
+        &self,
+        link: &TicketLink,
+        key: &SigningKey,
+        action: &str,
+        argument: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let serde_json::Value::Object(argument) = argument else {
+            unreachable!("an argument is an object")
+        };
+        link.ask(
+            Arc::new(key.clone()),
+            key.verifying_key().to_bytes(),
+            self.host_device.cert.device_public_key,
+            action,
+            argument,
+            std::time::Duration::from_secs(20),
+        )
+        .await
+        .unwrap()
     }
 
     /// Ada's laptop, in the workspace over a direct session.
@@ -196,63 +271,36 @@ async fn a_root_holding_device_certifies_a_new_one(carrier: Carrier) {
     ada.host.server.shutdown().await;
 }
 
-/// What a page holding the person's root runs: over the session it already
-/// holds with the host, it lists the device waiting for it and pairs it, each
-/// command its own root-signed approval, binding no endpoint of its own.
-async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
+/// What a page holding the person's root runs: it lists the device waiting to be signed in as
+/// one of theirs, and signs it in, over the link it keeps to call its host's ticket actions on.
+async fn the_persons_page_signs_a_new_device_in(carrier: Carrier) {
     let ada = Ada::start().await;
     let host = ada.host.over(carrier);
-    let (page_key, page_cert, server_cert) = ada.certified(&host).await;
-    let session = page(&ada.host, carrier, page_key, &page_cert, &server_cert);
-    let user = ada.root.verifying_key().to_bytes();
-    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
-    let asking = tokio::spawn({
-        let host = host.clone();
-        let key = key.clone();
-        async move {
-            certify(&host, user, "Phone", [0; 16], &key, |code| {
-                let _ = code_tx.send(code.to_owned());
-            })
-            .await
-        }
-    });
-    let shown = tilo_test_env::within("the pairing code", code_rx)
-        .await
-        .unwrap();
-    // Until the session first reaches the host it has no endpoint to ask
-    // from, and says so.
-    let waiting = wait_for("the phone to wait for the root", || async {
-        pending_pairings(&tilo_session_client::member_server(&session), &ada.root)
-            .await
-            .ok()?
-            .pop()
-    })
-    .await;
-    assert_eq!(waiting.pairing_code, shown, "the person compares codes");
-    let issued = answer_pairing(
-        &tilo_session_client::member_server(&session),
-        &ada.root,
-        waiting.request_digest,
-        true,
-    )
-    .await
-    .unwrap()
-    .expect("an approval issues a certificate");
-    let (cert, server_cert, _) = asking.await.unwrap().unwrap();
-    assert_eq!(cert, issued);
-    assert_eq!(cert.device_public_key, key.verifying_key().to_bytes());
+    let (page_key, page_cert, _) = ada.certified(&host).await;
+    let page = Device {
+        key: page_key,
+        cert: page_cert,
+    };
+    let kept = TicketLink::new(host.clone());
+    let phone = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let (cert, server_cert) = ada.signed_in(&host, &phone, "Phone", (&kept, &page)).await;
+    assert_eq!(cert.device_public_key, phone.verifying_key().to_bytes());
+    assert_eq!(cert.user_public_key, ada.root.verifying_key().to_bytes());
+    assert!(!cert.capabilities.can_admit_devices);
     assert_eq!(
         server_cert.device_public_key,
         ada.host_device.cert.device_public_key
     );
-    assert!(
-        pending_pairings(&tilo_session_client::member_server(&session), &ada.root)
-            .await
-            .unwrap()
-            .is_empty()
+    let listed = ada
+        .ask(&kept, &page.key, "pending", json!({ "as": page.cert }))
+        .await
+        .unwrap();
+    assert_eq!(
+        listed["waiting"],
+        json!([]),
+        "a signed-in tab waits no more"
     );
-    session.close();
+    kept.close().await;
     ada.host.server.shutdown().await;
 }
 
@@ -795,66 +843,34 @@ impl Ada {
 /// its stream, or the link would take no more after those.
 const ASKS: usize = 300;
 
-/// What a page asks its server before it holds a session there (who waits to
-/// be paired, every few seconds while an invitation of the page is open):
-/// every ask goes over the one link the page keeps. A browser holds a socket
-/// for every WebTransport session a page makes, and `WebKit` holds it after the
-/// session closed for as long as its network process lives, so a link for
-/// each ask filled that process until the browser could open nothing.
+/// What a page holding its person's root asks its server every few seconds while it is open
+/// (who waits to be signed in): every ask goes over the one link the page keeps. A browser holds
+/// a socket for every WebTransport session a page makes, and `WebKit` holds it after the session
+/// closed for as long as its network process lives, so a link for each ask filled that process
+/// until the browser could open nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_ask_of_a_page_goes_over_the_one_link_it_keeps() {
     let ada = Ada::start().await;
     let (reach, sessions) = ada.counted().await;
-    let approver = MemberApprover::new(reach);
+    let kept = TicketLink::new(reach);
     for _ in 0..ASKS {
-        assert!(
-            pending_pairings(&approver, &ada.root)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        let listed = ada
+            .ask(
+                &kept,
+                &ada.laptop.key,
+                "pending",
+                json!({ "as": ada.laptop.cert }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed["waiting"], json!([]));
     }
     assert_eq!(
         sessions.load(Ordering::SeqCst),
         1,
         "three hundred asks made one WebTransport session"
     );
-    approver.close().await;
-    ada.stop().await;
-}
-
-/// What a page in a session asks its server every two seconds for as long as
-/// it is open (what its person's agents ask them): the asks go over one link
-/// the page keeps beside its session, and make no session of their own.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_in_a_session_asks_its_server_over_the_one_link_it_keeps() {
-    let ada = Ada::start().await;
-    let (reach, sessions) = ada.counted().await;
-    let (page_key, page_cert, served_cert) = ada.certified(&reach).await;
-    let session = start_page(
-        reach,
-        page_cert,
-        served_cert,
-        page_key,
-        Arc::new(MemoryPeerStore::default()),
-    );
-    let asks = tilo_session_client::member_server(&session);
-    // Until the session first reaches its server it has no way to ask; the
-    // first ask answered is the one that dials the link.
-    wait_for("the page's first ask to be answered", || async {
-        pending_pairings(&asks, &ada.root).await.ok()
-    })
-    .await;
-    let before = sessions.load(Ordering::SeqCst);
-    for _ in 0..ASKS {
-        assert!(pending_pairings(&asks, &ada.root).await.unwrap().is_empty());
-    }
-    assert_eq!(
-        sessions.load(Ordering::SeqCst),
-        before,
-        "three hundred asks made no WebTransport session: they went over the link the page keeps"
-    );
-    session.close();
+    kept.close().await;
     ada.stop().await;
 }
 

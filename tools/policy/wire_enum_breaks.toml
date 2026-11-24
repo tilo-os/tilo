@@ -754,3 +754,13 @@ reason = "the host's answer on the same live certification connection, never sto
 file = "crates/core/tilo-server-protocol/src/certify.rs"
 enum = "ApproverDecision"
 reason = "an approver's answer on the same live certification connection, never stored: an agent's certificate and delegation are no longer issued together here, and both ends are the same build, so no bytes of the old layout are read back"
+
+[[break]]
+file = "crates/core/tilo-server-protocol/src/certify.rs"
+enum = "CertifyOpen"
+reason = "the opener of a certification stream, which a device's ticket actions replace: a tab signs in, and a pairing link logs one in, over the link to its host's actions, so no build opens such a stream or reads one, and nothing kept it"
+
+[[break]]
+file = "crates/core/tilo-server-protocol/src/certify.rs"
+enum = "CertifyReply"
+reason = "the host's answer on the same certification stream, gone with it: spoken only live between a page and its host of one build, never stored"

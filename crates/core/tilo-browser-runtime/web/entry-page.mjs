@@ -30,7 +30,7 @@ import {setupOrigin} from './identity-actions.mjs';
 import {showRecoveryWords} from './recovery-words.mjs';
 import {firstScreen, openSignIn, setupDone} from './first-screen.mjs';
 import {fetchPersonProfile} from './profile-photos.mjs';
-import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose} from './pairing.mjs';
+import {deviceLabel, ofThisSite, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose} from './pairing.mjs';
 import {browserIdentity, browserPerson, currentIdentity, keepRecoveryWordsShown, keptIdentity, recoveryWords, recoveryWordsShown} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
@@ -41,6 +41,7 @@ import {isInvitedServer, invitedOrigin, nameInvitedServer, siteNames, siteServer
 import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {initial, shownName} from './person.mjs';
 import {hex} from './hex.mjs';
+import {memberText} from './json-text.mjs';
 
 /** Set for the one reload that joins an embed's visiting page as the person. */
 const JOIN_NOW = 'tilo-embed-join';
@@ -300,10 +301,10 @@ function pairingWait(code, whose, where, onStop) {
   return () => card.remove();
 }
 
-/** Said on a tab its person signed in with their agent while its pairing
- * goes through (`ownPairing`): nothing asks the person anything, since
- * their own computer certifies the request its claim named, so
- * the tab shows no code and points at no other device. */
+/** Said on a tab its person signed in with their agent while it enters as
+ * theirs: nothing asks the person anything, since their own computer
+ * signed it in already, so the tab shows no code and points at no other
+ * device. */
 function pairingSigningIn() {
   const card = pairCard('pair-own', PAIRING_SIGNING_IN, 'status');
   document.body.append(card);
@@ -504,17 +505,18 @@ export async function startEntryPage({mode}) {
     return [];
   });
   /**
-   * `pair(userPublicKey, invite)` for a sign-in with the person's agent
+   * `pair(userPublicKey, signedIn)` for a sign-in with the person's agent
    * (`signInAs`): this tab becomes a device of `userPublicKey` through the
-   * host of `listed` (the workspace it is in or entering), answering the
-   * invite the claim named. It pairs on the page it is on, so the one load
-   * the sign-in takes is the workspace it opens; `null` where that page
-   * knows no host to pair through.
+   * host of `listed` (the workspace it is in or entering), with the
+   * certificate their device signed it in with and the key it asked with
+   * (`signedIn`). It enters on the page it is on, so the one load the
+   * sign-in takes is the workspace it opens; `null` where that page knows no
+   * host to enter through.
    */
   function pairSignIn(listed) {
     if (!listed?.host?.origin) return null;
-    return (userPublicKey, invite) => deps.pairDevice({origin: listed.host.origin,
-      workspace: listed.workspace ?? null, userPublicKey, invite, listed});
+    return (userPublicKey, signedIn) => deps.pairDevice({origin: listed.host.origin,
+      workspace: listed.workspace ?? null, userPublicKey, signedIn, listed});
   }
   /**
    * Hold the page the entry would have handed over (`entry.mjs`,
@@ -803,7 +805,7 @@ export async function startEntryPage({mode}) {
     },
     // An embed lists no host actions, so it has nothing to invite with:
     // the desktop offers no Invite there rather than one that does nothing.
-    pairDevice: async ({origin, workspace, userPublicKey, invite, listed}) => {
+    pairDevice: async ({origin, workspace, userPublicKey, ticket = null, signedIn = null, listed}) => {
       displayName = chosenDisplayName(userPublicKey);
       let waiting = () => {};
       // Whose device this becomes and which server adds it, as its person
@@ -812,16 +814,16 @@ export async function startEntryPage({mode}) {
       let whose = '';
       let where = '';
       let stopped = false;
-      // A link this tab opened for itself, signing its person in with their
-      // agent (`signInAs`), is theirs: they asked for it on this page, so
-      // they are not asked whose device this becomes.
-      const own = ownPairing(userPublicKey, invite);
+      // A tab its person's computer signed in (`signInAs`) is theirs: they
+      // asked for it on this page, so they are not asked whose device this
+      // becomes.
+      const own = Boolean(signedIn);
       try {
         // The person this browser already is, where it keeps one: the one
         // this tab opened, else the one it keeps (a tab that opens a link
         // has opened nobody yet). It is told so, never paired to them.
         const holds = currentIdentity()?.userPublicKey ?? (await keptIdentity().catch(() => null))?.rootPublicKey ?? null;
-        return await pairViaHost({origin, workspace, userPublicKey, invite, listed, runtime, displayName, holds,
+        return await pairViaHost({origin, workspace, userPublicKey, ticket, signedIn, listed, runtime, displayName, holds,
           label: deviceLabel(),
           // The link wrote the server it names. Only one this site names as
           // its own (its `entry.json`, read before anything is asked) is
@@ -850,8 +852,8 @@ export async function startEntryPage({mode}) {
     readAccounts: async origin => readBrowserAccounts({origin, runtime: await loadRuntime(), currentDevice: profile => profileDevice(profile)}),
     chooseAccount: accounts => card('Open this link as',
       accounts.map(account => [account.displayName || account.userPublicKey.slice(0, 12), account]), 'accounts'),
-    // A guest ticket: a fresh device of the workspace's root, certified once the
-    // web host spent the ticket on this page's pairing code. The root key is
+    // A guest ticket: a fresh device of the workspace's root, signed in once the
+    // web host spent the ticket on this page's sign-in ticket. The root key is
     // read from the host's own certificate, so the link need not carry it.
     // The visitor is a person without a name until they give one; their
     // device goes by what it is, never as their name.
@@ -861,9 +863,9 @@ export async function startEntryPage({mode}) {
       const hostCert = await hostCertificate(await loadRuntime(), origin);
       const admit = new URL(`${encodeURIComponent(workspace)}/admit`, tickets).href;
       return connectServerPeer({origin, workspace, userPublicKey: hex(hostCert.user_public_key), label: deviceLabel(),
-        onPairingCode: async pairingCode => {
+        onSignIn: async signIn => {
           const response = await fetch(admit, {method: 'POST', headers: {'content-type': 'application/json'},
-            body: JSON.stringify({ticket, pairingCode})});
+            body: JSON.stringify({ticket, signIn})});
           if (!response.ok) {
             console.warn('guest link:', (await response.json().catch(() => ({}))).error ?? response.status);
             status.textContent = 'This guest link didn’t let this browser in. Ask whoever sent it for a new one.';
@@ -1369,18 +1371,17 @@ function offerFirstScreenCodes({origin, identity, runtime, link, home = null, pa
 }
 
 /**
- * Sign this tab in as the person whose device claimed its sign-in code
- * (`{user, invite}`): the tab pairs here, with the invite the claim named
- * (`pair`), as a new device of theirs, and then loads, once, the workspace it
+ * Sign this tab in as the person whose device signed in its sign-in ticket
+ * (`{user, signedIn}`): the tab enters here with the certificate it was
+ * signed in with (`pair`), as a new device of theirs, and then loads, once, the workspace it
  * opens: the one the person last used on the host at `origin`, else their own
  * (`signInWorkspace`). `home` is that host's shared home workspace, which is
  * where people meet, not where someone starts. With `stay` (signed in from a
  * link to a workspace) the tab loads that link again instead.
  */
-export async function signInAs({user, invite}, {origin, home = null, stay = false}, link, pair) {
+export async function signInAs({user, signedIn}, {origin, home = null, stay = false}, link, pair) {
   setupDone();
-  askOwnPairing(user, invite);
-  const peer = await pair(user, invite);
+  const peer = await pair(user, signedIn);
   // Signed in from a link: the link opens again, now as them.
   if (stay) {
     await peer.dispose?.();
@@ -1485,15 +1486,28 @@ const TICKET_LIFE_MS = 10 * 60_000;
  * (`ticketAction`: `issue`, `follow`, `answer`), the same `tilo.device` actions the computer
  * calls there. The host serves a setup's ticket on its iroh endpoint, and the tab approves the
  * computer that shows up with it by signing, with the root it holds, the certificate the host
- * built and the question with its own device key (`peer.approveAsked`). A sign-in's ticket is the
- * person's computer's to approve; the tab learns whom to pair with from the ticket's answer
- * (`claimed`).
+ * built and the question with its own device key (`peer.approveAsked`). A sign-in's ticket names
+ * the key this tab asks with, and is the person's computer's to approve: the tab reads whose
+ * device it became (`claimed`) and the certificate their root signed for that key when it follows
+ * the ticket.
  */
 function ticketCodes({origin, identity}) {
   const post = httpsPost(origin);
-  const call = async (action, body) => {
+  // The key a sign-in asks with, before the tab knows whose device it becomes: kept under a
+  // profile of its own until the person's device signed it in, then moved to theirs
+  // (`adoptDeviceKey`).
+  const signInProfile = `tilo-sign-in@${new URL(origin).host}`;
+  let signInKey = null;
+  const signingIn = async () => {
+    signInKey ??= openDeviceKey({profile: signInProfile, storage: idbStorage()})
+      .then(async key => ({key, wasm: key.kind === 'sealed-seed' ? await key.unseal() : key}));
+    return signInKey;
+  };
+  // The answer as the host wrote it: a certificate in it has times more than a number holds.
+  const callText = async (action, body, deviceKey = undefined) => {
     const runtime = await loadRuntime();
-    const reply = await runtime.ticketAction(post, action, JSON.stringify(body)).catch(error => {
+    const text = typeof body === 'string' ? body : JSON.stringify(body);
+    const reply = await runtime.ticketAction(post, action, text, deviceKey).catch(error => {
       throw hostNamed(Object.assign(new Error(String(error?.message ?? error)), {code: 'unreachable'}), origin);
     });
     const answer = JSON.parse(reply);
@@ -1501,24 +1515,36 @@ function ticketCodes({origin, identity}) {
       throw hostNamed(Object.assign(new Error(answer.refused || 'the host refused this ticket'),
         {name: 'TicketError', code: 'refused'}), origin);
     }
-    return answer?.value ?? null;
+    return memberText(reply, 'value') ?? 'null';
   };
+  const call = async (action, body, deviceKey = undefined) => JSON.parse(await callText(action, body, deviceKey));
   const kept = (ticket, id, direction) => ({code: ticket, expiresAt: Date.now() + TICKET_LIFE_MS, follow: id, id, direction});
   const answerer = saved => {
     let answering = false;
     return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
       follow: async () => {
-        const status = await call(TICKET_FOLLOW, {id: saved.follow}) ?? {};
+        // A sign-in is followed by the key that asked, which alone reads its certificate.
+        const asking = saved.direction === 'sign-in' ? await signingIn() : null;
+        const statusText = await callText(TICKET_FOLLOW, {id: saved.follow}, asking?.wasm);
+        const status = JSON.parse(statusText) ?? {};
         const agent = status.agent ?? null;
-        const claimed = status.claimed ?? null;
+        let claimed = status.claimed ?? null;
         if (saved.direction === 'sign-in') {
-          // The person's computer approved this tab: the screen hands whom to pair with, and the
-          // tab is signed in once its own request is answered.
-          if (status.certified) return {resolved: true, expired: false, steps: ['approved'], agent, claimed};
-          if (status.declined) {
-            return {resolved: true, expired: false, steps: ['failed'], agent, detail: status.declined, claimed};
+          // The person's computer signed this tab in: the screen hands whom it became a device
+          // of, with the certificate and the key it was signed in with.
+          if (status.certified) {
+            const signedIn = {certified: `{"cert":${status.certified},"hostCert":${status.hostCert}}`,
+              key: {profile: signInProfile, slot: asking.key.slot}};
+            await asking.key.close();
+            signInKey = null;
+            claimed = claimed ? {...claimed, signedIn} : null;
+            return {resolved: true, expired: false, steps: ['approved'], agent, claimed};
           }
-          return {resolved: Boolean(claimed), expired: Date.now() > saved.expiresAt, steps: [], agent, claimed};
+          if (status.declined) {
+            return {resolved: true, expired: false, steps: ['failed'], agent, detail: status.declined, claimed: null};
+          }
+          // Whom it names is said once the tab is signed in: then it enters as them.
+          return {resolved: Boolean(claimed), expired: Date.now() > saved.expiresAt, steps: [], agent, claimed: null};
         }
         if (status.declined) {
           return {resolved: true, expired: false, steps: ['failed'], agent, detail: status.declined};
@@ -1529,8 +1555,9 @@ function ticketCodes({origin, identity}) {
             const peer = await setupPeer();
             const person = currentIdentity();
             if (!peer?.approveAsked || !person) throw new Error('this tab cannot approve your agent');
-            const approved = JSON.parse(await peer.approveAsked(person, JSON.stringify(status.asked)));
-            await call(TICKET_ANSWER, {id: saved.follow, approved});
+            // Signed over the question as the host asked it, and handed back as signed.
+            const approved = await peer.approveAsked(person, memberText(statusText, 'asked'));
+            await call(TICKET_ANSWER, `{"id":${JSON.stringify(saved.follow)},"approved":${approved}}`);
           } catch (error) {
             console.warn('first screen: approving your agent', error);
             await call(TICKET_ANSWER, {id: saved.follow, declined: String(error?.message ?? error)})
@@ -1553,7 +1580,9 @@ function ticketCodes({origin, identity}) {
       return answerer(kept(minted.ticket, minted.id, 'login'));
     },
     async createSignIn() {
-      const minted = await call(TICKET_ISSUE, {direction: 'sign-in', site: globalThis.location?.origin ?? null});
+      const {wasm} = await signingIn();
+      const minted = await call(TICKET_ISSUE, {direction: 'sign-in', label: deviceLabel(),
+        site: globalThis.location?.origin ?? null}, wasm);
       return answerer(kept(minted.ticket, minted.id, 'sign-in'));
     },
     resume(saved) {

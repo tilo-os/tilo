@@ -1,6 +1,6 @@
 //! A local host for browser runs of the runtime bundle: `tilo-server` serving
 //! HTTPS with a development certificate, a throwaway user root, and an
-//! approver that certifies every browser device that asks.
+//! approver that signs in every browser that asks to be one of the root's devices.
 //! Never use it outside development: anyone who reaches it is admitted.
 //!
 //! ```sh
@@ -29,14 +29,9 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::sync::Arc;
-use tilo_server::certify::ApproverDecision;
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig};
-use tilo_server_client::Approver;
-use tilo_user_identity::{
-    CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
-    sign_device_cert,
-};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
@@ -73,7 +68,6 @@ async fn main() {
     let root = SigningKey::generate(&mut UnwrapErr(SysRng));
     let user = root.verifying_key().to_bytes();
     let (host_key, server_cert) = enrol(&root, "dev host", DeviceCapabilities::member());
-    let (approver_key, approver_cert) = enrol(&root, "dev approver", DeviceCapabilities::primary());
 
     let cfg = tilo_server::ServerConfig {
         state_root: state.path().to_path_buf(),
@@ -117,41 +111,29 @@ async fn main() {
         })
     );
 
-    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .bind()
-        .await
-        .expect("approver endpoint");
-    let mut approver = Approver::connect(
-        &endpoint,
-        server.node_addr(),
-        approver_cert,
-        &approver_key,
-        &RevocationList::new(),
-    )
-    .await
-    .expect("connect the approver");
+    // Every tab that asks to sign in as one of the root's devices is signed in.
+    let tickets = server
+        .workspaces()
+        .expect("the host governs its workspaces")
+        .action_service()
+        .tickets();
     loop {
-        for pending in approver
-            .list_pending()
-            .await
-            .expect("list pending requests")
-        {
-            let decision = issue_device_cert(
-                &pending.request,
-                &root,
-                &CertificationPolicy::browser(),
-                &RevocationList::new(),
-                tilo_clock::unix_now_ns(),
-            )
-            .map_or(ApproverDecision::Deny, ApproverDecision::Issue);
-            println!(
-                "{}",
-                serde_json::json!({"certified": pending.request.device_label, "pairingCode": pending.pairing_code})
-            );
-            approver
-                .decide(pending.request_digest, decision)
-                .await
-                .expect("answer a request");
+        for (secret, asked) in tickets.waiting_for(user) {
+            let tab = tilo_device_identity::login::Tab {
+                device_public_key: asked.device.clone(),
+                label: asked.label.clone(),
+                agent: None,
+            };
+            let Ok(mut cert) = tab.certificate(user, tilo_clock::unix_now_ns()) else {
+                continue;
+            };
+            sign_device_cert(&mut cert, &root).expect("sign a browser's certificate");
+            if tickets
+                .approve(user, &secret, cert, Some("dev host"))
+                .is_ok()
+            {
+                println!("{}", serde_json::json!({"certified": asked.label}));
+            }
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }

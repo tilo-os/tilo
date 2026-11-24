@@ -11,6 +11,8 @@
 //! checked against the approver's own certificate ([`check_approval`]), and only then does the
 //! invocation succeed with the [`CertifyAnswer`]. A decline, or an answer that does not check,
 //! fails it with that sentence.
+//!
+//! A device serves every ticket through its one [`Tickets`], whoever issued the ticket there.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -28,6 +30,10 @@ use tilo_device_identity::login::{
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::watch;
+
+mod tickets;
+
+pub use tickets::{LookAgain, PageHost, Refusal, Tickets};
 
 /// How long a follower waiting for the approval is held before it looks again.
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
@@ -47,6 +53,9 @@ struct Inner {
     approver: Arc<dyn Approver>,
     /// What the computer becomes: a member device, or one that administers the person's others.
     capability: tilo_user_identity::DeviceCapabilities,
+    /// Whether it adds a browser, which a pairing link adds: a member device of the person's
+    /// for a browser's lifetime, whatever system it says it runs.
+    browser: bool,
     revocations: RevocationList,
     /// Each call taken, by invocation: the device that made it, and where it is.
     calls: Mutex<HashMap<InvocationId, ([u8; 32], InvocationState)>>,
@@ -84,6 +93,53 @@ impl ServedTicket {
         revocations: RevocationList,
         expires_at_ns: u64,
     ) -> Self {
+        Self::serving(
+            ticket,
+            user_public_key,
+            enter,
+            (capability, false),
+            approver,
+            revocations,
+            expires_at_ns,
+        )
+    }
+
+    /// [`Self::new`] for a browser, which a pairing link adds: certified a member of the
+    /// person's for a browser's lifetime
+    /// ([`tilo_user_identity::CertificationPolicy::browser`]).
+    ///
+    /// # Panics
+    ///
+    /// Outside a runtime context, where the approval could not be waited for.
+    #[must_use]
+    pub fn for_browser(
+        ticket: Ticket,
+        user_public_key: [u8; 32],
+        enter: Entry,
+        approver: Arc<dyn Approver>,
+        revocations: RevocationList,
+        expires_at_ns: u64,
+    ) -> Self {
+        Self::serving(
+            ticket,
+            user_public_key,
+            enter,
+            (tilo_user_identity::DeviceCapabilities::member(), true),
+            approver,
+            revocations,
+            expires_at_ns,
+        )
+    }
+
+    fn serving(
+        ticket: Ticket,
+        user_public_key: [u8; 32],
+        enter: Entry,
+        (capability, browser): (tilo_user_identity::DeviceCapabilities, bool),
+        approver: Arc<dyn Approver>,
+        revocations: RevocationList,
+        expires_at_ns: u64,
+    ) -> Self {
         let secret = Secret::of(&ticket, 0, expires_at_ns);
         Self(Arc::new(Inner {
             ticket,
@@ -92,6 +148,7 @@ impl ServedTicket {
             enter,
             approver,
             capability,
+            browser,
             revocations,
             calls: Mutex::default(),
             certified: watch::Sender::new(None),
@@ -202,19 +259,28 @@ impl ServedTicket {
             .secret
             .spend(&input.secret, now)
             .map_err(|why| ActionCallError::refused(why.to_string()))?;
-        let asked = asked(
+        let capability = if self.0.browser {
+            self.0.capability.clone()
+        } else {
+            tilo_user_identity::DeviceCapabilities {
+                foreign: !input.tilo_os,
+                ..self.0.capability.clone()
+            }
+        };
+        let mut asked = asked(
             self.0.user_public_key,
             device,
             &label,
             agent,
-            tilo_user_identity::DeviceCapabilities {
-                foreign: !input.tilo_os,
-                ..self.0.capability.clone()
-            },
+            capability,
             &self.0.ticket.secret,
             now,
         )
         .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        if self.0.browser {
+            let lifetime = tilo_user_identity::CertificationPolicy::browser().lifetime_ns;
+            asked.cert.expires_at_ns = Some(asked.cert.issued_at_ns.saturating_add(lifetime));
+        }
         let invocation = request.invocation;
         let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
         let receipt = accepted.receipt();
@@ -261,7 +327,7 @@ impl ServedTicket {
 /// `tilo device add` prints now. A call goes to the ticket whose secret it brings, and is followed
 /// there.
 #[derive(Clone, Default)]
-pub struct ServedTickets(Arc<Mutex<Vec<ServedTicket>>>);
+pub(crate) struct ServedTickets(Arc<Mutex<Vec<ServedTicket>>>);
 
 impl std::fmt::Debug for ServedTickets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -273,14 +339,14 @@ impl std::fmt::Debug for ServedTickets {
 
 impl ServedTickets {
     /// Serve `ticket` beside the others, dropping those that are done with.
-    pub fn serve(&self, ticket: ServedTicket) {
+    pub(crate) fn serve(&self, ticket: ServedTicket) {
         let mut served = self.0.lock_recover();
         served.retain(|kept| !kept.finished());
         served.push(ticket);
     }
 
     /// Stop serving `ticket`: another took its place.
-    pub fn withdraw(&self, ticket: &ServedTicket) {
+    pub(crate) fn withdraw(&self, ticket: &ServedTicket) {
         self.0
             .lock_recover()
             .retain(|kept| !Arc::ptr_eq(&kept.0, &ticket.0));
@@ -289,7 +355,7 @@ impl ServedTickets {
     /// Whether a ticket served here takes `request`: one took it already, or its secret is the
     /// one the call brings.
     #[must_use]
-    pub fn knows(&self, request: &InvokeRequest) -> bool {
+    pub(crate) fn knows(&self, request: &InvokeRequest) -> bool {
         let secret = secret_of(request);
         self.0
             .lock_recover()

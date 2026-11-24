@@ -7,8 +7,6 @@
 //! - [`auth`] — the mutual challenge/response handshake messages and their
 //!   signing / verification;
 //! - [`transport`] — the link ALPNs and the server's own operation messages;
-//! - [`certify`] — server-mediated issuance of a `DeviceCert` to a device
-//!   that holds only its own key;
 //! - [`live`] — the ephemeral presence and preview frames of the live session;
 //! - [`web`] — the HTTPS routes a page asks a host before it holds a session,
 //!   and the live grant;
@@ -34,7 +32,6 @@
 #![deny(rust_2018_idioms)]
 
 pub mod auth;
-pub mod certify;
 pub mod config;
 pub mod devices;
 pub mod directory;

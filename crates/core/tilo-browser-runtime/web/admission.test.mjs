@@ -441,9 +441,9 @@ test('a guest ticket is redeemed where the web host says, and a pairing link pai
     {peer: {admission: 'ticket'}});
   assert.deepEqual(ticket.calls, [['redeemTicket', {origin: target.host, workspace: target.workspace, ticket: 't1', tickets}]]);
   const person = 'ab'.repeat(32);
-  const invite = '0f'.repeat(16);
+  const login = `tilo1${'0f'.repeat(40)}`;
   const pair = entries();
-  assert.deepEqual(await admit({scope: target, secrets: {pair: `${person}${invite}`}, runtime: rules(['pair']).runtime, deps: pair.deps}),
+  assert.deepEqual(await admit({scope: target, secrets: {pair: `${person}${login}`}, runtime: rules(['pair']).runtime, deps: pair.deps}),
     {peer: {admission: 'paired'}});
-  assert.deepEqual(pair.calls, [['pairDevice', {origin: target.host, workspace: target.workspace, userPublicKey: person, invite, listed: null}]]);
+  assert.deepEqual(pair.calls, [['pairDevice', {origin: target.host, workspace: target.workspace, userPublicKey: person, ticket: login, listed: null}]]);
 });

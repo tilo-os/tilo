@@ -2,12 +2,13 @@
  * Pairing a person's new device, the parts both pages share.
  *
  * The device that has the person (holds their root) makes a pairing link:
- * the workspace link with `pair=<user public key><invite>`, 64 + 32 hex.
- * The invite is random, works once and for `INVITE_TTL_MS`; only the page
- * that made it offers to approve a request naming it, so the person is
- * always asked on the device that sent the link (`openInvites`,
- * `forInvites`). A 64-hex `pair` names no invite: any of the person's
- * devices may answer it.
+ * the workspace link with `pair=<user public key><ticket>`, 64 hex and then
+ * a login ticket (`tilo1…`) its page asked its host for. The ticket works
+ * once and for `LINK_TTL_MS`; only the page that showed it approves the
+ * device that logs in with it, so the person is always asked on the device
+ * that sent the link. A 64-hex `pair` names no ticket: the new device asks
+ * to be signed in, and any of the person's devices that holds their root
+ * may sign it in.
  *
  * The new device reads the link (`parsePairSecret`) and, before it asks any
  * holder to let it in, says whose device it would become (`pairingWhose`) and
@@ -19,10 +20,8 @@
  * and wait; a refusal is said in plain words (`pairingFailure`).
  */
 
-import {hex} from './hex.mjs';
-
-/** How long a pairing link works. */
-export const INVITE_TTL_MS = 10 * 60 * 1000;
+/** How long a pairing link works: as long as its ticket (`TICKET_LIFETIME_NS`). */
+export const LINK_TTL_MS = 10 * 60 * 1000;
 /** Said on the new device when its link was answered before: a link works once. */
 export const PAIRING_USED = 'This link was used already. Make a new one on your other device.';
 /** Said on the new device when none of the person's devices answered while
@@ -154,7 +153,7 @@ export const PAIRING_WAIT = Object.freeze({
 });
 
 /** What a tab its person signed in with their agent says while its
- * pairing goes through (`ownPairing`): nobody is asked, so it names no code
+ * pairing goes through (`signInAs`, entry-page.mjs): nobody is asked, so it names no code
  * and no device to approve on. */
 export const PAIRING_SIGNING_IN = 'Signing you in…';
 
@@ -164,93 +163,22 @@ export const PAIRING_SIGNING_IN = 'Signing you in…';
  * what gets it approved. */
 export const pairingStatus = code => `Pairing code ${code}. This tab is a new device of yours and waits for your approval. On a device where you are signed in, approve ${code} where it asks. If nothing asks, choose “Pair a new device” there on your own card (your picture, at the top right) or in search, and open its link in this tab.`;
 
-/** A new invite id: 16 random bytes as 32 hex characters. */
-export function newInvite(random = bytes => globalThis.crypto.getRandomValues(bytes)) {
-  return hex(random(new Uint8Array(16)));
-}
-
-/** The `pair` secret of a link: the person, then the invite if any. */
-export const pairSecret = (userPublicKey, invite = null) => `${userPublicKey}${invite ?? ''}`;
-
-/** Where a tab keeps the pairing it opens for itself (`askOwnPairing`). */
-const OWN_PAIRING = 'tilo-own-pairing';
-
 /**
- * Kept by a tab about to open a pairing link it made itself: the person
- * signed in here with their agent, whose device claimed this tab's sign-in
- * code and named the person and the invite (`pair`, its secret). The person
- * asked for this pairing on this very page a moment ago, so the page it
- * loads asks them nothing about whose device this becomes
- * (`ownPairing`). It is kept for this tab alone (`sessionStorage`), which
- * no link and no other page writes.
+ * The six digits both screens of a sign-in show for the tab whose device key is `device` (hex):
+ * the person compares them before their page signs that tab in.
  */
-export function askOwnPairing(userPublicKey, invite, storage = globalThis.sessionStorage) {
-  try {
-    storage?.setItem(OWN_PAIRING, pairSecret(userPublicKey, invite));
-  } catch {
-    // Not kept: the page asks whose device this becomes, as for any link.
-  }
+export function deviceCodeOf(device) {
+  return String(Number.parseInt(String(device ?? '').slice(0, 8), 16) % 1_000_000).padStart(6, '0');
 }
 
-/**
- * Whether the pairing link this page opened, for `userPublicKey` with
- * `invite`, is the one this tab asked for itself (`askOwnPairing`), and not
- * a link someone handed its reader. Read once: what was kept is gone after,
- * so a later link, even one naming the same person, is asked about again.
- */
-export function ownPairing(userPublicKey, invite, storage = globalThis.sessionStorage) {
-  let kept = null;
-  try {
-    kept = storage?.getItem(OWN_PAIRING) ?? null;
-    storage?.removeItem(OWN_PAIRING);
-  } catch {
-    return false;
-  }
-  return kept !== null && kept === pairSecret(userPublicKey, invite);
-}
+/** The `pair` secret of a link: the person, then the ticket if any. */
+export const pairSecret = (userPublicKey, ticket = null) => `${userPublicKey}${ticket ?? ''}`;
 
-/** `{userPublicKey, invite}` (invite `null` when none) of a link's `pair`
- * secret, or `null` when it is neither 64 nor 96 lowercase hex. */
+/** `{userPublicKey, ticket}` (ticket `null` when none) of a link's `pair`
+ * secret, or `null` when it is not 64 lowercase hex, then perhaps a ticket. */
 export function parsePairSecret(secret) {
-  const match = /^([0-9a-f]{64})([0-9a-f]{32})?$/.exec(secret ?? '');
-  return match ? {userPublicKey: match[1], invite: match[2] ?? null} : null;
-}
-
-/**
- * The invites this page made and has not spent, each open until `ttl`
- * after it was made. `open()` makes one; `spend(id)` closes it for good
- * (its request was answered); `prune()` drops the expired ones and
- * returns their ids.
- */
-export function openInvites({now = () => Date.now(), ttl = INVITE_TTL_MS, random} = {}) {
-  const open = new Map();
-  return {
-    open() {
-      const id = newInvite(random);
-      const invite = {id, expiresAt: now() + ttl};
-      open.set(id, invite);
-      return invite;
-    },
-    has: id => open.has(id) && open.get(id).expiresAt > now(),
-    spend: id => open.delete(id),
-    prune() {
-      const expired = [...open.values()].filter(invite => invite.expiresAt <= now()).map(invite => invite.id);
-      for (const id of expired) open.delete(id);
-      return expired;
-    },
-    get size() { return open.size; },
-  };
-}
-
-/** The waiting requests (`PairingHost.pending`) that answer one of `invites`:
- * the first per invite, since an invite admits one device. */
-export function forInvites(pending, invites) {
-  const seen = new Set();
-  return pending.filter(request => {
-    if (!request.invite || !invites.has(request.invite) || seen.has(request.invite)) return false;
-    seen.add(request.invite);
-    return true;
-  });
+  const match = /^([0-9a-f]{64})(tilo1[0-9a-f]+)?$/.exec(secret ?? '');
+  return match ? {userPublicKey: match[1], ticket: match[2] ?? null} : null;
 }
 
 /**

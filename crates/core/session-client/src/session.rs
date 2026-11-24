@@ -60,7 +60,6 @@ mod live_session;
 
 use agent_session::AgentSessionCompletion;
 use connect::Dial;
-pub use connect::{SessionMemberServer, member_server};
 use tilo_server_protocol::WorkspaceId;
 
 /// Longest wait between attempts at a link a host refused or lost: a host that
@@ -1557,10 +1556,6 @@ impl Task {
             }
             Command::Client(Cmd::AgentSession(label, done)) => {
                 self.session_as_agent(label, done);
-                true
-            }
-            Command::Client(Cmd::AskMember(approval, done)) => {
-                self.ask_member(approval, done);
                 true
             }
             Command::Client(Cmd::Enter(entering, done)) => {
@@ -4037,6 +4032,180 @@ pub async fn ask_action(
         .await
         .map_err(|_| tilo_server_protocol::refusal::Refusal::NotReady)?;
     Ok(answer)
+}
+
+/// How long the host holds one ask about a ticket call before it answers with how it stands.
+const TICKET_WAIT_MS: u32 = 20_000;
+
+/// Call one of `tilo.device`'s ticket actions, `action` with `argument`, on the host `link`
+/// reaches (`host`, its device key), in the scope a device with no certificate is admitted to
+/// ([`tilo_device_identity::login::SCOPE`]), as the key `signer` holds (`device`): a tab that is
+/// signing in, or logging in with a ticket, holds no certificate there yet. Answers the action's
+/// value once it settled, or the host's refusal in its own words. A call the host takes time over,
+/// a certify the person still decides, is followed until `follow_for` passes.
+///
+/// # Errors
+///
+/// The device could not sign the call, the link carried no answer, or the call did not settle in
+/// time.
+pub async fn ask_ticket(
+    link: &tilo_server_client::link::Link,
+    signer: Arc<dyn tilo_server_client::DeviceSigner>,
+    device: [u8; 32],
+    host: [u8; 32],
+    action: &str,
+    argument: serde_json::Map<String, serde_json::Value>,
+    follow_for: std::time::Duration,
+) -> Result<Result<serde_json::Value, String>, tilo_server_protocol::refusal::Refusal> {
+    use tilo_actions::remote::{
+        InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+        RemoteActionTarget,
+    };
+    use tilo_device_identity::login::{PROVIDER, RESOURCE, SCOPE};
+    use tilo_server_protocol::refusal::Refusal;
+    let invocation = tilo_actions::InvocationId::new();
+    let mut message = RemoteActionMessage::Invoke(InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, action),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: Some(TICKET_WAIT_MS),
+        appearance: None,
+        signed: None,
+    });
+    let until = tilo_clock::now()
+        .checked_add(follow_for)
+        .unwrap_or_else(tilo_clock::now);
+    loop {
+        let frame = ask_action(link, Arc::clone(&signer), device, SCOPE, host, message).await?;
+        let answer = RemoteActionFrame::decode(&frame)
+            .map_err(|error| Refusal::Invalid(format!("the host's answer: {error}")))?
+            .message;
+        let status = match answer {
+            RemoteActionMessage::Receipt(receipt) => receipt.status,
+            RemoteActionMessage::Update {
+                state: Some(state), ..
+            } => state.receipt().status,
+            RemoteActionMessage::Update { state: None, .. } => {
+                return Err(Refusal::Other("the host forgot the ticket call".to_owned()));
+            }
+            _ => return Err(Refusal::Invalid("the host answered no receipt".to_owned())),
+        };
+        match status {
+            ReceiptStatus::Completed { output } => {
+                return Ok(Ok(output.value.unwrap_or(serde_json::Value::Null)));
+            }
+            ReceiptStatus::Failed { error } => return Ok(Err(error.message)),
+            ReceiptStatus::Rejected { error } => return Ok(Err(error.to_string())),
+            ReceiptStatus::Cancelled { message } => {
+                return Ok(Err(
+                    message.unwrap_or_else(|| "the call was stopped".to_owned())
+                ));
+            }
+            ReceiptStatus::Accepted if tilo_clock::now() < until => {
+                message = RemoteActionMessage::Observe {
+                    correlation: 0,
+                    invocation,
+                    wait_ms: Some(TICKET_WAIT_MS),
+                    seen: None,
+                };
+            }
+            ReceiptStatus::Accepted => {
+                return Err(Refusal::Other(
+                    "the ticket call did not settle in time".to_owned(),
+                ));
+            }
+        }
+    }
+}
+
+/// The one link a device that holds no session with a host keeps to call its ticket actions on
+/// ([`ask_ticket`]): every call goes over it, so a page that asks every few seconds (who waits to
+/// be signed in) makes one link, not one each. A browser holds a socket for every WebTransport
+/// session a page makes, and `WebKit` holds it after the session closed for as long as its
+/// network process lives. A link that dropped is dialled again on the next call.
+pub struct TicketLink {
+    dialer: tilo_server_client::link::Dialer,
+    link: tokio::sync::Mutex<Option<tilo_server_client::link::Link>>,
+}
+
+impl TicketLink {
+    /// Keep a link to the host `host` names, dialled on the first call.
+    #[must_use]
+    pub fn new(host: tilo_server_client::ServerAddress) -> Self {
+        Self {
+            dialer: tilo_server_client::link::Dialer::new(host, None),
+            link: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// [`ask_ticket`] over the link kept here, dialling it first when there is none.
+    ///
+    /// # Errors
+    ///
+    /// As [`ask_ticket`], and the host not reached.
+    pub async fn ask(
+        &self,
+        signer: Arc<dyn tilo_server_client::DeviceSigner>,
+        device: [u8; 32],
+        host: [u8; 32],
+        action: &str,
+        argument: serde_json::Map<String, serde_json::Value>,
+        follow_for: std::time::Duration,
+    ) -> Result<Result<serde_json::Value, String>, tilo_server_protocol::refusal::Refusal> {
+        let mut again = true;
+        loop {
+            let link = {
+                let mut kept = self.link.lock().await;
+                if let Some(link) = kept.as_ref() {
+                    link.clone()
+                } else {
+                    let link = self
+                        .dialer
+                        .link(tilo_server_client::link::Purpose::Actions)
+                        .await
+                        .map_err(|error| {
+                            tilo_server_protocol::refusal::Refusal::Other(error.to_string())
+                        })?;
+                    *kept = Some(link.clone());
+                    link
+                }
+            };
+            let answer = ask_ticket(
+                &link,
+                Arc::clone(&signer),
+                device,
+                host,
+                action,
+                argument.clone(),
+                follow_for,
+            )
+            .await;
+            match answer {
+                // The kept link dropped: dial it again, once.
+                Err(tilo_server_protocol::refusal::Refusal::NotReady) if again => {
+                    again = false;
+                    link.close("");
+                    *self.link.lock().await = None;
+                }
+                answer => return answer,
+            }
+        }
+    }
+
+    /// Close the kept link.
+    pub async fn close(&self) {
+        if let Some(link) = self.link.lock().await.take() {
+            link.close("");
+        }
+        self.dialer.close().await;
+    }
 }
 
 #[cfg(test)]

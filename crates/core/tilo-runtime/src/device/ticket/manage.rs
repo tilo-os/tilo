@@ -17,7 +17,9 @@ use tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_device_identity::login::{APPROVE, PENDING, PROVIDER, RENAME, RESOURCE, REVOKE, UPDATE};
+use tilo_device_identity::login::{
+    APPROVE, PENDING, PROVIDER, RENAME, REPORTED, RESOURCE, REVOKE, UPDATE,
+};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
 
@@ -224,8 +226,9 @@ fn device_in(args: &Value) -> Result<Option<[u8; 32]>> {
 }
 
 /// What this device answers the person's other devices on its action service: the device
-/// actions that are its own to carry out. Their caller was admitted by the workspace's grants
-/// before a request reaches it.
+/// actions that are its own to carry out, and the calls about a ticket it serves, which the
+/// device's one set of tickets answers ([`tilo_peer_state::new_device::Tickets`]). Their caller
+/// was admitted by the workspace's grants before a request reaches it.
 pub(crate) struct OnThisDevice(pub(crate) Tickets);
 
 impl OnThisDevice {
@@ -248,15 +251,25 @@ impl ActionProvider for OnThisDevice {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(catalogue_of(&query, |action| {
-            matches!(action, UPDATE | PENDING | APPROVE)
+            matches!(action, UPDATE | PENDING | APPROVE | REPORTED)
         })))
     }
 
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // A ticket this device serves, shown to, approved by or reported to a device of the
+        // person's: the device's tickets answer it, as they do on a device without a daemon.
+        if tilo_peer_state::new_device::Tickets::answers_certified(&request) {
+            return self
+                .0
+                .0
+                .service
+                .tickets()
+                .certified_invoke(caller, &request);
+        }
         let invocation = request.invocation;
         if let Some(state) = self.0.0.calls.lock_recover().get(&invocation) {
             return Pending::ready(Ok(state.receipt()));
@@ -266,18 +279,6 @@ impl ActionProvider for OnThisDevice {
             InvokeArgument::Json(argument) => Value::Object(argument.clone()),
             _ => Value::Object(Map::new()),
         };
-        // An agent's key this daemon serves a sign-in ticket for, shown to and approved by a
-        // device that holds the person's root.
-        if address.resource == RESOURCE
-            && matches!(address.action.as_str(), PENDING | APPROVE)
-            && self.0.asks_for_agent_key(&args)
-        {
-            let update = match self.0.agent_key(&address.action, &args) {
-                Ok(value) => succeeded(invocation, value),
-                Err(error) => failed(invocation, &format!("{error:#}")),
-            };
-            return Pending::ready(Ok(self.keep(invocation, update)));
-        }
         if address.resource != RESOURCE || address.action != UPDATE {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
@@ -298,8 +299,11 @@ impl ActionProvider for OnThisDevice {
         Pending::ready(Ok(self.keep(invocation, update)))
     }
 
-    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.0.0.calls.lock_recover().get(id).cloned()
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        if let Some(state) = self.0.0.calls.lock_recover().get(id).cloned() {
+            return Some(state);
+        }
+        self.0.0.service.tickets().certified_observe(caller, id)
     }
 
     fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
@@ -417,6 +421,4 @@ impl Issuer for Fleet {
             .as_ref()
             .map(|service| service.copies().clone())
     }
-
-
 }

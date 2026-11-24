@@ -205,8 +205,6 @@ pub(crate) struct WebContext {
     /// [`Server::web_link`] answers, and what a test that stands in for a page dials.
     #[cfg(feature = "web")]
     pub(crate) link: Arc<std::sync::OnceLock<tilo_server_protocol::web::WebLink>>,
-    #[cfg(feature = "web")]
-    pub(crate) certification: crate::certification::CertificationProtocol,
     /// The device of the session beside this node, once named.
     pub(crate) node_session: Arc<std::sync::OnceLock<[u8; 32]>>,
     /// What this server was told at its start about Apple's push service,
@@ -227,14 +225,6 @@ impl Server {
     #[must_use]
     pub fn web_link(&self) -> Option<tilo_server_protocol::web::WebLink> {
         self.web.link.get().cloned()
-    }
-
-    /// This host's channel to the person's approving devices: where a
-    /// question about an action it runs for one of their agents is answered.
-    #[cfg(feature = "web")]
-    #[must_use]
-    pub fn confirmations(&self) -> crate::certification::CertificationProtocol {
-        self.web.certification.clone()
     }
 
     /// The stand-in certificate and key this host keeps for `user`, when it
@@ -645,27 +635,26 @@ impl Server {
         let mut live_origin = Some(crate::web::live::LiveOrigin::start(handler.clone()));
         // A server enrolled into its person's identity: a host of theirs alone.
         let enrolled_server = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
-        let certification = crate::certification::CertificationProtocol::new(
-            live.clone(),
-            Some(workspaces.clone()),
-        );
+        // The pages this host serves are served their tickets by the device's one set of
+        // tickets, which keeps each device a page's ticket adds in its person's record here.
         if let Some(governed) = &governed {
-            certification.keep_issued_in(governed.clone());
+            governed.action_service().tickets().serve_pages(Arc::new(
+                crate::page_tickets::PageTickets {
+                    identity: live.clone(),
+                    endpoint: endpoint.clone(),
+                    records: Some(governed.clone()),
+                },
+            ));
         }
         let web = Box::new(WebContext {
             server: handler.clone(),
             #[cfg(feature = "web")]
             link: Arc::default(),
-            #[cfg(feature = "web")]
-            certification: certification.clone(),
             node_session: Arc::default(),
             #[cfg(feature = "agents")]
             closed_apps: Arc::default(),
         });
-        let protocols: Protocols = vec![(
-            crate::certify::CERTIFY_ALPN.to_vec(),
-            Box::new(certification) as Box<dyn DynProtocolHandler>,
-        )];
+        let protocols: Protocols = Vec::new();
         #[cfg(feature = "web")]
         let protocols = {
             let mut protocols = protocols;

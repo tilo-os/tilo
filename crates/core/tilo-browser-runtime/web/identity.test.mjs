@@ -163,19 +163,28 @@ test('a node is asked what it runs, and only a session its own key vouches for i
   assert.equal(asked.requests[0].init.headers['x-tilo-install-token'], 't');
 });
 
-test('a page asks about the browsers waiting to sign in, and answers only those, never a device pairing', async () => {
-  const root = {userPublicKey: 'ab'.repeat(32), signed: [], async sign() { return new Uint8Array(64); }};
-  const requests = [
-    {digest: 'aa', label: 'Laptop', signIn: false, capability: null},
-    {digest: 'bb', label: 'Firefox on Linux', signIn: true, capability: 'a browser of yours, for 30 days'},
-  ];
-  const answers = [];
+test('a page lists the tabs waiting to sign in as its person, and signs in the one it is told to', async () => {
+  const root = {userPublicKey: 'ab'.repeat(32)};
+  const cert = '{"device_public_key":[221],"issued_at_ns":1792023733547123457}';
+  const asked = [];
   const host = {
-    pending: async signer => { assert.equal(signer, root); return JSON.stringify(requests); },
-    answer: async (signer, digest, approved) => { assert.equal(signer, root); answers.push([digest, approved]); return null; },
+    runtime: {async signInCertificate(signer, device, label) { asked.push(['sign', signer, device, label]); return cert; }},
+    async act(action, body, signer) {
+      assert.equal(signer, root);
+      asked.push([action, body]);
+      return action === 'pending'
+        ? {waiting: [{secret: 's1', label: 'Firefox on Linux', device: 'dd'.repeat(32), capability: 'a browser of yours'}]}
+        : null;
+    },
   };
-  assert.deepEqual(await signInsWaiting(host, root), [requests[1]],
-    'a device pairing is the person’s own Tilo’s to ask about, not this page’s');
-  await answerSignIn(host, root, 'bb', true);
-  assert.deepEqual(answers, [['bb', true]]);
+  const waiting = await signInsWaiting(host, root);
+  assert.deepEqual(waiting, [{digest: 's1', label: 'Firefox on Linux', device: 'dd'.repeat(32), capability: 'a browser of yours', signIn: true}]);
+  assert.equal(await answerSignIn(host, root, waiting[0], false), null, 'turned away, nothing is signed');
+  assert.deepEqual(asked, [['pending', {user: root.userPublicKey}]]);
+  assert.equal(await answerSignIn(host, root, waiting[0], true), cert);
+  assert.deepEqual(asked.slice(1, 2), [['sign', root, 'dd'.repeat(32), 'Firefox on Linux']]);
+  // The certificate goes byte for byte: its nanoseconds are more than a JS number holds.
+  assert.equal(asked[2][0], 'approve');
+  assert.ok(asked[2][1].includes(`"cert":${cert}`), asked[2][1]);
+  assert.deepEqual(JSON.parse(asked[2][1]).secret, 's1');
 });

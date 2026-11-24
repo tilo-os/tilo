@@ -14,14 +14,15 @@ import {idbStorage, openDeviceKey} from './device-key.mjs';
 
 /**
  * Connect this page to relay workspace `workspace` at `origin` as a device of the
- * workspace's user root `userPublicKey` (hex). `onPairingCode(code)` is called
- * while the host waits for an approver; a page with the certificate from an
- * earlier visit skips that. Resolves once the session started (observe
+ * workspace's user root `userPublicKey` (hex). `onSignIn(ticket)` hears the
+ * sign-in ticket the root signs this page in with, and `onPairingCode(code)`
+ * the code shown while it waits; a page with the certificate from an earlier
+ * visit skips that. Resolves once the session started (observe
  * `getSnapshot().phase`, or `whenReady()`).
  */
 export async function connectServerPeer({
   origin, userPublicKey, workspace, label = 'Browser', profile = `tilo-server:${workspace}`, device = 'server',
-  displayName = '', onPairingCode, onStatus, signal, fetch: fetcher, live = true,
+  displayName = '', onPairingCode, onSignIn, onStatus, signal, fetch: fetcher, live = true,
 }) {
   if (!origin || !userPublicKey || !workspace) throw new TypeError('origin, userPublicKey and workspace are required');
   signal?.throwIfAborted();
@@ -33,7 +34,7 @@ export async function connectServerPeer({
     // The runtime, with the peer's code, and the profile's storage come
     // through host.mjs, which loads them once for this page.
     origin, userPublicKey, workspace, label, profile, device, displayName, deviceKey, desktop: host,
-    onPairingCode, onStatus, signal, fetch: fetcher, live,
+    onPairingCode, onSignIn, onStatus, signal, fetch: fetcher, live,
   });
   return Object.create(peer, {
     workspace: {value: workspace, enumerable: true},

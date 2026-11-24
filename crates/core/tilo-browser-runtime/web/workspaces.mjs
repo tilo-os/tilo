@@ -927,7 +927,7 @@ export async function pairViaHost({
   agree, findProfile = fetchProfile, ofSite = false, stopped = () => false, ...connectOptions
 }) {
   if (!/^[0-9a-f]{64}$/.test(userPublicKey ?? '')) throw new HostAdmissionError('invalid', 'This pairing link names no person');
-  if (connectOptions.invite != null && !/^[0-9a-f]{32}$/.test(connectOptions.invite)) {
+  if (connectOptions.ticket != null && !/^tilo1[0-9a-f]+$/.test(connectOptions.ticket)) {
     throw new HostAdmissionError('invalid', 'This pairing link is damaged');
   }
   if (holds && holds === userPublicKey) throw new HostAdmissionError('same-person', PAIRING_SAME_PERSON);

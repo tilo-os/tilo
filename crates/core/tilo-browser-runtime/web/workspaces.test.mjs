@@ -6,6 +6,9 @@ import {HOST_CHANGED} from './peer.mjs';
 import {PAIRING_SAME_PERSON} from './pairing.mjs';
 import {publicListings, unmarkOwnPairing} from './workspaces.mjs';
 
+/** A pairing link's ticket, as a page shows it. */
+const TICKET = `tilo1${'ab'.repeat(40)}`;
+
 const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(key), userPublicKey: key.toString(16).padStart(2, '0').repeat(32), sign: async () => new Uint8Array(64)});
 
 const commons = {name: 'Commons', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/'};
@@ -568,13 +571,13 @@ test('a paired device is kept as its person and reconnects as them, never as a p
   const {calls, options, store, knock} = harness();
   const person = '33'.repeat(32);
   const codes = [];
-  await pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, invite: '0f'.repeat(16), listed: commons,
+  await pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, ticket: TICKET, listed: commons,
     displayName: 'Ada', memberships: options.memberships, onPairingCode: code => codes.push(code),
     findProfile: async () => null, agree: async () => true,
     pair: async pairing => { calls.connected.push(pairing); knock(pairing); return {workspace: 'WORKSPACE'}; }});
   const paired = calls.connected[0];
   assert.equal(paired.userPublicKey, person);
-  assert.equal(paired.invite, '0f'.repeat(16), 'the request answers the link\u2019s invite');
+  assert.equal(paired.ticket, TICKET, 'the device logs in with the link\u2019s ticket');
   assert.equal(paired.identity, undefined, 'the root stays on the device that approves');
   assert.equal(paired.profile, `tilo-identity:${person}@workspaces.example`);
   assert.equal(typeof paired.onPairingCode, 'function');
@@ -596,7 +599,7 @@ test('a browser that becomes another person here forgets the workspaces it enter
   const {options, store} = harness({membership: {origin: 'https://workspaces.example', workspace: 'theirs', userPublicKey: '11'.repeat(32)}});
   store.set('tilo-entered-workspaces', JSON.stringify([{origin: 'https://workspaces.example', workspace: 'theirs', hostDevice: 'ab'.repeat(32)}]));
   const forgotten = [];
-  await pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, invite: '0f'.repeat(16), listed: commons,
+  await pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, ticket: TICKET, listed: commons,
     memberships: options.memberships, findProfile: async () => null, agree: async () => true,
     runtime: {forgetEnteredAt: (stored, origin) => {
       forgotten.push(origin);
@@ -613,7 +616,7 @@ test('a pairing link that names no person is refused before anything is asked', 
   const {calls, options} = harness();
   await assert.rejects(pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: 'nobody', pair: options.connect,
     memberships: options.memberships}), {code: 'invalid'});
-  await assert.rejects(pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '33'.repeat(32), invite: 'short',
+  await assert.rejects(pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '33'.repeat(32), ticket: 'short',
     pair: options.connect, memberships: options.memberships}), {code: 'invalid'});
   assert.equal(calls.connected.length, 0);
 });
@@ -1004,7 +1007,7 @@ test('a browser is not paired to the person it already is: the link is refused i
   const joined = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person.userPublicKey};
   const {calls, options, store} = harness({person, membership: joined});
   const before = store.get(KEY);
-  const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person.userPublicKey, invite: '0f'.repeat(16), listed: commons,
+  const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person.userPublicKey, ticket: TICKET, listed: commons,
     memberships: options.memberships, onPairingCode: () => assert.fail('no code is shown: no host was asked'),
     findProfile: async () => null,
     pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }};
@@ -1072,7 +1075,7 @@ test('a device says whose it becomes before any host is asked to let it in, and 
   const person = '33'.repeat(32);
   const asked = [];
   const said = [];
-  const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, invite: '0f'.repeat(16), listed: commons,
+  const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, ticket: TICKET, listed: commons,
     memberships: options.memberships, onPairingCode: () => {}, ofSite: true,
     fetch: profileHost(asked, key => ({version: 1, user_public_key: key, display_name: 'Ada Lovelace'})),
     pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }};
@@ -1134,7 +1137,7 @@ test('a device that stopped while it waited keeps nothing, though its request wa
   const {options, store} = harness();
   let stopped = false;
   let letGo = 0;
-  const refused = await pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '33'.repeat(32), invite: '0f'.repeat(16),
+  const refused = await pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '33'.repeat(32), ticket: TICKET,
     listed: commons, memberships: options.memberships, findProfile: async () => null, agree: async () => true, stopped: () => stopped,
     onPairingCode: () => {},
     // The person stops while the other device decides, and it approves all the same.

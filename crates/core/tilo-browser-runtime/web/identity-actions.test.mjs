@@ -4,7 +4,8 @@ import {setupOrigin,
   ACTION_GAP_MS, ASK_AFTER_ACTIONS, CONNECT_AGENT, createIdentityActions, LINKED_ID, NAME, PAIR, PHOTO,
   RESET_PHOTO, REVOKE_DEVICE, syncProfile,
 } from './identity-actions.mjs';
-import {openInvites} from './pairing.mjs';
+import {deviceCodeOf} from './pairing.mjs';
+import {deviceLinks} from './identity.mjs';
 import {IdentityError} from './identity.mjs';
 import {fakeIdentity} from './testing/fake-identity.mjs';
 
@@ -253,34 +254,47 @@ test('a device takes the name its person keeps on their hosts, and a root holder
   assert.equal(published.length, 2, 'a name nobody chose is not published');
 });
 
-const INVITE_A = '0a'.repeat(16);
-const INVITE_B = '0b'.repeat(16);
+/** A login ticket's text, as the host mints it for pairing link `n`. */
+const ticketOf = n => `tilo1${String(n).padStart(2, '0').repeat(40)}`;
+/** What the host asks about the browser that logged in with a link's ticket: its certificate,
+ * unsigned, with times a JS number does not hold. */
+const askedBy = (device, label = 'Safari on iPhone') =>
+  `{"user_public_key":[1],"device_public_key":[${Array(32).fill(Number.parseInt(device.slice(0, 2), 16))}],"label":${JSON.stringify(label)},"agent":"","ticket":[2],"cert":{"issued_at_ns":1792023733547123457},"digest":[3]}`;
 
-/** Pairing wired to fakes: the host's requests (`host.pending`), its
- * answers, the sheets and asks shown, and a clock and poll to drive. */
-async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
+/** Pairing wired to a fake host's ticket actions (`deviceLinks`): the tickets it minted, the
+ * browser that logged in with each (`host.asked`, by ticket id), its answers, the sheets and asks
+ * shown, and a clock and poll to drive. */
+async function pairingFixture({workspace = 'WORKSPACE'} = {}) {
   const identity = fakeIdentity();
   const mount = fakeMount();
-  const host = {pending: [], answers: [], fail: null};
+  const host = {minted: [], asked: {}, answers: [], fail: null,
+    async act(action, body, root) {
+      assert.equal(root, identity, 'the page calls as its person');
+      if (action === 'issue') {
+        host.minted.push(body);
+        const n = host.minted.length;
+        return {id: `id${n}`, ticket: ticketOf(n)};
+      }
+      if (host.fail) throw host.fail;
+      host.answers.push(body);
+      return null;
+    },
+    async actText(action, body) {
+      assert.equal(action, 'follow');
+      const asked = host.asked[body.id];
+      return asked ? `{"asked":${asked},"steps":[]}` : '{"steps":[]}';
+    }};
+  const peer = {approveAsked: async (root, asked) => `{"cert":${asked.slice(asked.indexOf('"cert":') + 7, asked.indexOf('},"digest"') + 1)},"signature":[9]}`};
   const sheets = [];
   const asks = [];
   const errors = [];
   const fixture = {identity, mount, host, sheets, asks, errors, clock: 0, poll: null};
-  const ids = [...invites];
-  const random = bytes => bytes.fill(Number.parseInt(ids.shift().slice(0, 2), 16));
   fixture.actions = createIdentityActions({identity, onError: error => errors.push(error),
-    now: () => fixture.clock, invites: openInvites({now: () => fixture.clock, random}),
+    now: () => fixture.clock,
     copy: async () => {},
     every: run => { fixture.poll = run; return () => { fixture.poll = null; }; },
-    pairing: {
-      link: (invite, workspace = 'WORKSPACE') => `https://tilo.example/#/@workspaces.example/w/${workspace}?pair=${identity.userPublicKey}${invite}`,
-      pending: async () => host.pending,
-      answer: async (digest, approved) => {
-        if (host.fail) throw host.fail;
-        host.answers.push([digest, approved]);
-        return approved ? '{"cert":{}}' : null;
-      },
-    },
+    pairing: deviceLinks({host, peer, root: identity, workspace: () => workspace, origin: 'https://workspaces.example',
+      site: 'https://tilo.example', link: pair => `https://tilo.example/#/@workspaces.example/w/${workspace}?pair=${pair}`}),
     showPairLink: sheet => { const shown = {...sheet, closed: false, close() { shown.closed = true; }}; sheets.push(shown); return shown; },
     askPairing: (request, decide) => {
       const shown = {request, decide, closed: false, close() { shown.closed = true; }};
@@ -291,9 +305,6 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
   await fixture.actions.attach(mount);
   return fixture;
 }
-
-const request = (digest, invite, extra = {}) => ({digest, pairingCode: '123456', label: 'Safari on iPhone', device: 'ee'.repeat(32),
-  invite, requestedAtMs: 0, ...extra});
 
 test('the card offers the agent setup, and choosing it shows that setup again', async () => {
   const identity = fakeIdentity();
@@ -346,19 +357,21 @@ test('without a page that can show the setup, the card offers nothing it cannot 
   assert.ok(!mount.actions.includes(CONNECT_AGENT.id));
 });
 
-test('each pairing link names a fresh invite, shown on a sheet that can copy it, open for ten minutes', async () => {
+test('each pairing link carries a fresh login ticket, shown on a sheet that can copy it, open for ten minutes', async () => {
   const pairing = await pairingFixture();
   assert.ok(pairing.mount.actions.includes(PAIR.id));
   await pairing.actions.perform(PAIR.id);
   await pairing.actions.perform(PAIR.id);
+  const user = pairing.identity.userPublicKey;
   assert.deepEqual(pairing.sheets.map(sheet => sheet.link), [
-    `https://tilo.example/#/@workspaces.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
-    `https://tilo.example/#/@workspaces.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_B}`,
+    `https://tilo.example/#/@workspaces.example/w/WORKSPACE?pair=${user}${ticketOf(1)}`,
+    `https://tilo.example/#/@workspaces.example/w/WORKSPACE?pair=${user}${ticketOf(2)}`,
   ]);
+  assert.deepEqual(pairing.host.minted[0], {user, workspace: 'WORKSPACE', name: null, browser: true,
+    site: 'https://tilo.example', host_origin: 'https://workspaces.example'}, 'a browser logs in with it, into this workspace');
   assert.deepEqual(pairing.sheets.map(sheet => sheet.expiresAt), [10 * 60 * 1000, 10 * 60 * 1000]);
   assert.equal(await pairing.sheets[0].copy(), true);
   assert.deepEqual(pairing.mount.offers, [], 'no banner: the sheet is the pairing');
-
   pairing.clock = 10 * 60 * 1000;
   await pairing.tick();
   assert.ok(pairing.sheets.every(sheet => sheet.closed), 'an expired link’s sheet closes');
@@ -366,38 +379,50 @@ test('each pairing link names a fresh invite, shown on a sheet that can copy it,
   assert.deepEqual(pairing.errors, []);
 });
 
-test('only a request answering one of this page’s open invites is asked about, once per invite', async () => {
+test('with no workspace in front there is no link to make', async () => {
+  const pairing = await pairingFixture({workspace: null});
+  await pairing.actions.perform(PAIR.id);
+  assert.deepEqual(pairing.errors.map(error => error.code), ['no-workspace']);
+  assert.deepEqual(pairing.host.minted, []);
+  assert.deepEqual(pairing.sheets, []);
+});
+
+test('the browser that logged in with a link is asked about once, with the code both screens show', async () => {
   const pairing = await pairingFixture();
   await pairing.actions.perform(PAIR.id);
-  pairing.host.pending = [
-    request('d0', null), request('d1', '0c'.repeat(16)), request('d2', INVITE_A), request('d3', INVITE_A),
-  ];
+  await pairing.tick();
+  assert.equal(pairing.asks.length, 0, 'nobody logged in yet');
+  pairing.host.asked.id1 = askedBy('ee');
   await pairing.tick();
   await pairing.tick();
-  assert.deepEqual(pairing.asks.map(ask => ask.request.digest), ['d2'], 'the first device naming this page’s invite, once');
+  assert.equal(pairing.asks.length, 1, 'asked once');
+  const {request} = pairing.asks[0];
+  assert.equal(request.device, 'ee'.repeat(32));
+  assert.equal(request.label, 'Safari on iPhone');
+  assert.equal(request.pairingCode, deviceCodeOf('ee'.repeat(32)));
   assert.ok(pairing.sheets[0].closed, 'the ask takes the sheet’s place');
   assert.deepEqual(pairing.host.answers, [], 'nothing is answered without the person');
 });
 
-test('approving answers the request and spends its invite; a second device naming it is never asked about', async () => {
+test('approving hands the host the approval as signed, its times exact; the link is spent', async () => {
   const pairing = await pairingFixture();
   await pairing.actions.perform(PAIR.id);
-  pairing.host.pending = [request('d1', INVITE_A)];
+  pairing.host.asked.id1 = askedBy('ee');
   await pairing.tick();
   assert.deepEqual(await pairing.asks[0].decide(true), {approved: true, label: 'Safari on iPhone'});
-  assert.deepEqual(pairing.host.answers, [['d1', true]]);
-  pairing.host.pending = [request('d2', INVITE_A)];
+  assert.equal(pairing.host.answers.length, 1);
+  assert.equal(pairing.host.answers[0], '{"id":"id1","approved":{"cert":{"issued_at_ns":1792023733547123457},"signature":[9]}}');
   await pairing.tick();
   assert.equal(pairing.asks.length, 1, 'the link worked once');
   assert.equal(pairing.poll, null, 'no link is open any more');
   assert.deepEqual(pairing.errors, []);
 });
 
-test('declining answers no and spends the invite too; an answer the host did not take can be given again', async () => {
+test('declining answers no and spends the link too; an answer the host did not take can be given again', async () => {
   const pairing = await pairingFixture();
   await pairing.actions.perform(PAIR.id);
   await pairing.actions.perform(PAIR.id);
-  pairing.host.pending = [request('d1', INVITE_A), request('d2', INVITE_B)];
+  pairing.host.asked = {id1: askedBy('d1'), id2: askedBy('d2')};
   await pairing.tick();
   assert.equal(pairing.asks.length, 2);
   pairing.host.fail = new Error('offline');
@@ -405,7 +430,8 @@ test('declining answers no and spends the invite too; an answer the host did not
   pairing.host.fail = null;
   assert.deepEqual(await pairing.asks[0].decide(false), {approved: false, label: 'Safari on iPhone'});
   assert.deepEqual(await pairing.asks[1].decide(true), {approved: true, label: 'Safari on iPhone'});
-  assert.deepEqual(pairing.host.answers, [['d1', false], ['d2', true]]);
+  assert.deepEqual(pairing.host.answers[0], {id: 'id1', declined: 'Your other device declined.'});
+  assert.match(pairing.host.answers[1], /^\{"id":"id2","approved":/);
   await pairing.tick();
   assert.equal(pairing.asks.length, 2);
   assert.equal(pairing.poll, null);
@@ -414,7 +440,7 @@ test('declining answers no and spends the invite too; an answer the host did not
 test('an ask still open when its link expires closes', async () => {
   const pairing = await pairingFixture();
   await pairing.actions.perform(PAIR.id);
-  pairing.host.pending = [request('d1', INVITE_A)];
+  pairing.host.asked.id1 = askedBy('ee');
   await pairing.tick();
   pairing.clock = 11 * 60 * 1000;
   await pairing.tick();

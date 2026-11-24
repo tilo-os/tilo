@@ -29,11 +29,11 @@ import {hex} from './hex.mjs';
 import {memberText} from './json-text.mjs';
 import {changed as pageChanged} from './changes.mjs';
 import {AdmissionError} from './admission.mjs';
-import {idbStorage, openDeviceKey, rememberBrowserDevice} from './device-key.mjs';
+import {adoptDeviceKey, idbStorage, openDeviceKey, rememberBrowserDevice} from './device-key.mjs';
 import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {siteServer, STALE_SITE_SERVER, staleSiteServer, staleSiteServerReport} from './site-host.mjs';
-import {deviceLabel} from './pairing.mjs';
+import {deviceLabel, deviceCodeOf} from './pairing.mjs';
 
 export {
   browserIdentity, browserPerson, certifyDevice, currentIdentity, fetchProfile, fitDisplayName, IdentityError, installNode,
@@ -354,12 +354,13 @@ export function createLiveLayer(peer, runtime, workspace, {
  * @param options.store          `{get, put, delete}` for public peer state;
  *                               defaults to the profile's storage
  * @param options.displayName    the person's name for history and presence
- * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec);
+ * @param options.runtime        the wasm module (`ticketAction`, `WasmPeer`, live codec);
  *                               defaults to the page host's (`desktop`'s)
  * @param options.fetch          defaults to `globalThis.fetch`
  * @param options.desktop        `{loadRuntime, openProfileStorage}`; defaults to `host.mjs`
  * @param options.live           `false`: join no live session
  * @param options.onPairingCode  shown while an approver decides
+ * @param options.onSignIn       hears the sign-in ticket a device of the person's signs this one in with
  * @param options.identity       an unlocked root (`identity.mjs`): the
  *                               page certifies its own device with it, no
  *                               approver; `userPublicKey` defaults to its key,
@@ -409,7 +410,7 @@ export async function withDeviceKey(deviceKey, connecting, signal) {
 async function connect({
   origin, userPublicKey, label = deviceLabel(), workspace, deviceKey, store, runtime, identity, deviceCertificate,
   profile, device, displayName = '',
-  fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
+  fetch: fetcher, desktop, signal, onStatus, onPairingCode, onSignIn, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
   workspaceName, hostInfo: answered, entering,
 }) {
@@ -654,8 +655,8 @@ async function connect({
   async function certifyNow() {
     return identity
       ? await runtime.certifyWithRoot(identity, deviceKeyForWasm, label, JSON.stringify(host.hostCert))
-      : await runtime.certifyDevice(userPublicKey, label, null, deviceKeyForWasm, code => onPairingCode?.(code),
-        JSON.stringify(host.address));
+      : await ticketCertificate({runtime, post, userPublicKey, label, deviceKey: deviceKeyForWasm,
+        onPairingCode, onSignIn, signal});
   }
 
   async function certificate() {
@@ -1121,9 +1122,6 @@ async function connect({
     /** Issue an invitation to the workspace (`workspaces.rs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
-    /** This person's new devices waiting at the host, paired with the root
-     * the page holds over this session (`PairingHost`: `pending`, `answer`). */
-    pairing: () => peer.pairing(),
     /** The person's own workspace on this host, with this very device in it
      * (the shared device entry, `enterOwnWorkspace` in wasm): made the first
      * time under an id the host chooses, answered again after, another for
@@ -1385,32 +1383,86 @@ export async function openInvitation(origin, workspace, secret, {runtime} = {}) 
   return runtime.openInvitation(origin, workspace ?? '', secret);
 }
 
+/** How often a tab that waits for its ticket's answer looks again. */
+const TICKET_LOOK_MS = 1000;
+/** How long a ticket works, as the host serves it (`TICKET_LIFETIME_NS`). */
+const TICKET_WAIT_MS = 10 * 60_000;
+
+/**
+ * A certificate for the key `deviceKey` (as the wasm takes it) as a device of `userPublicKey`'s
+ * (hex), by a ticket the host `post` reaches serves, over the link the page reaches its host's
+ * actions on. With `ticket` (a pairing link's login ticket a page of theirs shows) the tab logs in
+ * with it, and that page approves. Without, it asks for a sign-in ticket naming them, which a page
+ * or device of theirs that holds their root signs in: `onSignIn(ticket)` hears the ticket and
+ * `onPairingCode(code)` the code both screens show. Resolves to `{cert, hostCert, label}` JSON
+ * text, as `connectPeer` takes it, with the certificates' signed times as they were signed.
+ */
+export async function ticketCertificate({
+  runtime, post, userPublicKey, label = deviceLabel(), deviceKey, ticket = null, onPairingCode, onSignIn, signal,
+  now = () => Date.now(), wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
+}) {
+  const act = async (action, body) => {
+    const reply = JSON.parse(await runtime.ticketAction(post, action, JSON.stringify(body), deviceKey));
+    if (typeof reply?.refused === 'string') {
+      throw Object.assign(new Error(reply.refused || 'the host refused this ticket'), {name: 'TicketError', code: 'refused'});
+    }
+    return {value: reply?.value ?? null, device: reply?.device ?? ''};
+  };
+  const certificate = (answer, asked) => {
+    const cert = JSON.parse(answer.certified);
+    return `{"cert":${answer.certified},"hostCert":${answer.hostCert},"label":${JSON.stringify(cert.device_label ?? asked)}}`;
+  };
+  if (ticket) {
+    // The page that showed the link answers, once its person said yes.
+    const {value} = await act('certify', {ticket, label, agent: label});
+    return certificate(value, label);
+  }
+  const {value: issued, device} = await act('issue', {direction: 'sign-in', user: userPublicKey, label});
+  onPairingCode?.(deviceCodeOf(device));
+  onSignIn?.(issued.ticket);
+  const until = now() + TICKET_WAIT_MS;
+  for (;;) {
+    if (signal?.aborted) throw signal.reason ?? new Error('the sign-in was stopped');
+    const {value: status} = await act('follow', {id: issued.id});
+    if (status?.certified) return certificate(status, label);
+    if (now() > until) {
+      throw Object.assign(new Error('No device of yours signed this one in in time.'), {name: 'TicketError', code: 'unanswered'});
+    }
+    await wait(TICKET_LOOK_MS);
+  }
+}
+
 /**
  * Become a new device of the person `userPublicKey` (hex) at the host at
- * `origin`, with no root on this page: the host relays the request, this
- * page shows `onPairingCode(code)`, and one of the person's devices that
- * holds their root approves it. Then, with `entry` (a workspace's entry, its
+ * `origin`, with no root on this page: with `ticket` (a pairing link's), it
+ * logs in with the ticket, which the page that showed the link approves;
+ * else it asks to be signed in, shows `onPairingCode(code)`, and one of the
+ * person's devices that holds their root signs it in. A tab their device
+ * signed in already (`signedIn`: `{certified, key: {profile, slot}}`, from
+ * its sign-in ticket) keeps the key it was signed in with, moved to the
+ * person's profile. Then, with `entry` (a workspace's entry, its
  * base URL), the device goes through it into that workspace as a device of
  * theirs; without, it connects to `workspace`. Takes `connectPeer`'s other options; the device key is
  * `device key`, else a free one of `profile` (default the person's profile for
  * that host). Resolves to the `CertifiedPeer`.
  */
 export async function pairDevice(options) {
-  const {origin, userPublicKey, label = deviceLabel(), entry, signal} = options;
+  const {origin, userPublicKey, label = deviceLabel(), entry, signal, signedIn} = options;
   if (!origin || !userPublicKey) throw new TypeError('origin and userPublicKey are required');
   const profile = options.profile ?? identityProfile({userPublicKey}, origin);
+  if (signedIn && !options.deviceKey) {
+    await adoptDeviceKey({from: signedIn.key.profile, slot: signedIn.key.slot, to: profile, storage: idbStorage()});
+  }
   // A caller's device key (`options.device key`, of `profile`) stays the
   // caller's to let go.
   const own = options.deviceKey ?? await openDeviceKey({profile, storage: idbStorage()});
   const pairing = async () => {
     const runtime = options.runtime ?? await pageRuntime(options.desktop);
     const deviceKeyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
-    const info = siteServer(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
-    if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
-    // The host names this device: the name asked for, or the next numbered one
-    // when another of the person's devices reads by it already.
-    const certified = await runtime.certifyDevice(userPublicKey, label, options.invite ?? null, deviceKeyForWasm,
-      code => options.onPairingCode?.(code), JSON.stringify(info.address));
+    const post = httpsPost(origin, options.fetch);
+    // The person's root names this device: the name asked for.
+    const certified = signedIn?.certified ?? await ticketCertificate({runtime, post, userPublicKey, label,
+      deviceKey: deviceKeyForWasm, ticket: options.ticket ?? null, onPairingCode: options.onPairingCode, signal});
     const enrolled = JSON.parse(certified).label ?? label;
     const common = {...options, identity: undefined, label: enrolled, profile, deviceKey: own, runtime};
     if (!entry) return connect({...common, deviceCertificate: certified});

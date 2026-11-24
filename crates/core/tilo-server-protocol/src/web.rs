@@ -29,9 +29,9 @@
 //!
 //! A person a host does not know yet comes in on their device's session
 //! ([`crate::entering`]), through a workspace's entry or with an invitation,
-//! not on a route here. A device certifies itself, and a member's root
-//! answers their own device's request, over the host's certification ALPN
-//! (`crate::certify`).
+//! not on a route here. A device that holds no certificate asks for one with a
+//! ticket, over the link a page reaches the host's actions on
+//! (`tilo_device_identity::login`).
 
 use serde::{Deserialize, Serialize};
 
@@ -227,17 +227,6 @@ impl ServerInfo {
     }
 }
 
-/// Certification: each stream one conversation, as each connection on
-/// the certification ALPN.
-pub const LINK_CERTIFY_PATH: &str = "/peer/v1/link/certify";
-/// The subprotocol a device offers at [`LINK_CERTIFY_PATH`] to keep the
-/// session for every conversation it has with the certification, each on a
-/// stream of its own, until the device closes it. A browser gives every
-/// WebTransport session a socket of its own, and `WebKit` keeps that socket
-/// after the session closed for as long as its network process lives: a page
-/// that asks every few seconds asks on one session. A server that answers
-/// without the subprotocol serves one conversation there and closes.
-pub const LINK_CERTIFY_KEPT: &str = "tilo-certify-kept-1";
 /// A workspace's live session: the first stream proves which device opened
 /// the session (the relay handshake, `crate::auth`), then the live session's own
 /// admission and `moq-lite` follow, as over iroh.

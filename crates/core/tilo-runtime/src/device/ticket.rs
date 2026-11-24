@@ -483,7 +483,10 @@ fn descriptor(
     }
     // Only the person's root certifies an agent's key, as it revokes one
     // ([`tilo_actions::ROOT_ONLY_TAG`]).
-    if matches!(action, CERTIFY_AGENT | ENROL_BOOT_KEY | RELEASE_HALF | ANSWER_SIGN_IN) {
+    if matches!(
+        action,
+        CERTIFY_AGENT | ENROL_BOOT_KEY | RELEASE_HALF | ANSWER_SIGN_IN
+    ) {
         descriptor
             .contract
             .tags
@@ -682,8 +685,6 @@ struct Inner {
     rollout: std::sync::Mutex<Option<tilo_server::rollout::ServerMachine>>,
     /// Where the person's devices are reached that no lookup finds.
     reach: std::sync::Mutex<HashMap<[u8; 32], iroh::EndpointAddr>>,
-    /// The agents' keys this daemon serves a sign-in ticket for, one per agent.
-    agent_keys: std::sync::Mutex<Vec<agent_key::AgentKey>>,
     /// Told whenever a device action that waited ended.
     ended: tokio::sync::Notify,
     runtime: tokio::runtime::Handle,
@@ -741,7 +742,6 @@ impl Tickets {
             update: std::sync::OnceLock::new(),
             rollout: std::sync::Mutex::new(None),
             reach: std::sync::Mutex::default(),
-            agent_keys: std::sync::Mutex::default(),
             ended: tokio::sync::Notify::new(),
             runtime: tokio::runtime::Handle::current(),
             logged_in: tokio::sync::watch::Sender::new(None),
@@ -843,16 +843,15 @@ impl Tickets {
                 .map(|backup| json!({ "backup": hex::encode(backup) }))
                 .map_err(Into::into),
                 CERTIFY_AGENT => self.certify_agent(&args),
-                PERSONAL_DEVICES => super::signing::personal_devices(self.0.workspaces.as_ref())
+                PERSONAL_DEVICES => {
+                    super::signing::personal_devices(self.0.workspaces.as_ref()).map_err(Into::into)
+                }
+                ENROL_BOOT_KEY => super::signing::enrol_boot_key(self.0.workspaces.as_ref(), &args)
                     .map_err(Into::into),
-                ENROL_BOOT_KEY => super::signing::enrol_boot_key(
-                    self.0.workspaces.as_ref(),
-                    &args,
-                )
-                .map_err(Into::into),
                 RELEASE_HALF => super::signing::release_half(&args).map_err(Into::into),
-                ANSWER_SIGN_IN => super::signing::answer_sign_in(self.0.place.keys(), &args)
-                    .map_err(Into::into),
+                ANSWER_SIGN_IN => {
+                    super::signing::answer_sign_in(self.0.place.keys(), &args).map_err(Into::into)
+                }
                 _ => super::services::identity_step(&action, &args).map_err(Into::into),
             };
             let update = match answer {

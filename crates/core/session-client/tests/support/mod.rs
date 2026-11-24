@@ -24,19 +24,15 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use sha2::{Digest as _, Sha256};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
-use tilo_server::certify::{ApproverDecision, ApproverReply};
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
 use tilo_server::workspaces::PreAdmitRequest;
+use tilo_server_client::Carrier;
 use tilo_server_client::ServerAddress;
-use tilo_server_client::{Approver, Carrier};
 use tilo_server_protocol::workspaces::{JoinReply, PreAdmission, Role};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tilo_user_identity::{
-    CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
-    sign_device_cert,
-};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 pub const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
@@ -414,59 +410,6 @@ impl TestHost {
     pub fn over(&self, carrier: Carrier) -> ServerAddress {
         self.iroh().over(carrier)
     }
-}
-
-/// Approve the one pending certification request as `laptop` (a root
-/// holder), over the host's iroh certification ALPN.
-pub async fn approve_one(host: &TestHost, root: &SigningKey, laptop: &Device) -> String {
-    approve_one_over(&host.iroh(), root, laptop).await
-}
-
-/// [`approve_one`], with `laptop` reaching the host as `host` says.
-pub async fn approve_one_over(host: &ServerAddress, root: &SigningKey, laptop: &Device) -> String {
-    // The laptop approves over iroh, whichever way the new device came.
-    let host = match host.carrier() {
-        Carrier::WebTransport => host.clone().over(Carrier::Direct),
-        _ => host.clone(),
-    };
-    let endpoint = host.bind(None).await.unwrap();
-    let mut approver = Approver::connect(
-        &endpoint,
-        host.addr(),
-        laptop.cert.clone(),
-        &laptop.key,
-        &RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    let pending = loop {
-        if let Some(pending) = approver.list_pending().await.unwrap().pop() {
-            break pending;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no pending certification request"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    };
-    let cert = issue_device_cert(
-        &pending.request,
-        root,
-        &CertificationPolicy::browser(),
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    assert_eq!(
-        approver
-            .decide(pending.request_digest, ApproverDecision::Issue(cert))
-            .await
-            .unwrap(),
-        ApproverReply::Decided
-    );
-    approver.close();
-    pending.pairing_code
 }
 
 pub async fn wait_for<T, F, Fut>(what: &str, mut probe: F) -> T

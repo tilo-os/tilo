@@ -1,58 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  deviceLabel, forInvites, INVITE_TTL_MS, newInvite, openInvites, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_UNANSWERED,
+  deviceLabel, LINK_TTL_MS, PAIRING_CLOCK, deviceCodeOf, PAIRING_DECLINED, PAIRING_UNANSWERED,
   PAIRING_SAME_PERSON, PAIRING_USED, PAIRING_WAIT, pairingFailure, pairingStatus, pairSecret, parsePairSecret, whenRequested,
 } from './pairing.mjs';
 
 const USER = 'ab'.repeat(32);
 
-test('an invite is 16 random bytes, a new one each time', () => {
-  const invite = newInvite();
-  assert.match(invite, /^[0-9a-f]{32}$/);
-  assert.notEqual(newInvite(), invite);
-  assert.equal(newInvite(bytes => bytes.fill(0xff)), 'ff'.repeat(16));
-});
-
-test('a pair secret is the person then the invite, and reads back; 64 hex names no invite', () => {
-  const invite = '0f'.repeat(16);
-  assert.equal(pairSecret(USER, invite), `${USER}${invite}`);
+test('a pair secret is the person then the ticket, and reads back; 64 hex names no ticket', () => {
+  const ticket = `tilo1${'0f'.repeat(40)}`;
+  assert.equal(pairSecret(USER, ticket), `${USER}${ticket}`);
   assert.equal(pairSecret(USER), USER);
-  assert.deepEqual(parsePairSecret(`${USER}${invite}`), {userPublicKey: USER, invite});
-  assert.deepEqual(parsePairSecret(USER), {userPublicKey: USER, invite: null});
-  for (const damaged of [undefined, '', USER.slice(1), `${USER}0f`, `${USER}${invite}0`, USER.toUpperCase(), `${USER.slice(2)}zz`]) {
+  assert.deepEqual(parsePairSecret(`${USER}${ticket}`), {userPublicKey: USER, ticket});
+  assert.deepEqual(parsePairSecret(USER), {userPublicKey: USER, ticket: null});
+  for (const damaged of [undefined, '', USER.slice(1), `${USER}0f`, `${USER}tilo1`, `${USER}${ticket}Z`, USER.toUpperCase(), `${USER.slice(2)}zz`]) {
     assert.equal(parsePairSecret(damaged), null, `refused: ${damaged}`);
   }
 });
 
-test('an invite is open for ten minutes, until spent, and expired ones are pruned', () => {
-  let clock = 1000;
-  const invites = openInvites({now: () => clock});
-  const first = invites.open();
-  const second = invites.open();
-  assert.notEqual(first.id, second.id);
-  assert.equal(first.expiresAt, 1000 + INVITE_TTL_MS);
-  assert.equal(INVITE_TTL_MS, 10 * 60 * 1000);
-  assert.ok(invites.has(first.id));
-  invites.spend(first.id);
-  assert.ok(!invites.has(first.id), 'single use');
-  assert.equal(invites.size, 1);
-  clock += INVITE_TTL_MS;
-  assert.ok(!invites.has(second.id), 'expired');
-  assert.deepEqual(invites.prune(), [second.id]);
-  assert.equal(invites.size, 0);
-});
-
-test('only requests answering an open invite are this page’s, the first per invite', () => {
-  const invites = openInvites();
-  const mine = invites.open().id;
-  const pending = [
-    {digest: 'none', invite: null}, {digest: 'other', invite: 'cd'.repeat(16)},
-    {digest: 'first', invite: mine}, {digest: 'second', invite: mine},
-  ];
-  assert.deepEqual(forInvites(pending, invites).map(request => request.digest), ['first']);
-  invites.spend(mine);
-  assert.deepEqual(forInvites(pending, invites), []);
+test('both screens show six digits of the tab\u2019s key', () => {
+  assert.equal(deviceCodeOf('000f4240'.padEnd(64, '0')), '000000');
+  assert.equal(deviceCodeOf('00000001'.padEnd(64, '0')), '000001');
+  assert.equal(deviceCodeOf('ffffffff'.padEnd(64, 'f')), String(0xffffffff % 1_000_000));
 });
 
 test('a device is named by its browser and system, as people say them', () => {
@@ -131,7 +100,7 @@ test('a waiting device is told where it is approved and where “Pair a new devi
     then: 'This page goes on by itself once you approve.',
     otherwise: 'Nothing asking there? Its link was made more than 10 minutes ago, or its page was closed. On a device where you are signed in, choose “Pair a new device” on your own card (your picture, at the top right) or in search, and open the new link here.',
   });
-  assert.equal(INVITE_TTL_MS, 10 * 60 * 1000, 'the minutes the sentence names');
+  assert.equal(LINK_TTL_MS, 10 * 60 * 1000, 'the minutes the sentence names');
   assert.equal(pairingStatus('123456'), 'Pairing code 123456. This tab is a new device of yours and waits for your approval. On a device where you are signed in, approve 123456 where it asks. If nothing asks, choose “Pair a new device” there on your own card (your picture, at the top right) or in search, and open its link in this tab.');
 });
 
@@ -164,21 +133,3 @@ test('a device that stopped is told that nothing was paired', async () => {
   assert.match(pairing.PAIRING_STOPPED, /^Nothing was paired\./);
 });
 
-test('a pairing a tab asked for itself is known as its own once, and a link it did not ask for never is', async () => {
-  const {askOwnPairing, ownPairing} = await import('./pairing.mjs');
-  const kept = new Map();
-  const storage = {getItem: key => kept.get(key) ?? null, setItem: (key, value) => kept.set(key, value), removeItem: key => kept.delete(key)};
-  const invite = '0f'.repeat(16);
-  askOwnPairing(USER, invite, storage);
-  assert.equal(ownPairing(USER, invite, storage), true);
-  assert.equal(ownPairing(USER, invite, storage), false, 'read once');
-  askOwnPairing(USER, invite, storage);
-  assert.equal(ownPairing('cd'.repeat(32), invite, storage), false, 'another person');
-  askOwnPairing(USER, invite, storage);
-  assert.equal(ownPairing(USER, 'aa'.repeat(16), storage), false, 'another invite');
-  assert.equal(ownPairing(USER, invite, storage), false, 'and a mismatch spends it too');
-  assert.equal(ownPairing(USER, invite, null), false, 'no storage: nothing asked here');
-  const broken = {getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); }, removeItem: () => {}};
-  askOwnPairing(USER, invite, broken);
-  assert.equal(ownPairing(USER, invite, broken), false);
-});

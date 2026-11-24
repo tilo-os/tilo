@@ -5,7 +5,7 @@
 //! A ticket is one string: where this device is reached, and a one-use secret
 //! ([`tilo_device_identity::login`]). The new computer dials this device over its device action
 //! service and calls the ticket's certify action there; the service admits that call alone
-//! ([`SCOPE`]), and the person's root, held here, signs the computer's certificate. The person
+//! ([`SCOPE`](tilo_device_identity::login::SCOPE)), and the person's root, held here, signs the computer's certificate. The person
 //! asked for the ticket themselves, so the computer that comes with it is approved as it arrives.
 //!
 //! A ticket can name a role: a server, which gets an entry among the person's servers, or a
@@ -17,7 +17,8 @@
 //! the vault of the person's Servers workspace, sealed to the person's devices like every entry
 //! there, until the machine takes the plan, the plan goes, or the ticket runs out. A restarted
 //! issuer serves every such ticket it issued again ([`TicketServer::restore`]), as it does when a
-//! computer brings a secret nothing served here knows. Only the device a ticket names serves it:
+//! computer brings a secret nothing served here knows. Every ticket is served through the
+//! device's one [`Tickets`](tilo_peer_state::new_device::Tickets). Only the device a ticket names serves it:
 //! another device of the person's reads the entry and leaves it.
 //!
 //! What is the embedder's own (its endpoint and action service, how it signs, where its root and
@@ -32,18 +33,13 @@ use accounts::vault_items::VaultChange;
 use accounts::{SecretId, SecretItem, SecretItemKind};
 use collab_types::signer::DeviceSigner;
 use futures::future::BoxFuture;
-use tilo_actions::InvocationId;
-use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending,
-};
 use tilo_device_identity::login::{
     Approval, Approved, Approver, Asked, Declined, Entry, PLANNED_TICKET_LIFETIME_NS, Reached,
-    SCOPE, TICKET_LIFETIME_NS, Ticket,
+    TICKET_LIFETIME_NS, Ticket,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::ActionService;
-use tilo_peer_state::new_device::{ServedTicket, ServedTickets};
+use tilo_peer_state::new_device::ServedTicket;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, StatementSigner};
 
 use crate::workspaces::{Workspaces, person_workspace, servers};
@@ -58,9 +54,6 @@ const EXPIRES_FIELD: &str = "tilo.planned-machine.expires";
 const TICKET_TAG: &str = "planned-machine-ticket";
 /// What a kept ticket's entry id is derived under, from its plan's id.
 const ENTRY_DOMAIN: &[u8] = b"tilo-planned-machine-ticket-v1\0";
-/// How long after one look at the kept tickets a computer whose secret nothing here knows makes
-/// this device look again, so a guesser cannot make it read the vault on every call.
-const LOOK_AGAIN_NS: u64 = 5_000_000_000;
 
 /// What this device takes a certified computer in as, beside one of the person's devices.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,14 +152,11 @@ pub struct TicketServer(Arc<Inner>);
 
 struct Inner {
     issuer: Arc<dyn Issuer>,
-    served: ServedTickets,
     /// The ticket issued last, and whether it is a planned machine's: a newer ticket for a
     /// computer at hand replaces it unless it is.
     printed: Mutex<Option<(ServedTicket, bool)>>,
     /// Each planned machine's ticket served here, by its plan.
     planned: Mutex<HashMap<String, ServedTicket>>,
-    /// When this device last read the kept tickets, in nanoseconds.
-    looked: Mutex<u64>,
 }
 
 impl TicketServer {
@@ -174,10 +164,8 @@ impl TicketServer {
     pub fn new(issuer: Arc<dyn Issuer>) -> Self {
         Self(Arc::new(Inner {
             issuer,
-            served: ServedTickets::default(),
             printed: Mutex::default(),
             planned: Mutex::default(),
-            looked: Mutex::default(),
         }))
     }
 
@@ -231,7 +219,7 @@ impl TicketServer {
             // Kept before it is served, so the ticket never lives only in this process.
             keep(&workspaces, (&plan, &label), &ticket, expires_at_ns).await?;
             *self.0.printed.lock_recover() = Some((served.clone(), true));
-            self.serve_planned(plan, served);
+            self.serve_planned(&actions, plan, served);
         } else {
             let served = self
                 .served(
@@ -247,22 +235,25 @@ impl TicketServer {
                 .printed
                 .lock_recover()
                 .replace((served.clone(), false));
+            let tickets = actions.tickets();
             if let Some((replaced, false)) = replaced {
-                self.0.served.withdraw(&replaced);
+                tickets.withdraw(&replaced);
             }
-            self.0.served.serve(served);
+            tickets.serve(served);
         }
-        self.admit_on(&actions);
+        self.look_again_on(&actions);
         Ok(ticket)
     }
 
-    /// Serve the plan `plan`'s ticket `served`, in place of one served for it before.
-    fn serve_planned(&self, plan: String, served: ServedTicket) {
+    /// Serve the plan `plan`'s ticket `served` on `actions`, in place of one served for it
+    /// before.
+    fn serve_planned(&self, actions: &ActionService, plan: String, served: ServedTicket) {
+        let tickets = actions.tickets();
         let replaced = self.0.planned.lock_recover().insert(plan, served.clone());
         if let Some(replaced) = replaced {
-            self.0.served.withdraw(&replaced);
+            tickets.withdraw(&replaced);
         }
-        self.0.served.serve(served);
+        tickets.serve(served);
     }
 
     /// Serve again every planned machine's ticket this device issued that still waits for its
@@ -272,8 +263,8 @@ impl TicketServer {
     /// # Errors
     /// This device is not reachable yet, or the kept tickets could not be read.
     pub async fn restore(&self) -> Result<usize, String> {
-        *self.0.looked.lock_recover() = tilo_clock::unix_now_ns();
         let (reached, actions) = self.0.issuer.serving()?;
+        actions.tickets().looked();
         let Some(workspaces) = self.0.issuer.servers() else {
             return Ok(0);
         };
@@ -311,11 +302,11 @@ impl TicketServer {
             let served = self
                 .served(ticket, Some(Role::Plan(plan.clone())), expires_at_ns)
                 .await?;
-            self.serve_planned(plan, served);
+            self.serve_planned(&actions, plan, served);
         }
         forget(&workspaces, &gone).await?;
         if serving > 0 {
-            self.admit_on(&actions);
+            self.look_again_on(&actions);
         }
         Ok(serving)
     }
@@ -390,9 +381,21 @@ impl TicketServer {
         ))
     }
 
-    /// Answer the one call `actions` takes from a computer with no certificate here.
-    fn admit_on(&self, actions: &ActionService) {
-        actions.admit_uncertified(SCOPE, Arc::new(Certify(Arc::downgrade(&self.0))));
+    /// Have the tickets `actions` serves look at the kept tickets again when a computer brings a
+    /// secret nothing served there knows: its ticket may have been issued before this device
+    /// last started.
+    fn look_again_on(&self, actions: &ActionService) {
+        let issued = Arc::downgrade(&self.0);
+        actions.tickets().look_again_with(Arc::new(move || {
+            let issued = issued.upgrade().map(TicketServer);
+            Box::pin(async move {
+                if let Some(issued) = issued
+                    && let Err(error) = issued.restore().await
+                {
+                    tracing::warn!(%error, "the kept tickets were not read again");
+                }
+            })
+        }));
     }
 
     /// The machine the plan `plan` describes took its entry: its ticket is done with.
@@ -471,77 +474,6 @@ impl TicketServer {
         };
         if let Err(error) = person_workspace::devices::keep(&workspaces, cert).await {
             tracing::warn!(%error, "the added computer is listed once it enters");
-        }
-    }
-}
-
-/// The certify call a computer with no certificate makes here: answered by the ticket whose
-/// secret it brings, after another look at the kept tickets when nothing served knows it.
-struct Certify(Weak<Inner>);
-
-impl Certify {
-    fn served(&self) -> Option<TicketServer> {
-        self.0.upgrade().map(TicketServer)
-    }
-}
-
-impl ActionProvider for Certify {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        match self.served() {
-            Some(tickets) => tickets.0.served.query(caller, query),
-            None => Pending::ready(Err(ActionCallError::UnknownAction)),
-        }
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let Some(tickets) = self.served() else {
-            return Pending::ready(Err(ActionCallError::Refused {
-                reason: "no ticket is served here any more".into(),
-            }));
-        };
-        let now = tilo_clock::unix_now_ns();
-        let look = !tickets.0.served.knows(&request)
-            && now.saturating_sub(*tickets.0.looked.lock_recover()) >= LOOK_AGAIN_NS;
-        let runtime = tokio::runtime::Handle::try_current();
-        let Some(runtime) = runtime.ok().filter(|_| look) else {
-            return tickets.0.served.invoke(caller, request);
-        };
-        let (done, answer) = tilo_actions::remote::pending();
-        let caller = caller.clone();
-        runtime.spawn(async move {
-            if let Err(error) = tickets.restore().await {
-                tracing::warn!(%error, "the kept tickets were not read again");
-            }
-            let answered = tickets.0.served.invoke(&caller, request).await;
-            done.complete(answered.unwrap_or_else(|| {
-                Err(ActionCallError::Unavailable {
-                    reason: "the ticket's issuer stopped".into(),
-                })
-            }));
-        });
-        answer
-    }
-
-    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.served()?.0.served.observe(caller, id)
-    }
-
-    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.served()?.0.served.next_change(caller, id)
-    }
-
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        match self.served() {
-            Some(tickets) => tickets.0.served.cancel(caller, id),
-            None => Pending::ready(Err(ActionCallError::UnknownAction)),
         }
     }
 }

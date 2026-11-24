@@ -358,6 +358,26 @@ export async function openDeviceKey({
   }
 }
 
+/**
+ * Move the device key a tab made under `from` (its slot `slot`), before it knew whose device it
+ * becomes, to a free slot of `to`, the profile of the person it was signed in as: the key its
+ * certificate names stays the tab's, and the tab takes that slot when it opens `to` next
+ * (`session`). Resolves to the slot.
+ */
+export async function adoptDeviceKey({from, slot = 0, to, storage, session = globalThis.sessionStorage}) {
+  if (!from || !to || !storage) throw new TypeError('adopting a device key takes the profiles and their storage');
+  const record = await storage.get(keyRecord(from, slot));
+  if (!record) throw new DeviceKeyError('device-key-missing', 'The key this tab was signed in with is gone');
+  for (let free = 0; free < MAX_SLOTS; free++) {
+    if (await storage.get(keyRecord(to, free))) continue;
+    await storage.put(keyRecord(to, free), record);
+    await storage.delete(keyRecord(from, slot));
+    keepSlot(session, to, free);
+    return free;
+  }
+  throw new DeviceKeyError('device-key-busy', `This browser keeps ${MAX_SLOTS} device keys for this account already`);
+}
+
 /** This browser profile's tab devices, in `localStorage`, which every tab
  * of the profile shares: `{id, certs, exact}`, the profile's own random id and
  * the certificate each tab's device key holds (as the peer keeps it, JSON). The

@@ -50,20 +50,22 @@ pub(crate) mod migrate;
 pub mod package_runs;
 #[cfg(unix)]
 pub mod packages;
+#[cfg(test)]
+mod page_ticket_tests;
 pub mod peer;
 pub(crate) mod presence;
 #[cfg(target_os = "linux")]
 pub mod processes;
-mod search;
 /// The resources the daemon publishes to the apps attached to it: one table, a provider each.
 pub mod published;
+mod search;
 pub mod serve;
 pub mod server_settings;
-pub(crate) mod signing;
 pub mod services;
 #[cfg(unix)]
 mod shell;
 pub mod shortcuts;
+pub(crate) mod signing;
 pub mod take_work;
 #[cfg(target_os = "linux")]
 mod task_programs;

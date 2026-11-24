@@ -544,32 +544,51 @@ pub async fn workspace_deleted(post: Function, workspace: String) -> Result<bool
         .map_err(js_error)
 }
 
-/// Call one of the ticket actions `tilo.device` answers a page with on the host `post` reaches
-/// (`issue`, `follow` or `answer`), with `argument` (JSON). Resolves to `{value}`, the action's
-/// answer, or `{refused}`, the host's refusal in its own words. The call goes over the link the
-/// page reaches its host's actions on, in the scope a device with no certificate is admitted to:
-/// a tab that is signing in holds none yet, so it signs with a key it makes for the call, and the
-/// ticket's id is what the call stands on.
+thread_local! {
+    /// The one link each host this page calls ticket actions on is reached over, by its endpoint
+    /// ([`tilo_session_client::session::TicketLink`]).
+    static TICKET_LINKS: std::cell::RefCell<
+        std::collections::HashMap<[u8; 32], std::rc::Rc<tilo_session_client::session::TicketLink>>,
+    > = std::cell::RefCell::default();
+}
+
+/// Call one of `tilo.device`'s ticket actions on the host `post` reaches, with `argument`
+/// (JSON): `issue`, `follow` and `answer` for a ticket the page shows, `certify` to log this page
+/// in with a pairing link's ticket (`ticket`), and `pending` and `approve` for a page that holds
+/// its person's root to sign their tabs in (signing with the root and naming it as `user`, or
+/// showing its own certificate as `as`). Resolves to `{value, device}`, the action's answer and
+/// the key that asked (hex), or `{refused, device}`, the host's refusal in its own words. A
+/// certify answers `{certified, hostCert}`, the certificates as JSON text. The call
+/// goes over the one link the page keeps to its host's actions, in the scope a device with no
+/// certificate is admitted to, signed with `deviceKey`, the key the page signs in or acts as: a
+/// tab signing in is certified for exactly the key it asks with. A page that only shows a ticket
+/// for a computer passes none, and signs with a key it makes for the call.
 ///
 /// # Errors
 ///
-/// Throws for an action that is no ticket's, a malformed argument, and a host not reached or
-/// that answered nothing.
+/// Throws for an action that is no ticket's, a malformed argument or key, and a host not reached
+/// or that answered nothing.
 #[wasm_bindgen(js_name = ticketAction)]
+#[allow(
+    clippy::arc_with_non_send_sync,
+    reason = "the page's signer stays on its one thread"
+)]
 pub async fn ticket_action(
     post: Function,
     action: String,
     argument: String,
+    device_key: Option<JsValue>,
 ) -> Result<String, JsError> {
-    use tilo_actions::remote::{
-        InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-        RemoteActionTarget,
+    use tilo_device_identity::login::{
+        ANSWER, APPROVE, CERTIFY, FOLLOW, ISSUE, PENDING, TICKET_LIFETIME_NS,
     };
-    use tilo_device_identity::login::{ANSWER, FOLLOW, ISSUE, PROVIDER, RESOURCE, SCOPE};
-    if !matches!(action.as_str(), ISSUE | FOLLOW | ANSWER) {
+    if !matches!(
+        action.as_str(),
+        ISSUE | FOLLOW | ANSWER | CERTIFY | PENDING | APPROVE
+    ) {
         return Err(js_error(format!("{action} is no ticket's action")));
     }
-    let argument: serde_json::Map<String, serde_json::Value> =
+    let mut argument: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&argument).map_err(js_error)?;
     let info: tilo_server_protocol::web::ServerInfo =
         post_decoded(&PageHttp(post), "/host", Vec::new()).await?;
@@ -577,110 +596,92 @@ pub async fn ticket_action(
         .address
         .as_ref()
         .ok_or_else(|| js_error("this host names no address to reach its actions at"))?;
-    let mut seed = [0u8; 32];
-    getrandom::fill(&mut seed).map_err(js_error)?;
-    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let device = key.verifying_key().to_bytes();
-    let dialer = tilo_server_client::link::Dialer::new(ServerAddress::published(address), None);
-    let asked = async {
-        let link = dialer
-            .link(tilo_server_client::link::Purpose::Actions)
-            .await
-            .map_err(js_error)?;
-        let message = RemoteActionMessage::Invoke(InvokeRequest {
-            on_behalf_of: None,
-            invocation: tilo_actions::InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(RESOURCE, &action),
-            },
-            argument: InvokeArgument::Json(argument),
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        });
-        let frame = tilo_session_client::session::ask_action(
-            &link,
-            std::sync::Arc::new(key),
-            device,
-            SCOPE,
-            info.server_cert.device_public_key,
-            message,
-        )
-        .await
-        .map_err(js_error);
-        link.close("");
-        frame
+    let signer: std::sync::Arc<dyn DeviceSigner> = match device_key {
+        Some(key) if !key.is_undefined() && !key.is_null() => {
+            std::sync::Arc::new(PageSigner::from_js(&key)?)
+        }
+        _ => {
+            let mut seed = [0u8; 32];
+            getrandom::fill(&mut seed).map_err(js_error)?;
+            std::sync::Arc::new(ed25519_dalek::SigningKey::from_bytes(&seed))
+        }
+    };
+    let device = signer.device_public_key();
+    if action == CERTIFY {
+        // Logging in with a pairing link's ticket: the ticket's secret, for the key that asks.
+        if let Some(text) = argument.remove("ticket") {
+            let ticket = text
+                .as_str()
+                .and_then(|text| tilo_device_identity::login::Ticket::parse(text).ok())
+                .ok_or_else(|| js_error("this pairing link's ticket is damaged"))?;
+            argument.insert("secret".to_owned(), ticket.secret_hex().into());
+        }
+        argument
+            .entry("device_public_key")
+            .or_insert_with(|| hex::encode(device).into());
+        argument.entry("agent").or_insert_with(|| "".into());
     }
-    .await;
-    dialer.close().await;
-    let message = RemoteActionFrame::decode(&asked?)
-        .map_err(js_error)?
-        .message;
-    let RemoteActionMessage::Receipt(receipt) = message else {
-        return Err(js_error("the host answered no receipt"));
-    };
-    let answer = match receipt.status {
-        ReceiptStatus::Completed { output } => {
-            serde_json::json!({"value": output.value.unwrap_or(serde_json::Value::Null)})
+    let host = info.server_cert.device_public_key;
+    let link = TICKET_LINKS.with(|links| {
+        std::rc::Rc::clone(links.borrow_mut().entry(host).or_insert_with(|| {
+            std::rc::Rc::new(tilo_session_client::session::TicketLink::new(
+                ServerAddress::published(address),
+            ))
+        }))
+    });
+    // A certify waits for the person's answer, for as long as the ticket lasts.
+    let follow_for = std::time::Duration::from_nanos(if action == CERTIFY {
+        TICKET_LIFETIME_NS
+    } else {
+        30_000_000_000
+    });
+    let answer = link
+        .ask(signer, device, host, &action, argument, follow_for)
+        .await
+        .map_err(|refusal| js_error(refusal.to_string()))?;
+    let mut answer = match answer {
+        // A certificate the page keeps goes as text, so its signed times stay exact.
+        Ok(value) if action == CERTIFY => {
+            let answer: tilo_device_identity::login::CertifyAnswer =
+                serde_json::from_value(value).map_err(js_error)?;
+            serde_json::json!({ "value": {
+                "certified": serde_json::to_string(&answer.cert).map_err(js_error)?,
+                "hostCert": serde_json::to_string(&answer.enter.server_cert).map_err(js_error)?,
+            }})
         }
-        ReceiptStatus::Failed { error } => serde_json::json!({"refused": error.message}),
-        ReceiptStatus::Rejected { error } => serde_json::json!({"refused": error.to_string()}),
-        status => {
-            return Err(js_error(format!(
-                "the host did not answer the ticket: {status:?}"
-            )));
-        }
+        Ok(value) => serde_json::json!({ "value": value }),
+        Err(refused) => serde_json::json!({ "refused": refused }),
     };
+    answer["device"] = hex::encode(device).into();
     Ok(answer.to_string())
 }
 
-/// Certify this page's device key with the host its address names, as the
-/// answer to the pairing invite `inviteHex` (16 bytes as hex) the person's
-/// link named, if any. Calls `onPairingCode(code)` once the host queued the
-/// request. Resolves to `{cert, hostCert, label}` JSON for
-/// [`WasmPeer::start`], `label` being the name the host gave the device.
-#[wasm_bindgen(js_name = certifyDevice)]
-#[allow(
-    clippy::arc_with_non_send_sync,
-    reason = "the page's HTTP client stays on its one thread"
-)]
-pub async fn certify_device(
-    user_public_key_hex: String,
+/// The certificate the person's root (`root`, the key the page holds) signs for the tab whose
+/// key is `device` (hex), listed as `label`: a browser of theirs, for a browser's lifetime, as
+/// `devices#approve` takes it. Resolves to the certificate as JSON.
+///
+/// # Errors
+///
+/// Throws for a malformed key or label, and a root that did not sign.
+#[wasm_bindgen(js_name = signInCertificate)]
+pub async fn sign_in_certificate(
+    root: JsValue,
+    device: String,
     label: String,
-    invite_hex: Option<String>,
-    device_key: JsValue,
-    on_pairing_code: Function,
-    address: String,
 ) -> Result<String, JsError> {
-    let signer = PageSigner::from_js(&device_key)?;
-    let user: [u8; 32] = hex::decode(user_public_key_hex)
-        .map_err(js_error)?
-        .try_into()
-        .map_err(|_| js_error("user public key must be 32 bytes"))?;
-    let invite: [u8; 16] = match invite_hex {
-        Some(text) => hex::decode(text)
-            .map_err(js_error)?
-            .try_into()
-            .map_err(|_| js_error("a pairing invite is 16 bytes"))?,
-        None => [0; 16],
+    let root = PageSigner::from_js(&root)?;
+    let tab = tilo_device_identity::login::Tab {
+        device_public_key: device,
+        label,
+        agent: None,
     };
-    let host = server_at(&address)?;
-    let (cert, server_cert, label) =
-        tilo_server_client::certify::certify(&host, user, &label, invite, &signer, |code| {
-            let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
-        })
+    let mut cert = tab
+        .certificate(root.device_public_key(), tilo_clock::unix_now_ns())
+        .map_err(js_error)?;
+    tilo_user_identity::sign_device_cert_async(&mut cert, &root)
         .await
         .map_err(js_error)?;
-    serde_json::to_string(&Certified {
-        cert: &cert,
-        server_cert: &server_cert,
-        label: &label,
-    })
-    .map_err(js_error)
+    serde_json::to_string(&cert).map_err(js_error)
 }
 
 pub(crate) fn device_key(text: &str) -> Result<[u8; 32], JsError> {
@@ -1017,7 +1018,7 @@ pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
 /// Certify this page's device key (`device key`) with the user root the page
 /// holds, for the host whose certificate the page's own `hostInfo` named
 /// (`host_cert`, JSON), which must be a host of that root. Resolves to
-/// `{cert, hostCert}` JSON, as [`certify_device`] does.
+/// `{cert, hostCert, label}` JSON, what [`WasmPeer::start`] takes.
 #[wasm_bindgen(js_name = certifyWithRoot)]
 pub async fn certify_with_root(
     root: JsValue,
@@ -1076,121 +1077,6 @@ pub async fn revoke_device(
         handle.send(Cmd::Revoke(entry.clone())).map_err(js_error)?;
     }
     serde_json::to_string(&entry).map_err(js_error)
-}
-
-/// The host a page pairs its person's new devices through, as that person's
-/// root: over the session the page holds there ([`WasmPeer::pairing`]), or,
-/// before it holds one, from an endpoint of its own it keeps while it pairs.
-#[wasm_bindgen(js_name = PairingHost)]
-pub struct PairingHost(PairingReach);
-
-/// Where a page's pairing commands reach the host.
-enum PairingReach {
-    /// Over the session the page already holds with the host.
-    Session(tilo_session_client::SessionMemberServer),
-    /// From an endpoint bound for pairing alone: the page holds no session
-    /// with this host yet. Boxed: it carries its endpoint's state, where the
-    /// session is a handle.
-    Own(Box<tilo_server_client::MemberApprover>),
-}
-
-impl tilo_server_client::MemberServer for PairingReach {
-    async fn ask(
-        &self,
-        approval: &tilo_server_protocol::certify::MemberApproval,
-    ) -> Result<tilo_server_protocol::certify::ApproverReply, tilo_server_client::CertifyError>
-    {
-        match self {
-            Self::Session(session) => session.ask(approval).await,
-            Self::Own(approver) => approver.ask(approval).await,
-        }
-    }
-}
-
-#[wasm_bindgen(js_class = PairingHost)]
-impl PairingHost {
-    /// The host `address` names (`hostInfo().address`, JSON), for a page
-    /// that holds no session there.
-    ///
-    /// # Errors
-    /// `address` is not a host's address.
-    #[wasm_bindgen(constructor)]
-    pub fn new(address: &str) -> Result<Self, JsError> {
-        Ok(Self(PairingReach::Own(Box::new(
-            tilo_server_client::MemberApprover::new(server_at(address)?),
-        ))))
-    }
-
-    /// The new devices waiting here for the member root the page holds
-    /// (`root`) to pair them: `[{digest, pairingCode, label, device, invite,
-    /// requestedAtMs, signIn, capability}]` JSON, keys, digest and invite as hex
-    /// (`invite` null for a request no invite asked for). `signIn` is set for a
-    /// tab a page's sign-in ticket expects, and `capability` then says what
-    /// certifying it makes it (`null` for any other device).
-    ///
-    /// # Errors
-    /// The host was not reached, or turned the root away.
-    pub async fn pending(&self, root: JsValue) -> Result<String, JsError> {
-        let root = PageSigner::from_js(&root)?;
-        let pending = tilo_server_client::pending_pairings(&self.0, &root)
-            .await
-            .map_err(js_error)?;
-        Ok(serde_json::Value::Array(
-            pending
-                .iter()
-                .map(|entry| {
-                    serde_json::json!({
-                        "digest": hex::encode(entry.request_digest),
-                        "pairingCode": entry.pairing_code,
-                        "label": entry.request.device_label,
-                        "device": hex::encode(entry.request.device_public_key),
-                        "invite": (entry.request.invite != [0; 16])
-                            .then(|| hex::encode(entry.request.invite)),
-                        "requestedAtMs": entry.requested_at_ns / 1_000_000,
-                        "signIn": entry.sign_in,
-                        "capability": entry
-                            .sign_in
-                            .then(tilo_device_identity::login::tab_capability),
-                    })
-                })
-                .collect(),
-        )
-        .to_string())
-    }
-
-    /// Pair (`approved`) or turn away the waiting device `digest_hex`, with
-    /// the member root the page holds. Resolves to the certificate issued
-    /// (JSON), or null when turned away.
-    ///
-    /// # Errors
-    /// The host was not reached, the device no longer waits, or the host
-    /// refused the answer.
-    pub async fn answer(
-        &self,
-        root: JsValue,
-        digest_hex: String,
-        approved: bool,
-    ) -> Result<Option<String>, JsError> {
-        let root = PageSigner::from_js(&root)?;
-        let digest: [u8; 32] = hex::decode(&digest_hex)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
-        let issued =
-            tilo_server_client::certification::answer_pairing(&self.0, &root, digest, approved)
-                .await
-                .map_err(js_error)?;
-        issued
-            .map(|cert| serde_json::to_string(&cert).map_err(js_error))
-            .transpose()
-    }
-
-    /// Let go of the host: the page pairs nothing more through it.
-    pub async fn close(&self) {
-        if let PairingReach::Own(approver) = &self.0 {
-            approver.close().await;
-        }
-    }
 }
 
 // ---- Previews: what a member's editor shows before the change lands -----
@@ -1460,8 +1346,8 @@ impl WasmPeer {
         .map_err(js_error)
     }
 
-    /// Start a session. `configJson` is `{cert, hostCert}` from
-    /// [`certify_device`], optionally with `displayName`. With `namespace`
+    /// Start a session. `configJson` is `{cert, hostCert}`, the device's certificate and the
+    /// certificate of the host it entered through, optionally with `displayName`. With `namespace`
     /// (`{profile, device}` JSON, whose storage the page has opened) the
     /// peer record lives in that profile's durable store; otherwise `record`
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
@@ -1637,15 +1523,6 @@ impl WasmPeer {
     ///
     /// Rejects for malformed options, when the root does not sign, or when the
     /// host refuses.
-    /// Pair this person's new devices through this session's host, as the
-    /// person's root device key the page holds: over this session, with no
-    /// connection of its own.
-    pub fn pairing(&self) -> PairingHost {
-        PairingHost(PairingReach::Session(tilo_session_client::member_server(
-            &self.handle,
-        )))
-    }
-
     #[wasm_bindgen(js_name = preAdmit)]
     pub async fn pre_admit(&self, root: JsValue, options: String) -> Result<String, JsError> {
         use tilo_server_client::DeviceSigner as _;

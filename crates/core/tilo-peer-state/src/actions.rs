@@ -307,6 +307,8 @@ struct Inner {
     /// What answers requests naming no workspace, the host's own operations
     /// ([`ActionService::admit_host_operations`]).
     host_operations: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
+    /// The tickets this device serves, once asked for ([`ActionService::tickets`]).
+    tickets: std::sync::OnceLock<crate::new_device::Tickets>,
     /// The certificate this device answers under, which it hands whoever asks
     /// ([`ActionService::answer_under`]).
     certificate: Mutex<Option<tilo_user_identity::DeviceCert>>,
@@ -388,6 +390,7 @@ impl ActionService {
             providers: Mutex::default(),
             uncertified: Mutex::default(),
             host_operations: Mutex::default(),
+            tickets: std::sync::OnceLock::new(),
             certificate: Mutex::default(),
             asked: std::sync::OnceLock::new(),
             replay: Mutex::default(),
@@ -422,6 +425,7 @@ impl ActionService {
             providers: Mutex::default(),
             uncertified: Mutex::default(),
             host_operations: Mutex::default(),
+            tickets: std::sync::OnceLock::new(),
             certificate: Mutex::default(),
             asked: std::sync::OnceLock::new(),
             replay: Mutex::default(),
@@ -534,6 +538,25 @@ impl ActionService {
             .uncertified
             .lock_recover()
             .insert(scope.into(), provider);
+    }
+
+    /// The one set of tickets this device serves, whoever issued them here
+    /// ([`crate::new_device::Tickets`]): made the first time they are asked for, when they start
+    /// answering the scope a device with no certificate calls
+    /// ([`tilo_device_identity::login::SCOPE`]) and the ticket actions of `tilo.device` a
+    /// certified device calls, beside this device's dispatcher. A dispatcher that answers
+    /// `tilo.device` itself hands those to the same tickets
+    /// ([`crate::new_device::Tickets::certified_invoke`]).
+    pub fn tickets(&self) -> crate::new_device::Tickets {
+        self.0
+            .tickets
+            .get_or_init(|| {
+                let tickets = crate::new_device::Tickets::new(self.0.runtime.clone());
+                self.admit_uncertified(tilo_device_identity::login::SCOPE, tickets.uncertified());
+                self.add_provider(tickets.certified());
+                tickets
+            })
+            .clone()
     }
 
     /// Answer requests that name no workspace, the host's own operations, through `provider`: a

@@ -48,8 +48,6 @@ pub mod apple_push;
 #[cfg(feature = "agents")]
 pub mod browser_actions;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod certification;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod content;
 #[cfg(feature = "web")]
 pub mod content_links;
@@ -63,6 +61,8 @@ pub mod hosted_browser;
 pub mod kept_content;
 #[cfg(feature = "agents")]
 pub mod linux_devices;
+#[cfg(not(target_arch = "wasm32"))]
+mod page_tickets;
 #[cfg(feature = "agents")]
 #[cfg(not(target_arch = "wasm32"))]
 pub mod servers;
@@ -91,7 +91,7 @@ pub use tilo_workspace_service::{
 use tilo_workspace_service::{authority_epoch, handshake, workspace_access};
 
 pub use tilo_server_client::frame;
-pub use tilo_server_protocol::{auth, certify, config, devices, live, mesh, policy};
+pub use tilo_server_protocol::{auth, config, devices, live, mesh, policy};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use app_serving::{ActionProviderServer, AppActionServer};

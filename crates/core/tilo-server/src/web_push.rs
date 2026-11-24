@@ -3,14 +3,11 @@
 //! browser that subscribed (RFC 8291, `aes128gcm` of RFC 8188) and the request
 //! signed with this host's application server key (VAPID, RFC 8292).
 //!
-//! A page of the person's that may show notifications subscribes its browser
-//! and hands the subscription here ([`ApproverRequest::Notify`]); this host
-//! keeps a few per person on disk. When the teller has something for a person
+//! A browser of the person's that may show notifications is kept here
+//! ([`WebPush::subscribe`]); this host keeps a few per person on disk. When the teller has something for a person
 //! and no device of theirs is looking, every browser they subscribed is
 //! pushed a short message. Its service worker shows it, and a click opens
 //! Tilo, where it waits.
-//!
-//! [`ApproverRequest::Notify`]: tilo_server_protocol::certify::ApproverRequest::Notify
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,7 +20,6 @@ use ring::rand::SystemRandom;
 use ring::signature::KeyPair as _;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
-use tilo_server_protocol::certify::PushSubscription;
 
 /// The file this host's application server key is kept in, under its state.
 const KEY_FILE: &str = "web-push-key.pk8";
@@ -51,6 +47,42 @@ pub struct WebPush {
     path: PathBuf,
     kept: std::sync::Arc<Mutex<Kept>>,
     client: tilo_net::Client,
+}
+
+/// Where a browser takes pushes, as its `PushManager` subscribed
+/// (RFC 8030, RFC 8291): its push service's address for it, its key and its
+/// auth secret.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushSubscription {
+    /// The push service's `https` address for this browser.
+    pub endpoint: String,
+    /// The browser's P-256 key, uncompressed (65 bytes).
+    pub p256dh: Vec<u8>,
+    /// The browser's auth secret (16 bytes).
+    pub auth: Vec<u8>,
+}
+
+impl PushSubscription {
+    /// The longest push service address taken.
+    pub const MAX_ENDPOINT: usize = 1024;
+
+    /// Whether this is a subscription a host can push to: an `https`
+    /// address of bounded length, a key and an auth secret of their sizes.
+    ///
+    /// # Errors
+    /// What is wrong with it.
+    pub fn check(&self) -> Result<(), &'static str> {
+        if !self.endpoint.starts_with("https://") || self.endpoint.len() > Self::MAX_ENDPOINT {
+            return Err("a push subscription names an https address");
+        }
+        if self.p256dh.len() != 65 || self.p256dh.first() != Some(&4) {
+            return Err("a push subscription carries the browser's P-256 key");
+        }
+        if self.auth.len() != 16 {
+            return Err("a push subscription carries a 16-byte auth secret");
+        }
+        Ok(())
+    }
 }
 
 /// The subscriptions kept, by person (their root, hex).
@@ -336,16 +368,6 @@ fn expand(prk: &ring::hkdf::Prk, info: &[u8], len: usize) -> Result<Vec<u8>, ()>
     let mut out = vec![0u8; len];
     okm.fill(&mut out).map_err(drop)?;
     Ok(out)
-}
-
-impl crate::certification::PushSubscriptions for WebPush {
-    fn push_key(&self) -> Vec<u8> {
-        self.public_key()
-    }
-
-    fn subscribe(&self, person: &[u8; 32], subscription: PushSubscription) -> Result<(), String> {
-        Self::subscribe(self, person, subscription)
-    }
 }
 
 /// What a person's assistant told them, pushed to the browsers they

@@ -1,21 +1,10 @@
-//! What a person's root gives their devices, and the pairing ceremony their
-//! server carries between them: a new device asks to be certified
-//! ([`certify`](crate::certify)), a root-holding device lists the waiting
-//! requests ([`pending_pairings`]) and sends an answer ([`decide_pairing`]).
-//!
-//! Only the root signs: the server carries and checks, and hands nothing on
-//! that a root did not sign for exactly that request.
+//! What a person's root takes back from their devices: the revocation every
+//! server and device refuses a key with.
 
-#[cfg(feature = "dial")]
-use tilo_server_protocol::certify::{
-    ApproverDecision, ApproverReply, ApproverRequest, MemberApproval,
-};
 use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry_async};
 #[cfg(test)]
 use tilo_user_identity::{RevocationList, issue_device_cert_async};
 
-#[cfg(feature = "dial")]
-use crate::certify::MemberServer;
 use crate::error::CertifyError;
 use crate::signer::DeviceSigner;
 
@@ -54,127 +43,6 @@ pub async fn revoke_device(
     Ok(entry)
 }
 
-#[cfg(feature = "dial")]
-pub(crate) async fn member_approval(
-    root: &dyn DeviceSigner,
-    request: ApproverRequest,
-) -> Result<MemberApproval, CertifyError> {
-    member_approval_as(root, None, request).await
-}
-
-/// [`member_approval`], signed by `signer`: the person's root when `device`
-/// is `None`, else the device `device` certifies, which signs only what a
-/// device may ([`MemberApproval::device`]).
-#[cfg(feature = "dial")]
-pub(crate) async fn member_approval_as(
-    signer: &dyn DeviceSigner,
-    device: Option<&tilo_user_identity::DeviceCert>,
-    request: ApproverRequest,
-) -> Result<MemberApproval, CertifyError> {
-    let root = signer;
-    let user_public_key =
-        device.map_or_else(|| root.device_public_key(), |cert| cert.user_public_key);
-    let issued_at_ns = tilo_clock::unix_now_ns();
-    let digest = MemberApproval::signed_digest(&user_public_key, issued_at_ns, &request)
-        .map_err(|error| CertifyError::Request(error.to_string()))?;
-    let signature = root
-        .sign(digest.to_vec())
-        .await
-        .map_err(|error| CertifyError::Request(error.0))?;
-    Ok(MemberApproval {
-        user_public_key,
-        issued_at_ns,
-        request,
-        signature,
-        device: device.cloned(),
-    })
-}
-
-#[cfg(feature = "dial")]
-async fn approve(
-    server: &impl MemberServer,
-    root: &dyn DeviceSigner,
-    request: ApproverRequest,
-) -> Result<ApproverReply, CertifyError> {
-    let approval = member_approval(root, request).await?;
-    match server.ask(&approval).await? {
-        ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
-        reply => Ok(reply),
-    }
-}
-
-/// The requests of new devices waiting at `server` for `root` (a
-/// member's root) to answer, each showing its pairing code.
-///
-/// # Errors
-///
-/// [`CertifyError::Transport`] when the server is not reached, or
-/// [`CertifyError::Denied`] when it refuses.
-#[cfg(feature = "dial")]
-pub async fn pending_pairings(
-    server: &impl MemberServer,
-    root: &dyn DeviceSigner,
-) -> Result<Vec<tilo_server_protocol::certify::PendingCertification>, CertifyError> {
-    match approve(server, root, ApproverRequest::ListPending).await? {
-        ApproverReply::Pending(pending) => Ok(pending),
-        _ => Err(CertifyError::Denied(
-            "the server answered something else".into(),
-        )),
-    }
-}
-
-/// [`pending_pairings`] once they are other than `known`, the request digests
-/// the caller holds: the server answers as a new device asks for `root` or one
-/// is answered, or with what waits after
-/// [`AWAIT_PENDING_NS`](tilo_server_protocol::certify::AWAIT_PENDING_NS).
-///
-/// # Errors
-///
-/// As [`pending_pairings`].
-#[cfg(feature = "dial")]
-pub async fn next_pairings(
-    server: &impl MemberServer,
-    root: &dyn DeviceSigner,
-    known: Vec<[u8; 32]>,
-) -> Result<Vec<tilo_server_protocol::certify::PendingCertification>, CertifyError> {
-    match approve(server, root, ApproverRequest::AwaitPending { known }).await? {
-        ApproverReply::Pending(pending) => Ok(pending),
-        _ => Err(CertifyError::Denied(
-            "the server answered something else".into(),
-        )),
-    }
-}
-
-/// Answer the pending request `request_digest` at `server`, as
-/// `approver`: with `cert`, one the person's root already issued for exactly
-/// that request, or turned away without one.
-///
-/// # Errors
-///
-/// The server was not reached or refused the answer.
-#[cfg(feature = "dial")]
-pub async fn decide_pairing(
-    server: &impl MemberServer,
-    approver: &dyn DeviceSigner,
-    request_digest: [u8; 32],
-    cert: Option<tilo_user_identity::DeviceCert>,
-) -> Result<(), CertifyError> {
-    let decision = match cert {
-        Some(cert) => ApproverDecision::Issue(cert),
-        None => ApproverDecision::Deny,
-    };
-    approve(
-        server,
-        approver,
-        ApproverRequest::Decide {
-            request_digest,
-            decision,
-        },
-    )
-    .await
-    .map(drop)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,25 +51,6 @@ mod tests {
         CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest,
         DeviceCapabilities, verify_device_cert,
     };
-
-    #[tokio::test]
-    #[cfg(feature = "dial")]
-    async fn a_refused_signature_issues_no_approval() {
-        struct Refusing;
-
-        impl DeviceSigner for Refusing {
-            fn device_public_key(&self) -> [u8; 32] {
-                SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()
-            }
-
-            fn sign(&self, _message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
-                Box::pin(async { Err(collab_types::signer::SignError("locked".into())) })
-            }
-        }
-
-        let approved = member_approval(&Refusing, ApproverRequest::ListPending).await;
-        assert!(matches!(approved, Err(CertifyError::Request(_))));
-    }
 
     #[tokio::test]
     async fn a_page_root_signs_the_same_certificate_and_revocation_as_a_held_key() {

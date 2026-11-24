@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, pairDevice, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, storageFailureCode, withDeviceKey, withStartFields} from './peer.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 import {memberText} from './json-text.mjs';
+import {deviceCodeOf} from './pairing.mjs';
 import {forgetSiteServers, nameSiteServer, STALE_SITE_SERVER, staleSiteServer} from './site-host.mjs';
 import {failureCause} from './failure-screen.mjs';
 import {hostUnreachable} from './session-refusal.mjs';
@@ -42,16 +43,26 @@ function memoryStore() {
   return {rows, get: async key => rows.get(key), put: async (key, value) => { rows.set(key, value); }, delete: async key => { rows.delete(key); }};
 }
 
+/** The device key a host reports a tab's ticket asks with. */
+const TAB_DEVICE = 'dd'.repeat(32);
+
 function fakeRuntime({phase = 'ready'} = {}) {
   const calls = {certify: [], started: []};
   let peer;
   let nextPeerId = 1;
   const runtime = runtimeFake({
     async hostInfo(post) { calls.hostPost = post; return JSON.stringify({address: HOST_ADDRESS, hostCert: {}}); },
-    async certifyDevice(user, label, invite, deviceKey, onPairingCode) {
-      calls.certify.push({user, label, invite, deviceKey});
-      onPairingCode('123456');
-      return JSON.stringify({cert: {device: calls.certify.length}, hostCert: {host: true}});
+    /** The host's ticket actions: a sign-in is issued, and its first look finds it signed
+     * in, answering with `calls.signedIn` (certificate texts) when a test sets one. */
+    async ticketAction(post, action, body, deviceKey) {
+      const asked = JSON.parse(body);
+      if (action === 'issue') {
+        calls.issued = {...asked, deviceKey};
+        return JSON.stringify({value: {id: 'sign-in', ticket: 'tilo1ab'}, device: TAB_DEVICE});
+      }
+      calls.certify.push({user: calls.issued?.user ?? null, label: asked.label ?? calls.issued?.label, ticket: asked.ticket ?? null, deviceKey});
+      const answer = calls.signedIn?.() ?? {certified: JSON.stringify({device: calls.certify.length}), hostCert: '{"host":true}'};
+      return JSON.stringify({value: answer, device: TAB_DEVICE});
     },
     async certifyWithRoot(root, deviceKey, label, hostCert) {
       calls.certify.push({hostCert, root, deviceKey, label});
@@ -241,7 +252,7 @@ test('first connect certifies with the host it names once, shows the pairing cod
   const store = memoryStore();
   const codes = [];
   const peer = await connect(options(runtime, store, {onPairingCode: code => codes.push(code)}));
-  assert.deepEqual(codes, ['123456']);
+  assert.deepEqual(codes, [deviceCodeOf(TAB_DEVICE)]);
   assert.equal(runtime.calls.certify.length, 1);
   assert.equal(runtime.peer.workspace, WORKSPACE);
   assert.deepEqual(runtime.peer.config.cert, {device: 1});
@@ -260,7 +271,7 @@ const LINUX_CERT = `{"device_public_key":[221],"issued_at_ns":${NANOS},"expires_
 
 test('a certificate reaches the session byte for byte, its nanosecond timestamps intact', async () => {
   const runtime = fakeRuntime();
-  runtime.certifyDevice = async () => `{"cert":${LINUX_CERT},"hostCert":{"issued_at_ns":${NANOS}}}`;
+  runtime.calls.signedIn = () => ({certified: LINUX_CERT, hostCert: `{"issued_at_ns":${NANOS}}`});
   const peer = await connect(options(runtime, memoryStore(), {displayName: 'Ada "A"'}));
   assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
   assert.ok(runtime.peer.configText.includes(`"hostCert":{"issued_at_ns":${NANOS}}`));
@@ -346,7 +357,7 @@ const siteNamed = (device = 1) => `{"hostCert":{"user_public_key":[9],"device_pu
 const home = (info = siteNamed()) => ({name: 'Lounge', host: {origin: 'https://host.example:8443', info}});
 /** A runtime whose host certifies this page's device as the host the site names. */
 const certifiedBySite = runtime => {
-  runtime.certifyDevice = async () => `{"cert":${LINUX_CERT},"hostCert":${memberText(siteNamed(), 'hostCert')}}`;
+  runtime.calls.signedIn = () => ({certified: LINUX_CERT, hostCert: memberText(siteNamed(), 'hostCert')});
   return runtime;
 };
 const refusalOptions = (runtime, extra = {}) => ({
@@ -1377,7 +1388,7 @@ test('the peer starts from the certificate text, keeping nanosecond timestamps e
 
 test('the label the host gives a device is never its person\'s name', async () => {
   const runtime = fakeRuntime();
-  runtime.certifyDevice = async () => `{"cert":${LINUX_CERT},"hostCert":{"issued_at_ns":${NANOS}},"label":"Browser on Cloud 2"}`;
+  runtime.calls.signedIn = () => ({certified: LINUX_CERT.replace('{', '{"device_label":"Browser on Cloud 2",'), hostCert: `{"issued_at_ns":${NANOS}}`});
   const peer = await connect(options(runtime, memoryStore()));
   assert.equal(peer.member.label, '', 'a person who gave no name goes by none');
   await peer.dispose();
@@ -1453,9 +1464,9 @@ test('a paired device entering a workspace derives the person key from its certi
   const runtime = fakeRuntime();
   const keyBytes = [0x00, 0x0f, 0xab, ...Array(29).fill(0xcd)];
   const expectedKey = `000fab${'cd'.repeat(29)}`;
-  runtime.certifyDevice = async () => JSON.stringify({
-    cert: {user_public_key: keyBytes, device_public_key: Array(32).fill(0xdd)},
-    hostCert: {device_public_key: Array(32).fill(0x11)},
+  runtime.calls.signedIn = () => ({
+    certified: JSON.stringify({user_public_key: keyBytes, device_public_key: Array(32).fill(0xdd)}),
+    hostCert: JSON.stringify({device_public_key: Array(32).fill(0x11)}),
   });
   const peer = await pairDevice({
     origin: 'https://host.example:8443',
