@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Line, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
 use crate::component::{Component, Described, Event, PartType, PartViews, ResourceId, Source};
@@ -832,6 +832,8 @@ pub struct Map {
     placed: Rc<RefCell<HashMap<String, crate::motion::Placed>>>,
     /// Where the region laid each pin out last, by key, written by its own solve.
     laid: Rc<RefCell<HashMap<String, Rect>>>,
+    /// The edges that resize the places on screen, for the shell's control hints.
+    hint_edges: crate::control_hints::anchors::EdgesAnchor,
     /// The pins that hug what they hold but whose view said no height of its own at the last
     /// solve (a turn before its words arrive), by key: laid out at their most, which is not yet
     /// how tall they are, so the camera does not follow them there.
@@ -1050,6 +1052,7 @@ impl Map {
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
             placed: Rc::default(),
             laid: Rc::default(),
+            hint_edges: crate::control_hints::anchors::EdgesAnchor::new(),
             unsaid: Rc::default(),
             drawn_said: Rc::default(),
             pin_places: Rc::default(),
@@ -1243,6 +1246,41 @@ impl Map {
                 crate::component::Value::Int(at.y.round() as i64),
             ]),
         ])));
+    }
+
+    /// Tell the shell's control hints ([`crate::control_hints`]) where the edges that resize the
+    /// places on screen are, and, when the places drawn since `windows` hold windows, whether some
+    /// lie out of view to either side.
+    fn tell_hints(&self, transform: Affine, windows: u64) {
+        let origin = self.rect.origin().to_vec2();
+        let laid: Vec<Rect> = self
+            .laid
+            .borrow()
+            .values()
+            .map(|rect| *rect + origin)
+            .collect();
+        let resizes = !self.resize.is_none();
+        self.hint_edges.drawn(
+            transform,
+            laid.iter()
+                .filter(|rect| resizes && rect.overlaps(self.rect))
+                .map(|rect| Line::new((rect.x1, rect.y0), (rect.x1, rect.y1))),
+        );
+        if crate::control_hints::anchors::windows_drawn() != windows {
+            crate::control_hints::anchors::windows_beyond(
+                laid.iter().any(|rect| rect.x1 <= self.rect.x0),
+                laid.iter().any(|rect| rect.x0 >= self.rect.x1),
+            );
+        }
+    }
+
+    /// The person moved the camera by hand to `camera`: a pan, which the shell's control hints
+    /// teach ([`crate::control_hints`]).
+    fn pan_by_hand(&mut self, camera: MapCamera) {
+        self.set_camera(camera);
+        crate::control_hints::performed::note(
+            crate::control_hints::performed::Performed::PannedView,
+        );
     }
 
     /// The pin whose trailing edge, bottom edge or corner stands at `local` (this map's own
@@ -2735,7 +2773,7 @@ impl Map {
                 }
                 let mut camera = self.camera;
                 camera.pan_by(by);
-                self.set_camera(camera);
+                self.pan_by_hand(camera);
                 *ctx.handled = true;
             }
             // A pinch, on a touchscreen or a touchpad, zooms about the fingers, as Ctrl and a
@@ -2810,7 +2848,7 @@ impl Map {
                 self.pan = Some(pan);
                 let mut camera = pan.camera;
                 camera.pan_by(travelled);
-                self.set_camera(camera);
+                self.pan_by_hand(camera);
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -2838,7 +2876,7 @@ impl Map {
                 if let Some(delta) = delta {
                     let mut camera = self.camera;
                     camera.pan_by(delta);
-                    self.set_camera(camera);
+                    self.pan_by_hand(camera);
                     *ctx.handled = true;
                 }
             }
@@ -2902,6 +2940,9 @@ impl Map {
                         .find(|(key, _, _)| *key == drag.key)
                         .map_or(0.0, |(_, place, _)| place.band);
                     if rect != drag.from {
+                        crate::control_hints::performed::note(
+                            crate::control_hints::performed::Performed::ResizedWindow,
+                        );
                         self.resize.fire(Some(crate::component::Value::List(vec![
                             crate::component::Value::Text(self.item_of(drag.key)),
                             crate::component::Value::List(vec![
@@ -3011,7 +3052,7 @@ impl Map {
                         TouchGestureEvent::Pan { fingers, delta } if fingers >= 2 => {
                             let mut camera = self.camera;
                             camera.pan_by(Vec2::new(delta.0, delta.1));
-                            self.set_camera(camera);
+                            self.pan_by_hand(camera);
                             *ctx.handled = true;
                         }
                         TouchGestureEvent::Pinch { center, scale, .. } => {
@@ -3211,6 +3252,7 @@ impl Widget for Map {
         self.draw_markers(scene, transform, text, theme, &env);
         self.draw_hint(scene, transform, text, theme);
         self.draw_frame_outline(scene, transform, theme);
+        let windows = crate::control_hints::anchors::windows_drawn();
         self.draw_pins(&mut crate::draw::DrawCtx::new(
             scene,
             transform,
@@ -3221,6 +3263,7 @@ impl Widget for Map {
         if clips {
             scene.pop_layer();
         }
+        self.tell_hints(transform, windows);
     }
 
     fn child_clip_rect(&self) -> Option<Rect> {

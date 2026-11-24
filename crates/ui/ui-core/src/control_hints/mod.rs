@@ -3,16 +3,22 @@
 //! when each is useful ([`Cue`]), what must hold while it shows, which of the person's actions mean
 //! they know it, and the gesture it teaches.
 
+pub mod anchors;
 mod card;
 pub mod coach;
+mod component;
 pub(crate) mod ink;
 mod layer;
 pub mod performed;
+pub mod shell;
 
+#[cfg(test)]
+mod component_tests;
 #[cfg(test)]
 mod tests;
 
 pub use coach::{Coach, Current, Phase, Timing};
+pub use component::{ControlHints, ControlHintsProps};
 pub use layer::{HintLayer, HintLook, HintPlace};
 
 use crate::time::Duration;

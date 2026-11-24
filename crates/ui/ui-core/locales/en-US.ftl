@@ -1390,3 +1390,10 @@ timeline-lock = Lock
 timeline-muted = muted
 timeline-soloed = playing alone
 timeline-locked = locked
+
+# The shell's control hints (control_hints)
+control-hint-open = Open anything
+control-hint-move = Drag to move
+control-hint-resize = Drag to resize
+control-hint-pan = Scroll sideways
+control-hint-pan-touch = Swipe left or right

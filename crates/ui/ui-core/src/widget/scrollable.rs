@@ -199,6 +199,9 @@ pub struct Scrollable {
     /// Theme setting sampled by the latest draw. It prevents a reduced-motion
     /// bar (which intentionally remains visible) from requesting fade ticks.
     reduce_motion_active: bool,
+    /// The content drew windows the last time it was drawn: a sideways scroll here moves the view
+    /// along them, as the shell's control hints teach ([`crate::control_hints`]).
+    holds_windows: bool,
     /// Release-velocity samples of the continuous (touchpad/touchscreen)
     /// gesture in progress; a fast lift turns into [`Self::fling`].
     kinetic: crate::virtual_viewport::KineticSampler,
@@ -366,6 +369,7 @@ impl Scrollable {
             bar_visible_last_draw: Cell::new(false),
             terminal_fade_damage: Cell::new(false),
             reduce_motion_active: false,
+            holds_windows: false,
             kinetic: crate::virtual_viewport::KineticSampler::new(),
             band: crate::motion::RubberBand::new(),
             persisted_offset: None,
@@ -1726,10 +1730,26 @@ impl Widget for Scrollable {
         }
         // Unless fading in, what a copy keeps is not drawn (`draw_cull`).
         let keep = self.shown.keep().filter(|_| !fading);
+        let windows = crate::control_hints::anchors::windows_drawn();
+        let keeping = keep.is_some();
         if let Some(c) = &mut self.child {
             crate::draw_cull::keeping(scene, keep, |scene| {
                 crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme, &env);
             });
+        }
+        // Windows drawn along a row that scrolls sideways: those scrolled past either end lie out
+        // of view, which the shell's control hints teach the way to.
+        if crate::control_hints::anchors::windows_drawn() != windows {
+            self.holds_windows = true;
+            if self.axis_has_horizontal() {
+                let max_x = (self.content_w - self.viewport_w).max(0.0);
+                crate::control_hints::anchors::windows_beyond(
+                    self.offset_x > 0.5,
+                    self.offset_x < max_x - 0.5,
+                );
+            }
+        } else if !keeping {
+            self.holds_windows = false;
         }
         if fading {
             scene.pop_layer();
@@ -1829,10 +1849,26 @@ impl Widget for Scrollable {
                 ctx.modifiers.state().shift_key(),
                 ctx.scale_factor,
             );
+            let shift = ctx.modifiers.state().shift_key();
+            let moved_x = matches!(self.axis, ScrollAxis::Horizontal)
+                || match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        *x != 0.0 || (shift && *y != 0.0)
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(p) => {
+                        p.x.abs() > p.y.abs() || (shift && p.y != 0.0)
+                    }
+                };
             // Every child refused it and it moved only this view: nothing
             // the app publishes changed.
             if *ctx.handled {
                 crate::widget::note_view_only_pan();
+                // A sideways scroll along a row of windows moves the view across them.
+                if self.holds_windows && self.axis_has_horizontal() && moved_x {
+                    crate::control_hints::performed::note(
+                        crate::control_hints::performed::Performed::PannedView,
+                    );
+                }
             }
             return;
         }

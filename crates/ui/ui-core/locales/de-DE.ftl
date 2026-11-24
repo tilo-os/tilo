@@ -1357,3 +1357,10 @@ timeline-lock = Sperren
 timeline-muted = stumm
 timeline-soloed = spielt allein
 timeline-locked = gesperrt
+
+# The shell's control hints (control_hints)
+control-hint-open = Alles öffnen
+control-hint-move = Zum Verschieben ziehen
+control-hint-resize = Größe per Ziehen ändern
+control-hint-pan = Seitwärts scrollen
+control-hint-pan-touch = Links oder rechts wischen

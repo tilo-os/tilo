@@ -107,8 +107,6 @@ impl Shared {
             carry_press: None,
             float_covers: Vec::new(),
             shown_strip: None,
-            hint_places: ui::widget::HintPlaces::default(),
-            hint_reading: super::HintReading::Places,
             focused_presence: Vec::new(),
             rebuild: Vec::new(),
             search_request: None,

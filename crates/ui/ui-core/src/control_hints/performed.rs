@@ -40,3 +40,10 @@ pub fn note(what: Performed) {
 pub fn take() -> Vec<Performed> {
     PERFORMED.with(|log| std::mem::take(&mut *log.borrow_mut()))
 }
+
+/// Whether the person did something since the last [`take`]: the hints read it on their next
+/// frame.
+#[must_use]
+pub fn pending() -> bool {
+    PERFORMED.with(|log| !log.borrow().is_empty())
+}
