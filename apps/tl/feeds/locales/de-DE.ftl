@@ -238,6 +238,7 @@ d-tkh3vj2o = Status
 d-3oef7xt5 = Meldung
 
 d-in2no76u = Artikel
+    .doc = Das eigene JSON jedes Artikels, als Text: eine Liste von Einträgen hält Ressourcen, und JSON-Text macht keine, also wird jeder hier in seinen Eintrag gelesen.
 
 d-4mwlj5jz-filter-ok = Ok
 
@@ -296,6 +297,7 @@ d-amdvzfos = Umrisse
     }
 
 d-z646rsds = Umrisse
+    .doc = Das eigene JSON jedes Umrisses, als Text.
 
 d-kzsmsaqw = OPML-Anfrage
     .noun = { $count ->
@@ -441,6 +443,8 @@ d-io5ncepq = Aktualisierung stoppen
 d-dlqkkend = Aktualisierung abfragen
     .doc = Nimmt, was das Gerät bisher gelesen hat: die Antwort jedes Abos, sobald sie eintrifft.
     .w-the-refresh-stopped = Die Aktualisierung endete: { $why }
+    .w-a-subscription-s-answer-did-not = Die Antwort eines Abos ließ sich nicht lesen: { $why }
+    .w-the-refresh-s-answer-did-not = Die Antwort der Aktualisierung ließ sich nicht lesen: { $why }
 
 d-ompsa4v6 = OPML importieren…
     .doc = Abonniert, was eine OPML-Datei auflistet: jede Adresse, die die Bibliothek noch nicht hat, in den Ordnern, die die Datei nennt, angelegt, wo sie fehlen.
