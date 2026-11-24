@@ -66,6 +66,25 @@ fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
     );
 }
 
+/// The appearance setting's choose action, which a strip of its cases runs.
+fn appearance_binding() -> crate::tilo_actions::ActionBinding<usize> {
+    let spec = crate::tilo_actions::ActionSpec::typed_operation(
+        "choose",
+        "Appearance",
+        "Choose the appearance",
+        crate::tilo_actions::OperationKind::Effect,
+        "fixture.appearance",
+        vec![],
+        |_| {
+            crate::tilo_actions::EncodedAction::encode_operation("fixture.appearance", &()).unwrap()
+        },
+    );
+    let resource = crate::tilo_actions::ResourceSpec::new("fixture", "fixture", "Fixture")
+        .with_action(spec.clone());
+    crate::tilo_actions::ActionBinding::new(&resource, &spec, |_: usize| serde_json::Map::new())
+        .unwrap()
+}
+
 tilo_test_env::scenario! {
     fn a_strip_chooses_by_pointer_touch_keyboard_and_action;
 
@@ -265,7 +284,9 @@ tilo_test_env::scenario! {
                 0,
                 Rect::new(0.0, 0.0, 200.0, 44.0),
             )
-            .on_choose("appearance", |_| {});
+            .with_id("appearance")
+            .on_action(appearance_binding());
+            // The setting's action is withdrawn: nothing the strip offers can choose it.
             crate::widget::controls::refresh_control_action_availability(
                 &mut group,
                 &std::collections::HashSet::new(),

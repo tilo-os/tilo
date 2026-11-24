@@ -4,7 +4,11 @@ use tilo_action_policy::{Answer, Context, Grant, Grantee, KindSet, MemberId, Par
 use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, VerbCall};
 
 use super::*;
-use crate::claim::{claims_of, parse_changes};
+use crate::claim::parse_changes;
+use collab_types::claim::{UnitPath, claims_of};
+use collab_types::receipt::*;
+use tilo_action_policy::TreePath;
+use tilo_actions::PathStep;
 
 const WORKSPACE: &str = "workspace-1";
 const APP: &str = "so.tilo.notes";
@@ -220,7 +224,7 @@ tilo_test_env::scenario! {
             Ok(Receipt::Hold),
             "without the app's surface the change is held, never trusted"
         );
-        let written = |_: &[u8; 32]| crate::units::Written {
+        let written = |_: &[u8; 32]| collab_types::units::Written {
             units: vec![comment("c1")],
             added: Vec::new(),
         };
@@ -326,15 +330,15 @@ tilo_test_env::scenario! {
             };
             doc.commit_with(CommitOptions::default().with_message(entry.change_message().unwrap()));
         }
-        let payload = crate::op::DocumentMutation::Incremental(doc.save_after(&[]))
+        let payload = collab_types::op::DocumentMutation::Incremental(doc.save_after(&[]))
             .encode()
             .unwrap();
-        let op = crate::op::SignedOp::new_unsigned(
+        let op = collab_types::op::SignedOp::new_unsigned(
             payload,
-            crate::document_artifact_id(APP, WORKSPACE, "channels"),
-            crate::Ed25519PublicKey::from_bytes([7; 32]),
-            crate::document_attestation_id(APP, WORKSPACE, "channels"),
-            crate::role::OpKind::Change,
+            collab_types::document_artifact_id(APP, WORKSPACE, "channels"),
+            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            collab_types::document_attestation_id(APP, WORKSPACE, "channels"),
+            collab_types::role::OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             1,
         )
@@ -457,7 +461,7 @@ impl ReceiptSurface for Calendar {
 /// (inside each unit it names); `read`: the receiver read the changes
 /// themselves.
 fn calendar(claims: &[ChangeClaim], read: bool) -> Result<Receipt, ReceiptRefusal> {
-    let wrote = |units: &[UnitPath]| crate::units::Written {
+    let wrote = |units: &[UnitPath]| collab_types::units::Written {
         added: units
             .iter()
             .filter(|unit| !unit.is_empty())
@@ -469,7 +473,7 @@ fn calendar(claims: &[ChangeClaim], read: bool) -> Result<Receipt, ReceiptRefusa
 }
 
 /// What a receiver reads a change wrote, given the units its claim names.
-type Wrote<'a> = &'a dyn Fn(&[UnitPath]) -> crate::units::Written;
+type Wrote<'a> = &'a dyn Fn(&[UnitPath]) -> collab_types::units::Written;
 
 /// [`calendar`], the receiver reading from each change what `wrote` says
 /// of its claimed units.
@@ -535,7 +539,7 @@ tilo_test_env::scenario! {
             calendar(&[claim(4, edit("title"), vec![Vec::new()])], true),
             Ok(Receipt::Admit)
         );
-        let made = |units: &[UnitPath]| crate::units::Written {
+        let made = |units: &[UnitPath]| collab_types::units::Written {
             units: units.to_vec(),
             added: Vec::new(),
         };
@@ -544,7 +548,7 @@ tilo_test_env::scenario! {
             Ok(Receipt::Admit),
             "a new document's first event makes its outbox empty and queues nothing"
         );
-        let queued = |_: &[UnitPath]| crate::units::Written {
+        let queued = |_: &[UnitPath]| collab_types::units::Written {
             units: vec![Vec::new(), uploads()],
             added: vec![uploads()],
         };
@@ -835,11 +839,11 @@ fn store_change(kind: &str) -> automerge::Change {
         .put_object(ROOT, "r:n1", automerge::ObjType::Map)
         .unwrap();
     doc.put(&record, "k", kind).unwrap();
-    let stamp = crate::stamp::Stamp {
+    let stamp = collab_types::stamp::Stamp {
         verb: "new".into(),
         invoker: "ada".into(),
         invocation: "i1".into(),
-        ..crate::stamp::Stamp::default()
+        ..collab_types::stamp::Stamp::default()
     };
     doc.commit_with(CommitOptions::default().with_message(stamp.message()));
     parse_changes(&doc.save()).unwrap().remove(0)
@@ -921,12 +925,12 @@ fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
     let change = store_change("tl.notes.Note");
     let read = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()).unwrap();
     let opened = |change: &automerge::Change, read: &ChangeClaim, kind: &str| {
-        let op = crate::op::SignedOp::new_unsigned(
+        let op = collab_types::op::SignedOp::new_unsigned(
             Vec::new(),
-            crate::document_artifact_id(APP, WORKSPACE, "*/tl.notes#0"),
-            crate::Ed25519PublicKey::from_bytes([7; 32]),
-            crate::document_attestation_id(APP, WORKSPACE, "*/tl.notes#0"),
-            crate::role::OpKind::Change,
+            collab_types::document_artifact_id(APP, WORKSPACE, "*/tl.notes#0"),
+            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            collab_types::document_attestation_id(APP, WORKSPACE, "*/tl.notes#0"),
+            collab_types::role::OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             1,
         )
@@ -936,7 +940,7 @@ fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
         }]);
         check_opened_mutation(
             &op,
-            &crate::op::DocumentMutation::Incremental(change.raw_bytes().to_vec()),
+            &collab_types::op::DocumentMutation::Incremental(change.raw_bytes().to_vec()),
         )
     };
     assert_eq!(opened(&change, &read, "tl.notes.Note"), Ok(()));
@@ -945,15 +949,20 @@ fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
         Err(ReceiptRefusal::Misclaimed(_))
     ));
     assert_eq!(
-        crate::claim::store_record_kinds("*/tl.notes#0", None, std::slice::from_ref(&change))
-            .remove(&change.hash().0),
+        collab_types::claim::store_record_kinds(
+            "*/tl.notes#0",
+            None,
+            std::slice::from_ref(&change)
+        )
+        .remove(&change.hash().0),
         Some(std::iter::once("tl.notes.Note".to_owned()).collect())
     );
 
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "Groceries").unwrap();
     doc.commit_with(
-        CommitOptions::default().with_message(crate::FrameworkChange::Native.change_message()),
+        CommitOptions::default()
+            .with_message(collab_types::FrameworkChange::Native.change_message()),
     );
     let native = parse_changes(&doc.save()).unwrap().remove(0);
     let native_read =

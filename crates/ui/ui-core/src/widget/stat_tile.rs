@@ -876,6 +876,12 @@ impl Widget for StatGroup {
             .collect()
     }
 
+    /// Its box is the rows its tiles make: it asks layout when a tile does, and a group holding
+    /// none has no row to size.
+    fn is_layout_dirty(&self) -> bool {
+        self.tiles.iter().any(|tile| tile.is_layout_dirty())
+    }
+
     fn mark_drawn(&mut self) {
         for tile in &mut self.tiles {
             tile.mark_drawn();

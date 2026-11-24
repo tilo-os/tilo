@@ -403,7 +403,7 @@ pub fn change_carrying(bytes: Vec<u8>) -> Vec<u8> {
 
 /// Each change `bytes` carries, as the store takes and hands them on.
 pub fn changes_of(bytes: &[u8]) -> Vec<Vec<u8>> {
-    collab_types::parse_changes(bytes)
+    automerge::Automerge::parse_changes(bytes)
         .unwrap()
         .iter()
         .map(|change| change.raw_bytes().to_vec())

@@ -132,3 +132,135 @@ pub(crate) fn radio_wakes(phy: &str) -> Result<bool, String> {
         .ok_or_else(|| "this daemon reads no radio's wake setting".to_owned())?;
     read(phy)
 }
+
+/// A tilolang process this device started on Windows.
+#[cfg(windows)]
+#[derive(Debug)]
+pub(crate) enum Confined {
+    /// In its app's `AppContainer`, in a job the daemon holds ([`launcher_windows::launch`]).
+    Contained(launcher_windows::Launched),
+    /// With no confinement at all: a test build's start where Windows has no `AppContainer`
+    /// ([`allow_unconfined_test_launch`]).
+    #[cfg(feature = "test-support")]
+    Unconfined(runtime_portal::process_link::Child),
+}
+
+#[cfg(windows)]
+impl Confined {
+    /// Its process id.
+    pub(crate) const fn pid(&self) -> u32 {
+        match self {
+            Self::Contained(launched) => launched.pid(),
+            #[cfg(feature = "test-support")]
+            Self::Unconfined(child) => child.id(),
+        }
+    }
+
+    /// Its error output, taken once.
+    pub(crate) fn take_stderr(&mut self) -> Option<std::fs::File> {
+        match self {
+            Self::Contained(launched) => launched.child.stderr.take(),
+            #[cfg(feature = "test-support")]
+            Self::Unconfined(child) => child.stderr.take(),
+        }
+    }
+
+    /// End it now: a contained process with everything in its job, as the job closes.
+    pub(crate) fn kill(self) {
+        match self {
+            Self::Contained(launched) => drop(launched),
+            #[cfg(feature = "test-support")]
+            Self::Unconfined(mut child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    /// Wait for it to end, and how it ended.
+    ///
+    /// # Errors
+    /// The system's error waiting for it.
+    pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Contained(launched) => launched.wait(),
+            #[cfg(feature = "test-support")]
+            Self::Unconfined(child) => child.wait(),
+        }
+    }
+}
+
+/// Whether this test build starts a tilolang process unconfined where Windows has no
+/// `AppContainer`.
+#[cfg(all(windows, feature = "test-support"))]
+static UNCONFINED_TEST_LAUNCH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Let the daemons of this test program start a tilolang process with no confinement at all
+/// where Windows has no `AppContainer` to start it in (Wine), so a walk through the daemon there
+/// reaches an app. It exists only in a build with `test-support`, which no shipping build has
+/// (`tools/policy/check_test_support_shipping.py`), and nothing else turns it on. A process it
+/// starts is confined by nothing: a walk that uses it proves nothing about the sandbox. Where
+/// Windows has an `AppContainer`, every start is confined whether this was called or not.
+#[cfg(all(windows, feature = "test-support"))]
+pub fn allow_unconfined_test_launch() {
+    UNCONFINED_TEST_LAUNCH.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Start `request` confined: in its app's `AppContainer`, granted its paths alone, in a job the
+/// daemon holds ([`launcher_windows::launch`]). Where Windows has no `AppContainer`, the start is
+/// refused, unless this is a test program that allowed an unconfined start
+/// ([`allow_unconfined_test_launch`]).
+///
+/// # Errors
+/// As [`launcher_windows::launch`].
+#[cfg(windows)]
+pub(crate) fn launch_confined(
+    request: launcher_windows::LaunchRequest,
+) -> std::io::Result<(runtime_portal::process_link::Descriptor, Confined)> {
+    #[cfg(feature = "test-support")]
+    let command = clone_command(&request.command);
+    match launcher_windows::launch(request) {
+        Ok((link, launched)) => Ok((link, Confined::Contained(launched))),
+        #[cfg(feature = "test-support")]
+        Err(error)
+            if error.kind() == std::io::ErrorKind::Unsupported
+                && UNCONFINED_TEST_LAUNCH.load(std::sync::atomic::Ordering::SeqCst) =>
+        {
+            tracing::warn!(
+                %error,
+                "starting a tilolang process unconfined: this test build allowed it where Windows \
+                 has no AppContainer"
+            );
+            unconfined_test_launch(command)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// The test build's start of `command` with no confinement: [`launch_confined`] where Windows has
+/// no `AppContainer` and the test program allowed it.
+#[cfg(all(windows, feature = "test-support"))]
+fn unconfined_test_launch(
+    command: std::process::Command,
+) -> std::io::Result<(runtime_portal::process_link::Descriptor, Confined)> {
+    runtime_portal::process_link::spawn(command)
+        .map(|(link, child)| (link, Confined::Unconfined(child)))
+}
+
+/// A copy of `command`: its program, arguments, environment and directory.
+#[cfg(all(windows, feature = "test-support"))]
+fn clone_command(command: &std::process::Command) -> std::process::Command {
+    let mut copy = std::process::Command::new(command.get_program());
+    copy.args(command.get_args());
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => copy.env(key, value),
+            None => copy.env_remove(key),
+        };
+    }
+    if let Some(dir) = command.get_current_dir() {
+        copy.current_dir(dir);
+    }
+    copy
+}

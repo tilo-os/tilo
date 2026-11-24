@@ -18,6 +18,7 @@ view media(g: Gallery) {
     state head: Float = 3.0
     state span: Float = 20.0
     state scroll: Float = 0.0
+    state curve: List<Float> = [0.0, 0.0, 0.25, 0.15, 0.75, 0.85, 1.0, 1.0]
     ui.Text(
         "Pictures, players, a library, codes and surfaces, each as an app places it.",
         role: .caption,
@@ -57,6 +58,14 @@ view media(g: Gallery) {
                     bottom: 0.9,
                     aspect: 1.5,
                 )
+            }
+        }
+        part(
+            "Curve editor",
+            "A tone curve shaped by hand: a press adds a point, a drag bends it, and letting go outside takes it off.",
+        ) {
+            ui.CurveEditor(points: curve, label: "A tone curve") {
+                on change(moved: List<Float>): set(curve, moved)
             }
         }
         part(

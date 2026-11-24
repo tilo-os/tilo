@@ -128,6 +128,11 @@ pub struct AccessState {
     pub multiline: bool,
     /// When set, widgets must NOT place the secret in [`AccessNode::value`].
     pub protected: bool,
+    /// A press that grants or confirms what the person decides (Allow, Delete, Send): a screen
+    /// reader presses it, but it is never published where an agent reaches it, so that consent
+    /// stays the person's.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub consent: bool,
     /// What a text field asks for, so a browser or password manager can fill it in and a page can offer
     /// passkeys on it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -205,6 +210,11 @@ impl AccessState {
     }
     pub fn protected(mut self, v: bool) -> Self {
         self.protected = v;
+        self
+    }
+    /// Sets [`consent`](Self::consent).
+    pub fn consent(mut self, v: bool) -> Self {
+        self.consent = v;
         self
     }
     /// Sets [`autofill`](Self::autofill).

@@ -772,16 +772,14 @@ pub fn run_udp_relay(fd: std::os::fd::RawFd, port: u16) -> io::Result<()> {
         loop {
             match from_app.recv_from(&mut buf) {
                 Ok((n, from)) => {
-                    let mut pinned = pinned
+                    // The first sender is pinned; every later datagram must come from it.
+                    let from_client = *pinned
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let Some(client) = *pinned else {
-                        *pinned = Some(from);
-                        let _ = to_proxy.send(&buf[..n]);
-                        continue;
-                    };
-                    if client == from {
-                        let _ = to_proxy.send(&buf[..n]);
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get_or_insert(from)
+                        == from;
+                    if from_client && let Some(datagram) = buf.get(..n) {
+                        let _ = to_proxy.send(datagram);
                     }
                 }
                 Err(e)
@@ -796,17 +794,23 @@ pub fn run_udp_relay(fd: std::os::fd::RawFd, port: u16) -> io::Result<()> {
         match host.recv(&mut buf) {
             // The proxy end is gone: this launch is over, and no app traffic may cross without it.
             Ok(0) => return Ok(()),
-            Ok(n) if n == 1 && buf[0] == UDP_RELAY_RESET[0] => {
-                *client
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-            }
             Ok(n) => {
-                let client = *client
+                let Some(datagram) = buf.get(..n) else {
+                    continue;
+                };
+                let mut pinned = client
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(client) = client {
-                    let _ = app.send_to(&buf[..n], client);
+                // The proxy's reset forgets the pinned client: the next call's app sends first.
+                let to = if datagram == UDP_RELAY_RESET {
+                    pinned.take();
+                    None
+                } else {
+                    *pinned
+                };
+                drop(pinned);
+                if let Some(client) = to {
+                    let _ = app.send_to(datagram, client);
                 }
             }
             Err(e)
@@ -817,41 +821,38 @@ pub fn run_udp_relay(fd: std::os::fd::RawFd, port: u16) -> io::Result<()> {
     }
 }
 
-/// The SOCKS5 UDP request header's destination and where its data starts.
-fn udp_destination(frame: &[u8]) -> Option<(Destination, usize)> {
-    if frame.len() < 4 || frame[0] != 0 || frame[1] != 0 || frame[2] != 0 {
+/// The SOCKS5 UDP request header's destination, and the data that follows it.
+fn udp_destination(frame: &[u8]) -> Option<(Destination, &[u8])> {
+    // Reserved, reserved, no fragment, then the address's kind.
+    let [0, 0, 0, kind, rest @ ..] = frame else {
         return None;
-    }
-    let mut at: usize = 4;
-    let dest = match frame[3] {
+    };
+    match kind {
         0x01 => {
-            let raw = frame.get(at..at.checked_add(4)?)?;
-            at += 4;
-            let ip = IpAddr::from(<[u8; 4]>::try_from(raw).ok()?);
-            Destination::Addr(ip, udp_port(frame, &mut at)?)
+            let (ip, rest) = rest.split_first_chunk::<4>()?;
+            let (port, data) = udp_port(rest)?;
+            Some((Destination::Addr(IpAddr::from(*ip), port), data))
         }
         0x03 => {
-            let len = usize::from(*frame.get(at)?);
-            at += 1;
-            let name = std::str::from_utf8(frame.get(at..at.checked_add(len)?)?).ok()?;
-            at += len;
-            Destination::Domain(name.to_owned(), udp_port(frame, &mut at)?)
+            let (len, rest) = rest.split_first()?;
+            let (name, rest) = rest.split_at_checked(usize::from(*len))?;
+            let name = std::str::from_utf8(name).ok()?.to_owned();
+            let (port, data) = udp_port(rest)?;
+            Some((Destination::Domain(name, port), data))
         }
         0x04 => {
-            let raw = frame.get(at..at.checked_add(16)?)?;
-            at += 16;
-            let ip = IpAddr::from(<[u8; 16]>::try_from(raw).ok()?);
-            Destination::Addr(ip, udp_port(frame, &mut at)?)
+            let (ip, rest) = rest.split_first_chunk::<16>()?;
+            let (port, data) = udp_port(rest)?;
+            Some((Destination::Addr(IpAddr::from(*ip), port), data))
         }
-        _ => return None,
-    };
-    Some((dest, at))
+        _ => None,
+    }
 }
 
-fn udp_port(frame: &[u8], at: &mut usize) -> Option<u16> {
-    let raw = frame.get(*at..at.checked_add(2)?)?;
-    *at += 2;
-    Some(u16::from_be_bytes(<[u8; 2]>::try_from(raw).ok()?))
+/// A big-endian port, and what follows it.
+fn udp_port(bytes: &[u8]) -> Option<(u16, &[u8])> {
+    let (port, rest) = bytes.split_first_chunk::<2>()?;
+    Some((u16::from_be_bytes(*port), rest))
 }
 
 /// A SOCKS5 UDP reply frame carrying `data` from `from`.
@@ -890,14 +891,14 @@ fn udp_reachable(ip: IpAddr, test_loopback: bool) -> bool {
                 || v4.is_broadcast()
                 || v4.is_multicast()
                 || v4.is_documentation()
-                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])))
+                || matches!(v4.octets(), [100, 64..128, ..]))
         }
         IpAddr::V6(v6) => {
             !(v6.is_unspecified()
                 || v6.is_multicast()
                 || v6.is_unique_local()
                 || v6.is_unicast_link_local()
-                || (v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0db8))
+                || matches!(v6.segments(), [0x2001, 0x0db8, ..]))
         }
     }
 }
@@ -913,11 +914,93 @@ fn serve_udp(state: Arc<CallsState>) -> Result<oneshot::Sender<()>, ProxyError> 
                 _ = &mut stopped => return,
                 got = state.ingress.recv(&mut buf) => got,
             };
-            let Ok(n) = got else { continue };
-            handle_udp(&state, &buf[..n]).await;
+            let Some(frame) = got.ok().and_then(|n| buf.get(..n)) else {
+                continue;
+            };
+            handle_udp(&state, frame).await;
         }
     });
     Ok(stop)
+}
+
+/// Resolve a datagram's named destination to one public address, within a bound: a call names
+/// an address it was handed, and one slow lookup must not hold the lane's other datagrams.
+async fn resolve_udp(state: &Arc<CallsState>, name: &str, port: u16) -> Option<SocketAddr> {
+    let resolved = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::net::lookup_host((name, port)),
+    )
+    .await;
+    let mut addrs = match resolved {
+        Ok(Ok(addrs)) => addrs,
+        Ok(Err(error)) => {
+            tracing::warn!(app = %state.app, host = %name, %error, "udp name did not resolve");
+            state.deny("the name did not resolve", name);
+            return None;
+        }
+        Err(_) => {
+            state.deny("the name did not resolve in time", name);
+            return None;
+        }
+    };
+    let found = addrs.find(|addr| udp_reachable(addr.ip(), state.test_loopback));
+    if found.is_none() {
+        state.deny("the name has no public address", name);
+    }
+    found
+}
+
+/// Open the call's flow to `target`, and carry its replies back to the app while the call lasts.
+async fn open_udp_flow(state: &Arc<CallsState>, target: SocketAddr) -> Option<Arc<UdpFlow>> {
+    let bind: SocketAddr = if target.is_ipv4() {
+        ([0, 0, 0, 0], 0).into()
+    } else {
+        ([0_u16; 8], 0).into()
+    };
+    let Ok(socket) = tokio::net::UdpSocket::bind(bind).await else {
+        state.deny("could not bind a datagram socket", &target.ip().to_string());
+        return None;
+    };
+    if socket.connect(target).await.is_err() {
+        state.deny("could not reach the address", &target.ip().to_string());
+        return None;
+    }
+    let flow = Arc::new(UdpFlow {
+        socket: Arc::new(socket),
+    });
+    state
+        .flows
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(target, Arc::clone(&flow));
+    state.stats.udp_flows.fetch_add(1, Ordering::Relaxed);
+    tracing::info!(
+        app = %state.app,
+        address = %target,
+        "udp flow open; datagrams go only to this address and back while a call is live"
+    );
+    let reader = Arc::clone(&flow);
+    let ingress = Arc::clone(&state.ingress);
+    let mut cut = state.cut.subscribe();
+    if let Ok(runtime) = egress_runtime() {
+        runtime.spawn(async move {
+            let mut buf = vec![0u8; 65_535];
+            loop {
+                let got = tokio::select! {
+                    _ = cut.recv() => return,
+                    got = reader.socket.recv_from(&mut buf) => got,
+                };
+                let Ok((n, source)) = got else { continue };
+                if source != target {
+                    continue;
+                }
+                if let Some(data) = buf.get(..n) {
+                    let _ = ingress.send(&udp_reply(source, data)).await;
+                }
+            }
+        });
+    }
+    Some(flow)
 }
 
 async fn handle_udp(state: &Arc<CallsState>, frame: &[u8]) {
@@ -928,40 +1011,17 @@ async fn handle_udp(state: &Arc<CallsState>, frame: &[u8]) {
         state.deny("outside a call", "");
         return;
     }
-    let Some((dest, header)) = udp_destination(frame) else {
+    let Some((dest, data)) = udp_destination(frame) else {
         state.deny("not a SOCKS5 UDP datagram", "");
         return;
     };
-    let target = match &dest {
-        Destination::Addr(ip, port) => SocketAddr::new(*ip, *port),
+    let target = match dest {
+        Destination::Addr(ip, port) => SocketAddr::new(ip, port),
         Destination::Domain(name, port) => {
-            // A call names an address it was handed; a name is bounded so one slow lookup cannot
-            // hold the lane's other datagrams.
-            let resolved = tokio::time::timeout(
-                Duration::from_secs(2),
-                tokio::net::lookup_host((name.as_str(), *port)),
-            )
-            .await;
-            match resolved {
-                Ok(Ok(mut addrs)) => {
-                    match addrs.find(|addr| udp_reachable(addr.ip(), state.test_loopback)) {
-                        Some(addr) => addr,
-                        None => {
-                            state.deny("the name has no public address", name);
-                            return;
-                        }
-                    }
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(app = %state.app, host = %name, %error, "udp name did not resolve");
-                    state.deny("the name did not resolve", name);
-                    return;
-                }
-                Err(_) => {
-                    state.deny("the name did not resolve in time", name);
-                    return;
-                }
-            }
+            let Some(target) = resolve_udp(state, &name, port).await else {
+                return;
+            };
+            target
         }
     };
     if !udp_reachable(target.ip(), state.test_loopback) {
@@ -976,59 +1036,15 @@ async fn handle_udp(state: &Arc<CallsState>, frame: &[u8]) {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&target)
         .cloned();
-    let flow = match existing {
-        Some(flow) => flow,
-        None => {
-            let bind: SocketAddr = if target.is_ipv4() {
-                ([0, 0, 0, 0], 0).into()
-            } else {
-                ([0_u16; 8], 0).into()
-            };
-            let Ok(socket) = tokio::net::UdpSocket::bind(bind).await else {
-                state.deny("could not bind a datagram socket", &target.ip().to_string());
-                return;
-            };
-            if socket.connect(target).await.is_err() {
-                state.deny("could not reach the address", &target.ip().to_string());
-                return;
-            }
-            let flow = Arc::new(UdpFlow {
-                socket: Arc::new(socket),
-            });
-            state
-                .flows
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(target, Arc::clone(&flow));
-            state.stats.udp_flows.fetch_add(1, Ordering::Relaxed);
-            tracing::info!(
-                app = %state.app,
-                address = %target,
-                "udp flow open; datagrams go only to this address and back while a call is live"
-            );
-            let reader = Arc::clone(&flow);
-            let ingress = Arc::clone(&state.ingress);
-            let mut cut = state.cut.subscribe();
-            if let Ok(runtime) = egress_runtime() {
-                runtime.spawn(async move {
-                    let mut buf = vec![0u8; 65_535];
-                    loop {
-                        let got = tokio::select! {
-                            _ = cut.recv() => return,
-                            got = reader.socket.recv_from(&mut buf) => got,
-                        };
-                        let Ok((n, source)) = got else { continue };
-                        if source != target {
-                            continue;
-                        }
-                        let _ = ingress.send(&udp_reply(source, &buf[..n])).await;
-                    }
-                });
-            }
-            flow
-        }
+    let flow = if let Some(flow) = existing {
+        flow
+    } else {
+        let Some(flow) = open_udp_flow(state, target).await else {
+            return;
+        };
+        flow
     };
-    let _ = flow.socket.send(&frame[header..]).await;
+    let _ = flow.socket.send(data).await;
     state.allowed();
 }
 
@@ -2707,8 +2723,8 @@ mod tests {
         }
 
         fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline {
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(5) {
                 if done() {
                     return;
                 }
@@ -2839,8 +2855,12 @@ mod tests {
             let payload = [0x5au8; 1200];
             let mut reply_buf = [0u8; 2048];
             for _ in 0..900 {
-                client.send(&frame(target, &payload)).expect("a datagram out");
-                let n = client.recv(&mut reply_buf).expect("every datagram comes back");
+                client
+                    .send(&frame(target, &payload))
+                    .expect("a datagram out");
+                let n = client
+                    .recv(&mut reply_buf)
+                    .expect("every datagram comes back");
                 assert_eq!(&reply_buf[10..n], &payload[..], "the share's bytes, whole");
             }
             assert_eq!(proxy.stats().udp_allowed(), 900);
@@ -2859,12 +2879,12 @@ mod tests {
 
         #[test]
         fn the_relay_carries_only_the_client_that_sent_first() {
+            use std::os::fd::IntoRawFd as _;
             let (proxy_end, relay_end) = UnixDatagram::pair().expect("a datagram pair");
             let port = {
                 let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
                 socket.local_addr().unwrap().port()
             };
-            use std::os::fd::IntoRawFd as _;
             let fd = relay_end.into_raw_fd();
             std::thread::spawn(move || {
                 let _ = run_udp_relay(fd, port);

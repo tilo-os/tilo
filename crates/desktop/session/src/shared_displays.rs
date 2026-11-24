@@ -85,7 +85,7 @@ fn encoded(outputs: &[DeviceOutput]) -> Option<String> {
 
 /// The outputs a device keeps in `value`, where they hold: no more than a device has, each one an
 /// output could be, none named twice.
-fn decoded(value: &str) -> Option<Vec<DeviceOutput>> {
+pub(crate) fn decoded(value: &str) -> Option<Vec<DeviceOutput>> {
     let outputs: Vec<DeviceOutput> = crate::platform::fabric::decoded(value)?;
     let ids = outputs
         .iter()

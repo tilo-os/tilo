@@ -239,6 +239,27 @@ pub struct Arrived<T> {
     pub bytes: Vec<u8>,
 }
 
+/// Content whose pieces all arrived, not yet checked against its address: checked
+/// ([`Self::verified`]) apart from whatever lock keeps the wants, since hashing a large file
+/// takes a while and every other piece waits on that lock meanwhile.
+pub struct Assembled<T> {
+    tag: T,
+    hash: String,
+    bytes: Vec<u8>,
+}
+
+impl<T> Assembled<T> {
+    /// The content, when its bytes are the ones its address names.
+    #[must_use]
+    pub fn verified(self) -> Option<Arrived<T>> {
+        (blake3::hash(&self.bytes).to_hex().as_str() == self.hash).then_some(Arrived {
+            tag: self.tag,
+            hash: self.hash,
+            bytes: self.bytes,
+        })
+    }
+}
+
 /// The content requests this device has open, by hash.
 pub struct ContentWants<T> {
     wants: BTreeMap<String, Want<T>>,
@@ -352,7 +373,12 @@ impl<T> ContentWants<T> {
     /// silence ([`LACKED_PATIENCE_MS`]). Only an asker whose responders hand
     /// over what they lacked takes these.
     pub fn lacks(&mut self, device: &[u8; 32], frame: &[u8]) -> bool {
-        let Some(hash) = self.lacking(device, frame) else {
+        crate::NeighbourMsg::decode(frame).is_ok_and(|message| self.lacks_in(device, &message))
+    }
+
+    /// [`Self::lacks`], of a frame decoded already.
+    pub fn lacks_in(&mut self, device: &[u8; 32], message: &crate::NeighbourMsg) -> bool {
+        let Some(hash) = self.lacking(device, message) else {
             return false;
         };
         if let Some(want) = self.wants.get_mut(&hash) {
@@ -366,28 +392,34 @@ impl<T> ContentWants<T> {
     /// ([`Self::lacks`]).
     #[must_use]
     pub fn awaits(&self, device: &[u8; 32], frame: &[u8]) -> bool {
-        self.lacking(device, frame).is_some()
+        crate::NeighbourMsg::decode(frame).is_ok_and(|message| self.awaits_in(device, &message))
     }
 
-    /// The hash of the want `frame`, word addressed to `device` that the
+    /// [`Self::awaits`], of a frame decoded already.
+    #[must_use]
+    pub fn awaits_in(&self, device: &[u8; 32], message: &crate::NeighbourMsg) -> bool {
+        self.lacking(device, message).is_some()
+    }
+
+    /// The hash of the want `message`, word addressed to `device` that the
     /// responder lacks it, is about.
-    fn lacking(&self, device: &[u8; 32], frame: &[u8]) -> Option<String> {
-        let Ok(crate::NeighbourMsg::DocumentContentLacks {
+    fn lacking(&self, device: &[u8; 32], message: &crate::NeighbourMsg) -> Option<String> {
+        let crate::NeighbourMsg::DocumentContentLacks {
             requester,
             app_id,
             cluster_id,
             hash,
             ..
-        }) = crate::NeighbourMsg::decode(frame)
+        } = message
         else {
             return None;
         };
         let hash = hash.to_ascii_lowercase();
-        (requester == crate::peer_handle(device)
+        (*requester == crate::peer_handle(device)
             && self
                 .wants
                 .get(&hash)
-                .is_some_and(|want| want.app_id == app_id && want.cluster_id == cluster_id))
+                .is_some_and(|want| &want.app_id == app_id && &want.cluster_id == cluster_id))
         .then_some(hash)
     }
 
@@ -499,30 +531,48 @@ impl<T> ContentWants<T> {
     /// its own request.
     #[must_use]
     pub fn expects(&self, device: &[u8; 32], frame: &[u8]) -> bool {
-        let Ok(crate::NeighbourMsg::DocumentContentPiece {
+        crate::NeighbourMsg::decode(frame).is_ok_and(|message| self.expects_in(device, &message))
+    }
+
+    /// [`Self::expects`], of a frame decoded already.
+    #[must_use]
+    pub fn expects_in(&self, device: &[u8; 32], message: &crate::NeighbourMsg) -> bool {
+        let crate::NeighbourMsg::DocumentContentPiece {
             requester,
             app_id,
             cluster_id,
             hash,
             total,
             ..
-        }) = crate::NeighbourMsg::decode(frame)
+        } = message
         else {
             return false;
         };
-        requester == crate::peer_handle(device)
-            && total <= MAX_CONTENT_BYTES
+        *requester == crate::peer_handle(device)
+            && *total <= MAX_CONTENT_BYTES
             && self
                 .wants
                 .get(&hash.to_ascii_lowercase())
-                .is_some_and(|want| want.app_id == app_id && want.cluster_id == cluster_id)
+                .is_some_and(|want| &want.app_id == app_id && &want.cluster_id == cluster_id)
     }
 
     /// One piece of content a member sent device `device`: kept when it
     /// belongs to content a device asked for; the content once whole and
     /// verified.
     pub fn piece(&mut self, device: &[u8; 32], frame: &[u8], now_ms: u64) -> Option<Arrived<T>> {
-        let Ok(crate::NeighbourMsg::DocumentContentPiece {
+        let message = crate::NeighbourMsg::decode(frame).ok()?;
+        self.assemble(device, message, now_ms)?.verified()
+    }
+
+    /// [`Self::piece`], of a frame decoded already, taking its bytes: the content once all its
+    /// pieces are here, still to be checked against its address ([`Assembled::verified`]).
+    pub fn assemble(
+        &mut self,
+        device: &[u8; 32],
+        message: crate::NeighbourMsg,
+        now_ms: u64,
+    ) -> Option<Assembled<T>> {
+        let crate::NeighbourMsg::DocumentContentPiece {
             requester,
             app_id,
             cluster_id,
@@ -531,7 +581,7 @@ impl<T> ContentWants<T> {
             offset,
             bytes,
             ..
-        }) = crate::NeighbourMsg::decode(frame)
+        } = message
         else {
             return None;
         };
@@ -580,7 +630,7 @@ impl<T> ContentWants<T> {
             return None;
         };
         let want = self.wants.remove(&hash)?;
-        (blake3::hash(&assembled).to_hex().as_str() == hash).then_some(Arrived {
+        Some(Assembled {
             tag: want.tag,
             hash,
             bytes: assembled,
@@ -741,6 +791,56 @@ mod tests {
                 assert_eq!(wanted.assembled().as_deref(), whole, "{case}: row {row}");
             }
         }
+    }
+
+    /// Pieces whose bytes are not what their address names are gathered like any others, and
+    /// never come out as content: the check against the address runs once all are here, apart
+    /// from the wants, and the want is gone by then, so the forged bytes are not asked for
+    /// again as if they were still on their way, nor kept.
+    #[test]
+    fn forged_content_is_assembled_and_never_verified() {
+        let device = [7; 32];
+        let named = b"the file the record names".to_vec();
+        let forged = b"bytes the record never named".to_vec();
+        let hash = blake3::hash(&named).to_hex().to_string();
+        let mut wants = ContentWants::default();
+        let workspace = ("so.tilo.file-explorer", "workspace");
+        assert!(wants.ask(&device, "files", workspace, &hash, 0).is_some());
+        let message = crate::NeighbourMsg::DocumentContentPiece {
+            responder: crate::peer_handle(&[1; 32]),
+            requester: crate::peer_handle(&device),
+            app_id: workspace.0.into(),
+            cluster_id: workspace.1.into(),
+            hash: hash.clone(),
+            total: forged.len() as u64,
+            offset: 0,
+            bytes: forged,
+        };
+        assert!(wants.expects_in(&device, &message), "what it asked for");
+        let assembled = wants
+            .assemble(&device, message, 0)
+            .expect("every piece is here");
+        assert!(
+            assembled.verified().is_none(),
+            "bytes their address does not name are no content"
+        );
+        assert!(
+            !wants.expects(
+                &device,
+                &postcard::to_allocvec(&crate::NeighbourMsg::DocumentContentPiece {
+                    responder: crate::peer_handle(&[1; 32]),
+                    requester: crate::peer_handle(&device),
+                    app_id: workspace.0.into(),
+                    cluster_id: workspace.1.into(),
+                    hash,
+                    total: named.len() as u64,
+                    offset: 0,
+                    bytes: named.clone(),
+                })
+                .unwrap()
+            ),
+            "the want ended with the forged answer: it is asked for again, not waited on"
+        );
     }
 
     #[test]
@@ -1069,9 +1169,17 @@ mod tests {
         let elsewhere = blake3::hash(b"another workspace's").to_hex().to_string();
         let now_ms = 1_000;
         let ask = wants.ask(&host, (), workspace, &started, now_ms).unwrap();
-        wants.ask(&host, (), workspace, &unanswered, now_ms).unwrap();
         wants
-            .ask(&host, (), ("so.tilo.files", "elsewhere"), &elsewhere, now_ms)
+            .ask(&host, (), workspace, &unanswered, now_ms)
+            .unwrap();
+        wants
+            .ask(
+                &host,
+                (),
+                ("so.tilo.files", "elsewhere"),
+                &elsewhere,
+                now_ms,
+            )
             .unwrap();
         let first = answer(&member, &host, &ask, |_, _, _| Some(large.clone()))
             .into_iter()
@@ -1093,7 +1201,10 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            again.keys().cloned().collect::<std::collections::BTreeSet<_>>(),
+            again
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
             std::collections::BTreeSet::from([started.clone(), unanswered]),
             "both of the workspace's wants are asked at once, the other workspace's not"
         );
@@ -1105,10 +1216,7 @@ mod tests {
             }],
             "saying what arrived"
         );
-        assert!(
-            wants.reask(&host, now_ms + 1).is_empty(),
-            "and only once"
-        );
+        assert!(wants.reask(&host, now_ms + 1).is_empty(), "and only once");
     }
 
     /// An ask whose answer was lost hands its request back once it lapses, so the asker that

@@ -14,7 +14,7 @@ use tilo_actions::{
     ActionContext, ActionInvoker, ActionKey, Did, EditOp, FieldEdit, PathStep, VerbCall,
 };
 
-use super::super::*;
+use super::*;
 
 const WORKSPACE: &str = "workspace-1";
 const APP: &str = "so.tilo.mail";
@@ -76,7 +76,7 @@ impl SurfaceSource for Mailbox {
 fn held() -> AutoCommit {
     let mut doc = AutoCommit::new();
     let index = doc
-        .put_object(ROOT, crate::units::UNIT_INDEX, ObjType::List)
+        .put_object(ROOT, collab_types::units::UNIT_INDEX, ObjType::List)
         .unwrap();
     doc.insert(&index, 0, "outbox").unwrap();
     doc.put(ROOT, "title", "Mailbox").unwrap();
@@ -95,7 +95,7 @@ fn with_invoker(context: ActionContext, by: &str) -> ActionContext {
 
 /// The change a device makes settling the entry it ran: an edit inside the
 /// entry, made as who it names.
-fn settle(before: &AutoCommit, by: &str) -> crate::op::SignedOp {
+fn settle(before: &AutoCommit, by: &str) -> collab_types::op::SignedOp {
     let heads = before.clone().get_heads();
     let mut doc = before.clone();
     let outbox = doc.get(ROOT, "outbox").unwrap().unwrap().1;
@@ -125,7 +125,7 @@ fn settle(before: &AutoCommit, by: &str) -> crate::op::SignedOp {
 }
 
 /// The change a device makes queueing a message to send: the entry it pushes.
-fn send(before: &AutoCommit, by: &str) -> crate::op::SignedOp {
+fn send(before: &AutoCommit, by: &str) -> collab_types::op::SignedOp {
     let heads = before.clone().get_heads();
     let mut doc = before.clone();
     let outbox = doc.get(ROOT, "outbox").unwrap().unwrap().1;
@@ -147,16 +147,16 @@ fn send(before: &AutoCommit, by: &str) -> crate::op::SignedOp {
     op(&mut doc, &heads)
 }
 
-fn op(doc: &mut AutoCommit, heads: &[automerge::ChangeHash]) -> crate::op::SignedOp {
-    let payload = crate::op::DocumentMutation::Incremental(doc.save_after(heads))
+fn op(doc: &mut AutoCommit, heads: &[automerge::ChangeHash]) -> collab_types::op::SignedOp {
+    let payload = collab_types::op::DocumentMutation::Incremental(doc.save_after(heads))
         .encode()
         .unwrap();
-    crate::op::SignedOp::new_unsigned(
+    collab_types::op::SignedOp::new_unsigned(
         payload,
-        crate::document_artifact_id(APP, WORKSPACE, ""),
-        crate::Ed25519PublicKey::from_bytes([7; 32]),
-        crate::document_attestation_id(APP, WORKSPACE, ""),
-        crate::role::OpKind::Change,
+        collab_types::document_artifact_id(APP, WORKSPACE, ""),
+        collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+        collab_types::document_attestation_id(APP, WORKSPACE, ""),
+        collab_types::role::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         1,
     )
@@ -196,7 +196,7 @@ fn writes_mail(person: &str) -> WorkspacePolicy {
 
 /// How `op` is decided by a receiver holding `held` whose signer is `signer`.
 fn received(
-    op: &crate::op::SignedOp,
+    op: &collab_types::op::SignedOp,
     held: &AutoCommit,
     signer: &MemberAccess,
 ) -> Result<Receipt, ReceiptRefusal> {
@@ -207,13 +207,14 @@ fn received(
     let surfaces = Surfaces::from_source(Arc::new(Mailbox));
     let held = held.clone();
     let mut holding = held.clone();
-    decide_op_pinned(
-        op,
+    decide_opened(
+        (op, None),
         &document(),
         (Some(KIND), Some(held), None),
         Some(holding.document()),
         &surfaces,
         &allows,
+        (None, None),
     )
 }
 
@@ -229,7 +230,7 @@ fn sealed(
     by: &str,
     signer: &MemberAccess,
 ) -> Result<Receipt, ReceiptRefusal> {
-    let claim = crate::claim::ChangeClaim {
+    let claim = collab_types::claim::ChangeClaim {
         change: [1; 32],
         action,
         units,

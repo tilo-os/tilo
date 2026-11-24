@@ -15380,6 +15380,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-broker-core",
+ "tilo-collab-admission",
  "tilo-collab-types",
  "tilo-content",
  "tilo-desktop-model",
@@ -15796,6 +15797,7 @@ dependencies = [
  "tilo-accounts",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-automerge-fork",
  "tilo-clock",
  "tilo-collab-types",
  "tilo-delivery-protocol",
@@ -16213,6 +16215,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-collab-admission"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "postcard",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-automerge-isolate",
+ "tilo-collab-types",
+ "tilo-test-env",
+ "uuid",
+ "web-time",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-collab-types"
 version = "0.1.0"
 dependencies = [
@@ -16234,7 +16254,6 @@ dependencies = [
  "tilo-app-id",
  "tilo-automerge",
  "tilo-automerge-fork",
- "tilo-automerge-isolate",
  "tilo-canonical-json",
  "tilo-content-types",
  "tilo-face",
@@ -16630,6 +16649,7 @@ dependencies = [
  "tilo-rt",
  "tilo-runtime",
  "tilo-runtime-bundle",
+ "tilo-runtime-collab",
  "tilo-runtime-portal",
  "tilo-server-protocol",
  "tilo-socket",
@@ -17655,6 +17675,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-collab-admission",
  "tilo-collab-types",
  "tilo-desktop-model",
  "tilo-device-identity",
@@ -18960,6 +18981,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-collab-admission",
  "tilo-collab-types",
  "tilo-content",
  "tilo-delivery-protocol",
@@ -19001,6 +19023,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "test-server",
+ "tilo-actions",
  "tilo-api",
  "tilo-app",
  "tilo-app-package",
@@ -19010,7 +19033,6 @@ dependencies = [
  "tilo-daemon",
  "tilo-device-identity",
  "tilo-paths",
- "tilo-peer-state",
  "tilo-render-protocol",
  "tilo-runtime",
  "tilo-server-protocol",

@@ -73,6 +73,43 @@ class ImportsTests(unittest.TestCase):
             runtime.imports(b"\x7fELF" + bytes(64))
 
 
+class BundleAuditTests(unittest.TestCase):
+    """A runtime bundle carries exactly the closure staged, byte for byte, and nothing more."""
+
+    def setUp(self):
+        import json
+        import tempfile
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        tree = reviewed_tree()
+        tree["licenses/LGPL-2.1-or-later.txt"] = b"notice"
+        self.staged = root / "gstreamer-runtime-x86_64.json"
+        self.staged.write_text(json.dumps({"files": {
+            path: {"sha256": runtime.digest(data)} for path, data in tree.items()}}))
+        self.bundle = root / "bundle"
+        for path, data in tree.items():
+            kept = path.replace("libexec/", "lib/libexec/", 1).replace("licenses/", "lib/licenses/", 1)
+            (self.bundle / kept).parent.mkdir(parents=True, exist_ok=True)
+            (self.bundle / kept).write_bytes(data)
+        (self.bundle / "bin/tilolang-process.exe").write_bytes(executable(["kernel32.dll"]))
+        (self.bundle / "bundle.toml").write_text("version = \"1\"\n")
+
+    def test_the_staged_closure_passes(self):
+        self.assertEqual(runtime.audit(self.bundle, self.staged), len(reviewed_tree()) + 1)
+
+    def test_a_file_the_closure_did_not_stage_is_refused(self):
+        (self.bundle / "lib/gstreamer-1.0/gstx264.dll").write_bytes(executable(["kernel32.dll"]))
+        with self.assertRaisesRegex(ValueError, r"extra \['lib/gstreamer-1.0/gstx264.dll'\]"):
+            runtime.audit(self.bundle, self.staged)
+
+    def test_a_changed_library_is_refused(self):
+        library = sorted(runtime.LIBRARIES)[0]
+        (self.bundle / f"bin/{library}").write_bytes(executable(["user32.dll"]))
+        with self.assertRaisesRegex(ValueError, f"bin/{library} is not the file staged"):
+            runtime.audit(self.bundle, self.staged)
+
+
 class ClosureTests(unittest.TestCase):
     def test_the_reviewed_closure_stages_with_the_windows_it_imports(self):
         staged, system = runtime.closure(reviewed_tree())

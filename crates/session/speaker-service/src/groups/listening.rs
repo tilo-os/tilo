@@ -31,7 +31,6 @@ pub struct ListenEgress {
 pub struct PendingListen {
     pub(super) leader: DeviceId,
     pub(super) microphone: EndpointSelector,
-    pub(super) received: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -294,7 +293,6 @@ impl SpeakerGroupCore {
                         PendingListen {
                             leader: source.clone(),
                             microphone: *microphone,
-                            received: now,
                         },
                     );
                 }
@@ -328,7 +326,7 @@ impl SpeakerGroupCore {
             self.listen_invites.clear();
             return Vec::new();
         }
-        let stale = state
+        let voided = state
             .listeners_of(local)
             .iter()
             .filter(|listener| {
@@ -339,7 +337,7 @@ impl SpeakerGroupCore {
             })
             .map(|listener| (listener.group, listener.leader.clone()))
             .collect::<BTreeSet<_>>();
-        stale
+        voided
             .into_iter()
             .map(|(group, leader)| SpeakerWrite::Withdraw {
                 device: local.clone(),

@@ -34,10 +34,13 @@ pub(crate) struct Served {
     drawn_at: Option<(String, String, String, bool)>,
     /// The settings document when this last read them.
     settings: settings_store::SettingsFollower,
+    /// This machine's input devices, kept current by a worker: which keyboard types is read from
+    /// them.
+    inputs: crate::input_devices::Inputs,
 }
 
 impl Served {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(inputs: crate::input_devices::Inputs) -> Self {
         let (layouts, error) = installed_once();
         Self {
             published: Keyboard {
@@ -48,6 +51,7 @@ impl Served {
             },
             drawn_at: None,
             settings: settings_store::SettingsFollower::default(),
+            inputs,
         }
     }
 
@@ -67,7 +71,9 @@ impl Served {
             }
         };
         let input = settings_store::hardware::RichInputConfig::load();
-        let current = settings_store::keyboard_sources::current(&input);
+        // The keyboard the scope names, as the worker read this machine's input devices: the
+        // reading never opens the compositor's file on the loop.
+        let current = settings_store::keyboard_sources::effective(&input, &self.inputs.scope());
         let model = if settings_sections::prefs::valid_keyboard_model(&device.keyboard_model) {
             device.keyboard_model.clone()
         } else {

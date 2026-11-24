@@ -301,20 +301,7 @@ impl Device {
         // A workspace this session is in already was entered, and its host's answer kept with
         // it: the link it takes part in is all that is left to join.
         if self.peer.status().workspaces.get(&id) != Some(&true) {
-            let entering = tilo_server_protocol::entering::Entering {
-                workspace: workspace.to_owned(),
-                name: String::new(),
-                request_id: rand::random(),
-                through: tilo_server_protocol::entering::Through::Entry,
-            };
-            let entered = self.enter_once(entering).await?;
-            let admission = admission(entered).map_err(|refusal| {
-                CertifyError::Denied(format!(
-                    "The workspace did not let this device in: {}",
-                    refusal.reason()
-                ))
-            })?;
-            self.keep_host(&admission);
+            self.let_in(workspace).await?;
         }
         self.peer
             .send(Cmd::Join(id))
@@ -325,6 +312,31 @@ impl Device {
             ));
         }
         Ok(id)
+    }
+
+    /// Have the host let this device in to `workspace` (its UUID) through its entry, which puts
+    /// it in the workspace's roster and answers the address its host holds the workspace at,
+    /// without taking part in the workspace's link: what a login asks of a server before the
+    /// device's own service takes the workspace in there.
+    ///
+    /// # Errors
+    /// The session is closed, the host did not answer, or the workspace did not let it in.
+    pub async fn let_in(&self, workspace: &str) -> Result<Admission, CertifyError> {
+        let entering = tilo_server_protocol::entering::Entering {
+            workspace: workspace.to_owned(),
+            name: String::new(),
+            request_id: rand::random(),
+            through: tilo_server_protocol::entering::Through::Entry,
+        };
+        let entered = self.enter_once(entering).await?;
+        let admission = admission(entered).map_err(|refusal| {
+            CertifyError::Denied(format!(
+                "The workspace did not let this device in: {}",
+                refusal.reason()
+            ))
+        })?;
+        self.keep_host(&admission);
+        Ok(admission)
     }
 
     /// Whether the session is in `workspace_id`, waiting for its host to say so.

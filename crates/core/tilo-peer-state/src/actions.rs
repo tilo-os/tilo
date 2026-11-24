@@ -581,6 +581,20 @@ impl ActionService {
             .map_or_else(|| Arc::clone(&self.0.dispatcher), Arc::clone)
     }
 
+    /// The tickets this device serves, for a call a certified device makes about one of them
+    /// ([`crate::new_device::Tickets::answers_certified`]): they answer it beside the dispatcher,
+    /// which on a host serving a workspace's apps would answer it as one of theirs and refuse it.
+    fn certified_tickets(
+        &self,
+        invoke: &tilo_actions::remote::InvokeRequest,
+    ) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
+        self.0
+            .tickets
+            .get()
+            .filter(|_| crate::new_device::Tickets::answers_certified(invoke))
+            .map(crate::new_device::Tickets::certified)
+    }
+
     /// The provider that alone answers a request [`Self::authorize`] handed to `dispatcher`: one
     /// admitted for a device with no certificate yet ([`Self::admit_uncertified`]) answers every
     /// request of its caller, and no provider beside it does.
@@ -1220,7 +1234,9 @@ impl ActionService {
         } else {
             self.spend(caller, client)
         };
-        let provider = alone.unwrap_or_else(|| self.provider_for(&invoke.target.provider));
+        let provider = alone
+            .or_else(|| self.certified_tickets(invoke))
+            .unwrap_or_else(|| self.provider_for(&invoke.target.provider));
         let status = match spent {
             Ok(()) => await_answer(provider.invoke(caller, invoke.clone()))
                 .await

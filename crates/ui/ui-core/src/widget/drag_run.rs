@@ -1101,6 +1101,14 @@ impl Widget for DragRun {
             .map_or(Rect::ZERO, |items| Widget::get_rect(&**items))
     }
 
+    /// The run is the row of its items, so it asks layout while that row has still to be built,
+    /// and after it only when the row does.
+    fn is_layout_dirty(&self) -> bool {
+        self.items
+            .as_ref()
+            .is_none_or(|items| Widget::is_layout_dirty(&**items))
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         self.name

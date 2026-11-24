@@ -963,7 +963,9 @@ pub(crate) mod entry_tests {
     use tilo_server_protocol::WorkspaceId;
     use tilo_server_protocol::directory::{EntryJoin, Listing};
     use tilo_server_protocol::workspaces::RemoveMemberRequest;
-    use tilo_server_protocol::workspaces::{JoinReply, PreAdmission};
+    use tilo_server_protocol::workspaces::{
+        JoinReply, PreAdmission, WorkspacesReply, WorkspacesRequest,
+    };
     use tilo_user_identity::DeviceCert;
 
     use super::super::actions::{PUBLISH, UNPUBLISH};
@@ -971,6 +973,7 @@ pub(crate) mod entry_tests {
     use crate::workspaces::Workspaces;
     use crate::workspaces::fixtures::signed_pre_admission;
     use crate::workspaces::tests::{governor, guest_device, test_host, test_host_with_grants};
+    use crate::workspaces::{AddMemberRequest, MemberPlace};
 
     async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -1455,8 +1458,8 @@ pub(crate) mod entry_tests {
     }
 
     /// Moderation takes a person's membership away and the entry keeps them out
-    /// for the day; a ban keeps them out until a moderator lifts it, and lifting
-    /// it lets them in again at once.
+    /// for the day; an administrator holding them again lifts a plain removal
+    /// at once, and so does the person redeeming an invitation.
     #[tokio::test]
     async fn a_person_moderation_removed_is_refused_at_the_entry_for_the_day() {
         let dir = tempfile::tempdir().unwrap();
@@ -1506,14 +1509,38 @@ pub(crate) mod entry_tests {
                 .await
         );
 
-        // A ban keeps them out past the day; a person only removed was never banned, so lifting
-        // a ban is what lets them in again, and the entry opens with it.
+        // An administrator holds them again: a deliberate admission, which lifts a plain
+        // removal at once, with no ban involved.
         workspaces
-            .ban_member(
+            .add_member(
+                &workspace,
+                &owner,
+                AddMemberRequest {
+                    request_id: [8; 32],
+                    user_public_key: guest.user_public_key,
+                    place: MemberPlace::Role(Role::Editor),
+                    name: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            !workspaces
+                .removed_within_the_day(&workspace, guest.user_public_key)
+                .await
+        );
+        assert!(matches!(
+            walk_in_as(workspaces, &workspace, &join, &guest).await,
+            Ok(JoinReply::Admitted { .. })
+        ));
+
+        // A removal the person answers with an invitation is lifted by it too.
+        workspaces
+            .remove_member(
                 &workspace,
                 &owner,
                 RemoveMemberRequest {
-                    request_id: [8; 32],
+                    request_id: [9; 32],
                     user_public_key: guest.user_public_key,
                 },
             )
@@ -1524,25 +1551,151 @@ pub(crate) mod entry_tests {
                 .admit_listed(&workspace, &join)
                 .await
                 .unwrap_err(),
-            EntryRefusal::Banned
+            EntryRefusal::Removed
         );
-        workspaces
-            .unban_member(
-                &workspace,
+        let WorkspacesReply::Invitation {
+            signed_invitation, ..
+        } = workspaces
+            .page_workspaces(
                 &owner,
-                RemoveMemberRequest {
-                    request_id: [9; 32],
-                    user_public_key: guest.user_public_key,
+                WorkspacesRequest::Invite {
+                    workspace: workspace.clone(),
+                    request_id: [10; 32],
+                    role: Role::Editor,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                    inviter_name: None,
+                    wait_list_entry: None,
+                    recipient: Some(guest.user_public_key),
+                    administrator: false,
                 },
             )
             .await
-            .unwrap();
+        else {
+            panic!("the owner invites the person");
+        };
+        assert!(matches!(
+            workspaces
+                .admit_proven(
+                    signed_invitation,
+                    guest.clone(),
+                    rand::random(),
+                    "Troll",
+                    None
+                )
+                .await,
+            JoinReply::Admitted { .. }
+        ));
         assert!(
             !workspaces
                 .removed_within_the_day(&workspace, guest.user_public_key)
                 .await
         );
-        assert!(workspaces.admit_listed(&workspace, &join).await.is_ok());
+        server.shutdown().await;
+    }
+
+    /// A ban is not a removal: it is lifted only through `unban`, and neither
+    /// holding the person again nor an invitation to them admits them while it
+    /// stands.
+    #[tokio::test]
+    async fn a_banned_person_is_not_let_in_again_by_being_added_or_invited() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Hearth").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: String::new(),
+                    default_role: Role::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let (_, guest) = guest_device();
+        let join = EntryJoin {
+            user_public_key: hex::encode(guest.user_public_key),
+            display_name: "Troll".into(),
+        };
+        assert!(matches!(
+            walk_in_as(workspaces, &workspace, &join, &guest).await,
+            Ok(JoinReply::Admitted { .. })
+        ));
+        workspaces
+            .ban_member(
+                &workspace,
+                &owner,
+                RemoveMemberRequest {
+                    request_id: [7; 32],
+                    user_public_key: guest.user_public_key,
+                },
+            )
+            .await
+            .unwrap();
+
+        let held = workspaces
+            .add_member(
+                &workspace,
+                &owner,
+                AddMemberRequest {
+                    request_id: [8; 32],
+                    user_public_key: guest.user_public_key,
+                    place: MemberPlace::Role(Role::Editor),
+                    name: None,
+                },
+            )
+            .await;
+        assert!(held.is_err(), "a banned person is not held again: {held:?}");
+
+        let WorkspacesReply::Invitation {
+            signed_invitation, ..
+        } = workspaces
+            .page_workspaces(
+                &owner,
+                WorkspacesRequest::Invite {
+                    workspace: workspace.clone(),
+                    request_id: [9; 32],
+                    role: Role::Editor,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                    inviter_name: None,
+                    wait_list_entry: None,
+                    recipient: Some(guest.user_public_key),
+                    administrator: false,
+                },
+            )
+            .await
+        else {
+            panic!("the owner invites the person");
+        };
+        let reply = workspaces
+            .admit_proven(
+                signed_invitation,
+                guest.clone(),
+                rand::random(),
+                "Troll",
+                None,
+            )
+            .await;
+        assert!(
+            matches!(reply, JoinReply::Refused(_)),
+            "an invitation admits no banned person: {reply:?}"
+        );
+        assert_eq!(
+            workspaces
+                .admit_listed(&workspace, &join)
+                .await
+                .unwrap_err(),
+            EntryRefusal::Banned
+        );
+        let members = workspaces.summary(&workspace).await.unwrap().members;
+        assert!(
+            !members
+                .iter()
+                .any(|member| member.root() == Some(guest.user_public_key) && !member.removed),
+            "still no member"
+        );
         server.shutdown().await;
     }
 

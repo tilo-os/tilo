@@ -34,6 +34,9 @@ pub struct Placed {
     /// It takes its control from where the pointer was at its first placement: a window the person
     /// pressed for, which the pointer was on. Never for a surface a shortcut or an agent opened.
     pointer_control: bool,
+    /// The view shows it only as it leaves (the window a person just closed): its departure begins
+    /// on its first placement rather than resting there first.
+    departing: bool,
 }
 
 impl Default for Placed {
@@ -46,6 +49,7 @@ impl Default for Placed {
             motion: EffectiveMotion::default(),
             control: None,
             pointer_control: false,
+            departing: false,
         }
     }
 }
@@ -66,6 +70,34 @@ impl Placed {
         Self {
             presence: Presence::closed(),
             ..Self::default()
+        }
+    }
+
+    /// A surface a view shows only as it leaves — the window a person just closed: it is drawn whole
+    /// where it stood and goes from there, back into its control, on its first placement.
+    #[must_use]
+    pub fn leaving() -> Self {
+        Self {
+            presence: Presence::opened(),
+            departing: true,
+            ..Self::default()
+        }
+    }
+
+    /// The surface comes out of `control` when it arrives and goes back into it when it leaves: the
+    /// launching control's centre in its own coordinates (the dock icon or the search row a window
+    /// was asked for from). `None` grows it where it stands.
+    #[must_use]
+    pub fn from_control(mut self, control: Option<Point>) -> Self {
+        self.control = control;
+        self
+    }
+
+    /// [`Self::from_control`] for a surface told its control again (a shell's reading says where a
+    /// window was asked for from): an empty answer keeps the control it has.
+    pub fn set_control(&mut self, control: Option<Point>) {
+        if control.is_some() {
+            self.control = control;
         }
     }
 
@@ -114,8 +146,9 @@ impl Placed {
             self.control = super::source::last_pointer();
         }
         // The first placement rests where it stands. A surface built up shows at rest (the first
-        // paint shows the resting state); one built closed and asked to be up on its first frame
-        // comes in, as a window the shell just opened does.
+        // paint shows the resting state), one built closed and asked to be up on its first frame
+        // comes in, as a window the shell just opened does, and one a view shows only as it leaves
+        // goes from whole to gone, as a window the person just closed does.
         if !self.settled {
             self.settled = true;
             self.rect.snap(rect);
@@ -123,6 +156,8 @@ impl Placed {
             if open && !self.presence.is_open() {
                 self.presence.snap(false);
                 self.presence.show(true, spec, motion, source, now);
+            } else if !open && self.presence.is_open() && self.departing {
+                self.presence.show(false, spec, motion, source, now);
             } else {
                 self.presence.snap(open);
             }
@@ -364,6 +399,41 @@ mod tests {
                 "a reduced motion lands at its place at once"
             );
             assert!(!reduced_surface.is_moving(now));
+        }
+
+        phase a_surface_shown_only_as_it_leaves_goes_from_whole_to_gone;
+        {
+            let _frame = crate::motion::pin_frame();
+            let now = crate::motion::frame_now();
+            let place = rect(0.0);
+            let control = Point::new(20.0, 900.0);
+            let mut leaving = Placed::leaving().from_control(Some(control));
+            leaving.follow(
+                place,
+                false,
+                EffectiveMotion::default(),
+                MotionSource::Pointer,
+                now,
+            );
+            assert!(leaving.is_visible(now), "it starts whole where it stood");
+            assert!(
+                leaving.openness().progress(now) > 0.99,
+                "whole on its first frame, not gone before it was drawn"
+            );
+            assert!(leaving.is_moving(now), "and goes from there");
+
+            let mid = now + Duration::from_millis(80);
+            let _later = crate::motion::pin_frame_at(mid);
+            let drawn = leaving.pose(place, mid).drawn_rect(place);
+            assert!(
+                drawn.width() < place.width() && drawn.center().y > place.center().y,
+                "it shrinks back toward the control: {drawn:?}"
+            );
+            drop(_later);
+
+            let settles = leaving.settles_at().expect("a departure ends");
+            assert!(!leaving.is_visible(settles), "and it is gone when it ends");
+            assert!(!leaving.is_moving(settles));
         }
     }
 }

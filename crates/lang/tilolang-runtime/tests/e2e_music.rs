@@ -110,6 +110,27 @@ mod cases {
             self.call("like", vec![Value::resource(t), Value::Bool(true)]);
         }
 
+        /// Sets a field of a song, as the catalogue's answer would have.
+        fn write_field(&self, at: &ResourceRef, ty: &str, field: &str, value: Value) {
+            let write = tilolang_runtime::origin::OriginWrite::Set {
+                target: at.clone(),
+                fields: vec![(field_id(&self.app, ty, field), value)],
+            };
+            self.rt
+                .write_origin("music.track", None, |change| change.write(vec![write]))
+                .unwrap_or_else(|why| panic!("writing {ty}.{field}: {why}"));
+        }
+
+        /// The payloads the app asked the catalogue for through `capability`, in order.
+        fn asked_for(&self, capability: &str) -> Vec<serde_json::Value> {
+            self.rt
+                .pending_outbox()
+                .into_iter()
+                .filter(|entry| entry.capability == capability)
+                .map(|entry| entry.payload)
+                .collect()
+        }
+
         fn window(&self) -> ViewInstance {
             let mut window = self
                 .rt
@@ -281,6 +302,128 @@ mod cases {
                 Some("Night Bus"),
                 "the artist asked for comes first"
             );
+        }
+
+        phase a_catalogue_playlists_words_stand_on_its_page;
+        {
+            let s = Shelf::new();
+            let playlist = seed_origin(
+                &s.rt,
+                "music.playlist",
+                &s.lib,
+                &field_id(&s.app, "Library", "playlists"),
+                &type_id(&s.app, "Playlist"),
+                vec![
+                    ("key", Value::text("pl-1")),
+                    ("title", Value::text("Roads")),
+                    ("description", Value::text("Songs for the drive home")),
+                    ("found_for", Value::text("roads")),
+                ],
+            );
+            let mut page = s
+                .rt
+                .open_view(&me(), &s.app.view("playlist"), vec![Value::resource(&playlist)])
+                .unwrap();
+            page.set_lazy_rows(false).unwrap();
+            let words: Vec<String> = of_kind(page.tree(), "ui.Text")
+                .into_iter()
+                .filter_map(|node| node.props.get("value").and_then(Value::as_text))
+                .map(str::to_owned)
+                .collect();
+            assert!(
+                words.iter().any(|word| word == "Songs for the drive home"),
+                "the playlist's own words stand on its page: {words:?}"
+            );
+        }
+
+        phase a_stream_cut_short_says_where_and_plays_on_from_there;
+        {
+            let s = Shelf::new();
+            let song = s.song("Blue Hour", "Ava", "ava", "Morning");
+            s.call("play_song", vec![Value::resource(&song)]);
+            // The engine stopped at 1:23 and said why.
+            let window = s.window();
+            let band = of_kind(window.tree(), "ui.MediaTransport")
+                .into_iter()
+                .next()
+                .expect("the player is in the window");
+            window
+                .fire_with(
+                    &band.key,
+                    "fail",
+                    Some(&Value::List(vec![
+                        Value::text("the source refused the rest of the stream"),
+                        Value::Float(83.0),
+                    ])),
+                )
+                .expect("the player reports why it stopped");
+            let window = s.window();
+            let shown = format!("{:?}", window.tree());
+            assert!(
+                shown.contains("The stream stopped at 1:23"),
+                "the notice names where it stopped: {shown}"
+            );
+            let banner = of_kind(window.tree(), "ui.Banner")
+                .into_iter()
+                .next()
+                .expect("the notice offers to continue there");
+            let action = match banner.props.get("action") {
+                Some(Value::Text(label)) => Some(label.as_str()),
+                Some(Value::Opt(Some(label))) => label.as_text(),
+                _ => None,
+            };
+            assert_eq!(action, Some("Try again"), "and one press continues it");
+            // The press asks the catalogue for a fresh address, and the session stands where the
+            // stream stopped.
+            let mut outcome = window
+                .fire_with(&banner.key, "act", None)
+                .expect("the notice's press runs");
+            while let InvokeOutcome::Waits { run, .. } = outcome {
+                outcome = match s.dispatch.allow(&s.rt, &run) {
+                    RunOutcome::Done(value) => InvokeOutcome::Done(value),
+                    RunOutcome::Waits { run, call } => InvokeOutcome::Waits { run, call },
+                };
+            }
+            assert_eq!(
+                s.asked_for("music.stream"),
+                vec![serde_json::json!("k-Blue Hour")],
+                "the catalogue is asked where the song's bytes are now"
+            );
+            assert!(
+                !format!("{:?}", s.window().tree()).contains("The stream stopped"),
+                "the notice goes once the person answered it"
+            );
+            // What the catalogue answered is what plays, from where the stream stopped.
+            s.write_field(
+                &song,
+                "Track",
+                "stream",
+                Value::text("https://music.example/blue-hour-fresh.wav"),
+            );
+            let window = s.window();
+            let band = of_kind(window.tree(), "ui.MediaTransport")
+                .into_iter()
+                .next()
+                .expect("the player is in the window");
+            let source = match band.props.get("source") {
+                Some(Value::Text(source)) => Some(source.as_str()),
+                Some(Value::Opt(Some(source))) => source.as_text(),
+                _ => None,
+            };
+            assert_eq!(
+                source,
+                Some("https://music.example/blue-hour-fresh.wav"),
+                "the player opens the address the catalogue answered with"
+            );
+            let position = match band.props.get("position") {
+                Some(Value::Float(position)) => Some(*position),
+                Some(Value::Opt(Some(position))) => match &**position {
+                    Value::Float(seconds) => Some(*seconds),
+                    _ => None,
+                },
+                _ => None,
+            };
+            assert_eq!(position, Some(83.0), "and plays on from where it stopped");
         }
     }
 }
@@ -576,6 +719,27 @@ mod spotify_cases {
                 ])),
                 "the new name is Spotify's too"
             );
+            // What the playlist says about itself is the person's too, and Spotify's.
+            s.call(
+                "describe_mixtape",
+                vec![
+                    Value::resource(&mixtape),
+                    Value::text("Songs for the drive home"),
+                ],
+            );
+            assert_eq!(
+                s.field_of(&mixtape, "Mixtape", "description"),
+                Value::text("Songs for the drive home")
+            );
+            assert!(
+                s.asked_for("music.spotify").contains(&serde_json::json!([
+                    "edit_playlist",
+                    "spotify:playlist:pl-1",
+                    "Roads at night",
+                    "Songs for the drive home"
+                ])),
+                "the description reaches the Spotify playlist"
+            );
             s.call("mixtape_remove", vec![Value::resource(&mixtape), Value::resource(&song)]);
             assert!(
                 s.asked_for("music.spotify").contains(&serde_json::json!([
@@ -585,6 +749,7 @@ mod spotify_cases {
                 ]))
             );
         }
+
 
         phase an_ended_sign_in_says_so_and_offers_to_connect_again;
         {

@@ -532,19 +532,13 @@ pub async fn log_in_at(
             debug_why("dialing the server", &refusal);
             anyhow!("{refusal}")
         })?;
-        let listed = session
-            .person_workspaces(
-                &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
-                None,
-            )
-            .await
-            .map_err(|refusal| anyhow!("{refusal}"))?;
-        let (workspace, name) = choose_workspace(&listed.workspaces, asked)?;
+        let listed = kept_here(&session, &cert.user_public_key).await?;
+        let (workspace, name) = choose_workspace(&listed, asked)?;
         // Entered here, the server puts this device in the workspace's roster, as a ticket's
         // issuer does for the device it certifies: the server's sync with this device's own copy
         // of the workspace checks the roster before it reads a frame of it.
         session
-            .enter_workspace(&workspace, "")
+            .let_in(&workspace)
             .await
             .map_err(|refusal| anyhow!("{refusal}"))?;
         anyhow::Ok((workspace, name))
@@ -557,6 +551,62 @@ pub async fn log_in_at(
         workspace_name: Some(name).filter(|name| !name.trim().is_empty()),
         ..device
     })
+}
+
+/// The workspaces of `person`'s the server `session` reached keeps: what it answers its own
+/// `workspace.list` with, each one it governs whose people name them. The person's list in their
+/// own workspace is not read: a server that keeps a workspace for them (its operator made them
+/// its owner, or an invitation let them in) holds their own workspace only when it made it, and
+/// a computer that holds their root keeps that one itself.
+///
+/// # Errors
+/// The server did not answer or refused, or keeps no workspace of theirs.
+async fn kept_here(
+    session: &Entered,
+    person: &[u8; 32],
+) -> Result<Vec<tilo_server_protocol::workspaces::ListedWorkspace>> {
+    use tilo_server_protocol::workspaces::{
+        HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_WORKSPACES, ListedWorkspace,
+        WorkspaceListing,
+    };
+    let answered = session
+        .ask_host(
+            tilo_session_client::session::HOST_ITSELF,
+            tilo_actions::remote::RemoteActionTarget {
+                provider: HOST_ACTIONS_PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    HOST_WORKSPACES_RESOURCE,
+                    LIST_WORKSPACES,
+                ),
+            },
+            serde_json::Map::new(),
+        )
+        .await
+        .map_err(|refusal| anyhow!("{refusal}"))?;
+    let kept: Vec<WorkspaceListing> = serde_json::from_value(answered)
+        .map_err(|error| anyhow!("the server answered no list of workspaces: {error}"))?;
+    if kept.is_empty() {
+        return Err(anyhow!(
+            "{}",
+            tilo_session_client::device::DeviceRefusal::of(
+                &tilo_actions::remote::not_on_this_server(person)
+            )
+        ));
+    }
+    Ok(kept
+        .into_iter()
+        .map(|kept| ListedWorkspace {
+            workspace: kept.workspace,
+            name: kept.name,
+            host: None,
+            role: kept.role,
+            labels: kept.labels,
+            made_at_ms: kept.made_at_ms,
+            unattended: kept.unattended,
+            host_device: None,
+            host_hint: None,
+        })
+        .collect())
 }
 
 /// The workspace a held login enters: the one `asked` names (its id, or its name in any case),

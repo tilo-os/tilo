@@ -189,6 +189,13 @@ device root readings: Readings
 
 default view weather_window for Locations
 
+/// A place opens on its own page: what a search hit, a reference or another app shows when it
+/// asks for the place rather than for Weather.
+default view place_page for Place
+
+/// How a place reads in a list of results: its name, its sky and its temperature.
+row view place_row for Place
+
 /// What this device read of `place`, or the empty reading a place has before it is read.
 fn reading_of(r: Readings, place: Place) -> PlaceReading {
     if let found = r.of.find(reading -> reading.place == place.id()) {
@@ -1290,8 +1297,11 @@ view update_bar(w: Locations) {
 }
 
 /// One place's forecast: its hero, its readings, the hours, the week and the air, or what stands
-/// in their place while the device reads it.
-view forecast(w: Locations, place: Place, imperial: Bool) {
+/// in their place while the device reads it. The place's own page — what the window shows for the
+/// place a person chose, and what opening the place on its own shows, wherever it was opened from.
+view place_page(place: Place) {
+    let w = root Locations
+    let imperial = settings.locale.measurement == .Imperial
     let here = reading_of(readings, place)
     ui.Scroll {
         page {
@@ -1352,6 +1362,22 @@ view forecast(w: Locations, place: Place, imperial: Bool) {
     }
 }
 
+/// How a place reads in a list of results: its name, what the sky is doing there and how warm it
+/// is, or where it is while this device has not read it yet.
+view place_row(p: Place) {
+    let here = reading_of(readings, p)
+    let imperial = settings.locale.measurement == .Imperial
+    ui.ListRow(
+        title: p.name,
+        secondary: if here.read { condition(here.current.code) } else { subtitle(p) },
+        item: p,
+        icon: if here.read { here.current.icon } else { .map_pin },
+        value: if here.read {
+            degree_words(here.current.temperature, imperial)
+        } else { "" },
+    )
+}
+
 /// The places a person follows, in their order, each with its sky, and the choice the list
 /// reports.
 view places_side(w: Locations, shown: Option<Place>, chosen: State<Option<Place>>) {
@@ -1376,7 +1402,9 @@ view places_side(w: Locations, shown: Option<Place>, chosen: State<Option<Place>
 view weather_window(w: Locations) {
     state chosen: Option<Place> = .none
     state adding: Bool = false
-    let imperial = settings.locale.measurement == .Imperial
+    // A place a search hit, a reference or another app asks the window to show opens where the
+    // window stands: the place it names is the one the window draws.
+    on show(p: Place): set(chosen, .some(p))
     let place = shown_place(w, chosen)
     ui.NavShell(content_kind: .page, sidebar_title: "Weather", title: place?.name ?? "Weather") {
         actions: {
@@ -1415,7 +1443,7 @@ view weather_window(w: Locations) {
                     on act: set(adding, true).then(begin_search(w))
                 }
             } else if let shown = place {
-                forecast(w, shown, imperial)
+                place_page(shown)
             } else {
                 ui.EmptyState("Choose a place", icon: .map_pin)
             }

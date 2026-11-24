@@ -251,6 +251,25 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
                 tracing::info!(app = access.app, "what the person may do changed");
             }
         }
+        ToProcess::Content(content) => {
+            // A limit moved, or a host refused content or kept it once its limit was raised: the
+            // windows reading `workspace.content` show the refusal or its going.
+            match serde_json::from_str(&content.content) {
+                Ok(reading) => {
+                    if host.set_content(&content.workspace, Some(reading)) {
+                        tracing::info!(
+                            workspace = content.workspace,
+                            "the workspace's content changed"
+                        );
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    %error,
+                    workspace = content.workspace,
+                    "a reading the device named does not read"
+                ),
+            }
+        }
         ToProcess::Build { build, module } => {
             // A development session took a later build of the app: its windows show it.
             if let Err(error) = host.take_build(&build, &module) {

@@ -26,6 +26,24 @@ type Settings {
     pane: Text = "appearance"
 }
 
+/// One screen on the arrangement: whose it is, where it stands in the person's layout, and how
+/// this device knows it.
+type Screen {
+    device: Text
+    device_label: Text
+    output: Text
+    connector: Text
+    name: Text
+    x: Int
+    y: Int
+    own_x: Int
+    own_y: Int
+    width: Int
+    height: Int
+    local: Bool
+    online: Bool
+}
+
 root Settings
 
 default view settings_window for Settings
@@ -930,37 +948,6 @@ fn canvas_span() -> Float {
     1.0 - 2.0 * canvas_margin()
 }
 
-/// The left of the leftmost screen, in logical pixels.
-fn left_of(displays: List<device.Display>) -> Int {
-    displays.map(d -> d.x).sort_by(x -> x).first() ?? 0
-}
-
-/// The top of the highest screen, in logical pixels.
-fn top_of(displays: List<device.Display>) -> Int {
-    displays.map(d -> d.y).sort_by(y -> y).first() ?? 0
-}
-
-/// The right of the rightmost screen, in logical pixels.
-fn right_of(displays: List<device.Display>) -> Int {
-    displays.map(d -> d.x + d.width).sort_by(x -> x, desc).first() ?? 0
-}
-
-/// The bottom of the lowest screen, in logical pixels.
-fn bottom_of(displays: List<device.Display>) -> Int {
-    displays.map(d -> d.y + d.height).sort_by(y -> y, desc).first() ?? 0
-}
-
-/// The desktop the screens stand on, as the canvas draws it: its left and top, and how wide and
-/// tall it is — never nothing, so a single screen still fills the box.
-fn display_bounds(displays: List<device.Display>) -> List<Float> {
-    [
-        left_of(displays).to_float(),
-        top_of(displays).to_float(),
-        (right_of(displays) - left_of(displays)).max(1).to_float(),
-        (bottom_of(displays) - top_of(displays)).max(1).to_float(),
-    ]
-}
-
 /// The size a mode shows, as a person reads it: `1920 × 1080`.
 fn mode_size(mode: device.Mode) -> Text {
     "{mode.width} × {mode.height}"
@@ -1060,187 +1047,272 @@ fn colour_profile_index(display: device.Display) -> Int {
     } else { 0 }
 }
 
-/// The left of the leftmost screen of the person's layout, in pixels.
-fn shared_left(screens: List<device.SharedScreen>) -> Int {
-    screens.map(s -> s.x).sort_by(x -> x).first() ?? 0
+/// Whether a screen a device reported shows anything.
+fn showing(output: device.DeviceDisplayView) -> Bool {
+    output.connected and output.enabled and output.width > 0 and output.height > 0
 }
 
-/// The top of the highest screen of the person's layout, in pixels.
-fn shared_top(screens: List<device.SharedScreen>) -> Int {
-    screens.map(s -> s.y).sort_by(y -> y).first() ?? 0
+/// The corners of `outputs` in their device's own layout: its left, top, width and height.
+fn output_bounds(outputs: List<device.DeviceDisplayView>) -> List<Int> {
+    let left = outputs.map(o -> o.x).sort_by(x -> x).first() ?? 0
+    let top = outputs.map(o -> o.y).sort_by(y -> y).first() ?? 0
+    let right = outputs.map(o -> o.x + o.width).sort_by(x -> x, desc).first() ?? 0
+    let bottom = outputs.map(o -> o.y + o.height).sort_by(y -> y, desc).first() ?? 0
+    [left, top, (right - left).max(1), (bottom - top).max(1)]
 }
 
-/// The right of the rightmost screen of the person's layout, in pixels.
-fn shared_right(screens: List<device.SharedScreen>) -> Int {
-    screens.map(s -> s.x + s.width).sort_by(x -> x, desc).first() ?? 0
+/// The screen of `device` whose place decides where its group stands: the first one the person
+/// placed, in the order the session lays the person's screens out.
+fn anchor_of(device: Text, outputs: List<Text>) -> Option<settings.PlacedDisplay> {
+    settings.display_person.placement
+        .filter(entry -> entry.device == device and entry.placed)
+        .filter(entry -> outputs.contains(entry.output))
+        .sort_by(entry -> entry.output)
+        .sort_by(entry -> entry.order)
+        .first()
 }
 
-/// The bottom of the lowest screen of the person's layout, in pixels.
-fn shared_bottom(screens: List<device.SharedScreen>) -> Int {
-    screens.map(s -> s.y + s.height).sort_by(y -> y, desc).first() ?? 0
-}
-
-/// The shared space the person's screens stand in: its left and top, and how wide and tall it
-/// is — never nothing, so a single screen still fills the box.
-fn shared_bounds(screens: List<device.SharedScreen>) -> List<Float> {
-    [
-        shared_left(screens).to_float(),
-        shared_top(screens).to_float(),
-        (shared_right(screens) - shared_left(screens)).max(1).to_float(),
-        (shared_bottom(screens) - shared_top(screens)).max(1).to_float(),
-    ]
-}
-
-/// What a person calls one screen of their layout: a screen of this device by its own name, a
-/// screen of another by that name and the device it is on.
-fn shared_name(screen: device.SharedScreen) -> Text {
-    if screen.local { screen.name } else { "{screen.name} on {screen.device_label}" }
-}
-
-/// Another device's screen and how the pointer reaches it.
-fn shared_status(screen: device.SharedScreen) -> Text {
-    if not screen.online {
-        "Offline"
-    } else if not screen.reachable { "Online, away from your other screens" } else { "Online" }
-}
-
-/// The layout as assistive technology hears it: every screen, and where it stands.
-fn shared_label(screens: List<device.SharedScreen>) -> Text {
-    let places = screens.map(s -> shared_name(s))
-    "Your screens, left to right and top to bottom: {places.join("; ")}"
-}
-
-/// Where a screen stands on the shared canvas, as fractions of its box, moved by `across` and
-/// `down` while its device is dragged: `[x, y, w, h]`.
-fn shared_box(
-    screen: device.SharedScreen,
-    across: Float,
-    down: Float,
-    bounds: List<Float>,
-) -> List<Float> {
-    let x = (screen.x.to_float() - (bounds.at(0) ?? 0.0)) / (bounds.at(2) ?? 1.0)
-    let y = (screen.y.to_float() - (bounds.at(1) ?? 0.0)) / (bounds.at(3) ?? 1.0)
-    let w = screen.width.to_float() / (bounds.at(2) ?? 1.0)
-    let h = screen.height.to_float() / (bounds.at(3) ?? 1.0)
-    [
-        canvas_margin() + (x + across) * canvas_span(),
-        canvas_margin() + (y + down) * canvas_span(),
-        w * canvas_span(),
-        h * canvas_span(),
-    ]
-}
-
-/// One screen of the person's layout on the shared canvas: its rectangle and its name over it.
-/// The device being dragged moves all of its screens together.
-fn shared_tile(
-    screen: device.SharedScreen,
-    index: Int,
-    picked: Int,
-    moving: Text,
-    across: Float,
-    down: Float,
-    bounds: List<Float>,
-) -> List<ui.Shape> {
-    let shifted = screen.device == moving
-    let box = shared_box(
-        screen,
-        if shifted { across } else { 0.0 },
-        if shifted { down } else { 0.0 },
-        bounds,
-    )
-    let x = box.at(0) ?? canvas_margin()
-    let y = box.at(1) ?? canvas_margin()
-    let w = box.at(2) ?? canvas_span()
-    let h = box.at(3) ?? canvas_span()
-    [
-        ui.Shape.rect(
-            x: x,
-            y: y,
-            w: w,
-            h: h,
-            round: 0.02,
-            fill: .some(.track),
-            stroke: .some(if index == picked { .accent } else { .muted }),
-            weight: if index == picked { .strong } else { .hairline },
-        ),
-        ui.Shape.text(
-            x: x + w / 2.0,
-            y: y + h / 2.0,
-            text: shared_name(screen),
-            role: .caption,
-            ink: .ink,
-            anchor: .middle,
-        ),
-    ]
-}
-
-/// The shared canvas's shapes: every screen where it stands, the dragged device's screens where
-/// the pointer is.
-fn shared_shapes(
-    screens: List<device.SharedScreen>,
-    picked: Int,
-    start: List<Float>,
-    drag: List<Float>,
-) -> List<ui.Shape> {
-    let bounds = shared_bounds(screens)
-    let across = (drag.at(0) ?? 0.0) - (start.at(0) ?? 0.0)
-    let down = (drag.at(1) ?? 0.0) - (start.at(1) ?? 0.0)
-    let moving = screens.at(picked)?.device ?? ""
-    screens.flat_map((screen, i) -> shared_tile(screen, i, picked, moving, across, down, bounds))
-}
-
-/// Move the device whose screen was dragged so that screen stands where the pointer was let go,
-/// in the shared space's own pixels, snapped to a small grid. Every screen of that device moves
-/// with it; a drag too small to mean anything is not a change.
-action move_shared_screen(
-    night: settings.DisplayPerson,
-    screens: List<device.SharedScreen>,
-    picked: Int,
-    start: List<Float>,
-    let_go: List<Float>,
-) {
-    if let dragged = screens.at(picked) {
-        let across = (let_go.at(0) ?? 0.0) - (start.at(0) ?? 0.0)
-        let down = (let_go.at(1) ?? 0.0) - (start.at(1) ?? 0.0)
-        if across.abs() + down.abs() > 0.004 {
-            let bounds = shared_bounds(screens)
-            let span_x = (bounds.at(2) ?? 1.0) / canvas_span()
-            let span_y = (bounds.at(3) ?? 1.0) / canvas_span()
-            let dx = (across * span_x).round() / 8 * 8
-            let dy = (down * span_y).round() / 8 * 8
-            for screen in screens {
-                if screen.device == dragged.device {
-                    settings.place_display(
-                        night,
-                        screen.device,
-                        screen.output,
-                        screen.x + dx,
-                        screen.y + dy,
-                        .none,
-                        .some(true),
-                    )
-                }
-            }
-        }
+/// Where this device calls `output`: the connector its own screens read it by, empty for another
+/// device's screen, which this device names only by the id the person's layout places it by. The
+/// two readings name a screen their own ways, so the rectangle it shows stands for it here.
+fn connector_of(one: device.PersonalDeviceView, output: device.DeviceDisplayView) -> Text {
+    if not one.local {
+        ""
+    } else {
+        device.displays.displays
+            .find(
+                d -> d.x == output.x
+                    and d.y == output.y
+                    and d.width == output.width
+                    and d.height == output.height,
+            )
+            ?.connector
+            ?? ""
     }
 }
 
-/// What one screen says on the arrangement: its name, and the size it shows.
+/// This device's screens as the arrangement draws them where no other device is known: where they
+/// stand here is where they stand in the person's layout.
+fn local_screens() -> List<Screen> {
+    device.displays.displays.map(
+        d -> Screen(
+            device: "",
+            device_label: "",
+            output: d.connector,
+            connector: d.connector,
+            name: d.name,
+            x: d.x,
+            y: d.y,
+            own_x: d.x,
+            own_y: d.y,
+            width: d.width,
+            height: d.height,
+            local: true,
+            online: true,
+        ),
+    )
+}
+
+/// The person's screens `placed` and `moved` together, as the canvas reads them: left, top, width
+/// and height.
+fn union_bounds(placed: List<Int>, moved: List<Int>) -> List<Int> {
+    if placed.is_empty() {
+        moved
+    } else {
+        let left = (placed.at(0) ?? 0).min(moved.at(0) ?? 0)
+        let top = (placed.at(1) ?? 0).min(moved.at(1) ?? 0)
+        let right = ((placed.at(0) ?? 0) + (placed.at(2) ?? 0))
+            .max((moved.at(0) ?? 0) + (moved.at(2) ?? 0))
+        let bottom = ((placed.at(1) ?? 0) + (placed.at(3) ?? 0))
+            .max((moved.at(1) ?? 0) + (moved.at(3) ?? 0))
+        [left, top, right - left, bottom - top]
+    }
+}
+
+/// One device's screens, its group standing `offset` from where its own layout puts them.
+fn device_screens(
+    one: device.PersonalDeviceView,
+    outputs: List<device.DeviceDisplayView>,
+    offset: List<Int>,
+) -> List<Screen> {
+    let across = offset.at(0) ?? 0
+    let down = offset.at(1) ?? 0
+    outputs.map(
+        output -> Screen(
+            device: one.id,
+            device_label: one.label,
+            output: output.output,
+            connector: connector_of(one, output),
+            name: output.name,
+            x: output.x + across,
+            y: output.y + down,
+            own_x: output.x,
+            own_y: output.y,
+            width: output.width,
+            height: output.height,
+            local: one.local,
+            online: one.online,
+        ),
+    )
+}
+
+/// Where one device's group of screens stands, `offset` from its own layout: left, top, width and
+/// height.
+fn group_bounds(outputs: List<device.DeviceDisplayView>, offset: List<Int>) -> List<Int> {
+    let bounds = output_bounds(outputs)
+    [
+        (bounds.at(0) ?? 0) + (offset.at(0) ?? 0),
+        (bounds.at(1) ?? 0) + (offset.at(1) ?? 0),
+        bounds.at(2) ?? 1,
+        bounds.at(3) ?? 1,
+    ]
+}
+
+/// Every screen of the person's, as their layout places them: a device's own arrangement keeps its
+/// screens together, and the person's placement decides where each device's group stands in their
+/// one space. The session lays the groups out the same way, and the pointer crosses by that
+/// layout, so a screen dragged here and there is one arrangement.
+fn arranged_screens() -> List<Screen> {
+    let listed = device.devices.devices
+    if listed.is_empty() {
+        return local_screens()
+    }
+    let screens: List<Screen> = []
+    let placed: List<Int> = []
+    let waiting: List<device.PersonalDeviceView> = []
+    for one in listed.sort_by(d -> d.id) {
+        let outputs = one.displays.filter(o -> showing(o))
+        if not outputs.is_empty() {
+            if let entry = anchor_of(one.id, outputs.map(o -> o.output)) {
+                if let here = outputs.find(o -> o.output == entry.output) {
+                    let offset = [entry.x - here.x, entry.y - here.y]
+                    screens = screens + device_screens(one, outputs, offset)
+                    placed = union_bounds(placed, group_bounds(outputs, offset))
+                }
+            } else {
+                waiting = waiting + [one]
+            }
+        }
+    }
+    // A device the person has not placed lines up to the right of the groups placed before it, in
+    // the order of the devices' ids, as the session lines them up.
+    for one in waiting {
+        let outputs = one.displays.filter(o -> showing(o))
+        let bounds = output_bounds(outputs)
+        let offset = if placed.is_empty() {
+            [0 - (bounds.at(0) ?? 0), 0 - (bounds.at(1) ?? 0)]
+        } else {
+            [
+                (placed.at(0) ?? 0) + (placed.at(2) ?? 0) - (bounds.at(0) ?? 0),
+                (placed.at(1) ?? 0) - (bounds.at(1) ?? 0),
+            ]
+        }
+        screens = screens + device_screens(one, outputs, offset)
+        placed = union_bounds(placed, group_bounds(outputs, offset))
+    }
+    if not screens.any(s -> s.local) {
+        // The record has not said what this device shows yet: draw its screens where they stand.
+        screens = screens + local_screens()
+    }
+    screens.sort_by(s -> s.y).sort_by(s -> s.x)
+}
+
+/// The person's devices that show but have not said what their screens are: nothing to arrange
+/// until they do.
+fn silent_devices() -> List<Text> {
+    device.devices.devices
+        .filter(d -> d.display and d.displays.is_empty() and not d.local)
+        .map(d -> d.label)
+}
+
+/// Where one screen of the person's stands, without its name: the device it belongs to, and the
+/// size it shows.
+fn screen_place_words(screen: Screen) -> Text {
+    "{screen.device_label}, {screen.width} × {screen.height}"
+}
+
+/// The left of the leftmost screen, in shared pixels.
+fn left_of(screens: List<Screen>) -> Int {
+    screens.map(s -> s.x).sort_by(x -> x).first() ?? 0
+}
+
+/// The top of the highest screen, in shared pixels.
+fn top_of(screens: List<Screen>) -> Int {
+    screens.map(s -> s.y).sort_by(y -> y).first() ?? 0
+}
+
+/// The right of the rightmost screen, in shared pixels.
+fn right_of(screens: List<Screen>) -> Int {
+    screens.map(s -> s.x + s.width).sort_by(x -> x, desc).first() ?? 0
+}
+
+/// The bottom of the lowest screen, in shared pixels.
+fn bottom_of(screens: List<Screen>) -> Int {
+    screens.map(s -> s.y + s.height).sort_by(y -> y, desc).first() ?? 0
+}
+
+/// The person's desktop the screens stand on, as the canvas draws it: its left and top, and how
+/// wide and tall it is — never nothing, so a single screen still fills the box.
+fn screen_bounds(screens: List<Screen>) -> List<Float> {
+    [
+        left_of(screens).to_float(),
+        top_of(screens).to_float(),
+        (right_of(screens) - left_of(screens)).max(1).to_float(),
+        (bottom_of(screens) - top_of(screens)).max(1).to_float(),
+    ]
+}
+
+/// Keep what one of this device's screens says on the arrangement: its name, and the size it shows.
 fn screen_words(display: device.Display) -> Text {
     let primary = if display.primary { ", the primary screen" } else { "" }
     "{display.name}, {display.width} × {display.height}{primary}"
 }
 
-/// The arrangement as assistive technology hears it: every screen, and where it stands.
-fn arrangement_label(displays: List<device.Display>) -> Text {
-    let places = displays.map(d -> screen_words(d))
-    "The screens, left to right and top to bottom: {places.join("; ")}"
+/// What a person calls one screen of their layout: a screen of this device by its own name, a
+/// screen of another by that name and the device it is on.
+fn screen_name(screen: Screen) -> Text {
+    if screen.local { screen.name } else { "{screen.name} on {screen.device_label}" }
+}
+
+/// Whether `a0..a1` and `b0..b1` overlap.
+fn spans(a0: Int, a1: Int, b0: Int, b1: Int) -> Bool {
+    a0 < b1 and b0 < a1
+}
+
+/// Whether two screens meet along an edge: one's right at the other's left, or one's bottom at
+/// the other's top, with the other axis overlapping. The pointer crosses only there.
+fn meets(one: Screen, other: Screen) -> Bool {
+    (one.x + one.width == other.x or other.x + other.width == one.x)
+        and spans(one.y, one.y + one.height, other.y, other.y + other.height)
+        or (one.y + one.height == other.y or other.y + other.height == one.y)
+            and spans(one.x, one.x + one.width, other.x, other.x + other.width)
+}
+
+/// Whether a screen meets a screen of another device, so the pointer reaches it.
+fn screen_reachable(screen: Screen, screens: List<Screen>) -> Bool {
+    screens.any(s -> s.device != screen.device and meets(screen, s))
+}
+
+/// Another device's screen and how the pointer reaches it.
+fn screen_status(screen: Screen, screens: List<Screen>) -> Text {
+    if not screen.online {
+        "Offline"
+    } else if not screen_reachable(screen, screens) {
+        "Online, away from your other screens"
+    } else { "Online" }
+}
+
+/// The layout as assistive technology hears it: every screen of every device, and where it
+/// stands.
+fn arrangement_label(screens: List<Screen>) -> Text {
+    let places = screens.map(s -> screen_name(s))
+    "Your screens, left to right and top to bottom: {places.join("; ")}"
 }
 
 /// Where a screen stands on the canvas, as fractions of its box: `[x, y, w, h]`. While it is
 /// dragged from `start` to `drag`, the screen under the pointer moves by that much.
 fn screen_box(
-    display: device.Display,
+    screen: Screen,
     index: Int,
     picked: Int,
     moved: List<Float>,
@@ -1248,10 +1320,10 @@ fn screen_box(
 ) -> List<Float> {
     let move_x = if index == picked { moved.at(0) ?? 0.0 } else { 0.0 }
     let move_y = if index == picked { moved.at(1) ?? 0.0 } else { 0.0 }
-    let x = (display.x.to_float() - (bounds.at(0) ?? 0.0)) / (bounds.at(2) ?? 1.0)
-    let y = (display.y.to_float() - (bounds.at(1) ?? 0.0)) / (bounds.at(3) ?? 1.0)
-    let w = display.width.to_float() / (bounds.at(2) ?? 1.0)
-    let h = display.height.to_float() / (bounds.at(3) ?? 1.0)
+    let x = (screen.x.to_float() - (bounds.at(0) ?? 0.0)) / (bounds.at(2) ?? 1.0)
+    let y = (screen.y.to_float() - (bounds.at(1) ?? 0.0)) / (bounds.at(3) ?? 1.0)
+    let w = screen.width.to_float() / (bounds.at(2) ?? 1.0)
+    let h = screen.height.to_float() / (bounds.at(3) ?? 1.0)
     [
         canvas_margin() + (x + move_x) * canvas_span(),
         canvas_margin() + (y + move_y) * canvas_span(),
@@ -1262,7 +1334,7 @@ fn screen_box(
 
 /// One screen on the arrangement: its rectangle, and its name over it. The screen picked stands
 /// out from the others.
-fn screen_shapes(display: device.Display, box: List<Float>, picked: Bool) -> List<ui.Shape> {
+fn screen_shapes(screen: Screen, box: List<Float>, picked: Bool) -> List<ui.Shape> {
     let x = box.at(0) ?? canvas_margin()
     let y = box.at(1) ?? canvas_margin()
     let w = box.at(2) ?? canvas_span()
@@ -1281,7 +1353,7 @@ fn screen_shapes(display: device.Display, box: List<Float>, picked: Bool) -> Lis
         ui.Shape.text(
             x: x + w / 2.0,
             y: y + h / 2.0,
-            text: display.name,
+            text: screen_name(screen),
             role: .caption,
             ink: .ink,
             anchor: .middle,
@@ -1290,40 +1362,65 @@ fn screen_shapes(display: device.Display, box: List<Float>, picked: Bool) -> Lis
 }
 
 /// The arrangement's shapes: every screen where it stands, the dragged one where the pointer is.
-fn display_shapes(
-    displays: List<device.Display>,
+fn arrangement_shapes(
+    screens: List<Screen>,
     picked: Int,
     start: List<Float>,
     drag: List<Float>,
 ) -> List<ui.Shape> {
-    let bounds = display_bounds(displays)
+    let bounds = screen_bounds(screens)
     let moved = [
         (drag.at(0) ?? 0.0) - (start.at(0) ?? 0.0),
         (drag.at(1) ?? 0.0) - (start.at(1) ?? 0.0),
     ]
-    displays.flat_map(
-        (display, i) -> screen_shapes(
-            display,
-            screen_box(display, i, picked, moved, bounds),
+    screens.flat_map(
+        (screen, i) -> screen_shapes(
+            screen,
+            screen_box(screen, i, picked, moved, bounds),
             i == picked,
         ),
     )
 }
 
-/// Move the screen picked to where the pointer was let go, in the desktop's own pixels, snapped
-/// to a small grid: a drag too small to mean anything is not a change.
-action move_screen(screens: device.Displays, picked: Int, start: List<Float>, let_go: List<Float>) {
-    let chosen = screens.displays.at(picked)
-    if let display = chosen {
+/// Move the screen picked to where the pointer let it go. This device's own screens keep the
+/// arrangement their desktop gives them; another device's screens move together by the person's
+/// shared layout, this device's too when it has only one. A drag too small to mean anything is
+/// not a change.
+action move_screen(screens: List<Screen>, picked: Int, start: List<Float>, let_go: List<Float>) {
+    if let chosen = screens.at(picked) {
         let across = (let_go.at(0) ?? 0.0) - (start.at(0) ?? 0.0)
         let down = (let_go.at(1) ?? 0.0) - (start.at(1) ?? 0.0)
         if across.abs() + down.abs() > 0.004 {
-            let bounds = display_bounds(screens.displays)
+            let bounds = screen_bounds(screens)
             let span_x = (bounds.at(2) ?? 1.0) / canvas_span()
             let span_y = (bounds.at(3) ?? 1.0) / canvas_span()
-            let x = (display.x + (across * span_x).round()) / 8 * 8
-            let y = (display.y + (down * span_y).round()) / 8 * 8
-            device.arrange_displays(screens, display.connector, x, y)
+            let dx = (across * span_x).round()
+            let dy = (down * span_y).round()
+            let here = screens.filter(s -> s.local)
+            if chosen.local and here.len() > 1 {
+                if chosen.connector != "" {
+                    device.arrange_displays(
+                        device.displays,
+                        chosen.connector,
+                        (chosen.own_x + dx) / 8 * 8,
+                        (chosen.own_y + dy) / 8 * 8,
+                    )
+                }
+            } else if chosen.device != "" and (not chosen.local or screens.any(s -> not s.local)) {
+                // The device's screens move together: each says where it stands in the person's
+                // shared layout, so the layout keeps them together.
+                for screen in screens.filter(s -> s.device == chosen.device) {
+                    settings.place_display(
+                        settings.display_person,
+                        screen.device,
+                        screen.output,
+                        screen.x + dx / 8 * 8,
+                        screen.y + dy / 8 * 8,
+                        .none,
+                        .some(true),
+                    )
+                }
+            }
         }
     }
 }
@@ -1333,23 +1430,21 @@ action set_sdr_brightness(displays: device.Displays, display: Text, nits: Float)
     device.set_display_sdr_brightness(displays, display, nits.round())
 }
 
-/// This device's screens: how they are arranged, what each one shows, and the warmth of the
-/// night light.
+/// The person's screens: how they are arranged across their devices, what each one shows, and
+/// the warmth of the night light.
 view displays_pane() {
     let d = settings.display
     let night = settings.display_person
     let screens = device.displays
-    let person = device.person_displays
+    let arranged = arranged_screens()
+    let silent = silent_devices()
     let change = settings.display_change
     state picked: Int = 0
     state start: List<Float> = []
     state drag: List<Float> = []
-    state picked_shared: Int = 0
-    state start_shared: List<Float> = []
-    state drag_shared: List<Float> = []
     ui.Section("Arrangement") {
         ui.Text(
-            "How this device shows what is on its screens. Drag a screen to where it stands; choose the way they show together here.",
+            "Your screens across your devices. Drag one to where it stands: this device keeps its own screens' arrangement, and another device's screens move together.",
             role: .caption,
             secondary: true,
         )
@@ -1367,17 +1462,27 @@ view displays_pane() {
                 on press: device.set_mode(device.displays, mode: "external")
             }
         }
-        if screens.displays.len() > 1 {
+        if not arranged.is_empty() {
             ui.Drawing(
-                display_shapes(screens.displays, picked, start, drag),
+                arrangement_shapes(arranged, picked, start, drag),
                 meaning: .picture,
-                label: arrangement_label(screens.displays),
+                label: arrangement_label(arranged),
                 height: .some(240.0),
             ) {
-                on press(at: Int): set(picked, (at / 2).min(screens.displays.len() - 1))
+                on press(at: Int): set(picked, (at / 2).min(arranged.len() - 1))
                 on drag_start(x: Float, y: Float): set(start, [x, y]).then(set(drag, [x, y]))
                 on drag_at(at: List<Float>): set(drag, at)
-                on release_at(at: List<Float>): move_screen(screens, picked, start, at)
+                on release_at(at: List<Float>): move_screen(arranged, picked, start, at)
+            }
+        }
+        if not silent.is_empty() {
+            ui.Text(
+                "A device has not said what its screens are yet.",
+                role: .caption,
+                secondary: true,
+            )
+            for one in silent {
+                ui.ListRow(one, icon: .monitor)
             }
         }
         row(gap: .related, align: .center, wrap: true) {
@@ -1386,36 +1491,6 @@ view displays_pane() {
             }
             ui.Button("The display sheet", icon: .sliders_horizontal) {
                 on press: device.open_sheet(device.displays)
-            }
-        }
-    }
-    if person.screens.any(s -> not s.local) {
-        ui.Section("Your other screens") {
-            ui.Text(
-                "Your devices' screens as one desktop, where the pointer crosses between them. Drag a screen to move that device's screens.",
-                role: .caption,
-                secondary: true,
-            )
-            ui.Drawing(
-                shared_shapes(person.screens, picked_shared, start_shared, drag_shared),
-                meaning: .picture,
-                label: shared_label(person.screens),
-                height: .some(240.0),
-            ) {
-                on press(at: Int): set(picked_shared, (at / 2).min(person.screens.len() - 1))
-                on drag_start(x: Float, y: Float): set(start_shared, [x, y])
-                    .then(set(drag_shared, [x, y]))
-                on drag_at(at: List<Float>): set(drag_shared, at)
-                on release_at(at: List<Float>): move_shared_screen(
-                    night,
-                    person.screens,
-                    picked_shared,
-                    start_shared,
-                    at,
-                )
-            }
-            if let screen = person.screens.at(picked_shared) {
-                ui.ListRow(shared_name(screen), secondary: shared_status(screen), icon: .monitor)
             }
         }
     }
@@ -1438,157 +1513,201 @@ view displays_pane() {
             }
         }
     }
-    if let chosen = screens.displays.at(picked) {
-        ui.Section("The screen picked") {
-            ui.ListRow(chosen.name, secondary: screen_words(chosen), icon: .monitor)
-            if not chosen.modes.is_empty() {
-                setting("Resolution", "How many pixels it shows") {
-                    ui.ToggleGroup(selected: .some(size_index(chosen)), caption: "Resolution") {
-                        for size in mode_sizes(chosen.modes) {
-                            ui.Segment(size) {
-                                on press: device.set_display_mode(
-                                    device.displays,
-                                    chosen.connector,
-                                    modes_at_size(chosen.modes, size).first()?.width ?? 0,
-                                    modes_at_size(chosen.modes, size).first()?.height ?? 0,
-                                    refresh_mhz: .none,
-                                )
+    if let screen = arranged.at(picked) {
+        if let chosen = screens.displays.find(d -> screen.local and d.connector == screen.connector) {
+            ui.Section("The screen picked") {
+                ui.ListRow(chosen.name, secondary: screen_words(chosen), icon: .monitor)
+                if not chosen.modes.is_empty() {
+                    setting("Resolution", "How many pixels it shows") {
+                        ui.ToggleGroup(selected: .some(size_index(chosen)), caption: "Resolution") {
+                            for size in mode_sizes(chosen.modes) {
+                                ui.Segment(size) {
+                                    on press: device.set_display_mode(
+                                        device.displays,
+                                        chosen.connector,
+                                        modes_at_size(chosen.modes, size).first()?.width ?? 0,
+                                        modes_at_size(chosen.modes, size).first()?.height ?? 0,
+                                        refresh_mhz: .none,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    setting("Refresh rate", "How often it draws a new picture") {
+                        ui.ToggleGroup(
+                            selected: .some(rate_index(chosen)),
+                            caption: "Refresh rate",
+                        ) {
+                            for mode in modes_at_size(chosen.modes, shown_size(chosen)) {
+                                ui.Segment(mode_rate(mode)) {
+                                    on press: device.set_display_mode(
+                                        device.displays,
+                                        chosen.connector,
+                                        mode.width,
+                                        mode.height,
+                                        refresh_mhz: .some(mode.refresh_mhz),
+                                    )
+                                }
                             }
                         }
                     }
                 }
-                setting("Refresh rate", "How often it draws a new picture") {
-                    ui.ToggleGroup(selected: .some(rate_index(chosen)), caption: "Refresh rate") {
-                        for mode in modes_at_size(chosen.modes, shown_size(chosen)) {
-                            ui.Segment(mode_rate(mode)) {
-                                on press: device.set_display_mode(
-                                    device.displays,
-                                    chosen.connector,
-                                    mode.width,
-                                    mode.height,
-                                    refresh_mhz: .some(mode.refresh_mhz),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            setting("Scale", "How large it draws what it shows") {
-                ui.ToggleGroup(selected: .some(scale_index(chosen.scale)), caption: "Scale") {
-                    ui.Segment("100%") {
-                        on press: device.set_display_scale(device.displays, chosen.connector, 1.0)
-                    }
-                    ui.Segment("125%") {
-                        on press: device.set_display_scale(device.displays, chosen.connector, 1.25)
-                    }
-                    ui.Segment("150%") {
-                        on press: device.set_display_scale(device.displays, chosen.connector, 1.5)
-                    }
-                    ui.Segment("200%") {
-                        on press: device.set_display_scale(device.displays, chosen.connector, 2.0)
-                    }
-                }
-            }
-            setting("Rotation", "Which way its picture is turned") {
-                ui.ToggleGroup(selected: .some(turn_index(chosen.transform)), caption: "Rotation") {
-                    ui.Segment("Upright") {
-                        on press: device.rotate_display(device.displays, chosen.connector, "normal")
-                    }
-                    ui.Segment("90°") {
-                        on press: device.rotate_display(
-                            device.displays,
-                            chosen.connector,
-                            "rotate-90",
-                        )
-                    }
-                    ui.Segment("180°") {
-                        on press: device.rotate_display(
-                            device.displays,
-                            chosen.connector,
-                            "rotate-180",
-                        )
-                    }
-                    ui.Segment("270°") {
-                        on press: device.rotate_display(
-                            device.displays,
-                            chosen.connector,
-                            "rotate-270",
-                        )
-                    }
-                }
-            }
-            if chosen.hdr {
-                setting(
-                    "HDR",
-                    "Brighter highlights and richer colour for HDR games, video and photos",
-                ) {
-                    ui.Toggle(shown: chosen.hdr_on, label: "HDR") {
-                        on check(on): device.set_display_hdr(device.displays, chosen.connector, on)
-                    }
-                }
-                setting(
-                    "SDR content brightness",
-                    "How bright everything that is not HDR looks while HDR is on",
-                ) {
-                    ui.Slider(
-                        value: chosen.sdr_brightness_nits.to_float(),
-                        label: "SDR content brightness",
-                        min: 80.0,
-                        max: 480.0,
-                        step: 1.0,
-                        shows_value: true,
-                    ) {
-                        on change(v): set_sdr_brightness(device.displays, chosen.connector, v)
-                    }
-                }
-            } else {
-                ui.ListRow("HDR", secondary: hdr_unavailable_words(chosen))
-            }
-            if chosen.vrr {
-                setting(
-                    "Variable refresh rate",
-                    "Turns on by itself for fullscreen games and video",
-                ) {
-                    ui.Toggle(shown: chosen.vrr_on, label: "Variable refresh rate") {
-                        on check(on): device.set_display_vrr(device.displays, chosen.connector, on)
-                    }
-                }
-            } else {
-                ui.ListRow("Variable refresh rate", secondary: vrr_unavailable_words(chosen))
-            }
-            if chosen.colour_profiles.is_empty() {
-                ui.ListRow("Colour profile", secondary: "System default")
-            } else {
-                setting("Colour profile", "The colours it shows, as the screen was measured") {
-                    ui.ToggleGroup(
-                        selected: .some(colour_profile_index(chosen)),
-                        caption: "Colour profile",
-                    ) {
-                        ui.Segment("System default") {
-                            on press: device.set_display_colour_profile(
+                setting("Scale", "How large it draws what it shows") {
+                    ui.ToggleGroup(selected: .some(scale_index(chosen.scale)), caption: "Scale") {
+                        ui.Segment("100%") {
+                            on press: device.set_display_scale(
                                 device.displays,
                                 chosen.connector,
-                                .none,
+                                1.0,
                             )
                         }
-                        for profile in chosen.colour_profiles {
-                            ui.Segment(profile.label) {
+                        ui.Segment("125%") {
+                            on press: device.set_display_scale(
+                                device.displays,
+                                chosen.connector,
+                                1.25,
+                            )
+                        }
+                        ui.Segment("150%") {
+                            on press: device.set_display_scale(
+                                device.displays,
+                                chosen.connector,
+                                1.5,
+                            )
+                        }
+                        ui.Segment("200%") {
+                            on press: device.set_display_scale(
+                                device.displays,
+                                chosen.connector,
+                                2.0,
+                            )
+                        }
+                    }
+                }
+                setting("Rotation", "Which way its picture is turned") {
+                    ui.ToggleGroup(
+                        selected: .some(turn_index(chosen.transform)),
+                        caption: "Rotation",
+                    ) {
+                        ui.Segment("Upright") {
+                            on press: device.rotate_display(
+                                device.displays,
+                                chosen.connector,
+                                "normal",
+                            )
+                        }
+                        ui.Segment("90°") {
+                            on press: device.rotate_display(
+                                device.displays,
+                                chosen.connector,
+                                "rotate-90",
+                            )
+                        }
+                        ui.Segment("180°") {
+                            on press: device.rotate_display(
+                                device.displays,
+                                chosen.connector,
+                                "rotate-180",
+                            )
+                        }
+                        ui.Segment("270°") {
+                            on press: device.rotate_display(
+                                device.displays,
+                                chosen.connector,
+                                "rotate-270",
+                            )
+                        }
+                    }
+                }
+                if chosen.hdr {
+                    setting(
+                        "HDR",
+                        "Brighter highlights and richer colour for HDR games, video and photos",
+                    ) {
+                        ui.Toggle(shown: chosen.hdr_on, label: "HDR") {
+                            on check(on): device.set_display_hdr(
+                                device.displays,
+                                chosen.connector,
+                                on,
+                            )
+                        }
+                    }
+                    setting(
+                        "SDR content brightness",
+                        "How bright everything that is not HDR looks while HDR is on",
+                    ) {
+                        ui.Slider(
+                            value: chosen.sdr_brightness_nits.to_float(),
+                            label: "SDR content brightness",
+                            min: 80.0,
+                            max: 480.0,
+                            step: 1.0,
+                            shows_value: true,
+                        ) {
+                            on change(v): set_sdr_brightness(device.displays, chosen.connector, v)
+                        }
+                    }
+                } else {
+                    ui.ListRow("HDR", secondary: hdr_unavailable_words(chosen))
+                }
+                if chosen.vrr {
+                    setting(
+                        "Variable refresh rate",
+                        "Turns on by itself for fullscreen games and video",
+                    ) {
+                        ui.Toggle(shown: chosen.vrr_on, label: "Variable refresh rate") {
+                            on check(on): device.set_display_vrr(
+                                device.displays,
+                                chosen.connector,
+                                on,
+                            )
+                        }
+                    }
+                } else {
+                    ui.ListRow("Variable refresh rate", secondary: vrr_unavailable_words(chosen))
+                }
+                if chosen.colour_profiles.is_empty() {
+                    ui.ListRow("Colour profile", secondary: "System default")
+                } else {
+                    setting("Colour profile", "The colours it shows, as the screen was measured") {
+                        ui.ToggleGroup(
+                            selected: .some(colour_profile_index(chosen)),
+                            caption: "Colour profile",
+                        ) {
+                            ui.Segment("System default") {
                                 on press: device.set_display_colour_profile(
                                     device.displays,
                                     chosen.connector,
-                                    .some(profile.key),
+                                    .none,
                                 )
+                            }
+                            for profile in chosen.colour_profiles {
+                                ui.Segment(profile.label) {
+                                    on press: device.set_display_colour_profile(
+                                        device.displays,
+                                        chosen.connector,
+                                        .some(profile.key),
+                                    )
+                                }
                             }
                         }
                     }
                 }
-            }
-            if not chosen.primary {
-                row(gap: .related, align: .center, wrap: true) {
-                    ui.Button("Make it the primary screen", icon: .monitor) {
-                        on press: device.make_display_primary(device.displays, chosen.connector)
+                if not chosen.primary {
+                    row(gap: .related, align: .center, wrap: true) {
+                        ui.Button("Make it the primary screen", icon: .monitor) {
+                            on press: device.make_display_primary(device.displays, chosen.connector)
+                        }
                     }
                 }
+            }
+        } else if not screen.local {
+            ui.Section("Another device's screen") {
+                ui.ListRow(
+                    screen_name(screen),
+                    secondary: screen_status(screen, arranged),
+                    icon: .monitor,
+                )
             }
         }
     }

@@ -1491,6 +1491,12 @@ impl Widget for WindowSearch {
             .set_platform_conventions(conventions);
     }
 
+    /// Its bar and its panel stand over the window at boxes it works out from its anchor, and its
+    /// node takes no room: no layout pass can move it.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     fn get_rect(&self) -> Rect {
         if self.is_open() {
             let end = self.parts.last().map_or(self.field_rect.x1, |(_, r)| r.x1);

@@ -960,6 +960,8 @@ impl SemanticTree {
             .filter(|node| node.id != self.root && !node.id.0.starts_with("r:"))
             .filter(|node| node.durable_identity)
             .filter(|node| !self.duplicate_ids.contains(&node.id))
+            // A press that grants or confirms stays the person's: never an agent's to make.
+            .filter(|node| !node.state.consent)
             .filter_map(|node| {
                 let verbs = node
                     .actions

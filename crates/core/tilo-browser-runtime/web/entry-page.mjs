@@ -573,6 +573,10 @@ export async function startEntryPage({mode}) {
     remembering(() => rememberEntered(runtime, {origin: peer.origin, workspace: peer.workspace, hostDevice,
       name: workspaceName ?? peer.workspaceName ?? null}));
   }
+  /** The runtime with the peer's code loaded: what reads an invitation, asks a
+   * server what it offers, and joins (`../src/split.rs`). Loading it is the
+   * page entering a workspace, never its first screen. */
+  const peerRuntime = async () => (runtime = await loadRuntime('peer'));
   const deps = {
     loadRuntime: async () => {
       runtime = await loadRuntime();
@@ -689,17 +693,17 @@ export async function startEntryPage({mode}) {
       if (!identity || identity.userPublicKey !== kept.userPublicKey) return null;
       runtime ??= await loadRuntime();
       const name = chosenDisplayName(identity.userPublicKey);
-      return joinViaHost({workspace: home, identity, displayName: name, runtime, live: false, voice: false,
+      return joinViaHost({workspace: home, identity, displayName: name, runtime: await peerRuntime(), live: false, voice: false,
         wait: () => Promise.reject(new Error('the home workspace did not let this device in'))});
     },
-    inspectInvitation: (origin, invitation) => inspectInvitation(origin, invitation, {runtime}),
+    inspectInvitation: async (origin, invitation) => inspectInvitation(origin, invitation, {runtime: await peerRuntime()}),
     // An invitation a link names no other server beside, whose server the page's own site does
     // not name either, is that server's own word on where it is: a server reached only over iroh
     // (behind a NAT, through a packet relay) is dialled as the invitation says, never asked over
     // HTTP, and what it offers is read from the invitation.
     invitedServer: async (invitation, origin) => {
       if (new URL(origin).origin !== globalThis.location.origin && !siteServer(origin)) return null;
-      runtime ??= await loadRuntime();
+      runtime = await peerRuntime();
       let invited;
       try {
         invited = await invitedServer(invitation, {runtime});
@@ -723,7 +727,7 @@ export async function startEntryPage({mode}) {
     },
     // A link's `invite` names the invitation its workspace keeps at its host:
     // the page asks for it before anything reads it.
-    openInvitation: (origin, workspace, secret) => openInvitation(origin, workspace, secret, {runtime}),
+    openInvitation: async (origin, workspace, secret) => openInvitation(origin, workspace, secret, {runtime: await peerRuntime()}),
     // The invite sheet this page's desktop shows, when the page is in a
     // workspace: made and listed through that workspace's host, in links
     // that open this page.
@@ -849,7 +853,7 @@ export async function startEntryPage({mode}) {
         waiting();
       }
     },
-    readAccounts: async origin => readBrowserAccounts({origin, runtime: await loadRuntime(), currentDevice: profile => profileDevice(profile)}),
+    readAccounts: async origin => readBrowserAccounts({origin, runtime: await loadRuntime('accounts'), currentDevice: profile => profileDevice(profile)}),
     chooseAccount: accounts => card('Open this link as',
       accounts.map(account => [account.displayName || account.userPublicKey.slice(0, 12), account]), 'accounts'),
     // A guest ticket: a fresh device of the workspace's root, signed in once the

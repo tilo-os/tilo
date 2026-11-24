@@ -46,17 +46,12 @@ fn settings() -> Host {
         };
         let _ = host.runtime().set_reading(&root, "{}");
     }
-    // The person's screens: the session publishes them even when it knows of none.
-    let _ = host
-        .runtime()
-        .set_reading(&person_displays(), r#"{"local":"","screens":[]}"#);
     host
 }
 
-/// The person's screens across their devices, as the session publishes them.
-fn person_displays() -> ResourceRef {
-    ResourceRef::parse_id("session:person-displays", "so.tilo.device#PersonDisplays")
-        .expect("a person displays resource")
+/// The person's devices, with the screens each says it drives, as the session publishes them.
+fn devices() -> ResourceRef {
+    ResourceRef::parse_id("session:devices", "so.tilo.device#Devices").expect("a devices resource")
 }
 
 /// This device's displays, as the session publishes them.
@@ -132,25 +127,27 @@ fn labelled(view: &ViewInstance, kind: &str, label: &str) -> String {
 struct Sent(Rc<RefCell<Vec<Invocation>>>);
 
 impl Sent {
-    /// The invocation of `name`, with its arguments by name.
-    fn asked(&self, name: &str) -> Vec<(String, Value)> {
+    /// The invocation of `app`'s `name`, with its arguments by name.
+    fn asked_on(&self, app: &str, name: &str) -> Vec<(String, Value)> {
         self.0
             .borrow()
             .iter()
             .rev()
             .find_map(|invocation| match invocation {
                 Invocation::Action {
-                    app,
+                    app: asked_app,
                     name: asked,
                     args,
                     ..
-                } if asked == name => {
-                    assert_eq!(app.as_str(), "so.tilo.device", "a device resource's verb");
-                    Some(args.clone())
-                }
+                } if asked == name && asked_app.as_str() == app => Some(args.clone()),
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("the pane asks `{name}`: {:?}", self.0.borrow()))
+            .unwrap_or_else(|| panic!("the pane asks {app}'s `{name}`: {:?}", self.0.borrow()))
+    }
+
+    /// The device resource's invocation of `name`, with its arguments by name.
+    fn asked(&self, name: &str) -> Vec<(String, Value)> {
+        self.asked_on("so.tilo.device", name)
     }
 }
 
@@ -309,32 +306,49 @@ fn the_pane_asks_a_trusted_display_tool_again() {
     assert_eq!(arg(&asked, "tool"), Value::text("/usr/bin/kanshi"));
 }
 
-/// This laptop's panel and the tower computer's monitor, side by side in the person's layout.
-const PERSON_READING: &str = r#"{
-  "local": "laptop",
-  "screens": [
+/// This laptop's panel and the tower computer's monitor, which says it drives a screen of its
+/// own: the devices' reading carries each.
+const DEVICES_READING: &str = r#"{
+  "devices": [
     {
-      "device": "laptop", "output": "edid:panel", "name": "Built-in display",
-      "device_label": "Laptop", "local": true, "online": true,
-      "x": 0, "y": 0, "width": 1920, "height": 1200, "reachable": true
+      "id": "laptop", "label": "Laptop", "online": true, "nearby": true, "local": true,
+      "display": true, "wakeable": false, "audio_output": false,
+      "displays": [
+        {
+          "output": "edid:panel", "name": "Built-in display", "builtin": true,
+          "x": 0, "y": 0, "width": 1920, "height": 1200, "connected": true, "enabled": true
+        }
+      ]
     },
     {
-      "device": "tower", "output": "edid:tower", "name": "Tower monitor",
-      "device_label": "Tower computer", "local": false, "online": true,
-      "x": 1920, "y": 0, "width": 1920, "height": 1080, "reachable": true
+      "id": "tower", "label": "Tower computer", "online": true, "nearby": false, "local": false,
+      "display": true, "wakeable": false, "audio_output": false,
+      "displays": [
+        {
+          "output": "edid:tower", "name": "Tower monitor", "builtin": false,
+          "x": 0, "y": 0, "width": 1920, "height": 1080, "connected": true, "enabled": true
+        }
+      ]
     }
-  ]
+  ],
+  "access": [],
+  "playing": null, "chosen": null, "sounds": [], "routes": [], "asks": [],
+  "signed_in": true, "workspaces": [], "refused": ""
 }"#;
 
+/// The pane draws every device's screens as one layout, and dragging one moves that device's
+/// screens together through the person's placement.
 #[test]
 fn the_pane_shows_another_device_s_screens_where_they_stand() {
+    let sent = Sent::default();
     let host = settings();
+    host.runtime().set_invoker(sent.clone());
     host.runtime()
         .set_reading(&displays(), READING)
         .expect("the displays are set");
     host.runtime()
-        .set_reading(&person_displays(), PERSON_READING)
-        .expect("the person's screens are set");
+        .set_reading(&devices(), DEVICES_READING)
+        .expect("the person's devices are set");
     let view = displays_pane(&host);
     let shown = texts(&view);
     assert!(
@@ -342,10 +356,49 @@ fn the_pane_shows_another_device_s_screens_where_they_stand() {
             == "Your screens, left to right and top to bottom: Built-in display; Tower monitor on Tower computer"),
         "{shown:?}"
     );
-    assert!(shown.iter().any(|text| text == "Online"), "{shown:?}");
+    let drawing = view
+        .tree()
+        .of_kind("ui.Drawing")
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            panic!(
+                "the person's screens are drawn as one layout: {:?}",
+                kinds(&view)
+            )
+        })
+        .key
+        .clone();
+
+    // A drag from the tower's screen, a tenth of the canvas to the right.
+    let point = |x: f64| Value::List(vec![Value::Float(x), Value::Float(0.5)]);
+    view.fire_with(&drawing, "press", Some(&Value::Int(2)))
+        .expect("the tower's screen is picked");
+    view.poll_patches().expect("the picked screen is drawn");
+    let picked = texts(&view);
+    assert!(picked.iter().any(|text| text == "Online"), "{picked:?}");
+    view.fire_with(&drawing, "drag_start", Some(&point(0.5)))
+        .expect("the drag starts");
+    view.fire_with(&drawing, "release_at", Some(&point(0.6)))
+        .expect("the drag is let go");
+
+    let placed = sent.asked_on("so.tilo.settings.sections", "place-display");
+    assert_eq!(arg(&placed, "device"), Value::text("tower"));
+    assert_eq!(arg(&placed, "output"), Value::text("edid:tower"));
+    let moved = arg(&placed, "x");
     assert!(
-        !view.tree().of_kind("ui.Drawing").is_empty(),
-        "the person's screens are drawn as one layout: {:?}",
-        kinds(&view)
+        matches!(moved, Value::Int(x) if x > 1920),
+        "the tower's screen moved right: {moved:?}"
+    );
+    assert_eq!(arg(&placed, "y"), Value::Int(0));
+    assert!(
+        sent.0.borrow().iter().all(|invocation| match invocation {
+            Invocation::Action { name, args, .. } if name == "place-display" => {
+                arg(args, "device") == Value::text("tower")
+            }
+            _ => true,
+        }),
+        "only the dragged device's screens move: {:?}",
+        sent.0.borrow()
     );
 }

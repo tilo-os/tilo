@@ -201,6 +201,16 @@ impl Widget for Manual {
             .applied
             .set(self.invalidation.0.solved.get());
     }
+    /// What it places is the parts it holds: it asks layout when one of them does. Anything the
+    /// policy itself owes is a measure request ([`Self::layout_needs_measure`]), which a region
+    /// with no child to move never makes.
+    fn is_layout_dirty(&self) -> bool {
+        self.parts
+            .children
+            .iter()
+            .any(|child| child.is_layout_dirty())
+    }
+
     fn layout_needs_measure(&self) -> bool {
         self.invalidation.is_pending()
             || self

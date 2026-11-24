@@ -272,6 +272,15 @@ pub(crate) trait Origins: Send + Sync {
 /// What records that an app was started from the cache: its id.
 type Opened = dyn Fn(&str) + Send + Sync;
 
+/// Where a workspace's content as this device's person reads it comes from: its owners' limits
+/// on what members post there and the content a limit refused, as the Workspace package's root
+/// carries them (`tilolang_tilo::content::WorkspaceContent` JSON). The daemon hands it to each
+/// window's process, which serves it as `workspace.content`.
+pub(crate) trait ContentOf: Send + Sync {
+    /// The reading of `workspace` for this device's person, now.
+    fn content(&self, workspace: &str) -> Option<String>;
+}
+
 /// The tilolang processes this device runs, by workspace, app and runtimes.
 pub struct Processes {
     /// Where processes keep what their instances keep, and where windows kept it before.
@@ -290,6 +299,12 @@ pub struct Processes {
     /// The providers this device registered, whose packages each instance is handed
     /// ([`InstanceRequest::provided`]).
     provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
+    /// Where each workspace's content is read, once the daemon keeps its workspaces here
+    /// ([`Self::read_content_from`]): what each window's process serves as `workspace.content`.
+    content_of: OnceLock<Arc<dyn ContentOf>>,
+    /// The content last handed to each workspace's processes, so a reading that did not move is
+    /// said no second time.
+    contents: Mutex<HashMap<String, String>>,
     /// The daemon's launch records, once it keeps them: each process this device starts is
     /// written there, so a connection from it is admitted as the app it runs.
     attests: OnceLock<Arc<crate::apps::Launched>>,
@@ -338,6 +353,8 @@ impl Processes {
             follows_reinstalls: AtomicBool::new(false),
             playing: Mutex::new(Playing::default()),
             provided: OnceLock::new(),
+            content_of: OnceLock::new(),
+            contents: Mutex::new(HashMap::new()),
             attests: OnceLock::new(),
             jobs: OnceLock::new(),
             engines: Mutex::default(),
@@ -472,6 +489,83 @@ impl Processes {
         providers: tilo_workspace_service::workspaces::providers::Providers,
     ) {
         let _ = self.provided.set(providers);
+    }
+
+    /// Read each workspace's content from `content` from now on: what each window's process
+    /// serves as `workspace.content` when it starts, and what they are told again whenever
+    /// [`Self::content_changed`] says the workspace's content moved.
+    pub(crate) fn read_content_from(&self, content: Arc<dyn ContentOf>) {
+        let _ = self.content_of.set(content);
+    }
+
+    /// The workspace's content as this device's person reads it now, as an instance is handed it:
+    /// empty where no service reads one here.
+    fn content(&self, workspace: &str) -> String {
+        let content = self
+            .content_of
+            .get()
+            .and_then(|content| content.content(workspace))
+            .unwrap_or_default();
+        self.contents
+            .lock_recover()
+            .insert(workspace.to_owned(), content.clone());
+        content
+    }
+
+    /// The content of `workspace` moved — its owners set another limit, or a host refused content
+    /// or kept it once a limit was raised: say it on every process running a window of it, so the
+    /// views that read `workspace.content` show the refusal or its going. A reading that did not
+    /// move is said no second time.
+    pub(crate) fn content_changed(&self, workspace: &str) {
+        let Some(content) = self.content_of.get() else {
+            return;
+        };
+        let reading = content.content(workspace).unwrap_or_default();
+        if self
+            .contents
+            .lock_recover()
+            .get(workspace)
+            .is_some_and(|said| said == &reading)
+        {
+            return;
+        }
+        self.contents
+            .lock_recover()
+            .insert(workspace.to_owned(), reading.clone());
+        for (key, process) in self.running().iter() {
+            if key.workspace != workspace || key.alone.is_some() {
+                continue;
+            }
+            if let Err(error) = ToProcess::Content(runtime_portal::process_link::WorkspaceContent {
+                workspace: workspace.to_owned(),
+                content: reading.clone(),
+            })
+            .send(&process.socket)
+            {
+                tracing::warn!(
+                    %error,
+                    workspace,
+                    app = %key.app,
+                    "a tilolang process was not told the workspace's content changed"
+                );
+            }
+        }
+    }
+
+    /// Read every workspace's content again: what a daemon told of writes it missed does, so no
+    /// process keeps a reading that moved without it hearing.
+    pub(crate) fn content_refresh_all(&self) {
+        let workspaces: Vec<String> = {
+            let running = self.running();
+            let mut workspaces: Vec<String> =
+                running.keys().map(|key| key.workspace.clone()).collect();
+            workspaces.sort();
+            workspaces.dedup();
+            workspaces
+        };
+        for workspace in workspaces {
+            self.content_changed(&workspace);
+        }
     }
 
     /// What the registered providers publish, as an instance is handed it: a JSON list, or
@@ -757,6 +851,7 @@ impl Processes {
                 std::collections::BTreeMap::new()
             },
             access: instance.access,
+            content: self.content(&instance.workspace),
             link_home: instance.link_home.clone(),
             provided: self.provided()?,
         };
@@ -1426,16 +1521,15 @@ fn spawn_host(
             .with_extension(std::env::consts::EXE_EXTENSION),
     );
     command.env(runtime_portal::process_link::STORAGE_ENV, storage);
-    let (link, mut launched) = launcher_windows::launch(launcher_windows::LaunchRequest {
-        package_id: key.app.clone(),
-        command,
-        read: vec![runtime],
-        read_write: vec![storage.to_path_buf()],
-    })?;
+    let (link, mut launched) =
+        super::capabilities::launch_confined(launcher_windows::LaunchRequest {
+            package_id: key.app.clone(),
+            command,
+            read: vec![runtime],
+            read_write: vec![storage.to_path_buf()],
+        })?;
     let stderr = launched
-        .child
-        .stderr
-        .take()
+        .take_stderr()
         .map(|stderr| Box::new(stderr) as Box<dyn std::io::Read + Send>);
     Ok((
         link,

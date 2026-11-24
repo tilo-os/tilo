@@ -12,6 +12,77 @@ d-7eg6gmz4 = Settings
        *[other] Einstellungen
     }
 
+d-b2lfahgj = Bildschirm
+    .doc = Ein Bildschirm auf der Anordnung: wem er gehört, wo er in der Anordnung der Person steht, und wie dieses Gerät ihn kennt.
+    .noun = { $count ->
+        [one] Bildschirm
+       *[other] Bildschirme
+    }
+
+d-jv7udxtv = Gerät
+
+d-yffzojmk = Gerätename
+
+d-ygrxnhgi = Ausgang
+
+d-pyvmb3xc = Anschluss
+
+d-qkogq64e = Name
+
+d-wl63r7vc = X
+
+d-ifqfxckm = Y
+
+d-ckht7p7n = Eigenes X
+
+d-mw6cqvcw = Eigenes Y
+
+d-yfbxh7yj = Breite
+
+d-dhxa4orb = Höhe
+
+d-pokqvk7i = Dieses Gerät
+
+d-jqmgcbem = Online
+
+d-b2lfahgj-filter-x = X
+
+d-b2lfahgj-filter-y = Y
+
+d-b2lfahgj-filter-own_x = Eigenes X
+
+d-b2lfahgj-filter-own_y = Eigenes Y
+
+d-b2lfahgj-filter-width = Breite
+
+d-b2lfahgj-filter-height = Höhe
+
+d-b2lfahgj-filter-local = Dieses Gerät
+
+d-b2lfahgj-filter-online = Online
+
+d-3nzrpaqb = Bildschirmname
+    .w-on = { $name } auf { $device_label }
+
+d-rqcsnkd2 = Bildschirmstatus
+    .w-offline = Nicht erreichbar
+    .w-online-away-from-your-other-screens = Online, abseits Ihrer anderen Bildschirme
+    .w-online = Online
+
+d-majgvuxm = Anordnungsbeschriftung
+    .w-your-screens-left-to-right-and = Ihre Bildschirme, von links nach rechts und von oben nach unten: { $join }
+
+d-e4sjras5 = Bildschirm verschieben
+    .doc = Den gewählten Bildschirm dorthin bewegen, wo der Zeiger ihn losgelassen hat.
+
+d-e4sjras5-screens = Bildschirme
+
+d-e4sjras5-picked = Gewählt
+
+d-e4sjras5-start = Start
+
+d-e4sjras5-let_go = Losgelassen
+
 d-vfi4twig = Pane
     .doc = Der Bereich im Vordergrund, bei seinem eigenen Namen: Eine Suchzeile, ein Agent oder die eigene Seitenleiste setzt ihn, und das Fenster zeigt diesen Bereich.
 
@@ -511,7 +582,9 @@ d-utmybuy7 = Displays pane
     .w-follow-the-evening = Dem Abend folgen
     .w-turn-on-at-sunset-and-off = Bei Sonnenuntergang ein- und bei Sonnenaufgang von selbst ausschalten
     .w-arrangement = Anordnung
-    .w-how-this-device-shows-what-is = Wie dieses Gerät zeigt, was auf seinen Bildschirmen ist. Der Desktop behält, wo jeder Bildschirm steht; wählen Sie hier, wie er sie zeigt.
+    .w-your-screens-across-your-devices-drag = Ihre Bildschirme über Ihre Geräte hinweg. Ziehen Sie einen dorthin, wo er stehen soll: Dieses Gerät behält die Anordnung seiner eigenen Bildschirme, und die Bildschirme eines anderen Geräts wandern gemeinsam.
+    .w-a-device-has-not-said-what = Ein Gerät hat noch nicht gesagt, welche Bildschirme es hat.
+    .w-another-device-s-screen = Ein Bildschirm eines anderen Geräts
     .w-extend-across-them = Über sie erweitern
     .w-mirror-them = Sie spiegeln
     .w-only-the-built-in-screen = Nur der eingebaute Bildschirm
@@ -543,8 +616,6 @@ d-utmybuy7 = Displays pane
     .w-colour-profile = Farbprofil
     .w-system-default = Systemstandard
     .w-the-colours-it-shows-as-the = Die Farben, die er zeigt, wie der Bildschirm vermessen wurde
-    .w-your-other-screens = Ihre anderen Bildschirme
-    .w-your-devices-screens-as-one-desktop = Die Bildschirme Ihrer Geräte als ein Schreibtisch, an dem der Zeiger zwischen ihnen wechselt. Ziehen Sie einen Bildschirm, um die Bildschirme dieses Geräts zu verschieben.
     .w-display-tools = Anzeigeprogramme
     .w-these-programs-can-make-risky-display = Diese Programme können riskante Bildschirmänderungen vornehmen, ohne dass Sie sie behalten müssen.
     .w-ask-again = Wieder fragen
@@ -1752,30 +1823,6 @@ d-hqy5br35 = Widget-Einstellung
     .w-where-it-rests = Wo es liegt
     .w-the-corner-or-edge-you-left = Die Ecke oder Kante, an der du es gelassen hast; Ziehen an seiner Kopfzeile verschiebt es
     .w-back-to-its-corner = Zurück in seine Ecke
-
-d-hthmopna = Bildschirm verschieben
-    .doc = Verschiebt den gewählten Bildschirm dorthin, wo der Zeiger losgelassen wurde, in den eigenen Pixeln des Schreibtischs, auf ein kleines Raster gerundet: ein zu kleiner Zug ist keine Änderung.
-
-d-hthmopna-screens = Bildschirme
-
-d-hthmopna-picked = Gewählt
-
-d-hthmopna-start = Start
-
-d-hthmopna-let_go = Losgelassen
-
-d-y3ve5xob = Eine Gerätegruppe verschieben
-    .doc = Verschiebt das Gerät, dessen Bildschirm gezogen wurde, sodass dieser Bildschirm dort steht, wo der Zeiger losgelassen wurde, in den eigenen Pixeln des gemeinsamen Raums, auf ein kleines Raster gerundet. Jeder Bildschirm dieses Geräts wandert mit; ein zu kleiner Zug ist keine Änderung.
-
-d-y3ve5xob-night = Nachtlicht
-
-d-y3ve5xob-screens = Bildschirme
-
-d-y3ve5xob-picked = Gewählt
-
-d-y3ve5xob-start = Start
-
-d-y3ve5xob-let_go = Losgelassen
 
 d-rmuoshhm = Helligkeit von SDR-Inhalten setzen
     .doc = Wie hell gewöhnliche Inhalte in HDR aussehen, in cd/m²; 203 ist der Referenzweißwert, den HDR-Video erwartet.

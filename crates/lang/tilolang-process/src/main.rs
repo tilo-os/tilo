@@ -11,19 +11,16 @@
 //!   `TILO_APP_MODULE`. The language's command line (`tilolang build`, `tilolang run`) is a
 //!   separate tool, `crates/lang/tilolang-cli`.
 //!
-//! Its Windows body does not exist yet: a session hands the host its process link by passing a
-//! descriptor, which needs named pipes and handle duplication. Until then the binary refuses in
-//! words where it would take that link.
+//! On Windows the process link is a pipe, and what it carries are handles the device puts into
+//! this process; an origin's connector and a page's window are started on Unix alone.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-#[cfg(unix)]
 mod host;
 
-#[cfg(unix)]
 fn main() -> std::process::ExitCode {
     // The engines this bundle answers its apps with, registered before any of them asks.
     tilolang_process::engines::register_all();
@@ -42,13 +39,14 @@ fn main() -> std::process::ExitCode {
 
 /// The role an app's launch starts: the connector of the origin it names, or the windows of its
 /// package.
-#[cfg(all(unix, feature = "app-launch"))]
+#[cfg(feature = "app-launch")]
 fn launched() -> std::process::ExitCode {
     // The system runs this app's connector for an outside service in a process of its own,
     // with no window and no package of its own: the app's instances in the tilolang host reach
     // it. It needs no module, so this comes before the package is installed. It has no window
     // to log beside, so its own log is all a failure in it says: the session reads what it
     // writes to stderr.
+    #[cfg(unix)]
     if let Ok(origin) = std::env::var(tilolang_mail::CONNECTOR_ORIGIN_ENV) {
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new(

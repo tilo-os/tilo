@@ -858,33 +858,19 @@ impl Session {
         self.sent.borrow_mut().clear();
     }
 
-    /// What the instance published to the session's search index, delta by delta.
-    fn index_deltas(&self) -> Vec<ui::tilo_resource::search_index::IndexDelta> {
-        self.sent
-            .borrow()
+    /// Assert the instance published nothing to the session's search index: the device's daemon
+    /// owns a tilolang app's entries, read from the workspace's store one document at a time, so
+    /// a window sends none, however much its app's resources change.
+    fn assert_no_index_delta(&self) {
+        let sent = self.sent.borrow();
+        let published = sent
             .iter()
-            .filter_map(|request| match request {
-                CollabRequest::PublishSearchIndex { delta_json } => Some(
-                    ui::tilo_resource::search_index::IndexDelta::decode(delta_json)
-                        .expect("the session takes every delta"),
-                ),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// The entries the instance published to the session's search index: what it upserted, the
-    /// keys it dropped, and whether it sent the whole set again.
-    fn index_published(&self) -> (usize, usize, bool) {
-        self.index_deltas()
-            .into_iter()
-            .fold((0, 0, false), |(upserted, removed, reset), delta| {
-                (
-                    upserted + delta.upsert.len(),
-                    removed + delta.remove.len(),
-                    reset | delta.reset,
-                )
-            })
+            .filter(|request| matches!(request, CollabRequest::PublishSearchIndex { .. }))
+            .count();
+        assert!(
+            published == 0,
+            "an open window publishes no search entry, and this one sent {published}"
+        );
     }
 
     /// The host's frames and the window's, until the host owes nothing: an instance opening, a

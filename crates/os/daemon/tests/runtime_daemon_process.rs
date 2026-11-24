@@ -553,35 +553,29 @@ fn a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run() -> 
         // does, and names an app this computer never launched.
         let mut stream = UnixStream::connect(profile.join(tilo_runtime::COLLAB_SOCKET))
             .context("connecting to the collaboration socket")?;
+        stream
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .context("bounding the refusal")?;
         runtime_portal::launch_handoff::write(&mut stream, APP, &workspace)
             .context("naming the app this program claims to be")?;
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(
-            "TILO_SVC_COLLAB_FD",
-            std::os::fd::AsRawFd::as_raw_fd(&stream).to_string(),
-        );
-        environment.set("TILO_PACKAGE_ID", APP);
-        environment.set("TILO_WORKSPACE_ID", &workspace);
-        let mut manager = ui::collaboration::CollaborationManager::new();
-        let deadline = Instant::now()
-            .checked_add(tilo_test_env::hang_bound())
-            .context("the refusal's deadline")?;
-        loop {
-            let state = manager.state();
-            if let ui::collaboration::CollaborationState::Offline(_) = &state {
-                std::fs::write(&file, format!("{state:?}"))?;
-                return Ok(());
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "the unattested program was never refused: {state:?}"
-            );
-            // Publishing opens one of the app's records, which the workspace service decides for an app:
-            // what a program that attached for itself asks first.
-            let _ = manager.publish_action_directory(ui::collaboration::local_app_id());
-            let _ = manager.poll();
-            std::thread::sleep(Duration::from_millis(25));
-        }
+        // The first call any app makes: where the workspace its record names stands. A
+        // connection no launch attests is answered why, on every call.
+        let call = runtime_collab::wire::Call {
+            id: 1,
+            request: runtime_collab::wire::Operation::Workspace {
+                record: String::new(),
+                seen: None,
+            },
+        };
+        runtime_collab::wire::FRAMING
+            .write_value(&mut stream, &call)
+            .context("asking the collaboration service")?;
+        let answer: runtime_collab::wire::HostFrame = runtime_collab::wire::FRAMING
+            .read_value(&mut stream)
+            .context("reading the collaboration service's answer")?
+            .context("the collaboration service answered nothing")?;
+        std::fs::write(&file, format!("{answer:?}"))?;
+        return Ok(());
     }
     let profile = DaemonProfile::new()?;
     let workspace = status(profile.path())?

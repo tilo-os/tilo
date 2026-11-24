@@ -77,6 +77,15 @@ pub struct LayoutStripReading {
     pub float_width: i64,
     #[serde(default)]
     pub float_height: i64,
+    /// Whether the window has just closed: the shell keeps it in the reading while its frame plays
+    /// its departure, back into the control it was opened from, and draws it marked leaving.
+    #[serde(default)]
+    pub leaving: bool,
+    /// The control the person pressed for it, in the shell's pixels as `x, y`: the dock icon or the
+    /// search row the window comes out of and goes back into. Empty when a shortcut or an agent
+    /// asked for it, which lands and grows where it stands.
+    #[serde(default)]
+    pub control: Vec<i64>,
     pub shell: String,
 }
 
@@ -96,6 +105,9 @@ pub struct LayoutPlaceReading {
     /// app id.
     pub name: String,
     pub pinned: bool,
+    /// Whether its window just closed: the place stands only while its frame's departure plays.
+    #[serde(default)]
+    pub leaving: bool,
     pub shell: String,
 }
 
@@ -255,6 +267,8 @@ pub fn of(
                     float_dy: float.map_or(0, |float| i64::from(float.dy)),
                     float_width: float.map_or(0, |float| i64::from(float.width)),
                     float_height: float.map_or(0, |float| i64::from(float.height)),
+                    leaving: false,
+                    control: Vec::new(),
                     shell: SHELL.to_owned(),
                 });
                 for tab in &group.tabs {

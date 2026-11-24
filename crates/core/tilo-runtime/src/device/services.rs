@@ -2819,6 +2819,12 @@ fn shell_processes(
         let documents = tilo_workspace_service::device_documents::ServiceDocuments::of(
             workspaces.copies().clone(),
         );
+        // What each window's process serves as `workspace.content`: the limits this device's
+        // person reads and the refusals they read, from the workspace service the daemon holds.
+        let content: Arc<dyn super::processes::ContentOf> =
+            Arc::new(DeviceContent(workspaces.copies().clone()));
+        processes.read_content_from(content);
+        follow_content_changes(&processes, workspaces.copies());
         Some(processes.for_the_shell(
             Box::new(move |workspace| documents.workspaces().iter().any(|has| has == workspace)),
             Arc::clone(apps) as Arc<dyn crate::device::processes::Origins>,
@@ -2829,6 +2835,83 @@ fn shell_processes(
         let _ = (apps, workspaces);
         None
     }
+}
+
+/// What a workspace serves as its content root to this device's person: its owners' limits on
+/// what members post there and the refusals the person reads, read from the workspace service.
+#[cfg(target_os = "linux")]
+struct DeviceContent(tilo_workspace_service::workspaces::Workspaces);
+
+#[cfg(target_os = "linux")]
+impl super::processes::ContentOf for DeviceContent {
+    fn content(&self, workspace: &str) -> Option<String> {
+        let workspaces = self.0.clone();
+        let workspace = workspace.to_owned();
+        let reader = workspaces.device_person();
+        super::workspaces::block_on_owned(async move {
+            let reading = workspaces.content_reading(&workspace, reader).await;
+            serde_json::to_string(&reading).ok()
+        })
+    }
+}
+
+/// Tell each process running a workspace's windows when its content moves: a refusal a host
+/// recorded, a refusal it withdrew once the limit was raised, or a limit its owners set. The
+/// workspace service tells of the records written and of its governance moving, so the windows
+/// show the refusal or its going without a poll on a clock.
+#[cfg(target_os = "linux")]
+fn follow_content_changes(
+    processes: &Arc<super::processes::Processes>,
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+) {
+    let mut writes = workspaces.document_writes();
+    let mut governance = workspaces.governance_changes();
+    let processes = Arc::downgrade(processes);
+    tilo_rt::app().handle().spawn(async move {
+        loop {
+            let workspace = tokio::select! {
+                write = writes.recv() => match write {
+                    Ok(write) => {
+                        // A record of content a host refused is written or withdrawn: the root
+                        // the windows read carries it from now.
+                        if write.app != collab_types::CONTENT_REFUSAL_APP {
+                            continue;
+                        }
+                        write.workspace
+                    }
+                    // Writes were missed: every workspace is read again by `content_refresh_all`.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if let Some(processes) = processes.upgrade() {
+                            let _ = tokio::task::spawn_blocking(move || {
+                                processes.content_refresh_all();
+                            })
+                            .await;
+                        }
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+                change = governance.recv() => match change {
+                    Ok(workspace) => workspace,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if let Some(processes) = processes.upgrade() {
+                            let _ = tokio::task::spawn_blocking(move || {
+                                processes.content_refresh_all();
+                            })
+                            .await;
+                        }
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+            };
+            let Some(host) = processes.upgrade() else {
+                return;
+            };
+            // The reading is read from the workspace's store, which waits: never on this thread.
+            let _ = tokio::task::spawn_blocking(move || host.content_changed(&workspace)).await;
+        }
+    });
 }
 
 fn execution_policy_clock() -> io::Result<(

@@ -186,6 +186,11 @@ label = "Dev overrides stay out of production images, and every documented contr
 run = "python3 tools/policy/check_dev_overrides_contract.py"
 
 [[step]]
+name = "test-support-shipping"
+label = "No shipping build compiles in the daemon's unconfined test start"
+run = "python3 tools/policy/check_test_support_shipping.py"
+
+[[step]]
 name = "app-window-inputs-contract"
 label = "app window-inputs contract"
 run = "python3 tools/policy/check_app_window_inputs_contract.py"

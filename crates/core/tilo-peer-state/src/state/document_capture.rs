@@ -432,15 +432,15 @@ impl StatePeer {
         // What a device without the key decided the write by must be what it carries: a write
         // that claims harmless actions to them and carries others is refused here.
         if !write.claims.is_empty() {
-            collab_types::check_opened_mutation(write, mutation)
+            collab_admission::check_opened_mutation(write, mutation)
                 .map_err(|refusal| self.refused_opened(app, record, write, &refusal))?;
         }
         Ok(())
     }
 
-    /// Decide `write` of a record being opened, in the order its log holds the writes: by the
-    /// changes it carries, as admission decides the same write in the clear, before the writes
-    /// it builds on are merged here.
+    /// Decide `write` of a record read in the order its log holds the writes, as opening it,
+    /// checking its checkpoint and compacting it read it: by the changes it carries, as admission
+    /// decides the same write in the clear, before the writes it builds on are merged here.
     pub(crate) fn check_write_in_log(
         &self,
         (app, record): (&str, &str),
@@ -576,9 +576,9 @@ impl StatePeer {
     ) -> Result<(), crate::owner::WriteRefusal> {
         use crate::owner::WriteRefusal;
         // What the signer refuses to sign: a change in the clear that names no action.
-        collab_types::claim::check_claimed(write).map_err(|unclaimed| {
-            WriteRefusal::Refused(format!("{record} of {app}: {unclaimed}"))
-        })?;
+        collab_types::claim::check_claimed(write, tilo_automerge_isolate::parse_changes).map_err(
+            |unclaimed| WriteRefusal::Refused(format!("{record} of {app}: {unclaimed}")),
+        )?;
         match self.check_opened_write((app, record), write, mutation) {
             Ok(()) | Err(OpenedRefusal::CannotDecide(_)) => Ok(()),
             Err(OpenedRefusal::Refused(refused)) => Err(WriteRefusal::ChangeRefused(refused)),

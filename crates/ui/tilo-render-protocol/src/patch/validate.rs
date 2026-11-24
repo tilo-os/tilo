@@ -97,9 +97,10 @@ impl Default for PatchLimits {
     }
 }
 
-/// The sizing and placement arguments every node takes (`fill`, `min: 12.rem`, `at`).
+/// The sizing and placement arguments every node takes (`fill`, `min: 12.rem`, `at`), as the
+/// language's `prims::NODE_ARGS` names them.
 pub const NODE_ARGS: &[&str] = &[
-    "fill", "min", "max", "aspect", "span", "lines", "truncate", "at", "lead",
+    "fill", "min", "max", "height", "aspect", "span", "lines", "truncate", "at", "lead", "x", "y",
 ];
 
 /// Every primitive of the language a view may send: the layouts, controls and blocks the host

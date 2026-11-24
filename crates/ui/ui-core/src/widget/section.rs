@@ -1559,6 +1559,16 @@ impl Widget for Section {
         true
     }
 
+    /// It places the children it shows: it asks layout when one of them does, and a section
+    /// showing none has nothing to size.
+    fn is_layout_dirty(&self) -> bool {
+        self.parts
+            .children
+            .iter()
+            .take(self.shown())
+            .any(|child| child.is_layout_dirty())
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let shown = self.shown();
         self.parts

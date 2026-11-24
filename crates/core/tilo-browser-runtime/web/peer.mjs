@@ -25,6 +25,7 @@
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
 import {createPeerVoice} from './voice-peer.mjs';
+import {visitorLocale} from './arrival.mjs';
 import {hex} from './hex.mjs';
 import {memberText} from './json-text.mjs';
 import {changed as pageChanged} from './changes.mjs';
@@ -723,6 +724,10 @@ async function connect({
       throw new AdmissionError('host-changed', HOST_CHANGED);
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
+    // The peer's code is a module of its own, fetched when a page first
+    // starts a session; every call below reaches it through the start
+    // module's exports (`host.mjs`).
+    await (desktop ?? await import('./host.mjs')).loadRuntime?.('peer');
     peer = runtime.WasmPeer.start(
       withStartFields(certified, {
         displayName, address: host.address,
@@ -1133,7 +1138,7 @@ async function connect({
      * `{workspace, workspace_id, name}`; rejects with the host's refusal as it
      * typed it (`DeviceRefusal`: `code`, and `refusal` where the host gave one). */
     enterOwnWorkspace: async ({name = null, entered = () => false, invocation = null} = {}) => JSON.parse(
-      await peer.enterOwnWorkspace(name, fitDisplayName(displayName), entered, invocation)),
+      await peer.enterOwnWorkspace(visitorLocale(), name, fitDisplayName(displayName), entered, invocation)),
     /** Who is in the workspace, for its owner (`workspaces.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },

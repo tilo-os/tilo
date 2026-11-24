@@ -143,11 +143,11 @@ fn wav(bytes: &[u8]) -> Option<(u64, &'static str)> {
     ))
 }
 
-fn find(bytes: &[u8], tag: &[u8; 4]) -> Option<usize> {
+fn find(bytes: &[u8], tag: [u8; 4]) -> Option<usize> {
     bytes.windows(4).position(|window| window == tag)
 }
 
-/// An MP4 or QuickTime movie's length, from its `mvhd` box: the duration in the movie's own time
+/// An MP4 or `QuickTime` movie's length, from its `mvhd` box: the duration in the movie's own time
 /// scale. Found by its tag, so a reader that joined a file's head and tail still finds it.
 #[allow(
     clippy::arithmetic_side_effects,
@@ -155,7 +155,7 @@ fn find(bytes: &[u8], tag: &[u8; 4]) -> Option<usize> {
     reason = "every read is bounded by `get`"
 )]
 fn movie_duration(bytes: &[u8]) -> Option<u64> {
-    let at = find(bytes, b"mvhd")? + 4;
+    let at = find(bytes, *b"mvhd")? + 4;
     let version = *bytes.get(at)?;
     let be32 = |from: usize| -> Option<u64> {
         Some(u64::from(u32::from_be_bytes(
@@ -179,7 +179,7 @@ fn movie_duration(bytes: &[u8]) -> Option<u64> {
     reason = "every read is bounded by `get`"
 )]
 fn sample_format(bytes: &[u8]) -> Option<String> {
-    let at = find(bytes, b"stsd")? + 4 + 8 + 4;
+    let at = find(bytes, *b"stsd")? + 4 + 8 + 4;
     let tag = bytes.get(at..at + 4)?;
     Some(
         match tag {
@@ -233,7 +233,7 @@ mod tests {
         bytes.extend_from_slice(b"\0\0\0\x6cmoov\0\0\0\x64mvhd\0\0\0\0");
         bytes.extend_from_slice(&[0; 8]);
         bytes.extend_from_slice(&600u32.to_be_bytes());
-        bytes.extend_from_slice(&(seconds * 600).to_be_bytes());
+        bytes.extend_from_slice(&seconds.checked_mul(600).unwrap().to_be_bytes());
         bytes.extend_from_slice(b"\0\0\0\x20stsd\0\0\0\0\0\0\0\x01\0\0\0\x10avc1");
         bytes
     }

@@ -1411,14 +1411,18 @@ impl Widget for Chip {
         }
         let name = self.accessible_name.as_deref().unwrap_or(&self.label);
         // The × is a control of its own: a screen reader, and an agent shown the window,
-        // remove the chip through it as a person's click does.
-        Some(node.with_children(vec![
-            crate::a11y::AccessNode::new(crate::a11y::Role::Button)
-                .with_key(REMOVE_KEY)
-                .with_action_target(format!("{}/remove", self.activation.id()))
-                .with_name(format!("{} {name}", crate::i18n::widget_text("Remove")))
-                .with_bounds(self.remove_hit_rect()),
-        ]))
+        // remove the chip through it as a person's click does. The chip is keyed by its id so the
+        // × keeps one place across frames and is published where an agent reaches it.
+        Some(
+            node.with_semantic_key(self.activation.id())
+                .with_children(vec![
+                    crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                        .with_key(REMOVE_KEY)
+                        .with_action_target(format!("{}/remove", self.activation.id()))
+                        .with_name(format!("{} {name}", crate::i18n::widget_text("Remove")))
+                        .with_bounds(self.remove_hit_rect()),
+                ]),
+        )
     }
 }
 
@@ -2036,11 +2040,10 @@ mod activation_tests {
             }
         }
 
-        // A chip that both runs a press and offers its own removal keeps both reachable: its ×
-        // is an accessibility control of its own where it is drawn, so a reader or an agent
-        // shown the window removes the chip as a person's click does, beside the press the chip
-        // itself answers.
-        phase a_chip_with_a_press_and_a_remove_offers_its_remove_as_a_control_of_its_own;
+        // A chip that both runs a press and offers its own removal publishes the × as a control of
+        // its own: an agent removes the chip through it, under an id no other spec of the chip
+        // shadows, and the open press, a closure, is never published beside a typed action.
+        phase a_chip_with_a_press_and_a_remove_publishes_its_remove_as_its_own_control;
         {
             let opened = Rc::new(Cell::new(0));
             let removed = Rc::new(Cell::new(0));
@@ -2056,10 +2059,37 @@ mod activation_tests {
                 Box::new(crate::widget::Row::new().push(Box::new(chip))),
                 (400, 100),
             );
-            let remove = harness.a11y_nodes_named("Remove Book: The Tideglass");
-            assert_eq!(remove.len(), 1, "the × is published as its own control");
+            let resources = harness.resources();
+            let published: Vec<&tilo_actions::ResourceSpec> = resources
+                .iter()
+                .filter(|resource| {
+                    resource
+                        .id
+                        .as_str()
+                        .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
+                })
+                .collect();
+            let ids: std::collections::HashSet<&str> =
+                published.iter().map(|resource| resource.id.as_str()).collect();
+            assert_eq!(ids.len(), published.len(), "one spec per control id");
+            assert!(
+                published
+                    .iter()
+                    .filter(|resource| resource.label == "Book: The Tideglass")
+                    .all(|resource| resource.actions.iter().all(|action| action.id != "activate")),
+                "the open press is not published: {ids:?}"
+            );
+            let remove = published
+                .iter()
+                .find(|resource| resource.label == "Remove Book: The Tideglass")
+                .expect("the chip publishes its ×");
+            assert!(
+                remove.actions.iter().any(|action| action.id == "activate"),
+                "the × is pressed"
+            );
+            let remove = remove.id.as_str().to_owned();
             harness
-                .perform_a11y_action(remove[0], &crate::a11y::Action::Activate)
+                .invoke_published(&remove, "activate", &serde_json::Map::new())
                 .expect("the remove answers");
             assert_eq!(removed.get(), 1, "the chip's own remove handler ran");
 

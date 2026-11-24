@@ -344,6 +344,7 @@ d-w7mpbzm4 = Videoseite
     .w-live = Live
     .w-description = Beschreibung
     .w-found-for = Gefunden über { $found_for }
+    .w-the-stream-stopped-at = Der Stream stoppte bei { $stopped }
     .w-this-video-won-t-play-here = Dieses Video lässt sich hier nicht abspielen
     .w-try-again = Erneut versuchen
     .w-cancel = Abbrechen
@@ -424,7 +425,9 @@ d-edbp7ej2 = Aktualisieren
     .doc = Fragt den Dienst, was die Wiedergabeliste enthält, in der Reihenfolge ihrer Erstellerin.
 
 d-4hpmg3yw = Erneut versuchen
-    .doc = Fragt den Dienst erneut, wo die Daten des Videos abgespielt werden, nachdem der Player sie nicht zeigen konnte: die Adresse, die der Client hält, schreibt allein der Dienst, und seine neue Antwort ist die, die der Player öffnet.
+    .doc = Fragt den Dienst erneut, wo die Daten des Videos abgespielt werden, nachdem der Player sie nicht zeigen konnte: die Adresse, die der Client hält, schreibt allein der Dienst, und seine neue Antwort ist die, die der Player öffnet. Die Sitzung rückt an die Stelle, an der der Stream stoppte, damit die neue Adresse dort fortsetzt.
+
+d-4hpmg3yw-at = Stelle
 
 d-lcvxshh4 = Automatisch weiterspielen
     .doc = Jede dieser Aktionen hält eine der Wiedergabeeinstellungen der Person fest: der Eintrag gehört ihr, entsteht beim ersten Setzen, und jede andere Person liest ihre eigenen.

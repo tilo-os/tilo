@@ -42,7 +42,7 @@ pub use super::PERSONAL_SCOPE;
 /// a workspace's, so it is the same wherever the app opens its records.
 #[must_use]
 pub fn document_id(kind: &ResourceType) -> DocumentId {
-    DocumentId::derived(kind.as_str(), &DocumentId::for_tab(0))
+    collab_types::document::personal_document_id(kind)
 }
 
 /// Where one app keeps the person's records on this device. Cloning shares

@@ -82,17 +82,18 @@ function fixture({startModule} = {}) {
   return {steps, release: () => release()};
 }
 
-test('the peer’s code is fetched and compiled while the start module still compiles, and init takes the page’s compile', async () => {
+test('the peer’s code waits for the page that needs it, and init takes the page’s compile', async () => {
   const {steps, release} = fixture({startModule: Promise.resolve({compiled: true})});
   const host = await loadHost();
   await settle();
-  // Before the runtime is ready: the peer's module is already asked for.
-  assert.deepEqual([...steps].sort(), ['init compiled', 'prefetch peer']);
+  // A first screen's runtime: nothing of the peer's module is asked for yet.
+  assert.deepEqual([...steps].sort(), ['init compiled']);
   release();
-  const runtime = host.loadRuntime();
-  await settle();
-  assert.deepEqual(steps.slice(2), ['ready', 'load peer']);
-  await runtime;
+  await host.loadRuntime();
+  assert.deepEqual(steps.slice(1), ['ready']);
+  // The page starts a session: its code is fetched and instantiated then.
+  await host.loadRuntime('peer');
+  assert.deepEqual(steps.slice(1), ['ready', 'load peer']);
   delete globalThis.__tiloStartModule;
 });
 
@@ -102,7 +103,7 @@ test('a page whose early compile failed has init fetch the module itself', async
   const {steps, release} = fixture({startModule: failed});
   await loadHost();
   await settle();
-  assert.deepEqual([...steps].sort(), ['init fetch', 'prefetch peer']);
+  assert.deepEqual([...steps].sort(), ['init fetch']);
   release();
 });
 

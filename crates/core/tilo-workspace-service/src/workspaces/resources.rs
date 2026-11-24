@@ -1338,7 +1338,7 @@ impl Workspaces {
     /// is read through yet, and the read waits for the workspace once
     /// ([`Self::resource_read`]). A record's reads answer here: no reactor, and no thread of its
     /// own.
-    #[cfg(feature = "agents")]
+    #[cfg(any(feature = "apps", feature = "agents"))]
     pub(crate) fn read_record_now(
         &self,
         workspace: &str,
@@ -1349,6 +1349,28 @@ impl Workspaces {
             .readings
             .held(workspace)
             .map(|reading| read_from(&reading, reader, command))
+    }
+
+    /// The resources the store document `document` of `workspace` holds now, by kind and id:
+    /// what search reads of one document at a time, from the store the workspace is read
+    /// through, without its lock. `None` when this server does not know what the workspace is
+    /// read through yet.
+    #[cfg(feature = "agents")]
+    pub(crate) fn held_resources(
+        &self,
+        workspace: &str,
+        document: &str,
+    ) -> Option<Vec<(String, String)>> {
+        use tilo_lock::MutexRecover as _;
+        let reading = self.inner.readings.held(workspace)?;
+        let store = reading.store.lock_recover();
+        Some(
+            store
+                .index()
+                .held(document)
+                .map(|(kind, id)| (kind.to_owned(), id.to_owned()))
+                .collect(),
+        )
     }
 }
 

@@ -3024,7 +3024,7 @@ pub(crate) fn launch_with_context(
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::origin_connector::SERVICE.to_owned(),
-                host: link.into(),
+                host: link,
                 child_fd: runtime_portal::origin_connector::CHILD_FD,
             });
         }
@@ -3037,7 +3037,7 @@ pub(crate) fn launch_with_context(
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::process_link::SERVICE.to_owned(),
-                host: link.into(),
+                host: link,
                 child_fd: runtime_portal::process_link::CHILD_FD,
             });
         }

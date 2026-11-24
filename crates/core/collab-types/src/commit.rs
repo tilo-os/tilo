@@ -28,7 +28,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::SignedOp;
-use crate::claim;
 use crate::op::DocumentMutation;
 
 /// Version of the commit object; a receiver refuses one it does not know.
@@ -485,8 +484,9 @@ impl Read {
         let DocumentMutation::Incremental(bytes) = unit.mutation else {
             return Ok(None);
         };
-        let changes =
-            claim::parse_changes(bytes).map_err(|error| CommitError::Unnamed(error.to_string()))?;
+        // A publisher reads what it publishes itself: the changes are its own.
+        let changes = automerge::Automerge::parse_changes(bytes)
+            .map_err(|error| CommitError::Unnamed(error.to_string()))?;
         if changes.is_empty() {
             return Ok(None);
         }
@@ -1015,7 +1015,7 @@ mod tests {
         let DocumentMutation::Incremental(bytes) = mutation else {
             return [0; 32];
         };
-        claim::parse_changes(bytes)
+        automerge::Automerge::parse_changes(bytes)
             .ok()
             .and_then(|changes| changes.first().map(|change| change.hash().0))
             .unwrap_or_default()

@@ -124,6 +124,9 @@ pub enum ToProcess {
     Engine(Box<EngineJob>),
     /// Show `anchor` in the window `instance`, as a search hit's `open` shows it.
     Reveal { instance: u64, anchor: String },
+    /// The workspace's content changed: its owners set another limit, or a host refused content or
+    /// kept it once a limit was raised. The processes running windows of `workspace` serve it.
+    Content(WorkspaceContent),
 }
 
 impl Packet for ToProcess {
@@ -136,6 +139,7 @@ impl Packet for ToProcess {
             | Self::Patch { .. }
             | Self::Locale(_)
             | Self::Access(_)
+            | Self::Content(_)
             | Self::MediaCommand { .. }
             | Self::CancelJob { .. }
             | Self::JobsUnder(_)
@@ -349,6 +353,18 @@ pub struct AppAccess {
     pub access: Option<MemberAccess>,
 }
 
+/// The workspace's content as the device reads it, said again when it changes
+/// ([`ToProcess::Content`]): its owners' limits and the content a limit refused.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceContent {
+    pub workspace: String,
+    /// The reading, as `tilolang_tilo::content::WorkspaceContent` JSON: empty where the device
+    /// reads none.
+    ///
+    /// Always written, as every field of a packet is.
+    pub content: String,
+}
+
 /// A file an instance was opened with: the hash its content has in the session's content store,
 /// and the name of the file it is where the one handing it over knew it (`plan.md`). The instance
 /// reads the bytes by the hash and hands the action the same `File` value a chooser gives it.
@@ -435,6 +451,13 @@ pub struct InstanceRequest {
     /// where the session holds no policy for the workspace; the broker decides either way.
     #[serde(with = "policy_text")]
     pub access: Option<MemberAccess>,
+    /// The workspace's content as this window reads it (`tilolang_tilo::content::WorkspaceContent`
+    /// as JSON): its owners' limits on what members post there and the content a limit refused, so
+    /// a view shows why a file is missing. Empty where no device service reads one, and then the
+    /// root reads as no limit and no refusal.
+    ///
+    /// Always written, as every field of a packet is.
+    pub content: String,
     /// Where the workspace's resources open on the web, as the session knows it
     /// (`tilolang_tilo::share::LinkHome`, as JSON): what the instance's host mints a resource's
     /// `share-link` under. `None` where the workspace's host serves no page, and then the link is
@@ -985,6 +1008,7 @@ mod tests {
                 ),
                 "ada",
             )),
+            content: String::new(),
         }
     }
 

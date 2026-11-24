@@ -115,9 +115,10 @@ pub struct SpeakerMember {
 }
 
 /// What plays on a group right now, most urgent state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum SpeakerPlayback {
+    #[default]
     Playing,
     /// A member has not admitted the session yet.
     Connecting,
@@ -127,12 +128,6 @@ pub enum SpeakerPlayback {
     ClockFailed {
         reason: String,
     },
-}
-
-impl Default for SpeakerPlayback {
-    fn default() -> Self {
-        Self::Playing
-    }
 }
 
 /// Whether one device's microphone can listen while a group is calibrated.
@@ -188,9 +183,10 @@ pub struct SpeakerGroup {
 }
 
 /// What one speaker of a calibration run has measured.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum CalibrationMemberState {
+    #[default]
     Waiting,
     Measuring,
     /// `delay_ms` is when the speaker's sound arrives at the listening position. With that
@@ -207,12 +203,6 @@ pub enum CalibrationMemberState {
     },
 }
 
-impl Default for CalibrationMemberState {
-    fn default() -> Self {
-        Self::Waiting
-    }
-}
-
 /// One speaker in a calibration run.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default)]
@@ -226,9 +216,10 @@ pub struct CalibrationMember {
 }
 
 /// What one microphone contributed to a run.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum CalibrationMicrophoneState {
+    #[default]
     AwaitingConsent,
     Declined,
     Listening,
@@ -243,12 +234,6 @@ pub enum CalibrationMicrophoneState {
     Failed {
         reason: String,
     },
-}
-
-impl Default for CalibrationMicrophoneState {
-    fn default() -> Self {
-        Self::AwaitingConsent
-    }
 }
 
 /// One microphone in a calibration run.

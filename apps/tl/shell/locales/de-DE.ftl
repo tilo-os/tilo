@@ -912,6 +912,8 @@ d-4qeo26jr = Zeilen der Arbeitsbereiche
 d-7sxqbtn2 = Zeilenfenster
 
 d-2fofsa7f = Leistenfenster
+
+d-4q76vbc7 = Stehendes Fenster
     .w-nothing-here = Nichts hier
 
 d-p5wzoqr5 = Fensterbedienelemente
@@ -2105,3 +2107,18 @@ d-q6dyi7r7 = Zugriffsangabe
 d-3ytya6pk = Gesicht-Schaltfläche
     .w-someone = Jemand
     .w-follows-you = { $name }, folgt dir
+
+d-32e233z5 = Verlässt
+    .doc = Ob sein Fenster gerade geschlossen wurde: der Platz steht nur, solange die Abfahrt seines Rahmens läuft.
+
+d-54wspwy2 = Auslöser
+    .doc = Der Auslöser, den die Person dafür gedrückt hat, in Pixeln der Shell als `x, y`: das Dock-Symbol oder die Suchzeile, aus der das Fenster kommt und in die es zurückgeht. Leer, wenn eine Tastenkombination oder ein Agent es angefordert hat; das landet und wächst, wo es steht.
+
+d-kxssatr3 = Verlässt
+    .doc = Ob das Fenster gerade geschlossen wurde: die Sitzung hält es in der Lesung, während die Shell die Abfahrt seines Rahmens zeichnet, zurück in den Auslöser, mit dem die Person es geöffnet hat.
+
+d-w25t6rl7-filter-leaving = Verlässt
+
+d-farfsl4d-filter-leaving = Verlässt
+
+d-ohzicl6b = Gehendes Fenster

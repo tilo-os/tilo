@@ -13,7 +13,7 @@ pub(crate) fn change_hashes(payload: &[u8]) -> Vec<[u8; 32]> {
     };
     tilo_failure::ignored!(
         "a payload that is not automerge bytes names no changes this device lacks",
-        collab_types::parse_changes(&bytes).unwrap_or_default()
+        collab_admission::parse_changes(&bytes).unwrap_or_default()
     )
     .iter()
     .map(automerge::Change::hash)

@@ -350,7 +350,9 @@ impl OwnerDevices {
         });
     }
 
-    /// Ask the person's devices to wake the device `name` names, by its key or its label.
+    /// Ask the person's devices to wake the device `name` names, by its key or its label. The ask
+    /// goes to the daemon without the session waiting on it; the record says how it went, and the
+    /// person hears that as the wake ends ([`crate::wake::Wake::follow`]).
     ///
     /// # Errors
     /// Why it cannot be woken, in the person's words.
@@ -359,9 +361,13 @@ impl OwnerDevices {
         let now = i64::try_from(tilo_clock::unix_now_ns()).unwrap_or(i64::MAX);
         let ask = wake::asking(&self.record.get(), &person, &local, name, now)
             .map_err(|refusal| refusal.to_string())?;
-        self.record
-            .invoke(&ask)
-            .map_err(|error| format!("the wake did not reach this device's daemon: {error}"))
+        let name = name.to_owned();
+        self.record.invoke_unwaited(&ask, move |asked| {
+            if let Err(error) = asked {
+                tracing::warn!(%error, device = name, "the wake did not reach this device's daemon");
+            }
+        });
+        Ok(())
     }
 
     /// The interfaces this device keeps in the record, that it can be woken through.

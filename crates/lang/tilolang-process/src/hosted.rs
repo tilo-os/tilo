@@ -117,6 +117,10 @@ pub struct Spec {
     /// runtime refuses it before it reaches the broker. `None` where the session holds no policy
     /// for the workspace: the broker alone decides.
     pub access: Option<tilo_action_policy::MemberAccess>,
+    /// The workspace's content as this window reads it (`InstanceRequest::content`): its owners'
+    /// limits on what members post there and the content a limit refused. `None` where the device
+    /// reads none, and then the root reads as no limit and no refusal.
+    pub content: Option<tilolang_tilo::content::WorkspaceContent>,
     /// Whether the instance shows a window or runs with none (`InstanceRequest::shows`): an
     /// instance that shows nothing draws no window, offers no window verb, and runs the app's
     /// actions on its document alone.
@@ -149,6 +153,7 @@ impl Spec {
             installed: BTreeMap::new(),
             language: String::new(),
             access: None,
+            content: None,
             shows: Shows::View,
             link_home: None,
             provided: Vec::new(),
@@ -1568,28 +1573,8 @@ pub struct Hosted {
     /// a place switch asks again only for the rows that came into view, and only when what their
     /// answers read moved ([`Answers`]).
     answers: Answers,
-    /// What the instance last published to the session's persistent search index: it publishes
-    /// the entries of the resources the publication moved, so a Mail message is found by a word
-    /// of its body through the system's one search, whether or not the window runs.
-    search_index: tilo_resource::search_index::Publisher,
-    /// Where the publication's journal stood when the index last took it: what the change since
-    /// moved, so the index reads the resources it moved and not the workspace. [`None`] until it
-    /// has published once.
-    search_index_moved: Option<u64>,
-    /// The entry each resource has in the index, by its published id: what a change replaces,
-    /// and what a resource that is gone takes away, its own entries and those under it.
-    search_entries: std::collections::BTreeMap<String, tilo_resource::search_index::IndexEntry>,
-    /// How many builds of the entries the index has been sent: the state's generation.
-    search_index_build: u64,
-    /// The whole index being published off the frame: where the publication's journal stood
-    /// when it was read, and where the deltas that publish it arrive. Until they do, a change
-    /// waits for them; it is published by the frames after.
-    search_whole: Option<(
-        u64,
-        std::sync::mpsc::Receiver<tilolang_tilo::search::Published>,
-    )>,
-    /// What wakes the host: an index read off the frame wakes it too, and the read is the first
-    /// frame's, before the instance published a surface with a wake of its own.
+    /// What wakes the host for the next frame: a picture, a state or an end it was handed, and
+    /// the waits a host finished.
     wake: Waker,
     /// The other apps the app uses, each read through its own package ([`Used`]).
     used: Vec<Used>,
@@ -1610,12 +1595,16 @@ pub struct Hosted {
         dead_code,
         reason = "held open, never read: the connection signs through it"
     )]
-    identity: Option<std::os::fd::OwnedFd>,
+    identity: Option<runtime_portal::process_link::Descriptor>,
     /// The scope the instance's code runs in, its document's content store registered for it.
     scope: DocumentScope,
     /// What the person may do in the app now: the launch's, until the session says it changed
     /// ([`Self::set_access`]). The runtime reads it at each decision.
     access: Rc<RefCell<Option<tilo_action_policy::MemberAccess>>>,
+    /// The workspace's content as the person reads it now: the launch's, until the device says
+    /// it changed ([`Self::set_content`]). The instance serves it as `workspace.content` each
+    /// frame it moved.
+    content: Rc<RefCell<Option<tilolang_tilo::content::WorkspaceContent>>>,
     /// The workspace's document of each person's own state: what the person picked in the views
     /// and what they have seen, given to the views and kept back as they change it.
     personal: PersonalDocument,
@@ -1749,6 +1738,9 @@ struct Opened {
     builds: BuildsSlot,
     /// What the person may do in the app, which the instance reads at each decision.
     access: Rc<RefCell<Option<tilo_action_policy::MemberAccess>>>,
+    /// The workspace's content as the person reads it, which the instance serves as
+    /// `workspace.content` each frame it moved.
+    content: Rc<RefCell<Option<tilolang_tilo::content::WorkspaceContent>>>,
     /// The platform roots the instance reads the device through, shared with the host.
     roots: Rc<RefCell<Roots>>,
     watches: Rc<crate::files::Watches>,
@@ -1886,12 +1878,19 @@ fn open_instance(
     let access = Rc::new(RefCell::new(spec.access.clone()));
     let read = Rc::clone(&access);
     instance.set_access(Rc::new(move || read.borrow().clone()));
+    // What the workspace's owners let members post there, and what a limit refused: the device
+    // hands it with the instance and says it again when it moved, and the host serves it as
+    // `workspace.content` each frame that reads something else.
+    let content = Rc::new(RefCell::new(spec.content.clone()));
+    let reading = Rc::clone(&content);
+    instance.set_content_source(Rc::new(move || reading.borrow().clone()));
     drop(in_scope);
     Opened {
         instance,
         surface,
         builds,
         access,
+        content,
         roots,
         watches,
         used,
@@ -1927,6 +1926,7 @@ impl Hosted {
             surface,
             builds,
             access,
+            content: workspace_content,
             roots: platform_roots,
             watches,
             used,
@@ -1985,11 +1985,6 @@ impl Hosted {
             published_from: None,
             refused: Vec::new(),
             answers: Answers::default(),
-            search_index: tilo_resource::search_index::Publisher::default(),
-            search_index_moved: None,
-            search_entries: std::collections::BTreeMap::new(),
-            search_index_build: 0,
-            search_whole: None,
             wake,
             used,
             callees,
@@ -2002,6 +1997,7 @@ impl Hosted {
             scope,
             personal,
             access,
+            content: workspace_content,
             presence,
             calls,
             page_prompts: crate::page_prompts::PagePrompts::default(),
@@ -2071,7 +2067,7 @@ impl Hosted {
     /// Keep the identity-service connection the instance's connection signs through for as long
     /// as the instance runs.
     #[must_use]
-    pub fn holding_identity(mut self, identity: std::os::fd::OwnedFd) -> Self {
+    pub fn holding_identity(mut self, identity: runtime_portal::process_link::Descriptor) -> Self {
         self.identity = Some(identity);
         self
     }
@@ -2169,6 +2165,21 @@ impl Hosted {
         self.published_from = None;
         self.answers = Answers::default();
         self.person_changed();
+        true
+    }
+
+    /// The workspace's content moved, as this device's person reads it (`workspace.content`): its
+    /// owners set another limit, or a host refused content or kept it once a limit was raised. The
+    /// next frame serves the new reading, so a view shows the refusal or its going where it
+    /// stands. Whether it changed.
+    pub fn set_content(
+        &mut self,
+        content: Option<tilolang_tilo::content::WorkspaceContent>,
+    ) -> bool {
+        if *self.content.borrow() == content {
+            return false;
+        }
+        *self.content.borrow_mut() = content;
         true
     }
 
@@ -2375,7 +2386,6 @@ impl Hosted {
 
         self.publish();
         self.answer_directory();
-        self.publish_search_index();
         changed |= self.opened();
         // Where what plays comes out, after this frame's views ran: a person who moved the
         // session to a speaker or a cast target hears it there from the next frame.
@@ -2884,140 +2894,6 @@ impl Hosted {
         }
     }
 
-    /// Publish the app's resources to the session's persistent search index, over the
-    /// instance's certified route: what search finds of the room (a note's title, a message's
-    /// sender, subject and body), keyed by each resource's id, so a hit opens the app at it.
-    /// Nothing is sent while nothing moved; a new route sends the whole set again, and so does a
-    /// change the publication's journal no longer reaches. Otherwise a change sends the entries
-    /// of the resources it moved, and drops those of the resources it deleted: a task checked in
-    /// a book of ten thousand replaces one entry.
-    fn publish_search_index(&mut self) {
-        if self.connection.route().app_id != self.spec.app {
-            return;
-        }
-        let Some(host) = self.instance.host() else {
-            return;
-        };
-        if let Some((moved, taken)) = self.search_whole.take() {
-            match taken.try_recv() {
-                Ok(published) => {
-                    self.search_entries = published.entries;
-                    self.search_index = published.publisher;
-                    for bytes in published.deltas {
-                        self.connection.manager().send(
-                            collaboration::CollabRequest::PublishSearchIndex { delta_json: bytes },
-                        );
-                    }
-                    self.search_index_moved = Some(moved);
-                    return;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.search_whole = Some((moved, taken));
-                    return;
-                }
-                // The thread ended without publishing it: it is read whole again.
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
-            }
-        }
-        let Some(surface) = self.surface.borrow().clone() else {
-            return;
-        };
-        // What the workspace moved since the index last took it, read from the publication the
-        // window reads rather than from the document: a change becomes a publication at the frame
-        // that reads it from the store, and the index publishes that frame's changes, not the
-        // ones before.
-        surface.update();
-        // A publication no earlier frame took ([`Self::search_index_moved`] is `None`) has no
-        // journal to read from: the whole index is read off the frame, as it is when the
-        // journal no longer reaches back to it.
-        let moved = self
-            .search_index_moved
-            .and_then(|since| surface.publications.borrow().text_since(since));
-        // What a hit's address names opens at its resource; the entries carry the package's
-        // `open`. A change sends the entries it moved; a whole publication reads the workspace
-        // off the frame instead.
-        let Some(tilolang_tilo::publish::TextMoves::These { texts, gone, whole }) = moved else {
-            self.read_index_whole(&host);
-            return;
-        };
-        if texts.is_empty() && gone.is_empty() && whole.is_empty() {
-            return;
-        }
-        let state = self.index_state();
-        let (upsert, mut remove) = self.moved_entries(&host, &texts, &gone);
-        // A document read again whole names every text it still holds: an entry under it that
-        // it no longer names is gone.
-        for package in host.packages() {
-            for doc in &whole {
-                let id = tilolang_tilo::publish::resource_id(&package.meta.app, doc);
-                let named: std::collections::BTreeSet<String> = texts
-                    .iter()
-                    .map(|path| tilolang_tilo::publish::resource_id(&package.meta.app, path))
-                    .collect();
-                // A paragraph's entry stands while the resource it is in is named: what the
-                // resource holds now was published with it.
-                let vanished: Vec<String> = self
-                    .entries_under(&id)
-                    .into_iter()
-                    .filter(|key| !named.contains(tilolang_tilo::search::split_anchor(key).0))
-                    .collect();
-                for key in vanished {
-                    self.search_entries.remove(&key);
-                    remove.push(key);
-                }
-            }
-        }
-        let Some(deltas) = self.search_index.publish_moved(state, upsert, remove) else {
-            self.read_index_whole(&host);
-            return;
-        };
-        for delta in deltas {
-            let Some(bytes) = delta.encode() else {
-                continue;
-            };
-            self.connection
-                .manager()
-                .send(collaboration::CollabRequest::PublishSearchIndex { delta_json: bytes });
-        }
-        self.search_index_moved = Some(surface.publications.borrow().moved());
-    }
-
-    /// The state the entries are published at: a generation of its own for every publication.
-    fn index_state(&mut self) -> tilo_resource::search_index::IndexState {
-        self.search_index_build = self.search_index_build.saturating_add(1);
-        tilo_resource::search_index::IndexState {
-            generation: self.search_index_build,
-            secrets_unlocked: None,
-        }
-    }
-
-    /// Read every entry of the workspace and send it: what a first publication, a new route and
-    /// a change the journal no longer reaches send. The entries are read from the store on the
-    /// frame; the deltas that publish ten thousand of them are made off it, and a later frame
-    /// sends them ([`Self::search_whole`]).
-    fn read_index_whole(&mut self, host: &Host) {
-        let publisher = std::mem::take(&mut self.search_index);
-        let state = self.index_state();
-        let moved = self.moved();
-        let entries = tilolang_tilo::search::whole(host);
-        let (sent, taken) = std::sync::mpsc::channel();
-        let wake = Arc::clone(&self.wake);
-        let spawned = std::thread::Builder::new()
-            .name("tilolang-index".to_owned())
-            .spawn(move || {
-                let index = tilolang_tilo::search::publish_whole(publisher, state, entries);
-                // An instance that ended meanwhile takes nothing, and needs no frame.
-                if sent.send(index).is_ok() {
-                    wake();
-                }
-            });
-        match spawned {
-            Ok(_) => self.search_whole = Some((moved, taken)),
-            // Nothing was published: the next frame reads the whole index again.
-            Err(error) => tracing::warn!(%error, "the search index could not be published"),
-        }
-    }
-
     /// Fill what can run now on the resources the window shows ([`Instance::shown_resources`]):
     /// the rows its palette offers are the actions on what it draws, and a condition is the
     /// app's to answer for them. Every other row is answered when a caller asks about it
@@ -3109,67 +2985,6 @@ impl Hosted {
         let publications = surface.publications.borrow();
         let packages = surface.host.package_ids();
         self.answers.forget(&publications, &packages)
-    }
-
-    /// The entries of the resources the change moved, and the keys of the entries it deleted:
-    /// a resource read from the store as it is now, each app's own resources by its own package.
-    fn moved_entries(
-        &mut self,
-        host: &Host,
-        texts: &std::collections::BTreeSet<String>,
-        gone: &std::collections::BTreeSet<String>,
-    ) -> (Vec<tilo_resource::search_index::IndexEntry>, Vec<String>) {
-        let mut upsert = Vec::new();
-        let mut remove = Vec::new();
-        let packages = host.packages();
-        for path in texts {
-            for package in &packages {
-                let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
-                let entries = tilolang_tilo::search::index_entries_at(host, &package.meta, path);
-                // What the resource published before and no longer does goes: a paragraph
-                // deleted, or the whole resource once it holds no text, though it is still
-                // there. What is published under it is the entries of its own resources.
-                let before: Vec<String> = self
-                    .entries_under(&id)
-                    .into_iter()
-                    .filter(|key| tilolang_tilo::search::keys_resource(key, &id))
-                    .collect();
-                for key in before {
-                    if !entries.iter().any(|entry| entry.resource == key) {
-                        self.search_entries.remove(&key);
-                        remove.push(key);
-                    }
-                }
-                for entry in entries {
-                    self.search_entries
-                        .insert(entry.resource.clone(), entry.clone());
-                    upsert.push(entry);
-                }
-            }
-        }
-        // The resources that are gone, and whatever was published under them.
-        for package in &packages {
-            for path in gone {
-                let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
-                for key in self.entries_under(&id) {
-                    self.search_entries.remove(&key);
-                    remove.push(key);
-                }
-            }
-        }
-        (upsert, remove)
-    }
-
-    /// The keys of the index entries of `id`: its own, its paragraphs' and those of the resources
-    /// published under it, and theirs.
-    fn entries_under(&self, id: &str) -> Vec<String> {
-        let under = format!("{id}/");
-        self.search_entries
-            .range(id.to_owned()..)
-            .take_while(|(key, _)| key.starts_with(id))
-            .map(|(key, _)| key.clone())
-            .filter(|key| tilolang_tilo::search::keys_resource(key, id) || key.starts_with(&under))
-            .collect()
     }
 
     /// Offer the instance's action directory on its connection, once it is connected, and

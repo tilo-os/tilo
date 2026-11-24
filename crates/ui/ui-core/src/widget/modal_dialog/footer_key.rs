@@ -68,7 +68,11 @@ impl Widget for FooterKey {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let mut state = AccessState::new().focusable(self.enabled);
+        // The secondary answer (Cancel, Keep) grants nothing; the others grant or confirm, and
+        // that consent stays the person's.
+        let mut state = AccessState::new()
+            .focusable(self.enabled)
+            .consent(!matches!(self.slot, Slot::Secondary));
         state.focused = self.focused;
         state.disabled = !self.enabled;
         Some(

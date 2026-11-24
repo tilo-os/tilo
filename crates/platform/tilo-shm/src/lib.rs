@@ -165,12 +165,20 @@ impl Mapping {
     /// Map `fd` read-only after checking it is a memfd sealed against resizing (and against writes
     /// when `immutable`), at least `min_len` bytes and at most `max_len`.
     pub fn map_sealed(
-        fd: &OwnedFd,
+        fd: &impl AsFd,
         immutable: bool,
         min_len: usize,
         max_len: usize,
     ) -> io::Result<Self> {
-        let file = File::from(fd.as_fd().try_clone_to_owned()?);
+        Self::sealed(
+            File::from(fd.as_fd().try_clone_to_owned()?),
+            immutable,
+            min_len,
+            max_len,
+        )
+    }
+
+    fn sealed(file: File, immutable: bool, min_len: usize, max_len: usize) -> io::Result<Self> {
         sys::require_seals(&file, immutable)?;
         let len = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
         if len < min_len || len > max_len || len == 0 {
@@ -200,18 +208,26 @@ impl Mapping {
     /// pages, so it may exceed `max_len` by less than a page; what lies beyond `max_len` is not
     /// copied. A writable buffer (`immutable` false) needs seals and is refused.
     pub fn map_sealed(
-        fd: &OwnedFd,
+        fd: &impl AsFd,
         immutable: bool,
         min_len: usize,
         max_len: usize,
     ) -> io::Result<Self> {
+        Self::sealed(
+            File::from(fd.as_fd().try_clone_to_owned()?),
+            immutable,
+            min_len,
+            max_len,
+        )
+    }
+
+    fn sealed(file: File, immutable: bool, min_len: usize, max_len: usize) -> io::Result<Self> {
         if !immutable {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "a writable shared buffer needs sealed memory, which only Linux has",
             ));
         }
-        let file = File::from(fd.as_fd().try_clone_to_owned()?);
         let size = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
         let len = size.min(max_len);
         if size < min_len || len == 0 || size.saturating_sub(max_len) >= MAX_PAGE {

@@ -295,20 +295,6 @@ pub fn primary_kind(app_id: &str) -> Option<String> {
         .map(|surface| surface.kind.clone())
 }
 
-/// Whether this app declares an undoable verb on this resource kind. A
-/// window may route a chain's document verb through an effect handler, while
-/// the committed surface describes what it changes.
-#[must_use]
-pub fn document_verb(app_id: &str, kind: &str, action: &str) -> bool {
-    surface_of(app_id).is_some_and(|file| {
-        file.resource(kind).is_some_and(|surface| {
-            surface.verbs.iter().any(|verb| {
-                verb.id == action && verb.kind == tilo_action_policy::ActionKind::Undoable
-            })
-        })
-    })
-}
-
 /// Whether `action` of `app_id` shows something in a window of the app, on
 /// whatever resource it is invoked, as its surface declares
 /// ([`tilo_actions::surface::Surface::shows`]). False when this process holds
@@ -358,61 +344,6 @@ pub fn reads_app(reader: &str, owner: &str) -> bool {
     }
 }
 
-/// `claims` naming as units what each action may write by `app_id`'s
-/// surface: what a server that cannot read a sealed change checks it against
-/// (devices that open it check what it really wrote). Every host that signs a
-/// change names its units this way; a claim left on the whole record is
-/// refused wherever the action may only write some of its units (a comment,
-/// a message). Unchanged when this process holds no surface for the app.
-#[must_use]
-pub fn with_footprints(
-    app_id: &str,
-    mut claims: Vec<crate::ChangeClaim>,
-) -> Vec<crate::ChangeClaim> {
-    use crate::ReceiptSurface as _;
-    let Some(file) = surface_of(app_id) else {
-        return claims;
-    };
-    for claim in &mut claims {
-        let kind = claim
-            .action
-            .members()
-            .into_iter()
-            .find_map(|action| match action {
-                crate::ClaimedAction::Verb { action, .. } => Some(action.kind.clone()),
-                crate::ClaimedAction::Edit { kind, .. } if !kind.is_empty() => Some(kind.clone()),
-                _ => None,
-            });
-        let resource = match &kind {
-            Some(kind) => file.resource(kind),
-            // A change that names no kind is an edit of the record whole: the app's own.
-            None => file.own_resource(),
-        };
-        if let Some(resource) = resource {
-            let surface = crate::surface::KindSurface(resource.clone());
-            claim.units = surface.footprint(&claim.action);
-        }
-    }
-    claims
-}
-
-/// The claims of the changes `mutation` carries, a change this process made to
-/// a record of `app_id`, each naming what it is and, as units, what its action
-/// may write ([`with_footprints`]): what the op that carries it is signed
-/// with. A change names what it is in its message; the store writes one for
-/// every change it makes.
-pub fn claims_of(
-    app_id: &str,
-    mutation: &crate::DocumentMutation,
-) -> Result<Vec<crate::ChangeClaim>, crate::ClaimError> {
-    let changes = match mutation {
-        crate::DocumentMutation::Snapshot(_) => return Ok(Vec::new()),
-        crate::DocumentMutation::Incremental(bytes) => crate::claim::parse_changes(bytes)?,
-    };
-    let claims = crate::claim::claims_of(&changes, crate::record_unit)?;
-    Ok(with_footprints(app_id, claims))
-}
-
 /// Parse a lowercase hex hash, as [`SURFACE_HASH_ENV`] carries it.
 #[must_use]
 pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
@@ -436,54 +367,6 @@ mod tests {
             assert!(keeps_person_resource("test.person-kinds", "test.history"));
             assert!(!keeps_person_resource("test.person-kinds", "test.shared"));
             assert!(!keeps_person_resource("test.unknown-app", "test.history"));
-        }
-
-        phase a_claim_names_the_units_its_action_may_write;
-        // A change to a part of a record its app keeps apart (a PDF's
-        // comments) claims only that part: claimed on the whole record, the
-        // workspace refuses it, since no action of it may write the whole record.
-        {
-            use crate::{ChangeClaim, ClaimedAction, ReceiptRefusal};
-            use tilo_actions::PathStep;
-            static FILE: &[u8] = b"[[resources]]\nkind = \"test.paper\"\nlabel = \"Paper\"\nversion = 1\nfields = [\n  { path = \"title\", type = \"String\" },\n  { path = \"comments\", type = \"Keyed<Note>\", stored = \"keyed\", unit = true },\n  { path = \"comments.*.text\", type = \"String\" },\n  { path = \"comments.*.resolved\", type = \"bool\" },\n]\n";
-            register_package("test.footprints", FILE);
-            let edit = |field: &str| ClaimedAction::Edit {
-                kind: "test.paper".into(),
-                path: vec![
-                    PathStep::Field("comments".into()),
-                    PathStep::Item("c1".into()),
-                    PathStep::Field(field.into()),
-                ],
-            };
-            let group = ClaimedAction::Group(vec![edit("text"), edit("resolved")]);
-            let whole_resource = vec![ChangeClaim {
-                change: [7; 32],
-                action: group,
-                units: vec![Vec::new()],
-                invoker: None,
-                call: None,
-            }];
-            let file = crate::surface::SurfaceFile::parse(FILE).unwrap();
-            let receiver = crate::surface::KindSurface(file.own_resource().unwrap().clone());
-            let document = crate::WrittenDocument {
-                workspace: "workspace-1",
-                app: "test.footprints",
-                document: "paper-1",
-            };
-            let decide = |claims: &[ChangeClaim]| {
-                crate::check_claims(claims, &document, None, None, Some(&receiver), &|_, _, _| true)
-            };
-            assert!(matches!(
-                decide(&whole_resource),
-                Err(ReceiptRefusal::OutsideFootprint { .. })
-            ));
-            let claimed = with_footprints("test.footprints", whole_resource);
-            let comment = vec![
-                PathStep::Field("comments".into()),
-                PathStep::Item("c1".into()),
-            ];
-            assert_eq!(claimed[0].units, [comment.clone(), comment]);
-            assert_eq!(decide(&claimed), Ok(crate::Receipt::Admit));
         }
 
         phase a_launched_package_surface_replaces_the_one_held;

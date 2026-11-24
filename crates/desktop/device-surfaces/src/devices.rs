@@ -158,12 +158,46 @@ pub struct PersonalDeviceView {
     pub wakeable: bool,
     /// It plays the sound this device sends it.
     pub audio_output: bool,
+    /// The screens it drives, as the record of the person's devices says it: what a view arranges
+    /// beside this device's own, and places by their shared ids.
+    #[serde(default)]
+    pub displays: Vec<DeviceDisplayView>,
     /// When a session of it was last with a host, in milliseconds since the Unix epoch; `0` when
     /// it never said.
     pub seen_ms: u64,
     /// What it last said it holds of each workspace it mounts, by what losing that device would
     /// cost: empty until it said.
     pub storage: Vec<tilo_system_resources::storage::WorkspaceHold>,
+}
+
+/// One screen a device drives, as the person's devices record keeps it: what the person placed
+/// across their devices, and what a view draws on that arrangement.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct DeviceDisplayView {
+    /// Its stable id, which the person's shared layout places it by.
+    pub output: String,
+    /// What a person knows it by.
+    pub name: String,
+    /// It is the device's own panel.
+    pub builtin: bool,
+    /// Where its top-left corner stands in the device's own layout.
+    pub x: i32,
+    pub y: i32,
+    /// How much of the device's desktop it shows, in logical pixels.
+    pub width: u32,
+    pub height: u32,
+    /// It is plugged in, and it shows something.
+    pub connected: bool,
+    pub enabled: bool,
 }
 
 /// One key that may act as the person, as the record of their own workspace keeps it: one of

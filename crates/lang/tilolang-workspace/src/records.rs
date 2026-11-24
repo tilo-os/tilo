@@ -1006,6 +1006,25 @@ impl Records for crate::Service {
         Ok(tilolang_tilo::search::whole(opened.host()))
     }
 
+    fn entries_of(
+        &self,
+        record: Record,
+        policy: Arc<WorkspacePolicy>,
+        viewer: &Actor,
+        app: &str,
+        document: &str,
+        installed: Option<&runtime_portal::process_link::Module>,
+    ) -> Result<Vec<IndexEntry>, String> {
+        let opened = opened_with(
+            record,
+            Some(policy),
+            viewer.clone(),
+            app,
+            installed.map(|module| Package::Installed(module.clone())),
+        )?;
+        Ok(tilolang_tilo::search::entries_in(opened.host(), document))
+    }
+
     fn apply(
         &self,
         record: Record,

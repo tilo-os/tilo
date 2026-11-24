@@ -278,11 +278,26 @@ pub type PatchConnection = tilo_socket::Stream;
 pub fn patch_connection(handed: Descriptor) -> std::io::Result<PatchConnection> {
     #[cfg(unix)]
     {
-        tilo_render_protocol::channel::Channel::from_socket(handed)
+        tilo_render_protocol::channel::Channel::from_socket(handed.into())
     }
     #[cfg(windows)]
     {
         handed.into_stream()
+    }
+}
+
+/// A patch connection's two ends: a window's and its instance's.
+///
+/// # Errors
+/// The system could not make the pair.
+pub(crate) fn patch_pair() -> std::io::Result<(PatchConnection, PatchConnection)> {
+    #[cfg(unix)]
+    {
+        tilo_render_protocol::channel::Channel::pair()
+    }
+    #[cfg(windows)]
+    {
+        tilo_socket::pair()
     }
 }
 
@@ -298,7 +313,7 @@ pub(crate) fn patch_transport(
     {
         let watched = std::os::fd::AsFd::as_fd(&connection).try_clone_to_owned()?;
         let transport = tilo_render_protocol::patch::unix::ChannelTransport::new(connection)?;
-        Ok((Box::new(transport), watched))
+        Ok((Box::new(transport), watched.into()))
     }
     #[cfg(windows)]
     {
@@ -317,6 +332,13 @@ pub(crate) fn patch_transport(
 /// not hold leaves the instance running without one, as a launched app runs without media. The
 /// device content store has no Windows client yet: an instance there keeps its files in the
 /// store of its own machine.
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::needless_pass_by_value,
+        reason = "the connection is dropped unused until Windows has a device content client"
+    )
+)]
 fn store_of(fd: Option<Descriptor>) -> Option<tilo_content::ContentStore> {
     #[cfg(unix)]
     {
@@ -629,6 +651,39 @@ impl TilolangProcess {
         changed
     }
 
+    /// The workspace `workspace`'s content moved, as this device's person reads it: the windows
+    /// already running there serve the new reading on their next frame, and those still opening
+    /// run with it from theirs. Whether any running instance changed.
+    pub fn set_content(
+        &mut self,
+        workspace: &str,
+        content: Option<tilolang_tilo::content::WorkspaceContent>,
+    ) -> bool {
+        let mut changed = false;
+        for running in &mut self.running {
+            if running.hosted.spec().workspace != workspace {
+                continue;
+            }
+            changed |= running.hosted.set_content(content.clone());
+        }
+        let encoded = content
+            .as_ref()
+            .and_then(|content| serde_json::to_string(content).ok())
+            .unwrap_or_default();
+        for opening in &mut self.opening {
+            match &mut opening.stage {
+                Stage::Module { request, .. } if request.workspace == workspace => {
+                    request.content = encoded.clone();
+                }
+                Stage::Joining { spec, .. } if spec.workspace == workspace => {
+                    spec.content = content.clone();
+                }
+                Stage::Module { .. } | Stage::Joining { .. } | Stage::Moved => {}
+            }
+        }
+        changed
+    }
+
     /// The instances running.
     pub fn instances(&self) -> impl Iterator<Item = &Hosted> {
         self.running.iter().map(|running| &running.hosted)
@@ -911,6 +966,23 @@ impl TilolangProcess {
                 },
                 language: request.language,
                 access: request.access,
+                content: if request.content.is_empty() {
+                    None
+                } else {
+                    match serde_json::from_str(&request.content) {
+                        Ok(content) => Some(content),
+                        Err(error) => {
+                            // The daemon made this JSON from its workspaces; one that does not
+                            // read leaves the root as no limit and no refusal, and says why.
+                            tracing::warn!(
+                                %error,
+                                "a workspace's content the daemon named does not read: this \
+                                 window reads no limit and no refusal"
+                            );
+                            None
+                        }
+                    }
+                },
                 shows: request.shows,
                 link_home: request.link_home.as_deref().and_then(|home| {
                     match serde_json::from_str(home) {
@@ -1022,7 +1094,7 @@ impl TilolangProcess {
             hosted.speak(&language);
         }
         let mut hosted = match opening.identity.take() {
-            Some(identity) => hosted.holding_identity(identity),
+            Some(identity) => hosted.holding_identity(identity.into()),
             None => hosted,
         };
         // What a window was asked to show: an instance that shows nothing opens on nothing.
@@ -1323,8 +1395,11 @@ fn arrived_early(
 fn module_bundle(fd: &Descriptor, len: u64) -> Result<Bundle, AdmitError> {
     let module_error = |error: &dyn std::fmt::Display| AdmitError::Module(error.to_string());
     let len = usize::try_from(len).map_err(|error| module_error(&error))?;
-    let mapping =
-        tilo_shm::Mapping::map_sealed(fd, true, len, len).map_err(|error| module_error(&error))?;
+    // The mapping opens the file for itself: it takes a descriptor of its own, so the one the
+    // session handed stays the instance's to close.
+    let sealed: std::os::fd::OwnedFd = fd.try_clone().map_err(|error| module_error(&error))?.into();
+    let mapping = tilo_shm::Mapping::map_sealed(&sealed, true, len, len)
+        .map_err(|error| module_error(&error))?;
     let bytes = mapping
         .get(0, len)
         .ok_or_else(|| AdmitError::Module("the module is shorter than it says".to_owned()))?;

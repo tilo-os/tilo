@@ -1,5 +1,8 @@
 //! Who a workspace keeps out: a person moderation removed stays out for a day,
-//! however often they ask again. An idle member the host prunes is not kept out
+//! however often they ask again, until the workspace admits them again — an
+//! administrator holding them, or an invitation redeemed — which lifts it at
+//! once. A ban is not lifted so; [`Removals::clear`] on an unban is the only
+//! thing that lifts one. An idle member the host prunes is not kept out
 //! ([`Removals::clear`]): they come back as the person they are.
 //!
 //! The day is the workspace's own: a person removed from a community workspace
@@ -89,8 +92,8 @@ impl Removals {
         self.save()
     }
 
-    /// Let `person` in again at once: the workspace pruned them as idle, or
-    /// lifted their ban.
+    /// Let `person` in again at once: the workspace pruned them as idle, lifted
+    /// their ban, or admitted them again.
     pub(super) fn clear(&mut self, person: [u8; 32]) -> Result<(), String> {
         if self.removed.remove(&person).is_some() {
             self.save()?;

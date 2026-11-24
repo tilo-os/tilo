@@ -163,13 +163,24 @@ async fn a_computer_holding_the_root_logs_in_at_a_server_by_its_line_and_is_aske
         "the login put the laptop in the workspace's roster"
     );
 
-    // The daemon enters as it enters every login's workspace, and is let in.
+    // The daemon enters as it enters every login's workspace, through the device's own service,
+    // which keeps the workspace's member copy, and is let in.
+    let state = tempfile::tempdir().unwrap();
+    let own = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("laptop"),
+        &laptop_key,
+        &laptop_cert,
+        &tilo_api::daemon::enter::server_of(&login).await.unwrap(),
+    )
+    .await
+    .expect("the laptop's own service opens");
     let entered = tilo_test_env::within(
         "the daemon's entry",
-        tilo_api::daemon::enter::connect(&laptop_key, &login, None),
+        tilo_api::daemon::enter::connect(&laptop_key, &login, Some(own.lent())),
     )
     .await
     .expect("the server lets the root's own device in");
+    tilo_test_env::within("the device's service keeps the workspace", own.hold(&entered)).await;
     assert!(entered.admitted(company.workspace_id).await);
 
     // The server's ask for content it lacks reaches the laptop now.

@@ -33,14 +33,20 @@ pub fn root_map(key: &str) -> AutoCommit {
 
 /// Whether `change`, named as the framework change `named` and naming no one, is the change
 /// every holder derives alike: a founding identity for a genesis, a file tree's root map for a
-/// structure. Every other framework change names who made it.
+/// structure. Every other framework change names who made it. `load` loads a change alone, as
+/// whoever received it may: a founding is read from what it writes.
 #[must_use]
-pub fn is_derived(change: &automerge::Change, named: FrameworkChange) -> bool {
+pub fn is_derived(
+    change: &automerge::Change,
+    named: FrameworkChange,
+    load: impl FnOnce(&[u8]) -> Option<AutoCommit>,
+) -> bool {
     if !change.deps().is_empty() || change.seq() != 1 || change.timestamp() != 0 {
         return false;
     }
     match named {
-        FrameworkChange::Genesis => super::identity::is_derived_founding(change),
+        FrameworkChange::Genesis => load(change.raw_bytes())
+            .is_some_and(|doc| super::identity::is_derived_founding(&doc, change)),
         FrameworkChange::Structure => is_derived_root_map(change),
         _ => false,
     }
@@ -71,7 +77,8 @@ mod tests {
     fn a_root_map_is_derived_and_an_edit_dressed_as_one_is_not() {
         assert!(is_derived(
             &only_change(root_map("nodes")),
-            FrameworkChange::Structure
+            FrameworkChange::Structure,
+            |_| None
         ));
         let mut dressed = AutoCommit::new().with_actor(automerge::ActorId::from(
             b"tilo.files.tree.v1/nodes".as_slice(),
@@ -85,7 +92,8 @@ mod tests {
         );
         assert!(!is_derived(
             &only_change(dressed),
-            FrameworkChange::Structure
+            FrameworkChange::Structure,
+            |_| None
         ));
     }
 }

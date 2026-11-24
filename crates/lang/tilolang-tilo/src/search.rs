@@ -19,14 +19,15 @@
 //! it (its first version's author) first, and when it was made, so the shell draws a conversation
 //! or a message as one and a box sends to a conversation and the people in it.
 //!
-//! Search is the system's: a window publishes every hit to the session's search index, which
+//! Search is the system's: the device's daemon publishes every hit to its search index, which
 //! finds them as every Tilo surface finds things, and keeps them after the app closes. The hits
 //! are read from the device's resource store ([`crate::resources`]): every resource of a type
-//! that holds text, nothing kept beside it. Each text is as the window's person reads it, and a
+//! that holds text, nothing kept beside it. Each text is as the device's person reads it, and a
 //! resource the records holding it keep from them (`type Direct (readers: people)`) is no hit.
-//! The index keeps every hit of an app under one slot, which any caller who may read the app's
-//! record passes, so a hit of a resource sealed to its readers names them ([`Hit::readers`]), by
-//! the rule the store seals it by: the index answers it to them alone, whoever published it.
+//! The index keeps the hits of one store document in a slot of their own
+//! ([`entries_in`]), which a caller who may read that document passes, so a hit of a resource
+//! sealed to its readers names them ([`Hit::readers`]), by the rule the store seals it by: the
+//! index answers it to them alone, whoever published it.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -600,9 +601,9 @@ pub fn hits(host: &Host, meta: &Meta, doc: &str) -> Vec<Hit> {
     out
 }
 
-/// Every hit of the workspace, read from the store now: what a window publishes to the session's
-/// search index, which is what search finds things through. One read of every resource of each
-/// type that holds text. Each text is as the window's person reads it: the index matches a query
+/// Every hit of the workspace, read from the store now: every entry system search keeps of it,
+/// before a document's set is narrowed to that document. One read of every resource of each
+/// type that holds text. Each text is as the host's person reads it: the index matches a query
 /// against what they read, never against the title of a resource they do not hold. A resource
 /// the records holding it keep from them (`type Direct (readers: people)`) is no hit.
 #[must_use]
@@ -659,13 +660,19 @@ pub fn entries(host: &Host) -> Vec<IndexEntry> {
 /// change reached, instead of reading the workspace again.
 #[must_use]
 pub fn index_entries_at(host: &Host, meta: &Meta, id: &str) -> Vec<IndexEntry> {
-    let store = host.store();
     let id = tilolang_runtime::value::flat_id(id);
-    let Some(ty) = store.type_of_id(&id) else {
+    let Some(ty) = host.store().type_of_id(&id) else {
         return Vec::new();
     };
-    let fields = texted(store, meta, &ty);
-    let Some(at) = ResourceRef::parse_id(&id, ty).filter(|_| !fields.is_empty()) else {
+    index_entries_of(host, meta, &ty, &id)
+}
+
+/// [`index_entries_at`] for the resource `id` of `meta`'s type `ty`, its type known rather than
+/// read from the store: what a document's resources are read by, their kind naming their type.
+fn index_entries_of(host: &Host, meta: &Meta, ty: &str, id: &str) -> Vec<IndexEntry> {
+    let store = host.store();
+    let fields = texted(store, meta, ty);
+    let Some(at) = ResourceRef::parse_id(id, ty.to_owned()).filter(|_| !fields.is_empty()) else {
         return Vec::new();
     };
     if !host.reads_for(host.viewer())(&at) {
@@ -676,6 +683,36 @@ pub fn index_entries_at(host: &Host, meta: &Meta, id: &str) -> Vec<IndexEntry> {
         return Vec::new();
     };
     entry(&hit).into_iter().chain(block_entries(&hit)).collect()
+}
+
+/// Every entry the search index keeps of the resources the store's document `document` holds
+/// now, each read as the host's person reads it ([`index_entries_at`]): what the device's daemon
+/// publishes for that document, in one slot of its own. Each run of a document publishes the
+/// whole of its set, so an entry the document no longer holds — a paragraph deleted, a
+/// resource removed — goes with it.
+#[must_use]
+pub fn entries_in(host: &Host, document: &str) -> Vec<IndexEntry> {
+    let store = host.store();
+    let packages = host.packages();
+    let mut out = Vec::new();
+    for (kind, id) in store.resources_in(document) {
+        // The type the store's kind names, as the store answers a resource's type: the one the
+        // package that declares it reads its fields with.
+        let declared = {
+            let kinds = store.kinds();
+            kinds
+                .of_kind(&kind)
+                .map(|entry| (entry.app.clone(), entry.id.clone()))
+        };
+        let Some((app, ty)) = declared else {
+            continue;
+        };
+        let Some(package) = packages.iter().find(|package| package.meta.app == app) else {
+            continue;
+        };
+        out.extend(index_entries_of(host, &package.meta, &ty, &id));
+    }
+    out
 }
 
 /// The index's entry of `hit`: short metadata first (a sender, a subject), then long prose (a
@@ -798,9 +835,9 @@ pub struct Published {
 }
 
 /// The whole of a workspace's search index, read from the store now: one entry per resource
-/// with text, then one per paragraph found on its own. What a first publication, a new route or
-/// a change the journal no longer reaches sends, through [`publish_whole`]: an index that keeps
-/// only so many entries keeps every resource before any paragraph.
+/// with text, then one per paragraph found on its own. What a caller that reads an app whole
+/// sends, through [`publish_whole`]: an index that keeps only so many entries keeps every
+/// resource before any paragraph.
 #[must_use]
 pub fn whole(host: &Host) -> Vec<IndexEntry> {
     let hits = every_hit(host);
@@ -811,8 +848,8 @@ pub fn whole(host: &Host) -> Vec<IndexEntry> {
 }
 
 /// The deltas that publish every one of `entries` through `publisher` at `state`, and the
-/// entries by resource. Plain data, read of no store: a host publishes ten thousand entries off
-/// its frame.
+/// entries by resource. Plain data, read of no store: a caller publishes ten thousand entries
+/// off its frame.
 #[must_use]
 pub fn publish_whole(
     mut publisher: Publisher,

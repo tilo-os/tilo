@@ -109,10 +109,7 @@ mod own;
 mod ownership;
 #[cfg(not(target_arch = "wasm32"))]
 mod packaged_model;
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    any(feature = "agents", test, feature = "test-support")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use packaged_model::keep_surface;
 #[cfg(not(target_arch = "wasm32"))]
 pub use packaged_model::{PackagedAction, package_surface};
@@ -393,7 +390,7 @@ pub(crate) struct GovernedWorkspace {
     /// without taking its lock ([`readings::Invitations`]).
     invitations: readings::Invitations,
     /// Whom moderation removed, and when: the public entry keeps them out for
-    /// the day.
+    /// the day, or until the workspace admits them again.
     removals: removals::Removals,
     /// Member writes to follow before compacting a sealed record history
     /// again, after a compaction failed: each attempt opens and merges the

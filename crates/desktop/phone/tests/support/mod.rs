@@ -7,6 +7,7 @@
     clippy::expect_used,
     clippy::panic,
     dead_code,
+    unused_imports,
     reason = "test support: a failure here is the test's failure; each test uses part of it"
 )]
 

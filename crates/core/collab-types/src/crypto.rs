@@ -206,7 +206,8 @@ pub fn sign_op(
     reason = "a debug build's check that every produced change is claimed"
 )]
 fn assert_claimed(op: &SignedOp) {
-    if let Err(unclaimed) = crate::claim::check_claimed(op) {
+    // What a device signs is its own: its changes are read in this process.
+    if let Err(unclaimed) = crate::claim::check_claimed(op, automerge::Automerge::parse_changes) {
         panic!("signing a document op whose changes are not all claimed: {unclaimed}");
     }
 }

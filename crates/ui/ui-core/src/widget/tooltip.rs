@@ -388,6 +388,8 @@ pub struct Tooltip {
     appear: crate::motion::Appearing,
 
     dirty: bool,
+    /// It takes a box only while it shows, so showing or hiding asks layout again.
+    layout_dirty: bool,
 }
 
 impl std::fmt::Debug for Tooltip {
@@ -402,6 +404,7 @@ impl std::fmt::Debug for Tooltip {
             .field("hover_since", &self.hover_since)
             .field("appear", &self.appear)
             .field("dirty", &self.dirty)
+            .field("layout_dirty", &self.layout_dirty)
             .finish()
     }
 }
@@ -418,6 +421,14 @@ impl Tooltip {
             anchor: Rect::ZERO,
             hover_since: None,
             appear: crate::motion::Appearing::closed(),
+            layout_dirty: true,
+        }
+    }
+
+    fn set_shown(&mut self, shown: bool) {
+        if self.is_visible != shown {
+            self.is_visible = shown;
+            self.layout_dirty = true;
         }
     }
 
@@ -453,13 +464,14 @@ impl Tooltip {
     pub fn on_hover_enter(&mut self, initial: Duration) {
         self.dirty = true;
         self.elapsed = Some(initial);
-        self.is_visible = initial >= self.delay;
+        let shown = initial >= self.delay;
+        self.set_shown(shown);
     }
 
     pub fn on_hover_leave(&mut self) {
         self.dirty = true;
         self.elapsed = None;
-        self.is_visible = false;
+        self.set_shown(false);
     }
 
     pub fn tick(&mut self, dt: Duration) {
@@ -468,9 +480,8 @@ impl Tooltip {
             return;
         };
         *e = e.saturating_add(dt);
-        if *e >= self.delay {
-            self.is_visible = true;
-        }
+        let shown = *e >= self.delay;
+        self.set_shown(shown);
     }
 }
 
@@ -496,7 +507,7 @@ impl Widget for Tooltip {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
@@ -509,7 +520,7 @@ impl Widget for Tooltip {
             && !self.is_visible
             && crate::time::now().saturating_duration_since(since) >= self.delay
         {
-            self.is_visible = true;
+            self.set_shown(true);
         }
         if !self.is_visible {
             self.appear.snap(false);
@@ -586,7 +597,7 @@ impl Widget for Tooltip {
             !self.is_visible && crate::time::now().saturating_duration_since(since) >= self.delay
         });
         if due {
-            self.is_visible = true;
+            self.set_shown(true);
         }
         due
     }

@@ -517,6 +517,18 @@ impl<M: ListModel + 'static> VirtualList<M> {
             .set_on_opened(move |key: ListKey| callback(key.typed()));
     }
 
+    /// Run a command the focused row declares (`Ctrl+Enter`), answering whether one did: the
+    /// row answers the key however it is drawn, a list row and any other view alike.
+    pub fn set_on_row_shortcut(
+        &mut self,
+        mut callback: impl FnMut(&M::Key, &crate::platform::Shortcut) -> bool + 'static,
+    ) {
+        self.rows
+            .set_on_row_shortcut(move |key: &ListKey, pressed| {
+                key.get().is_some_and(|key| callback(key, pressed))
+            });
+    }
+
     #[must_use]
     pub fn on_fold(mut self, mut callback: impl FnMut(&M::Key, bool) + 'static) -> Self {
         self.rows = self.rows.on_fold(move |key: &ListKey, folded| {

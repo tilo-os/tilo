@@ -146,7 +146,8 @@ impl Workspaces {
     /// Whether `caller`, on the device `certificate` certifies, may do
     /// `effect` with `action` of `store` in the workspace `workspace_id`
     /// names, as the workspace's policy decides it now. A person acting as
-    /// themselves is asked nothing: their invocation is their answer. An
+    /// themselves is asked nothing: their invocation is their answer, except
+    /// in the vault, where what the rules ask them first waits for their yes. An
     /// agent its person's session was handed to is held to its delegation
     /// too: it reads, and a change asks its person ([`Answer::Ask`]) unless
     /// they answered that very action in advance.
@@ -199,8 +200,12 @@ impl Workspaces {
         let verdict = access.verdict(&node, effect, &Context::at_time(now));
         let answer = if acting.person_id().is_some() {
             // The person acting as themselves is the one their invocation
-            // asks: nothing is put to them.
-            if verdict.answer == Answer::Ask {
+            // asks: nothing is put to them. Not in the vault, where a rule
+            // that asks them first is answered by their yes alone, as every
+            // release of a secret is decided (`Workspaces::using_vault`); a
+            // step another action declares there is that action's, decided
+            // when it was called.
+            if verdict.answer == Answer::Ask && store != Store::VAULT {
                 Answer::Allow
             } else {
                 verdict.answer
@@ -273,10 +278,12 @@ impl Workspaces {
         request: impl Into<Option<&InvokeRequest>>,
     ) -> Result<Reach, ActionCallError> {
         if reach.answer == Answer::Ask {
-            caller
-                .acting()
-                .agent_id()
-                .ok_or(ActionCallError::NotPermitted)?;
+            // An agent's change is put to its person; a person's own call of
+            // what the rules ask them first waits for their yes.
+            let acting = caller.acting();
+            if acting.agent_id().is_none() && acting.person_id().is_none() {
+                return Err(ActionCallError::NotPermitted);
+            }
             let place = self
                 .workspace_name(reach.workspace)
                 .await

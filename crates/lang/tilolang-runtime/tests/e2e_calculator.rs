@@ -165,20 +165,38 @@ mod cases {
         of_kind(tree, "ui.Drawing")
     }
 
-    /// How many of a drawing's shapes are filled at a light of their own: a surface's bands, as
-    /// opposed to the floor's lines.
-    fn shaded_count(drawing: &UiNode) -> usize {
+    /// The cells of the window's surfaces: one shape gathers them all, nine numbers each, so
+    /// the floor's lines beside it are no cells.
+    fn mesh_cells(drawing: &UiNode) -> usize {
         match drawing.props.get("shapes") {
             Some(Value::List(shapes)) => shapes
                 .iter()
-                .filter(|shape| match shape {
-                    Value::Enum(case) => case.fields.values().any(|field| match field {
-                        Value::Opt(Some(shade)) => matches!(**shade, Value::Float(_)),
-                        _ => false,
-                    }),
-                    _ => false,
+                .filter_map(|shape| match shape {
+                    Value::Enum(case) if case.variant == "mesh" => match case.fields.get("cells") {
+                        Some(Value::List(cells)) => Some(cells.len() / 9),
+                        _ => None,
+                    },
+                    _ => None,
                 })
-                .count(),
+                .sum(),
+            other => panic!("a drawing holds shapes, not {other:?}"),
+        }
+    }
+
+    /// The texts a drawing sets in its own shapes: the graph's corner numbers.
+    fn shape_texts(drawing: &UiNode) -> Vec<String> {
+        match drawing.props.get("shapes") {
+            Some(Value::List(shapes)) => shapes
+                .iter()
+                .filter_map(|shape| match shape {
+                    Value::Enum(case) if case.variant == "text" => case
+                        .fields
+                        .get("text")
+                        .and_then(Value::as_text)
+                        .map(str::to_owned),
+                    _ => None,
+                })
+                .collect(),
             other => panic!("a drawing holds shapes, not {other:?}"),
         }
     }
@@ -478,9 +496,9 @@ mod cases {
             let own = c.window();
             let graph = drawn(own.tree())[0];
             assert_eq!(
-                shaded_count(graph),
-                11,
-                "the surface is drawn as filled bands, one per row"
+                mesh_cells(graph),
+                12 * 12,
+                "the surface is drawn as cells, not as bands"
             );
             assert!(
                 shape_count(graph) > 7,
@@ -502,6 +520,84 @@ mod cases {
             c.call("clear", vec![Value::resource(&c.root)]);
             let none = c.window();
             assert!(of_kind(none.tree(), "ui.ListRow").is_empty(), "the record is cleared");
+        }
+
+        phase a_text_that_is_no_calculation_says_what_is_wrong;
+        {
+            let c = Calc::new();
+            let mut view = c.window();
+            let field = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
+            for (typed, why) in [
+                ("(2+3", "A bracket is not closed"),
+                ("2 +", "The expression ends where a value belongs"),
+                ("nope(2)", "There is no function by that name"),
+                ("$2", "There is a character a calculation does not use"),
+                ("2)", "There is more after the calculation"),
+            ] {
+                view.edit(&field, &Value::text(typed)).unwrap();
+                view.poll_patches().unwrap();
+                let result = of_kind(view.tree(), "ui.TextInput")
+                    .into_iter()
+                    .filter(|input| {
+                        input.props.get("placeholder").and_then(Value::as_text) == Some("Result")
+                    })
+                    .next()
+                    .expect("the result field");
+                assert_eq!(
+                    result.props.get("text").and_then(Value::as_text),
+                    Some(why),
+                    "`{typed}` says why it is no calculation:\n{}",
+                    dump(view.tree())
+                );
+            }
+        }
+
+        phase the_graph_pans_up_and_zooms_each_axis_on_its_own;
+        {
+            let c = Calc::new();
+            let mut view = c.window();
+            let tabs = of_kind(view.tree(), "ui.ViewTabs")[0].key.clone();
+            view.fire_with(&tabs, "change", Some(&Value::Int(2))).unwrap();
+            view.poll_patches().unwrap();
+            let drawing = of_kind(view.tree(), "ui.Drawing")[0].key.clone();
+            // The grid is read against ten either way, each axis on its own.
+            assert_eq!(
+                shape_texts(of_kind(view.tree(), "ui.Drawing")[0]),
+                ["-10", "10", "-10", "10"],
+                "both axes start at ten"
+            );
+            // Taller takes the y range alone: the x numbers stay where they were.
+            let taller = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|button| button.props.get("label").and_then(Value::as_text) == Some("Taller"))
+                .expect("the Taller button")
+                .key
+                .clone();
+            view.press(&taller).unwrap();
+            view.poll_patches().unwrap();
+            let taller_numbers = shape_texts(of_kind(view.tree(), "ui.Drawing")[0]);
+            assert_eq!(
+                taller_numbers,
+                ["-10", "10", "-15", "15"],
+                "the y range grew and the x range did not"
+            );
+            // A drag down the drawing pans the graph up: the height it moved stays under the hand.
+            let drag = |view: &tilolang_runtime::ViewInstance, event: &str, at: f64| {
+                view.fire_with(
+                    &drawing,
+                    event,
+                    Some(&Value::List(vec![Value::Float(0.5), Value::Float(at)])),
+                )
+                .unwrap();
+            };
+            drag(&view, "drag_start", 0.5);
+            drag(&view, "drag", 0.25);
+            view.poll_patches().unwrap();
+            assert_eq!(
+                shape_texts(of_kind(view.tree(), "ui.Drawing")[0]),
+                ["-10", "10", "-22.5", "7.5"],
+                "the y range followed the hand up, and x did not move"
+            );
         }
     }
 }

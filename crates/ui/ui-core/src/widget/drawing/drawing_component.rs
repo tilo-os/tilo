@@ -298,6 +298,22 @@ pub fn shape_description() -> EnumDescription {
                 ],
             ),
             case(
+                "mesh",
+                "A surface of cells, nine numbers each: four corners, x and y in turn, then how \
+                 much of the fill's light reaches the cell, `1` the ink itself and `0` black. \
+                 Cells are drawn in the order they are given, so a nearer fold covers the one \
+                 behind it.",
+                vec![
+                    FieldDescription {
+                        name: "cells".to_owned(),
+                        ty: Type::List(Box::new(Type::Float)),
+                        default: None,
+                        doc: "The cells' numbers, nine to a cell.".to_owned(),
+                    },
+                    ink("fill", true),
+                ],
+            ),
+            case(
                 "text",
                 "A text at (x, y), set in one of the theme's type roles.",
                 vec![
@@ -616,6 +632,10 @@ impl PropType for Shape {
                     None | Some(Value::None) => None,
                     Some(_) => Some(float("shade")?),
                 },
+            },
+            "mesh" => Shape::Mesh {
+                cells: points("cells")?,
+                fill: ink("fill")?.unwrap_or(Ink::Accent),
             },
             "text" => Shape::Text {
                 x: float("x")?,

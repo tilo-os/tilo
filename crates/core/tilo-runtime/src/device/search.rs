@@ -110,8 +110,8 @@ impl DeviceSearch {
 
 /// The tilolang apps' resources, read from the workspaces' stores through each app's package as
 /// this device installed it, verified as a launch verifies it (else as this build carries it),
-/// as the device's person reads them: the entries a window of the app publishes, with no window
-/// open.
+/// as the device's person reads them: the entries of the store document a change landed in,
+/// with no window open.
 struct InstalledPackages {
     copies: Workspaces,
     person: String,
@@ -141,6 +141,7 @@ impl StoreReader for InstalledPackages {
         &self,
         workspace: &str,
         app: &str,
+        record: &str,
     ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String> {
         let installed = if super::package_runs::runs_in_process(app) {
             Some(super::package_runs::verified_installed(workspace, app)?.module)
@@ -148,7 +149,7 @@ impl StoreReader for InstalledPackages {
             None
         };
         self.copies
-            .record_entries(workspace, app, installed.as_ref(), &self.person)
+            .record_entries_of(workspace, app, record, installed.as_ref(), &self.person)
     }
 }
 

@@ -320,7 +320,6 @@ impl Widget for PaintSurface {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        self.layout_dirty = false;
         let style = taffy::Style {
             flex_grow: 1.0,
             flex_shrink: 1.0,
@@ -468,6 +467,11 @@ impl Widget for PaintSurface {
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO || self.layout_dirty
+    }
+
+    /// The solve read the size the surface stands at: what it paints changed, not its box.
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 }
 

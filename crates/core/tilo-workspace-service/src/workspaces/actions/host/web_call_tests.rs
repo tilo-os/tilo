@@ -914,7 +914,7 @@ async fn a_call_sends_the_workspace_content_it_names() {
     let at = format!("{}/v1/upload", upload.url());
     let called = |body: Value| call(&at, &item, body);
 
-    let parts = json!({"bodyParts": [
+    let parts = json!({"method": "POST", "bodyParts": [
         {"name": "payload_json", "json": {"content": "hi", "attachments": [{"id": 0, "filename": "a.png"}]}},
         {"name": "files[0]", "content": {
             "app": "so.tilo.chat", "hash": hash, "filename": "a.png", "contentType": "image/png"

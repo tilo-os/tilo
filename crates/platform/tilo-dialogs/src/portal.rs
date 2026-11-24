@@ -945,6 +945,91 @@ pub fn walk_chosen_folder(folder: &File, limit: usize) -> Result<Vec<(String, Ve
     Ok(out)
 }
 
+/// [`walk_chosen_folder`] on Windows: the folder the handle is open on, walked by its final
+/// path. Links and junctions are skipped, never followed out of the folder.
+#[cfg(windows)]
+pub fn walk_chosen_folder(folder: &File, limit: usize) -> Result<Vec<(String, Vec<u8>)>, String> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+
+    /// The most files one folder choice hands over.
+    const MAX_FILES: usize = 10_000;
+
+    fn walk(
+        dir: &Path,
+        prefix: &str,
+        limit: &mut usize,
+        out: &mut Vec<(String, Vec<u8>)>,
+    ) -> Result<(), String> {
+        let entries =
+            std::fs::read_dir(dir).map_err(|_| "the chosen folder can't be read".to_owned())?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let relative = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if out.len() >= MAX_FILES {
+                return Err("the chosen folder holds too many files".to_owned());
+            }
+            // The entry itself, never what a link or junction points at.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                walk(&entry.path(), &relative, limit, out)?;
+            } else if kind.is_file() {
+                let Ok(mut file) = File::open(entry.path()) else {
+                    continue;
+                };
+                let Ok(metadata) = file.metadata() else {
+                    continue;
+                };
+                let size = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+                if size > *limit {
+                    return Err(
+                        "Those files are too large for the app to read. Choose fewer or smaller files."
+                            .to_owned(),
+                    );
+                }
+                let mut bytes = Vec::with_capacity(size);
+                if std::io::Read::read_to_end(&mut file, &mut bytes).is_err() {
+                    continue;
+                }
+                *limit = limit.saturating_sub(bytes.len());
+                out.push((relative, bytes));
+            }
+        }
+        Ok(())
+    }
+
+    let mut wide = vec![0_u16; 32_768];
+    // SAFETY: the folder's live handle and a buffer of the length given.
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            folder.as_raw_handle(),
+            wide.as_mut_ptr(),
+            u32::try_from(wide.len()).unwrap_or(u32::MAX),
+            0,
+        )
+    };
+    let length = usize::try_from(length).unwrap_or(usize::MAX);
+    if length == 0 || length >= wide.len() {
+        return Err("the chosen folder can't be read".to_owned());
+    }
+    wide.truncate(length);
+    let path =
+        PathBuf::from(<std::ffi::OsString as std::os::windows::ffi::OsStringExt>::from_wide(&wide));
+    let mut limit = limit;
+    let mut out = Vec::new();
+    walk(&path, "", &mut limit, &mut out)?;
+    Ok(out)
+}
+
 /// The chosen folder `path`, kept open for reading: what a host hands an app that walks a folder
 /// it was given. Opening the folder itself, never a link to one.
 #[cfg(unix)]

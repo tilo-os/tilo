@@ -236,7 +236,8 @@ impl StatePeer {
             }
         };
         if let Some(bytes) = incremental {
-            let changes = collab_types::parse_changes(&bytes).map_err(AdmissionError::malformed)?;
+            let changes =
+                collab_admission::parse_changes(&bytes).map_err(AdmissionError::malformed)?;
             if !part
                 .heads
                 .iter()

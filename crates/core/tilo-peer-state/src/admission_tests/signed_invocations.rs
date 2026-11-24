@@ -315,7 +315,7 @@ fn sealed_commit(
     let collab_types::DocumentMutation::Incremental(bytes) = &mutation else {
         panic!("an incremental write");
     };
-    let changes = collab_types::claim::parse_changes(bytes).expect("the changes parse");
+    let changes = collab_admission::parse_changes(bytes).expect("the changes parse");
     envelope.claims =
         collab_types::claim::claims_of(&changes, |_| Vec::new()).expect("every change is claimed");
     envelope.encryption = Some(collab_types::EncryptionMetadata::content_key(
@@ -753,7 +753,7 @@ tilo_test_env::scenario! {
         add_member_with(&mut reader, &reader_authority, now, 31, 32);
         take(&mut reader, document_message(envelope.clone()), now)
             .expect("a reader takes the sealed write in");
-        collab_types::check_opened_mutation(&envelope, &mutation)
+        collab_admission::check_opened_mutation(&envelope, &mutation)
             .expect("the call opened to is the one the claim carried");
     }
 }
@@ -1014,7 +1014,10 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
         Ok(message) => take(&mut receiver, message, now).unwrap_err().reason,
         Err(refusal) => format!("{refusal:?}"),
     };
-    assert!(refused.contains("not granted"), "a device is no member: {refused}");
+    assert!(
+        refused.contains("not granted"),
+        "a device is no member: {refused}"
+    );
     assert_eq!(value(&receiver), "\"kept\"", "never applied");
 
     // The person reads only now: the same upkeep is decided with the person's role.

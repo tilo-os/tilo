@@ -157,7 +157,8 @@ tilo_test_env::scenario! {
                 ..
             } = request
             {
-                collab_types::claim::named_changes(bytes).unwrap();
+                let changes = automerge::Automerge::parse_changes(bytes).unwrap();
+                collab_types::claim::check_named(&changes).unwrap();
             }
         }
     }

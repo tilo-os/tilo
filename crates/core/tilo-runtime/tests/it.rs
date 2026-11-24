@@ -123,8 +123,6 @@ mod nearby_send;
 mod provided;
 #[path = "refresh_reads.rs"]
 mod refresh_reads;
-#[path = "root_holder_login.rs"]
-mod root_holder_login;
 #[path = "search.rs"]
 mod search;
 #[path = "shared_workspace.rs"]

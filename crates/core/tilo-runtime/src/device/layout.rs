@@ -310,6 +310,7 @@ impl DeviceLayouts {
                             title: shown,
                             name,
                             pinned: tab.pinned,
+                            leaving: false,
                             shell: SHELL.to_owned(),
                         }
                     },

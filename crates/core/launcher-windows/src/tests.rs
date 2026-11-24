@@ -183,3 +183,36 @@ fn a_confined_app_the_daemon_does_not_hold_is_refused_handles() {
     assert!(refused.to_string().contains("did not start"), "{refused}");
     drop(job);
 }
+
+/// Where Windows has no `AppContainer` (Wine), a launch is refused as unsupported and starts
+/// nothing: there is no unconfined fallback in the launcher. Where it has one, the confined
+/// scenarios above prove the launch instead.
+#[test]
+fn a_windows_without_an_app_container_starts_nothing() {
+    match Container::for_app("so.tilo.notes") {
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {}
+        Err(error) => panic!("the container: {error}"),
+        Ok(_) => return,
+    }
+    let marker = tempfile::tempdir().unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "probe", "--nocapture"])
+        .env(PROBE, format!("{}\n-\n-", marker.path().display()));
+    let launched = launch(LaunchRequest {
+        package_id: "so.tilo.notes".to_owned(),
+        command,
+        read: Vec::new(),
+        read_write: vec![marker.path().to_path_buf()],
+    });
+    assert_eq!(
+        launched.as_ref().map(|_| ()).map_err(io::Error::kind).err(),
+        Some(io::ErrorKind::Unsupported),
+        "a launch where nothing confines it: {:?}",
+        launched.map(|(_, launched)| launched.pid())
+    );
+    assert!(
+        std::fs::read_dir(marker.path()).unwrap().next().is_none(),
+        "the app did not run"
+    );
+}

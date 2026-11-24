@@ -1,6 +1,8 @@
 """Stage the GStreamer tilolang-process plays video with on Windows, from GStreamer's own MSVC build.
 
     gstreamer_runtime.py stage <out>   fetch the pinned release, stage the reviewed closure
+    gstreamer_runtime.py audit <bundle> <runtime.json>
+                                       check a runtime bundle carries exactly the closure staged
 
 GStreamer publishes its MSVC build as Python wheels on PyPI (cerbero's packages/wheel): the same
 binaries its Windows installer carries, as zip archives a Linux build reads without running an
@@ -376,7 +378,53 @@ def stage(out, wheels):
     return len(staged)
 
 
+# Where a runtime bundle keeps the staged tree: the DLLs beside tilolang-process.exe in bin/,
+# every directory it includes under lib/ (tools/ci/windows/build.sh).
+IN_BUNDLE = (('bin/', 'bin/'), ('lib/gstreamer-1.0/', 'lib/gstreamer-1.0/'),
+             ('libexec/', 'lib/libexec/'), ('licenses/', 'lib/licenses/'))
+# What a runtime bundle holds of its own, beside the closure.
+OWN = {'bin/tilolang-process.exe'}
+
+
+def audit(bundle, staged):
+    """Refuse a runtime bundle whose GStreamer is anything but the closure `staged` (the
+    manifest `stage` wrote) byte for byte, and review that closure again: no GPL code, no
+    encoder, nothing unreviewed. The bundle's own metadata (its top-level files) aside."""
+    files = json.loads(Path(staged).read_text())['files']
+    expected = {}
+    for path, entry in files.items():
+        place = next((kept + path[len(prefix):] for prefix, kept in IN_BUNDLE
+                      if path.startswith(prefix)), None)
+        if place is None:
+            raise ValueError(f'the staged closure holds {path}, which no bundle keeps')
+        expected[place] = (path, entry['sha256'])
+    bundle = Path(bundle)
+    held = {path.relative_to(bundle).as_posix(): path for path in bundle.rglob('*')
+            if path.is_file() and len(path.relative_to(bundle).parts) > 1}
+    extra = sorted(set(held) - set(expected) - OWN)
+    missing = sorted(set(expected) - set(held))
+    if extra or missing:
+        raise ValueError(f'the bundle is not the staged closure: extra {extra}, missing {missing}')
+    tree = {}
+    for place, (path, sha256) in expected.items():
+        data = held[place].read_bytes()
+        if digest(data) != sha256:
+            raise ValueError(f'{place} is not the file staged as {path}')
+        tree[path] = data
+    staged_binaries, system = closure(tree)
+    review(staged_binaries, system)
+    return len(expected)
+
+
 def main(argv):
+    if len(argv) == 3 and argv[0] == 'audit':
+        try:
+            count = audit(argv[1], argv[2])
+        except (ValueError, OSError, KeyError) as error:
+            print(f'gstreamer runtime: {error}', file=sys.stderr)
+            return 1
+        print(f'the bundle carries the reviewed closure of GStreamer {VERSION}: {count} files')
+        return 0
     if len(argv) != 2 or argv[0] != 'stage':
         print(__doc__, file=sys.stderr)
         return 2

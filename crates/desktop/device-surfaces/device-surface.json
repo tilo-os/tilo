@@ -9900,82 +9900,6 @@
       ]
     },
     {
-      "kind": "person-displays",
-      "label": "Your screens",
-      "version": 1,
-      "verbs": [],
-      "fields": [
-        {
-          "path": "local",
-          "stored": "value",
-          "type": "text",
-          "readonly": true
-        },
-        {
-          "path": "screens",
-          "stored": "value",
-          "type": {
-            "list": {
-              "named": "SharedScreen"
-            }
-          },
-          "readonly": true
-        }
-      ],
-      "types": [
-        {
-          "name": "SharedScreen",
-          "doc": "One screen of the person's shared layout.",
-          "fields": [
-            {
-              "name": "device",
-              "type": "text"
-            },
-            {
-              "name": "output",
-              "type": "text"
-            },
-            {
-              "name": "name",
-              "type": "text"
-            },
-            {
-              "name": "device_label",
-              "type": "text"
-            },
-            {
-              "name": "local",
-              "type": "bool"
-            },
-            {
-              "name": "online",
-              "type": "bool"
-            },
-            {
-              "name": "x",
-              "type": "int"
-            },
-            {
-              "name": "y",
-              "type": "int"
-            },
-            {
-              "name": "width",
-              "type": "int"
-            },
-            {
-              "name": "height",
-              "type": "int"
-            },
-            {
-              "name": "reachable",
-              "type": "bool"
-            }
-          ]
-        }
-      ]
-    },
-    {
       "kind": "input-devices",
       "label": "Input devices",
       "version": 1,
@@ -13887,6 +13811,48 @@
           ]
         },
         {
+          "name": "DeviceDisplayView",
+          "doc": "One screen a device drives, as the person's devices record keeps it: what the person placed across their devices, and what a view draws on that arrangement.",
+          "fields": [
+            {
+              "name": "output",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "builtin",
+              "type": "bool"
+            },
+            {
+              "name": "x",
+              "type": "int"
+            },
+            {
+              "name": "y",
+              "type": "int"
+            },
+            {
+              "name": "width",
+              "type": "int"
+            },
+            {
+              "name": "height",
+              "type": "int"
+            },
+            {
+              "name": "connected",
+              "type": "bool"
+            },
+            {
+              "name": "enabled",
+              "type": "bool"
+            }
+          ]
+        },
+        {
           "name": "DeviceWorkspace",
           "doc": "A workspace this device's shell lists, as a view of the devices reads it: the same `key` and `name` the layout's workspaces go by.",
           "fields": [
@@ -13935,6 +13901,14 @@
             {
               "name": "audio_output",
               "type": "bool"
+            },
+            {
+              "name": "displays",
+              "type": {
+                "list": {
+                  "named": "DeviceDisplayView"
+                }
+              }
             },
             {
               "name": "seen_ms",

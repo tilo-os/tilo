@@ -68,8 +68,16 @@ const REFRESH: Duration = Duration::from_millis(16);
 const CLOCK_TYPE: &str = "so.tilo.device#Time";
 /// The person at the session.
 const PERSON: &str = "Pat";
-/// The titles of the notes the apps profile opens, one window each.
-const TITLES: [&str; 3] = ["Groceries", "Packing list", "Recipes"];
+/// The titles of the notes the profiles open: three windows in the apps profile's strip, and six
+/// in the activities one, where a strip of them scrolls under the cards.
+const TITLES: [&str; 6] = [
+    "Groceries",
+    "Packing list",
+    "Recipes",
+    "Reading",
+    "Garden",
+    "Errands",
+];
 
 // -------------------------------------------------------------------------------------------------
 // Allocation counting
@@ -1208,7 +1216,7 @@ fn main() -> std::process::ExitCode {
 
 fn run(marks: &Marks) -> Result<(), String> {
     let mut json_path = None;
-    let mut tabs = TITLES.len();
+    let mut tabs = 3;
     let mut profile = Profile::Arriving;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {

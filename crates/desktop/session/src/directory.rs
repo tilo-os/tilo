@@ -267,6 +267,20 @@ pub(crate) fn awaiting_notice(notices: &dyn Notices, name: &str, host: &str) {
     );
 }
 
+/// Say the daemon refused a change the person made to their workspaces here, and why: the shell
+/// shows them as their list holds them again.
+pub(crate) fn list_refused_notice(notices: &dyn Notices, why: &str) {
+    notices.show(
+        &Notice::new(
+            String::new(),
+            2,
+            tilo_session_core::desktop::i18n::t("session-workspace-list-refused"),
+            why,
+        )
+        .about(NotificationIconKind::Workspace),
+    );
+}
+
 /// Say a join the person chose did not happen, and why, where they are: the workspace directory's
 /// own sentence, as a banner.
 fn failure_notice(notices: &dyn Notices, said: &str) {

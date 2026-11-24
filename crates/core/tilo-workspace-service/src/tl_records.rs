@@ -23,7 +23,7 @@
 //!
 //! Only the packages built into the build run here; an app a workspace installed is untrusted
 //! code and runs only on a device that installed it: its windows there, and what search reads of
-//! it with none open ([`Workspaces::record_entries`], given that device's verified package).
+//! it with none open ([`Workspaces::record_entries_of`], given that device's verified package).
 //!
 //! Who may do what is decided by the host's authority, from the workspace's policy as the
 //! acting member holds it: an agent within its delegation, a bot within its grants. The caller
@@ -119,6 +119,22 @@ pub trait Records: Send + Sync {
         policy: Arc<WorkspacePolicy>,
         viewer: &tilo_actions::Actor,
         app: &str,
+        installed: Option<&runtime_portal::process_link::Module>,
+    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String>;
+
+    /// What `app` keeps in the store document `document` of the record's workspace publishes to
+    /// search, read as the record's person reads it: the entries of the resources that document
+    /// holds now, through its app's built-in package or through `installed`'s.
+    ///
+    /// # Errors
+    /// As [`Self::entries`].
+    fn entries_of(
+        &self,
+        record: Record,
+        policy: Arc<WorkspacePolicy>,
+        viewer: &tilo_actions::Actor,
+        app: &str,
+        document: &str,
         installed: Option<&runtime_portal::process_link::Module>,
     ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String>;
 
@@ -324,6 +340,10 @@ impl Record {
 }
 
 impl Port for Record {
+    fn held(&self, document: &str) -> Option<Vec<(String, String)>> {
+        self.workspaces.held_resources(&self.workspace, document)
+    }
+
     fn command(&self, command: Command) -> Result<Reply, String> {
         // A read answers from the store the workspace reads through without its lock: it needs no
         // reactor and no thread of its own, and never waits for a write that waits on the key
@@ -503,7 +523,7 @@ impl Workspaces {
     }
 
     /// What `app` keeps in `workspace` publishes to search, read from the workspace's resource
-    /// store as `person` reads it: every entry a window of the app publishes, so search finds
+    /// store as `person` reads it: every entry of the app's resources, so search finds
     /// the app's resources on a device that never opened a window of it. The app is read through
     /// `installed`, its package as this device installed it and verified as a launch verifies it
     /// (what its windows run here), and without one through the package built into this build.
@@ -530,6 +550,35 @@ impl Workspaces {
             .ok_or_else(|| format!("{workspace}'s policy does not read here"))?;
         let viewer = tilo_actions::Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
         records.entries(record, policy, &viewer, app, installed)
+    }
+
+    /// What `app` keeps in the store document `document` of `workspace` publishes to search,
+    /// read from the workspace's resource store as `person` reads it: every entry the resources
+    /// that document holds now. The app and the person are read as [`Self::record_entries`]
+    /// reads them.
+    ///
+    /// # Errors
+    /// As [`Self::record_entries`].
+    pub fn record_entries_of(
+        &self,
+        workspace: &str,
+        app: &str,
+        document: &str,
+        installed: Option<&runtime_portal::process_link::Module>,
+        person: &str,
+    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String> {
+        let records = self
+            .tilolang()
+            .ok_or_else(|| "this device runs no tilolang runtime".to_owned())?
+            .records;
+        let record = self.record_to_read(workspace, app, person);
+        // Without the policy nobody's reads are known, and every resource would read as anyone's.
+        let policy = self
+            .policy_now(workspace)
+            .map(Arc::new)
+            .ok_or_else(|| format!("{workspace}'s policy does not read here"))?;
+        let viewer = tilo_actions::Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
+        records.entries_of(record, policy, &viewer, app, document, installed)
     }
 
     /// Apply `call`, a published action of an app's record of `workspace`, through the app's

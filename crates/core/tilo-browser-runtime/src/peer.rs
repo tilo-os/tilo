@@ -83,12 +83,13 @@ pub(crate) fn refusal_error(refusal: &DeviceRefusal) -> JsValue {
 ///
 /// Throws for text that is no refusal of a host's.
 /// The colour presence draws the identity `id` in when nothing settled
-/// another one for it, as `#rrggbb`: [`ui::presence::user_color`], the one
-/// the native desktop uses, so a page never computes a colour of its own.
+/// another one for it, as `#rrggbb`: [`collab_types::presence::user_color`],
+/// the one the native desktop uses, so a page never computes a colour of its
+/// own.
 #[wasm_bindgen(js_name = presenceColor)]
 #[must_use]
 pub fn presence_color(id: &str) -> String {
-    let (r, g, b) = ui::presence::user_color(id);
+    let (r, g, b) = collab_types::presence::user_color(id);
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
@@ -2014,11 +2015,12 @@ impl WasmPeer {
     /// holds there: made the first time, under an id the host chooses, answered again after, another
     /// for each `name` ([`Device::enter_own_workspace`]). This very device
     /// redeems the invitation on that session, shown to the workspace's people as `shownAs`,
-    /// unless `entered(workspace)` says it is in already. Resolves to the workspace's listing,
-    /// `{workspace, workspace_id, name, generation}` JSON. `invocation` is the caller's own id for
-    /// this make (a UUID the page keeps while its dialog asks again after no answer), so the next
-    /// ask is answered the workspace the first made, never a second one; `null` asks under a fresh
-    /// id.
+    /// unless `entered(workspace)` says it is in already. `locale` is the language the page
+    /// speaks, which names a workspace made for the first time. Resolves to the workspace's
+    /// listing, `{workspace, workspace_id, name, generation}` JSON. `invocation` is the caller's own
+    /// id for this make (a UUID the page keeps while its dialog asks again after no answer), so the
+    /// next ask is answered the workspace the first made, never a second one; `null` asks under a
+    /// fresh id.
     ///
     /// # Errors
     ///
@@ -2029,6 +2031,7 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = enterOwnWorkspace)]
     pub async fn enter_own_workspace(
         &self,
+        locale: String,
         name: Option<String>,
         shown_as: String,
         entered: Function,
@@ -2040,7 +2043,7 @@ impl WasmPeer {
         let listing = self
             .device
             .enter_own_workspace(
-                &ui::i18n::I18nManager::window_locale(),
+                &locale,
                 name.as_deref(),
                 &shown_as,
                 |id| {

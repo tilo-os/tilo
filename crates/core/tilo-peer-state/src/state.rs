@@ -131,11 +131,11 @@ pub use authority::DocumentKeysBasis;
 mod construction;
 mod durable;
 mod written_under;
+pub use durable::DURABLE_VERSION;
 #[cfg(test)]
 pub(crate) use durable::Durable;
 #[cfg(test)]
 use durable::brought_up;
-pub use durable::DURABLE_VERSION;
 pub(crate) use durable::{DocumentParts, DurableParts};
 mod copied;
 mod receiving;
@@ -479,7 +479,7 @@ fn held_units(
                 "change bytes that do not parse bring no index",
                 collab_types::DocumentMutation::decode(&envelope.payload)
                     .ok()
-                    .and_then(|mutation| collab_types::parse_changes(mutation.data()).ok())
+                    .and_then(|mutation| collab_admission::parse_changes(mutation.data()).ok())
             )
             .is_some_and(|changes| collab_types::units::brings_index(&changes))
     };

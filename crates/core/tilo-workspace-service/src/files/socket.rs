@@ -61,13 +61,38 @@ const PEER_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The tree's sync served on a socket, until dropped.
 pub struct Serving {
-    task: tokio::task::JoinHandle<()>,
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for Serving {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
+}
+
+/// The runtime the trees' sockets are read and written on: a thread of their own. The service
+/// waits for a daemon's bytes on whatever thread needs them ([`Lender::lend`]), the app runtime's
+/// one thread included, and the daemon's answer is read here meanwhile.
+fn sockets() -> Result<&'static tokio::runtime::Handle, String> {
+    static SOCKETS: std::sync::OnceLock<Result<tokio::runtime::Handle, String>> =
+        std::sync::OnceLock::new();
+    SOCKETS
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+            let handle = runtime.handle().clone();
+            tilo_rt::spawn_thread("tilo-tree-sockets", move || {
+                runtime.block_on(std::future::pending::<()>());
+            })
+            .map_err(|error| error.to_string())?;
+            Ok(handle)
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 /// Serve the trees of the workspaces `service` holds at `path`, to the processes `attest`
@@ -86,7 +111,14 @@ pub fn serve(
     folders: super::Folders,
 ) -> Serving {
     let path = path.to_path_buf();
-    let task = tilo_rt::app().spawn(async move {
+    let sockets = match sockets() {
+        Ok(sockets) => sockets,
+        Err(error) => {
+            tracing::error!(%error, "the workspace trees' socket has no thread to run on: no files daemon reaches this device's workspaces");
+            return Serving { task: None };
+        }
+    };
+    let task = sockets.spawn(async move {
         service.installed().await;
         let bound = tilo_files::native::private::bind_socket(&path)
             .and_then(tilo_socket::tokio::listener);
@@ -109,23 +141,24 @@ pub fn serve(
                 folders.clone(),
             );
             tokio::spawn(async move {
-                if let Err(error) =
-                    serve_one(stream, &service, content, &attest, offers, folders).await
+                if let Err(error) = carry(stream, service, content, attest, offers, folders).await
                 {
                     tracing::debug!(%error, "a workspace tree's connection ended");
                 }
             });
         }
     });
-    Serving { task }
+    Serving { task: Some(task) }
 }
 
-/// One connection, admitted and served until it ends.
-async fn serve_one(
+/// One connection's frames, read and written on the sockets' thread ([`sockets`]) and served on
+/// the app runtime ([`serve_one`]) until either ends. The bytes a daemon lends are handed to the
+/// lend that waits for them right where they are read.
+async fn carry(
     stream: tilo_socket::tokio::Stream,
-    service: &ServiceSlot,
+    service: ServiceSlot,
     content: Arc<RouteContent>,
-    attest: &Attest,
+    attest: Attest,
     offers: Offers,
     folders: super::Folders,
 ) -> Result<(), String> {
@@ -136,10 +169,75 @@ async fn serve_one(
     let (mut reader, writer) = tokio::io::split(stream);
     let (tell, told) = mpsc::unbounded_channel();
     let sending = tokio::spawn(send(writer, told));
-    let hello = FRAMING
-        .read_value_async::<_, Ask>(&mut reader)
+    let lender = Arc::new(Lender {
+        tell: tell.clone(),
+        lent: Mutex::new(BTreeMap::new()),
+        next: AtomicU64::new(0),
+    });
+    let (asked, asks) = mpsc::unbounded_channel();
+    let wire = Wire {
+        own,
+        pid,
+        asks,
+        tell,
+        sending,
+        lender: Arc::clone(&lender),
+    };
+    let served = tilo_rt::app()
+        .spawn(async move { serve_one(wire, &service, content, &attest, offers, folders).await });
+    loop {
+        tokio::select! {
+            read = FRAMING.read_value_async::<_, Ask>(&mut reader) => match read {
+                Ok(Some(Ask::Lent { id, bytes })) => lender.lent(id, bytes),
+                Ok(Some(ask)) => {
+                    if asked.send(Ok(ask)).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = asked.send(Err(error.to_string()));
+                    break;
+                }
+            },
+            // The service is done with the connection: so is its reading.
+            () = asked.closed() => break,
+        }
+    }
+    drop(asked);
+    served
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("a tree's connection was not served to its end: {error}"))?
+}
+
+/// A connection as [`serve_one`] serves it: what the daemon asks, and how it is told.
+struct Wire {
+    own: bool,
+    pid: Option<u32>,
+    asks: mpsc::UnboundedReceiver<Result<Ask, String>>,
+    tell: mpsc::UnboundedSender<Told>,
+    sending: tokio::task::JoinHandle<()>,
+    lender: Arc<Lender>,
+}
+
+/// One connection, admitted and served until it ends.
+async fn serve_one(
+    wire: Wire,
+    service: &ServiceSlot,
+    content: Arc<RouteContent>,
+    attest: &Attest,
+    offers: Offers,
+    folders: super::Folders,
+) -> Result<(), String> {
+    let Wire {
+        own,
+        pid,
+        mut asks,
+        tell,
+        sending,
+        lender,
+    } = wire;
+    let hello = asks.recv().await.transpose()?;
     let admitted = admit(own, pid, hello, service, attest);
     let (workspaces, workspace) = match admitted {
         Ok(admitted) => admitted,
@@ -159,11 +257,6 @@ async fn serve_one(
         writer,
         wakes,
     } = Backend::of(&workspaces, workspace, Some(content), governed);
-    let lender = Arc::new(Lender {
-        tell: tell.clone(),
-        lent: Mutex::new(BTreeMap::new()),
-        next: AtomicU64::new(0),
-    });
     offers.daemons.connected(&workspace.to_string(), &lender);
     let name = copy.name.clone();
     let served = Connection {
@@ -176,10 +269,9 @@ async fn serve_one(
         workspace,
         source: Arc::new(source),
         keys: offers.keys,
-        lender,
         folders: folders.clone(),
     }
-    .run(reader, wakes, offers.access)
+    .run(asks, wakes, offers.access)
     .await;
     // The daemon that held the folder is gone: nothing says where it stands any more.
     folders.gone(&name);
@@ -262,8 +354,6 @@ struct Connection {
     /// The workspace as the source of the bytes the daemon lacks.
     source: Arc<super::WorkspaceSource>,
     keys: Keys,
-    /// The daemon's store, as the service's record content reaches it.
-    lender: Arc<Lender>,
     folders: super::Folders,
 }
 
@@ -272,7 +362,7 @@ impl Connection {
     /// ends.
     async fn run(
         self,
-        mut reader: tokio::io::ReadHalf<tilo_socket::tokio::Stream>,
+        mut asks: mpsc::UnboundedReceiver<Result<Ask, String>>,
         mut wakes: mpsc::UnboundedReceiver<tilo_fs::tree_sync::Wake>,
         mut access: watch::Receiver<Option<String>>,
     ) -> Result<(), String> {
@@ -295,8 +385,8 @@ impl Connection {
                         return Ok(());
                     }
                 }
-                asked = FRAMING.read_value_async::<_, Ask>(&mut reader) => {
-                    match asked.map_err(|error| error.to_string())? {
+                asked = asks.recv() => {
+                    match asked.transpose()? {
                         Some(ask) => self.take(ask)?,
                         None => return Ok(()),
                     }
@@ -434,7 +524,8 @@ impl Connection {
                 }
                 self.send_keys(id);
             }
-            Ask::Lent { id, bytes } => self.lender.lent(id, bytes),
+            // Handed to the lend waiting for it where it is read ([`carry`]).
+            Ask::Lent { .. } => {}
             Ask::Served { id, chunks } => {
                 for chunk in &chunks {
                     self.name(*chunk);

@@ -219,6 +219,10 @@ type Library (title: name) {
     home_state: Text = ""
     home_trouble: Text = ""
     trouble: Text = ""
+    /// Why the player stopped on the song it plays, in the engine's words, and where it stopped,
+    /// in seconds: the notice names the place and continues from it.
+    player_trouble: Text = ""
+    player_at: Float = 0.0
     online: Bool = true
 }
 
@@ -337,50 +341,68 @@ view library(lib: Library) {
 
 /// The player: what plays, and the controls that steer it. Its source is the kept bytes where
 /// the song is kept offline and the catalogue's stream otherwise; the band plays it on the
-/// window's engine, so its place and length are the sound's own.
+/// window's engine, so its place and length are the sound's own. Under it, a stream its source
+/// stopped serving partway through says where it stopped, and one press continues it there.
 view band(lib: Library) {
-    if let p = lib.playing {
-        ui.MediaTransport(
-            title: if p.title == "" { "Nothing playing" } else { p.title },
-            subtitle: if lib.trouble != "" { lib.trouble } else { p.artist },
-            error: lib.trouble != "",
-            art: p.cover,
-            playing: p.state == .playing,
-            idle: p.track == "",
-            position: p.at,
-            duration: p.length,
-            volume: p.volume,
-            shuffle: p.shuffle,
-            repeat: if p.repeat == "all" {
-                .all
-            } else if p.repeat == "one" { .one } else { .off },
-            liked: if let s = lib.tracks.find(t -> t.id == p.track) { s.liked } else { false },
-            lyrics: false,
-            queue: true,
-            source: p.source,
-            fill,
-        ) {
-            on act_play_pause: playback.toggle(p)
-            on act_previous: playback.previous(p)
-            on act_next: playback.next(p)
-            on act_shuffle: playback.shuffle_toggle(p)
-            on act_repeat: playback.cycle_repeat(p)
-            on act_like: like_playing(
-                p,
-                liked: not (lib.tracks.find(t -> t.id == p.track)?.liked ?? false),
-            )
-            on act_mute: playback.mute(p)
-            on act_seek(place: Float): playback.seek(p, place: place)
-            on act_volume(place: Float): playback.set_volume(p, level: place)
-            on act_queue: open(p, view: queue)
-            on act_lyrics: open(p, view: lyrics)
-            on ended: playback.next(p)
-            on progress(share: Float): playback.set_share(p, share)
-            on length(seconds: Float): playback.set_length(p, seconds)
-            on fail(reason: Text): note_failure(lib, reason: reason)
+    let stopped = clock(lib.player_at.max(0.0).to_int())
+    stack(fill, gap: .tight) {
+        if let p = lib.playing {
+            ui.MediaTransport(
+                title: if p.title == "" { "Nothing playing" } else { p.title },
+                subtitle: if lib.player_trouble != "" { lib.player_trouble } else { p.artist },
+                error: lib.player_trouble != "",
+                art: p.cover,
+                playing: p.state == .playing,
+                idle: p.track == "",
+                position: p.at,
+                duration: p.length,
+                volume: p.volume,
+                shuffle: p.shuffle,
+                repeat: if p.repeat == "all" {
+                    .all
+                } else if p.repeat == "one" { .one } else { .off },
+                liked: if let s = lib.tracks.find(t -> t.id == p.track) {
+                    s.liked
+                } else { false },
+                lyrics: false,
+                queue: true,
+                source: playing_source(lib, p),
+                fill,
+            ) {
+                on act_play_pause: playback.toggle(p)
+                on act_previous: playback.previous(p)
+                on act_next: playback.next(p)
+                on act_shuffle: playback.shuffle_toggle(p)
+                on act_repeat: playback.cycle_repeat(p)
+                on act_like: like_playing(
+                    p,
+                    liked: not (lib.tracks.find(t -> t.id == p.track)?.liked ?? false),
+                )
+                on act_mute: playback.mute(p)
+                on act_seek(place: Float): playback.seek(p, place: place)
+                on act_volume(place: Float): playback.set_volume(p, level: place)
+                on act_queue: open(p, view: queue)
+                on act_lyrics: open(p, view: lyrics)
+                on ended: playback.next(p)
+                on progress(share: Float): playback.set_share(p, share).then(follow_stream(lib, p))
+                on length(seconds: Float): playback.set_length(p, seconds)
+                on fail(reason: Text, at: Float): note_failure(lib, reason: reason, at: at)
+            }
+        } else {
+            ui.MediaTransport(title: "Nothing playing", idle: true, queue: false, fill)
         }
-    } else {
-        ui.MediaTransport(title: "Nothing playing", idle: true, queue: false, fill)
+        if lib.player_trouble != "" {
+            ui.Banner(
+                if lib.player_at > 0.0 {
+                    "The stream stopped at {stopped}"
+                } else { "This song won't play here" },
+                message: lib.player_trouble,
+                kind: .warning,
+                action: "Try again",
+            ) {
+                on act: retry_stream(lib)
+            }
+        }
     }
 }
 
@@ -510,7 +532,7 @@ view artist(a: Artist) {
     }
 }
 
-/// A catalogue playlist's page: its songs, played from the top.
+/// A catalogue playlist's page: what it says about itself, and its songs, played from the top.
 view playlist(pl: Playlist) {
     let lib = root Library
     let songs = lib.tracks.filter(t -> t.found_for == pl.found_for)
@@ -521,6 +543,9 @@ view playlist(pl: Playlist) {
         stack(gap: .related) {
             text(pl.title, role: .title)
             text(pl.subtitle, role: .subheading)
+            if pl.description != "" {
+                text(pl.description, role: .caption, secondary: true)
+            }
             track_list(lib, songs, "This playlist has no songs yet")
         }
     }
@@ -1022,6 +1047,25 @@ primary action open_audio_file(lib: Library, file: File) -> Track (
     song
 }
 
+/// Where a song's bytes play from: where the device keeps them, else the catalogue's stream.
+fn song_source(t: Track) -> Text {
+    if t.offline != "" { t.offline } else { t.stream }
+}
+
+/// The source the session plays, as the song it plays reads now: the catalogue writes a fresh
+/// address when its stream was cut short or its old one expired, and the band opens that one at
+/// the place it stands.
+fn playing_source(lib: Library, p: playback.Playback) -> Text {
+    if let song = lib.tracks.find(t -> t.id == p.track) { song_source(song) } else { p.source }
+}
+
+/// Keeps the session's source the song's own address, so the live card and another device play
+/// the one the catalogue last answered with.
+action follow_stream(lib: Library, p: playback.Playback) {
+    let source = playing_source(lib, p)
+    if source != "" and source != p.source { playback.set_source(p, source) }
+}
+
 /// The item a song queues as: its reference, what it is called and who sings it, its cover,
 /// where its bytes play from, and how long it is.
 fn item_of(t: Track) -> playback.Item {
@@ -1030,7 +1074,7 @@ fn item_of(t: Track) -> playback.Item {
         title: t.title,
         artist: t.artist,
         cover: t.cover,
-        source: if t.offline != "" { t.offline } else { t.stream },
+        source: song_source(t),
         length: t.seconds.to_float(),
     )
 }
@@ -1039,6 +1083,7 @@ fn item_of(t: Track) -> playback.Item {
 /// record, so the song continues on this device or another.
 action play_song(t: Track) (icon: .play) {
     let lib = root Library
+    lib.player_trouble = ""
     if t.stream.starts_with("spotify:") {
         outside("music.spotify", ["play", t.stream])
     } else {
@@ -1049,6 +1094,7 @@ action play_song(t: Track) (icon: .play) {
 /// Plays an album's songs from the top.
 action play_album(a: Album) (icon: .play) {
     let lib = root Library
+    lib.player_trouble = ""
     let songs = lib.tracks.filter(t -> t.album_key == a.key)
     playback.play_list(session(lib), songs.map(t -> item_of(t)), at: 0)
 }
@@ -1056,6 +1102,7 @@ action play_album(a: Album) (icon: .play) {
 /// Plays a mixtape's songs in the person's order.
 action play_mixtape(m: Mixtape) (icon: .play) {
     let lib = root Library
+    lib.player_trouble = ""
     playback.play_list(session(lib), m.tracks.map(item -> item), at: 0)
 }
 
@@ -1414,9 +1461,25 @@ action lyrics_of(lib: Library, p: playback.Playback) uses time (icon: .quote) {
     }
 }
 
-/// Says why the player stopped.
-action note_failure(lib: Library, reason: Text) {
-    lib.trouble = reason
+/// Says why the player stopped, and where, so the notice names the place and continues there.
+action note_failure(lib: Library, reason: Text, at: Float) {
+    lib.player_trouble = reason
+    lib.player_at = at
+}
+
+/// Asks the catalogue for the song's address again and plays it on from where it stopped: a
+/// stream its source stopped serving partway through, or one whose signed address expired,
+/// continues from that place rather than beginning again.
+action retry_stream(lib: Library) uses time (icon: .refresh, label: "Try again") {
+    let at = lib.player_at
+    lib.player_trouble = ""
+    lib.player_at = 0.0
+    if let p = lib.playing {
+        if let song = lib.tracks.find(t -> t.id == p.track) {
+            playback.remember_position(p, at, now)
+            outside("music.stream", song.key)
+        }
+    }
 }
 
 /// Makes a playlist of the person's own: at Spotify too, when it is their catalogue and their

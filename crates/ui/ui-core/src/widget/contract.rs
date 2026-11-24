@@ -991,7 +991,9 @@ pub trait Widget {
     }
 
     /// Default `true`; widgets with a fixed intrinsic size should override to `false` unless a
-    /// size-affecting mutation landed.
+    /// size-affecting mutation landed. A widget that places children answers from them: it asks
+    /// layout when one of them does, and it asks nothing when it holds none, since there is no
+    /// size of its own to solve.
     fn is_layout_dirty(&self) -> bool {
         defaults::is_layout_dirty(&|visit| self.for_each_child(visit))
     }

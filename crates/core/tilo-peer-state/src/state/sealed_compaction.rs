@@ -274,7 +274,7 @@ impl<'peer> PeerPublication<'peer> {
                 open,
                 &mut |write, mutation| {
                     self.peer
-                        .check_opened_write((app, document_id), write, mutation)
+                        .check_write_in_log((app, document_id), write, mutation)
                 },
                 &|checkpoint| self.peer.checkpoint_settled((app, document_id), checkpoint),
             )?,
@@ -629,7 +629,7 @@ impl PeerPublicationMut<'_> {
             (&pieces, &replaced),
             candidate.publication().document((app, document))?,
             open,
-            &mut |write, mutation| candidate.check_opened_write((app, document), write, mutation),
+            &mut |write, mutation| candidate.check_write_in_log((app, document), write, mutation),
             &|checkpoint| candidate.checkpoint_settled((app, document), checkpoint),
         )?;
         candidate.publication_mut().take_sealed_compaction(
@@ -1734,7 +1734,7 @@ impl HeldDocument {
         mutation: &DocumentMutation,
     ) -> Result<(), super::document_capture::OpenedRefusal> {
         self.peer
-            .check_opened_write((&self.route.app, &self.route.record), write, mutation)
+            .check_write_in_log((&self.route.app, &self.route.record), write, mutation)
     }
 
     /// [`Self::opened`] over `prior`, what an earlier opening of this document left

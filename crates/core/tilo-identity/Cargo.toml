@@ -25,6 +25,7 @@ tilo-paths.workspace = true
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }
+collab-admission = { package = "tilo-collab-admission", path = "../collab-admission" }
 tilo-action-policy = { path = "../action-policy" }
 # The action context the broker's tests record changes under.
 tilo-actions = { path = "../actions" }

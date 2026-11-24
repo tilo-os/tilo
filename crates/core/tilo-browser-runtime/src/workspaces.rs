@@ -71,7 +71,7 @@ impl WorkspacesArgs {
                 "" | "administrator" => Role::Editor,
                 _ => self.role()?,
             },
-            expires_at_ns: ui::time::unix_now_ns()
+            expires_at_ns: tilo_clock::unix_now_ns()
                 .saturating_add(seconds(self.expires_in_seconds)?.saturating_mul(1_000_000_000)),
             inviter_name: self.inviter_name.clone(),
             wait_list_entry: self

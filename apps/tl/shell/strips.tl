@@ -317,6 +317,38 @@ view row_window(a: Layout, s: LayoutStrip, lists: Bool) {
 /// press, a key and an agent make the same change, attributed and undoable. A window's bar
 /// likewise carries its place's document, so another window's bar takes it as a tab.
 view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
+    if s.leaving {
+        leaving_window(a, s)
+    } else {
+        standing_window(a, s, lists)
+    }
+}
+
+/// A window whose place just left the layout: its frame stays where it stood and plays its
+/// departure, back into the control the person opened it from. It takes nothing while it goes —
+/// no press brings it forward, no tab names it and no drop lands on it — so the actions of a place
+/// that has left the layout are never reachable.
+view leaving_window(a: Layout, s: LayoutStrip) {
+    let placed = places_of(a, s.key)
+    let shown = placed.find(p -> p.key == s.active) ?? placed.first()
+    ui.WindowFrame(
+        name: window_name(shown),
+        glyph: window_glyph(shown),
+        leaving: true,
+        control: s.control,
+        fill,
+    ) {
+        body: {
+            // The place's own view, still, while the frame goes: the window is whole as it leaves.
+            if let p = shown {
+                place_content(p)
+            }
+        }
+    }
+}
+
+/// A window that stands: its places, its bar and its content, drawn as the style shows a window.
+view standing_window(a: Layout, s: LayoutStrip, lists: Bool) {
     let in_front = s.key == strip_in_front(a)
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)

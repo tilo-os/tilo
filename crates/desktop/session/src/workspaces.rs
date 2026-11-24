@@ -35,7 +35,7 @@ use tilo_workspace_service::workspaces::person_list;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices, KeyKind};
 
 use crate::directory;
-use crate::followed_resource::{FollowedResource, Sending};
+use crate::followed_resource::{FollowedResource, Sending, Went};
 use crate::platform::notice::Notices;
 use crate::workspace_settings;
 
@@ -100,6 +100,20 @@ pub(crate) struct Adoption {
     pub(crate) enter: Vec<ToEnter>,
     /// Workspaces to take off this session: taken off the list, or no longer shown on this one.
     pub(crate) release: Vec<WorkspaceId>,
+    /// Why the daemon refused what the person changed here: the shell shows the list as the
+    /// daemon holds it again, and the person hears why.
+    pub(crate) refused: Option<String>,
+}
+
+/// How a pass's writes of the person's list stand.
+#[derive(Debug, PartialEq, Eq)]
+enum Written {
+    /// Made, or none to make.
+    Made,
+    /// On their way to the daemon, or sent again since it did not answer.
+    Sent,
+    /// The daemon refused one, saying why.
+    Refused(String),
 }
 
 /// A write of the person's list.
@@ -161,6 +175,9 @@ pub(crate) struct Personal {
     >,
     /// Where a workspace shows, as the person chose it, on its way to the list.
     choosing: RefCell<Vec<Sending>>,
+    /// Workspaces made here that the list refused to name: they stay on this device alone, and
+    /// are not offered to it again.
+    kept_here: BTreeSet<WorkspaceId>,
     /// The workspaces placed on a host whose roster, as the device's daemon reads it, named this
     /// device: one whose roster names it no more is one the person left, or was taken out of.
     in_hosted: BTreeSet<WorkspaceId>,
@@ -271,6 +288,7 @@ impl Personal {
             seed: None,
             writing: RefCell::default(),
             choosing: RefCell::default(),
+            kept_here: BTreeSet::new(),
             in_hosted: BTreeSet::new(),
         }
     }
@@ -323,13 +341,18 @@ impl Personal {
         moved
     }
 
-    /// Make `writes` at the daemon, in order, without waiting on it. Whether every one was made:
-    /// the first pass that asks for them sends them and says no; a later pass asking for the same
-    /// writes hears yes once they went, and reads the list they changed. One that was not made is
-    /// sent again by a later pass, which finds the list still lacking it.
-    fn write(&self, writes: &[ListWrite]) -> bool {
+    /// Make `writes` at the daemon, in order, without waiting on it. The first pass that asks for
+    /// them sends them and hears [`Written::Sent`]; a later pass asking for the same writes hears
+    /// they were made once they went, and reads the list they changed. Ones the daemon did not
+    /// answer are sent again by a later pass, which finds the list still lacking them; ones it
+    /// refused are not, and the list stands as the daemon holds it.
+    fn write(&self, writes: &[ListWrite]) -> Written {
         let Some(list) = &self.list else {
-            return writes.is_empty();
+            return if writes.is_empty() {
+                Written::Made
+            } else {
+                Written::Sent
+            };
         };
         let asked: Vec<_> = writes
             .iter()
@@ -338,35 +361,83 @@ impl Personal {
         let mut writing = self.writing.borrow_mut();
         if let Some((sent, sending)) = writing.as_ref() {
             match sending.went() {
-                None => return false,
-                Some(Ok(())) => {
+                None => return Written::Sent,
+                Some(Went::Made) => {
                     let made = *sent == asked;
                     *writing = None;
                     if made {
-                        return true;
+                        return Written::Made;
                     }
                 }
-                Some(Err(_)) => {
+                Some(Went::Refused(why)) => {
                     *writing = None;
-                    return false;
+                    return Written::Refused(why);
                 }
+                Some(Went::Unreached(_)) => *writing = None,
             }
         }
         if asked.is_empty() {
-            return true;
+            return Written::Made;
         }
         *writing = Some((asked, list.send(writes)));
-        false
+        Written::Sent
+    }
+
+    /// Why the daemon refused the choices of where a workspace shows that went since this was last
+    /// asked: the list stands as the daemon holds it, and the person hears why.
+    pub(crate) fn refused_choices(&self) -> Vec<String> {
+        let mut refused = Vec::new();
+        self.choosing
+            .borrow_mut()
+            .retain(|sending| match sending.went() {
+                None => true,
+                Some(Went::Refused(why) | Went::Unreached(why)) => {
+                    refused.push(why);
+                    false
+                }
+                Some(Went::Made) => false,
+            });
+        refused
+    }
+
+    /// Take back onto `handle`'s shell what the daemon refused to write of it: each listed
+    /// workspace is called what `list` calls it, and one made here that the list does not name
+    /// stays on this device alone, never offered to the list again. The order comes back with
+    /// the adoption after.
+    fn take_back(&mut self, handle: &DesktopHandle, list: &WorkspaceList) {
+        let mut tree = handle.read(Clone::clone);
+        let mut renamed = false;
+        for workspace in &mut tree.workspaces {
+            let id = workspace.id();
+            match list.get(id) {
+                Some(listed) => {
+                    if !listed.name.trim().is_empty() && listed.name != workspace.name {
+                        workspace.name.clone_from(&listed.name);
+                        renamed = true;
+                    }
+                }
+                None => {
+                    if !id.is_nil() && !self.borrowed.contains(&id) && self.seed != Some(id) {
+                        self.kept_here.insert(id);
+                    }
+                }
+            }
+        }
+        if renamed {
+            handle.replace_tree(tree);
+        }
+        // What the shell shows now is what the person did since: nothing, as the daemon says.
+        self.passed = Some(shown(handle));
     }
 
     /// Wait until the writes this session sent went: what a test takes its next step after.
     #[cfg(test)]
     fn written(&self) {
         if let Some((_, sending)) = &*self.writing.borrow() {
-            let _ = sending.wait();
+            sending.wait();
         }
         for sending in self.choosing.borrow().iter() {
-            let _ = sending.wait();
+            sending.wait();
         }
     }
 
@@ -494,6 +565,7 @@ impl Personal {
             let id = *workspace;
             if id.is_nil()
                 || self.borrowed.contains(&id)
+                || self.kept_here.contains(&id)
                 || self.seed == Some(id)
                 || self.is_own(id)
             {
@@ -675,9 +747,10 @@ impl Personal {
 
     /// Write to the person's list what changed on `handle`'s shell since the last pass, with
     /// `writes` the session adds, then bring the list as it stands after onto the shell
-    /// ([`Self::adopt_into`]). `None` when the daemon did not take a write: the next pass makes
-    /// it, comparing the shell with the same last pass, and nothing is brought onto the shell
-    /// from a list that lacks it meanwhile.
+    /// ([`Self::adopt_into`]). `None` while the writes are on their way, or the daemon did not
+    /// answer them: a later pass makes them, comparing the shell with the same last pass, and
+    /// nothing is brought onto the shell from a list that lacks them meanwhile. Writes the daemon
+    /// refused are taken back off the shell ([`Self::take_back`]), and the adoption says why.
     pub(crate) fn reconcile(
         &mut self,
         handle: &DesktopHandle,
@@ -686,16 +759,22 @@ impl Personal {
         unknown_here: &dyn Fn(WorkspaceId) -> bool,
     ) -> Option<(Rc<WorkspaceList>, Adoption)> {
         writes.extend(self.publish_local(handle, &list));
-        if !self.write(&writes) {
-            return None;
-        }
+        let refused = match self.write(&writes) {
+            Written::Sent => return None,
+            Written::Made => None,
+            Written::Refused(why) => Some(why),
+        };
         let list = if writes.is_empty() {
             list
         } else {
             self.read().unwrap_or(list)
         };
+        if refused.is_some() {
+            self.take_back(handle, &list);
+        }
         self.ask_again_due();
-        let adoption = self.adopt_into(handle, &list, unknown_here);
+        let mut adoption = self.adopt_into(handle, &list, unknown_here);
+        adoption.refused = refused;
         Some((list, adoption))
     }
 
@@ -1491,6 +1570,9 @@ impl crate::Shared {
             else {
                 return;
             };
+            for why in adoption.refused.iter().chain(&personal.refused_choices()) {
+                crate::directory::list_refused_notice(&*self.telling(), why);
+            }
             let mut enter = adoption.enter;
             // A workspace on this session the person's list does not carry (one
             // joined at someone's site) is entered as this device at the host
@@ -1802,6 +1884,7 @@ mod tests {
                 .block_on(async move {
                     tilo_workspace_service::workspaces::person_workspace::found(&workspaces).await
                 })
+                .expect("the app runtime runs the step")
                 .expect("the daemon holds the person's own workspace");
             Self { daemon }
         }
@@ -1826,6 +1909,7 @@ mod tests {
                     )
                     .await
                 })
+                .expect("the app runtime runs the step")
                 .expect("the person's own workspace keeps the device");
             let mut personal = Personal::open(identity);
             personal.follow(&self.daemon.shell(), std::sync::Arc::new(|| {}));
@@ -2086,6 +2170,61 @@ mod tests {
         assert!(!names(&desktop, shared), "and does not list it again");
         pass(&mut desktop, &desktop_shell);
         assert!(!names(&laptop, shared), "nor does a later pass");
+    }
+
+    /// What the daemon refuses to write of the shell comes back off it: a renamed workspace shows
+    /// the name the list holds again, one made here that the list refused stays on this device
+    /// alone, the person hears why, and nothing is sent again.
+    #[test]
+    fn a_change_the_daemon_refuses_comes_back_as_the_list_holds_it() {
+        let person = Person::start();
+        let laptop_shell = session();
+        let [first] = on_shell(&laptop_shell)
+            .try_into()
+            .expect("a fresh session holds one workspace");
+        let mut laptop = person.device(0x21, "The laptop");
+        pass(&mut laptop, &laptop_shell);
+
+        let mut tree = laptop_shell.read(Clone::clone);
+        tree.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id() == first)
+            .expect("the first workspace")
+            .name = "Bell\u{7}".to_owned();
+        laptop_shell.replace_tree(tree);
+        let adoption = pass(&mut laptop, &laptop_shell);
+        assert!(
+            adoption
+                .refused
+                .as_deref()
+                .is_some_and(|why| why.contains("control characters")),
+            "the person hears why: {adoption:?}"
+        );
+        assert_eq!(
+            laptop_shell.read(|tree| tree.workspaces[0].name.clone()),
+            "Session",
+            "the shell shows the name the list holds"
+        );
+        assert_eq!(
+            listed(&laptop),
+            [(first, "Session".to_owned(), Some(key(0x21)))]
+        );
+
+        let second = WorkspaceId::new();
+        open_here(&laptop_shell, second, "Tab\u{9}");
+        let adoption = pass(&mut laptop, &laptop_shell);
+        assert!(adoption.refused.is_some(), "{adoption:?}");
+        assert!(!names(&laptop, second), "the list does not name it");
+        assert!(
+            on_shell(&laptop_shell).contains(&second),
+            "it stays on this device"
+        );
+        let list = laptop.read().expect("the list reads");
+        assert!(
+            laptop.publish_local(&laptop_shell, &list).is_empty(),
+            "nothing refused is sent again"
+        );
+        assert_eq!(pass(&mut laptop, &laptop_shell).refused, None);
     }
 
     /// A workspace the person joined on one device through someone's invitation is that person's

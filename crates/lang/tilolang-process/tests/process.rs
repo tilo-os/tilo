@@ -26,6 +26,7 @@ use tilolang_process::hosted::{Hosted, Spec};
 use tilolang_process::phrases::Phrases;
 use tilolang_process::testing::{Broker, Bus, Directory, Inbox, Sent};
 use tilolang_tilo::bundle::Bundle;
+use tilolang_tilo::host::Host;
 use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::runtime::Value;
 
@@ -2063,15 +2064,22 @@ fn mail() -> Bundle {
     Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
 }
 
-/// Apply the search index deltas the instance published to the session's index, over its
-/// certified route, as the session's index applies them.
-fn published_index(index: &tilo_workspace_service::search::AppContentIndex, sent: &Sent) {
-    for request in sent.borrow().iter() {
-        if let CollabRequest::PublishSearchIndex { delta_json } = request {
-            index
-                .publish("workspace", "so.tilo.mail", "", delta_json)
-                .expect("the session takes every delta");
-        }
+/// Publish what search holds of the app the instance runs, read from the workspace's store as
+/// the device's daemon reads it ([`tilolang_tilo::search::whole`]): the entries of every resource
+/// of the app that holds text, the test's index keeping them under the app's one slot.
+fn published_index(index: &tilo_workspace_service::search::AppContentIndex, host: &Host) {
+    let published = tilolang_tilo::search::publish_whole(
+        tilo_resource::search_index::Publisher::default(),
+        tilo_resource::search_index::IndexState {
+            generation: 1,
+            secrets_unlocked: None,
+        },
+        tilolang_tilo::search::whole(host),
+    );
+    for delta in &published.deltas {
+        index
+            .publish("workspace", MAIL, "", delta)
+            .expect("the session takes every delta");
     }
 }
 
@@ -2089,12 +2097,25 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
         .stage("a busy inbox");
     settle(&mut host, &mut window);
 
-    // What it published to the session's one index, as the session keeps it.
+    // The window publishes nothing to search: the device's daemon owns the app's entries.
+    assert!(
+        !sent
+            .borrow()
+            .iter()
+            .any(|request| matches!(request, CollabRequest::PublishSearchIndex { .. })),
+        "an open window sends no search entry"
+    );
+
+    // What the daemon reads of the app's store, as the session's one index keeps it.
     let index = std::sync::Arc::new(AppContentIndex::in_memory());
-    published_index(&index, &sent);
+    {
+        let running = host.instances_mut().next().expect("the instance runs");
+        let instance_host = running.instance().host().expect("the instance's store");
+        published_index(&index, &instance_host);
+    }
     assert!(
         !index.contents().visible.is_empty(),
-        "the Mail instance published its conversations and messages"
+        "search holds the Mail app's conversations and messages"
     );
 
     // Search reads that index through its production source: a word that appears only inside a
@@ -2266,6 +2287,132 @@ tilo_test_env::scenario! {
             "the week the person starts on Sunday is the one their window shows: {sunday}"
         );
     }
+}
+
+tilo_test_env::scenario! {
+    fn the_workspaces_content_a_device_reads_reaches_the_windows_root;
+
+    phase a_refusal_the_device_reads_shows_in_the_window_and_clears_when_the_limit_is_raised;
+    // A window reads the workspace's owners' limits and the content a limit refused
+    // (`workspace.content`). The device reads them from its workspaces and says them on the API;
+    // the window shows them where it stands, and the refusal goes when the limit is raised.
+    {
+        let (mut host, mut window, _sent, _inbox, route) =
+            running_app("ada", CONTENT, contented());
+        settle(&mut host, &mut window);
+        let empty = shown(&window);
+        assert!(
+            empty.contains("0 bytes, 0 refused"),
+            "a workspace whose content was all kept reads as none refused: {empty}"
+        );
+
+        // The device reads a refusal for the file a message carries, and says it on the API as
+        // it says it to a process running the workspace's windows.
+        let refused = tilolang_tilo::content::WorkspaceContent {
+            file_bytes: 1_000,
+            member_bytes: 5_000,
+            hourly_bytes: 5_000,
+            refusals: vec![tilolang_tilo::content::RefusedContent {
+                record: "so.tilo.chat/".to_owned(),
+                hash: "ab".repeat(32),
+                bytes: 1_200,
+                limit: "file".to_owned(),
+                allowed: 1_000,
+                member: "ada".to_owned(),
+                at: 7,
+                raise: "owners".to_owned(),
+            }],
+            host_person: None,
+        };
+        let (session, api) = runtime_portal::process_link::pair().expect("an API");
+        runtime_portal::process_link::Packet::send(
+            &runtime_portal::process_link::ToProcess::Content(
+                runtime_portal::process_link::WorkspaceContent {
+                    workspace: route.cluster_id.to_string(),
+                    content: serde_json::to_string(&refused).expect("a reading encodes"),
+                },
+            ),
+            &session,
+        )
+        .expect("the reading crosses the API");
+        let packet =
+            <runtime_portal::process_link::ToProcess as runtime_portal::process_link::Packet>::receive(
+                &api,
+            )
+            .expect("the API carries it");
+        let Some(runtime_portal::process_link::ToProcess::Content(content)) = packet else {
+            panic!("the API carries the workspace's content as content");
+        };
+        let reading = serde_json::from_str(&content.content).expect("the reading reads");
+        assert!(
+            host.set_content(&content.workspace, Some(reading)),
+            "another reading is a change"
+        );
+        settle(&mut host, &mut window);
+        let refused = shown(&window);
+        assert!(
+            refused.contains("1000 bytes, 1 refused"),
+            "the window shows the limit and the refusal: {refused}"
+        );
+
+        // The owners raise the limit and the file is kept: the refusal no longer stands.
+        let raised = tilolang_tilo::content::WorkspaceContent {
+            file_bytes: 5_000,
+            ..tilolang_tilo::content::WorkspaceContent::default()
+        };
+        assert!(host.set_content(&route.cluster_id.to_string(), Some(raised)));
+        settle(&mut host, &mut window);
+        let cleared = shown(&window);
+        assert!(
+            cleared.contains("5000 bytes, 0 refused"),
+            "the refusal goes with the limit that made it: {cleared}"
+        );
+    }
+}
+
+/// The package whose window reads the workspace's content root.
+const CONTENT: &str = "so.tilo.lang.content";
+
+/// The text of the content package: a note's window says the limits on what members post in the
+/// workspace and how much of it a limit refused.
+const CONTENT_SOURCE: &str = r#"app so.tilo.lang.content "Content" (icon: .hash, category: .utility)
+
+use tilo.workspace as workspace
+
+/// Something the person reads the workspace's content limits beside.
+type Note {
+    key: Text merge register
+    read: Text = ""
+}
+
+root Note
+
+default view note for Note
+
+/// The window: the largest file the workspace's owners let a host keep, and how many refusals
+/// stand for the person at this window.
+view note(n: Note) {
+    std.page(n) {
+        section("Kept") {
+            ui.Text("{workspace.content.file_bytes} bytes, {workspace.content.refusals.count()} refused")
+        }
+    }
+}
+
+/// A note read before anything was typed.
+scenario "empty" {
+    let n = root Note
+    n.read = "nothing yet"
+}
+"#;
+
+/// The content package, compiled against the workspace package it reads.
+fn contented() -> Bundle {
+    let used = tilolang_tilo::platform_apps::platform_packages_of(["tilo.workspace"].into_iter())
+        .expect("the workspace package reads");
+    let compiled = tilolang::compile_package(CONTENT_SOURCE, &tilolang::IdsLock::new(), &used)
+        .unwrap_or_else(|diagnostics| panic!("the content package compiles: {diagnostics:#?}"));
+    Bundle::new(&compiled, [])
 }
 
 /// A package whose window writes the day the week it shows began on, as the person's region

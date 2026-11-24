@@ -105,6 +105,13 @@ pub(super) fn shortcut_action_where(
 }
 
 fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {
+    // A command the control offers is one registration whether the view wrote it out as a menu
+    // item's node or handed the control the actions it offers: its key and the event that runs
+    // it travel in the value, and the press fires that event either way, while the control
+    // stands or its menu is closed.
+    if let Some(event) = offered_event(node, pressed) {
+        return Some((node.key.clone(), event));
+    }
     if !declares(node, pressed) {
         return None;
     }
@@ -112,6 +119,38 @@ fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(S
         .into_iter()
         .find(|event| node.events.contains_key(*event))
         .map(|event| (node.key.clone(), event.to_owned()))
+}
+
+/// The event of a command `node` offers whose key is `pressed`: a control given the actions it
+/// offers (`ui.MenuButton(actions: actions(r))`, a bar's commands, a row's) declares each one's
+/// key and the event choosing it fires in the value itself, as a menu item's node declares its
+/// own in its props.
+fn offered_event(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<String> {
+    // A row's own commands answer while that row is selected, not for the window: the row the
+    // list holds offers them through its item (`ui.ListItem`), and its keyboard answers there.
+    if crate::shell::row_like(&node.kind) {
+        return None;
+    }
+    node.props
+        .values()
+        .find_map(|value| offered_within(value, pressed))
+}
+
+/// The event of the command `value` holds whose key is `pressed`, in a value or in the list of
+/// values a control offers.
+fn offered_within(value: &Value, pressed: &ui::platform::Shortcut) -> Option<String> {
+    match value {
+        Value::Action(offered) => offered
+            .key
+            .as_deref()
+            .filter(|key| ui::platform::Shortcut::from(*key).same_press(pressed))
+            .map(|_| offered.event.clone()),
+        Value::List(items) => items
+            .iter()
+            .find_map(|item| offered_within(item, pressed)),
+        Value::Opt(Some(inner)) => offered_within(inner, pressed),
+        _ => None,
+    }
 }
 
 fn declared_within(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {

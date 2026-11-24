@@ -14,10 +14,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[test]
 fn own_device_effects_run_for_guests_and_refusals_are_said() {
     use ::collaboration::permissions::{PermissionContext, Role};
-    let click = |button: Button, role: Role| {
+    let click = |root: crate::widget::Element, role: Role| {
         let mut harness = crate::headless::FrameHarness::new_with_theme(
             crate::State::new(),
-            fit_host(1, button),
+            root,
             (600, 200),
             Theme::dark(),
         );
@@ -38,7 +38,10 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         }
     };
 
-    let harness = click(Button::new("go", "Copy").on_click(counter()), Role::Editor);
+    let harness = click(
+        fit_host(1, Button::new("go", "Copy").on_click(counter())),
+        Role::Editor,
+    );
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
@@ -52,7 +55,10 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
     );
     assert_eq!(harness.refusal_said(), None);
 
-    let harness = click(Button::new("go", "Copy").on_click(counter()), Role::Viewer);
+    let harness = click(
+        fit_host(1, Button::new("go", "Copy").on_click(counter())),
+        Role::Viewer,
+    );
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,
@@ -60,7 +66,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         harness.control_failures()
     );
 
-    let harness = click(Button::new("go", "Send").on_click(counter()), Role::Editor);
+    let harness = click(sends(counter()), Role::Editor);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,
@@ -73,7 +79,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         harness.control_failures()
     );
 
-    let harness = click(Button::new("go", "Send").on_click(counter()), Role::Viewer);
+    let harness = click(sends(counter()), Role::Viewer);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,
@@ -85,6 +91,102 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         harness.control_failures()
     );
 }
+
+/// A component whose "Send" button is bound to its typed `send` action, an effect that reaches
+/// outside the person's device: `sent` runs only when the action is admitted.
+struct Sends {
+    child: crate::widget::Element,
+    resource: tilo_actions::ResourceSpec,
+    sent: Box<dyn FnMut()>,
+}
+
+const SEND_OPERATION: &str = "fixture.send";
+
+fn sends(sent: impl FnMut() + 'static) -> crate::widget::Element {
+    use tilo_actions::{ActionBinding, ActionSpec, EncodedAction, OperationKind, ResourceSpec};
+    let spec = ActionSpec::typed_operation(
+        "send",
+        "Send",
+        "Send it",
+        OperationKind::Effect,
+        SEND_OPERATION,
+        vec![],
+        |_| EncodedAction::encode_operation(SEND_OPERATION, &()).unwrap(),
+    );
+    let resource = ResourceSpec::new("fixture:outbox", "fixture", "Outbox").with_action(spec);
+    let binding =
+        ActionBinding::new(&resource, &resource.actions[0], |()| serde_json::Map::new()).unwrap();
+    Box::new(Sends {
+        child: fit_host(1, Button::new("go", "Send").on_action(binding)),
+        resource,
+        sent: Box::new(sent),
+    })
+}
+
+impl Widget for Sends {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
+    crate::testing::delegate_widget_methods!(
+        child: sync,
+        build_layout,
+        apply_layout,
+        draw,
+        handle_event,
+        get_rect
+    );
+    fn name(&self) -> &str {
+        "Outbox fixture"
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![self.child.as_ref()]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![self.child.as_mut()]
+    }
+}
+
+impl crate::widget::ResourceOperations for Sends {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        std::iter::once(SEND_OPERATION.to_owned()).collect()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _: &mut crate::widget::Edits<'_>,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if op.request().type_id != SEND_OPERATION {
+            return Ok(None);
+        }
+        (self.sent)();
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
+impl crate::widget::resources::PublishesResources for Sends {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        vec![self.resource.clone()]
+    }
+}
+
+impl crate::widget::controls::ActionControls for Sends {
+    fn attach_controls(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_domain::DomainAttachment,
+    ) {
+        crate::widget::controls::attach_controls(self.child.as_mut(), domain, attachment);
+    }
+}
+
+crate::testing::test_app_widget!(Sends, "Outbox fixture");
 
 fn layout_fit_host(
     host: &mut dyn Widget,
@@ -941,36 +1043,22 @@ tilo_test_env::scenario! {
         assert!(rebuilt.focus_visible(), "the keyboard brings the ring back");
     }
 
+    // A button inside an ordinary container answers the press a screen reader sends it by name,
+    // the route that reaches it through every container it stands in.
     phase a_shared_button_answers_through_an_ordinary_container;
     {
         let clicks = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&clicks);
-        let mut column = crate::widget::Column::new().push(Box::new(
+        let column = crate::widget::Column::new().push(Box::new(
             Button::new("files.retry", "Retry").on_open(move || {
                 counted.fetch_add(1, Ordering::SeqCst);
             }),
         ));
-        let mut doc = AutoCommit::new();
-        let kind = tilo_actions::OperationKind::View;
-        let payload = br#""files.retry""#;
-
-        let started = crate::widget::ResourceOperation::local(
-            tilo_actions::InvocationId::new(),
-            kind,
-            "tilo.ui.control.invoke",
-            payload,
-        )
-        .start(
-            &mut column,
-            &mut crate::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        )
-        .unwrap();
-        assert!(
-            started
-                .and_then(super::super::ResourceOperationStart::completed)
-                .is_some()
-        );
+        let mut harness =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(column), (400, 120));
+        harness
+            .perform_named("files.retry", &crate::a11y::Action::Activate)
+            .expect("the press reaches the button through its container");
 
         assert_eq!(clicks.load(Ordering::SeqCst), 1);
     }
@@ -1315,7 +1403,6 @@ tilo_test_env::scenario! {
         }
 
         fn icon_only_effect_publishes_its_spoken_name() {
-            let doc = AutoCommit::new();
             let named = Button::new("private", "")
                 .with_icon(crate::icons::Icon::Shield)
                 .with_accessible_name("New Private Window")
@@ -1324,16 +1411,20 @@ tilo_test_env::scenario! {
                 .with_icon(crate::icons::Icon::Search)
                 .on_click(|| {})
                 .tooltip("Search");
+            // What a screen reader says, and what an agent shown the window finds the press by.
             for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
-                let resources = crate::widget::resources::resources(&button, &doc);
-                assert_eq!(resources.len(), 1);
-                assert_eq!(resources[0].label, name);
-                assert!(
-                    resources[0]
-                        .actions
-                        .iter()
-                        .all(|action| action.label == name)
+                let harness = crate::headless::FrameHarness::new(
+                    crate::State::new(),
+                    Box::new(crate::widget::Row::new().push(Box::new(button))),
+                    (400, 100),
                 );
+                let pressable: Vec<_> = harness
+                    .controls()
+                    .into_iter()
+                    .filter(|control| control.verbs.iter().any(|verb| verb == "activate"))
+                    .collect();
+                assert_eq!(pressable.len(), 1, "{pressable:?}");
+                assert_eq!(pressable[0].name.as_deref(), Some(name));
             }
         }
 

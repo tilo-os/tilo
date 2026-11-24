@@ -1,6 +1,9 @@
 //! The accounts this browser's profiles keep, read for the entry page from
 //! the Settings record of a person's accounts each profile's store keeps as
 //! its page value `browser-accounts` (`web/browser-accounts.mjs`).
+use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
+use collab_types::document::identity::{home, identity};
+use collab_types::document::{DocumentId, PERSONAL_SCOPE, ResourceType, personal_document_id};
 use wasm_bindgen::prelude::*;
 
 #[allow(
@@ -15,25 +18,28 @@ fn error(e: impl ToString) -> JsValue {
 /// No record initialization, key storage, or credential store is involved.
 ///
 /// # Errors
+///
 /// Refuses invalid identity, oversized or malformed documents, and failed projection.
 #[wasm_bindgen]
 pub fn project_browser_accounts(root: &str, origin: &str, bytes: &[u8]) -> Result<String, JsValue> {
     if bytes.len() > 1024 * 1024 {
         return Err(error("account projection exceeds its read budget"));
     }
-    let kind = ui::resource::ResourceType::new("tilo.accounts");
-    if ui::resource::DocumentId::of_member(root, kind.as_str()).is_none() {
+    let kind = ResourceType::new("tilo.accounts");
+    if DocumentId::of_member(root, kind.as_str()).is_none() {
         return Err(error("invalid root identity"));
     }
-    let doc = ui::automerge::AutoCommit::load_with_options(
+    let doc = AutoCommit::load_with_options(
         bytes,
-        ui::automerge::LoadOptions::new().on_partial_load(ui::automerge::OnPartialLoad::Error),
+        LoadOptions::new().on_partial_load(OnPartialLoad::Error),
     )
     .map_err(error)?;
-    let id = ui::resource::person::document_id(&kind);
-    let home = ui::resource::home(&doc);
-    if ui::resource::identity(&doc).is_none_or(|found| found.id != id || found.kind != kind)
-        || home.as_deref() != Some(ui::resource::person::PERSONAL_SCOPE)
+    // The person's record of this kind (`personal_document_id`): one per
+    // kind, the same on every device.
+    let id = personal_document_id(&kind);
+    let home = home(&doc);
+    if identity(&doc).is_none_or(|found| found.id != id || found.kind != kind)
+        || home.as_deref() != Some(PERSONAL_SCOPE)
     {
         return Err(error(
             "account document belongs to another identity or record",

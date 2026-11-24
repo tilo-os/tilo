@@ -259,6 +259,15 @@ impl Workspaces {
             )
             .await;
         if done.is_ok() {
+            // Holding the person again is a deliberate admission, and lifts a
+            // plain removal at once, as it lifts the mark on a device the
+            // workspace took off its member list. A ban is not lifted so: its
+            // block stays on the workspace's policy, and admitting a banned
+            // person is refused before this change commits.
+            workspace
+                .removals
+                .clear(person)
+                .map_err(CollaborationError::new)?;
             self.carry_written(workspace.workspace_id(), &kept.1)?;
             self.kept_memberships(workspace.workspace(), &kept.0);
         }
@@ -643,6 +652,16 @@ impl Workspaces {
             if let Ok(answers) = &admitted {
                 for (join, answer) in joins.iter().zip(answers) {
                     let certificate = join.redemption.certificate();
+                    if answer.is_ok() {
+                        // Redeeming an invitation is a deliberate admission:
+                        // it lifts a plain removal at once, as holding the
+                        // person again does. A ban stays on the workspace's
+                        // policy, so an invitation admits no banned person.
+                        workspace
+                            .removals
+                            .clear(certificate.user_public_key)
+                            .map_err(CollaborationError::new)?;
+                    }
                     if answer.is_ok()
                         && let Some(scope) = certificate.capabilities.agent
                     {

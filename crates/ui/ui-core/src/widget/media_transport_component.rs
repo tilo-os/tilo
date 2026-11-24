@@ -115,8 +115,10 @@ pub struct MediaTransportProps {
     /// a file is long, which its name does not say.
     #[component(event(value = f64))]
     pub length: Event,
-    /// The engine could not play the source: carries what it said.
-    #[component(event(value = String))]
+    /// The engine could not play the source: carries what it said, and where in the song it
+    /// stopped, in seconds. A stream a source serves only partway through stops here, and the
+    /// app asks the source for a fresh address and continues from that place.
+    #[component(event(value = String, at = f64))]
     pub fail: Event,
     /// The engine the band plays on, where its host builds one (a test does, with the
     /// synthesized backend). Without one the band builds it when it is given a source.
@@ -334,7 +336,10 @@ impl DeclaredTransport {
         self.declared.playing = playing;
         self.feed.show(self.declared.clone());
         if let Some(reason) = failed {
-            self.fail.fire(Some(crate::component::Value::Text(reason)));
+            self.fail.fire(Some(crate::component::Value::List(vec![
+                crate::component::Value::Text(reason),
+                crate::component::Value::Float(position / 1000.0),
+            ])));
         }
         if ended && !self.ended_told {
             self.ended_told = true;

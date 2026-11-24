@@ -2664,7 +2664,9 @@ fn a_refusal_shows_on_the_attachment_and_clears_when_the_limit_is_raised() {
     );
 
     let twenty_five = 25 * 1_048_576;
-    ada.host.give_content(&WorkspaceContent {
+    // The host serves the root from what its device reads: the limits its owners set and the
+    // content a limit refused. A reading that moved reaches the window on its next frame.
+    let served = std::rc::Rc::new(std::cell::RefCell::new(Some(WorkspaceContent {
         file_bytes: twenty_five,
         member_bytes: 250 * 1_048_576,
         hourly_bytes: 250 * 1_048_576,
@@ -2679,7 +2681,15 @@ fn a_refusal_shows_on_the_attachment_and_clears_when_the_limit_is_raised() {
             raise: "owners".to_owned(),
         }],
         host_person: None,
+    })));
+    ada.host.set_content_source({
+        let served = std::rc::Rc::clone(&served);
+        std::rc::Rc::new(move || served.borrow().clone())
     });
+    assert!(
+        ada.host.follow_content(),
+        "the reading reaches the host the frame reads"
+    );
     view.poll_patches().unwrap();
     let shown: Vec<String> = rows(&mut view).iter().flat_map(texts).collect();
     assert!(
@@ -2695,14 +2705,33 @@ fn a_refusal_shows_on_the_attachment_and_clears_when_the_limit_is_raised() {
         "who can raise it: {shown:?}"
     );
 
+    // A member who posted none of it reads none of it: the refusal is the poster's, and the
+    // workspace's owners' and the host's person's.
+    let (ben, _) = Replica::new("ben", ada.doc.fork(), &[(CHAT, CHAT_IDS)]);
+    ben.host.set_content_source({
+        let served = std::rc::Rc::clone(&served);
+        std::rc::Rc::new(move || served.borrow().clone())
+    });
+    assert!(ben.host.follow_content());
+    let mut theirs = open(&ben, &target(&design));
+    let shown: Vec<String> = rows(&mut theirs).iter().flat_map(texts).collect();
+    assert!(
+        !shown.iter().any(|text| text.contains("didn't keep")),
+        "a refusal another member posted is not theirs to read: {shown:?}"
+    );
+
     // Raised: the limit allows it, the host keeps it again, and the refusal record is gone.
-    ada.host.give_content(&WorkspaceContent {
+    *served.borrow_mut() = Some(WorkspaceContent {
         file_bytes: 50 * 1_048_576,
         member_bytes: 250 * 1_048_576,
         hourly_bytes: 250 * 1_048_576,
         refusals: Vec::new(),
         host_person: None,
     });
+    assert!(
+        ada.host.follow_content(),
+        "the raised limit reaches the host the frame reads"
+    );
     view.poll_patches().unwrap();
     let shown: Vec<String> = rows(&mut view).iter().flat_map(texts).collect();
     assert!(

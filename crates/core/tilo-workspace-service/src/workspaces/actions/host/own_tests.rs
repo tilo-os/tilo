@@ -1896,16 +1896,27 @@ async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
         &SigningKey::from_bytes(&rand::random()),
         DeviceCapabilities::agent_grant(AgentScope::Workspace(work)),
     );
+    // Its person allows what their agents ask of them, so the call is admitted again on their
+    // answer, and the host's own check refuses it then: the caller reads that it ended refused.
     let refused = on_host(
         &host,
         &narrow,
         &as_key(&narrow),
         own_request(json!({"name": "Another"})),
     )
-    .await;
-    assert!(
-        matches!(&refused, Err(ActionCallError::Refused { reason }) if AdminRefusal::from_reason(reason) == Some(AdminRefusal::NotYourOwn)),
-        "{refused:?}"
+    .await
+    .expect("the person's answer admits it again");
+    let ReceiptStatus::Failed { error } = &refused.status else {
+        panic!("the host refuses it: {refused:?}");
+    };
+    let reason = error
+        .message
+        .strip_prefix("refused: ")
+        .unwrap_or(&error.message);
+    assert_eq!(
+        AdminRefusal::from_reason(reason),
+        Some(AdminRefusal::NotYourOwn),
+        "{error:?}"
     );
     let entered = own_as_key(
         &host,

@@ -9,7 +9,7 @@ use tilo_action_policy::{
 };
 use tilo_actions::{ActionContext, ActionInvoker, ActionKey, Did, VerbCall};
 
-use super::super::*;
+use super::*;
 
 pub(super) const WORKSPACE: &str = "workspace-1";
 pub(super) const FILES: &str = "so.tilo.files";
@@ -83,7 +83,7 @@ pub(super) fn policy(writes: Option<Answer>) -> WorkspacePolicy {
 
 /// A cleartext op writing a file into the tree, made by `invoker` (the
 /// signer itself when `None`).
-fn write_by(invoker: Option<&Acting>) -> crate::op::SignedOp {
+fn write_by(invoker: Option<&Acting>) -> collab_types::op::SignedOp {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "notes.md", "hello").unwrap();
     let mut entry = ActionContext {
@@ -97,15 +97,15 @@ fn write_by(invoker: Option<&Acting>) -> crate::op::SignedOp {
         entry = entry.with_invoker(ActionInvoker::admitted(invoker));
     }
     doc.commit_with(CommitOptions::default().with_message(entry.change_message().unwrap()));
-    let payload = crate::op::DocumentMutation::Incremental(doc.save_after(&[]))
+    let payload = collab_types::op::DocumentMutation::Incremental(doc.save_after(&[]))
         .encode()
         .unwrap();
-    crate::op::SignedOp::new_unsigned(
+    collab_types::op::SignedOp::new_unsigned(
         payload,
-        crate::document_artifact_id(FILES, WORKSPACE, "tree"),
-        crate::Ed25519PublicKey::from_bytes([7; 32]),
-        crate::document_attestation_id(FILES, WORKSPACE, "tree"),
-        crate::role::OpKind::Change,
+        collab_types::document_artifact_id(FILES, WORKSPACE, "tree"),
+        collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+        collab_types::document_attestation_id(FILES, WORKSPACE, "tree"),
+        collab_types::role::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         1,
     )
@@ -115,29 +115,30 @@ fn write_by(invoker: Option<&Acting>) -> crate::op::SignedOp {
 /// The same write sealed: a server and every device that has not opened it
 /// read only the claims its envelope carries, and `plaintext` is what a
 /// device opens it to.
-fn sealed(op: &crate::op::SignedOp) -> (crate::op::SignedOp, Vec<u8>) {
+fn sealed(op: &collab_types::op::SignedOp) -> (collab_types::op::SignedOp, DocumentMutation) {
     let plaintext = op.payload.clone();
-    let Ok(crate::op::DocumentMutation::Incremental(bytes)) =
-        crate::op::DocumentMutation::decode(&plaintext)
+    let Ok(collab_types::op::DocumentMutation::Incremental(bytes)) =
+        collab_types::op::DocumentMutation::decode(&plaintext)
     else {
         panic!("a write is an incremental mutation");
     };
-    let claims = crate::claim::claims_of(&crate::claim::parse_changes(&bytes).unwrap(), |_| {
-        vec![Vec::new()]
-    })
-    .unwrap();
+    let claims =
+        collab_types::claim::claims_of(&crate::claim::parse_changes(&bytes).unwrap(), |_| {
+            vec![Vec::new()]
+        })
+        .unwrap();
     let mut sealed = op.clone().with_claims(claims);
     sealed.payload = vec![0; 16];
-    sealed.encryption = Some(crate::op::EncryptionMetadata::content_key(
+    sealed.encryption = Some(collab_types::op::EncryptionMetadata::content_key(
         1,
-        crate::ContentRetention::of_frame(&plaintext),
+        collab_types::ContentRetention::of_frame(&plaintext),
     ));
-    (sealed, plaintext)
+    (sealed, DocumentMutation::Incremental(bytes))
 }
 
 /// How a receiver decides `op` signed by the device `signer` is.
 pub(super) fn received(
-    op: &crate::op::SignedOp,
+    op: &collab_types::op::SignedOp,
     signer: &MemberAccess,
 ) -> Result<Receipt, ReceiptRefusal> {
     let cx = Context::at_secs(1);
@@ -308,7 +309,7 @@ tilo_test_env::scenario! {
         );
         // The claims survive the wire as signed.
         let bytes = postcard::to_allocvec(&op).unwrap();
-        let back: crate::op::SignedOp = postcard::from_bytes(&bytes).unwrap();
+        let back: collab_types::op::SignedOp = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(back.claims, op.claims);
         assert!(op.claims.iter().all(|claim| claim.invoker.is_some()));
         // The writer's live decision and the one of a device deciding the
@@ -326,8 +327,8 @@ tilo_test_env::scenario! {
 
     phase a_device_refuses_a_sealed_change_that_says_other_than_its_claim;
     {
-        let (op, plaintext) = sealed(&write_by(Some(&mount_agent())));
-        assert_eq!(check_opened(&op, &plaintext), Ok(()));
+        let (op, opened) = sealed(&write_by(Some(&mount_agent())));
+        assert_eq!(check_opened_mutation(&op, &opened), Ok(()));
         // Claimed as the person's own, though the agent made it: decided as
         // the person by whoever cannot read it, refused by whoever opens it.
         let mut as_person = op.clone();
@@ -335,12 +336,12 @@ tilo_test_env::scenario! {
             claim.invoker = None;
         }
         assert!(matches!(
-            check_opened(&as_person, &plaintext),
+            check_opened_mutation(&as_person, &opened),
             Err(ReceiptRefusal::Misclaimed(_))
         ));
         let mut unclaimed = op;
         unclaimed.claims.clear();
-        assert_eq!(check_opened(&unclaimed, &plaintext), Err(ReceiptRefusal::Unclaimed));
+        assert_eq!(check_opened_mutation(&unclaimed, &opened), Err(ReceiptRefusal::Unclaimed));
     }
 }
 
@@ -353,15 +354,15 @@ fn a_framework_change_signed_by_an_agent_is_decided_as_the_agent() {
     doc.commit_with(
         CommitOptions::default().with_message(FrameworkChange::Native.change_message()),
     );
-    let payload = crate::op::DocumentMutation::Incremental(doc.save_after(&[]))
+    let payload = collab_types::op::DocumentMutation::Incremental(doc.save_after(&[]))
         .encode()
         .unwrap();
-    let op = crate::op::SignedOp::new_unsigned(
+    let op = collab_types::op::SignedOp::new_unsigned(
         payload,
-        crate::document_artifact_id(FILES, WORKSPACE, "tree"),
-        crate::Ed25519PublicKey::from_bytes([7; 32]),
-        crate::document_attestation_id(FILES, WORKSPACE, "tree"),
-        crate::role::OpKind::Change,
+        collab_types::document_artifact_id(FILES, WORKSPACE, "tree"),
+        collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+        collab_types::document_attestation_id(FILES, WORKSPACE, "tree"),
+        collab_types::role::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         1,
     );
@@ -376,7 +377,7 @@ fn a_framework_change_signed_by_an_agent_is_decided_as_the_agent() {
         &tree(),
         (None, None, None),
         None,
-        &Surfaces(None),
+        &Surfaces::default(),
         &allows,
         (None, Some(&agent)),
     );

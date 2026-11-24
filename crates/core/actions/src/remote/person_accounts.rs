@@ -304,7 +304,7 @@ pub enum CloudKind {
     GoogleDrive,
     /// Microsoft's cloud storage.
     OneDrive,
-    /// Dropbox.
+    /// Dropbox's cloud storage.
     Dropbox,
     /// iCloud Drive, signed in with an Apple ID and a verification code.
     IcloudDrive,

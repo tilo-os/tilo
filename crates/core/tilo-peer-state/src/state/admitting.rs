@@ -517,7 +517,7 @@ impl StatePeer {
         candidate.channel = inbound;
         if let DocumentMutation::Incremental(bytes) = &mutation {
             let changes =
-                collab_types::parse_changes(bytes).map_err(crate::AdmissionError::malformed)?;
+                collab_admission::parse_changes(bytes).map_err(crate::AdmissionError::malformed)?;
             collab_types::check_appearances(&changes, None)
                 .map_err(|refusal| format!("document change forbidden: {refusal}"))
                 .map_err(crate::AdmissionError::malformed)?;

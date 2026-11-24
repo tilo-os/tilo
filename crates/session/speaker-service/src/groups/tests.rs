@@ -102,7 +102,7 @@ impl World {
     fn apply(&mut self, writes: Vec<SpeakerWrite>) {
         for write in writes {
             self.record
-                .apply(action_of(write))
+                .apply(action_of(write).expect("what a write carries encodes"))
                 .expect("a speaker-group write holds");
         }
     }
@@ -145,7 +145,7 @@ fn consent(world: &mut World, core: &mut SpeakerGroupCore, group: SpeakerGroupId
     world.apply(writes);
 }
 
-fn reconcile(world: &mut World, core: &mut SpeakerGroupCore, device: &str) -> Vec<SpeakerWrite> {
+fn reconcile(world: &World, core: &mut SpeakerGroupCore, device: &str) -> Vec<SpeakerWrite> {
     core.reconcile(
         &world.state(),
         &world.fabric,
@@ -184,10 +184,10 @@ fn a_group_is_written_to_the_record_and_a_member_answers_once() {
 
     // The shelf's own pass asks its person once; answering yes writes its consent.
     let mut shelf = SpeakerGroupCore::default();
-    reconcile(&mut world, &mut shelf, "shelf");
+    reconcile(&world, &mut shelf, "shelf");
     let pending = shelf.view(&world.state(), &world.fabric, &id("shelf"), &|_| None);
     assert_eq!(pending.consents.len(), 1, "the shelf asks its person once");
-    assert_eq!(pending.consents[0].prompt().is_empty(), false);
+    assert!(!pending.consents[0].prompt().is_empty());
     consent(&mut world, &mut shelf, group, true);
     let written = world.state();
     let led = written.group(group).unwrap();
@@ -197,7 +197,7 @@ fn a_group_is_written_to_the_record_and_a_member_answers_once() {
     );
 
     // A second pass asks nothing more.
-    reconcile(&mut world, &mut shelf, "shelf");
+    reconcile(&world, &mut shelf, "shelf");
     let view = shelf.view(&world.state(), &world.fabric, &id("shelf"), &|_| None);
     assert!(view.consents.is_empty());
     assert_eq!(view.memberships.len(), 1);
@@ -212,7 +212,7 @@ fn a_consented_group_admits_playbacks_from_its_source_only() {
     let mut shelf = SpeakerGroupCore::default();
     let group = group_id(2);
     pair(&mut world, &mut office, group);
-    reconcile(&mut world, &mut shelf, "shelf");
+    reconcile(&world, &mut shelf, "shelf");
     consent(&mut world, &mut shelf, group, true);
 
     // The office plays to the pair: one offer per remote member, the shelf's right output.
@@ -244,7 +244,7 @@ fn a_consented_group_admits_playbacks_from_its_source_only() {
     world.apply(writes);
 
     // The shelf admits it with a capability of its own, bound to that exact source.
-    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    let writes = reconcile(&world, &mut shelf, "shelf");
     let route = offered[0].0;
     assert!(
         writes.iter().any(|write| matches!(
@@ -264,7 +264,7 @@ fn a_consented_group_admits_playbacks_from_its_source_only() {
     assert_eq!(playback.source, id("office"));
 
     // The office reads the admission and starts the route to the shelf.
-    reconcile(&mut world, &mut office, "office");
+    reconcile(&world, &mut office, "office");
     let plans = office.playback_plans();
     assert_eq!(plans.len(), 1);
     let shelf_member = plans[0]
@@ -287,7 +287,7 @@ fn a_consented_group_admits_playbacks_from_its_source_only() {
         ..
     } = receiving
     else {
-        unreachable!()
+        panic!("the shelf receives what the office plays");
     };
     assert_eq!(received, route);
     assert_eq!(authorization, [9; 16]);
@@ -303,7 +303,7 @@ fn a_consented_group_admits_playbacks_from_its_source_only() {
     let writes = office.stop_session(session).expect("the office stops");
     world.apply(writes);
     assert!(world.state().playback(route).is_none());
-    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    let writes = reconcile(&world, &mut shelf, "shelf");
     assert!(
         writes.iter().any(
             |write| matches!(write, SpeakerWrite::Stop { route: stopped, .. } if *stopped == route)
@@ -323,7 +323,7 @@ fn consent_ends_when_the_group_changes_under_a_member() {
     let mut shelf = SpeakerGroupCore::default();
     let group = group_id(3);
     pair(&mut world, &mut office, group);
-    reconcile(&mut world, &mut shelf, "shelf");
+    reconcile(&world, &mut shelf, "shelf");
     consent(&mut world, &mut shelf, group, true);
 
     // The office changes the shelf's role: its consent no longer covers the member, and the
@@ -341,7 +341,7 @@ fn consent_ends_when_the_group_changes_under_a_member() {
         .expect("the office edits the group");
     world.apply(writes);
     // A consent for the same output and role still covers it.
-    reconcile(&mut world, &mut shelf, "shelf");
+    reconcile(&world, &mut shelf, "shelf");
     let view = shelf.view(&world.state(), &world.fabric, &id("shelf"), &|_| None);
     assert!(view.consents.is_empty(), "the same role stays agreed");
     assert_eq!(view.memberships.len(), 1);
@@ -369,12 +369,12 @@ fn consent_ends_when_the_group_changes_under_a_member() {
             SpeakerMemberStatus::AwaitingConsent
         ]
     );
-    reconcile(&mut world, &mut shelf, "shelf");
+    reconcile(&world, &mut shelf, "shelf");
     let view = shelf.view(&world.state(), &world.fabric, &id("shelf"), &|_| None);
     assert_eq!(view.consents.len(), 1, "the shelf agrees to the new role");
 
     // And the consent it gave for the old role is withdrawn by its next pass.
-    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    let writes = reconcile(&world, &mut shelf, "shelf");
     assert!(
         writes
             .iter()
@@ -394,7 +394,7 @@ fn a_groups_teardown_releases_its_members() {
     let mut shelf = SpeakerGroupCore::default();
     let group = group_id(4);
     pair(&mut world, &mut office, group);
-    reconcile(&mut world, &mut shelf, "shelf");
+    reconcile(&world, &mut shelf, "shelf");
     consent(&mut world, &mut shelf, group, true);
     let session = [6; 16];
     let writes = office
@@ -409,9 +409,9 @@ fn a_groups_teardown_releases_its_members() {
         )
         .expect("the office plays");
     world.apply(writes);
-    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    let writes = reconcile(&world, &mut shelf, "shelf");
     world.apply(writes);
-    reconcile(&mut world, &mut office, "office");
+    reconcile(&world, &mut office, "office");
 
     // The office deletes the group: its members are let go and the playback ends.
     let writes = office.delete_group(&id("office"), group);
@@ -433,7 +433,7 @@ fn a_groups_teardown_releases_its_members() {
     );
 
     // The shelf's next pass hears nothing of the group: its consent goes, and its route ends.
-    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    let writes = reconcile(&world, &mut shelf, "shelf");
     assert!(
         writes
             .iter()
@@ -453,7 +453,7 @@ fn admitted_playbacks_become_routes_by_endpoint_selector() {
     let mut shelf = SpeakerGroupCore::default();
     let group = group_id(5);
     pair(&mut world, &mut office, group);
-    reconcile(&mut world, &mut shelf, "shelf");
+    reconcile(&world, &mut shelf, "shelf");
     consent(&mut world, &mut shelf, group, true);
 
     let session = [8; 16];
@@ -470,9 +470,9 @@ fn admitted_playbacks_become_routes_by_endpoint_selector() {
             )
             .unwrap(),
     );
-    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    let writes = reconcile(&world, &mut shelf, "shelf");
     world.apply(writes);
-    reconcile(&mut world, &mut office, "office");
+    reconcile(&world, &mut office, "office");
 
     // The office plays the left side on its own output and sends the right side to the shelf.
     let playing = office.route_specs(&world.state(), &id("office"));
@@ -486,7 +486,7 @@ fn admitted_playbacks_become_routes_by_endpoint_selector() {
         ..
     } = local
     else {
-        unreachable!()
+        panic!("the office plays its own side");
     };
     assert_eq!(*on, output("office"));
     assert_eq!(*channel, ChannelRole::Left);
@@ -509,7 +509,7 @@ fn admitted_playbacks_become_routes_by_endpoint_selector() {
         .leave(&world.state(), &id("shelf"), group)
         .expect("the shelf leaves");
     world.apply(writes);
-    let writes = reconcile(&mut world, &mut office, "office");
+    let writes = reconcile(&world, &mut office, "office");
     assert!(
         writes
             .iter()
@@ -534,7 +534,7 @@ fn a_groups_microphones_listen_only_for_the_leader_and_with_consent() {
     let mut shelf = SpeakerGroupCore::default();
     let group = group_id(6);
     pair(&mut world, &mut office, group);
-    reconcile(&mut world, &mut shelf, "shelf");
+    reconcile(&world, &mut shelf, "shelf");
     consent(&mut world, &mut shelf, group, true);
 
     let published = world.state().group(group).unwrap().clone();

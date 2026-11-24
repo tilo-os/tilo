@@ -951,5 +951,109 @@ mod cases {
             assert_eq!(weather.field(&place, "region"), json!("Ohio"));
             assert_eq!(weather.field(&place, "longitude"), json!(-80.6));
         }
+
+        phase a_place_opens_the_place_a_reference_names_not_the_one_shown_first;
+        {
+            let weather = Weather::new(false);
+            // Two places, the second saved last, so it is the one a window shows first.
+            let berlin = returned_ref(weather.call(
+                "save_place",
+                &[
+                    ("w", Value::resource(&weather.root)),
+                    ("name", Value::text("Berlin")),
+                    ("latitude", Value::Float(52.52)),
+                    ("longitude", Value::Float(13.405)),
+                    ("region", Value::text("Berlin")),
+                    ("country", Value::text("Germany")),
+                ],
+            ));
+            let amsterdam = returned_ref(weather.call(
+                "save_place",
+                &[
+                    ("w", Value::resource(&weather.root)),
+                    ("name", Value::text("Amsterdam")),
+                    ("latitude", Value::Float(52.374)),
+                    ("longitude", Value::Float(4.8897)),
+                    ("region", Value::text("North Holland")),
+                    ("country", Value::text("Netherlands")),
+                ],
+            ));
+            weather.refresh();
+
+            // A place is a type that opens on its own: another surface asks for the place.
+            let places = weather
+                .app
+                .meta()
+                .types
+                .iter()
+                .find(|declared| declared.name == "Place")
+                .expect("the place type")
+                .id
+                .clone();
+            assert!(
+                weather.app.meta().default_view(&places).is_some(),
+                "a place has a view of its own to open in"
+            );
+
+            // Its own page draws the place it was given, not the one a window shows first.
+            let page = weather.window("place_page", vec![Value::resource(&berlin)]);
+            let on_the_page = drawn(&page);
+            assert!(
+                on_the_page.iter().any(|text| text == "Germany"),
+                "the page names the place it is of: {on_the_page:?}"
+            );
+            assert!(
+                !on_the_page.iter().any(|text| text.contains("Netherlands")),
+                "and says nothing of another place: {on_the_page:?}"
+            );
+
+            // A list of results draws a place as its row: its name, its sky and its reading.
+            let row = weather.window("place_row", vec![Value::resource(&berlin)]);
+            let face = of_kind(row.tree(), "ui.ListRow")
+                .into_iter()
+                .next()
+                .expect("the place's row");
+            assert_eq!(text(face, "title"), "Berlin", "{:?}", dump(row.tree()));
+            assert_eq!(text(face, "secondary"), "Overcast", "{:?}", dump(row.tree()));
+
+            // The window asked for the place a reference names follows it there: Amsterdam is
+            // the one it shows first, and asking for Berlin shows Berlin.
+            let mut window = weather.weather_window();
+            assert!(
+                drawn(&window)
+                    .iter()
+                    .any(|text| text == "North Holland, Netherlands"),
+                "the window shows the place shown first: {:?}",
+                dump(window.tree())
+            );
+            assert!(
+                window.show(&berlin).unwrap(),
+                "the window answers the place it is asked to show"
+            );
+            window.poll_patches().unwrap();
+            let after = drawn(&window);
+            assert!(
+                after.iter().any(|text| text == "Germany"),
+                "the place asked for is the one the window draws: {after:?}"
+            );
+            assert!(
+                !after.iter().any(|text| text.contains("Netherlands")),
+                "and the place shown first is no longer drawn: {after:?}"
+            );
+            let list = of_kind(window.tree(), "ui.NavList")
+                .into_iter()
+                .next()
+                .expect("the sidebar's list");
+            assert_eq!(
+                text(list, "selected"),
+                berlin.id_string(),
+                "the sidebar marks the place it draws"
+            );
+            assert_eq!(
+                weather.field(&amsterdam, "region"),
+                json!("North Holland"),
+                "the place the reference did not name still stands as it was"
+            );
+        }
     }
 }

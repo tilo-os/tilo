@@ -774,9 +774,14 @@ destructive action delete_history(yt: YouTube) (icon: .trash, label: "Delete his
 
 /// Asks the service for where the video's bytes play from again, after the player could not show
 /// them: the address the client holds is the service's alone to write, and the answer it gives
-/// now is what the player opens.
-action retry_playback(v: Video) (icon: .refresh, label: "Try again") {
-    outside("youtube.stream", (v.key, quality_of(root YouTube, invoker)))
+/// now is what the player opens. The session moves to where the stream stopped, so the fresh
+/// address continues there.
+action retry_playback(v: Video, at: Float) uses time (icon: .refresh, label: "Try again") {
+    let yt = root YouTube
+    if let p = yt.playing {
+        if p.track == v.key { playback.remember_position(p, at, now) }
+    }
+    outside("youtube.stream", (v.key, quality_of(yt, invoker)))
 }
 
 /// Asks the service for what the playlist holds, in its maker's order.
@@ -1884,6 +1889,9 @@ view channel_page(c: Channel) {
 view video_page(v: Video) {
     // Why the player could not show the video, in its own words; empty while it plays or waits.
     state failed: Text = ""
+    // Where in the video the player stopped: the notice names the place, and Try again continues
+    // from it.
+    state stopped_at: Float = 0.0
     // How fast the player here plays, and the captions it shows: the window's own choices, which
     // the player's gear menu sets and which outlast this page on this window. A rate of nought
     // means the member has not changed it here yet, so their own speed applies.
@@ -1896,6 +1904,7 @@ view video_page(v: Video) {
     let yt = root YouTube
     let mine = invoker
     let p = yt.playing
+    let stopped = clock(stopped_at.max(0.0).to_int())
     let held = if let playing = p { playing.track == v.key } else { false }
     let channel = yt.channels.find(c -> c.key == v.channel_key)
     let left = if let h = watched_before(yt, mine, v) { left_at(h, v) } else { 0.0 }
@@ -1965,7 +1974,8 @@ view video_page(v: Video) {
                         on set_rate(chosen: Float): set(rate, chosen).then(set_speed(yt, chosen))
                         on select_captions(language: Text): set(caption_language, language)
                         on select_quality(quality: Text): play_at_quality(v, quality)
-                        on fail(reason: Text): set(failed, reason)
+                        on fail(reason: Text, at: Float): set(failed, reason)
+                            .then(set(stopped_at, at))
                     }
                 }
             } else {
@@ -1980,16 +1990,18 @@ view video_page(v: Video) {
                 }
             }
         }
-        // The player could not show the video: what the engine said, and one press to ask the
-        // service for the address again.
+        // The player could not show the video: where it stopped and what the engine said, and one
+        // press to ask the service for the address again and play on from that place.
         if failed != "" {
             ui.Banner(
-                "This video won't play here",
+                if stopped_at > 0.0 {
+                    "The stream stopped at {stopped}"
+                } else { "This video won't play here" },
                 message: failed,
                 kind: .warning,
                 action: "Try again",
             ) {
-                on act: set(failed, "").then(retry_playback(v))
+                on act: set(failed, "").then(retry_playback(v, stopped_at))
             }
         }
         // What the video is: its name, who made it and what people did with it, under the

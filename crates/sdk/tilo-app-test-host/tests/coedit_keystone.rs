@@ -11,7 +11,7 @@
 //! (`peer_edit_converges_...`), a caret round-trips through the real
 //! presence path and paints into the local render
 //! (`remote_caret_presence_...`), and a signed op validates/rejects
-//! through the real `collab_types::validate_admitted_inbound_op` pipeline by
+//! through the real `collab_admission::validate_admitted_inbound_op` pipeline by
 //! role (`signed_edit_is_permission_guarded`).
 
 use automerge::transaction::Transactable;
@@ -518,13 +518,13 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
 
 // ---------------------------------------------------------------------
 // Permission-guarded signed co-edit: drives the real
-// `collab_types::validate_admitted_inbound_op` pipeline, not a re-implementation.
+// `collab_admission::validate_admitted_inbound_op` pipeline, not a re-implementation.
 // ---------------------------------------------------------------------
 
+use collab_admission::validate_admitted_inbound_op;
 use collab_types::{
     ArtifactId, ArtifactKind, AttestationId, DEFAULT_WORKSPACE, Ed25519PublicKey, InboundState,
     OpKind, Role, SignedOp, ValidationError, generate_keypair, sign_op,
-    validate_admitted_inbound_op,
 };
 use ed25519_dalek::SigningKey;
 use std::time::{Duration as StdDuration, SystemTime};

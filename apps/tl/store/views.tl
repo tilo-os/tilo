@@ -31,7 +31,9 @@ view catalogue(s: Store) {
     let found = if searched.is_empty() { listed } else { listed.matching(searched) }
     let title = if searched != "" {
         "Search"
-    } else if let p = place { p.label } else if category != "" { category } else { "All apps" }
+    } else if let p = place {
+        p.label
+    } else if category != "" { category_words(category) } else { "All apps" }
     if page == "apps" {
         ui.NavShell(
             content_kind: .document,
@@ -131,7 +133,7 @@ view catalogue_sidebar(s: Store, places: List<Filter<App>>, chosen: State<Text>)
     if not categories.is_empty() {
         ui.NavSection("Categories") {
             for c in categories {
-                ui.NavItem("category:{c}", c, icon: .layout_grid) {
+                ui.NavItem("category:{c}", category_words(c), icon: .layout_grid) {
                     on select: set(chosen, "category:{c}")
                 }
             }
@@ -780,6 +782,32 @@ fn evidence_json(r: Report) -> Text {
 /// catalogue holds.
 fn places_of() -> List<Filter<App>> {
     [App.discover, App.updates, App.on_this_device, App.bots]
+}
+
+/// What a category of apps is called in the reader's language. A source offers its apps under
+/// the desktop's own category words, which are its names for them, not the reader's: the Store
+/// says each in the words its catalogue has for it, and an app's own word for one it does not
+/// know.
+fn category_words(category: Text) -> Text {
+    if category == "Office" {
+        "Office"
+    } else if category == "Development" {
+        "Development"
+    } else if category == "Graphics" {
+        "Graphics"
+    } else if category == "AudioVideo" {
+        "Sound & video"
+    } else if category == "Network" {
+        "Network"
+    } else if category == "Education" {
+        "Education"
+    } else if category == "Science" {
+        "Science"
+    } else if category == "Game" {
+        "Games"
+    } else if category == "System" {
+        "System"
+    } else if category == "Utility" { "Utilities" } else { category }
 }
 
 fn categories_of(items: List<App>) -> List<Text> {

@@ -12404,6 +12404,24 @@ impl BlockEditor {
         self.slash_anchor_caret = Some((focused_idx, trigger_byte));
     }
 
+    /// The editable block nearest the page height `at` in this box: the last one starting above
+    /// it, else the first one.
+    fn nearest_editable_block(&self, at: f64) -> Option<usize> {
+        let above = self
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| block.kind.is_editable())
+            .filter(|(_, block)| block.line.get_rect().y0 <= at)
+            .map(|(index, _)| index)
+            .next_back();
+        above.or_else(|| {
+            self.blocks
+                .iter()
+                .position(|block| block.kind.is_editable())
+        })
+    }
+
     /// Focus whichever editable block a left click lands on first, so the
     /// later `TextInput` click handler sets the caret there.
     fn focus_block_under_mouse(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -12420,7 +12438,16 @@ impl BlockEditor {
         let hit = self
             .blocks
             .iter()
-            .position(|b| b.kind.is_editable() && b.line.get_rect().contains(self.last_mouse_pos));
+            .position(|b| b.kind.is_editable() && b.line.get_rect().contains(self.last_mouse_pos))
+            // A press in this box's own space that no line covers — below the last line, or in
+            // the gap between two — still puts the person in the box: the nearest editable
+            // block takes the caret, as a click anywhere in a text box does.
+            .or_else(|| {
+                self.rect
+                    .contains(self.last_mouse_pos)
+                    .then(|| self.nearest_editable_block(self.last_mouse_pos.y))
+                    .flatten()
+            });
         let Some(idx) = hit else {
             return;
         };

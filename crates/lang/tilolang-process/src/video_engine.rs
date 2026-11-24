@@ -57,6 +57,7 @@ impl Provider for Engine {
             "thumb" => thumb(store, input),
             "waveform" => waveform(store, input),
             "sample" => sample(store, input),
+            "mix" => mix(store, input),
             "scrub" => scrub(store, input),
             "cut" => recut(store, input),
             other => Err(format!("`{other}` is no op this device runs for {APP}")),
@@ -217,6 +218,55 @@ fn waveform(store: &ContentStore, input: &str) -> Result<String, String> {
     let peaks = video_edit::waveform::peaks_from_file(&path, buckets)
         .ok_or_else(|| "no samples could be read from that source".to_owned())?;
     Ok(serde_json::json!({ "peaks": peaks }).to_string())
+}
+
+/// Where the cut's mix goes over full scale, and by how much: the whole cut measured block by
+/// block, as the device plays it.
+///
+/// A mix is a sum, so the report is about the sum, not one track: two tracks at two-thirds each
+/// are over without either being over alone. `tracks` names the ones that were over on their
+/// own, which is what a person looks at first.
+fn mix(store: &ContentStore, input: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        project: String,
+    }
+    let ask: Ask = reads(input)?;
+    let cut = reads::<Shot>(&ask.project)?.into_project(Some(store))?;
+    let (over_db, overs, hot) = measure_mix(&cut);
+    Ok(serde_json::json!({
+        "over_db": over_db,
+        "overs": overs,
+        "tracks": hot,
+    })
+    .to_string())
+}
+
+/// The cut's mix measured to its end, answering how far over full scale it went, where, and
+/// which tracks were over on their own.
+fn measure_mix(cut: &model::Project) -> (f64, Vec<f64>, Vec<String>) {
+    // A cut with no sound in it cannot go over: nothing is decoded to find out.
+    if !video_edit::audio::has_audio(cut) {
+        return (0.0, Vec::new(), Vec::new());
+    }
+    let mut source = video_edit::audio::DecodedPcm::new(cut);
+    let meters = video_edit::audio::MixMeters::new();
+    let block = video_edit::audio::MONITOR_BLOCK;
+    let step = ui_core::num::f64_of_usize(block) / f64::from(video_edit::audio::SAMPLE_RATE);
+    let end = cut.duration().max(0.0);
+    let mut at = 0.0;
+    while at < end {
+        let (_, report) = video_edit::audio::mix_block_metered(cut, at, block, &mut source);
+        meters.record(at, &report);
+        at += step;
+    }
+    let snapshot = meters.snapshot();
+    let hot = snapshot
+        .clipped_tracks()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+    (snapshot.worst_over_db(), snapshot.overs, hot)
 }
 
 /// The colour of the cut's frame at (x, y), a fraction of its box each.
@@ -506,18 +556,22 @@ fn run_play(
         sound,
     } = *playing;
     let mut cut = taken(worker)?;
+    let mut mix = video_edit::audio::mix_signature(&cut);
     let mut compositor = video_picture::gpu::HeadlessCompositor::new()
         .map_err(|error| format!("this device cannot draw the cut as it plays: {error}"))?;
     let mut media = video_picture::gpu::media_signature(&cut);
     let mut sources =
         video_picture::gpu::MediaFrameSource::new(&cut, video_picture::gpu::Fetch::Responsive)
             .with_timeout(std::time::Duration::from_millis(500));
+    // What every block the device mixes measured, kept beside the monitor: the play says
+    // where the mix it has heard went over, as well as where the playhead is.
+    let meters = Arc::new(video_edit::audio::MixMeters::new());
     let mut monitor = sound.then(|| {
         video_edit::audio::AudioMonitor::new(
             &cut,
             video_edit::audio::open_output(),
             Box::new(video_edit::audio::DecodedPcm::new(&cut)),
-            Arc::new(video_edit::audio::MixMeters::new()),
+            Arc::clone(&meters),
         )
     });
     let began = std::time::Instant::now();
@@ -530,6 +584,12 @@ fn run_play(
         }
         if let Some(edited) = swapped(worker) {
             let its_media = video_picture::gpu::media_signature(&edited);
+            // An edit that changes the mix makes what was measured describe a mix that no
+            // longer exists; a rename or a grade does not.
+            if video_edit::audio::mix_signature(&edited) != mix {
+                mix = video_edit::audio::mix_signature(&edited);
+                meters.clear();
+            }
             if its_media != media {
                 media = its_media;
                 sources = video_picture::gpu::MediaFrameSource::new(
@@ -575,7 +635,7 @@ fn run_play(
         }
         if frames % SAY_EVERY_FRAMES == 0 {
             worker.done.store(frames, Ordering::Relaxed);
-            push.state(slot, &format!("{now:.2}"));
+            push.state(slot, &play_word(now, &meters));
         }
         frames = frames.saturating_add(1);
         if ended {
@@ -588,10 +648,29 @@ fn run_play(
     }
     // Where the play left the playhead, so a window that reads the stream's word after it ends
     // stands where the picture did.
-    push.state(slot, &format!("{reached:.2}"));
+    push.state(slot, &play_word(reached, &meters));
     worker.done.store(frames, Ordering::Relaxed);
     worker.total.store(frames, Ordering::Relaxed);
     Ok(reached)
+}
+
+/// What a live play says of itself: the timeline second its playhead has reached, and what the
+/// mix it has heard so far measured — how far over full scale, where, and which tracks were over
+/// on their own.
+fn play_word(at: f64, meters: &video_edit::audio::MixMeters) -> String {
+    let snapshot = meters.snapshot();
+    let hot: Vec<String> = snapshot
+        .clipped_tracks()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+    serde_json::json!({
+        "at": at,
+        "over_db": snapshot.worst_over_db(),
+        "overs": snapshot.overs,
+        "tracks": hot,
+    })
+    .to_string()
 }
 
 /// Waits until frame `frames` is due, so a play runs at the cut's rate rather than as fast as the
@@ -974,6 +1053,18 @@ struct ShotClip {
     crop_bottom: Option<f64>,
     #[serde(default)]
     effects: Vec<String>,
+    /// One channel's tone curve: its points' x and y, each 0..1, in ascending x.
+    #[serde(default)]
+    curve_master: Vec<f64>,
+    #[serde(default)]
+    curve_red: Vec<f64>,
+    #[serde(default)]
+    curve_green: Vec<f64>,
+    #[serde(default)]
+    curve_blue: Vec<f64>,
+    /// How much of the curve is mixed in: 0 bypasses it, 1 is the curve as drawn.
+    #[serde(default = "one_f")]
+    curve_mix: f64,
     /// One JSON text a key: its param, clip-local seconds, value and interp.
     #[serde(default)]
     keys: Vec<String>,
@@ -1222,6 +1313,7 @@ fn clip_of(clip: ShotClip) -> Result<model::Clip, String> {
             );
         }
     }
+    let curves = curves_of(&clip);
     let mut effects = Ordered::new();
     for effect in clip.effects {
         let effect: ShotEffect = reads(&effect)?;
@@ -1249,7 +1341,7 @@ fn clip_of(clip: ShotClip) -> Result<model::Clip, String> {
             contrast: clip.contrast,
             saturation: clip.saturation,
         },
-        curves: video_edit::curve::Curve::default(),
+        curves,
         fade_in: clip.fade_in,
         fade_out: clip.fade_out,
         transition_duration: clip.transition_duration,
@@ -1301,6 +1393,25 @@ fn clip_of(clip: ShotClip) -> Result<model::Clip, String> {
         link_follows: clip.link_follows,
         sound_split: clip.playback.sound_split,
     })
+}
+
+/// A clip's tone curves, from the flat point lists the app keeps: both ends of each channel, at
+/// x 0 and x 1, so the ends of the curve are defined whatever points the app sends.
+fn curves_of(clip: &ShotClip) -> video_edit::curve::Curve {
+    let spline = |points: &[f64]| -> video_edit::curve::Spline {
+        let mut drawn = video_edit::curve::Spline::identity();
+        for pair in points.chunks_exact(2) {
+            drawn.set_point(pair[0], pair[1]);
+        }
+        drawn.normalised()
+    };
+    video_edit::curve::Curve {
+        master: spline(&clip.curve_master),
+        red: spline(&clip.curve_red),
+        green: spline(&clip.curve_green),
+        blue: spline(&clip.curve_blue),
+        mix: clip.curve_mix.clamp(0.0, 1.0),
+    }
 }
 
 /// The marker `marker` names, as the model holds it.

@@ -90,7 +90,7 @@ fn cleartext_changes_of(envelope: &SignedOp) -> Option<Vec<automerge::Change>> {
     };
     tilo_failure::ignored!(
         "change bytes that do not parse name no caller",
-        collab_types::claim::parse_changes(&bytes).ok()
+        collab_admission::parse_changes(&bytes).ok()
     )
 }
 
@@ -1369,9 +1369,9 @@ impl StatePeer {
         // A change a holder hands on from its store was admitted when it was made: one that
         // names no kind of the records it writes keeps the verdict it got then.
         let decide = if retained {
-            collab_types::decide_op_replayed
+            collab_admission::decide_op_replayed
         } else {
-            collab_types::decide_opened
+            collab_admission::decide_opened
         };
         // The invocations the changes keep, and the calls a host made them
         // for, are checked above as they are read: this decides their grants
@@ -1668,7 +1668,7 @@ impl StatePeer {
                     // A change with no history entry names its maker in its own message, or is
                     // one every holder derives alike; one that names no one is refused, unless
                     // an import step holds the write as the person's.
-                    if collab_types::claim::maker_of(change) == collab_types::claim::Maker::Nobody
+                    if collab_admission::maker_of(change) == collab_admission::Maker::Nobody
                         && self
                             .governance()
                             .imported_invoker(source, app_id, record, envelope.seq)
@@ -1716,15 +1716,7 @@ impl StatePeer {
                     Some(certificate) => {
                         let effect = keeper.is_some()
                             && tilo_server_protocol::invocation::declared_effect(&context);
-                        let acting = &invoker.acting;
-                        // A call the keeper carried out for an agent, and signed as the device
-                        // that did, is the call of the person the agent acts for.
-                        let person = match acting.acted_for_person() {
-                            Some(person) if effect && certificate.device_public_key == *source => {
-                                person.to_owned()
-                            }
-                            _ => hex::encode(certificate.user_public_key),
-                        };
+                        let person = called_person(&invoker.acting, &certificate, source, effect);
                         caller = Some(self.called_by(
                             (&route, source, envelope),
                             caller,
@@ -1804,7 +1796,7 @@ fn refused_change(
     source: &[u8; 32],
     envelope: &SignedOp,
 ) -> String {
-    let claimed = collab_types::claimed_invokers(envelope);
+    let claimed = collab_admission::claimed_invokers(envelope);
     let invokers: Vec<String> = claimed
         .iter()
         .map(|invoker| serde_json::to_string(invoker).unwrap_or_default())
@@ -1905,5 +1897,20 @@ impl DocumentKeysBasis<'_> {
             // has no member access, and the workspace key reaches it by right.
             None => governance.holder_role(device) != Some(super::CopyRole::KeyHolder),
         }))
+    }
+}
+
+/// Whose call a change that keeps a checked invocation is: the person its certificate names,
+/// or, for a call the record's keeper carried out for an agent and signed as the device that
+/// did (`effect` declared, signed by `source`), the person the agent acts for.
+fn called_person(
+    acting: &tilo_action_policy::Acting,
+    certificate: &DeviceCert,
+    source: &[u8; 32],
+    effect: bool,
+) -> String {
+    match acting.acted_for_person() {
+        Some(person) if effect && certificate.device_public_key == *source => person.to_owned(),
+        _ => hex::encode(certificate.user_public_key),
     }
 }

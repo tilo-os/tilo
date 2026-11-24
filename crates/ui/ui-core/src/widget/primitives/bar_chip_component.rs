@@ -92,6 +92,9 @@ pub struct BarChip {
     hovered: bool,
     pressed: bool,
     focused: bool,
+    /// Its width is measured from its faces and its label, so a change to either asks the solver
+    /// for its box again.
+    layout_dirty: bool,
 }
 
 impl BarChip {
@@ -205,6 +208,16 @@ impl Widget for BarChip {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
+    /// It measures its faces and its label for its width, so it asks layout until it is placed and
+    /// again whenever what it measures changed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO || self.layout_dirty
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
+    }
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -212,6 +225,8 @@ impl Widget for BarChip {
         if self.interaction != environment {
             self.interaction = environment;
             self.hovered &= environment.supports_hover();
+            // A coarse pointer grows the face to the minimum target.
+            self.layout_dirty = true;
         }
     }
 
@@ -366,6 +381,7 @@ impl Described for BarChip {
             hovered: false,
             pressed: false,
             focused: false,
+            layout_dirty: true,
         }
     }
 
@@ -374,6 +390,7 @@ impl Described for BarChip {
         self.press = press.handler();
         self.icon_run = props.icon.into_iter().collect();
         self.props = props;
+        self.layout_dirty = true;
         true
     }
 }

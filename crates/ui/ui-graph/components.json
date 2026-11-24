@@ -2151,6 +2151,44 @@
       }
     },
     {
+      "name": "CurveEditor",
+      "doc": "A tone curve a person shapes: a box over the whole range each way, the straight line a plain picture takes, and the points that bend it. A press puts a point where it landed or grabs the one it landed on, a drag bends the curve through it, and letting go well outside the box takes an interior point off again. The line is drawn as the grade applies it, so what is shaped is what the picture gets.",
+      "props": [
+        {
+          "name": "points",
+          "doc": "The points, a flat list of x and y each in `0..=1`, in ascending x. Both ends are kept at x 0 and x 1; an empty list is the straight line.",
+          "type": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "height",
+          "doc": "How tall the box stands, in logical pixels: 160 unless said.",
+          "type": "float"
+        },
+        {
+          "name": "label",
+          "doc": "What the curve is, for assistive technology: \"The red curve\".",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "change",
+          "doc": "The points moved: carries them all, a flat list of x and y, each `0..=1`.",
+          "value": {
+            "list": "float"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
       "name": "DataTable",
       "doc": "A table of resources as columns and rows: the attributes of a device, the songs in a library, the rules of a firewall.",
       "props": [
@@ -4757,8 +4795,9 @@
         },
         {
           "name": "fail",
-          "doc": "The engine could not play the source: carries what it said.",
-          "value": "text"
+          "doc": "The engine could not play the source: carries what it said, and where in the song it stopped, in seconds. A stream a source serves only partway through stops here, and the app asks the source for a fresh address and continues from that place.",
+          "value": "text",
+          "at": "float"
         }
       ],
       "semantics": {
@@ -8663,8 +8702,9 @@
         },
         {
           "name": "fail",
-          "doc": "The player could not show its video: carries what the engine said.",
-          "value": "text"
+          "doc": "The player could not show its video: carries what the engine said, and where in the video it stopped, in seconds. A stream a source serves only partway through stops here, and the app asks the source for a fresh address and continues from that place.",
+          "value": "text",
+          "at": "float"
         },
         {
           "name": "progress",
@@ -9040,6 +9080,18 @@
             "option": "text"
           },
           "data": true
+        },
+        {
+          "name": "leaving",
+          "doc": "Whether the window has just closed: its frame is drawn where it stood and goes back into the control it was asked for from, taking nothing meanwhile. The shell keeps a closed window in its layout reading for its departure and draws it here.",
+          "type": "bool"
+        },
+        {
+          "name": "control",
+          "doc": "The control the person pressed for it, in the shell's pixels as `x, y`: the dock icon or the search row a window comes out of and goes back into. Empty for a window a shortcut or an agent asked for, which lands and grows where it stands.",
+          "type": {
+            "list": "int"
+          }
         },
         {
           "name": "enabled",
@@ -12620,6 +12672,40 @@
               },
               "default": "none",
               "doc": "How much of the fill's light reaches it, `1` the ink itself and `0` black: a filled cell of a surface shades by the angle it turns to the light."
+            }
+          ]
+        },
+        {
+          "name": "mesh",
+          "doc": "A surface of cells, nine numbers each: four corners, x and y in turn, then how much of the fill's light reaches the cell, `1` the ink itself and `0` black. Cells are drawn in the order they are given, so a nearer fold covers the one behind it.",
+          "fields": [
+            {
+              "name": "cells",
+              "ty": {
+                "list": "float"
+              },
+              "doc": "The cells' numbers, nine to a cell."
+            },
+            {
+              "name": "fill",
+              "ty": {
+                "choice": {
+                  "name": "Ink",
+                  "cases": [
+                    "accent",
+                    "ink",
+                    "muted",
+                    "track",
+                    "success",
+                    "warning",
+                    "danger",
+                    "info",
+                    "base",
+                    "surface",
+                    "sidebar"
+                  ]
+                }
+              }
             }
           ]
         },

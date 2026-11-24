@@ -1269,6 +1269,10 @@ pub struct PropertyValue {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+
+    /// It measures its value for its height, so a value given after it was laid out asks the
+    /// solver for its box again.
+    layout_dirty: bool,
 }
 
 impl PropertyValue {
@@ -1285,6 +1289,7 @@ impl PropertyValue {
             hovered: false,
             pressed: crate::pointer_replay::HeldPress::default(),
             metrics: None,
+            layout_dirty: true,
         }
     }
 
@@ -1313,8 +1318,12 @@ impl PropertyValue {
     }
 
     pub fn set_value(&mut self, value: impl Into<String>) {
+        let value = value.into();
+        if self.value != value {
+            self.value = value;
+            self.layout_dirty = true;
+        }
         self.dirty = true;
-        self.value = value.into();
     }
 
     fn row(&self) -> PropertyRow<'_> {
@@ -1385,6 +1394,16 @@ impl Widget for PropertyValue {
             width,
             height: crate::num::f32_of_f64(f64::from(h).max(min)),
         }
+    }
+
+    /// It measures its value for its height, so it asks layout until it is placed and again when
+    /// the value it shows changed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO || self.layout_dirty
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

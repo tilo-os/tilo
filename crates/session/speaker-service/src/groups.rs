@@ -118,24 +118,6 @@ pub enum ConsentWrite {
     },
 }
 
-impl ConsentWrite {
-    fn group(&self) -> SpeakerGroupId {
-        match self {
-            Self::Play { group, .. } | Self::Listen { group, .. } => *group,
-        }
-    }
-
-    fn leader(&self) -> &DeviceId {
-        match self {
-            Self::Play { leader, .. } | Self::Listen { leader, .. } => leader,
-        }
-    }
-
-    const fn play(&self) -> bool {
-        matches!(self, Self::Play { .. })
-    }
-}
-
 /// What a session plays. The playing device resolves it; it never leaves the device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GroupAudioSource {
@@ -263,7 +245,7 @@ impl SpeakerState {
                 .groups
                 .iter()
                 .filter_map(|led| {
-                    let id = SpeakerGroupId::from_hex(&led.id)?;
+                    let group_id = SpeakerGroupId::from_hex(&led.id)?;
                     let members = led
                         .members
                         .iter()
@@ -280,13 +262,13 @@ impl SpeakerState {
                         return None;
                     }
                     let group = SpeakerGroup {
-                        id,
+                        id: group_id,
                         name: led.name.clone(),
-                        leader: id_of(key.as_str()),
+                        leader: id.clone(),
                         members,
                         stamp: FabricStamp {
                             counter: u64::try_from(led.at_ms).unwrap_or(0),
-                            device: id_of(key.as_str()),
+                            device: id.clone(),
                         },
                     };
                     group.validate(&group.leader).ok()?;
@@ -357,15 +339,15 @@ impl SpeakerState {
             ) else {
                 continue;
             };
-            let stage = playback.stage;
+            let phase = playback.stage;
             state.playbacks.push(RecordedPlayback {
                 route,
                 session,
                 source,
                 target,
                 group,
-                admitted: stage == record::PlaybackStage::Admitted,
-                refused: stage == record::PlaybackStage::Refused,
+                admitted: phase == record::PlaybackStage::Admitted,
+                refused: phase == record::PlaybackStage::Refused,
                 authorization: EndpointSelector::from_hex(&playback.authorization)
                     .map(|selector| selector.0),
             });
@@ -526,10 +508,6 @@ impl SpeakerState {
     }
 }
 
-fn id_of(key: &str) -> DeviceId {
-    DeviceId::new(key).unwrap_or_else(|_| DeviceId::new("unknown").expect("a device id"))
-}
-
 fn role_from_record(value: &str) -> Option<SpeakerRole> {
     use tilo_network_actor::fabric::speaker_group::{RoomPoint, StereoSide, SurroundChannel};
     Some(match value {
@@ -683,8 +661,7 @@ impl SpeakerGroupCore {
         members: &[MemberSpec],
         now: Instant,
     ) -> Result<Vec<SpeakerWrite>, String> {
-        let previous = self
-            .led_group(state, local, id)
+        let previous = Self::led_group(state, local, id)
             .cloned()
             .ok_or_else(|| crate::i18n::t("speaker-error-group-gone"))?;
         let trims = previous
@@ -723,8 +700,7 @@ impl SpeakerGroupCore {
         id: SpeakerGroupId,
         trims: &[(DeviceId, EndpointSelector, SpeakerTrim)],
     ) -> Result<Vec<SpeakerWrite>, String> {
-        let group = self
-            .led_group(state, local, id)
+        let group = Self::led_group(state, local, id)
             .cloned()
             .ok_or_else(|| crate::i18n::t("speaker-error-group-gone"))?;
         let mut updated = group;
@@ -922,7 +898,6 @@ impl SpeakerGroupCore {
     /// group with this device as a member, and either this device is that leader or its consent
     /// covers the member as published.
     fn consent_covers(
-        &self,
         state: &SpeakerState,
         local: &DeviceId,
         group: SpeakerGroupId,
@@ -940,10 +915,6 @@ impl SpeakerGroupCore {
     /// playbacks now, and the writes that bring the two in line. With media continuity off
     /// everything ends and consents are withdrawn; otherwise the record's new groups are asked
     /// about, offers are admitted or refused, and stale sessions end.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one pass keeps every part of what the record and the sessions say together"
-    )]
     pub fn reconcile(
         &mut self,
         state: &SpeakerState,
@@ -1011,7 +982,7 @@ impl SpeakerGroupCore {
         }
 
         // A consent whose group its leader no longer writes as it was agreed is void.
-        let stale = state
+        let voided = state
             .memberships_of(local)
             .iter()
             .filter(|membership| {
@@ -1024,7 +995,7 @@ impl SpeakerGroupCore {
             })
             .map(|membership| membership.group)
             .collect::<BTreeSet<_>>();
-        for group in stale {
+        for group in voided {
             let leader = state
                 .memberships_of(local)
                 .iter()
@@ -1080,7 +1051,7 @@ impl SpeakerGroupCore {
             let online = fabric
                 .get(&playback.source)
                 .is_some_and(|device| device.online);
-            let covers = self.consent_covers(state, local, playback.group);
+            let covers = Self::consent_covers(state, local, playback.group);
             if playback.admitted {
                 if let Some(authorization) = playback.authorization.filter(|_| covers && online) {
                     let group = playback.group;
@@ -1221,7 +1192,6 @@ impl SpeakerGroupCore {
     }
 
     fn led_group<'a>(
-        &self,
         state: &'a SpeakerState,
         local: &DeviceId,
         id: SpeakerGroupId,
@@ -1375,13 +1345,29 @@ impl SpeakerGroupCore {
             })
             .chain(self.listener_views(state, fabric, local))
             .collect();
+        let sessions = self.session_views(state, &label, playout);
+        SpeakerGroupsView {
+            groups,
+            consents,
+            memberships,
+            sessions,
+        }
+    }
+
+    /// One row per session this device plays and per session it admitted, with each session's
+    /// members counted by how far their clock has got.
+    fn session_views(
+        &self,
+        state: &SpeakerState,
+        label: &dyn Fn(&DeviceId) -> String,
+        playout: &dyn Fn([u8; 16]) -> Option<ClockSyncState>,
+    ) -> Vec<SpeakerSessionView> {
         let name_of = |group: SpeakerGroupId| {
             state
                 .group(group)
                 .map_or_else(String::new, |group| group.name.clone())
         };
-        let sessions = self
-            .outbound
+        self.outbound
             .iter()
             .map(|(session_id, session)| {
                 let mut clocks = SessionClocks::default();
@@ -1427,13 +1413,7 @@ impl SpeakerGroupCore {
                     clock_failure: clocks.failure,
                 }
             }))
-            .collect();
-        SpeakerGroupsView {
-            groups,
-            consents,
-            memberships,
-            sessions,
-        }
+            .collect()
     }
 
     /// What the playing device's timed audio path renders for each session: only members that
@@ -1518,7 +1498,7 @@ impl SpeakerGroupCore {
         group: SpeakerGroupId,
     ) -> Option<EndpointSelector> {
         let published = state.group(group)?;
-        (&published.leader == source && self.consent_covers(state, local, group))
+        (&published.leader == source && Self::consent_covers(state, local, group))
             .then(|| published.member(local).map(|member| member.output))?
     }
 
@@ -1551,7 +1531,7 @@ impl SpeakerGroupCore {
         source: &DeviceId,
     ) -> Option<MemberPlaybackGrant> {
         let session = self.inbound.get(&session_id)?;
-        if &session.source != source || !self.consent_covers(state, local, session.group) {
+        if &session.source != source || !Self::consent_covers(state, local, session.group) {
             return None;
         }
         let group = state.group(session.group)?;
@@ -2131,48 +2111,13 @@ fn now_ms() -> i64 {
     i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
 }
 
-/// The typed action that makes `write` to the record of the person's devices.
-fn action_of(write: SpeakerWrite) -> Invoke<Devices> {
+/// The typed action that makes `write` to the record of the person's devices, or `None` when
+/// what it carries into that record does not encode.
+fn action_of(write: SpeakerWrite) -> Option<Invoke<Devices>> {
     use tilo_workspace_service::workspaces::person_workspace::devices::Devices as Record;
-    match write {
-        SpeakerWrite::Endpoints { device, endpoints } => {
-            let endpoints = endpoints
-                .iter()
-                .map(|endpoint| record::SpeakerEndpoint {
-                    selector: endpoint.selector.to_hex(),
-                    microphone: endpoint.kind == AudioEndpointKind::Microphone,
-                    label: endpoint.label.clone(),
-                    is_default: endpoint.is_default,
-                })
-                .collect::<Vec<_>>();
-            let bytes = postcard::to_allocvec(&endpoints).expect("endpoints encode");
-            Record::SAY_SPEAKER_ENDPOINTS.with((device.as_str().to_owned(), hex::encode(bytes)))
-        }
-        SpeakerWrite::Lead { device, group } => {
-            let members = group
-                .members
-                .iter()
-                .map(|member| {
-                    let (delay_ns, gain_mb, eq) = trim_to_record(&member.trim);
-                    record::SpeakerLedMember {
-                        device: member.device.as_str().to_owned(),
-                        output: member.output.to_hex(),
-                        role: role_to_record(member.role),
-                        delay_ns,
-                        gain_mb,
-                        eq,
-                    }
-                })
-                .collect::<Vec<_>>();
-            let bytes = postcard::to_allocvec(&members).expect("members encode");
-            Record::LEAD_SPEAKER_GROUP.with((
-                device.as_str().to_owned(),
-                group.id.to_hex(),
-                group.name.clone(),
-                hex::encode(bytes),
-                now_ms(),
-            ))
-        }
+    Some(match write {
+        SpeakerWrite::Endpoints { device, endpoints } => endpoints_action(&device, &endpoints)?,
+        SpeakerWrite::Lead { device, group } => lead_action(&device, group)?,
         SpeakerWrite::Drop { device, group } => {
             Record::DROP_SPEAKER_GROUP.with((device.as_str().to_owned(), group.to_hex()))
         }
@@ -2180,48 +2125,7 @@ fn action_of(write: SpeakerWrite) -> Invoke<Devices> {
             device,
             consent,
             approved,
-        } => {
-            let (group, leader, play, output, role, microphone) = match &consent {
-                ConsentWrite::Play {
-                    group,
-                    leader,
-                    output,
-                    role,
-                } => (
-                    group.to_hex(),
-                    leader.as_str().to_owned(),
-                    true,
-                    output.to_hex(),
-                    role_to_record(*role),
-                    String::new(),
-                ),
-                ConsentWrite::Listen {
-                    group,
-                    leader,
-                    microphone,
-                } => (
-                    group.to_hex(),
-                    leader.as_str().to_owned(),
-                    false,
-                    String::new(),
-                    String::new(),
-                    microphone.to_hex(),
-                ),
-            };
-            let endpoint = if play { output } else { microphone };
-            Record::CONSENT_SPEAKER_GROUP.with(
-                tilo_workspace_service::workspaces::person_workspace::devices::SpeakerConsentGiven {
-                    device: device.as_str().to_owned(),
-                    group,
-                    leader,
-                    play,
-                    endpoint,
-                    role,
-                    approved,
-                    at_ms: now_ms(),
-                },
-            )
-        }
+        } => consent_action(&device, &consent, approved),
         SpeakerWrite::Withdraw {
             device,
             group,
@@ -2265,13 +2169,104 @@ fn action_of(write: SpeakerWrite) -> Invoke<Devices> {
             hex::encode(route),
             authorization.map(hex::encode).unwrap_or_default(),
         )),
-    }
+    })
+}
+
+/// The action recording the outputs and microphones this device offers.
+fn endpoints_action(device: &DeviceId, endpoints: &[AudioEndpoint]) -> Option<Invoke<Devices>> {
+    let endpoints = endpoints
+        .iter()
+        .map(|endpoint| record::SpeakerEndpoint {
+            selector: endpoint.selector.to_hex(),
+            microphone: endpoint.kind == AudioEndpointKind::Microphone,
+            label: endpoint.label.clone(),
+            is_default: endpoint.is_default,
+        })
+        .collect::<Vec<_>>();
+    let bytes = postcard::to_allocvec(&endpoints).ok()?;
+    Some(Devices::SAY_SPEAKER_ENDPOINTS.with((device.as_str().to_owned(), hex::encode(bytes))))
+}
+
+/// The action publishing a group this device leads, with its members and their trims.
+fn lead_action(device: &DeviceId, group: SpeakerGroup) -> Option<Invoke<Devices>> {
+    let members = group
+        .members
+        .iter()
+        .map(|member| {
+            let (delay_ns, gain_mb, eq) = trim_to_record(&member.trim);
+            record::SpeakerLedMember {
+                device: member.device.as_str().to_owned(),
+                output: member.output.to_hex(),
+                role: role_to_record(member.role),
+                delay_ns,
+                gain_mb,
+                eq,
+            }
+        })
+        .collect::<Vec<_>>();
+    let bytes = postcard::to_allocvec(&members).ok()?;
+    Some(Devices::LEAD_SPEAKER_GROUP.with((
+        device.as_str().to_owned(),
+        group.id.to_hex(),
+        group.name,
+        hex::encode(bytes),
+        now_ms(),
+    )))
+}
+
+/// The action recording this device's answer to a consent prompt.
+fn consent_action(device: &DeviceId, consent: &ConsentWrite, approved: bool) -> Invoke<Devices> {
+    use tilo_workspace_service::workspaces::person_workspace::devices::Devices as Record;
+    let (group, leader, play, output, role, microphone) = match consent {
+        ConsentWrite::Play {
+            group,
+            leader,
+            output,
+            role,
+        } => (
+            group.to_hex(),
+            leader.as_str().to_owned(),
+            true,
+            output.to_hex(),
+            role_to_record(*role),
+            String::new(),
+        ),
+        ConsentWrite::Listen {
+            group,
+            leader,
+            microphone,
+        } => (
+            group.to_hex(),
+            leader.as_str().to_owned(),
+            false,
+            String::new(),
+            String::new(),
+            microphone.to_hex(),
+        ),
+    };
+    let endpoint = if play { output } else { microphone };
+    Record::CONSENT_SPEAKER_GROUP.with(
+        tilo_workspace_service::workspaces::person_workspace::devices::SpeakerConsentGiven {
+            device: device.as_str().to_owned(),
+            group,
+            leader,
+            play,
+            endpoint,
+            role,
+            approved,
+            at_ms: now_ms(),
+        },
+    )
 }
 
 /// Make every `write` to the record of the person's devices, telling what the record refused.
 fn apply_writes(network: &dyn FabricLink, writes: Vec<SpeakerWrite>) {
     for write in writes {
-        if let Err(error) = network.apply_person_devices(action_of(write)) {
+        let Some(action) = action_of(write) else {
+            tracing::warn!("a speaker group change does not encode");
+            continue;
+        };
+        if let Err(error) = network.apply_person_devices(action) {
             tracing::warn!(%error, "a speaker group change did not reach the person's record");
         }
     }
