@@ -479,8 +479,8 @@ export class Gateway {
       guild: key,
       endpoint: String(data?.endpoint ?? ""),
       token: String(data?.token ?? ""),
-      session: this.#session ?? "",
-      channel: String(held.channel ?? ""),
+      // The voice session Discord's VOICE_STATE_UPDATE named for the bot, never the gateway's.
+      session: String(held.session ?? ""),
     };
     this.voice.set(key, merged);
     this.#emit("voiceServer", merged);

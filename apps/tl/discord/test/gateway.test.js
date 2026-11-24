@@ -156,3 +156,54 @@ test("the gateway identifies with the bridge's intents and carries Discord's eve
   client.destroy();
   discord.stop();
 });
+
+test("a call hands the voice session Discord named, never the gateway's", async () => {
+  const discord = fakeGateway();
+  const client = await connect({
+    token: "MTIz.GxYz.abcdefghij0123456789AB",
+    url: discord.url,
+    onEvent: () => {},
+  });
+  const joining = client.joinVoice("123", "458");
+  await until(
+    () => discord.received.some((frame) => frame.op === 4),
+    "the join",
+  );
+  const join = discord.received.find((frame) => frame.op === 4);
+  expect(join.d).toMatchObject({ guild_id: "123", channel_id: "458", self_mute: false });
+
+  // Discord moves the bot in, naming the voice session its connection identifies with.
+  discord.send({
+    op: 0,
+    s: 3,
+    t: "VOICE_STATE_UPDATE",
+    d: { guild_id: "123", user_id: "900", channel_id: "458", session_id: "voice-session-1" },
+  });
+  discord.send({
+    op: 0,
+    s: 4,
+    t: "VOICE_SERVER_UPDATE",
+    d: {
+      guild_id: "123",
+      user_id: "900",
+      endpoint: "c-sjc01.discord.media:2096",
+      token: "voice-token",
+    },
+  });
+  const server = await joining;
+  expect(server.endpoint).toBe("c-sjc01.discord.media:2096");
+  expect(server.token).toBe("voice-token");
+  expect(server.channel).toBe("458");
+  expect(server.session).toBe("voice-session-1");
+
+  // The person ends the call in Discord: the bot's own state says it is in none.
+  discord.send({
+    op: 0,
+    s: 5,
+    t: "VOICE_STATE_UPDATE",
+    d: { guild_id: "123", user_id: "900", channel_id: null, session_id: "voice-session-1" },
+  });
+  await until(() => !client.voice.has("123"), "the call ended");
+  client.destroy();
+  discord.stop();
+});
