@@ -300,7 +300,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"],
                                  "swtpm": ["swtpm"], "pdf-sandbox": ["pdf-sandbox"],
-                                 "property-cases": ["property-cases"]})
+                                 "property-cases": ["property-cases"],
+                                 "throughput": ["throughput"]})
         for script in scripts.values():
             self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
