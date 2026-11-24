@@ -2237,14 +2237,10 @@ view artwork(a: Artwork) {
     state zoom: Float = 1.0
     state pan_x: Float = 0.0
     state pan_y: Float = 0.0
-    std.page(
-        a,
-        canvas: true,
-        fill: true,
+    std.page(a, canvas: true, fill: true) {
         header: {
             artwork_head(a, tool, brush, size, colour, show_layers, zoom, pan_x, pan_y)
-        },
-    ) {
+        }
         if a.notice != "" {
             ui.Banner(a.notice, kind: .warning) {
                 on act: clear_notice(a)

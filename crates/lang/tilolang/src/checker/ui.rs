@@ -395,11 +395,15 @@ impl Checker<'_> {
             return;
         };
         let mut fl = self.new_for(list, &elem);
-        // A resource keys its row by its id; a value (a host value too) by its place.
+        // A row says what it stands for: the id of the resource it is, or its place for a value
+        // the view made itself, which names no stored thing. A plain value stands by its place.
         let part = if matches!(&elem, Ty::Record(key) if !crate::host::is_value(key)) {
             Ex::host(
-                Imp::RefId,
-                vec![Ex::local(fl.item_local, elem.clone())],
+                Imp::RowKey,
+                vec![
+                    Ex::local(fl.item_local, elem.clone()),
+                    Ex::local(fl.idx_local, Ty::Int),
+                ],
                 Ty::Text,
             )
         } else {

@@ -1382,6 +1382,17 @@ impl Core {
                 let r = self.ref_arg(a.h(0)?)?;
                 self.ret_h(Value::Text(r.target.id_string()))
             }
+            // `row_key(v, index)`: what a list row is called between builds: the id of the
+            // resource a reference names, and the row's place for a value the view made
+            // itself, which names no stored thing.
+            Imp::RowKey => {
+                let at = a.long(1)?;
+                let key = match self.val(a.h(0)?)? {
+                    Value::Ref(r) => r.target.id_string(),
+                    _ => at.to_string(),
+                };
+                self.ret_h(Value::Text(key))
+            }
             // `resource(id)`: the resource the store keeps under `id`, read as its own type.
             // A place names what it shows by the id alone (`LayoutPlace.resource`), so a
             // shell reads the place's resource — its actions, its title — without knowing the

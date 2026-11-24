@@ -187,6 +187,8 @@ imports! {
     RefEq = "ref_eq" ([H, H] -> [I32]);
     RefIs = "ref_is" ([H, H] -> [I32]);
     RefId = "ref_id" ([H] -> [H]);
+    // A row's key: the id of a reference, or the row's place for a value a view made itself.
+    RowKey = "row_key" ([H, I64] -> [H]);
     ResourceRef = "resource_ref" ([H] -> [H]);
 
     Invoker = "invoker" ([] -> [H]);

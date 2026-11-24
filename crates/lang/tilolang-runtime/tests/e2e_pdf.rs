@@ -463,8 +463,27 @@ mod cases {
         let reader = Reader::new();
         let doc = reader.open();
         let window = reader.window("reader", vec![Value::resource(&doc)]);
-        let shown = crate::common::dump(window.tree());
+        let tree = window.tree();
+        let shown = crate::common::dump(tree);
         assert!(shown.contains("Report.pdf"), "its file:\n{shown}");
         assert!(shown.contains("Pages"), "its page rail:\n{shown}");
+        // The reader's toolbar is the page's header: it stands in the window's bar, with the
+        // actions the window offers beside it.
+        let shell = crate::common::of_kind(tree, "ui.NavShell")
+            .into_iter()
+            .next()
+            .expect("the reader's window shell");
+        let bar = shell
+            .children
+            .iter()
+            .find(|child| {
+                child.kind == "part" && child.props.get("name") == Some(&Value::text("actions"))
+            })
+            .unwrap_or_else(|| panic!("the window's bar holds the page's header:\n{shown}"));
+        let bar_shown = crate::common::dump(bar);
+        assert!(
+            bar_shown.contains("Zoom in") && bar_shown.contains("Fit width"),
+            "the toolbar's controls stand in the window's bar:\n{bar_shown}"
+        );
     }
 }

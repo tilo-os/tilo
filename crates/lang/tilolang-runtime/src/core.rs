@@ -53,7 +53,7 @@ use Imp::{
     PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
     RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText, ReadWith, RecNew, RecSetF,
     RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI,
-    ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended, RichEmbed, RichEmpty,
+    ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RowKey, RichAppended, RichEmbed, RichEmpty,
     RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart, RichRelinked,
     RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, SheetEdit, SheetEntry, SheetFile,
     SheetNumbers, SheetOfFile, SheetRanges, SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI,
@@ -639,7 +639,7 @@ impl Core {
             | CollMoveTo | CollMoveAmong | CollPlace | SetAdd | SetRemove | MapPut | MapRemove
             | MapSetAdd | MapSetRemove | MapGetH | MapGetValue | MapKeys | MapKeysValue
             | MapNew | MapPutValue | MapRemoveValue | RecNew | RecSetI | RecSetF | RecSetH
-            | RefLit | RefEq | RefIs | RefId | ResourceRef | Earlier => {
+            | RefLit | RefEq | RefIs | RefId | RowKey | ResourceRef | Earlier => {
                 self.resource_import(imp, a)
             }
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside

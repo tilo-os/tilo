@@ -192,6 +192,11 @@ struct Parser<'a> {
     base: usize,
     diags: Vec<Diagnostic>,
     next_node: NodeId,
+    /// The next argument list is a UI call's, whose named blocks fill the view's parts.
+    ui_args: bool,
+    /// The parts a UI call's arguments gave: `std.page(x, header: { ... })` fills the part
+    /// `header`, as the call's block does.
+    ui_parts: Vec<(Ident, Vec<UiStmt>)>,
 }
 
 #[derive(Default)]
@@ -255,6 +260,8 @@ impl<'a> Parser<'a> {
             base,
             diags: Vec::new(),
             next_node: 0,
+            ui_args: false,
+            ui_parts: Vec::new(),
         }
     }
 
@@ -2434,6 +2441,7 @@ impl<'a> Parser<'a> {
     }
 
     fn args(&mut self) -> PResult<Vec<Arg>> {
+        let ui = std::mem::take(&mut self.ui_args);
         let mut out = Vec::new();
         while !self.is(&Tok::RParen) {
             let name = match (self.peek().clone(), self.peek_at(1)) {
@@ -2453,6 +2461,18 @@ impl<'a> Parser<'a> {
                 }
                 _ => None,
             };
+            // A UI call's named block is the view's part of that name, read as its block's
+            // content: `std.page(x, header: { ... })` fills `header` as `{ header: { ... } }`
+            // does.
+            if ui && name.is_some() && self.is(&Tok::LBrace) {
+                let name = name.expect("a named argument");
+                let body = self.ui_block()?;
+                self.ui_parts.push((name, body));
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                continue;
+            }
             let value = self.expr()?;
             out.push(Arg { name, value });
             if !self.eat(&Tok::Comma) {
@@ -3043,7 +3063,11 @@ impl<'a> Parser<'a> {
 
     fn ui_call(&mut self) -> PResult<UiCall> {
         let node = self.node();
-        let call = self.postfix()?;
+        let parts_from = self.ui_parts.len();
+        self.ui_args = true;
+        let call = self.postfix();
+        self.ui_args = false;
+        let call = call?;
         let mut block = None;
         let mut params = Vec::new();
         if self.is(&Tok::LBrace) {
@@ -3080,6 +3104,28 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        // The parts the arguments gave stand with the block's, where the view reads them: the
+        // call's own parts lead the block, as a block's parts are written.
+        let given = self.ui_parts.split_off(parts_from);
+        if !given.is_empty() {
+            let mut body: Vec<UiStmt> = given
+                .into_iter()
+                .map(|(name, inner)| {
+                    let span = name.span;
+                    let node = self.node();
+                    UiStmt {
+                        kind: UiKind::Part {
+                            node,
+                            name,
+                            body: inner,
+                        },
+                        span,
+                    }
+                })
+                .collect();
+            body.extend(block.take().unwrap_or_default());
+            block = Some(body);
+        }
         Ok(UiCall {
             node,
             call,

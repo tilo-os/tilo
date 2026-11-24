@@ -305,9 +305,29 @@ view member_row(p: Member) {
                 vec![Value::resource(&sheets.book)],
             )
             .unwrap();
-        let shown = crate::common::dump(window.tree());
+        let tree = window.tree();
+        let shown = crate::common::dump(tree);
         for expected in ["Sheet1", "Add sheet"] {
             assert!(shown.contains(expected), "no {expected} in\n{shown}");
+        }
+        // The workbook's bar is the page's header: it stands in the window's bar.
+        let shell = of_kind(tree, "ui.NavShell")
+            .into_iter()
+            .next()
+            .expect("the workbook's window shell");
+        let bar = shell
+            .children
+            .iter()
+            .find(|child| {
+                child.kind == "part" && child.props.get("name") == Some(&Value::text("actions"))
+            })
+            .unwrap_or_else(|| panic!("the window's bar holds the workbook's bar:\n{shown}"));
+        let bar_shown = crate::common::dump(bar);
+        for expected in ["AutoSum", "Value or formula"] {
+            assert!(
+                bar_shown.contains(expected),
+                "no {expected} in the workbook's bar:\n{bar_shown}"
+            );
         }
     }
 }

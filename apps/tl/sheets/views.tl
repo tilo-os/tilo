@@ -44,14 +44,10 @@ template view workbook_page(
         let book = book_of(w.sheets.map(x -> sheet_input(x)), currency_code(w.currency))
         let rows = shown_sheet(values_of(book), s.name)
         let cells = shown_cells(rows)
-        std.page(
-            w,
-            canvas: true,
-            fill: true,
+        std.page(w, canvas: true, fill: true) {
             header: {
                 workbook_bar(w, s, area, typed, formulas, panel, settings_open)
-            },
-        ) {
+            }
             ui.Docked {
                 content: {
                     row(fill) {
@@ -91,7 +87,7 @@ template view workbook_bar(
         on submit(reference): set(area, reference.trim().upper())
     }
     ui.TextInput(bind: typed, placeholder: "Value or formula") {
-        on submit(input): write_cells(w, s.name, [range_start(area)], [input]).then(set(typed, ""))
+        on submit: write_cells(w, s.name, [range_start(area)], [typed]).then(set(typed, ""))
     }
     spacer
     ui.Button("Bold", icon: .bold, icon_only: true, toggled: s.bold.any(b -> in_range(area, b))) {
@@ -102,7 +98,7 @@ template view workbook_bar(
     }
     ui.Button(
         if formulas { "Show results" } else { "Show formulas" },
-        icon: if formulas { .equal } else { .hash },
+        icon: if formulas { .eye } else { .code },
         icon_only: true,
         toggled: formulas,
     ) {

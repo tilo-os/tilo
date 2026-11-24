@@ -1,7 +1,10 @@
 /// The workspace's PDFs: what can be opened, and how one opens.
 // ! The reader's views: the workspace's PDFs, the pages of one, and the panels beside them.
 view library(lib: Library) {
-    std.page(lib, header: { library_head(lib) }) {
+    std.page(lib) {
+        header: {
+            library_head(lib)
+        }
         if lib.documents.is_empty() {
             ui.EmptyState(
                 "No PDFs yet",
@@ -72,14 +75,10 @@ view reader(d: Document) {
     state stroke: List<Float> = []
     state finding: Bool = false
     state query: Text = ""
-    std.page(
-        d,
-        canvas: true,
-        fill: true,
+    std.page(d, canvas: true, fill: true) {
         header: {
             reader_head(d, page_at, zoom, rail, review, tool, colour)
-        },
-    ) {
+        }
         if d.trouble != "" {
             ui.EmptyState(
                 "This PDF cannot be opened",
@@ -151,6 +150,9 @@ view reader_head(
     tool: State<Text>,
     colour: State<Text>,
 ) {
+    let percent = zoom.round()
+    let page_now = page_at + 1
+    let page_count = d.pages.len()
     stack(gap: .none) {
         ui.Toolbar {
             ui.ToolbarButton("Previous", icon: .chevron_left) {
@@ -171,15 +173,17 @@ view reader_head(
             ui.ToolbarButton("Fit width", icon: .expand) {
                 on press: set(zoom, 100.0)
             }
-            ui.MenuButton("{percent}%", icon: .zoom_in) {
-                for step in zoom_steps() {
-                    ui.MenuItem("{step}%", checked: percent == step) {
-                        on choose: set(zoom, step.to_float())
+            ui.ToolbarButton("{percent}%", icon: .zoom_in) {
+                menu: {
+                    for step in zoom_steps() {
+                        ui.MenuItem("{step}%", checked: percent == step) {
+                            on choose: set(zoom, step.to_float())
+                        }
                     }
                 }
             }
             ui.ToolbarSeparator()
-            ui.MenuButton(
+            ui.ToolbarButton(
                 "Tools",
                 icon: if tool == "ink" {
                     .pencil
@@ -190,40 +194,43 @@ view reader_head(
                 } else if tool == "sign" {
                     .square_pen
                 } else if tool == "select" { .mouse_pointer_2 } else { .highlighter },
-                icon_only: true,
             ) {
-                ui.MenuItem("Select", icon: .mouse_pointer_2) {
-                    on choose: set(tool, "select")
-                }
-                ui.MenuItem("Highlight", icon: .highlighter) {
-                    on choose: set(tool, "highlight")
-                }
-                ui.MenuItem("Underline", icon: .underline) {
-                    on choose: set(tool, "underline")
-                }
-                ui.MenuItem("Strike through", icon: .strikethrough) {
-                    on choose: set(tool, "strikeout")
-                }
-                ui.MenuItem("Squiggle", icon: .pencil) {
-                    on choose: set(tool, "squiggly")
-                }
-                ui.MenuItem("Draw", icon: .pencil) {
-                    on choose: set(tool, "ink")
-                }
-                ui.MenuItem("Note", icon: .message_square) {
-                    on choose: set(tool, "note")
-                }
-                ui.MenuItem("Text box", icon: .text_cursor) {
-                    on choose: set(tool, "text")
-                }
-                ui.MenuItem("Sign", icon: .square_pen) {
-                    on choose: set(tool, "sign")
+                menu: {
+                    ui.MenuItem("Select", icon: .mouse_pointer_2) {
+                        on choose: set(tool, "select")
+                    }
+                    ui.MenuItem("Highlight", icon: .highlighter) {
+                        on choose: set(tool, "highlight")
+                    }
+                    ui.MenuItem("Underline", icon: .underline) {
+                        on choose: set(tool, "underline")
+                    }
+                    ui.MenuItem("Strike through", icon: .strikethrough) {
+                        on choose: set(tool, "strikeout")
+                    }
+                    ui.MenuItem("Squiggle", icon: .pencil) {
+                        on choose: set(tool, "squiggly")
+                    }
+                    ui.MenuItem("Draw", icon: .pencil) {
+                        on choose: set(tool, "ink")
+                    }
+                    ui.MenuItem("Note", icon: .message_square) {
+                        on choose: set(tool, "note")
+                    }
+                    ui.MenuItem("Text box", icon: .text_cursor) {
+                        on choose: set(tool, "text")
+                    }
+                    ui.MenuItem("Sign", icon: .square_pen) {
+                        on choose: set(tool, "sign")
+                    }
                 }
             }
-            ui.MenuButton("Colour", icon: .palette, icon_only: true) {
-                for c in marker_colours() {
-                    ui.MenuItem(c.name) {
-                        on choose: set(colour, c.value)
+            ui.ToolbarButton("Colour", icon: .palette) {
+                menu: {
+                    for c in marker_colours() {
+                        ui.MenuItem(c.name) {
+                            on choose: set(colour, c.value)
+                        }
                     }
                 }
             }

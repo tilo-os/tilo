@@ -183,7 +183,10 @@ fn named(name: Text) -> Text {
 
 /// The library: the workspace's documents, and opening one.
 view library(lib: Library) {
-    std.page(lib, header: { library_head(lib) }) {
+    std.page(lib) {
+        header: {
+            library_head(lib)
+        }
         if lib.documents.is_empty() {
             ui.EmptyState(
                 "No Typst documents yet",
@@ -243,7 +246,10 @@ view library_head(lib: Library) {
 /// The editor: the source, the page it typesets to, and what the typesetter found.
 view editor(d: Document) {
     let lib = root Library
-    std.page(d, canvas: true, fill: true, header: { editor_head(d, lib) }) {
+    std.page(d, canvas: true, fill: true) {
+        header: {
+            editor_head(d, lib)
+        }
         if d.trouble != "" {
             ui.Banner(
                 if d.stale {

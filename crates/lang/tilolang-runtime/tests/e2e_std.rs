@@ -270,6 +270,54 @@ fn ranking() -> List<Text> {
         assert_eq!(textual(view.tree()), "🎉 1");
     }
 
+    /// A page whose header is given as an argument (`std.page(x, header: { ... })`) stands in
+    /// the window's bar: the call reads that view as the page's part, never drops it.
+    #[test]
+    fn a_pages_header_given_as_an_argument_stands_in_its_bar() {
+        const HEADED: &str = "app so.tilo.headed \"Headed\"
+
+type Notes {
+    title: Text
+}
+
+root Notes
+
+default view all for Notes
+
+view all(n: Notes) {
+    std.page(n, header: { ui.Text(\"Header words\") }) {
+        ui.Text(\"Body words\")
+    }
+}
+";
+        let app = App::compile(HEADED, &[]);
+        let rt = runtime();
+        app.load(&rt);
+        let n = rt.create_root("Notes").unwrap();
+        let view = rt
+            .open_view(&me(), &app.view("all"), vec![res(&n)])
+            .unwrap();
+        let tree = view.tree();
+        let shell = of_kind(tree, "ui.NavShell")
+            .into_iter()
+            .next()
+            .expect("the page's window shell");
+        let bar = shell
+            .children
+            .iter()
+            .find(|child| {
+                child.kind == "part" && child.props.get("name") == Some(&Value::text("actions"))
+            })
+            .unwrap_or_else(|| panic!("the window has a bar for the page's header:\n{}", dump(tree)));
+        assert!(
+            of_kind(bar, "ui.Text")
+                .into_iter()
+                .any(|text| text_prop(text, "value") == "Header words"),
+            "the page's header stands in the window's bar:\n{}",
+            dump(tree)
+        );
+    }
+
     /// The text of a view's one text node.
     fn textual(node: &tilolang_runtime::UiNode) -> String {
         let texts = of_kind(node, "ui.Text");
