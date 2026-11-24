@@ -519,7 +519,7 @@ pub fn internal_row_status(state: &InternalProjection) -> Vec<EffectStatus> {
 }
 
 /// [`internal_refusals`] for a test that publishes a row without the
-/// framework's row status.
+/// host's row status.
 #[cfg(test)]
 pub(super) fn internal_refusals_for_test(
     state: &InternalProjection,
@@ -645,7 +645,7 @@ mod tests {
         }
     }
 
-    /// The internal row's actions as the framework publishes them: the
+    /// The internal row's actions as the host publishes them: the
     /// projection's guarded commands, each refused with the reason it gives.
     fn internal_actions(state: &SetupProjection) -> Vec<ActionSpec> {
         let mut actions = row(state)

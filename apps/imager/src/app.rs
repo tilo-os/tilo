@@ -988,7 +988,11 @@ impl ImagerApp {
             crate::setup::strings::t("imager-writer-unavailable")
         };
         body.push(Box::new(
-            page::related().push(Box::new(Banner::error(warning).with_message(consequence))),
+            page::related().push(Box::new(
+                Banner::error(warning)
+                    .with_message(consequence)
+                    .arrives_in_place(),
+            )),
         ))
     }
 

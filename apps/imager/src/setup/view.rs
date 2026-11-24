@@ -2681,7 +2681,7 @@ mod tests {
         root
     }
 
-    /// The framework's row status, applied to the child a test built without
+    /// The host's row status, applied to the child a test built without
     /// publishing it.
     fn refuse(child: &mut tilo_actions::ResourceSpec, id: &str, code: &str, reason: String) {
         if let Some(at) = child.actions.iter().position(|action| action.id == id) {
