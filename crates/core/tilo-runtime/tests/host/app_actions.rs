@@ -107,12 +107,6 @@ const APPS: &[App] = &[
         kind: "slides.deck",
     },
     App {
-        package: "snippets",
-        bin: "snippets",
-        id: "so.tilo.snippets",
-        kind: "snippets.library",
-    },
-    App {
         package: "terminal",
         bin: "terminal",
         id: "so.tilo.terminal",
@@ -129,12 +123,6 @@ const APPS: &[App] = &[
         bin: "typst-editor",
         id: "so.tilo.typst-editor",
         kind: "typst-editor.workspace",
-    },
-    App {
-        package: "weather",
-        bin: "weather",
-        id: "so.tilo.weather",
-        kind: "weather.locations",
     },
 ];
 
