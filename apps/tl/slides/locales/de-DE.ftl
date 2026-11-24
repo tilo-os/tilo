@@ -334,6 +334,7 @@ d-57jfhctc = Start
 
 d-2g5khvi5 = Folie hinzufügen
     .doc = Adds a slide after `after`, or at the end, from the template its layout names.
+    .did = hat eine Folie hinzugefügt
 
 d-2g5khvi5-title = Titel
 
@@ -360,6 +361,7 @@ d-2la4kpcr-after = After
 
 d-j7beflcx = Folien hinzufügen
     .doc = Adds several slides in one step, in the order given: a deck written from an outline, as the JSON a person or an agent hands over.
+    .did = hat Folien aus einer Gliederung hinzugefügt
 
 d-j7beflcx-outline = Outline
 
@@ -367,27 +369,32 @@ d-j7beflcx-after = After
 
 d-ym5e44gl = Folie duplizieren
     .doc = Copies a slide and everything on it, right after it.
+    .did = hat eine Folie dupliziert
 
 d-ym5e44gl-s = S
 
 d-j3ft43xp = Folie duplizieren
     .doc = Kopiert die Folie, die das Fenster zeigt, direkt danach.
+    .did = hat eine Folie dupliziert
 
 d-j3ft43xp-showing = Angezeigt
 
 d-yovatixr = Objekt duplizieren
     .doc = Kopiert ein Objekt an seinem Platz auf der Folie, etwas weiter unten und seitlich versetzt.
+    .did = hat ein Objekt dupliziert
 
 d-yovatixr-e = E
 
 d-5bpcbcc5 = Folie löschen
     .doc = Deletes a slide.
     .w-a-deck-keeps-at-least-one = A deck keeps at least one slide
+    .did = hat eine Folie gelöscht
 
 d-5bpcbcc5-s = S
 
 d-rpjtkcs3 = Folie verschieben
     .doc = Moves a slide to `at`, the place among the slides a drag reports.
+    .did = hat eine Folie verschoben
 
 d-rpjtkcs3-s = S
 
@@ -396,6 +403,7 @@ d-rpjtkcs3-at = At
 d-urjtfzun = Text der Folie setzen
     .doc = Writes a slide's title and body: the first two text boxes, as the templates make them.
     .w-give-a-title-a-body-or = Give a title, a body or both
+    .did = hat den Text der Folie gesetzt
 
 d-urjtfzun-s = S
 
@@ -408,6 +416,7 @@ d-lb5rvlcb = Element hinzufügen
     .w-only-a-picture-takes-a-source = Only a picture takes a source
     .w-only-text-takes-words = Only text takes words
     .w-a-picture-needs-its-source = A picture needs its source
+    .did = hat ein Objekt hinzugefügt
 
 d-lb5rvlcb-kind = Kind
 
@@ -443,26 +452,31 @@ d-lb5rvlcb-radius = Radius
 
 d-5o6heqjy = Einfügen
     .doc = Inserts an element given whole, as the JSON another deck copied: a paste from anywhere.
+    .did = hat ein Objekt eingefügt
 
 d-5o6heqjy-element = Element
 
 d-uzu5nfqf = Löschen
     .doc = Deletes an element.
+    .did = hat ein Objekt gelöscht
 
 d-uzu5nfqf-e = E
 
 d-keiyxwq5 = Nach vorn
     .doc = Brings an element to the front.
+    .did = hat ein Objekt nach vorn geholt
 
 d-keiyxwq5-e = E
 
 d-g3ev3t4g = Nach hinten
     .doc = Sends an element to the back.
+    .did = hat ein Objekt nach hinten geschickt
 
 d-g3ev3t4g-e = E
 
 d-5ezqovdl = Verschieben
     .doc = Moves an element to a place on the slide, as a drag or the arrow keys place it.
+    .did = hat ein Objekt verschoben
 
 d-5ezqovdl-e = E
 
@@ -472,6 +486,7 @@ d-5ezqovdl-y = Y
 
 d-7kfizqqa = Verschieben
     .doc = Moves the element `target` names to `at`, as a drag on the stage reports it.
+    .did = hat ein Objekt verschoben
 
 d-7kfizqqa-target = Target
 
@@ -479,6 +494,7 @@ d-7kfizqqa-at = At
 
 d-cbw5ooxc = Verschieben
     .doc = Nudges the element `target` names by `dx` and `dy` slide units.
+    .did = hat ein Objekt verschoben
 
 d-cbw5ooxc-target = Target
 
@@ -488,6 +504,7 @@ d-cbw5ooxc-dy = Dy
 
 d-dqkpey7x = Größe ändern
     .doc = Sizes an element, as dragging its edge does.
+    .did = hat ein Objekt in der Größe geändert
 
 d-dqkpey7x-e = E
 
@@ -495,6 +512,7 @@ d-dqkpey7x-at = At
 
 d-m6cvsw3h = Größe ändern
     .doc = Sizes the element `target` names, as a drag on its edge reports it.
+    .did = hat ein Objekt in der Größe geändert
 
 d-m6cvsw3h-target = Target
 
@@ -502,6 +520,7 @@ d-m6cvsw3h-at = At
 
 d-egsj6wvu = Gestaltung
     .doc = Sets what an element is painted with, as the inspector's swatches do.
+    .did = hat ein Objekt neu gestaltet
 
 d-egsj6wvu-fill = Fill
 
@@ -521,32 +540,38 @@ d-egsj6wvu-radius = Radius
 
 d-rvnmx3ns = Layout
     .doc = Sets a slide's layout.
+    .did = hat das Layout der Folie geändert
 
 d-rvnmx3ns-layout = Layout
 
 d-dl2g2jid = Hintergrund
     .doc = Sets what a slide stands on.
+    .did = hat den Hintergrund der Folie geändert
 
 d-dl2g2jid-background = Hintergrund
 
 d-qyin6x3m = Thema der Präsentation
     .doc = Sets the deck's accent hue.
+    .did = hat das Farbschema des Decks geändert
 
 d-qyin6x3m-palette = Palette
 
 d-d5shal5e = Erscheinungsbild der Präsentation
     .doc = Sets the deck's light or dark surfaces.
+    .did = hat das Erscheinungsbild des Decks geändert
 
 d-d5shal5e-look = Erscheinungsbild
 
 d-evess4te = Präsentation benennen
     .doc = Names the deck.
     .w-name-the-deck-something = Name the deck something
+    .did = hat das Deck umbenannt
 
 d-evess4te-title = Titel
 
 d-3cw3tbyv = Notizen für die Sprecherin
     .doc = Writes what the speaker says over a slide.
+    .did = hat die Sprechernotizen geschrieben
 
 d-3cw3tbyv-notes = Notes
 
@@ -555,17 +580,20 @@ d-mll3py2e = Kopieren
 
 d-btdk5ete = Ausschneiden
     .doc = Cuts the chosen element: its JSON to the clipboard as another deck pastes it, and the element off the slide.
+    .did = hat ein Objekt ausgeschnitten
 
 d-btdk5ete-e = E
 
 d-pvutm3kt = Einfügen
     .doc = Pastes an element from the clipboard onto a slide, nudged clear of the one it came from.
+    .did = hat ein Objekt eingefügt
 
 d-auooxeyg = Präsentation als Text lesen
     .doc = A deck as text: its slides in order, each title, body and other elements with its id, and its speaker notes.
 
 d-c3kzo7bd = Präsentation öffnen
     .doc = Replaces the deck with the one a presentation file holds.
+    .did = hat eine Präsentation geöffnet
 
 d-c3kzo7bd-file = File
 
@@ -582,41 +610,51 @@ d-bhx54qvo = Als PowerPoint exportieren
 
 d-sidrg2nq = Open the presentation
     .doc = Reads a deck file into this deck: its slides replace what the deck holds.
+    .did = hat eine Präsentation geöffnet
 
 d-sidrg2nq-file = File
 
 d-zvlzo24x = Bild einfügen
     .doc = Puts a chosen picture on the slide.
+    .did = hat ein Bild eingefügt
 
 d-zvlzo24x-file = File
 
 d-2puqgfam = Meldung schließen
     .doc = Schließt die Meldung, die ein Deck zu einer Datei zeigt, die es nicht öffnen konnte.
+    .did = hat die Meldung geschlossen
 
 d-ecnpnt3u = Präsentation importieren
     .doc = The deck a file holds, kept as this deck: its slides replace what it held.
+    .did = hat eine Präsentation importiert
 
 d-ecnpnt3u-file = File
 
 d-c5bdebu4 = Präsentation importieren
     .doc = Opens the first presentation of a set dropped on the window.
+    .did = hat eine Präsentation importiert
 
 d-c5bdebu4-files = Files
 
 d-2btclxzc = Präsentation starten
     .doc = Starts the presentation clock: the speaker's elapsed time runs from now.
+    .did = hat die Präsentation gestartet
 
 d-ilm2mnkd = Präsentation beenden
     .doc = Stops the presentation clock.
+    .did = hat die Präsentation beendet
 
 d-zestriau = Uhr anhalten
     .doc = Holds the clock where it stands, until the speaker starts it again.
+    .did = hat die Uhr angehalten
 
 d-26lbs3c2 = Uhr weiterlaufen lassen
     .doc = Runs the clock on from where it was held.
+    .did = hat die Uhr wieder gestartet
 
 d-drvos6bo = Open the presentation
     .doc = Keeps one slide a deck file brings.
+    .did = hat eine Präsentation geöffnet
 
 d-drvos6bo-f = F
 
@@ -747,6 +785,9 @@ d-5al7yk7f = Deck
     .w-k-0 = K, 0
     .w-pause-or-reset-the-clock = Uhr anhalten oder zurücksetzen
     .w-end-the-presentation = Präsentation beenden
+    .w-fit = Anpassen
+    .w-bring-to-front = Nach vorn
+    .w-send-to-back = Nach hinten
 
 d-jnyka7fe = Element view
     .w-add-text = Add text
@@ -766,3 +807,15 @@ d-34l2smm3 = Textfeld-Seite
     .w-add-text = Text hinzufügen
     .w-this-box-s-slide-is-gone = Die Folie dieses Textfelds ist nicht mehr da
     .w-the-slide-it-stood-on-is = Die Folie, auf der es stand, ist nicht mehr in der Präsentation
+
+d-7tizubwd = Folie verschieben
+    .doc = Verschiebt die gezogene Folie dorthin, wo sie abgelegt wurde: die Kennung der Folie und die Kennung der Folie, auf der sie abgelegt wurde, wie sie die Sortierung der Leiste mitführt.
+    .did = hat eine Folie verschoben
+
+d-7tizubwd-ids = Kennungen
+
+d-c2gzexjw = Element löschen
+    .doc = Löscht das Element von `s`, dessen Kennung `target` ist, wie es das Löschen der Bühne benennt.
+    .did = hat ein Objekt gelöscht
+
+d-c2gzexjw-target = Ziel

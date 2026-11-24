@@ -895,3 +895,36 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
         .find(|a| a.key.as_ref() == key)
         .and_then(|a| tilo_doc_codecs::unescape_attr(&a))
 }
+
+#[cfg(test)]
+mod foreign_tests {
+    use super::*;
+
+    /// A presentation another program wrote: no `qslides:` attributes, only the native ODF
+    /// vocabulary. Its frames, shapes and words are read structurally, and its CDATA text
+    /// survives as the words it is.
+    #[test]
+    fn a_foreign_presentation_keeps_its_content_kinds_places_and_cdata_words() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><office:body><office:presentation><draw:page draw:name="slide-1"><draw:frame draw:name="title" svg:x="2.54cm" svg:y="1.4288cm" svg:width="20.32cm" svg:height="2.8575cm"><draw:text-box><text:p>Hello from LibreOffice</text:p><text:p>Second line</text:p></draw:text-box></draw:frame><draw:rect draw:name="box" svg:x="5.08cm" svg:y="7.1438cm" svg:width="10.16cm" svg:height="4.2863cm"/><draw:frame draw:name="code" svg:x="2.54cm" svg:y="12cm" svg:width="10cm" svg:height="3cm"><draw:text-box><text:p><![CDATA[a < b & c]]></text:p></draw:text-box></draw:frame></draw:page></office:presentation></office:body></office:document-content>"#;
+        let deck = parse_content(xml).expect("a foreign presentation parses");
+        assert_eq!(deck.slides.len(), 1, "one page is one slide");
+        assert_eq!(
+            deck.slides[0].elements.len(),
+            3,
+            "the words, the shape and the CDATA words"
+        );
+        let text = &deck.slides[0].elements[0];
+        assert_eq!(text.kind, ElementKind::Text);
+        assert_eq!(text.text, "Hello from LibreOffice\nSecond line");
+        assert!((text.x - 128.0).abs() < 0.1, "x reads in slide units: {}", text.x);
+        assert!((text.w - 1024.0).abs() < 0.1, "w reads in slide units: {}", text.w);
+        assert_eq!(deck.slides[0].elements[1].kind, ElementKind::Rect);
+        let code = &deck.slides[0].elements[2];
+        assert_eq!(code.kind, ElementKind::Text);
+        assert_eq!(
+            code.text, "a < b & c",
+            "a CDATA paragraph keeps its literal marks"
+        );
+    }
+}

@@ -209,7 +209,7 @@ primary action add_slide(
     body: Text = "",
     layout: Layout = .title_content,
     after: Option<Slide> = .none,
-) -> Slide (icon: .plus, label: "Add slide") {
+) -> Slide (icon: .plus, label: "Add slide", did: "added a slide") {
     let made = add_authored_slide(d, title, body, .some(layout), .none, layout, after)
     return made
 }
@@ -257,6 +257,7 @@ action add_authored_slide(
 action add_slides(d: Deck, outline: Text, after: Option<Slide> = .none) -> Result<Int, Text> (
     icon: .list_plus,
     label: "Add slides",
+    did: "added slides from an outline",
 ) {
     match json.decode<List<Outline>>(outline) {
         .ok(slides) => {
@@ -304,7 +305,11 @@ action add_slides(d: Deck, outline: Text, after: Option<Slide> = .none) -> Resul
 }
 
 /// Copies a slide and everything on it, right after it.
-action duplicate_slide(d: Deck, s: Slide) -> Slide (icon: .copy, label: "Duplicate slide") {
+action duplicate_slide(d: Deck, s: Slide) -> Slide (
+    icon: .copy,
+    label: "Duplicate slide",
+    did: "duplicated a slide",
+) {
     let made = d.slides.insert(Slide(layout: s.layout, background: s.background, notes: s.notes))
     for e in s.elements {
         let copy = made.elements.insert(
@@ -332,7 +337,11 @@ action duplicate_slide(d: Deck, s: Slide) -> Slide (icon: .copy, label: "Duplica
 }
 
 /// Copies the slide the window shows, right after it.
-action duplicate_current_slide(d: Deck, showing: Text) (icon: .copy, label: "Duplicate slide") {
+action duplicate_current_slide(d: Deck, showing: Text) (
+    icon: .copy,
+    label: "Duplicate slide",
+    did: "duplicated a slide",
+) {
     if let s = d.slides.find(x -> x.id() == showing) { duplicate_slide(d, s) }
 }
 
@@ -340,6 +349,7 @@ action duplicate_current_slide(d: Deck, showing: Text) (icon: .copy, label: "Dup
 action duplicate_element(s: Slide, e: Element) -> Element (
     icon: .layers,
     label: "Duplicate object",
+    did: "duplicated an object",
 ) {
     let copy = s.elements.insert(
         Element(
@@ -364,19 +374,23 @@ action duplicate_element(s: Slide, e: Element) -> Element (
 }
 
 /// Deletes a slide. A deck keeps at least one.
-destructive action delete_slide(d: Deck, s: Slide) (icon: .trash, label: "Delete slide") {
+destructive action delete_slide(d: Deck, s: Slide) (
+    icon: .trash,
+    label: "Delete slide",
+    did: "deleted a slide",
+) {
     require d.slides.len() > 1 "A deck keeps at least one slide"
     d.slides.remove(s)
 }
 
 /// Moves a slide to `at`, the place among the slides a drag reports.
-action move_slide(d: Deck, s: Slide, at: Int) (label: "Move the slide") {
+action move_slide(d: Deck, s: Slide, at: Int) (label: "Move the slide", did: "moved a slide") {
     d.slides.move(s, to: at)
 }
 
 /// Moves the dragged slide where it was dropped: the slide's id and the id of the slide it was
 /// dropped on, as the rail's reorder carries them.
-action reorder_slides(d: Deck, ids: List<Text>) (label: "Move the slide") {
+action reorder_slides(d: Deck, ids: List<Text>) (label: "Move the slide", did: "moved a slide") {
     if ids.len() < 2 {
         return
     }
@@ -391,6 +405,7 @@ action reorder_slides(d: Deck, ids: List<Text>) (label: "Move the slide") {
 action set_text(d: Deck, s: Slide, title: Text = "", body: Text = "") (
     icon: .pencil,
     label: "Set the slide's text",
+    did: "set the slide's words",
 ) {
     require title.trim() != "" or body.trim() != "" "Give a title, a body or both"
     let texts = s.elements.filter(e -> e.kind == .text)
@@ -435,7 +450,7 @@ action add_element(
     bold: Option<Bool> = .none,
     italic: Option<Bool> = .none,
     radius: Option<Float> = .none,
-) -> Element (icon: .plus, label: "Add an element") {
+) -> Element (icon: .plus, label: "Add an element", did: "added an object") {
     require kind == .image or (src ?? "") == "" "Only a picture takes a source"
     require kind == .text or (text ?? RichText("")).is_empty() "Only text takes words"
     require kind != .image or (src ?? "") != "" "A picture needs its source"
@@ -474,6 +489,7 @@ action add_element(
 action insert_element(s: Slide, element: Text) -> Result<Element, Text> (
     icon: .clipboard,
     label: "Paste",
+    did: "pasted an object",
 ) {
     match json.decode<ElementFile>(element) {
         .ok(held) => .ok(s.elements.insert(element_of(held, 0))),
@@ -482,40 +498,58 @@ action insert_element(s: Slide, element: Text) -> Result<Element, Text> (
 }
 
 /// Deletes an element.
-destructive action delete_element(s: Slide, e: Element) (icon: .trash, label: "Delete") {
+destructive action delete_element(s: Slide, e: Element) (
+    icon: .trash,
+    label: "Delete",
+    did: "deleted an object",
+) {
     s.elements.remove(e)
 }
 
 /// Deletes the element of `s` whose id is `target`, as the stage's delete names it.
-destructive action delete_element_at(s: Slide, target: Text) {
+destructive action delete_element_at(s: Slide, target: Text) (did: "deleted an object") {
     if let e = s.elements.find(x -> x.id() == target) { s.elements.remove(e) }
 }
 
 /// Brings an element to the front.
-action bring_to_front(s: Slide, e: Element) (icon: .bring_to_front, label: "Bring to front") {
+action bring_to_front(s: Slide, e: Element) (
+    icon: .bring_to_front,
+    label: "Bring to front",
+    did: "brought an object to the front",
+) {
     s.elements.move(e, to: s.elements.len())
 }
 
 /// Sends an element to the back.
-action send_to_back(s: Slide, e: Element) (icon: .send_to_back, label: "Send to back") {
+action send_to_back(s: Slide, e: Element) (
+    icon: .send_to_back,
+    label: "Send to back",
+    did: "sent an object to the back",
+) {
     s.elements.move(e, to: 0)
 }
 
 /// Moves an element to a place on the slide, as a drag or the arrow keys place it.
-action move_element(s: Slide, e: Element, x: Int, y: Int) (label: "Move") {
+action move_element(s: Slide, e: Element, x: Int, y: Int) (label: "Move", did: "moved an object") {
     e.x = x
     e.y = y
 }
 
 /// Moves the element `target` names to `at`, as a drag on the stage reports it.
-action move_element_to(s: Slide, target: Text, at: List<Int>) (label: "Move") {
+action move_element_to(s: Slide, target: Text, at: List<Int>) (
+    label: "Move",
+    did: "moved an object",
+) {
     if let e = s.elements.find(x -> x.id() == target) {
         move_element(s, e, at.at(0) ?? e.x, at.at(1) ?? e.y)
     }
 }
 
 /// Nudges the element `target` names by `dx` and `dy` slide units.
-action nudge_element_to(s: Slide, target: Text, dx: Int, dy: Int) (label: "Move") {
+action nudge_element_to(s: Slide, target: Text, dx: Int, dy: Int) (
+    label: "Move",
+    did: "moved an object",
+) {
     if let e = s.elements.find(x -> x.id() == target) {
         e.x = (e.x + dx).clamp(20 - e.w, 1280 - 20)
         e.y = (e.y + dy).clamp(20 - e.h, 720 - 20)
@@ -523,13 +557,19 @@ action nudge_element_to(s: Slide, target: Text, dx: Int, dy: Int) (label: "Move"
 }
 
 /// Sizes an element, as dragging its edge does.
-action resize_element(s: Slide, e: Element, at: List<Int>) (label: "Resize") {
+action resize_element(s: Slide, e: Element, at: List<Int>) (
+    label: "Resize",
+    did: "resized an object",
+) {
     e.w = (at.at(0) ?? e.w).max(16)
     e.h = (at.at(1) ?? e.h).max(16)
 }
 
 /// Sizes the element `target` names, as a drag on its edge reports it.
-action resize_element_to(s: Slide, target: Text, at: List<Int>) (label: "Resize") {
+action resize_element_to(s: Slide, target: Text, at: List<Int>) (
+    label: "Resize",
+    did: "resized an object",
+) {
     if let e = s.elements.find(x -> x.id() == target) { resize_element(s, e, at) }
 }
 
@@ -544,7 +584,7 @@ action set_style(
     bold: Option<Bool> = .none,
     italic: Option<Bool> = .none,
     radius: Option<Float> = .none,
-) (icon: .paint_bucket, label: "Style") {
+) (icon: .paint_bucket, label: "Style", did: "restyled an object") {
     if let fill = fill {
         e.fill = fill
     }
@@ -572,33 +612,57 @@ action set_style(
 }
 
 /// Sets a slide's layout.
-action set_layout(s: Slide, layout: Layout) (icon: .layout_dashboard, label: "Layout") {
+action set_layout(s: Slide, layout: Layout) (
+    icon: .layout_dashboard,
+    label: "Layout",
+    did: "changed the slide's layout",
+) {
     s.layout = layout
 }
 
 /// Sets what a slide stands on.
-action set_background(s: Slide, background: Background) (icon: .palette, label: "Background") {
+action set_background(s: Slide, background: Background) (
+    icon: .palette,
+    label: "Background",
+    did: "changed the slide's background",
+) {
     s.background = background
 }
 
 /// Sets the deck's accent hue.
-action set_palette(d: Deck, palette: Palette) (icon: .palette, label: "Deck theme") {
+action set_palette(d: Deck, palette: Palette) (
+    icon: .palette,
+    label: "Deck theme",
+    did: "changed the deck's theme",
+) {
     d.palette = palette
 }
 
 /// Sets the deck's light or dark surfaces.
-action set_look(d: Deck, look: Look) (icon: .sun, label: "Deck look") {
+action set_look(d: Deck, look: Look) (
+    icon: .sun,
+    label: "Deck look",
+    did: "changed the deck's look",
+) {
     d.look = look
 }
 
 /// Names the deck.
-action set_title(d: Deck, title: Text) (icon: .pencil, label: "Name the deck") {
+action set_title(d: Deck, title: Text) (
+    icon: .pencil,
+    label: "Name the deck",
+    did: "renamed the deck",
+) {
     require title.trim() != "" "Name the deck something"
     d.title = title.trim()
 }
 
 /// Writes what the speaker says over a slide.
-action set_notes(s: Slide, notes: RichText) (icon: .pencil, label: "Speaker notes") {
+action set_notes(s: Slide, notes: RichText) (
+    icon: .pencil,
+    label: "Speaker notes",
+    did: "wrote the speaker notes",
+) {
     s.notes = notes
 }
 
@@ -630,13 +694,21 @@ action copy_element(e: Element) uses clipboard (icon: .copy, label: "Copy") {
 
 /// Cuts the chosen element: its JSON to the clipboard as another deck pastes it, and the element
 /// off the slide.
-action cut_element(s: Slide, e: Element) uses clipboard (icon: .scissors, label: "Cut") {
+action cut_element(s: Slide, e: Element) uses clipboard (
+    icon: .scissors,
+    label: "Cut",
+    did: "cut an object",
+) {
     copy_element(e)
     s.elements.remove(e)
 }
 
 /// Pastes an element from the clipboard onto a slide, nudged clear of the one it came from.
-action paste_element(s: Slide) uses clipboard (icon: .clipboard, label: "Paste") {
+action paste_element(s: Slide) uses clipboard (
+    icon: .clipboard,
+    label: "Paste",
+    did: "pasted an object",
+) {
     if let text = clipboard.paste() {
         match json.decode<ElementFile>(text) {
             .ok(held) => { s.elements.insert(element_of(held, 24)) }
@@ -656,6 +728,7 @@ action read_deck(d: Deck) -> Text (icon: .hash, label: "Read deck as text") {
 action open_presentation(d: Deck, file: File) (
     icon: .file_plus,
     label: "Open presentation",
+    did: "opened a presentation",
     opens: [
     "application/vnd.oasis.opendocument.presentation",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -685,7 +758,7 @@ action export_pptx(d: Deck) -> File (icon: .download, label: "Export as PowerPoi
 }
 
 /// Reads a deck file into this deck: its slides replace what the deck holds.
-action adopt(d: Deck, file: File) (label: "Open the presentation") {
+action adopt(d: Deck, file: File) (label: "Open the presentation", did: "opened a presentation") {
     match file.presentation() {
         .ok(text) => match json.decode<DeckFile>(text) {
             .ok(held) => {
@@ -711,12 +784,12 @@ action adopt(d: Deck, file: File) (label: "Open the presentation") {
 }
 
 /// Closes the message a deck shows about a file it could not open.
-action clear_notice(d: Deck) (icon: .x, label: "Close the message") {
+action clear_notice(d: Deck) (icon: .x, label: "Close the message", did: "closed the message") {
     d.notice = ""
 }
 
 /// Puts a chosen picture on the slide.
-action add_picture(s: Slide, file: File) (label: "Insert picture") {
+action add_picture(s: Slide, file: File) (label: "Insert picture", did: "inserted a picture") {
     s.elements.insert(
         Element(
             kind: .image,
@@ -732,31 +805,41 @@ action add_picture(s: Slide, file: File) (label: "Insert picture") {
 }
 
 /// The deck a file holds, kept as this deck: its slides replace what it held.
-action import_file(d: Deck, file: File) (icon: .file_plus, label: "Import the deck") {
+action import_file(d: Deck, file: File) (
+    icon: .file_plus,
+    label: "Import the deck",
+    did: "imported a presentation",
+) {
     adopt(d, file)
 }
 
 /// Opens the first presentation of a set dropped on the window.
-action import_files(d: Deck, files: List<File>) (label: "Import the deck") {
+action import_files(d: Deck, files: List<File>) (
+    label: "Import the deck",
+    did: "imported a presentation",
+) {
     if let first = files.at(0) { adopt(d, first) }
 }
 
 /// Starts the presentation clock: the speaker's elapsed time runs from now.
-action begin_presenting(d: Deck) uses time (label: "Start the presentation") {
+action begin_presenting(d: Deck) uses time (
+    label: "Start the presentation",
+    did: "started the presentation",
+) {
     d.presenting_since = .some(now)
     d.clock_held = 0
     d.clock_paused = false
 }
 
 /// Stops the presentation clock.
-action end_presenting(d: Deck) (label: "End the presentation") {
+action end_presenting(d: Deck) (label: "End the presentation", did: "ended the presentation") {
     d.presenting_since = .none
     d.clock_held = 0
     d.clock_paused = false
 }
 
 /// Holds the clock where it stands, until the speaker starts it again.
-action pause_clock(d: Deck) uses time (label: "Pause the clock") {
+action pause_clock(d: Deck) uses time (label: "Pause the clock", did: "paused the clock") {
     if let since = d.presenting_since {
         d.clock_held = (now - since).seconds()
         d.clock_paused = true
@@ -764,7 +847,10 @@ action pause_clock(d: Deck) uses time (label: "Pause the clock") {
 }
 
 /// Runs the clock on from where it was held.
-action resume_clock(d: Deck) uses time (label: "Start the clock again") {
+action resume_clock(d: Deck) uses time (
+    label: "Start the clock again",
+    did: "started the clock again",
+) {
     if d.clock_paused {
         d.presenting_since = .some(now - Duration(d.clock_held))
         d.clock_held = 0
@@ -953,7 +1039,10 @@ fn deck_text(d: Deck) -> Text {
 }
 
 /// Keeps one slide a deck file brings.
-action adopt_slide(d: Deck, f: SlideFile) (label: "Open the presentation") {
+action adopt_slide(d: Deck, f: SlideFile) (
+    label: "Open the presentation",
+    did: "opened a presentation",
+) {
     let made = d.slides.insert(
         Slide(
             layout: layout_of(f.layout),
@@ -1449,6 +1538,19 @@ view deck(d: Deck) {
                                 stack(gap: .related, padding: .related, fill) {
                                     slide_stage(d, s, chosen, zoom, pan, editing)
                                     insert_tools(s, chosen, editing)
+                                    // A compact window keeps the speaker's words under the
+                                    // slide they are said over, where the inspector's sheet
+                                    // would cover it.
+                                    if space.compact {
+                                        stack(gap: .tight) {
+                                            ui.Text(
+                                                "Speaker notes",
+                                                role: .caption,
+                                                secondary: true,
+                                            )
+                                            ui.BlockEditor(bind: s.notes, placeholder: "Notes")
+                                        }
+                                    }
                                 }
                             } else {
                                 ui.EmptyState(
@@ -1632,7 +1734,7 @@ view slide_stage(
         on press: set(chosen, "none").then(set(editing, false))
         on zoomed(scale: Float): set(zoom, scale)
         on panned(at: List<Float>): set(pan, at)
-        on select(target: Text): set(chosen, target).then(set(editing, false))
+        on select(target: Text): set(chosen, target).then(set(editing, opens_empty_box(s, target)))
         on open(target: Text): set(chosen, target).then(set(editing, true))
         on delete(target: Text): delete_element_at(s, target).then(set(chosen, "none"))
         on moved(target: Text, at: List<Int>): move_element_to(s, target, at)
@@ -2281,6 +2383,13 @@ fn previous_slide(d: Deck, current: Text) -> Option<Slide> {
 /// The element of a slide with this key, if it is there.
 fn element_in(s: Slide, key: Text) -> Option<Element> {
     s.elements.find(x -> x.id() == key)
+}
+
+/// Whether the click that chose `target` also opens it for typing: a text box with no words yet
+/// is one a person means to write in, so one click puts the caret in it. A box that has words is
+/// chosen by the first click; the next one, or Enter, opens it at the word pressed.
+fn opens_empty_box(s: Slide, target: Text) -> Bool {
+    if let e = element_in(s, target) { e.kind == .text and e.body.is_empty() } else { false }
 }
 
 /// The slide the box `e` stands on, when the deck still holds it.

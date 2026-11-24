@@ -11,8 +11,8 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-        ViewInstance,
+        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Space, UiNode,
+        Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/slides/app.tl");
@@ -93,6 +93,21 @@ mod cases {
                 .unwrap_or_else(|e| panic!("deck: {e}"));
             view.set_lazy_rows(false).unwrap();
             view
+        }
+
+        /// Why the app refused `action` with `given`, as its `require` says it.
+        fn refused(&self, action: &str, given: &[(&str, Value)]) -> String {
+            let args = self.app.args(&self.rt, action, given);
+            let id = self.app.action(action);
+            match self.rt.invoke_action(&me(), (id.as_str(), args)) {
+                Ok(other) => panic!("{action} was expected to be refused, and answered {other:?}"),
+                Err(error) => format!("{error:?}"),
+            }
+        }
+
+        /// Every change the deck's document holds, oldest first.
+        fn changes(&self) -> Vec<tilolang_runtime::ChangeNote> {
+            self.rt.history(&self.deck.doc).unwrap()
         }
     }
 
@@ -753,7 +768,9 @@ mod cases {
     fn a_new_text_box_is_the_one_that_takes_the_keyboard() {
         let s = Slides::new();
         let mut view = s.window();
-        let insert = s.app.anchor("insert_tools", "insert_text");
+        // The insert tool stands in the tools row a view of its own draws, inside the deck's
+        // frame: a window presses it through the view it is shown through.
+        let insert = s.app.anchor("deck", "insert_text");
         assert!(matches!(
             view.press(&insert).unwrap(),
             InvokeOutcome::Done(_)
@@ -800,5 +817,332 @@ mod cases {
             "the box the press made takes the keyboard: {:?}",
             editor.props.get("focus")
         );
+
+    #[test]
+    fn an_empty_box_opens_on_the_click_that_chooses_it() {
+        use tilolang_runtime::{BindTarget, Binding};
+
+        let s = Slides::new();
+        let slide = s.slide(0);
+        // A box already written on: the first click chooses it, and the next one aims at a word.
+        let title = s.elements(&slide)[0].clone();
+        s.call(
+            "set_text",
+            vec![
+                Value::resource(&s.deck),
+                Value::resource(&slide),
+                Value::text("A written title"),
+                Value::text(""),
+            ],
+        );
+        // An empty one, which a person means to write in: it takes the click that chooses it.
+        let empty = s.add_element(
+            &slide,
+            &[
+                ("kind", s.case("ElementKind", "ElementKind.text")),
+                ("x", Value::Int(120)),
+                ("y", Value::Int(420)),
+            ],
+        );
+        let mut view = s.window();
+        let stage = {
+            let mut stages = Vec::new();
+            of_kind(view.tree(), "ui.Stage", &mut stages);
+            stages
+                .iter()
+                .find(|node| node.props.get("name") == Some(&Value::text("Slide")))
+                .unwrap_or_else(|| panic!("the slide's stage: {}", dump(view.tree())))
+                .key
+                .clone()
+        };
+        view.fire_with(&stage, "select", Some(&Value::text(&empty.id_string())))
+            .unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(
+            view.view_state("editing"),
+            Some(Value::Bool(true)),
+            "the click that chose the empty box opened it for typing"
+        );
+
+        // The box's editor, the one the stage places on the slide, asks for the keyboard.
+        let mut editors = Vec::new();
+        of_kind(view.tree(), "ui.BlockEditor", &mut editors);
+        let editor = editors
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.binding,
+                    Some(Binding {
+                        target: BindTarget::Field { target, .. },
+                        ..
+                    }) if target.id_string() == empty.id_string()
+                )
+            })
+            .unwrap_or_else(|| panic!("the empty box's editor: {}", dump(view.tree())));
+        assert!(
+            matches!(editor.props.get("focus"), Some(Value::Bool(true))),
+            "the empty box takes the keyboard on the same click: {:?}",
+            editor.props.get("focus")
+        );
+
+        // A box with words is only chosen by the first click: the person aims at a word with
+        // the next one, or with Enter.
+        view.fire_with(&stage, "select", Some(&Value::text(&title.id_string())))
+            .unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(
+            view.view_state("editing"),
+            Some(Value::Bool(false)),
+            "a box that has words waits for the click after the one that chose it"
+        );
+    }
+
+    #[test]
+    fn add_element_refuses_what_it_cannot_make() {
+        let s = Slides::new();
+        let slide = s.slide(0);
+        let before = s.elements(&slide).len();
+        let some = |value: Value| Value::Opt(Some(Box::new(value)));
+        let text = s.case("ElementKind", "ElementKind.text");
+        let image = s.case("ElementKind", "ElementKind.image");
+
+        let why = s.refused("add_element", &[("s", Value::resource(&slide)), ("kind", image.clone())]);
+        assert!(why.contains("A picture needs its source"), "{why}");
+
+        let why = s.refused(
+            "add_element",
+            &[
+                ("s", Value::resource(&slide)),
+                ("kind", image),
+                (
+                    "text",
+                    some(Value::Rich(tilolang_runtime::rich::RichValue::from_text("words"))),
+                ),
+            ],
+        );
+        assert!(why.contains("Only text takes words"), "{why}");
+
+        let why = s.refused(
+            "add_element",
+            &[
+                ("s", Value::resource(&slide)),
+                ("kind", text),
+                ("src", some(Value::text("tilo-blob://abc"))),
+            ],
+        );
+        assert!(why.contains("Only a picture takes a source"), "{why}");
+
+        assert_eq!(
+            s.elements(&slide).len(),
+            before,
+            "a refused add makes nothing"
+        );
+    }
+
+    #[test]
+    fn deleting_an_element_is_one_change_and_lands_at_once() {
+        let s = Slides::new();
+        let slide = s.slide(0);
+        let made = s.add_element(
+            &slide,
+            &[("kind", s.case("ElementKind", "ElementKind.rect"))],
+        );
+        assert_eq!(s.elements(&slide).len(), 1);
+        let before = s.changes();
+
+        s.call(
+            "delete_element",
+            vec![Value::resource(&slide), Value::resource(&made)],
+        );
+        assert!(s.elements(&slide).is_empty(), "the deletion lands at once");
+
+        // Every change the deletion made is one invocation: one step for a person to undo.
+        let made = &s.changes()[before.len()..];
+        assert!(!made.is_empty(), "the deletion changed the deck");
+        let invocation = made[0].invocation.clone();
+        assert!(invocation.is_some(), "the deletion is a run of its own");
+        assert!(
+            made.iter().all(|note| note.invocation == invocation),
+            "the deletion is one step: {made:?}"
+        );
+    }
+
+    #[test]
+    fn the_last_slide_cannot_be_deleted() {
+        let s = Slides::new();
+        let only = s.slide(0);
+        let why = s.refused(
+            "delete_slide",
+            &[
+                ("d", Value::resource(&s.deck)),
+                ("s", Value::resource(&only)),
+            ],
+        );
+        assert!(why.contains("A deck keeps at least one slide"), "{why}");
+        assert_eq!(s.slides().len(), 1, "a deck keeps its one slide");
+    }
+
+    #[test]
+    fn a_script_renames_the_deck_through_the_title_edit_the_bar_uses() {
+        let s = Slides::new();
+        let before = s.changes();
+        let args = s
+            .app
+            .args(&s.rt, "set_title", &[("d", Value::resource(&s.deck)), ("title", Value::text("Q3 review"))]);
+        s.call("set_title", args);
+        assert_eq!(
+            s.rt.read(&s.deck, "title").unwrap(),
+            Value::text("Q3 review")
+        );
+
+        let made = &s.changes()[before.len()..];
+        assert_eq!(made.len(), 1, "a rename is one change: {made:?}");
+        assert_eq!(
+            made[0].action,
+            s.app.action("set_title"),
+            "the change is the action a script and the bar alike call"
+        );
+
+        let view = s.window();
+        let mut shells = Vec::new();
+        of_kind(view.tree(), "ui.NavShell", &mut shells);
+        assert!(
+            shells
+                .iter()
+                .any(|node| node.props.get("title") == Some(&Value::text("Q3 review"))),
+            "the bar names the deck by its new title: {}",
+            dump(view.tree())
+        );
+    }
+
+    #[test]
+    fn every_change_reads_as_a_sentence_to_an_agent() {
+        let s = Slides::new();
+        let did = |name: &str| {
+            s.app
+                .meta()
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap_or_else(|| panic!("no action {name}"))
+                .did
+                .clone()
+        };
+        for (name, sentence) in [
+            ("add_slide", "added a slide"),
+            ("add_slides", "added slides from an outline"),
+            ("duplicate_slide", "duplicated a slide"),
+            ("delete_slide", "deleted a slide"),
+            ("move_slide", "moved a slide"),
+            ("set_text", "set the slide's words"),
+            ("add_element", "added an object"),
+            ("insert_element", "pasted an object"),
+            ("delete_element", "deleted an object"),
+            ("bring_to_front", "brought an object to the front"),
+            ("send_to_back", "sent an object to the back"),
+            ("move_element", "moved an object"),
+            ("resize_element", "resized an object"),
+            ("set_style", "restyled an object"),
+            ("set_layout", "changed the slide's layout"),
+            ("set_background", "changed the slide's background"),
+            ("set_palette", "changed the deck's theme"),
+            ("set_look", "changed the deck's look"),
+            ("set_title", "renamed the deck"),
+            ("set_notes", "wrote the speaker notes"),
+            ("add_picture", "inserted a picture"),
+            ("open_presentation", "opened a presentation"),
+            ("adopt", "opened a presentation"),
+            ("begin_presenting", "started the presentation"),
+        ] {
+            assert_eq!(
+                did(name).as_deref(),
+                Some(sentence),
+                "history reads `{name}` as a sentence an agent and a person both read"
+            );
+        }
+        // A read names no change: it has nothing to say.
+        assert_eq!(did("read_deck"), None, "a read declares no change");
+    }
+
+    #[test]
+    fn the_help_sheet_is_a_dialog_that_answers_its_own_dismiss() {
+        let s = Slides::new();
+        let mut view = s.window();
+        view.set_view_state("help", Value::Bool(true));
+        view.poll_patches().unwrap();
+
+        let mut dialogs = Vec::new();
+        of_kind(view.tree(), "ui.ModalDialog", &mut dialogs);
+        let dialog = *dialogs
+            .first()
+            .unwrap_or_else(|| panic!("the keyboard reference: {}", dump(view.tree())));
+        assert_eq!(
+            dialog.props.get("open"),
+            Some(&Value::Bool(true)),
+            "the reference is open over the editor"
+        );
+        assert!(
+            dialog.events.contains_key("dismiss"),
+            "the dialog takes the Escape the reference lists: {:?}",
+            dialog.events.keys()
+        );
+        view.fire(&dialog.key, "dismiss").unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(
+            view.view_state("help"),
+            Some(Value::Bool(false)),
+            "dismissing the dialog closes the reference"
+        );
+    }
+
+    #[test]
+    fn a_compact_window_shows_the_speakers_notes_under_the_slide() {
+        use tilolang_runtime::{BindTarget, Binding};
+
+        let s = Slides::new();
+        let shown = s.slide(0);
+        let args = s.app.args(
+            &s.rt,
+            "set_notes",
+            &[
+                ("s", Value::resource(&shown)),
+                (
+                    "notes",
+                    Value::Rich(tilolang_runtime::rich::RichValue::from_text("Say hello")),
+                ),
+            ],
+        );
+        s.call("set_notes", args);
+        let notes_editors = |view: &ViewInstance| {
+            let mut editors = Vec::new();
+            of_kind(view.tree(), "ui.BlockEditor", &mut editors);
+            editors
+                .iter()
+                .filter(|node| {
+                    matches!(
+                        &node.binding,
+                        Some(Binding {
+                            target: BindTarget::Field { target, .. },
+                            ..
+                        }) if target.id_string() == shown.id_string()
+                    )
+                })
+                .count()
+        };
+
+        let mut view = s.window();
+        assert_eq!(
+            notes_editors(&view),
+            1,
+            "a wide window keeps the notes in the inspector alone"
+        );
+        assert!(view.set_space("", Space::from_rem(20.0, 40.0)), "the window narrowed");
+        view.poll_patches().unwrap();
+        assert_eq!(
+            notes_editors(&view),
+            2,
+            "a compact window shows the notes under the slide as well"
+        );
+    }
     }
 }
