@@ -903,6 +903,18 @@ fn a_logins_device_is_what_this_computers_apps_sign_as() {
         "nothing signs before the login makes the certificate this computer's identity"
     );
     tilo_api::daemon::enter::adopt(&place, &cert).unwrap();
+    // The person's devices record lists this device, as the daemon reads it from their workspace
+    // once it holds it: a device signs only where that record holds it.
+    let devices = Arc::new(tilo_identity::sources::DevicesTrust::new());
+    let (person, device) = (cert.user_public_key, cert.device_public_key);
+    devices.reading(move || {
+        Some(tilo_identity::sources::DevicesSeen::of_host(
+            person,
+            [device],
+            [],
+        ))
+    });
+    tilo_identity::sources::install_device_trust(devices);
 
     let identity = Identity::here().unwrap();
     assert_eq!(identity.cert, cert);
@@ -1386,7 +1398,8 @@ fn identity_steps_list_change_and_protect_the_store_without_answering_a_secret()
     let dir = super::this_accounts_root_dir().unwrap();
     tilo_identity::provisioning::create_person(
         &dir,
-        &tilo_device_identity::IdentityPaths::under(profile.path().join("device")),
+        // This computer's one device key, which seals the root it keeps for an account.
+        &tilo_identity::provisioning::collaboration_identity_paths(),
         "Ada",
         "",
         tilo_identity::provisioning::IdentityStorage::Files,
