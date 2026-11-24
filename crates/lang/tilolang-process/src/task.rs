@@ -738,11 +738,8 @@ struct Apps {
 /// The apps the immutable shared buffer `fd` holds, `len` bytes of them.
 fn apps(fd: &Descriptor, len: u64) -> Result<Apps, String> {
     let len = usize::try_from(len).map_err(|error| error.to_string())?;
-    // The mapping opens the file for itself: it takes a descriptor of its own, so the one the
-    // daemon handed stays the task's to close.
-    let sealed: std::os::fd::OwnedFd = fd.try_clone().map_err(|error| error.to_string())?.into();
-    let mapping = tilo_shm::Mapping::map_sealed(&sealed, true, len, len)
-        .map_err(|error| error.to_string())?;
+    let mapping =
+        tilo_shm::Mapping::map_sealed(fd, true, len, len).map_err(|error| error.to_string())?;
     let bytes = mapping
         .get(0, len)
         .ok_or("the apps are shorter than they say")?;
