@@ -311,8 +311,9 @@ impl Core {
                         .collect(),
                 )
             }
-            // `(readers: author)`: whoever made the record reads it, and every member once the
-            // field `until` names holds; the store seals it the same way.
+            // `(readers: author)`: whoever made the record reads it; once the field `until`
+            // names holds, it names no readers of its own and whoever reads its document reads
+            // it, as the store hands it to the workspace's readers.
             ReaderRule::Author { until } => {
                 if let Some(until) = until {
                     let field = info.field_by_id_or_name(&until)?.clone();
@@ -320,7 +321,7 @@ impl Core {
                         vs.reads.push((at.id_string(), field.id.clone()));
                     }
                     if self.read_value(at, &field, None) == Ok(Value::Bool(true)) {
-                        return Some(self.read_members().iter().map(Member::who).collect());
+                        return None;
                     }
                 }
                 let created = self.store.borrow().version_end(at, false).ok().flatten()?;
