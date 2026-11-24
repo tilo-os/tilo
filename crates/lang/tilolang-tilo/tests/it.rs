@@ -13,6 +13,7 @@
 
 mod action_ids;
 mod agent_queries;
+mod asking_form;
 mod atomic;
 mod block_search;
 mod board_lists;
