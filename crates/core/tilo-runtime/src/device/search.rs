@@ -7,7 +7,8 @@
 //! daemon's state. Every caller
 //! the daemon answers (the person's shell, `tilo do`, an agent's `find`) searches that index
 //! ([`IndexSearch`]), and is answered only what it may read: each result's record is decided by
-//! the device's one reader as every read of it is.
+//! the device's one reader as every read of it is, and a result of a resource sealed to its
+//! readers is answered to them alone.
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};

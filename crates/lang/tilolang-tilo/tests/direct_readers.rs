@@ -287,6 +287,51 @@ fn a_direct_conversation_is_read_by_its_people_and_a_channel_by_everyone() {
     );
 }
 
+/// What Ada's window publishes to the device's search index names the readers of her
+/// conversation with Scout on every entry of it: the index keeps all of Chat's entries in one
+/// slot, which Bo passes as a member who reads Chat, so the entry itself says it is Ada's and
+/// Scout's alone. The channel's message names nobody: whoever reads Chat finds it.
+#[test]
+fn the_entries_a_window_publishes_name_who_alone_reads_a_direct_conversation() {
+    let Workspace { ada, .. } = workspace();
+    let entries = tilolang_tilo::search::entries(&ada.host);
+    let readers_of = |text: &str| {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.title.contains(text))
+            .unwrap_or_else(|| panic!("an entry reads {text:?}: {entries:?}"));
+        entry.readers.clone().map(|mut readers| {
+            readers.sort();
+            readers
+        })
+    };
+    assert_eq!(
+        readers_of("salaries"),
+        Some(vec!["ada".to_owned(), "agent:scout".to_owned()]),
+        "Ada's message to Scout is found by the two of them alone"
+    );
+    assert_eq!(
+        readers_of("Lunch at noon"),
+        None,
+        "the channel's message by whoever reads Chat"
+    );
+    let found_by = |text: &str, reader: Option<&str>| {
+        entries
+            .iter()
+            .filter(|entry| entry.title.contains(text))
+            .all(|entry| entry.found_by(reader))
+    };
+    assert!(found_by("salaries", Some("ada")));
+    assert!(found_by("salaries", Some("agent:scout")));
+    assert!(!found_by("salaries", Some("bo")), "Bo finds nothing of it");
+    assert!(
+        !found_by("salaries", Some("agent:helper")),
+        "nor an agent admitted to all of the workspace"
+    );
+    assert!(!found_by("salaries", None), "nor a caller who is no member");
+    assert!(found_by("Lunch at noon", Some("bo")));
+}
+
 #[test]
 fn bo_messaging_scout_opens_his_own_conversation_with_scout() {
     let Workspace { bo, with_scout, .. } = workspace();

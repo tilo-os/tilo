@@ -1714,6 +1714,15 @@ impl Runtime {
         self.core.readers_admit(who, at)
     }
 
+    /// The members who alone read `at`: those every record holding it that names its readers
+    /// (`type Direct (readers: people)`, `type Draft (readers: author until sent)`) names, as
+    /// history lists a change of it to them alone. `None` when no record holding it names its
+    /// readers, so whoever reads its document reads it.
+    #[must_use]
+    pub fn readers(&self, at: &ResourceRef) -> Option<Vec<tilo_actions::policy::MemberId>> {
+        self.core.change_readers(&[at.id_string()])
+    }
+
     /// Where settled outside effects go.
     pub fn set_sink(&self, sink: impl OutsideSink + 'static) {
         *self.core.sink.borrow_mut() = Some(Box::new(sink));

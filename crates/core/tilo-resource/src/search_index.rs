@@ -111,6 +111,12 @@ pub struct IndexEntry {
     /// found by the words in them and by what they show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Who alone may find it, when its resource is sealed to its readers (a
+    /// direct conversation, an unsent draft): each member as a change's
+    /// readers name them (`tilo_actions::contract::reader_name`). `None` for
+    /// whoever may read the record it was published from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readers: Option<Vec<String>>,
 }
 
 /// `text` cut to at most `max` bytes at a character boundary.
@@ -185,6 +191,16 @@ pub fn picture_address(text: &str) -> Option<String> {
 }
 
 impl IndexEntry {
+    /// Whether `reader` (a member, as [`Self::readers`] names them; `None`
+    /// for a caller who is no member) may find the entry among what it may
+    /// read of its record: anyone may, unless the entry names its readers.
+    #[must_use]
+    pub fn found_by(&self, reader: Option<&str>) -> bool {
+        self.readers.as_ref().is_none_or(|named| {
+            reader.is_some_and(|reader| named.iter().any(|name| name == reader))
+        })
+    }
+
     /// Whether a hit opens the entry's resource: through the `open` it
     /// names (of the resource itself, or of the one holding it), or its
     /// resource's own when it names no action.

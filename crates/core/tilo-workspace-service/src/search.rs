@@ -109,7 +109,7 @@ impl IndexSearch {
         self.current()
             .visible
             .iter()
-            .filter(|indexed| !indexed.entry.secret && reads.allows(&indexed.key))
+            .filter(|indexed| !indexed.entry.secret && reads.allows(indexed))
             .filter_map(|indexed| {
                 Some(Picture {
                     resource: indexed.entry.resource.clone(),
@@ -135,14 +135,23 @@ impl IndexSearch {
             words,
         } = description;
         let key = IndexKey::new(&picture.app, &picture.workspace, &picture.record);
-        if !self.reads(caller).allows(&key) {
-            return Err(ActionCallError::Refused {
-                reason: "the picture is in a record this caller may not read".into(),
-            });
+        let reads = self.reads(caller);
+        let refused = || ActionCallError::Refused {
+            reason: "the picture is in a record this caller may not read".into(),
+        };
+        if !reads.allows_record(&key) {
+            return Err(refused());
         }
         let published = self.index.contents().visible.into_iter().find(|indexed| {
             indexed.key == key && indexed.entry.resource == picture.resource && !indexed.entry.secret
         });
+        // A picture sealed to its readers is described by them alone.
+        if published
+            .as_ref()
+            .is_some_and(|indexed| !indexed.entry.found_by(reads.reader.as_deref()))
+        {
+            return Err(refused());
+        }
         let entry = match published {
             Some(indexed) => {
                 let mut entry = indexed.entry;
@@ -180,6 +189,10 @@ impl IndexSearch {
             caller,
             may_read: &self.may_read,
             workspace: caller.workspace().filter(|_| !caller.acting().is_person()),
+            reader: caller
+                .acting()
+                .member_id()
+                .map(tilo_actions::contract::reader_name),
         }
     }
 }
@@ -220,12 +233,24 @@ struct Reads<'a> {
     may_read: &'a MayRead,
     /// The one workspace an agent searches: the person's search spans every workspace they see.
     workspace: Option<&'a str>,
+    /// The member the caller is, as an entry names its readers
+    /// ([`IndexEntry::readers`]); `None` for a caller who is no member.
+    reader: Option<String>,
 }
 
 impl Reads<'_> {
-    fn allows(&self, key: &IndexKey) -> bool {
+    /// Whether the caller may read what was published under `key`: the record it came from.
+    fn allows_record(&self, key: &IndexKey) -> bool {
         self.workspace.is_none_or(|workspace| key.workspace == workspace)
             && (self.may_read)(self.caller, key)
+    }
+
+    /// Whether the caller may find `indexed`: it reads the record the entry was published from,
+    /// and is one of the entry's readers when the entry names them. Every app's entries share a
+    /// slot per record, so a resource the store sealed to its readers (a direct conversation, an
+    /// unsent draft) is told apart by them, never by the slot.
+    fn allows(&self, indexed: &IndexedEntry) -> bool {
+        indexed.entry.found_by(self.reader.as_deref()) && self.allows_record(&indexed.key)
     }
 }
 
@@ -237,13 +262,13 @@ struct Snapshot {
     /// Locked secret-bearing entries, matched only to offer unlocking.
     locked: Vec<IndexedEntry>,
     locked_index: SearchIndex,
-    /// What each resource is called now, by `(workspace, resource)`, with the key of the entry
-    /// that named it: a result says who a message is from and in which conversation, without the
+    /// What each resource is called now, by `(workspace, resource)`: the visible entries that name
+    /// it, by place. A result says who a message is from and in which conversation, without the
     /// record that holds the message knowing either.
-    titles: HashMap<(String, String), Vec<(IndexKey, String)>>,
-    /// What each person is called, by `(workspace, identity)`, with the key of the entry about
-    /// them.
-    names: HashMap<(String, String), (IndexKey, String)>,
+    titles: HashMap<(String, String), Vec<usize>>,
+    /// What each person is called, by `(workspace, identity)`: the visible entry about them, by
+    /// place.
+    names: HashMap<(String, String), usize>,
 }
 
 impl Snapshot {
@@ -273,7 +298,7 @@ impl Snapshot {
                     .ok()
                     .and_then(|at| self.visible.get(at))?;
                 (holds(within, indexed)
-                    && reads.allows(&indexed.key)
+                    && reads.allows(indexed)
                     && shown.insert((indexed.key.app.as_str(), indexed.entry.key.as_str())))
                 .then(|| self.found(reads, indexed, Some(needle), hit.rank.unwrap_or(0)))
             })
@@ -285,7 +310,7 @@ impl Snapshot {
         let mut listed: Vec<&IndexedEntry> = self
             .visible
             .iter()
-            .filter(|indexed| holds(within, indexed) && reads.allows(&indexed.key))
+            .filter(|indexed| holds(within, indexed) && reads.allows(indexed))
             .collect();
         // The sort is stable, so the app's own order settles what is equal.
         listed.sort_by_key(|indexed| std::cmp::Reverse(indexed.entry.when.unwrap_or(i64::MIN)));
@@ -311,7 +336,7 @@ impl Snapshot {
             else {
                 continue;
             };
-            if app.is_some_and(|app| app != indexed.key.app) || !reads.allows(&indexed.key) {
+            if app.is_some_and(|app| app != indexed.key.app) || !reads.allows(indexed) {
                 continue;
             }
             let rank = hit.rank.unwrap_or(0);
@@ -407,20 +432,24 @@ impl Snapshot {
                 .titles
                 .get(&(slot.workspace.clone(), person.anchor.clone()))
         {
-            let readable = |(key, _): &&(IndexKey, String)| reads.allows(key);
-            let named = held
+            let readable: Vec<&IndexedEntry> = held
                 .iter()
-                .filter(readable)
-                .find(|(key, _)| key.app == slot.app)
-                .or_else(|| held.iter().find(readable));
-            if let Some((_, title)) = named {
-                return Some(title.clone());
+                .filter_map(|&at| self.visible.get(at))
+                .filter(|indexed| reads.allows(indexed))
+                .collect();
+            let named = readable
+                .iter()
+                .find(|indexed| indexed.key.app == slot.app)
+                .or_else(|| readable.first());
+            if let Some(indexed) = named {
+                return Some(indexed.entry.title.clone());
             }
         }
         self.names
             .get(&(slot.workspace.clone(), person.identity.clone()))
-            .filter(|(key, _)| reads.allows(key))
-            .map(|(_, name)| name.clone())
+            .and_then(|&at| self.visible.get(at))
+            .filter(|indexed| reads.allows(indexed))
+            .map(|indexed| indexed.entry.title.clone())
     }
 }
 
@@ -465,33 +494,32 @@ fn opening(entry: &IndexEntry) -> (String, String, serde_json::Map<String, serde
 }
 
 /// What each resource the entries name is called now, by `(workspace, resource)`: an entry's own
-/// name of itself, for the results that show the people and places another entry holds.
-fn titles_of(entries: &[IndexedEntry]) -> HashMap<(String, String), Vec<(IndexKey, String)>> {
-    let mut titles: HashMap<(String, String), Vec<(IndexKey, String)>> = HashMap::new();
-    for indexed in entries {
+/// name of itself, for the results that show the people and places another entry holds. Each by
+/// its entry's place among `entries`.
+fn titles_of(entries: &[IndexedEntry]) -> HashMap<(String, String), Vec<usize>> {
+    let mut titles: HashMap<(String, String), Vec<usize>> = HashMap::new();
+    for (at, indexed) in entries.iter().enumerate() {
         titles
             .entry((
                 indexed.key.workspace.clone(),
                 indexed.entry.resource.clone(),
             ))
             .or_default()
-            .push((indexed.key.clone(), indexed.entry.title.clone()));
+            .push(at);
     }
     titles
 }
 
-/// What each person the entries name is called, by `(workspace, identity)`: the title of the entry
-/// about them.
-fn names_of(entries: &[IndexedEntry]) -> HashMap<(String, String), (IndexKey, String)> {
+/// What each person the entries name is called, by `(workspace, identity)`: the entry about them,
+/// by its place among `entries`.
+fn names_of(entries: &[IndexedEntry]) -> HashMap<(String, String), usize> {
     entries
         .iter()
-        .filter(|indexed| indexed.entry.kind == Some(IndexKind::Person))
-        .filter_map(|indexed| {
+        .enumerate()
+        .filter(|(_, indexed)| indexed.entry.kind == Some(IndexKind::Person))
+        .filter_map(|(at, indexed)| {
             let person = indexed.entry.people.first()?;
-            Some((
-                (indexed.key.workspace.clone(), person.identity.clone()),
-                (indexed.key.clone(), indexed.entry.title.clone()),
-            ))
+            Some(((indexed.key.workspace.clone(), person.identity.clone()), at))
         })
         .collect()
 }

@@ -115,7 +115,8 @@ impl Inner {
     }
 
     /// Each entry of `workspace` a person may find now that opens its
-    /// resource, with its app.
+    /// resource, with its app. Asked for no caller, it holds no entry sealed
+    /// to its readers ([`IndexEntry::readers`]).
     fn opening<'a>(
         &'a self,
         workspace: &'a str,
@@ -127,19 +128,28 @@ impl Inner {
                 let unlocked = self.unlocked(&key.app);
                 entries
                     .values()
-                    .filter(move |entry| entry.opens_its_resource() && (!entry.secret || unlocked))
+                    .filter(move |entry| {
+                        entry.opens_its_resource()
+                            && (!entry.secret || unlocked)
+                            && entry.readers.is_none()
+                    })
                     .map(move |entry| (key.app.as_str(), entry))
             })
     }
 
     /// What every resource a person may find is called now, by the entry
-    /// that opens it.
+    /// that opens it. A resource sealed to its readers names nothing here:
+    /// another entry found by what it is called would tell its title to
+    /// whoever finds that entry.
     fn titles(&self) -> Titles<'_> {
         let mut by_resource: HashMap<(&str, &str), Vec<(&str, &str)>> = HashMap::new();
         for (key, entries) in &self.entries_by_key {
             let unlocked = self.unlocked(&key.app);
             for entry in entries.values() {
-                if entry.opens_its_resource() && (!entry.secret || unlocked) {
+                if entry.opens_its_resource()
+                    && (!entry.secret || unlocked)
+                    && entry.readers.is_none()
+                {
                     by_resource
                         .entry((key.workspace.as_str(), entry.resource.as_str()))
                         .or_default()
@@ -391,7 +401,11 @@ impl AppContentIndex {
             .filter(|(key, _)| key.workspace == workspace)
         {
             let unlocked = inner.unlocked(&key.app);
-            for entry in entries.values().filter(|entry| !entry.secret || unlocked) {
+            // Asked for no caller: an entry sealed to its readers is none of these.
+            for entry in entries
+                .values()
+                .filter(|entry| (!entry.secret || unlocked) && entry.readers.is_none())
+            {
                 let refers = entry.references.iter().any(|reference| {
                     referent(reference).is_some_and(|(to_app, to)| {
                         to == resource && (to_app == app || names_app(&to_app, &to, app))

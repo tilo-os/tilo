@@ -19,7 +19,10 @@
 //! person reads them ([`StoreReader`]): the entries a window of the app publishes, under the key
 //! that window publishes to, so a window and this index replace each other's entries rather than
 //! adding to them. Notes, Tasks and Chat are found on a device that never opened them, and what is
-//! deleted goes from search with no window open either.
+//! deleted goes from search with no window open either. That key is one per app, which every
+//! caller who reads the app's record passes, so an entry of a resource the store sealed to its
+//! readers (a direct conversation, an unsent draft) names them, and search answers it to them
+//! alone ([`IndexEntry::readers`]).
 //!
 //! Writes are batched per record, and the worker reads each record once per pass on its own
 //! thread, so a burst of changes to one conversation costs one reading of it.

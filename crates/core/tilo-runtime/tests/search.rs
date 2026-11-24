@@ -241,3 +241,114 @@ fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
         .await;
     });
 }
+
+/// What `member` finds of `word` asking the daemon's search over the device link, by title: none
+/// when it is refused.
+async fn asked_over_the_link(member: &host::Member, word: &str) -> Vec<String> {
+    let asked = member
+        .send(Query::request(
+            tilo_actions::InvocationId::new(),
+            word,
+            &Within::default(),
+        ))
+        .await;
+    match asked {
+        Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => titles(
+            &found(InvocationReceipt {
+                invocation: tilo_actions::InvocationId::new(),
+                status: tilo_actions::remote::ReceiptStatus::Completed { output },
+            })
+            .unwrap_or_default(),
+        ),
+        _ => Vec::new(),
+    }
+}
+
+/// A conversation the person keeps with themselves in Chat (a `Direct` whose only person is
+/// them) is sealed to them by the store. The daemon reads Chat's resources from the store as the
+/// person, and keeps all of Chat's entries in one slot, which another member of the workspace
+/// who reads Chat passes: the person's palette finds what they wrote to themselves, and the other
+/// member, asking over the device link, finds what was said in a channel and nothing of it.
+#[test]
+fn a_conversation_sealed_to_its_people_is_found_by_them_alone() {
+    use tilo_workspace_service::tl_records::{
+        self,
+        runtime::{Value, rich::RichValue},
+    };
+
+    const CHAT: &str = "so.tilo.chat";
+    const SEALED: &str = "Wombat salaries are due";
+    const SHARED: &str = "Wombat picnic at noon";
+    // A message's result reads as the line around what was typed: each is told by a word of its
+    // own.
+    const SEALED_WORD: &str = "salaries";
+    const SHARED_WORD: &str = "picnic";
+
+    host::run(|host| async move {
+        let (caller, workspace) = (host.caller(), host.workspace().to_owned());
+        // Someone else is a member of the workspace.
+        let grace = host.other_person("Grace", &workspace).await;
+        let workspaces = host.daemon().workspaces().clone();
+        let chat = tl_records::built_in(CHAT)
+            .unwrap()
+            .expect("Chat is built in");
+        let person = tl_records::member(tilo_actions::MemberId::person(host.person()));
+
+        // Written through Chat's own actions over the workspace's store, no window of Chat open:
+        // a channel's message, and a message the person writes to themselves.
+        let who = person.clone();
+        workspaces
+            .with_tl_record(&workspace, &chat, person, move |opened| {
+                let all = Value::resource(&opened.open_root()?);
+                let rich = |text: &str| Value::Rich(RichValue::from_text(text));
+                let general = opened.invoke(
+                    &who,
+                    (CHAT, "new_channel"),
+                    vec![all.clone(), Value::text("general")],
+                    None,
+                )?;
+                opened.invoke(&who, (CHAT, "send"), vec![general, rich(SHARED)], None)?;
+                opened
+                    .invoke(
+                        &who,
+                        (CHAT, "write_to"),
+                        vec![all, Value::Actor(who.clone()), rich(SEALED)],
+                        None,
+                    )
+                    .map(drop)
+            })
+            .await
+            .expect("Chat is written");
+
+        let palette = palette(&host);
+        tilo_test_env::within("the person finds both messages", async {
+            loop {
+                let found = palette_finds(&palette, &caller, "wombat").await;
+                if [SEALED_WORD, SHARED_WORD]
+                    .iter()
+                    .all(|word| found.iter().any(|title| title.contains(word)))
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+
+        // Grace reads Chat: she finds the channel's message, from the same slot.
+        let seen = tilo_test_env::within("Grace finds the channel's message", async {
+            loop {
+                let seen = asked_over_the_link(&grace, "wombat").await;
+                if seen.iter().any(|title| title.contains(SHARED_WORD)) {
+                    return seen;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(
+            !seen.iter().any(|title| title.contains(SEALED_WORD)),
+            "nothing of the person's conversation with themselves is found by Grace: {seen:?}"
+        );
+    });
+}

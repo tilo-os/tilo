@@ -24,6 +24,9 @@
 //! are read from the device's resource store ([`crate::resources`]): every resource of a type
 //! that holds text, nothing kept beside it. Each text is as the window's person reads it, and a
 //! resource the records holding it keep from them (`type Direct (readers: people)`) is no hit.
+//! The index keeps every hit of an app under one slot, which any caller who may read the app's
+//! record passes, so a hit of a resource sealed to its readers names them ([`Hit::readers`]), by
+//! the rule the store seals it by: the index answers it to them alone, whoever published it.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -62,6 +65,11 @@ pub struct Hit {
     /// The paragraphs of its rich text that are found on their own, in reading order: none for a
     /// resource no page shows, or whose text is one paragraph.
     pub blocks: Vec<BlockHit>,
+    /// The members who alone read it, each as a change's readers name them
+    /// (`tilo_actions::contract::reader_name`), when a record holding it names its readers
+    /// (`type Direct (readers: people)`): the store seals it to them, and search finds it for them
+    /// alone. `None` for a resource whoever reads its document reads.
+    pub readers: Option<Vec<String>>,
 }
 
 /// One paragraph of a resource's rich text, found on its own.
@@ -257,6 +265,7 @@ fn person_of(member: &tilo_actions::MemberId) -> Option<IndexPerson> {
 /// What the person at the host holds, as their rich text is read for them: the resources the
 /// store holds, of the packages the host runs.
 struct Holdings<'a> {
+    host: &'a Host,
     store: &'a ResourceStore,
     apps: BTreeSet<String>,
     unshared: Arc<str>,
@@ -265,6 +274,7 @@ struct Holdings<'a> {
 impl<'a> Holdings<'a> {
     fn of(host: &'a Host) -> Self {
         Self {
+            host,
             store: host.store(),
             apps: host
                 .packages()
@@ -273,6 +283,17 @@ impl<'a> Holdings<'a> {
                 .collect(),
             unshared: Arc::from(host.runtime().unshared()),
         }
+    }
+
+    /// Who alone reads `at`, by the one rule the store seals it by and history lists its changes
+    /// by ([`tilolang_runtime::Runtime::readers`]), each as a change's readers name them.
+    fn readers(&self, at: &ResourceRef) -> Option<Vec<String>> {
+        self.host.runtime().readers(at).map(|readers| {
+            readers
+                .iter()
+                .map(tilo_actions::contract::reader_name)
+                .collect()
+        })
     }
 }
 
@@ -394,6 +415,7 @@ fn hit_of(
         references,
         facts: Facts::of(holdings.store, at),
         blocks,
+        readers: holdings.readers(at),
     })
 }
 
@@ -614,6 +636,7 @@ fn entry(hit: &Hit) -> Option<IndexEntry> {
         people: hit.facts.people.clone(),
         when: hit.facts.when,
         image,
+        readers: hit.readers.clone(),
         ..IndexEntry::default()
     };
     entry.bounded()
@@ -649,6 +672,7 @@ fn block_entries(hit: &Hit) -> impl Iterator<Item = IndexEntry> + '_ {
                 .then(|| (block.text.clone(), IndexWeight::Body))
                 .into_iter()
                 .collect(),
+            readers: hit.readers.clone(),
             ..IndexEntry::default()
         }
         .bounded()
