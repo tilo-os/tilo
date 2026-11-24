@@ -107,6 +107,10 @@ type Page (title: title) {
     /// History is paused in this page's window: pages opened there are not added to the person's
     /// history.
     paused: Bool = false
+    /// The page's window browses privately: its engine runs on a profile of its own, which holds
+    /// nothing the person signed in to, is not offered their saved logins, and goes when the window
+    /// closes. Nothing it opens joins the person's history.
+    private: Bool = false
     /// What was done in the page, newest last. The newest thousand are kept.
     steps: Collection<PageStep>
     /// What the page's own script asks, and the menu it showed, as its window last read them.
@@ -440,6 +444,16 @@ default view address_page for Address
 /// address and its own back and forward are the system's.
 primary action new_page(b: Browser) -> Page (icon: .plus, label: "New page", key: "t") {
     b.pages.insert(Page(url: b.homepage, title: ""))
+}
+
+/// Opens a window that browses privately: nothing it reads, signs in to or downloads joins what
+/// this device keeps of the person.
+action new_private_page(b: Browser) -> Page (
+    icon: .eye_off,
+    label: "New private window",
+    key: "Ctrl+Shift+P",
+) {
+    b.pages.insert(Page(url: b.homepage, title: "", private: true))
 }
 
 /// The browser opens on a page: a workspace with none gets its home page as one.
@@ -959,8 +973,12 @@ action refresh_page(p: Page) -> Answer uses page (
     Answer(ok: true, message: "read")
 }
 
-/// The page's window opened: it reads what the page asks and shows before anyone looks.
+/// The page's window opened: it settles a private page's engine before anything is read, then
+/// reads what the page asks and shows before anyone looks.
 opened action opened_page(p: Page) uses page {
+    if p.private {
+        let _ = page.call(json.encode(Ask(op: "private")))
+    }
     refresh_page(p)
 }
 
@@ -1691,7 +1709,7 @@ action went_to(p: Page, url: Text) uses time {
         return
     }
     p.url = url
-    if not p.paused { arrived_at(root Browser, url) }
+    if not p.paused and not p.private { arrived_at(root Browser, url) }
 }
 
 /// Pauses or resumes the person's history in a page's window.
@@ -2207,6 +2225,12 @@ view page_window(b: Browser) {
 /// how the page is read.
 view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
     ui.MenuButton("Page", icon: .menu) {
+        ui.MenuItem("New page", icon: .plus) {
+            on choose: new_page(b)
+        }
+        ui.MenuItem("New private window", icon: .eye_off) {
+            on choose: new_private_page(b)
+        }
         ui.MenuItem("History", icon: .clock) {
             on choose: open(b, view: library)
         }
@@ -2311,6 +2335,13 @@ view page_view(p: Page) {
         }
         content: {
             stack {
+                if p.private {
+                    ui.Banner(
+                        "Private window",
+                        message: "This window keeps nothing when it closes: no history, no sign-ins, and no cookies but the page's own.",
+                        kind: .info,
+                    )
+                }
                 stack(padding: .related) {
                     ui.TextInput(
                         bind: address,

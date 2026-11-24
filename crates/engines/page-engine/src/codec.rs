@@ -51,6 +51,10 @@ pub enum Ask {
     Command(WebViewCommand),
     /// What the page waits on and last reported: its own state, which asks the page nothing.
     Asks,
+    /// The page is private: its window's engine is started on a fresh, disposable profile,
+    /// which holds nothing the person signed in to and goes when the window does. Asked before
+    /// the page says anything else, since it settles which engine the page has.
+    Private,
 }
 
 /// Read a request an app's action wrote.
@@ -277,6 +281,8 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             command: integer(&value, "command").unwrap_or_default(),
         }),
         "asks" => Ask::Asks,
+        // A private page's window starts its engine on a profile of its own.
+        "private" => Ask::Private,
         // The engine's own developer tools, opened beside the page.
         "developer_tools" => Ask::Command(WebViewCommand::ShowDeveloperTools),
         // The page's sound, and where it can go back or forward to: the engine answers the

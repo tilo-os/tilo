@@ -138,6 +138,9 @@ d-tyhunk32 = Title
 d-4nlkcuks = Paused
     .doc = History is paused in this page's window: pages opened there are not added to the person's history.
 
+d-s6ryunn5 = Private
+    .doc = The page's window browses privately: its engine runs on a profile of its own, which holds nothing the person signed in to, is not offered their saved logins, and goes when the window closes.
+
 d-dedg3fev = Steps
     .doc = What was done in the page, newest last.
 
@@ -686,6 +689,9 @@ d-hh26i3w2-filter-addresses_enabled = Addresses enabled
 d-l4fklfdf = New page
     .doc = Opens a page in a window of its own.
 
+d-vzmpfm6h = New private window
+    .doc = Opens a window that browses privately: nothing it reads, signs in to or downloads joins what this device keeps of the person.
+
 d-2ihrsavk = Start
     .doc = The browser opens on a page: a workspace with none gets its home page as one.
 
@@ -1001,7 +1007,7 @@ d-4djvsjzf = Check the page’s questions
     .doc = Reads what the page waits on into its window's record: the question it asks, the menu it showed, and how far it has loaded.
 
 d-u7fbemnk = Opened page
-    .doc = The page's window opened: it reads what the page asks and shows before anyone looks.
+    .doc = The page's window opened: it settles a private page's engine before anything is read, then reads what the page asks and shows before anyone looks.
 
 d-lvbnkhyd = Allow the site
     .doc = Lets a site use what it asked for (its camera, microphone, location, notifications).
@@ -1393,10 +1399,14 @@ d-vsaswu4a = Page view
     .w-reload = Reload
     .w-find-in-page = Find in page
     .w-pause-history = Pause history
+    .w-private-window = Private window
+    .w-this-window-keeps-nothing-when-it = This window keeps nothing when it closes: no history, no sign-ins, and no cookies but the page's own.
     .w-address-and-search = Address and search
     .w-bookmark = Bookmark
     .w-questions = Questions
     .w-page = Page
+    .w-new-page = New page
+    .w-new-private-window = New private window
     .w-history = History
     .w-bookmarks = Bookmarks
     .w-browser-settings = Browser settings

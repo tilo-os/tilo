@@ -10,7 +10,9 @@ mod cases {
     use std::rc::Rc;
     use tilolang_runtime::files::{Entry, FileTarget, FilesHost};
     use tilolang_runtime::page::PageHost;
-    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
+    use tilolang_runtime::{
+        AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, Value, ViewInstance,
+    };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/browser/app.tl");
 
@@ -558,6 +560,51 @@ mod cases {
         assert_eq!(ask["asker"].as_str(), Some("proxy.example"));
         assert!(ask["username"].is_null(), "no user name is sent: {ask}");
         assert!(ask["password"].is_null(), "no password is sent: {ask}");
+    }
+
+    /// A private window settles the page's privacy before its window reads anything, and what it
+    /// opens joins no history the next window reads.
+    #[test]
+    fn a_private_window_keeps_nothing_of_what_it_opens() {
+        let b = Browser::new();
+        let made = returned_ref(b.run("new_private_page", &[("b", Value::resource(&b.root))]));
+        assert_eq!(b.read(&made, "private"), Value::Bool(true));
+
+        b.run("opened_page", &[("p", Value::resource(&made))]);
+        assert_eq!(
+            b.page.ops(),
+            ["private", "asks"],
+            "the privacy is settled before the page is read"
+        );
+
+        b.run(
+            "went_to",
+            &[
+                ("p", Value::resource(&made)),
+                ("url", Value::text("https://example.org/private")),
+            ],
+        );
+        let visits = b.rt.project(&b.read(&b.root, "visits"));
+        assert_eq!(
+            visits["items"].as_array().map(Vec::len),
+            Some(0),
+            "a private page's addresses join no history: {visits}"
+        );
+
+        let view = b.view("page_view", vec![Value::resource(&made)]);
+        assert!(
+            !of_kind(view.tree(), "ui.Banner").is_empty(),
+            "the window says it is private:\n{}",
+            dump(view.tree())
+        );
+
+        // An ordinary page says nothing on the same window.
+        let open = returned_ref(b.run("new_page", &[("b", Value::resource(&b.root))]));
+        let view = b.view("page_view", vec![Value::resource(&open)]);
+        assert!(
+            of_kind(view.tree(), "ui.Banner").is_empty(),
+            "an ordinary page shows no private notice"
+        );
     }
 
     /// The logins the engine keeps for a site are found, captured, saved, filled and forgotten

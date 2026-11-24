@@ -50,6 +50,17 @@ pub fn set_window_page(page: Option<PageHandle>) {
     WINDOW_PAGE.with(|held| *held.borrow_mut() = page);
 }
 
+/// The engine of a window whose page is private: a fresh, disposable profile under `root`,
+/// which holds nothing the person signed in to and is removed when the window closes.
+///
+/// # Errors
+///
+/// Why no private engine started (no Chromium runtime here, or the root is not one this
+/// person's Browser allocated).
+pub fn new_private_page_engine(root: &std::path::Path) -> Result<SharedEngine, String> {
+    tilo_webview::chromium::ChromiumEngine::new_private(root).map(|engine| engine as SharedEngine)
+}
+
 /// The engine a window shows a page with when it has none yet: this device's Chromium engine,
 /// or one that says why the page cannot be shown.
 #[must_use]

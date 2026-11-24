@@ -42,8 +42,26 @@ pub enum Asked {
 /// # Errors
 /// The request is no JSON the page reads, or the window keeps no page.
 pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
-    let engine = engine_of(page);
     match codec::decode(request)? {
+        // A page opened private starts its window's engine on a fresh, disposable profile. It is
+        // the window's to make before anything else is asked, since it settles which engine the
+        // page has; a page that already started keeps the engine it has.
+        codec::Ask::Private => {
+            let mut held = page.borrow_mut();
+            if held.is_some() {
+                return Ok(Asked::Answered(codec::accepted()));
+            }
+            let root = tilo_webview::chromium::allocate_private_root()?;
+            let engine = match ui::webview::new_private_page_engine(&root) {
+                Ok(engine) => engine,
+                Err(why) => {
+                    tilo_webview::chromium::release_private_root(&root);
+                    return Err(why);
+                }
+            };
+            held.replace(PageSession::new_private(engine, root));
+            Ok(Asked::Answered(codec::accepted()))
+        }
         // A credential action names the page's document, which is the session's to know and the
         // app's never to see: the session asks the page for it and sends the action after.
         codec::Ask::Command(WebViewCommand::Credentials(credential)) => {
@@ -55,10 +73,11 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             Ok(Asked::Answered(codec::accepted()))
         }
         codec::Ask::Command(command) => {
-            engine.send(command);
+            engine_of(page).send(command);
             Ok(Asked::Answered(codec::accepted()))
         }
         codec::Ask::Asks => {
+            let _ = engine_of(page);
             let mut held = page.borrow_mut();
             let session = held
                 .as_mut()
@@ -67,6 +86,7 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             Ok(Asked::Answered(codec::asks_json(session.asks())))
         }
         codec::Ask::Page(request) => {
+            let _ = engine_of(page);
             let mut held = page.borrow_mut();
             let session = held
                 .as_mut()

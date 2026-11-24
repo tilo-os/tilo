@@ -53,6 +53,9 @@ pub struct PageSession {
     /// A credential action waiting for the page's current document: the engine's store only acts
     /// on the document the person is looking at, so the session asks for its generation first.
     credential_waiting: Option<CredentialRequest>,
+    /// A private page's disposable root, which this session's engine started on and which goes
+    /// when the session does: nothing a private window read or signed in to is kept.
+    private_root: Option<std::path::PathBuf>,
 }
 
 impl PageSession {
@@ -71,7 +74,25 @@ impl PageSession {
             download_steps: HashMap::new(),
             credential_next: 0,
             credential_waiting: None,
+            private_root: None,
         }
+    }
+
+    /// The page of a window opened private: `engine` is already started on `root`, a fresh
+    /// profile that holds nothing the person signed in to, and this session removes it when the
+    /// window closes.
+    #[must_use]
+    pub fn new_private(engine: SharedEngine, root: std::path::PathBuf) -> Self {
+        let mut session = Self::new(engine);
+        session.private_root = Some(root);
+        session
+    }
+
+    /// Whether this page is private: nothing it reads or signs in to is kept, and its history is
+    /// kept nowhere.
+    #[must_use]
+    pub fn is_private(&self) -> bool {
+        self.private_root.is_some()
     }
 
     /// The engine this window shows its page with.
@@ -324,6 +345,16 @@ impl PageSession {
     }
 }
 
+impl Drop for PageSession {
+    fn drop(&mut self) {
+        // The engine's own supervisor removes a private root once its child has exited; a
+        // window that closed before one started leaves the root to this.
+        if let Some(root) = self.private_root.take() {
+            tilo_webview::chromium::release_private_root(&root);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +532,27 @@ mod tests {
             note["message"],
             "Page changed or secure form access is unavailable"
         );
+    }
+
+    /// A private page's profile is its window's alone and goes when the page does: nothing it
+    /// read or signed in to is kept for the next window.
+    #[test]
+    fn a_private_page_owns_the_profile_it_goes_with() {
+        let root = tilo_webview::chromium::allocate_private_root().expect("a private root");
+        assert!(
+            tilo_webview::chromium::is_owned_private_root(&root),
+            "a root this browser made is one it may remove"
+        );
+        let session = PageSession::new_private(TestEngine::new(), root.clone());
+        assert!(session.is_private());
+        drop(session);
+        assert!(!root.exists(), "the private profile goes with the page");
+    }
+
+    /// A page that is not private keeps this device's profile.
+    #[test]
+    fn an_ordinary_page_is_not_private() {
+        assert!(!PageSession::new(TestEngine::new()).is_private());
     }
 
     /// A page a script opened (a popup the site sized, a plain new tab) is a note the window

@@ -235,6 +235,12 @@ d-hh26i3w2-filter-addresses_enabled = Addresses enabled
 d-l4fklfdf = Neue Seite
     .doc = Öffnet eine Seite in einem eigenen Fenster.
 
+d-s6ryunn5 = Privat
+    .doc = Das Fenster der Seite browst privat: sein Motor läuft auf einem eigenen Profil, das nichts enthält, womit die Person angemeldet ist, ihr keine gespeicherten Anmeldungen anbietet und mit dem Fenster verschwindet.
+
+d-vzmpfm6h = Neues privates Fenster
+    .doc = Öffnet ein Fenster, das privat browst: nichts, was es liest, womit es sich anmeldet oder was es herunterlädt, kommt zu dem, was dieses Gerät über die Person behält.
+
 d-ybc7uykj = Adresse öffnen
     .doc = Öffnet eine Adresse in einer eigenen Seite oder fragt die Suchmaschine nach dem Getippten, wenn es keine Adresse ist.
     .w-type-an-address-or-what-to = Tippe eine Adresse oder wonach du suchen willst
@@ -418,6 +424,10 @@ d-vsaswu4a = Seitenansicht
     .w-saved-for-this-site = Für diese Website gespeichert
     .w-fill = Einsetzen
     .w-delete = Löschen
+    .w-new-page = Neue Seite
+    .w-new-private-window = Neues privates Fenster
+    .w-private-window = Privates Fenster
+    .w-this-window-keeps-nothing-when-it = Dieses Fenster behält nichts, wenn es schließt: kein Verlauf, keine Anmeldungen und keine Cookies außer denen der Seite.
 
 d-pu2zdrbu = Schrittzeile
 
@@ -1013,7 +1023,7 @@ d-4djvsjzf = Fragen der Seite prüfen
     .doc = Liest, worauf die Seite wartet, in das Protokoll ihres Fensters: die Frage, die sie stellt, das Menü, das sie zeigte, und wie weit sie geladen ist.
 
 d-u7fbemnk = Seite geöffnet
-    .doc = Das Fenster der Seite wurde geöffnet: es liest, was die Seite fragt und zeigt, bevor jemand hinsieht.
+    .doc = Das Fenster der Seite wurde geöffnet: es legt den Motor einer privaten Seite fest, bevor etwas gelesen wird, und liest dann, was die Seite fragt und zeigt, bevor jemand hinsieht.
 
 d-qbox6son = Befehl des Seitenmenüs
     .doc = Nimmt eine Zeile des Seitenmenüs, über den Befehl, den der Engine ihr gab.

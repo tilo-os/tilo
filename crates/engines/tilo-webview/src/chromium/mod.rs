@@ -378,6 +378,48 @@ pub fn is_owned_private_root(root: &Path) -> bool {
             .is_ok_and(|value| value == PRIVATE_ROOT_MARKER_CONTENT)
 }
 
+/// Allocate a private window's disposable root: a fresh directory under the device's
+/// temporary directory, named with [`PRIVATE_ROOT_PREFIX`] and holding the marker that
+/// makes it one a Browser owns and may remove, and the lock a cleanup takes. The engine
+/// started on it removes it once its child has exited; a caller that never starts one
+/// releases it with [`release_private_root`].
+///
+/// # Errors
+///
+/// Why no root was made (the temporary directory is not writable, or an entry by the
+/// name already exists).
+pub fn allocate_private_root() -> Result<PathBuf, String> {
+    let root = std::env::temp_dir().join(format!("{PRIVATE_ROOT_PREFIX}{}", uuid::Uuid::new_v4()));
+    let made = || std::io::Error::other("a private window root could not be made");
+    std::fs::create_dir(&root).map_err(|error| format!("{}: {error}", made()))?;
+    let private = |path: &Path| -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+        Ok(())
+    };
+    let written = (|| -> std::io::Result<()> {
+        std::fs::write(root.join(PRIVATE_ROOT_MARKER), PRIVATE_ROOT_MARKER_CONTENT)?;
+        private(&root.join(PRIVATE_ROOT_MARKER))?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(root.join(PRIVATE_ROOT_LOCK))?;
+        private(&root.join(PRIVATE_ROOT_LOCK))
+    })();
+    if let Err(error) = written {
+        // Nothing was started on it, and the marker may be what is missing: drop the
+        // directory by the name this call made, never by a path it read.
+        let _ = std::fs::remove_dir_all(&root);
+        return Err(format!("a private window root could not be made: {error}"));
+    }
+    Ok(root)
+}
+
 /// Remove a private window's disposable root that no engine will use, if it is one
 /// Browser owns.
 pub fn release_private_root(root: &Path) {
