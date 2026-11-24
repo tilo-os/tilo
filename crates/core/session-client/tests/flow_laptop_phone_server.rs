@@ -9,17 +9,19 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
+    clippy::similar_names,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     clippy::too_many_lines,
     dead_code,
-    reason = "in a test these are the assertion, not a hazard; a flow's steps set up more than one reads"
+    reason = "in a test these are the assertion, not a hazard; a flow's steps set up more than one reads; each device and its own computer and sessions are named alike"
 )]
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use serde_json::json;
+use tilo_peer_state::CopyRole;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
@@ -39,7 +41,7 @@ use tokio::task::block_in_place;
 mod phone;
 use crate::support::{
     Device, HostSettings, TestHost, enrol, entry_grant, record_of, redeem, start_host_serving,
-    start_peer,
+    start_peer, start_workspace_host_relaying,
 };
 
 /// The laptop, the Android phone and the person's server, with no tilo.sh: every address here
@@ -61,6 +63,10 @@ struct Rig {
     phone_session: Link,
     phone_person: Link,
     _state: tempfile::TempDir,
+    /// The person's own computer, holding the workspaces they found themselves: it founds their
+    /// own workspace and hands it to the server.
+    _desk: TestHost,
+    _desk_state: tempfile::TempDir,
 }
 
 impl Rig {
@@ -108,13 +114,37 @@ async fn rig() -> Rig {
     .await;
     let workspaces = host.server.workspaces().unwrap();
     let person = root.verifying_key().to_bytes();
+    // The person's own workspace is founded on their own computer, as founding is signed on the
+    // founder's own device and never by a server, and that computer hands it to the server: the
+    // server keeps the copy beside it, answers the person's list from it, and founds nothing.
+    let desk = enrol(&root, "desk", DeviceCapabilities::primary());
+    let desk_state = tempfile::tempdir().unwrap();
+    let desk_host =
+        start_workspace_host_relaying(&root, &desk, desk_state.path(), false, true).await;
+    let desk_workspaces = desk_host.server.workspaces().unwrap();
+    let person_workspace = tilo_server::servers::found(desk_workspaces).await.unwrap();
+    assert_eq!(person_workspace, person_workspace_id(&person));
+    desk_workspaces
+        .attach_server(
+            &person_workspace,
+            server_device.cert.device_public_key,
+            host.server.node_addr(),
+            CopyRole::KeyHolder,
+        )
+        .await
+        .expect("the server keeps the person's own workspace their computer hands it");
     // The person's workspaces are theirs: the server keeps them for them, and every device of
     // theirs takes part in each as a device of the person whose workspace it is.
     let work = workspaces.create("Work").await.unwrap().workspace;
     let home = workspaces.create("Home").await.unwrap().workspace;
-    // The person's own workspace, founded on their server as a server founds it.
-    let person_workspace = tilo_server::servers::found(workspaces).await.unwrap();
-    assert_eq!(person_workspace, person_workspace_id(&person));
+    // Their own computer lists what the person has, as the device that holds their own
+    // workspace does: each entry reaches the copy the server keeps.
+    for (workspace, name) in [(&work, "Work"), (&home, "Home")] {
+        assert!(
+            desk_workspaces.list_for(&person, workspace, name).await,
+            "the person's own computer lists {name} in their list"
+        );
+    }
     let laptop_session = flow::session(&host, &laptop, &server_device.cert);
     let phone_session = flow::session(&host, &phone, &server_device.cert);
     for session in [&laptop_session, &phone_session] {
@@ -139,6 +169,8 @@ async fn rig() -> Rig {
         phone_session,
         phone_person,
         _state: state,
+        _desk: desk_host,
+        _desk_state: desk_state,
     }
 }
 

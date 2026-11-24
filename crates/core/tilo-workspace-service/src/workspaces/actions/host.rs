@@ -1398,16 +1398,8 @@ impl Workspaces {
         } else {
             // Another one, for a person the site let in ([`Self::check_account`]):
             // there is no bound on how many a person keeps, and one they did
-            // not name is named in their language.
-            // A server that makes workspaces for a person holds their own workspace for them
-            // when no device of theirs does, so their list of workspaces is kept there and
-            // complete without a desktop session.
-            if person != self.inner.host.cert.user_public_key
-                && let Err(error) =
-                    crate::workspaces::person_workspace::found_for(self, &person).await
-            {
-                tracing::debug!(%error, "the person's own workspace is not kept here");
-            }
+            // not name is named in their language. The person's own workspace and the entry in
+            // their list are their own device's to write: this host founds and writes neither.
             let name = name.map_or_else(|| crate::i18n::workspace_name(language), str::to_owned);
             let summary = self
                 .create_for(&name, moving, person)

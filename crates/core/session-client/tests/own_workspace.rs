@@ -3,14 +3,19 @@
 //! (so the key it holds is the one that opens it), and every refusal reads typed, as the host said
 //! it. The page asks through this same entry (`enterOwnWorkspace`), as the CLI and the API server
 //! do.
+//!
+//! What is the person's own is their device's: their Servers workspace is founded on it, never by
+//! the site, and their list of workspaces is a record of that workspace, which their device keeps
+//! and writes. The site holds no copy of it, so nothing of theirs is written there.
 
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
+    clippy::similar_names,
     clippy::too_many_lines,
     clippy::significant_drop_tightening,
-    reason = "in a test these are the assertion, not a hazard; the test is one entry, in order; the host lives until it ends"
+    reason = "in a test these are the assertion, not a hazard; the test is one entry, in order; the host lives until it ends; the person's own workspace, their computer and their list are what it is about"
 )]
 
 use std::cell::Cell;
@@ -21,6 +26,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde_json::{Map, json};
 use tilo_server::workspaces::OwnWorkspaceOffer;
 use tilo_server_client::invite::guest_certificate;
+use tilo_server_protocol::servers::person_workspace_id;
 use tilo_session_client::device::{Device, DeviceRefusal};
 use tilo_session_client::{Outbox as _, PeerConfig};
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
@@ -31,6 +37,20 @@ use crate::support::{
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
+}
+
+/// The names the person's list of workspaces gives them, as read on the computer that holds
+/// their own workspace: what a person sees their workspaces in.
+async fn listed_names(workspaces: &tilo_workspace_service::workspaces::Workspaces) -> Vec<String> {
+    tilo_workspace_service::workspaces::person_workspace::read::<tilo_user_identity::WorkspaceList>(
+        workspaces,
+        tilo_server_protocol::workspaces::IDENTITY_LIST,
+    )
+    .await
+    .expect("the person's own computer reads their list")
+    .listed()
+    .map(|(_, listed)| listed.name.clone())
+    .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -44,6 +64,18 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let lounge = workspaces.create("Lounge").await.unwrap();
 
     let bob = new_key();
+    let bob_person = bob.verifying_key().to_bytes();
+    // Bob's own computer holds his root and his Servers workspace: founding is signed on the
+    // founder's own device, never by the site, and his list of workspaces is a record of that
+    // workspace, which his device writes. The site holds no copy of it.
+    let bob_computer = enrol(&bob, "bob-computer", DeviceCapabilities::primary());
+    let bob_state = tempfile::tempdir().unwrap();
+    let bob_host = start_workspace_host(&bob, &bob_computer, bob_state.path(), false).await;
+    let bob_workspaces = bob_host.server.workspaces().unwrap();
+    assert_eq!(
+        tilo_server::servers::found(bob_workspaces).await.unwrap(),
+        person_workspace_id(&bob_person)
+    );
     let tab_key = new_key();
     let tab_cert = guest_certificate(
         &bob,
@@ -140,55 +172,34 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     );
     assert_eq!(device.join(&own.workspace).await.unwrap(), own.workspace_id);
 
-    // The host lists the person's workspaces, the one it just made for them included: the same
-    // list the CLI's peer asks for, so a page whose own storage remembers nothing still offers
-    // them. A workspace the answering host keeps itself names no other host.
-    let listed = device
-        .person_workspaces(
-            &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
-            None,
-        )
-        .await
-        .unwrap();
-    let mine = listed
-        .workspaces
-        .iter()
-        .find(|listed| listed.workspace == own.workspace)
-        .expect("the host lists the workspace it made for the person");
-    assert_eq!(mine.name, own.name, "named as the host names it");
-    assert_eq!(mine.role.as_deref(), Some("owner"));
-    // The host names itself as where it keeps it, and gives no address: a page
-    // reaches it where it asked.
-    let address = mine.host.as_ref().expect("the host names itself");
-    assert!(!address.name.is_empty());
-    assert_eq!(address.hint, None);
+    // The site holds no copy of the person's own workspace, so it writes nothing into it: what
+    // is his is his own device's to write.
     assert!(
-        listed
-            .workspaces
-            .iter()
-            .any(|listed| listed.workspace == lounge.workspace),
-        "the Lounge is one of the person's too: {listed:?}"
+        !workspaces
+            .list_for(&bob_person, &own.workspace, &own.name)
+            .await,
+        "the site lists nothing in a workspace of someone whose root is elsewhere"
     );
-    // A device asks the host as the person it is a device of, whatever it calls itself: the API
-    // server names its device after the key it serves (`tilo api: Mover`), which is no person.
-    let api = Device::of(
-        tab.clone(),
-        tab_cert.clone(),
-        host_device.cert.clone(),
-        "tilo api: Mover",
-    );
-    let listed_by_api = api
-        .person_workspaces(
-            &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
-            None,
-        )
-        .await
-        .expect("a device named with a colon lists its person's workspaces");
+    // Bob's own computer lists what is his: the Lounge his tab entered, and the workspace the
+    // site just made him. That list is the record of his own workspace, which his computer
+    // holds, and it is what he sees his workspaces in.
+    for (workspace, name) in [
+        (&lounge.workspace, lounge.name.as_str()),
+        (&own.workspace, own.name.as_str()),
+    ] {
+        assert!(
+            bob_workspaces.list_for(&bob_person, workspace, name).await,
+            "the person's own computer lists {name}"
+        );
+    }
+    let names = listed_names(bob_workspaces).await;
     assert!(
-        listed_by_api
-            .workspaces
-            .iter()
-            .any(|listed| listed.workspace == own.workspace)
+        names.contains(&own.name),
+        "the workspace the site made is in the person's list: {names:?}"
+    );
+    assert!(
+        names.contains(&lounge.name),
+        "the Lounge is one of the person's too: {names:?}"
     );
 
     // A page opening that workspace through its own entry, as the workspace switcher does for one
@@ -251,18 +262,19 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let second = device.own_workspace(asked_twice, once).await.unwrap();
     assert_eq!(first.0.workspace, second.0.workspace);
     assert_eq!(first.0.name, "Twice");
-    let named_twice = device
-        .person_workspaces(
-            &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
-            None,
-        )
+    // His own computer lists it, and the second ask made no second workspace: one entry in the
+    // list has that name.
+    assert!(
+        bob_workspaces
+            .list_for(&bob_person, &first.0.workspace, &first.0.name)
+            .await
+    );
+    let twice = listed_names(bob_workspaces)
         .await
-        .unwrap()
-        .workspaces
-        .into_iter()
-        .filter(|listed| listed.name == "Twice")
+        .iter()
+        .filter(|name| name.as_str() == "Twice")
         .count();
-    assert_eq!(named_twice, 1, "the second ask made no second workspace");
+    assert_eq!(twice, 1, "the second ask made no second workspace");
 
     // Another device of Bob's that holds the Lounge enters the same workspace of his under its
     // own key, never under the tab's.
@@ -370,4 +382,6 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     tab.close();
     drop(host.web);
     host.server.shutdown().await;
+    drop(bob_host.web);
+    bob_host.server.shutdown().await;
 }

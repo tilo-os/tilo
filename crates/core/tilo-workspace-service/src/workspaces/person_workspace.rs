@@ -61,23 +61,13 @@ pub async fn holds_person_workspace_of(workspaces: &Workspaces, person: &[u8; 32
 /// Another device of the person keeps the workspace, or it could not be made.
 pub async fn found(workspaces: &Workspaces) -> Result<String, String> {
     let person = workspaces.serving_certificate().user_public_key;
-    found_for(workspaces, &person).await
-}
-
-/// [`found`] for `person`: found their own workspace here when this device is to hold it, which
-/// a server that makes workspaces for a person with no device of their own does. What this host
-/// records them in is listed there, so their list is complete on the device that now holds it.
-///
-/// # Errors
-/// Another device of the person keeps the workspace, or it could not be made.
-pub async fn found_for(workspaces: &Workspaces, person: &[u8; 32]) -> Result<String, String> {
-    let id = person_workspace_id(person);
-    if holds_person_workspace_of(workspaces, person).await {
+    let id = person_workspace_id(&person);
+    if holds_person_workspace_of(workspaces, &person).await {
         return Ok(id);
     }
-    may_found(workspaces, person).await?;
-    workspaces.create_for(NAME, Some(&id), *person).await?;
-    workspaces.list_known_for(person).await;
+    may_found(workspaces, &person).await?;
+    workspaces.create_for(NAME, Some(&id), person).await?;
+    workspaces.list_known_for(&person).await;
     Ok(id)
 }
 

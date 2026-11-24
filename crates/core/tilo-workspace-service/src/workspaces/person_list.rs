@@ -2,11 +2,12 @@
 //!
 //! A workspace is listed when the person's own daemon makes one for them, redeems the invitation
 //! into one, or lets one go: the daemon holds the person's own workspace, so its write is decided
-//! there like any other record's. A host that merely admits someone usually holds no copy of
-//! their own workspace and writes nothing; a server that makes a workspace for an account that
-//! has no device of its own does hold it, so it writes there as that person's holder.
+//! there like any other record's. A host that merely admits someone holds no copy of their own
+//! workspace and writes nothing; a server that makes a workspace for them holds no copy of it
+//! either, because founding it is their own device's, so nothing of theirs is written on the
+//! server.
 //!
-//! One writer runs wherever the person's workspace is held: the daemon calls these changes as
+//! One writer runs wherever the person's own workspace is held: the daemon calls these changes as
 //! part of the action that made the workspace or admitted the person, so the list is complete
 //! without a desktop session, and a workspace removed is remembered as gone so a device that was
 //! away lets it go too.
