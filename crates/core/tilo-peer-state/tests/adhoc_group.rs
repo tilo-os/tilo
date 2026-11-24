@@ -85,13 +85,8 @@ impl Desktop {
         // other machine names where they are reached.
         config.reaching = Reaching::OnItsOwn;
         // The service writes as the desktop, whose key its endpoint is bound with: one device,
-        // one key.
-        let identity = ServiceIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: key.clone(),
-            device_cert: cert.clone(),
-            revocations: tilo_user_identity::RevocationList::new(),
-        };
+        // one key, as every device's service opens.
+        let identity = ServiceIdentity::as_device(&cert, key.clone());
         let service = WorkspaceService::open(config, identity, endpoint.clone(), None)
             .await
             .expect("this desktop's workspace service opens");

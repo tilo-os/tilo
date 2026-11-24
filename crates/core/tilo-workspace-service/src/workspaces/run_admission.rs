@@ -253,9 +253,9 @@ impl Workspaces {
         // foreign device.
         //
         // `on_this_machine` is the daemon's own word that it is admitting a run it makes here
-        // ([`Self::admit_execution_on_this_device`]): its workspace service serves under a key
-        // its device issued ([`ServiceIdentity::beside_device`]), which is not the key the run
-        // acts as, and the run is still at this machine.
+        // ([`Self::admit_execution_on_this_device`]): whatever key the run acts under, it acts
+        // on this machine, whose workspace service signs as its device, and is no foreign
+        // device's.
         let on_this_device = (on_this_machine
             || own.device_public_key == self.device_cert().device_public_key)
             && !own.capabilities.foreign

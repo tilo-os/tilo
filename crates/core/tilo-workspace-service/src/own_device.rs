@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use collab_types::signer::DeviceSigner;
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::DeviceCert;
 use tilo_workspace_keys::KeyProvider;
 
 use crate::service::{ServiceConfig, ServiceError, ServiceIdentity, WorkspaceService};
@@ -77,13 +77,7 @@ pub async fn open(
                         .into(),
                 )
             })?;
-            ServiceIdentity {
-                user_public_key: device.cert.user_public_key,
-                device_signing_key: key,
-                device_cert: device.cert.clone(),
-                // Each workspace's own revocations reach the service through its governance.
-                revocations: RevocationList::new(),
-            }
+            ServiceIdentity::as_device(device.cert, key)
         }
     };
     // A person's own device takes nobody else's work, unless `configure` says otherwise, and

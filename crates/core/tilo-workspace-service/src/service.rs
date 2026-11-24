@@ -1172,6 +1172,22 @@ pub struct ServiceIdentity {
     pub revocations: RevocationList,
 }
 
+impl ServiceIdentity {
+    /// The identity of a device's own workspace service: the one key the device is certified as,
+    /// which signs the records it writes, serves its links and answers its content, so nothing a
+    /// device's service does names a key beside the device's.
+    #[must_use]
+    pub fn as_device(cert: &DeviceCert, signing_key: ed25519_dalek::SigningKey) -> Self {
+        Self {
+            user_public_key: cert.user_public_key,
+            device_signing_key: signing_key,
+            device_cert: cert.clone(),
+            // Each workspace's own revocations reach the service through its governance.
+            revocations: RevocationList::new(),
+        }
+    }
+}
+
 pub fn validate_service_device_identity(identity: &ServiceIdentity) -> Result<(), ServiceError> {
     verify_device_cert_at(&identity.device_cert, unix_now_ns())
         .map_err(|error| ServiceError::Identity(format!("invalid device certificate: {error}")))?;

@@ -1219,12 +1219,10 @@ impl ServiceWorkspaces {
         cert: &tilo_user_identity::DeviceCert,
         server: &tilo_server_client::ServerAddress,
     ) -> Result<Arc<Self>, String> {
-        let itself = Some(tilo_workspace_service::service::ServiceIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: key.clone(),
-            device_cert: cert.clone(),
-            revocations: tilo_user_identity::RevocationList::new(),
-        });
+        let itself = Some(tilo_workspace_service::service::ServiceIdentity::as_device(
+            cert,
+            key.clone(),
+        ));
         Self::open_for_test_as(dir, key, cert, server, itself).await
     }
 
