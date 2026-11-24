@@ -17,11 +17,14 @@ use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
 use tilo_session_client::session::TicketLink;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::ticket::Tickets;
-use super::ticket_tests::{Studio, ask_device, endpoint, enrol, root_in, studio};
+use super::ticket::{OnThisDevice, Tickets};
+use super::ticket_tests::{Studio, ask_device, endpoint, enrol, no_root, root_in, serve, studio};
 
 /// How long a call that waits for the person is followed.
 const FOLLOW_FOR: Duration = Duration::from_secs(20);
+
+/// The kind of a workspace's list of its agents, which Assistant keeps.
+const AGENTS: &str = "tilo.workspace.agent";
 
 /// A tab, or a page, calling the server's ticket actions as `key` over `link`.
 async fn ask(
@@ -385,11 +388,11 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
     let state = tempfile::tempdir().unwrap();
     let Studio {
         server,
+        hosted,
         workspace,
         laptop_key,
         laptop_cert,
         login,
-        ..
     } = studio(&root, state.path()).await;
     let identity = tempfile::tempdir().unwrap();
     tilo_identity::provisioning::import_single_device_root(
@@ -430,8 +433,111 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
         .accept(ACTIONS_ALPN, service)
         .spawn();
 
+    // Ada makes the agent in Studio from her laptop, through Assistant's own create-agent action
+    // on the server: the agent the key is asked for is one the workspace names.
+    hosted
+        .author_agents(&workspace, |_| Ok(()))
+        .await
+        .expect("Studio's list of agents starts");
+    let agents = tilo_agent_session::resource_provider(
+        &tilo_peer_state::document_frame::DocumentRoute {
+            app_id: tilo_app_id::apps::ASSISTANT.to_owned(),
+            cluster_id: workspace.clone(),
+            document: collab_types::workspace_document_id(AGENTS),
+        },
+    );
+    let from_laptop = Arc::new(
+        ActionService::new(laptop_key.clone(), Arc::new(NoActions)).remote(
+            &laptop_endpoint,
+            &server.node_addr(),
+            &workspace,
+        ),
+    );
+    let made = from_laptop
+        .invoke_until_settled(
+            tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: agents,
+                    address: tilo_actions::ActionAddress::new(AGENTS, "create-agent"),
+                },
+                argument: tilo_actions::remote::InvokeArgument::Json(
+                    json!({"name": "Claude", "id": "claude"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            },
+            Duration::from_secs(20),
+        )
+        .await;
+    assert!(
+        matches!(
+            made,
+            Some(Ok(tilo_actions::InvocationUpdate::Succeeded { .. }))
+        ),
+        "Ada makes the agent in Studio: {made:?}"
+    );
+
+    // The device the agent runs on, another of the person's, holds the agent's workspace and
+    // asks for the agent's key on its own endpoint; the laptop, which holds their root,
+    // approves it.
+    let (host_key, host_cert) = enrol(&root, "agent host", DeviceCapabilities::member());
+    let host_login = tilo_device_identity::login::Device {
+        cert: host_cert.clone(),
+        ..login.clone()
+    };
+    let host_copies = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("host-service"),
+        &host_key,
+        &host_cert,
+        &tilo_api::daemon::enter::server_of(&host_login)
+            .await
+            .unwrap(),
+    )
+    .await
+    .expect("the agent host's service opens");
+    let host_session = tilo_test_env::within(
+        "the agent host enters the agent's workspace",
+        tilo_api::daemon::enter::connect(&host_key, &host_login, Some(host_copies.lent())),
+    )
+    .await
+    .expect("the agent host enters");
+    tilo_test_env::within(
+        "the agent host holds the agent's workspace",
+        host_copies.hold(&host_session),
+    )
+    .await;
+    let host_actions = host_copies.copies().action_service();
+    let host = Tickets::new(
+        (host_key.clone(), host_cert),
+        host_copies.endpoint(),
+        None,
+        no_root(),
+        None,
+        Some(Arc::clone(&host_copies)),
+        tilo_device_identity::login::Place::at(
+            state.path().join("host"),
+            tilo_device_identity::IdentityPaths::under(state.path().join("host-keys")),
+        ),
+        host_actions.clone(),
+    );
+    // As the daemon does: what the person's other devices ask of this one.
+    host_copies.copies().provide(
+        tilo_device_identity::login::PROVIDER,
+        Arc::new(OnThisDevice(host.clone())),
+    );
+    let host_router = serve(&host_copies, host_actions);
+
     let agent = new_key();
-    let (ticket, mut certified) = laptop
+    let (ticket, mut certified) = host
         .serve_key(Tab {
             device_public_key: hex::encode(agent.verifying_key().to_bytes()),
             label: "Claude Code".into(),
@@ -480,26 +586,34 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
         "the key is the agent's grant"
     );
 
-    // The agent runs on it at once: with nothing restarted, its key enters its workspace at the
-    // person's server as the grant the root just signed.
-    let as_agent = tilo_device_identity::login::Device {
-        cert: heard,
-        agent: "claude".into(),
-        ..login.clone()
-    };
-    let session = tilo_test_env::within(
-        "the agent enters",
-        tilo_api::daemon::enter::connect(&agent, &as_agent, None),
+    // The agent acts on it at once: with nothing restarted, the person's server admits what its
+    // key signs in the workspace the grant the root just signed names.
+    let at_server = tilo_server_client::ServerAddress::at(server.node_addr());
+    let agent_endpoint = at_server.bind(Some(agent.to_bytes())).await.unwrap();
+    let as_agent = ActionService::new(agent.clone(), Arc::new(NoActions));
+    let in_workspace = as_agent.remote(&agent_endpoint, &at_server.addr(), &workspace);
+    let caller = tilo_actions::remote::Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        agent.verifying_key().to_bytes(),
+    );
+    let listed = tilo_test_env::within(
+        "the server answers the agent",
+        tilo_actions::remote::ActionProvider::query(
+            &in_workspace,
+            &caller,
+            tilo_actions::remote::CatalogueQuery::default(),
+        ),
     )
     .await
-    .expect("the agent's key enters its workspace");
-    let entered = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
+    .expect("the agent's ask is answered");
     assert!(
-        session.admitted(entered).await,
-        "the agent is admitted to the workspace its grant names"
+        listed.is_ok(),
+        "the server admits the agent's key in the workspace its grant names: {listed:?}"
     );
-    session.close();
+    agent_endpoint.close().await;
+    host_session.close();
 
+    let _ = host_router.shutdown().await;
     let _ = router.shutdown().await;
     server.shutdown().await;
 }

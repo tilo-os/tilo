@@ -436,7 +436,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
 }
 
 /// No root on this computer: a test whose daemon holds none.
-fn no_root() -> RootSource {
+pub(super) fn no_root() -> RootSource {
     Arc::new(|| Ok(None))
 }
 
