@@ -628,6 +628,13 @@ d-4fezz4oa = Change end
 
 d-4fezz4oa-at = At
 
+d-zrdjom25 = Move end day
+    .doc = Ends an event on the day a moment names, keeping the time of day it ends at: a day after the one it starts on makes it run through every day between, and a whole-day event ends at the midnight after its last day, which is the day it shows on.
+    .w-this-calendar-is-connected-for-reading = This calendar is connected for reading only, so nothing in it is changed
+    .w-an-event-does-not-end-before = An event does not end before it starts
+
+d-zrdjom25-at = At
+
 d-lbfkyak2 = Repeat
     .doc = Repeats an event every day, week, month or year from the day it stands on, on the days chosen of a week, and no longer on the days it named before.
     .w-this-calendar-is-connected-for-reading = This calendar is connected for reading only, so nothing in it is changed
@@ -811,6 +818,8 @@ d-u2vnroei = Change start~present
 
 d-c3a3dxxn = Change end~present
 
+d-6pmulvk5 = Move end day~present
+
 d-7cffrvhe = Repeat~present
 
 d-v4wdiwvk = Repeat every~present
@@ -865,6 +874,7 @@ d-uc6iwdpn = Agenda
     .w-event-title = Event title
     .w-what-is-it-about = What is it about?
     .w-day = Day
+    .w-last-day = Last day
     .w-starts = Starts
     .w-ends = Ends
     .w-add-a-place = Add a place
@@ -888,6 +898,7 @@ d-uc6iwdpn = Agenda
     .w-at-the-start = At the start
     .w-5-minutes-before = 5 minutes before
     .w-10-minutes-before = 10 minutes before
+    .w-15-minutes-before = 15 minutes before
     .w-30-minutes-before = 30 minutes before
     .w-an-hour-before = An hour before
     .w-a-day-before = A day before
@@ -964,6 +975,7 @@ d-jd6ftqrt = Moment page
     .w-event-title = Event title
     .w-what-is-it-about = What is it about?
     .w-day = Day
+    .w-last-day = Last day
     .w-starts = Starts
     .w-ends = Ends
     .w-add-a-place = Add a place
@@ -987,6 +999,7 @@ d-jd6ftqrt = Moment page
     .w-at-the-start = At the start
     .w-5-minutes-before = 5 minutes before
     .w-10-minutes-before = 10 minutes before
+    .w-15-minutes-before = 15 minutes before
     .w-30-minutes-before = 30 minutes before
     .w-an-hour-before = An hour before
     .w-a-day-before = A day before
@@ -1021,6 +1034,7 @@ d-qy4w4m3w = Event page
     .w-event-title = Event title
     .w-what-is-it-about = What is it about?
     .w-day = Day
+    .w-last-day = Last day
     .w-starts = Starts
     .w-ends = Ends
     .w-add-a-place = Add a place
@@ -1044,6 +1058,7 @@ d-qy4w4m3w = Event page
     .w-at-the-start = At the start
     .w-5-minutes-before = 5 minutes before
     .w-10-minutes-before = 10 minutes before
+    .w-15-minutes-before = 15 minutes before
     .w-30-minutes-before = 30 minutes before
     .w-an-hour-before = An hour before
     .w-a-day-before = A day before

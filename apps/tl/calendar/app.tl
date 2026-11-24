@@ -759,6 +759,18 @@ action change_end(e: Event, at: Time) uses time {
     e.end_day = end_day_of(e.all_day, Date.parse(e.end, near: now) ?? today)
 }
 
+/// Ends an event on the day a moment names, keeping the time of day it ends at: a day after the
+/// one it starts on makes it run through every day between, and a whole-day event ends at the
+/// midnight after its last day, which is the day it shows on.
+action move_end_day(e: Event, at: Time) uses time {
+    require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
+    require at.day() >= (Date.parse(e.start, near: now) ?? today) "An event does not end before it starts"
+    let finish = at.day()
+    let ends_on = if e.all_day { finish + 1d } else { finish }
+    e.end = wall_moved(e.end, zone_of(e), ends_on)
+    e.end_day = end_day_of(e.all_day, ends_on)
+}
+
 /// Repeats an event every day, week, month or year from the day it stands on, on the days
 /// chosen of a week, and no longer on the days it named before.
 action repeat(e: Event, how: Repeat) (icon: .repeat, label: "Repeat") {
@@ -2113,6 +2125,9 @@ template view event_body(e: Event) {
                 ui.DateField(bind: e.day, label: std.say("Day")) {
                     on change(at): change_day(e, at)
                 }
+                ui.DateField(bind: e.end_day, label: std.say("Last day")) {
+                    on change(at): move_end_day(e, at)
+                }
                 ui.TimePicker(bind: at_time, label: std.say("Starts"), step: 15) {
                     on changed(at): change_start(e, at)
                 }
@@ -2214,6 +2229,9 @@ template view event_body(e: Event) {
                     }
                     ui.MenuItem(std.say("10 minutes before"), icon: .bell) {
                         on choose: remind_before(e, 10)
+                    }
+                    ui.MenuItem(std.say("15 minutes before"), icon: .bell) {
+                        on choose: remind_before(e, 15)
                     }
                     ui.MenuItem(std.say("30 minutes before"), icon: .bell) {
                         on choose: remind_before(e, 30)
