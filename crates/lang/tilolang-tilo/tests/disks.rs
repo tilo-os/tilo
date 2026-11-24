@@ -179,7 +179,7 @@ impl Installed {
 
 /// Every text under `node` that the window shows, in order.
 fn words(node: &UiNode, into: &mut Vec<String>) {
-    for prop in ["value", "title", "label", "message", "action"] {
+    for prop in ["value", "title", "label", "message", "action", "description"] {
         if let Some(Value::Text(text)) = node.props.get(prop) {
             into.push(text.clone());
         }
