@@ -1321,10 +1321,11 @@ impl Host {
         // view reads of them comes from the readings this host serves. An app this host runs
         // already (the workspace's own service) keeps its package.
         for meta in named {
-            if meta.app != package.meta.app && self.package(&meta.app).is_none() {
-                if let Err(error) = self.inner.runtime.load_foreign(meta) {
-                    tracing::warn!(%error, "a platform package the app names is not described here");
-                }
+            if meta.app != package.meta.app
+                && self.package(&meta.app).is_none()
+                && let Err(error) = self.inner.runtime.load_foreign(meta)
+            {
+                tracing::warn!(%error, "a platform package the app names is not described here");
             }
         }
         Ok(package)
