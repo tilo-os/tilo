@@ -80,6 +80,8 @@ mod e2e_native;
 mod e2e_native_ui;
 #[path = "e2e_notes.rs"]
 mod e2e_notes;
+#[path = "e2e_pdf.rs"]
+mod e2e_pdf;
 #[path = "e2e_scratchpad.rs"]
 mod e2e_scratchpad;
 #[path = "e2e_snippets.rs"]

@@ -62,9 +62,14 @@ view reader(d: Document) {
     state tool: Text = "select"
     state colour: Text = "#facc15"
     state note: Text = ""
-    // A selection being dragged on a page: where it started, as fractions of the page.
+    // A selection being dragged on a page: where it started, as fractions of the page, and the
+    // runs of words it covers so far, the first and last counted in.
     state from: Option<List<Float>> = .none
     state to: Option<List<Float>> = .none
+    state sel_from: Int = -1
+    state sel_to: Int = -1
+    // The stroke being drawn with the ink tool, its points x and y in turn.
+    state stroke: List<Float> = []
     state finding: Bool = false
     state query: Text = ""
     std.page(
@@ -103,7 +108,22 @@ view reader(d: Document) {
                     on select(p: Page): set(page_at, d.pages.index_of(p) ?? 0)
                     for p in d.pages {
                         ui.ListItem(item: p) {
-                            page_sheet(d, p, zoom, tool, colour, from, to, note)
+                            page_sheet(
+                                d,
+                                p,
+                                zoom,
+                                tool,
+                                colour,
+                                from,
+                                to,
+                                note,
+                                sel_from,
+                                sel_to,
+                                page_at,
+                                query,
+                                finding,
+                                stroke,
+                            )
                         }
                     }
                 }
@@ -131,90 +151,112 @@ view reader_head(
     tool: State<Text>,
     colour: State<Text>,
 ) {
-    ui.Toolbar {
-        ui.ToolbarButton("Previous", icon: .chevron_left) {
-            on press: turn_to(d, stepped(d, page_at, -1), zoom)
-                .then(set(page_at, stepped(d, page_at, -1)))
-        }
-        ui.ToolbarButton("Next", icon: .chevron_right) {
-            on press: turn_to(d, stepped(d, page_at, 1), zoom)
-                .then(set(page_at, stepped(d, page_at, 1)))
-        }
-        ui.ToolbarSeparator()
-        ui.ToolbarButton("Zoom out", icon: .zoom_out) {
-            on press: set(zoom, (zoom * 0.8).clamp(25.0, 1600.0))
-        }
-        ui.ToolbarButton("Zoom in", icon: .zoom_in) {
-            on press: set(zoom, (zoom * 1.25).clamp(25.0, 1600.0))
-        }
-        ui.ToolbarButton("Fit width", icon: .expand) {
-            on press: set(zoom, 100.0)
-        }
-        ui.ToolbarSeparator()
-        ui.MenuButton(
-            "Tools",
-            icon: if tool == "ink" {
-                .pencil
-            } else if tool == "note" {
-                .message_square
-            } else if tool == "text" {
-                .text_cursor
-            } else if tool == "sign" {
-                .square_pen
-            } else if tool == "select" { .mouse_pointer_2 } else { .highlighter },
-            icon_only: true,
-        ) {
-            ui.MenuItem("Select", icon: .mouse_pointer_2) {
-                on choose: set(tool, "select")
+    stack(gap: .none) {
+        ui.Toolbar {
+            ui.ToolbarButton("Previous", icon: .chevron_left) {
+                on press: turn_to(d, stepped(d, page_at, -1), zoom)
+                    .then(set(page_at, stepped(d, page_at, -1)))
             }
-            ui.MenuItem("Highlight", icon: .highlighter) {
-                on choose: set(tool, "highlight")
+            ui.ToolbarButton("Next", icon: .chevron_right) {
+                on press: turn_to(d, stepped(d, page_at, 1), zoom)
+                    .then(set(page_at, stepped(d, page_at, 1)))
             }
-            ui.MenuItem("Underline", icon: .underline) {
-                on choose: set(tool, "underline")
+            ui.ToolbarSeparator()
+            ui.ToolbarButton("Zoom out", icon: .zoom_out) {
+                on press: set(zoom, (zoom * 0.8).clamp(25.0, 1600.0))
             }
-            ui.MenuItem("Strike through", icon: .strikethrough) {
-                on choose: set(tool, "strikeout")
+            ui.ToolbarButton("Zoom in", icon: .zoom_in) {
+                on press: set(zoom, (zoom * 1.25).clamp(25.0, 1600.0))
             }
-            ui.MenuItem("Squiggle", icon: .pencil) {
-                on choose: set(tool, "squiggly")
+            ui.ToolbarButton("Fit width", icon: .expand) {
+                on press: set(zoom, 100.0)
             }
-            ui.MenuItem("Draw", icon: .pencil) {
-                on choose: set(tool, "ink")
-            }
-            ui.MenuItem("Note", icon: .message_square) {
-                on choose: set(tool, "note")
-            }
-            ui.MenuItem("Text box", icon: .text_cursor) {
-                on choose: set(tool, "text")
-            }
-            ui.MenuItem("Sign", icon: .square_pen) {
-                on choose: set(tool, "sign")
-            }
-        }
-        ui.MenuButton("Colour", icon: .palette, icon_only: true) {
-            for c in marker_colours() {
-                ui.MenuItem(c.name) {
-                    on choose: set(colour, c.value)
+            ui.MenuButton("{percent}%", icon: .zoom_in) {
+                for step in zoom_steps() {
+                    ui.MenuItem("{step}%", checked: percent == step) {
+                        on choose: set(zoom, step.to_float())
+                    }
                 }
             }
+            ui.ToolbarSeparator()
+            ui.MenuButton(
+                "Tools",
+                icon: if tool == "ink" {
+                    .pencil
+                } else if tool == "note" {
+                    .message_square
+                } else if tool == "text" {
+                    .text_cursor
+                } else if tool == "sign" {
+                    .square_pen
+                } else if tool == "select" { .mouse_pointer_2 } else { .highlighter },
+                icon_only: true,
+            ) {
+                ui.MenuItem("Select", icon: .mouse_pointer_2) {
+                    on choose: set(tool, "select")
+                }
+                ui.MenuItem("Highlight", icon: .highlighter) {
+                    on choose: set(tool, "highlight")
+                }
+                ui.MenuItem("Underline", icon: .underline) {
+                    on choose: set(tool, "underline")
+                }
+                ui.MenuItem("Strike through", icon: .strikethrough) {
+                    on choose: set(tool, "strikeout")
+                }
+                ui.MenuItem("Squiggle", icon: .pencil) {
+                    on choose: set(tool, "squiggly")
+                }
+                ui.MenuItem("Draw", icon: .pencil) {
+                    on choose: set(tool, "ink")
+                }
+                ui.MenuItem("Note", icon: .message_square) {
+                    on choose: set(tool, "note")
+                }
+                ui.MenuItem("Text box", icon: .text_cursor) {
+                    on choose: set(tool, "text")
+                }
+                ui.MenuItem("Sign", icon: .square_pen) {
+                    on choose: set(tool, "sign")
+                }
+            }
+            ui.MenuButton("Colour", icon: .palette, icon_only: true) {
+                for c in marker_colours() {
+                    ui.MenuItem(c.name) {
+                        on choose: set(colour, c.value)
+                    }
+                }
+            }
+            ui.ToolbarSpacer()
+            ui.ToolbarButton("Rail", icon: .panel_left, toggled: rail) {
+                on press: set(rail, not rail)
+            }
+            ui.ToolbarButton(
+                "Review",
+                icon: .message_circle,
+                toggled: review,
+                dot: open_comments(d) > 0,
+            ) {
+                on press: set(review, not review)
+            }
+            ui.ToolbarButton("Save a copy", icon: .download) {
+                on press: file.save(save_copy(d), name: "Document (annotated).pdf")
+            }
         }
-        ui.ToolbarSpacer()
-        ui.ToolbarButton("Rail", icon: .panel_left, toggled: rail) {
-            on press: set(rail, not rail)
-        }
-        ui.ToolbarButton(
-            "Review",
-            icon: .message_circle,
-            toggled: review,
-            dot: open_comments(d) > 0,
-        ) {
-            on press: set(review, not review)
-        }
-        ui.ToolbarButton("Save a copy", icon: .download) {
-            on press: file.save(save_copy(d), name: "Document (annotated).pdf")
+        row(gap: .related, align: .center, padding: .related) {
+            ui.Text("Page {page_now} of {page_count}", role: .caption, secondary: true)
+            ui.Text("·", role: .caption, secondary: true)
+            ui.Text("{percent}%", role: .caption, secondary: true)
+            ui.Text("·", role: .caption, secondary: true)
+            ui.Text("{d.source_name}", role: .caption, secondary: true)
+            spacer()
         }
     }
+}
+
+/// The zoom steps the zoom menu offers, in percent.
+fn zoom_steps() -> List<Int> {
+    [50, 75, 100, 125, 150, 200, 400]
 }
 
 /// The colours a marker comes in.
@@ -297,10 +339,17 @@ view page_sheet(
     from: State<Option<List<Float>>>,
     to: State<Option<List<Float>>>,
     note: State<Text>,
+    sel_from: State<Int>,
+    sel_to: State<Int>,
+    page_at: State<Int>,
+    query: Text,
+    finding: Bool,
+    stroke: State<List<Float>>,
 ) {
     let picture = d.pictures.find(x -> x.page == p)
     let shown = if let held = picture { held.url } else { "" }
     let width = p.width * zoom * 1dp
+    let at = d.pages.index_of(p) ?? 0
     stack(gap: .related) {
         layers(fill) {
             if shown == "" {
@@ -315,7 +364,7 @@ view page_sheet(
                 )
             }
             ui.Drawing(
-                mark_shapes(d, p, from, to),
+                mark_shapes(d, p, from, to, sel_from, sel_to, query, finding, stroke),
                 meaning: .picture,
                 label: "Page {p.source_page}, its marks",
                 max: width,
@@ -323,31 +372,126 @@ view page_sheet(
             ) {
                 on press_at(at: List<Float>): press(d, p, at, tool, colour)
                     .then(set(note, pressed_note(tool)))
+                    .then(read_page(d, p))
+                    .then(set(note, link_said(d, p, at)))
                     .then(
                         set(from, if tool == "select" { .some(at) } else { .none }),
                     )
                     .then(
                         set(to, if tool == "select" { .some(at) } else { .none }),
                     )
+                    .then(set(stroke, if tool == "ink" { at } else { [] }))
                 on drag_at(at: List<Float>): set(to, .some(at))
-                on release_at: release(d, p, tool, colour, from, to)
+                    .then(
+                        set(
+                            stroke,
+                            if tool == "ink" { [stroke, at].flat_map(x -> x) } else { stroke },
+                        ),
+                    )
+                on release_at: release(d, p, tool, colour, from, to, stroke)
                     .then(set(note, released_note(tool, from, to)))
                     .then(set(from, .none))
                     .then(set(to, .none))
+                    .then(set(stroke, []))
+                    .then(set(sel_from, picked_from(p, from, to)))
+                    .then(set(sel_to, picked_to(p, from, to)))
             }
         }
         row(gap: .related, align: .center) {
-            ui.Text("Page {p.source_page}", role: .caption, secondary: true)
+            ui.Text("Page {at + 1} of {d.pages.len()}", role: .caption, secondary: true)
             ui.Button("Rotate", icon: .rotate_cw, role: .plain, size: .small) {
                 on press: rotate_page(d, p)
             }
-            ui.Button("More", icon: .ellipsis, role: .plain, size: .small) {
-                on press: set(note, "Page {p.source_page} of {d.pages.len()}")
+            ui.MenuButton("More", icon: .ellipsis, icon_only: true) {
+                ui.MenuItem("Duplicate this page", icon: .copy) {
+                    on choose: duplicate_page(d, p)
+                }
+                ui.MenuItem("Move to the front", icon: .arrow_up) {
+                    on choose: move_page(d, p, after: .none)
+                }
+                ui.MenuItem("Move to the end", icon: .arrow_down) {
+                    on choose: move_page(d, p, after: d.pages.last())
+                }
+                ui.MenuSeparator
+                ui.MenuItem("Delete this page", icon: .trash, destructive: true) {
+                    on choose: delete_page(d, p)
+                }
+            }
+        }
+        if sel_from >= 0 and sel_to >= 0 {
+            row(gap: .related, align: .center) {
+                ui.Text("{selected_words(p, sel_from, sel_to)}", role: .caption, secondary: true)
+                ui.Button("Copy", icon: .copy, size: .small) {
+                    on press: copy_selected(d, p, sel_from, sel_to)
+                }
+                ui.Button("Select all", icon: .box, size: .small) {
+                    on press: set(sel_from, 0).then(set(sel_to, p.run_words.len() - 1))
+                }
+                ui.Button("Dismiss", icon: .x, size: .small) {
+                    on press: set(sel_from, -1).then(set(sel_to, -1))
+                }
+            }
+        }
+        let links = d.links.filter(l -> l.page == p)
+        if not links.is_empty() {
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Text("Links", role: .caption, secondary: true)
+                for l in links {
+                    if l.kind == "page" {
+                        ui.Button("Page {l.to}", icon: .arrow_right, role: .plain, size: .small) {
+                            on press: set(page_at, (l.to.to_int() ?? 1) - 1).then(set(note, ""))
+                        }
+                    } else if l.kind == "uri" {
+                        ui.Link(l.to, label: l.to)
+                    } else {
+                        ui.Text(l.to, role: .caption, secondary: true)
+                    }
+                }
             }
         }
         for f in d.fields.filter(f -> f.page == p.source_page) {
             field_row(d, f)
         }
+    }
+}
+
+/// The first run a selection covers, counted in, or -1 when it covers none.
+fn picked_from(p: Page, start: Option<List<Float>>, end: Option<List<Float>>) -> Int {
+    if let s = start {
+        if let e = end { runs_in(p, s, e).at(0) ?? -1 } else { -1 }
+    } else { -1 }
+}
+
+/// The last run a selection covers, counted in, or -1 when it covers none.
+fn picked_to(p: Page, start: Option<List<Float>>, end: Option<List<Float>>) -> Int {
+    if let s = start {
+        if let e = end { runs_in(p, s, e).at(1) ?? -1 } else { -1 }
+    } else { -1 }
+}
+
+/// The link of `p` the press at `at` lands on, when one does.
+fn link_at(d: Document, p: Page, at: List<Float>) -> Option<Link> {
+    let x = (at.at(0) ?? 0.0) * p.width
+    let y = (at.at(1) ?? 0.0) * p.height
+    d.links.find(l -> l.page == p and box_holds(l.rect, x, y))
+}
+
+/// Whether a link's box, in points, holds the point `x`, `y`.
+fn box_holds(rect: List<Float>, x: Float, y: Float) -> Bool {
+    let bx = rect.at(0) ?? 0.0
+    let by = rect.at(1) ?? 0.0
+    let bw = rect.at(2) ?? 0.0
+    let bh = rect.at(3) ?? 0.0
+    x >= bx and x <= bx + bw and y >= by and y <= by + bh
+}
+
+/// What pressing a link says: where it leads, or nothing when no link is there.
+fn link_said(d: Document, p: Page, at: List<Float>) -> Text {
+    match link_at(d, p, at) {
+        .some(l) => {
+            if l.kind == "page" { "This link leads to page {l.to}" } else { "Link: {l.to}" }
+        }
+        .none => "",
     }
 }
 
@@ -366,7 +510,8 @@ action press(d: Document, p: Page, at: List<Float>, tool: Text, colour: Text) (
     } else if tool == "sign" { place_signature(d, p, x, y) }
 }
 
-/// What letting go does: a marking tool marks the box dragged over, and ink keeps the stroke.
+/// What letting go does: ink keeps the stroke drawn, and a marking tool marks the words the box
+/// covers, or the box itself where the page's words are not read.
 action release(
     d: Document,
     p: Page,
@@ -374,18 +519,48 @@ action release(
     colour: Text,
     start: Option<List<Float>>,
     end: Option<List<Float>>,
+    stroke: List<Float>,
 ) (label: "Release a page") {
     if tool == "ink" {
-        if let e = end {
-            draw_ink(d, p, colour, [[e.at(0) ?? 0.0, e.at(1) ?? 0.0]])
+        if stroke.len() >= 2 {
+            draw_ink(d, p, colour, [stroke])
+        } else {
+            if let e = end {
+                draw_ink(d, p, colour, [[e.at(0) ?? 0.0, e.at(1) ?? 0.0]])
+            }
         }
     } else if tool != "select" and tool != "note" and tool != "text" and tool != "sign" {
         if let s = start {
             if let e = end {
-                mark_text(d, p, tool, colour, box_between(p, s, e))
+                let words = run_rects(p, runs_in(p, s, e))
+                if words.is_empty() {
+                    mark_text(d, p, tool, colour, box_between(p, s, e))
+                } else { mark_text(d, p, tool, colour, words) }
             }
         }
     }
+}
+
+/// The boxes, in points, of the runs between `covered`'s first and last, counted in.
+fn run_rects(p: Page, covered: List<Int>) -> List<Float> {
+    if covered.len() < 2 {
+        []
+    } else {
+        let first = covered.at(0) ?? 0
+        let last = covered.at(1) ?? 0
+        count_between(first, last).flat_map(i -> run_box(p, i))
+    }
+}
+
+/// The box of the run at `i` of `p`'s runs, in points of the page.
+fn run_box(p: Page, i: Int) -> List<Float> {
+    let at = i * 4
+    [
+        (p.runs.at(at) ?? 0.0) * p.width,
+        (p.runs.at(at + 1) ?? 0.0) * p.height,
+        (p.runs.at(at + 2) ?? 0.0) * p.width,
+        (p.runs.at(at + 3) ?? 0.0) * p.height,
+    ]
 }
 
 /// What pressing says, by the tool.
@@ -421,6 +596,11 @@ fn mark_shapes(
     p: Page,
     from: Option<List<Float>>,
     to: Option<List<Float>>,
+    sel_from: Int,
+    sel_to: Int,
+    query: Text,
+    finding: Bool,
+    stroke: List<Float>,
 ) -> List<ui.Shape> {
     let lines = d.marks
         .filter(m -> m.page == p and m.kind == .markup)
@@ -430,10 +610,49 @@ fn mark_shapes(
         .filter(m -> m.page == p and (m.kind == .text or m.kind == .note))
         .flat_map(m -> box_shapes(m, p))
     let signatures = d.signatures.filter(s -> s.page == p).flat_map(s -> signature_shapes(s, p))
+    let selected = run_areas(p, sel_from, sel_to, "#60a5fa55")
+    let found = if finding { run_hits(p, query) } else { [] }
     let picked = if let start = from {
         if let end = to { [selection_shape(p, start, end)] } else { [] }
     } else { [] }
-    [lines, ink, boxes, signatures, picked].flat_map(x -> x)
+    let drawn = if stroke.len() >= 2 {
+        [ui.Shape.stroke(points: stroke, colour: "#1c212f", width: 0.004)]
+    } else { [] }
+    [lines, ink, boxes, signatures, selected, found, picked, drawn].flat_map(x -> x)
+}
+
+/// The runs of `p` from `first` to `finish`, both counted in, as areas in the colour given.
+fn run_areas(p: Page, first: Int, finish: Int, colour: Text) -> List<ui.Shape> {
+    if first < 0 or finish < 0 or first > finish {
+        []
+    } else {
+        count_between(first, finish).map(i -> run_area(p, i, colour))
+    }
+}
+
+/// The box of the run at `i` of `p`'s runs, in fractions of the page's box, as an area.
+fn run_area(p: Page, i: Int, colour: Text) -> ui.Shape {
+    let at = i * 4
+    ui.Shape.area(
+        x: p.runs.at(at) ?? 0.0,
+        y: p.runs.at(at + 1) ?? 0.0,
+        w: p.runs.at(at + 2) ?? 0.0,
+        h: p.runs.at(at + 3) ?? 0.0,
+        round: 0.0,
+        colour: colour,
+    )
+}
+
+/// The runs of `p` that say `query`, as the areas a find marks them with.
+fn run_hits(p: Page, query: Text) -> List<ui.Shape> {
+    let said = query.trim().lower()
+    if said == "" {
+        []
+    } else {
+        count_between(0, p.run_words.len() - 1)
+            .filter(i -> (p.run_words.at(i) ?? "").lower().contains(said))
+            .flat_map(i -> run_areas(p, i, i, "#facc1555"))
+    }
 }
 
 /// A text mark's lines over its page.
@@ -660,6 +879,8 @@ action speak(d: Document, words: Text) -> Option<Comment> (label: "Comment") {
 
 /// One conversation about the document, or about a mark on it.
 view comment_card(d: Document, c: Comment) {
+    state editing: Bool = false
+    state draft: RichText = c.body
     ui.Card {
         row(gap: .related, align: .center) {
             ui.Text(if c.words == "" { "A note" } else { c.words }, role: .label)
@@ -667,6 +888,9 @@ view comment_card(d: Document, c: Comment) {
                 ui.Badge("Resolved", tone: .success)
             }
             ui.MenuButton("More", icon: .ellipsis, icon_only: true, target: c) {
+                ui.MenuItem("Edit comment", icon: .pencil) {
+                    on choose: set(draft, c.body).then(set(editing, true))
+                }
                 ui.MenuItem(if c.resolved { "Reopen" } else { "Resolve" }, icon: .check) {
                     on choose: resolve_comment(d, c, not c.resolved)
                 }
@@ -675,9 +899,31 @@ view comment_card(d: Document, c: Comment) {
                 }
             }
         }
-        ui.Text("Page {c.page.source_page}", role: .caption, secondary: true)
+        ui.Text("Page {(d.pages.index_of(c.page) ?? 0) + 1}", role: .caption, secondary: true)
+        if editing {
+            row(gap: .related, align: .center) {
+                ui.RichInput(bind: draft, placeholder: "Edit the comment")
+                ui.Button("Save", icon: .check, size: .small) {
+                    on press: edit_comment(d, c, draft.text).then(set(editing, false))
+                }
+                ui.Button("Cancel", icon: .x, size: .small) {
+                    on press: set(editing, false)
+                }
+            }
+        }
         for r in c.replies {
-            ui.Text(r.words, role: .body)
+            row(gap: .related, align: .center) {
+                ui.Text(r.words, role: .body, fill: 1.0)
+                ui.Button(
+                    "Delete reply",
+                    icon: .trash,
+                    icon_only: true,
+                    role: .plain,
+                    size: .small,
+                ) {
+                    on press: delete_reply(d, c, r)
+                }
+            }
         }
         ui.TextInput(placeholder: "Reply") {
             on submit(word: Text): reply(d, c, word)
@@ -752,30 +998,105 @@ view signing_panel(d: Document) {
                 secondary: true,
             )
         }
+        ui.Section("Placed") {
+            if d.signatures.is_empty() {
+                ui.Text("No signature is placed yet.", role: .caption, secondary: true)
+            }
+            for s in d.signatures {
+                row(gap: .related, align: .center) {
+                    ui.Text(
+                        "{s.signer} on page {(d.pages.index_of(s.page) ?? 0) + 1}, {s.date}",
+                        role: .caption,
+                        fill: 1.0,
+                    )
+                    ui.Button(
+                        "Delete signature",
+                        icon: .trash,
+                        icon_only: true,
+                        role: .plain,
+                        size: .small,
+                    ) {
+                        on press: delete_signature(d, s)
+                    }
+                }
+            }
+        }
     }
 }
 
-/// The find bar: what to look for, and how often it stands in the document.
+/// The find bar: what to look for, how often it stands in the document, and the pages it stands
+/// on, each a press away.
 view find_bar(d: Document, query: State<Text>, page_at: State<Int>) {
-    row(gap: .related, align: .center) {
-        ui.TextInput(text: query, placeholder: "Find in this PDF") {
-            on submit(word: Text): set(query, word)
+    stack(gap: .tight) {
+        row(gap: .related, align: .center) {
+            ui.TextInput(text: query, placeholder: "Find in this PDF") {
+                on submit(word: Text): set(query, word)
+            }
+            ui.Text(
+                "{matches(d, query)} found in {pages_with(d, query)} pages",
+                role: .caption,
+                secondary: true,
+            )
+            if unread(d) > 0 {
+                ui.Text("· reading {unread(d)} pages", role: .caption, secondary: true)
+            }
+            ui.Button("Previous", icon: .chevron_left, role: .plain, size: .small) {
+                on press: set(page_at, next_hit(d, page_at, query, -1))
+            }
+            ui.Button("Next", icon: .chevron_right, role: .plain, size: .small) {
+                on press: set(page_at, next_hit(d, page_at, query, 1))
+            }
         }
-        ui.Text("{hits(d, query)} found", role: .caption, secondary: true)
-        ui.Button("Previous", icon: .chevron_left, role: .plain, size: .small) {
-            on press: set(page_at, (page_at - 1).clamp(0, d.pages.len() - 1))
-        }
-        ui.Button("Next", icon: .chevron_right, role: .plain, size: .small) {
-            on press: set(page_at, (page_at + 1).clamp(0, d.pages.len() - 1))
+        if query.trim() != "" {
+            let pages = pages_hit(d, query)
+            if not pages.is_empty() {
+                row(gap: .tight, align: .center, wrap: true) {
+                    for p in pages {
+                        ui.Button(
+                            "Page {(d.pages.index_of(p) ?? 0) + 1} ({hits_on(p, query)})",
+                            role: .plain,
+                            size: .small,
+                        ) {
+                            on press: set(page_at, d.pages.index_of(p) ?? 0)
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
 /// How often the words looked for stand in the document, page by page.
-fn hits(d: Document, query: Text) -> Int {
-    let said = query.trim().lower()
-    if said == "" {
-        return 0
+fn matches(d: Document, query: Text) -> Int {
+    d.pages.map(p -> hits_on(p, query)).sum()
+}
+
+/// How many of the document's pages say the words looked for.
+fn pages_with(d: Document, query: Text) -> Int {
+    pages_hit(d, query).len()
+}
+
+/// The pages that say the words looked for, in reading order.
+fn pages_hit(d: Document, query: Text) -> List<Page> {
+    d.pages.filter(p -> hits_on(p, query) > 0)
+}
+
+/// The page a step from `at` reaches that says the words looked for, staying where there is
+/// none.
+fn next_hit(d: Document, at: Int, query: Text, step: Int) -> Int {
+    let places = pages_hit(d, query).map(p -> d.pages.index_of(p) ?? 0)
+    if places.is_empty() {
+        at
+    } else if step > 0 {
+        let later = places.filter(i -> i > at)
+        if later.is_empty() { places.first() ?? at } else { later.first() ?? at }
+    } else {
+        let earlier = places.filter(i -> i < at)
+        if earlier.is_empty() { places.last() ?? at } else { earlier.last() ?? at }
     }
-    d.pages.filter(p -> p.words.lower().contains(said)).count()
+}
+
+/// How many of the document's pages nobody has read yet.
+fn unread(d: Document) -> Int {
+    d.pages.filter(p -> not p.read).count()
 }

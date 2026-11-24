@@ -24,6 +24,8 @@ type Document (title: source_name, untitled: "Untitled document") {
     pictures: Collection<Picture>
     /// The document's contents, as the engine reads them.
     outlines: Collection<Outline>
+    /// The links its pages carry, as the file names them.
+    links: Collection<Link>
     /// The form fields the file carries, where they stand and what they hold.
     fields: Collection<Field>
     marks: Collection<Mark>
@@ -64,6 +66,11 @@ type Page (title: words) {
     rotation: Int = 0
     /// Its words, as the engine reads them; empty until they are read.
     words: Text = ""
+    /// Its words as a person selects them, one run of a line at a time: each run's box in
+    /// fractions of the page's box (x, y, width, height, four in turn, in reading order), and
+    /// its words. A selection takes a run whole, so what a person copies is what the page says.
+    runs: List<Float>
+    run_words: List<Text>
     /// Whether its words were read: a page of pictures has been read too, and holds none.
     read: Bool = false
 
@@ -75,6 +82,8 @@ type Page (title: words) {
         hide height
         hide rotation
         hide read
+        hide runs
+        hide run_words
     }
 }
 
@@ -95,6 +104,17 @@ type Outline (title: title) {
     page: Int
     /// How deep it stands: 0 at the top.
     level: Int
+}
+
+/// A link a page carries: the area it covers and where it leads.
+type Link (untitled: "Link") {
+    page: Page
+    /// Its area in points of the page as the file draws it: x, y, width, height.
+    rect: List<Float>
+    /// What it leads to: a page of this document, an address, or a file.
+    kind: Text
+    /// The page it leads to, counted from 1, or the address or path it names.
+    to: Text
 }
 
 /// One form field the file carries, where its widget stands on a page and what it holds.
@@ -260,6 +280,9 @@ action lay_out(d: Document) (label: "Lay out the pages", did: "laid out the page
                 d.trouble = ""
                 read_outline(d)
                 read_fields(d)
+                // A file that came with its own highlights, notes and comments shows them as
+                // the document's, so a person reading it sees what was already marked.
+                adopt_markup(d)
             }
             .err(why) => {
                 d.trouble = why
@@ -324,7 +347,8 @@ action read_fields(d: Document) (label: "Read the form") {
     }
 }
 
-/// Reads the page's words once, so the workspace's search finds the page by them.
+/// Reads the page's words once, so the workspace's search finds the page by them and a person
+/// can select them, and reads the links it carries.
 action read_page(d: Document, p: Page) (label: "Read a page's words") {
     if p.read {
         return
@@ -333,12 +357,108 @@ action read_page(d: Document, p: Page) (label: "Read a page's words") {
         .ok(text) => match json.decode<List<GlyphRow>>(text) {
             .ok(rows) => {
                 p.words = words_of(rows)
+                let runs = runs_of(rows, p)
+                p.runs = runs.rects
+                p.run_words = runs.texts
+                read_links(d, p)
                 p.read = true
             }
             .err(_) => {}
         },
         .err(_) => {}
     }
+}
+
+/// Reads the links the page carries: each area it covers and where it leads.
+action read_links(d: Document, p: Page) (label: "Read a page's links") {
+    match pdf.links(file_of(d, p), p.source_page) {
+        .ok(text) => match json.parse(text) {
+            .ok(document) => match document {
+                .array(rows) => {
+                    for row in rows {
+                        let rect = [
+                            number_in(row, "rect", "x"),
+                            number_in(row, "rect", "y"),
+                            number_in(row, "rect", "w"),
+                            number_in(row, "rect", "h"),
+                        ]
+                        let kind = text_of(field_of(row, "kind"))
+                        let leads = link_text(field_of(row, "to"))
+                        if not d.links.any(
+                            l -> l.page == p
+                                and l.rect == rect
+                                and l.kind == kind
+                                and l.to == leads,
+                        ) {
+                            d.links.insert(Link(page: p, rect: rect, kind: kind, to: leads))
+                        }
+                    }
+                }
+                .object(fields) => {}
+                .string(text) => {}
+                .number(number) => {}
+                .bool(flag) => {}
+                .null => {}
+            },
+            .err(_) => {}
+        },
+        .err(_) => {}
+    }
+}
+
+/// A page's words as runs a person selects: each run's box and its words, the boxes in
+/// fractions of the page's box, in reading order.
+type Runs {
+    rects: List<Float>
+    texts: List<Text>
+}
+
+/// The runs `rows` make: a run per word, a line at a time, its box the words' own.
+fn runs_of(rows: List<GlyphRow>, p: Page) -> Runs {
+    let runs = Runs(rects: [], texts: [])
+    let word = ""
+    let x1 = 0.0
+    let y1 = 0.0
+    let x2 = 0.0
+    let y2 = 0.0
+    let line = -1
+    for row in rows {
+        let blank = row.text.trim() == ""
+        if blank or line != -1 and row.line != line {
+            if word.trim() != "" {
+                runs = add_run(runs, word.trim(), x1, y1, x2, y2, p)
+                word = ""
+            }
+        }
+        if not blank {
+            if line != row.line {
+                line = row.line
+                x1 = row.x
+                y1 = row.y
+                x2 = row.x + row.w
+                y2 = row.y + row.h
+            } else {
+                x1 = x1.min(row.x)
+                y1 = y1.min(row.y)
+                x2 = x2.max(row.x + row.w)
+                y2 = y2.max(row.y + row.h)
+            }
+            word = "{word}{row.text}"
+        }
+    }
+    if word.trim() != "" {
+        add_run(runs, word.trim(), x1, y1, x2, y2, p)
+    } else { runs }
+}
+
+/// `runs` with one more run: its words and box in fractions of `p`'s box.
+fn add_run(runs: Runs, word: Text, x1: Float, y1: Float, x2: Float, y2: Float, p: Page) -> Runs {
+    let w = if p.width > 0.0 { p.width } else { 1.0 }
+    let h = if p.height > 0.0 { p.height } else { 1.0 }
+    Runs(
+        rects: [runs.rects, [x1 / w, y1 / h, (x2 - x1) / w, (y2 - y1) / h]].flat_map(x -> x),
+        texts: [runs.texts, [word]].flat_map(x -> x),
+    )
 }
 
 /// Draws one page as a picture at `width` pixels, kept so a person looking at it again, or
@@ -367,9 +487,10 @@ action show_page(d: Document, p: Page, width: Int) (icon: .image, label: "Draw a
 /// while one is missing: a long document fills in page by page, without anyone waiting for it.
 trigger draw_pages(d: Document) every 1s: draw_next(d)
 
-/// Reads the next page of each document nobody read yet, every minute: a long PDF becomes
-/// searchable as its pages are read, without anyone waiting for the open.
-trigger read_pages(d: Document) every 1m: read_next(d)
+/// Reads the next page of each document nobody read yet, every second: a long PDF becomes
+/// searchable, and its words selectable, as its pages are read, without anyone waiting for the
+/// open.
+trigger read_pages(d: Document) every 1s: read_next(d)
 
 /// Reads the words of the next page nobody read.
 action read_next(d: Document) (label: "Read the next page's words") {
@@ -755,8 +876,23 @@ action adopt_markup(d: Document) (
                         or row.kind == "other") {
                         let id = "pdf-{short}-{row.page}-{row.index}"
                         if d.adopted.get(id) == .none {
-                            if let page = d.pages.at(row.page) {
-                                if let made = take_mark(d, page, row, id) {
+                            match d.pages.at(row.page) {
+                                .some(page) => {
+                                    let made = d.marks.insert(mark_of(row, page, id), key: id)
+                                    if made.kind == .ink {
+                                        for stroke in row.strokes {
+                                            made.strokes.insert(Stroke(points: stroke))
+                                        }
+                                    }
+                                    if made.kind == .note and row.contents.trim() != "" {
+                                        d.comments.insert(
+                                            Comment(
+                                                mark: .some(made),
+                                                page: page,
+                                                words: row.contents,
+                                            ),
+                                        )
+                                    }
                                     d.adopted.put(
                                         id,
                                         carried_of(
@@ -768,6 +904,7 @@ action adopt_markup(d: Document) (
                                         ),
                                     )
                                 }
+                                .none => {}
                             }
                         }
                     }
@@ -803,74 +940,51 @@ action adopt_markup(d: Document) (
 /// Writes one mark the file carried into the document. The mark takes the id its key names, so
 /// two readers who take the same file over make one mark, and taking it over again is the same
 /// mark.
-action take_mark(d: Document, page: Page, row: MarkRow, id: Text) -> Option<Mark> {
+/// The mark a file's own mark-up names, as this document keeps it: its page, its kind, where it
+/// stands and what it says, before anything about it is recorded.
+fn mark_of(row: MarkRow, page: Page, id: Text) -> Mark {
     if row.kind == "ink" {
-        let made = d.marks.insert(
-            Mark(
-                page: page,
-                kind: .ink,
-                colour: row.color ?? "#1c212f",
-                author: row.author,
-                adopted_id: id,
-            ),
-            key: id,
+        Mark(
+            page: page,
+            kind: .ink,
+            colour: row.color ?? "#1c212f",
+            author: row.author,
+            adopted_id: id,
         )
-        for stroke in row.strokes {
-            made.strokes.insert(Stroke(points: stroke))
-        }
-        return .some(made)
-    }
-    if row.kind == "note" {
-        let made = d.marks.insert(
-            Mark(
-                page: page,
-                kind: .note,
-                colour: row.color ?? "#facc15",
-                x: row.rect.at(0) ?? 0.0,
-                y: (row.rect.at(1) ?? 0.0) + (row.rect.at(3) ?? 0.0),
-                words: row.contents,
-                author: row.author,
-                adopted_id: id,
-            ),
-            key: id,
+    } else if row.kind == "note" {
+        Mark(
+            page: page,
+            kind: .note,
+            colour: row.color ?? "#facc15",
+            x: row.rect.at(0) ?? 0.0,
+            y: (row.rect.at(1) ?? 0.0) + (row.rect.at(3) ?? 0.0),
+            words: row.contents,
+            author: row.author,
+            adopted_id: id,
         )
-        if row.contents.trim() != "" {
-            d.comments.insert(Comment(mark: .some(made), page: page, words: row.contents))
-        }
-        return .some(made)
-    }
-    if row.kind == "freetext" {
-        return .some(
-            d.marks.insert(
-                Mark(
-                    page: page,
-                    kind: .text,
-                    colour: row.color ?? "#1c212f",
-                    rects: row.rect,
-                    words: row.contents,
-                    size: row.size ?? 14.0,
-                    author: row.author,
-                    adopted_id: id,
-                ),
-                key: id,
-            ),
+    } else if row.kind == "freetext" {
+        Mark(
+            page: page,
+            kind: .text,
+            colour: row.color ?? "#1c212f",
+            rects: row.rect,
+            words: row.contents,
+            size: row.size ?? 14.0,
+            author: row.author,
+            adopted_id: id,
+        )
+    } else {
+        let lines = if row.quads.is_empty() { [row.rect] } else { row.quads }
+        Mark(
+            page: page,
+            kind: .markup,
+            style: row.kind,
+            colour: row.color ?? "#facc15",
+            rects: lines.flat_map(r -> r),
+            author: row.author,
+            adopted_id: id,
         )
     }
-    let lines = if row.quads.is_empty() { [row.rect] } else { row.quads }
-    .some(
-        d.marks.insert(
-            Mark(
-                page: page,
-                kind: .markup,
-                style: row.kind,
-                colour: row.color ?? "#facc15",
-                rects: lines.flat_map(r -> r),
-                author: row.author,
-                adopted_id: id,
-            ),
-            key: id,
-        ),
-    )
 }
 
 /// What a mark looks like now, in the same shape a save compares with the fingerprint it had.
@@ -901,6 +1015,97 @@ fn file_of(d: Document, p: Page) -> File {
     if p.imported == "" { source_of(d) } else { File.at("page.{p.kind}", p.imported) }
 }
 
+/// The words a page shows between the runs `from` and `to`, both counted in, a space between
+/// them: what a person selects with the pointer and copies.
+fn selected_words(p: Page, from: Int, to: Int) -> Text {
+    let first = from.min(to).max(0)
+    let finish = from.max(to).min(p.run_words.len() - 1)
+    if first > finish {
+        ""
+    } else {
+        count_between(first, finish)
+            .map(i -> p.run_words.at(i) ?? "")
+            .filter(w -> w != "")
+            .join(" ")
+    }
+}
+
+/// The numbers from `from` to `to`, both counted in.
+fn count_between(from: Int, to: Int) -> List<Int> {
+    if from > to {
+        []
+    } else {
+        let rest = count_between(from + 1, to)
+        [[from], rest].flat_map(x -> x)
+    }
+}
+
+/// Every word a page shows, in reading order: what Select all takes.
+fn page_words(p: Page) -> Text {
+    if p.run_words.is_empty() {
+        p.words
+    } else {
+        p.run_words.filter(w -> w != "").join(" ")
+    }
+}
+
+/// How often `query` stands in the runs `p` shows, the case of its letters aside.
+fn hits_on(p: Page, query: Text) -> Int {
+    let said = query.trim().lower()
+    if said == "" {
+        0
+    } else {
+        p.run_words.filter(w -> w.lower().contains(said)).count()
+    }
+}
+
+/// Finds the words `query` in the document's pages: each page that says them, with how often,
+/// as `Page 3: 2`. An agent reads a PDF's answer without the window.
+action find_in(d: Document, query: Text) -> List<Text> (icon: .search, label: "Find in a PDF") {
+    require query.trim() != "" "Name the words to find"
+    pages_hit(d, query).map(p -> "Page {(d.pages.index_of(p) ?? 0) + 1}: {hits_on(p, query)}")
+}
+
+/// Copies the words a page shows between two runs, as selecting them and pressing Copy does.
+action copy_selected(d: Document, p: Page, from: Int, to: Int) uses clipboard (
+    label: "Copy the selection",
+    key: "Ctrl+C",
+) {
+    let said = selected_words(p, from, to)
+    if said != "" { clipboard.copy(said) }
+}
+
+/// Copies every word a page shows.
+action copy_page(d: Document, p: Page) uses clipboard (icon: .copy, label: "Copy the page's text") {
+    clipboard.copy(page_words(p))
+}
+
+/// The runs of `p` the box from `start` to `end` covers, as fractions of the page's box: the
+/// first and last of them, counted in, or none when the box covers no words.
+fn runs_in(p: Page, start: List<Float>, end: List<Float>) -> List<Int> {
+    let x1 = (start.at(0) ?? 0.0).min(end.at(0) ?? 0.0)
+    let y1 = (start.at(1) ?? 0.0).min(end.at(1) ?? 0.0)
+    let x2 = (start.at(0) ?? 0.0).max(end.at(0) ?? 0.0)
+    let y2 = (start.at(1) ?? 0.0).max(end.at(1) ?? 0.0)
+    let covered = count_between(0, p.run_words.len() - 1)
+        .filter(i -> overlaps(p, i, x1, y1, x2, y2))
+    if covered.is_empty() {
+        []
+    } else {
+        [covered.first() ?? 0, covered.last() ?? 0]
+    }
+}
+
+/// Whether the run at `i` of `p`'s runs meets the box, in fractions of the page's box.
+fn overlaps(p: Page, i: Int, x1: Float, y1: Float, x2: Float, y2: Float) -> Bool {
+    let at = i * 4
+    let rx = p.runs.at(at) ?? 0.0
+    let ry = p.runs.at(at + 1) ?? 0.0
+    let rw = p.runs.at(at + 2) ?? 0.0
+    let rh = p.runs.at(at + 3) ?? 0.0
+    rx < x2 and rx + rw > x1 and ry < y2 and ry + rh > y1
+}
+
 /// The words a page's glyphs make, a space between the lines: what the workspace's search reads.
 fn words_of(rows: List<GlyphRow>) -> Text {
     let said = ""
@@ -926,7 +1131,7 @@ action save_copy(d: Document) -> File (
     let files: List<File> = [source_of(d)]
     for p in d.pages {
         if p.imported != "" and not files.any(f -> f.url == p.imported) {
-            files = [files, [File.at("page.{p.kind}", p.imported)]].flat_map(x -> x)
+            files = files + [File.at("page.{p.kind}", p.imported)]
         }
     }
     let pages: List<PageOut> = []
@@ -936,7 +1141,9 @@ action save_copy(d: Document) -> File (
         } else {
             files.index_of(imported_of(files, p)) ?? 0
         }
-        let first = d.pages.find(q -> q.source_page == p.source_page and q.imported == p.imported)
+        let first = d.pages
+            .filter(q -> q.source_page == p.source_page and q.imported == p.imported)
+            .first()
         pages = [
             pages,
             [
@@ -944,7 +1151,7 @@ action save_copy(d: Document) -> File (
                     source: source,
                     page: p.source_page - 1,
                     rotation: p.rotation,
-                    primary: first == .some(p),
+                    primary: if let q = first { q.id == p.id } else { false },
                 ),
             ],
         ]
@@ -1159,6 +1366,71 @@ type PageRow {
     page: Int
     width: Float
     height: Float
+}
+
+/// The value an object holds under `name`, when it is an object.
+fn field_of(value: json.Value, name: Text) -> Option<json.Value> {
+    match value {
+        .object(fields) => fields.get(name),
+        .string(text) => .none,
+        .array(items) => .none,
+        .number(number) => .none,
+        .bool(flag) => .none,
+        .null => .none,
+    }
+}
+
+/// The number an object holds under `name`, inside the object it holds under `within`.
+fn number_in(value: json.Value, within: Text, name: Text) -> Float {
+    match field_of(value, within) {
+        .some(inner) => number_of(field_of(inner, name)),
+        .none => 0.0,
+    }
+}
+
+/// The number `value` holds, and zero when it holds none.
+fn number_of(value: Option<json.Value>) -> Float {
+    match value {
+        .some(held) => match held {
+            .number(number) => number,
+            .string(text) => 0.0,
+            .object(fields) => 0.0,
+            .array(items) => 0.0,
+            .bool(flag) => 0.0,
+            .null => 0.0,
+        },
+        .none => 0.0,
+    }
+}
+
+/// The text `value` holds, and empty when it holds none.
+fn text_of(value: Option<json.Value>) -> Text {
+    match value {
+        .some(held) => match held {
+            .string(text) => text,
+            .number(number) => "",
+            .object(fields) => "",
+            .array(items) => "",
+            .bool(flag) => "",
+            .null => "",
+        },
+        .none => "",
+    }
+}
+
+/// A link's destination, as the file names it: a page counted from 1, or an address.
+fn link_text(value: Option<json.Value>) -> Text {
+    match value {
+        .some(held) => match held {
+            .string(text) => text,
+            .number(number) => number.to_int().to_text(),
+            .object(fields) => "",
+            .array(items) => "",
+            .bool(flag) => "",
+            .null => "",
+        },
+        .none => "",
+    }
 }
 
 /// One character of a page's text, in the page's display space.
