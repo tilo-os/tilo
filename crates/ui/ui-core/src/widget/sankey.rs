@@ -437,22 +437,16 @@ impl SankeyMarks {
         ))
     }
 
-    /// The colours under `rects`: the chart's ground and every ribbon passing beneath them.
+    /// The colours under `rects`: the chart's ground and every ribbon whose band crosses them.
+    /// A band's outline is taken whole rather than sampled, so a word on the edge of one is
+    /// read as the ribbon it touches.
     fn label_grounds(&self, links: &[LinkBand], rects: &[Rect], theme: &Theme) -> Vec<Color> {
         let base = theme.tokens.colors.surfaces.base;
         let mut grounds = vec![base];
         for link in links {
-            let under = rects.iter().any(|rect| {
-                [
-                    rect.center(),
-                    Point::new(rect.x0, rect.y0),
-                    Point::new(rect.x1, rect.y0),
-                    Point::new(rect.x0, rect.y1),
-                    Point::new(rect.x1, rect.y1),
-                ]
-                .into_iter()
-                .any(|point| rect.contains(point) && link.path.contains(point))
-            });
+            let under = rects
+                .iter()
+                .any(|rect| !rect.intersect(link.path.bounding_box()).is_zero_area());
             if under && let Some(colour) = self.link_ground(link, theme) {
                 grounds.push(colour);
             }
