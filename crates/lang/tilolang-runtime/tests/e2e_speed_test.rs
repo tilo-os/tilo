@@ -508,11 +508,9 @@ mod cases {
             assert_eq!(badges, ["Limited", "Limited", "Limited"], "a slow connection");
 
             let fair = Speed::new();
-            fair.record(40.0, 10.0, 30.0, 5.0, "Cloudflare");
             fair.start();
-            fair.engine
-                .answer(&done(40.0, 10.0, 30.0, 5.0, 12000000));
-            fair.poll();
+            fair.finish();
+            fair.record(40.0, 10.0, 30.0, 5.0, "Cloudflare");
             let window = fair.window();
             let badges: Vec<String> = of_kind(window.tree(), "ui.Badge")
                 .iter()
