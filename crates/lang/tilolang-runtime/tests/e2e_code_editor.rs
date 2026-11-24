@@ -65,7 +65,7 @@ mod cases {
                 ]}"#
                 .to_owned()),
                 "load" if input.contains("README") => {
-                    Ok(r#"{"text":"# demo\n","mtime":11,"len":8}"#.to_owned())
+                    Ok(r##"{"text":"# demo\n","mtime":11,"len":8}"##.to_owned())
                 }
                 "load" if input.contains("main.rs") => {
                     Ok(r#"{"text":"fn main() {}\n","mtime":12,"len":13}"#.to_owned())
@@ -215,7 +215,8 @@ mod cases {
         fn number(&self, r: &ResourceRef, field: &str) -> i64 {
             match self.rt.read(r, field).unwrap() {
                 Value::Int(n) => n,
-                Value::Float(n) => i64::try_from(n).unwrap_or(0),
+                Value::Float(n) if n.is_finite() => n as i64,
+                Value::Float(_) => 0,
                 other => panic!("{field} reads {other:?}"),
             }
         }
