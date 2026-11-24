@@ -348,35 +348,31 @@ impl ResourceOpening {
         }
     }
 
-    /// Take the record in when it is here, waiting for its decoding with `wait` (never for the
-    /// workspace's answer). Whether it is open.
+    /// Take the record in when it is here. Whether it is open.
+    ///
+    /// With `wait`, as its window opens: it waits for the decoding of bytes the workspace
+    /// answered, and does not ask the workspace again. The launch went on with the record on its
+    /// way, and keeps that answer until the window's first frame; asking again could have the
+    /// workspace answer now that it holds none of it, leaving the window with a record neither
+    /// open nor opening. Without `wait`, as a frame: it takes what the workspace answered since.
     ///
     /// # Errors
     /// The record cannot be read or decoded, the workspace holds none of it
     /// ([`ResourceOpenError::MissingResource`]), or it is not this workspace's.
     pub fn take_in(&self, wait: bool) -> Result<bool, ResourceOpenError> {
-        self.records
+        let mut set = self
+            .records
             .0
             .try_borrow_mut()
-            .map_err(|_| ResourceOpenError::Busy)?
-            .take_in_opening(&self.checkout.id, wait)
-    }
-
-    /// The record's document as it is now, waiting for it to be taken in: what a window that
-    /// showed before it reads once it needs the record (to write, or to read what it does not
-    /// keep). `None` when it cannot be had, or the workspace has not answered for it yet.
-    #[must_use]
-    pub fn document(&self) -> Option<AutoCommit> {
-        match self.take_in(true) {
-            Ok(true) => {}
-            Ok(false) => return None,
-            Err(error) => {
-                tracing::warn!(%error, "the record could not be taken in");
-                return None;
-            }
+            .map_err(|_| ResourceOpenError::Busy)?;
+        let asked = set
+            .opening
+            .borrow()
+            .get(&self.checkout.id)
+            .is_some_and(|opening| matches!(opening.read, Read::Asked));
+        if wait && asked {
+            return Ok(false);
         }
-        self.records
-            .read_checked(&self.checkout.id, AutoCommit::clone)
-            .ok()
+        set.take_in_opening(&self.checkout.id, wait)
     }
 }
