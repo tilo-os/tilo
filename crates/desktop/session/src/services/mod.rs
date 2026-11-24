@@ -18,8 +18,8 @@
 //! than found by an app whose service is missing.
 //!
 //! The test below pairs the table with what clients dial — the names the launcher hands an app
-//! ([`launcher::services::HANDED_SERVICES`]) and the services every app's manifest declares — and
-//! fails when one has no row here.
+//! ([`launcher::services::HANDED_SERVICES`]), the services every app's manifest declares, and the
+//! connections every tilolang instance is handed — and fails when one has no row here.
 
 use collab_types::caps::DeviceCap;
 use std::sync::Arc;
@@ -945,7 +945,8 @@ mod tests {
     use super::{Owner, Reach, Service, TABLE};
 
     /// The names a client in this tree dials: what the launcher hands an app at its launch
-    /// ([`launcher::services::HANDED_SERVICES`]), and what every app's manifest declares.
+    /// ([`launcher::services::HANDED_SERVICES`]), what every app's manifest declares, and what a
+    /// tilolang package's generated manifest and its runtime ask for.
     fn dialled_by_clients() -> BTreeSet<String> {
         let mut dialled: BTreeSet<String> = launcher::services::HANDED_SERVICES
             .iter()
@@ -955,7 +956,9 @@ mod tests {
         dialled
     }
 
-    /// The names under `[sandbox.services]` of every app's manifest.
+    /// The names the apps dial: every service a native app's manifest declares
+    /// under `[sandbox.services]`, and the two a tilolang package's generated
+    /// manifest names.
     fn declared() -> Vec<String> {
         let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
         let mut manifests = std::fs::read_dir(&apps)
@@ -965,17 +968,92 @@ mod tests {
             .filter(|manifest| manifest.is_file())
             .collect::<Vec<_>>();
         manifests.sort();
-        assert!(
-            manifests.len() > 40,
-            "only {} app manifests found",
-            manifests.len()
+        let (native, tilolang) = default_collection(&apps);
+        assert_eq!(
+            manifests.len(),
+            native.len(),
+            "the session read {} app manifests, but the default collection packages {}",
+            manifests.len(),
+            native.len()
         );
         let mut names = Vec::new();
         for manifest in manifests {
             let source = std::fs::read_to_string(&manifest).expect("an app manifest is readable");
             names.extend(manifest_services(&source));
         }
+        // A tilolang package has no manifest in the tree: `tilolang build`
+        // generates it, naming collaboration and the filesystem at the
+        // runtime's version (crates/lang/tilolang-cli/src/package.rs), and the
+        // session hands every instance the tools service the runtime asks it
+        // for (runtime-portal's device processes).
+        for _ in tilolang {
+            names.push("collab".to_owned());
+            names.push("tilo-fs".to_owned());
+            names.push(crate::tools::SERVICE.to_owned());
+        }
         names
+    }
+
+    /// The default collection's apps, from `dist/apps/app-collections.toml` as
+    /// `package-apps` and the image read it: `*` is every native app's manifest
+    /// under `apps/`, and each `tl-<name>` is the tilolang package in
+    /// `apps/tl/<name>` that replaced the native app it retired. The list is the
+    /// source, never a count: every app it names must be in the tree.
+    fn default_collection(
+        apps: &std::path::Path,
+    ) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+        let repo = apps.parent().expect("apps/ is under the repository root");
+        let config = std::fs::read_to_string(repo.join("dist/apps/app-collections.toml"))
+            .expect("the app collections read");
+        let include = config
+            .lines()
+            .skip_while(|line| line.trim() != "[collections.default]")
+            .skip(1)
+            .find_map(|line| line.trim().strip_prefix("include = "))
+            .expect("dist/apps/app-collections.toml names a default include");
+        let entries: Vec<&str> = include
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .split(',')
+            .map(|entry| entry.trim().trim_matches('"'))
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        let mut native = Vec::new();
+        let mut tilolang = Vec::new();
+        for entry in entries {
+            if entry == "*" {
+                let mut manifests: Vec<std::path::PathBuf> = std::fs::read_dir(apps)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", apps.display()))
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|dir| dir.join("tilo-app.toml").is_file())
+                    .collect();
+                manifests.sort();
+                assert!(!manifests.is_empty(), "`*` packs no app under apps/");
+                native.extend(manifests);
+                continue;
+            }
+            if let Some(name) = entry.strip_prefix("tl-") {
+                let package = apps.join("tl").join(name);
+                assert!(
+                    package.join("app.tl").is_file(),
+                    "{entry} is packaged but {} is missing",
+                    package.join("app.tl").display()
+                );
+                tilolang.push(package);
+                continue;
+            }
+            let manifest = apps.join(entry).join("tilo-app.toml");
+            assert!(
+                manifest.is_file(),
+                "{entry} is packaged but {} is missing",
+                manifest.display()
+            );
+            native.push(apps.join(entry));
+        }
+        native.sort();
+        native.dedup();
+        (native, tilolang)
     }
 
     /// The names a manifest declares under `[sandbox.services]` .
@@ -1098,8 +1176,8 @@ mod tests {
                 launcher::services::COMPAT_SERVICE,
                 tilo_system_stats::SERVICE,
                 tilo_render_protocol::broker::SERVICE,
-                "tools",
-                "models",
+                crate::tools::SERVICE,
+                launcher::services::MESSAGING_SERVICE,
                 "tilo-fs",
             ] {
                 assert!(

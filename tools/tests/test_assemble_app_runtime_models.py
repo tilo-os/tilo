@@ -16,9 +16,9 @@ class ModelTests(unittest.TestCase):
             repo, target = Path(d) / 'repo', Path(d) / 'target'
             (repo / 'apps/poker-model-wasm').mkdir(parents=True)
             (repo / 'apps/poker-model-wasm/Cargo.toml').write_text('')
-            (repo / 'apps/clocks').mkdir(parents=True)
-            poker, clocks = {'dir': 'poker'}, {'dir': 'clocks'}
-            self.assertEqual(assembly.model_entries(repo, [poker, clocks]), [poker])
+            (repo / 'apps/terminal').mkdir(parents=True)
+            poker, terminal = {'dir': 'poker'}, {'dir': 'terminal'}
+            self.assertEqual(assembly.model_entries(repo, [poker, terminal]), [poker])
 
             calls = []
 
@@ -32,9 +32,9 @@ class ModelTests(unittest.TestCase):
             original = assembly.run
             assembly.run = fake_run
             try:
-                self.assertIsNone(assembly.prepare_models(args, [clocks]))
+                self.assertIsNone(assembly.prepare_models(args, [terminal]))
                 self.assertEqual(calls, [])
-                runtime = assembly.prepare_models(args, [poker, clocks])
+                runtime = assembly.prepare_models(args, [poker, terminal])
             finally:
                 assembly.run = original
             self.assertEqual(runtime, target.resolve() / 'app-models/app-model-runtime')

@@ -35,7 +35,7 @@ use crate::support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, 
 fn older_surface() -> Vec<u8> {
     let file = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../apps/clocks/surface.toml"
+        "/tests/fixtures/surface.toml"
     ))
     .unwrap();
     collab_types::surface::SurfaceFile::kept(&file)

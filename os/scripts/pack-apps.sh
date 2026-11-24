@@ -302,7 +302,7 @@ fi
 shipped=(); missing=(); failed=()
 
 # Which packages carry a model, by package id: an app keeps one by keeping a
-# guest crate beside it (apps/clocks -> apps/clocks-model-wasm). A prebuilt tapp
+# guest crate beside it (apps/poker -> apps/poker-model-wasm). A prebuilt tapp
 # of one of these must still hold the module this pack would have staged.
 declare -A model_ids=()
 for manifest in "$REPO"/apps/*/tilo-app.toml; do
@@ -397,8 +397,8 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     if [ -f "$(dirname "$manifest")/surface.toml" ]; then
         install -pm 0644 "$(dirname "$manifest")/surface.toml" "$payload/surface.toml"
     fi
-    # An app declares a model by keeping a guest crate beside it (apps/clocks ->
-    # apps/clocks-model-wasm). The module the app-models check built for it ships
+    # An app declares a model by keeping a guest crate beside it (apps/poker ->
+    # apps/poker-model-wasm). The module the app-models check built for it ships
     # at the payload root, where `tilolang package` stages it and every device
     # holding the workspace's keys reads it. A declared model with no module
     # built fails the pack: the app would install unable to apply its actions.

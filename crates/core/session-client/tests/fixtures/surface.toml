@@ -1,0 +1,9 @@
+# A surface in the form an app commits it: bytes a page keeps by hash, and
+# nothing a particular app publishes, so no app's removal changes this test.
+
+format = 2
+
+[[resources]]
+kind = "test.page"
+label = "Page"
+version = 1

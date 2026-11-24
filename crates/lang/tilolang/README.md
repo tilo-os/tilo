@@ -142,7 +142,7 @@ A package may also `use` a native app: `use so.tilo.tasks as tasks` reads what T
 the resources, records and enums of its committed `surface.toml`, as types (`tasks.Tracker`,
 `tasks.Issue`, `tasks.Person`) and its verbs as actions, and checks field reads and action
 signatures against them. The language's tool (`tilolang check`) finds native apps among the
-`--path` directories (`--path apps/clocks`, or `--path apps`), and an agent's task is handed the
+`--path` directories (`--path apps/terminal`, or `--path apps`), and an agent's task is handed the
 same catalogue by the session it runs in: every installed app's surface for its workspace, read
 by one loader. Invoking a native app's verb, or setting a field of its record, is the app's own
 action: it goes to the app through the session's broker, which decides it as it decides the

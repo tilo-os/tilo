@@ -2,7 +2,7 @@
 # Build every app's model module: the `model.wasm` a package carries so every
 # device holding a workspace's keys applies the app's actions with no build of
 # its own (crates/sdk/tilo-model-guest). An app keeps its model as a guest
-# crate beside it (`apps/clocks` -> `apps/clocks-model-wasm`).
+# crate beside it (`apps/poker` -> `apps/poker-model-wasm`).
 #
 # The guests are linked into one module (crates/sdk/tilo-models-wasm), which
 # `wasm-split --models` cuts into the model runtime every app shares
