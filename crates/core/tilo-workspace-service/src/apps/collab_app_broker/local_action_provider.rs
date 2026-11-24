@@ -242,6 +242,7 @@ impl AppBrokerState {
             route: super::CrdtRoute::cluster(workspace),
             admitted: Box::new(admitted),
             time: checked.admission.policy_time.clone(),
+            pressed: false,
         };
         Ok(Arc::new(super::action_provider::BrokerApi::for_run(
             Arc::clone(self),

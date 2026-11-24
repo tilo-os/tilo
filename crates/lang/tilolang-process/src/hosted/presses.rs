@@ -110,6 +110,11 @@ impl Presses {
         self.open.remove(&press).map(|open| open.held)
     }
 
+    /// The id the dispatch handed `press` back under, once it did.
+    pub(super) fn delivered(&self, press: InvocationId) -> Option<u64> {
+        self.open.get(&press).and_then(|open| open.delivered)
+    }
+
     /// The press the dispatch handed back under `id`, if one was.
     pub(super) fn delivered_as(&self, id: u64) -> Option<InvocationId> {
         self.open

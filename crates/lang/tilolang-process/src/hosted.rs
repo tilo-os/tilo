@@ -3532,7 +3532,16 @@ impl Hosted {
             child.asked = Some(record.clone());
             child.served
         };
-        let Some((id, invocation)) = served else {
+        // A press says it was asked once the dispatch has handed it back; until then the ask's
+        // own record is what the person sees.
+        let delivered = match served {
+            Some(Served::Delivered(id, invocation)) => Some((id, invocation)),
+            Some(Served::Pressed(press)) => {
+                self.presses.borrow().delivered(press).map(|id| (id, press))
+            }
+            None => None,
+        };
+        let Some((id, invocation)) = delivered else {
             return;
         };
         self.answer_invocation(
