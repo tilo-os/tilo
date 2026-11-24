@@ -1154,6 +1154,13 @@ pub fn verify_stored_complete(
 /// # Errors
 ///
 /// Returns an error if the challenge cannot be encoded for signing, or the signer refused.
+#[cfg_attr(
+    target_family = "wasm",
+    expect(
+        clippy::future_not_send,
+        reason = "a page's signer is a JavaScript object bound to the page's one thread"
+    )
+)]
 pub async fn sign_membership_proof(
     challenge: MembershipChallenge,
     key: &dyn collab_types::signer::DeviceSigner,
