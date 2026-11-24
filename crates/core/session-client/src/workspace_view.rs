@@ -16,10 +16,10 @@ use tilo_action_policy::WorkspacePolicy;
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::Role;
+use tilo_peer_state::workspace_view::{CallGateReading, LIST, Part, part_of, workspace_of};
 pub use tilo_peer_state::workspace_view::{
     Holder, Hosting, Listed, NotDeletable, WorkspaceReading,
 };
-use tilo_peer_state::workspace_view::{LIST, workspace_of};
 use tilo_peer_state::{Member, MemberList};
 use tilo_server_protocol::workspaces::{HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE};
 
@@ -60,6 +60,8 @@ pub struct WorkspaceView {
     /// next one ends.
     founding: std::sync::Mutex<BTreeSet<WorkspaceId>>,
     failed: std::sync::Mutex<BTreeSet<WorkspaceId>>,
+    /// What the daemon publishes of each workspace beside its standing, as it published it.
+    parts: std::sync::Mutex<BTreeMap<(WorkspaceId, Part), String>>,
     /// How many readings changed what the view says: what a reader compares to tell whether
     /// anything of the workspaces' standing changed since it last read.
     revision: tokio::sync::watch::Sender<u64>,
@@ -85,6 +87,7 @@ impl WorkspaceView {
             readings: std::sync::Mutex::default(),
             founding: std::sync::Mutex::default(),
             failed: std::sync::Mutex::default(),
+            parts: std::sync::Mutex::default(),
             revision: tokio::sync::watch::Sender::new(0),
             asks,
         }
@@ -137,6 +140,20 @@ impl WorkspaceView {
             let previous = std::mem::replace(&mut *self.listed.lock_recover(), listed.clone());
             return Ok(previous != listed);
         }
+        if let Some((workspace, part)) = part_of(resource) {
+            let workspace = WorkspaceId::parse(workspace)
+                .ok_or_else(|| format!("{resource} names no workspace"))?;
+            let mut parts = self.parts.lock_recover();
+            return Ok(match reading {
+                Some(reading) => {
+                    parts
+                        .insert((workspace, part), reading.to_owned())
+                        .as_deref()
+                        != Some(reading)
+                }
+                None => parts.remove(&(workspace, part)).is_some(),
+            });
+        }
         let workspace = workspace_of(resource)
             .and_then(WorkspaceId::parse)
             .ok_or_else(|| format!("{resource} names no workspace"))?;
@@ -168,6 +185,56 @@ impl WorkspaceView {
         let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.with(id, read)
             .ok_or_else(|| format!("this device holds no workspace {workspace}"))
+    }
+
+    /// `part` of `workspace` as the daemon published it last, read as `T`; `None` while it has
+    /// published none.
+    fn part<T: serde::de::DeserializeOwned>(
+        &self,
+        workspace: WorkspaceId,
+        part: Part,
+    ) -> Option<T> {
+        let parts = self.parts.lock_recover();
+        let reading = parts.get(&(workspace, part))?;
+        serde_json::from_str(reading)
+            .map_err(|error| tracing::error!(%workspace, ?part, %error, "a workspace's part does not read"))
+            .ok()
+    }
+
+    /// What `workspace` revokes, as it admitted each entry: whom its decisions refuse. `None`
+    /// while the daemon has not said, or an entry does not verify, which leaves its refusals
+    /// unknown rather than trusting the rest.
+    #[must_use]
+    pub fn revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
+        let entries: Vec<tilo_user_identity::RevocationEntry> =
+            self.part(WorkspaceId::parse(workspace)?, Part::Revocations)?;
+        let mut list = tilo_user_identity::RevocationList::new();
+        for entry in entries {
+            list.insert(entry).ok()?;
+        }
+        Some(list)
+    }
+
+    /// The records of `workspace` this device reads, by app and route, as its governance decides.
+    #[must_use]
+    pub fn readable(&self, workspace: WorkspaceId) -> Vec<(String, String)> {
+        self.part(workspace, Part::Readable).unwrap_or_default()
+    }
+
+    /// What `workspace`'s calls allow and whose each member device is; nothing for a workspace
+    /// the daemon has not said of.
+    #[must_use]
+    pub fn call_gate(&self, workspace: &str) -> tilo_peer_state::CallGate {
+        WorkspaceId::parse(workspace)
+            .and_then(|id| self.part::<CallGateReading>(id, Part::CallGate))
+            .unwrap_or_default()
+            .gate()
+    }
+
+    /// Where the devices keeping `workspace` are reached, as each signed it.
+    #[must_use]
+    pub fn keeping(&self, workspace: WorkspaceId) -> Vec<tilo_peer_state::join::TransportHint> {
+        self.part(workspace, Part::Keeping).unwrap_or_default()
     }
 
     /// The person's workspaces, as the daemon lists them.
@@ -451,6 +518,35 @@ impl WorkspaceView {
         ))
     }
 
+    /// Change `workspace`'s people or settings by `command`, as this device: the daemon signs it
+    /// with the device's key and the workspace's admission decides it as any member's change.
+    #[must_use]
+    pub fn commit_membership(
+        &self,
+        workspace: WorkspaceId,
+        command: &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> ServiceAnswer {
+        let command = match serde_json::to_value(command) {
+            Ok(command) => command,
+            Err(error) => {
+                let error = format!("the change does not encode: {error}");
+                return Box::pin(async move { Err(error) });
+            }
+        };
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("command".to_owned(), command);
+        self.asks.invoke(
+            None,
+            request(
+                tilo_actions::remote::RemoteActionTarget::workspace_governance(
+                    &workspace.to_string(),
+                    MEMBERSHIP,
+                ),
+                arguments,
+            ),
+        )
+    }
+
     /// Ask `workspace`'s action `target` with `arguments`, as the person on this device, in that
     /// workspace: what the workspace answers its members' devices (the models its agents run on),
     /// asked of the daemon, which answers it where it keeps the workspace.
@@ -518,4 +614,19 @@ pub fn request(
         appearance: None,
         signed: None,
     }
+}
+
+/// What each workspace revokes, as `view` reads it off the daemon: a session with no daemon
+/// revokes nothing it could tell.
+#[must_use]
+pub fn revocations_of(view: Option<&Arc<WorkspaceView>>) -> crate::engine::Revocations {
+    struct Read(Option<Arc<WorkspaceView>>);
+
+    impl crate::engine::RevocationsOf for Read {
+        fn of(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
+            self.0.as_ref()?.revocations(workspace)
+        }
+    }
+
+    Arc::new(Read(view.cloned()))
 }

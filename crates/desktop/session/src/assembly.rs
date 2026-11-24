@@ -338,8 +338,6 @@ pub(crate) struct Shared {
     /// Who is here: this session's membership of each workspace, when it
     /// takes part in the peer network.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
-    /// This device's workspaces: what the session shows of them, and what a join takes in.
-    pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// How the person's workspaces stand, as the device's daemon publishes them, and the actions
     /// that change them.
     #[cfg(not(target_arch = "wasm32"))]
@@ -386,10 +384,6 @@ pub(crate) struct Shared {
     /// What the loop does with the answers of async work it started (a signature, a commit into a
     /// workspace's record), on the pass after each landed.
     pub(crate) landings: Rc<crate::landing::Landings>,
-    /// This device's channels of those workspaces' sealed records, and the
-    /// devices each one admits: kept for as long as the session runs.
-    #[cfg(target_os = "linux")]
-    pub(crate) _workspace_keys: Option<crate::workspace_keys::KeyService>,
     /// The person's own workspaces, as all their devices hold the list of
     /// them: `None` when this computer has no identity to keep it for.
     #[cfg(target_os = "linux")]

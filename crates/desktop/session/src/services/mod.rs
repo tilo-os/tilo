@@ -421,13 +421,13 @@ impl Served {
     }
 
     /// Count what this device's traffic did since the last pass into the person's settings, and
-    /// bring what the services read of the seat's shell `handle` and this device's `engine` level
+    /// bring what the services read of the seat's shell `handle` and the daemon's `view` level
     /// with them, on the loop's pass: the only thread that may touch the services or the shell.
     pub(crate) fn follow(
         &self,
         services: &mut Services,
         handle: &tilo_session_core::desktop::state::DesktopHandle,
-        engine: Option<&crate::engine::Engine>,
+        view: Option<&crate::workspace_view::WorkspaceView>,
     ) {
         if let Some(usage) = &self.usage {
             usage.count(services);
@@ -436,7 +436,7 @@ impl Served {
             render.sync_workspaces(handle);
         }
         if let Some(windows) = &self.windows {
-            windows.answer_sandboxes(handle, engine);
+            windows.answer_sandboxes(handle, view);
         }
     }
 }

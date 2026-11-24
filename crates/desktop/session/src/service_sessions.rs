@@ -33,14 +33,13 @@ use tilo_workspace_service::apps::services::{
     BrowserServiceSessionRequestContext as Context, BrowserServiceSessionServices, ItemAnswering,
 };
 
-use crate::engine::Engine;
-
 const UNAVAILABLE: &str = "Selected website session unavailable";
 use ui::apps::BROWSER;
 
 /// The person's account credentials, as the apps it serves reach it on the action API.
 pub(crate) struct ServiceSessions {
-    engine: Arc<Engine>,
+    /// How the person's workspaces stand, as the daemon publishes them.
+    view: Arc<crate::workspace_view::WorkspaceView>,
     /// What Browser's asks for vault items are answered with.
     items: Arc<crate::item_lending::ItemLending>,
     /// The device's daemon, which keeps each workspace's vault and accounts: where an account's
@@ -50,12 +49,12 @@ pub(crate) struct ServiceSessions {
 
 impl ServiceSessions {
     pub(crate) fn new(
-        engine: Arc<Engine>,
+        view: Arc<crate::workspace_view::WorkspaceView>,
         items: Arc<crate::item_lending::ItemLending>,
         daemon: tilo_session_client::daemon_documents::DaemonShell,
     ) -> Self {
         Self {
-            engine,
+            view,
             items,
             daemon,
         }
@@ -71,37 +70,20 @@ impl ServiceSessions {
         }
         let workspace = WorkspaceId::parse(context.workspace_id())
             .ok_or("Invalid account-credentials workspace")?;
-        self.engine.owner().with_current(workspace, |view| {
-            let certificate = context.read_context().certificate();
-            if !view.peer().certificates().contains(certificate) {
-                return Err("This device left the workspace".into());
-            }
-            let now = std::time::SystemTime::now();
-            if admin {
-                view.peer()
-                    .workspace()
-                    .check_workspace_administration(certificate.device_public_key, now)?;
-            }
-            let member = view
-                .peer()
-                .permissions(certificate.device_public_key, now)
-                .map_err(|error| error.to_string())?;
-            if member.person_id() != Some(context.person()) {
-                return Err("This person left the workspace".into());
-            }
-            // Reading the app's own record here is what the broker itself asks of a join: the
-            // person's grants on the workspace decide it.
-            let route = context.read_context().route();
-            let node = collab_types::validator::document_node(
+        // The daemon keeps the workspace, and decides whether the certificate's person still
+        // reads the app's own record there: what the broker itself asks of a join.
+        if admin && !self.view.administers(&workspace.to_string()) {
+            return Err("This person no longer administers the workspace".into());
+        }
+        let route = context.read_context().route();
+        tilo_session_client::daemon_documents::DaemonDocuments(self.daemon.clone())
+            .authorizes(
                 &route.cluster_id,
                 &route.app_id,
                 &route.document_id,
-            );
-            if !member.allows(&node, tilo_action_policy::ActionKind::Read, now) {
-                return Err("This person can no longer read the app".into());
-            }
-            Ok(())
-        })?;
+                context.read_context().certificate(),
+            )
+            .map_err(|_| "This person can no longer read the app".to_owned())?;
         let selected = tilo_identity::store::selected_actor_id_prompt(context.workspace_id())
             .map_err(|_| "This workspace's selected identity is unavailable")?;
         if selected.as_deref() != Some(context.person()) {

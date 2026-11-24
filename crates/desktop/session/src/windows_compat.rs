@@ -738,33 +738,24 @@ struct WorkspaceSandboxes {
 
 impl WorkspaceSandboxes {
     /// Answer what the service asked since the last pass, from the shell `handle` shows and the
-    /// workspaces `engine` keeps. On the loop's pass only.
-    fn answer(&self, handle: &DesktopHandle, engine: Option<&crate::engine::Engine>) {
+    /// workspaces the device's daemon keeps, as `view` reads them. On the loop's pass only.
+    fn answer(&self, handle: &DesktopHandle, view: Option<&crate::workspace_view::WorkspaceView>) {
         let asks = std::mem::take(&mut *self.asks.lock_recover());
         for (workspace, done) in asks {
             let shown = handle.read(|tree| {
                 tilo_broker_core::services::workspace_in(tree, &workspace)
                     .map(|shown| shown.sandbox.clone())
             });
-            done.complete(shown.or_else(|| engine.and_then(|engine| kept(engine, &workspace))));
+            done.complete(shown.or_else(|| view.and_then(|view| kept(view, &workspace))));
         }
     }
 }
 
-/// The sandbox `engine` keeps for `workspace`, a workspace this device was let into. `None` for
-/// one it does not keep.
-fn kept(engine: &crate::engine::Engine, workspace: &str) -> Option<Sandbox> {
+/// The sandbox the device's daemon keeps for `workspace`, a workspace this device was let into.
+/// `None` for one it does not keep.
+fn kept(view: &crate::workspace_view::WorkspaceView, workspace: &str) -> Option<Sandbox> {
     let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
-    engine
-        .owner()
-        .with_current(id, |view| {
-            let peer = view.peer();
-            if peer.admitted_workspace().is_none() {
-                return Ok(None);
-            }
-            Ok(peer.governance().governed_sandbox().ok())
-        })
-        .ok()
+    view.reading(id, |reading| reading.sandbox.clone())
         .flatten()
 }
 
@@ -793,13 +784,13 @@ pub(crate) struct Served {
 
 impl Served {
     /// Answer the sandboxes the service asked for since the last pass, from the shell `handle`
-    /// shows and the workspaces `engine` keeps. On the loop's pass only.
+    /// shows and the workspaces the device's daemon keeps. On the loop's pass only.
     pub(crate) fn answer_sandboxes(
         &self,
         handle: &DesktopHandle,
-        engine: Option<&crate::engine::Engine>,
+        view: Option<&crate::workspace_view::WorkspaceView>,
     ) {
-        self.sandboxes.answer(handle, engine);
+        self.sandboxes.answer(handle, view);
     }
 }
 

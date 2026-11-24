@@ -32,14 +32,10 @@ const OPEN_SCOPES: usize = 64;
 const POLL: Duration = Duration::from_millis(25);
 
 /// The device's record content, as this session reaches it: one connection to the daemon's
-/// document media, the scope of each workspace and app opened on it, and the content secrets the
-/// members hold, by scope.
+/// document media, and the scope of each workspace and app opened on it.
 pub(crate) struct RecordContent {
     socket: PathBuf,
     connection: Mutex<Option<Connection>>,
-    /// The secret the members who read a record hold, by scope: what a store this session lends
-    /// the records it keeps seals with ([`Self::seal_under`]).
-    secrets: Mutex<HashMap<(String, String), tilo_seal::SymmetricKey>>,
 }
 
 /// One connection to the daemon's document media, and the scopes opened on it.
@@ -54,7 +50,6 @@ pub(crate) fn open(socket: Option<PathBuf>) -> Arc<RecordContent> {
     Arc::new(RecordContent {
         socket: socket.unwrap_or_else(launcher::services::blob_socket),
         connection: Mutex::default(),
-        secrets: Mutex::default(),
     })
 }
 
@@ -213,10 +208,10 @@ impl RecordContent {
         }
     }
 
-    /// The content store of the record of `app` in `workspace` , as the session keeps it: sealed
-    /// under the secret the workspace's members hold, so the record's readers alone open it, and
-    /// the same bytes stored twice are one item under one reference. What the store keeps is
-    /// offered where the workspace's devices fetch the record's content from, since it is kept on
+    /// The content store of the record of `app` in `workspace` , as the session keeps it: each
+    /// part sealed under a key of its own, which the record that names it carries, so the
+    /// record's readers alone open it. The session holds no workspace's keys; the daemon does.
+    /// What the store keeps is offered where the workspace's devices fetch the record's content from, since it is kept on
     /// the one shelf they read through.
     ///
     /// The store is the same one for a workspace and app every time: a session lends it to the
@@ -234,36 +229,10 @@ impl RecordContent {
             as Arc<dyn tilo_content::ContentBackend>)
         .sealing()
     }
-
-    /// Seal what the record of `app` in `workspace` keeps under `secret`, the content secret its
-    /// members hold: the same bytes stored twice are then one item under one reference, as a
-    /// window's record content is, and whoever keeps the ciphertext holds no key.
-    pub(crate) fn seal_under(
-        &self,
-        workspace: &str,
-        app: &str,
-        secret: Option<tilo_seal::SymmetricKey>,
-    ) {
-        let Some(secret) = secret else {
-            return;
-        };
-        self.secrets
-            .lock_recover()
-            .insert((workspace.to_owned(), app.to_owned()), secret);
-    }
-
-    /// The secret the members who read `app` 's record in `workspace` hold, once the engine has
-    /// it.
-    fn secret(&self, workspace: &str, app: &str) -> Option<tilo_seal::SymmetricKey> {
-        self.secrets
-            .lock_recover()
-            .get(&(workspace.to_owned(), app.to_owned()))
-            .cloned()
-    }
 }
 
 /// The store of one record's content, as the session keeps it: the daemon's shelf, under the
-/// record's scope, sealed with the content secret its members hold.
+/// record's scope.
 struct Scope {
     content: Arc<RecordContent>,
     workspace: String,
@@ -331,10 +300,6 @@ impl tilo_content::ContentBackend for Scope {
     /// workspace the record is in.
     fn workspace_scoped(&self) -> bool {
         true
-    }
-
-    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
-        self.content.secret(&self.workspace, &self.app)
     }
 
     fn max_item_bytes(&self) -> usize {

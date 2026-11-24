@@ -661,7 +661,6 @@ impl Session {
         let settings = crate::session_settings::SessionSettings::install();
         // A write the daemon takes to a layout or a view has it read again off the loop.
         desktops.follow_writes(daemon_writes.clone());
-        let engine = crate::options::open_engine(&options, &handle);
         let view = crate::options::open_view(&daemon_link, &options);
         if let Some(view) = &view {
             activity.attach_workspaces(
@@ -670,49 +669,18 @@ impl Session {
                 &writes,
             );
         }
-        // This device's channels of its workspaces' sealed records: its keys,
-        // and the devices each one admits, which its window streams carry
-        // between. The broker the apps reach is the one the channel service
-        // checks, so a sealed record opens before any of it reaches an app.
+        // The broker's side of the workspaces' sealed records the apps hold open.
         let channels_broker = std::sync::Arc::new(std::sync::Mutex::new(
             tilo_broker_core::collab_core::BrokerChannels::default(),
         ));
         // What the broker shows the apps that hold a record's route open.
         let channels_fanout =
             std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
-        let key_link = crate::workspace_keys::KeyLink::new();
         changes.waking(options.wake.handle());
-        let resource_index = engine
+        let resource_index = view
             .as_ref()
             .map(|_| crate::resource_index::RecordChanges::start(&document_reads, changes.clone()));
-        let channels = engine.as_ref().and_then(|engine| {
-            let settled = resource_index.clone();
-            // Keys that arrived open records the loop read sealed: it reads the layouts again.
-            let keys = engine.keys();
-            let mut keyed = keys.generation();
-            let wake = options.wake.handle();
-            crate::workspace_keys::KeyService::open(
-                engine,
-                std::sync::Arc::clone(&key_link),
-                std::sync::Arc::clone(&channels_broker),
-                move || {
-                    if let Some(index) = &settled {
-                        index.settled();
-                    }
-                    let generation = keys.generation();
-                    if generation != keyed {
-                        keyed = generation;
-                        wake();
-                    }
-                },
-            )
-            .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
-            .ok()
-        });
-        // What this device holds is read only once the channel service is up: before, nothing reads.
-        // The listing is the daemon's to answer and may take as long as its store does, so it is
-        // read on a thread of its own: the session starts at once, and what it notes reaches the
-        // roles when it arrives.
+        // What this device holds is read once the session follows what changes in it.
         if let Some(index) = &resource_index {
             let index = std::sync::Arc::clone(index);
             if let Err(error) = std::thread::Builder::new()
@@ -732,7 +700,7 @@ impl Session {
                 crate::platform::records::Changes::clone(&changes),
             )
         });
-        let sync = start_collaboration(&options, continuity.clone(), engine.clone(), beside);
+        let sync = start_collaboration(&options, continuity.clone(), beside);
         // What is live in the workspaces the device's daemon keeps, on this device or on one the
         // peer network reaches: what the shell shows in the bar, quick settings and on the lock
         // screen, followed at the daemon.
@@ -985,7 +953,7 @@ impl Session {
         // to be theirs, and taken off the shell otherwise. A session with no identity founds none.
         if let Some(seed) = seed
             && personal.is_some()
-            && engine.is_some()
+            && view.is_some()
         {
             session_services.keep_founding(std::collections::BTreeSet::from([seed.to_string()]));
         }
@@ -1008,7 +976,7 @@ impl Session {
                 >),
         ));
         session_services.keep_actions(std::sync::Arc::clone(&session_actions));
-        if engine.is_some() {
+        if view.is_some() {
             session_services.keep_records(document_reads.clone(), changes.clone());
         }
         // The person's settings, answered under the provider Settings' window names for each
@@ -1212,10 +1180,10 @@ impl Session {
             .enable_all()
             .build()
             .map_err(crate::Error::host)?;
-        // What each of this device's workspaces revokes, read from the
-        // workspaces the engine holds: the broker's decisions and the
-        // automation's arming both refuse a device its workspace revoked.
-        let revocations = crate::engine::revocations_of(engine.as_ref());
+        // What each of this device's workspaces revokes, as the device's daemon publishes it:
+        // the broker's decisions and the automation's arming both refuse a device its
+        // workspace revoked.
+        let revocations = crate::workspace_view::revocations_of(view.as_ref());
         // The typed opens an app asks this session for: one service, made
         // here and started from the services table.
         let tools = crate::tools::Handle::new(
@@ -1244,7 +1212,6 @@ impl Session {
             crate::services::app_wire::Collaboration {
                 sync: sync.as_deref(),
                 daemon: daemon_link.clone(),
-                engine: engine.as_ref().map(std::sync::Arc::clone),
                 view: view.clone(),
                 records: resource_index,
                 fanout: std::sync::Arc::clone(&channels_fanout),
@@ -1467,13 +1434,13 @@ impl Session {
             }
         }
         // The device's settings are published where this device's are kept, under its key: the one
-        // the engine holds the workspace for, else this computer's own identity, else the device
-        // the profile's settings were last left on. Settled here, before the loop: an address that
-        // names one of the device's settings asks for it as the shell runs, and that ask must not
-        // go to the disk.
-        let settings_on = engine
+        // the daemon holds the workspaces for, else the device the profile's settings were last
+        // left on. Settled here, before the loop: an address that names one of the device's
+        // settings asks for it as the shell runs, and that ask must not go to the disk.
+        let settings_on = view
             .as_ref()
-            .map(|engine| hex::encode(engine.identity().device_cert.device_public_key))
+            .and_then(|_| crate::sync::device_identity())
+            .map(|identity| hex::encode(identity.device_cert.device_public_key))
             .or_else(|| own.device.clone())
             .or_else(settings_store::outside::device);
         tilo_app::framework::read_settings_on(settings_on.as_deref().unwrap_or_default());
@@ -1711,8 +1678,7 @@ impl Session {
             crate::program_asks::ProgramNotices::new(program_asks.clone(), Rc::clone(&services));
         let workspace_tabs = crate::workspace_settings::WorkspaceTabs::new(
             &daemon,
-            engine.as_ref().and_then(|engine| engine.service_root()),
-            document_reads.clone(),
+            crate::options::service_root(&options),
             options.wake.handle(),
         );
         let directory_store = Rc::new(crate::directory::Store::default());
@@ -1733,7 +1699,7 @@ impl Session {
                     .map(|records| records.record(crate::mentions::KEPT)),
                 // The workspaces' records are this device's service to answer: what their apps
                 // and the person's other devices write lands there.
-                records: engine.as_ref().map(|_| {
+                records: view.as_ref().map(|_| {
                     crate::mentions::Reads::of_service(document_reads.clone(), changes.clone())
                 }),
                 notices: Some(crate::notifications::RoleNotices::of(&notifications)),
@@ -1878,7 +1844,6 @@ impl Session {
             mcp_server: RefCell::new(mcp_server),
             session_services,
             sync,
-            engine,
             view,
             joins: Rc::default(),
             document_reads,
@@ -1890,7 +1855,6 @@ impl Session {
             window_routes,
             membership_fed: std::cell::RefCell::new(None),
             landings,
-            _workspace_keys: channels,
             personal,
             clipboard,
             layout,

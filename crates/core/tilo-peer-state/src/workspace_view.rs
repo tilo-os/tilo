@@ -53,6 +53,85 @@ pub fn workspace_of(resource: &str) -> Option<&str> {
         .filter(|id| !id.is_empty() && !id.contains('/'))
 }
 
+/// What the daemon publishes of a workspace beside its standing, each its own resource
+/// ([`part`]) the shell follows: the readers that need one follow it alone, and the standing's
+/// encoding stays what a shell of another build reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Part {
+    /// The revocations the workspace admitted, a list of
+    /// [`tilo_user_identity::RevocationEntry`]: whom its decisions refuse.
+    Revocations,
+    /// The workspace's records this device reads, by app and route, as its governance decides
+    /// now: a list of pairs.
+    Readable,
+    /// What its calls allow and whose each member device is, a [`CallGateReading`].
+    CallGate,
+    /// Where the devices keeping it are reached, as each signed it: a list of
+    /// [`crate::join::TransportHint`].
+    Keeping,
+}
+
+impl Part {
+    /// Every part, as the daemon publishes them.
+    pub const ALL: [Self; 4] = [
+        Self::Revocations,
+        Self::Readable,
+        Self::CallGate,
+        Self::Keeping,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Revocations => "revocations",
+            Self::Readable => "readable",
+            Self::CallGate => "call-gate",
+            Self::Keeping => "keeping",
+        }
+    }
+}
+
+/// The resource of `workspace`'s `part`.
+#[must_use]
+pub fn part(workspace: &str, part: Part) -> String {
+    format!("{}/{}", resource(workspace), part.name())
+}
+
+/// The workspace and part a [`part`] resource names, when it names one.
+#[must_use]
+pub fn part_of(resource: &str) -> Option<(&str, Part)> {
+    let (workspace, name) = resource
+        .strip_prefix(LIST)?
+        .strip_prefix('/')?
+        .split_once('/')?;
+    let part = Part::ALL.into_iter().find(|part| part.name() == name)?;
+    (!workspace.is_empty()).then_some((workspace, part))
+}
+
+/// What a workspace's calls allow, as [`Part::CallGate`] publishes it: the rule of each channel,
+/// and the person of each member device (by device key), which a channel list reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallGateReading {
+    pub rules: BTreeMap<String, collab_types::calls::CallRule>,
+    pub persons: Vec<([u8; 32], String)>,
+}
+
+impl CallGateReading {
+    /// The gate as [`crate::CallGate`] holds it.
+    #[must_use]
+    pub fn gate(self) -> crate::CallGate {
+        (self.rules, self.persons.into_iter().collect())
+    }
+}
+
+impl From<crate::CallGate> for CallGateReading {
+    fn from((rules, persons): crate::CallGate) -> Self {
+        Self {
+            rules,
+            persons: persons.into_iter().collect(),
+        }
+    }
+}
+
 /// One of the person's workspaces, as [`LIST`] names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listed {

@@ -128,11 +128,6 @@ fn what_an_app_kept_through_its_workspace_outlives_the_session() {
 fn a_record_the_session_keeps_itself_keeps_its_parts_sealed_on_the_shelf() {
     let device = Device::open();
     let bytes = picture();
-    device.content.seal_under(
-        WORKSPACE,
-        APP,
-        Some(tilo_seal::SymmetricKey::generate().expect("a content secret")),
-    );
     let mine = device.content.store(WORKSPACE, APP);
     let reference = mine.put(&bytes).expect("the record's store keeps the part");
     assert!(
@@ -144,11 +139,6 @@ fn a_record_the_session_keeps_itself_keeps_its_parts_sealed_on_the_shelf() {
         Some(bytes.as_slice()),
         "the device that kept the part reads it back"
     );
-
-    // The same bytes kept again are the same reference, and one item: the members' secret, not the
-    // bytes alone, is what derives each keep's key.
-    let again = device.content.store(WORKSPACE, APP).put(&bytes);
-    assert_eq!(again.expect("kept again").as_str(), reference.as_str());
 }
 
 /// What this device does not keep is asked for by the daemon, which asks the workspace's other

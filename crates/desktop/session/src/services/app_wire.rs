@@ -143,9 +143,6 @@ pub(crate) struct Collaboration<'a> {
     pub sync: Option<&'a crate::sync::Client>,
     /// The shell link the device's daemon handed this session, or why it has none.
     pub daemon: tilo_workspace_service::apps::services::DeviceDaemon,
-    /// This session's own workspaces, as its engine holds them, when it has an identity to hold
-    /// them with.
-    pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// How the person's workspaces stand, as the device's daemon publishes them, and the actions
     /// that change them.
     pub view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
@@ -206,7 +203,6 @@ pub(crate) fn start_app_wire(
     let Collaboration {
         sync,
         daemon,
-        engine,
         view,
         fanout,
         records,
@@ -239,9 +235,6 @@ pub(crate) fn start_app_wire(
     // What Browser's asks for vault items are answered with: kept here as well, so a session
     // that holds a workspace's Browser can say so and name who asks its server.
     let item_lending = std::sync::Arc::new(crate::item_lending::ItemLending::default());
-    // The model keys the person's Settings changes are this session's engine's, else the ones its
-    // peer network holds.
-    let engine = engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned());
     // The device's one dispatch as this session's person, over the shell's link: what the
     // session's own callers (its automations, its agent servers, the palette's actions) and the
     // person's other devices reach the workspaces through.
@@ -274,7 +267,6 @@ pub(crate) fn start_app_wire(
             calls_service: calls_service.as_ref(),
             records,
             view: view.as_ref(),
-            engine: engine.as_ref(),
             shell: &shell,
             file_clipboard: &file_clipboard,
             item_lending: &item_lending,
@@ -330,7 +322,6 @@ struct SeatInputs<'a> {
     calls_service: Option<&'a tilo_native_media::NativeMediaService>,
     records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
     view: Option<&'a std::sync::Arc<crate::workspace_view::WorkspaceView>>,
-    engine: Option<&'a std::sync::Arc<crate::engine::Engine>>,
     shell: &'a runtime_collab::ShellClient,
     file_clipboard: &'a std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
     item_lending: &'a std::sync::Arc<crate::item_lending::ItemLending>,
@@ -348,7 +339,6 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         calls_service,
         records,
         view,
-        engine,
         shell,
         file_clipboard,
         item_lending,
@@ -383,9 +373,9 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         live_activities: std::sync::Arc::clone(live_activities),
         launches: Some(std::sync::Arc::clone(&options.launches)),
         keyboard_shortcuts: crate::keyboard_shortcuts::servable(),
-        service_sessions: engine.map(|engine| {
+        service_sessions: view.map(|view| {
             std::sync::Arc::new(crate::service_sessions::ServiceSessions::new(
-                std::sync::Arc::clone(engine),
+                std::sync::Arc::clone(view),
                 std::sync::Arc::clone(item_lending),
                 tilo_session_client::daemon_documents::DaemonShell::new(
                     Ok(shell.clone()),

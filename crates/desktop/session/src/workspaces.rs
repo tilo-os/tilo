@@ -1553,7 +1553,7 @@ impl crate::Shared {
         self.table.follow(
             &mut self.services.borrow_mut(),
             &self.handle,
-            self.engine.as_deref(),
+            self.view.as_deref(),
         );
     }
 

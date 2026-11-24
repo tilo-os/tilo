@@ -11,7 +11,7 @@ use crate::BeforeShell;
 use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
 use crate::{AppActions, Launches, SearchOptions, Service, SessionAction, SessionConfig, Vpn};
-use crate::{capture, controllers, desktop_services, engine, portal_link, surfaces, sync, unlock};
+use crate::{capture, controllers, desktop_services, portal_link, surfaces, sync, unlock};
 use tilo_session_core::desktop::state::DesktopHandle;
 
 /// What a session starts with.
@@ -271,7 +271,6 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 pub(crate) fn start_collaboration(
     options: &Options,
     continuity: crate::platform::fabric::Continuity,
-    engine: Option<std::sync::Arc<engine::Engine>>,
     beside: tilo_network_actor::own_service::Protocols,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
@@ -314,7 +313,6 @@ pub(crate) fn start_collaboration(
                 .clone()
                 .unwrap_or_else(tilo_endpoint_reachability::relays),
         },
-        engine,
         options.asks.as_ref().map(|(asks, _)| asks.clone()),
         beside,
     ) {
@@ -349,27 +347,14 @@ pub(crate) fn open_view(
     crate::device_shell::open(link.clone().ok()?, options.wake.handle())
 }
 
-/// This device's workspaces, holding what the shell shows of them and what a join takes in, kept
-/// beside the session. `None` when this computer has no identity to hold them with, or keeps no state
-/// to keep them in.
-pub(crate) fn open_engine(
-    options: &Options,
-    handle: &DesktopHandle,
-) -> Option<std::sync::Arc<engine::Engine>> {
-    let workspaces: Vec<_> = handle.read(|tree| {
-        tree.workspaces
-            .iter()
-            .filter(|workspace| !workspace.id().is_nil())
-            .map(tilo_desktop_model::Workspace::id)
-            .collect()
-    });
-    match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {
-        Ok(engine) => Some(std::sync::Arc::new(engine)),
-        Err(error) => {
-            tracing::warn!(%error, "this session holds no workspaces");
-            None
-        }
-    }
+/// Where the device's workspace service keeps its workspaces under this session's state: what
+/// the agents tab and the workspaces' records read of the models it runs. `None` for a session
+/// that keeps no state.
+pub(crate) fn service_root(options: &Options) -> Option<std::path::PathBuf> {
+    options
+        .state
+        .as_deref()
+        .map(|state| state.join("tilo").join("workspace-service"))
 }
 
 impl Default for Options {

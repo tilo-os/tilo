@@ -705,7 +705,6 @@ impl Shared {
             tabs: &self.workspace_tabs,
             asks: Some(&self.asker),
             personal: self.personal.as_ref(),
-            engine: self.engine.as_ref(),
             view: self.view.as_ref(),
             landings: &self.landings,
         }

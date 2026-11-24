@@ -230,3 +230,31 @@ impl HostElsewhere {
         postcard::to_allocvec(&self.hint).ok().map(hex::encode)
     }
 }
+
+/// `part` of the workspace `peer` holds, read for the device `device` and encoded as the shell
+/// reads it ([`tilo_peer_state::workspace_view::Part`]).
+///
+/// # Errors
+/// The part does not encode.
+pub fn part(
+    peer: &StatePeer,
+    device: [u8; 32],
+    part: tilo_peer_state::workspace_view::Part,
+) -> Result<Vec<u8>, serde_json::Error> {
+    use tilo_peer_state::workspace_view::{CallGateReading, Part};
+    let now = tilo_clock::wall();
+    match part {
+        Part::Revocations => serde_json::to_vec(&peer.revocations()),
+        Part::Readable => {
+            let mut readable = crate::documents::listing(peer);
+            readable.retain(|(app, document)| {
+                peer.check_document_read(device, app, document, now).is_ok()
+            });
+            serde_json::to_vec(&readable)
+        }
+        Part::CallGate => serde_json::to_vec(&CallGateReading::from(
+            peer.governance().call_gate(now).unwrap_or_default(),
+        )),
+        Part::Keeping => serde_json::to_vec(&peer.governance().keeping_devices()),
+    }
+}

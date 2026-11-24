@@ -28,7 +28,8 @@ use tilo_actions::remote::{
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::workspace_view::{
-    BRANCH, CREATE, DELETE, JOIN, LIST, Listed, MEMBERSHIP, resource,
+    BRANCH, CREATE, DELETE, JOIN, LIST, Listed, MEMBERSHIP, Part, part as part_resource,
+    resource,
 };
 use tilo_workspace_service::apps::services::{PublishedResources, Reading, ResourceWatch};
 use tilo_workspace_service::apps::shell::{
@@ -739,6 +740,16 @@ impl Standing {
                 }
                 Err(error) => {
                     tracing::error!(%workspace, %error, "a workspace's standing does not encode");
+                }
+            }
+            for part in Part::ALL {
+                match standing::part(&peer, cert.device_public_key, part) {
+                    Ok(bytes) => {
+                        readings.insert(part_resource(&workspace.to_string(), part), bytes);
+                    }
+                    Err(error) => {
+                        tracing::error!(%workspace, ?part, %error, "a workspace's part does not encode");
+                    }
                 }
             }
         }

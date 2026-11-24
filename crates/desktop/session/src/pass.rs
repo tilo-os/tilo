@@ -17,29 +17,6 @@ use crate::Error;
 /// drawing is read this often all the same.
 const KEEP_INTERVAL: Duration = Duration::from_millis(100);
 
-/// The content secret the members of the workspace `workspace` hold for the record of `app`, as
-/// this device's engine keeps it: `None` until the keys reach it, when each part is sealed under a
-/// fresh key instead.
-fn secret_of(
-    engine: &crate::engine::Engine,
-    workspace: tilo_desktop_model::WorkspaceId,
-    app: &str,
-) -> Option<tilo_seal::SymmetricKey> {
-    match engine.seal_keys(workspace) {
-        Ok(crate::engine::SealKeys::Here(keys)) => keys.document_content_secret().ok(),
-        Ok(crate::engine::SealKeys::Waiting | crate::engine::SealKeys::NoSecretStore) => None,
-        Err(error) => {
-            // A session that takes no part in the peer network keeps no channel of its
-            // own: what it stores is sealed under a fresh key until it does.
-            tilo_failure::ignored!(
-                "a session with no channel service seals each part under a key of its own",
-                tracing::debug!(%error, %app, "no content secret for a record the session keeps")
-            );
-            None
-        }
-    }
-}
-
 impl Session {
     /// How long this pass may sleep: no longer than `timeout` , and no longer than the next thing
     /// that is due on a clock of its own — a held direction repeating, or a profile the owner asked
@@ -148,15 +125,8 @@ impl Session {
         else {
             return;
         };
-        let front = tilo_desktop_model::WorkspaceId::parse(&workspace);
-        let engine = self.shared.engine.as_deref();
         let content = &self.content;
-        services.lend_content(&mut |app| {
-            if let (Some(id), Some(engine)) = (front, engine) {
-                content.seal_under(&workspace, app, secret_of(engine, id, app));
-            }
-            content.store(&workspace, app)
-        });
+        services.lend_content(&mut |app| content.store(&workspace, app));
     }
 
     /// The person's login is over once a frame reaches the display: the startup is measured and
@@ -743,19 +713,18 @@ impl Session {
         // The person's settings follow them between their devices in the workspace whose only
         // member is them, and the device's are kept in its owner's: what was set since the last
         // pass is written there, and what another device or an agent set there is taken in.
-        let engine = self.shared.engine.as_deref();
-        let identity = engine.map(|engine| {
-            let cert = &engine.identity().device_cert;
-            (cert.user_public_key, cert.device_public_key)
-        });
-        // Whether this device seals writes to a workspace yet: until its keys reach it, a setting
-        // is kept on the device.
+        let view = self.shared.view.as_deref();
+        let identity = view
+            .and_then(|_| crate::sync::device_identity())
+            .map(|identity| {
+                let cert = identity.device_cert;
+                (cert.user_public_key, cert.device_public_key)
+            });
+        // Whether a write to a workspace is sealed yet: the device's daemon seals what it keeps,
+        // so until it keeps the workspace, a setting is kept on the device.
         let sealing = |workspace: &str| {
-            engine
-                .zip(tilo_desktop_model::WorkspaceId::parse(workspace))
-                .is_some_and(|(engine, id)| {
-                    matches!(engine.seal_keys(id), Ok(crate::engine::SealKeys::Here(_)))
-                })
+            view.zip(tilo_desktop_model::WorkspaceId::parse(workspace))
+                .is_some_and(|(view, id)| view.holds(id))
         };
         self.shared.settings.follow(
             &self.shared.daemon,
@@ -892,15 +861,10 @@ impl Session {
         if let Some(shared_input) = &self.shared.keyboard_and_pointer {
             // A drag carried between the person's devices keeps its content in the workspace's,
             // sealed under the secret its members hold, as a record the session keeps itself does.
-            let engine = self.shared.engine.as_deref();
             let content = &self.content;
             let store = |workspace: &str| {
-                let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
-                let app = tilo_desktop_model::ownership::DESKTOP_APP;
-                if let Some(engine) = engine {
-                    content.seal_under(workspace, app, secret_of(engine, id, app));
-                }
-                Some(content.store(workspace, app))
+                tilo_desktop_model::WorkspaceId::parse(workspace)?;
+                Some(content.store(workspace, tilo_desktop_model::ownership::DESKTOP_APP))
             };
             let session = crate::shared_input::Shell {
                 handle: &self.shared.handle,
