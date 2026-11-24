@@ -1350,6 +1350,28 @@ impl Workspaces {
             .held(workspace)
             .map(|reading| read_from(&reading, reader, command))
     }
+
+    /// The resources the store document `document` of `workspace` holds now, by kind and id:
+    /// what search reads of one document at a time, from the store the workspace is read
+    /// through, without its lock. `None` when this server does not know what the workspace is
+    /// read through yet.
+    #[cfg(feature = "agents")]
+    pub(crate) fn held_resources(
+        &self,
+        workspace: &str,
+        document: &str,
+    ) -> Option<Vec<(String, String)>> {
+        use tilo_lock::MutexRecover as _;
+        let reading = self.inner.readings.held(workspace)?;
+        let store = reading.store.lock_recover();
+        Some(
+            store
+                .index()
+                .held(document)
+                .map(|(kind, id)| (kind.to_owned(), id.to_owned()))
+                .collect(),
+        )
+    }
 }
 
 /// Answer a read `command` of an app's record from `reading`'s store, with only what `reader`

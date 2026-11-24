@@ -25,6 +25,13 @@ pub trait Port {
     /// Who places this store's reader fields, as the workspace's one read decision answers. A
     /// port that keeps its store elsewhere (a device's) places them there already.
     fn set_record_reader(&self, _reader: std::sync::Arc<dyn crate::RecordReader>) {}
+
+    /// The resources the store document `document` holds now, by kind and id: what reads one
+    /// document of the store at a time, without reading the store (search). `None` for a port
+    /// that keeps no document of the workspace's store (a window's).
+    fn held(&self, _document: &str) -> Option<Vec<(String, String)>> {
+        None
+    }
 }
 
 /// A store held in this process: everything in it is the device's person's to read. Kept on
@@ -268,6 +275,17 @@ impl Port for LocalPort {
 
     fn set_record_reader(&self, reader: std::sync::Arc<dyn crate::RecordReader>) {
         self.store.borrow_mut().set_record_reader(reader);
+    }
+
+    fn held(&self, document: &str) -> Option<Vec<(String, String)>> {
+        let store = self.store.borrow();
+        Some(
+            store
+                .index()
+                .held(document)
+                .map(|(kind, id)| (kind.to_owned(), id.to_owned()))
+                .collect(),
+        )
     }
 
     fn command(&self, command: Command) -> Result<Reply, String> {

@@ -127,8 +127,8 @@ fn a_conversations_way_back_is_a_control_that_goes_to_the_first_message_unread()
     );
 }
 
-/// A note opened from search in a window as narrow as a phone's comes in front at once: the
-/// hit's `open` reaches the instance, and nobody's hand moved the window, so no push plays.
+/// A note a search hit names, opened in a window as narrow as a phone's, comes in front at once:
+/// the hit's `open` reaches the instance, and nobody's hand moved the window, so no push plays.
 #[test]
 fn a_note_opened_from_search_in_a_narrow_window_lands_in_front_at_once() {
     let mut session = Session::in_window(NOTES, "ada", (420, 860));
@@ -150,10 +150,11 @@ fn a_note_opened_from_search_in_a_narrow_window_lands_in_front_at_once() {
             .contains_key("nav-shell-back"),
         "the list is in front"
     );
-    let anchor = session
-        .index_deltas()
+    // What a hit of the note names, as search reads the workspace's store: the window itself
+    // publishes nothing.
+    session.assert_no_index_delta();
+    let anchor = tilolang_tilo::search::whole(&session.instance_host())
         .into_iter()
-        .flat_map(|delta| delta.upsert)
         .find(|entry| entry.title.contains("Groceries"))
         .map(|entry| entry.resource)
         .expect("search finds the note");

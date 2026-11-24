@@ -755,8 +755,6 @@ struct Opened {
     rows: usize,
     /// What the views sent the window.
     patches: u64,
-    /// The entries the instance published to the session's search index.
-    indexed: usize,
     /// The references to collection items its code built: a loop over every task builds one
     /// per task, and a count or a list of labels the index answers builds none.
     built: u64,
@@ -766,7 +764,8 @@ impl Opened {
     /// The work opening the window of the session `session` did.
     fn of(session: &mut Session) -> Self {
         let rows = session.titles().len();
-        let (indexed, _removed, _reset) = session.index_published();
+        // The window's search index work is the daemon's: opening a window publishes no entry.
+        session.assert_no_index_delta();
         let hosted = session.instance();
         let instance = hosted.instance();
         Self {
@@ -775,7 +774,6 @@ impl Opened {
             surface: hosted.published().len(),
             rows,
             patches: instance.patches_sent(),
-            indexed,
             built: instance
                 .host()
                 .map_or(0, |host| host.runtime().items_built()),
@@ -790,12 +788,11 @@ impl Opened {
             surface,
             rows,
             patches,
-            indexed,
             built,
         } = self;
         format!(
             "{published} documents published ({sweeps} sweeps), {surface} actions on the surface, \
-             {rows} rows, {patches} patches, {indexed} indexed, {built} items built"
+             {rows} rows, {patches} patches, {built} items built"
         )
     }
 }
@@ -804,8 +801,8 @@ impl Opened {
 /// over a thousand tasks and over ten thousand does the same work for the frame that opens it —
 /// the rows it shows, the actions it offers and the documents it publishes — give or take a
 /// constant. Opening is the one step the workspace's size must not reach: a person feels it as
-/// the window appearing. The search index is read off the frame, so its size is the reader's
-/// work, not the open's; it is printed either way.
+/// the window appearing. The search index is the device's daemon's, read from the store, so
+/// opening a window publishes nothing of it.
 fn opening_a_window_does_the_work_the_window_shows(
     seeded: &Rc<tilolang_process::testing::Bus>,
     large: &Rc<tilolang_process::testing::Bus>,
@@ -1045,11 +1042,10 @@ fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
     }
 }
 
-/// What a change to one task re-indexes: the entries of the resources it touched, whatever the
-/// workspace holds. The session's search index keeps an entry per resource; adding one task of
-/// ten thousand adds that task's entry, and the whole set is published again only when the
-/// publication cannot say what moved.
-fn a_change_reindexes_the_resources_it_touched(seeded: &Rc<tilolang_process::testing::Bus>) {
+/// What a change to one task costs the search index: nothing. The device's daemon publishes a
+/// tilolang app's entries, read from the workspace's store one document at a time, so a window's
+/// change — one task of ten thousand — sends no index delta at all.
+fn a_change_indexes_nothing(seeded: &Rc<tilolang_process::testing::Bus>) {
     use ui::winit::keyboard::NamedKey;
 
     let _motion = ui::motion::testing::settled();
@@ -1057,8 +1053,6 @@ fn a_change_reindexes_the_resources_it_touched(seeded: &Rc<tilolang_process::tes
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = opened_at_rest_in(&bus, &route);
     session.settle();
-    // Opening published every entry; what the change publishes is counted from here.
-    session.forget_sent();
 
     session.window.chord(&["ctrl"], "n");
     session.settle();
@@ -1074,17 +1068,7 @@ fn a_change_reindexes_the_resources_it_touched(seeded: &Rc<tilolang_process::tes
         task_in_workspace(&session, "Buy milk", false),
         "the task the entry added is in the workspace"
     );
-
-    let (upserted, dropped, whole) = session.index_published();
-    assert!(
-        !whole,
-        "a change publishes the entries it moved, not every entry again"
-    );
-    assert_eq!(
-        (upserted, dropped),
-        (1, 0),
-        "adding one task of {SEEDED} indexes one entry, not the workspace's"
-    );
+    session.assert_no_index_delta();
 }
 
 /// The boundaries the window's views have rendered since it opened: every app instance the
@@ -1187,11 +1171,8 @@ fn a_task_opened_from_search_shows_its_page(seeded: &Rc<tilolang_process::testin
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
         let mut session = opened_at_rest_in(&bus, &route);
         let today = session.titles();
-        let entries: Vec<_> = session
-            .index_deltas()
-            .into_iter()
-            .flat_map(|delta| delta.upsert)
-            .collect();
+        // The window publishes nothing to search: the daemon reads the store.
+        session.assert_no_index_delta();
         if typed {
             session.window.chord(&["ctrl"], "n");
             session.settle();
@@ -1203,13 +1184,9 @@ fn a_task_opened_from_search_shows_its_page(seeded: &Rc<tilolang_process::testin
                 "the entry's task is in the workspace"
             );
         }
-        // A task of the Inbox, neither due today nor done.
-        let hit = entries
-            .iter()
-            .find(|entry| entry.title == "Item 1" && !today.contains(&entry.title))
-            .expect("a task of the Inbox Today does not show");
-        let title = hit.title.clone();
-        let anchor = hit.resource.clone();
+        // A task of the Inbox, neither due today nor done: what a search hit of it names.
+        let (title, anchor) =
+            inbox_task(&session, &today).expect("a task of the Inbox Today does not show");
         session.instance_mut().reveal(anchor);
         session.settle();
         assert!(
@@ -1233,6 +1210,28 @@ fn a_task_opened_from_search_shows_its_page(seeded: &Rc<tilolang_process::testin
             session.titles()
         );
     }
+}
+
+/// A task the window's `today` rows do not show, as a hit of it names it: the task's title and
+/// the resource a search hit is addressed to, read from the workspace as the window's host reads
+/// it.
+fn inbox_task(session: &Session, today: &[String]) -> Option<(String, String)> {
+    use tilolang_tilo::runtime::Value;
+    let host = session.instance_host();
+    let root = host.root_of(TASKS).ok()?;
+    let Ok(Value::List(items)) = host.runtime().read(&root, "items") else {
+        return None;
+    };
+    items.into_iter().find_map(|item| {
+        let Value::Ref(item) = item else {
+            return None;
+        };
+        let Ok(Value::Text(title)) = host.runtime().read(&item.target, "title") else {
+            return None;
+        };
+        (!today.contains(&title))
+            .then(|| (title, format!("tl:{TASKS}:{}", item.target.id_string())))
+    })
 }
 
 /// The row held open into its item where it stands: the page a person reads there, and the
@@ -1799,12 +1798,12 @@ fn a_step_in_ten_thousand_tasks_lays_out_what_it_changes_and_a_scroll_asks_ahead
 }
 
 /// A task typed into the entry of ten thousand: its keystrokes render the entry, and the task
-/// they add publishes its one entry of the search index.
+/// they add sends no search index delta: the daemon indexes it from the store.
 #[test]
 fn a_task_typed_into_the_entry_renders_the_entry_and_indexes_the_task() {
     let ten_thousand = seeded_tasks(SEEDED);
     typing_in_the_entry_renders_the_entry(&ten_thousand);
-    a_change_reindexes_the_resources_it_touched(&ten_thousand);
+    a_change_indexes_nothing(&ten_thousand);
 }
 
 /// A task of ten thousand checked off, and one retitled on its page: each reaches the window

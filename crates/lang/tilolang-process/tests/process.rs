@@ -26,6 +26,7 @@ use tilolang_process::hosted::{Hosted, Spec};
 use tilolang_process::phrases::Phrases;
 use tilolang_process::testing::{Broker, Bus, Directory, Inbox, Sent};
 use tilolang_tilo::bundle::Bundle;
+use tilolang_tilo::host::Host;
 use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::runtime::Value;
 
@@ -2060,15 +2061,22 @@ fn mail() -> Bundle {
     Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
 }
 
-/// Apply the search index deltas the instance published to the session's index, over its
-/// certified route, as the session's index applies them.
-fn published_index(index: &tilo_workspace_service::search::AppContentIndex, sent: &Sent) {
-    for request in sent.borrow().iter() {
-        if let CollabRequest::PublishSearchIndex { delta_json } = request {
-            index
-                .publish("workspace", "so.tilo.mail", "", delta_json)
-                .expect("the session takes every delta");
-        }
+/// Publish what search holds of the app the instance runs, read from the workspace's store as
+/// the device's daemon reads it ([`tilolang_tilo::search::whole`]): the entries of every resource
+/// of the app that holds text, the test's index keeping them under the app's one slot.
+fn published_index(index: &tilo_workspace_service::search::AppContentIndex, host: &Host) {
+    let published = tilolang_tilo::search::publish_whole(
+        tilo_resource::search_index::Publisher::default(),
+        tilo_resource::search_index::IndexState {
+            generation: 1,
+            secrets_unlocked: None,
+        },
+        tilolang_tilo::search::whole(host),
+    );
+    for delta in &published.deltas {
+        index
+            .publish("workspace", MAIL, "", delta)
+            .expect("the session takes every delta");
     }
 }
 
@@ -2086,12 +2094,25 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
         .stage("a busy inbox");
     settle(&mut host, &mut window);
 
-    // What it published to the session's one index, as the session keeps it.
+    // The window publishes nothing to search: the device's daemon owns the app's entries.
+    assert!(
+        !sent
+            .borrow()
+            .iter()
+            .any(|request| matches!(request, CollabRequest::PublishSearchIndex { .. })),
+        "an open window sends no search entry"
+    );
+
+    // What the daemon reads of the app's store, as the session's one index keeps it.
     let index = std::sync::Arc::new(AppContentIndex::in_memory());
-    published_index(&index, &sent);
+    {
+        let running = host.instances_mut().next().expect("the instance runs");
+        let instance_host = running.instance().host().expect("the instance's store");
+        published_index(&index, &instance_host);
+    }
     assert!(
         !index.contents().visible.is_empty(),
-        "the Mail instance published its conversations and messages"
+        "search holds the Mail app's conversations and messages"
     );
 
     // Search reads that index through its production source: a word that appears only inside a

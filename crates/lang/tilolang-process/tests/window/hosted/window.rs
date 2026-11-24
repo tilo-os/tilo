@@ -870,8 +870,7 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
     );
 }
 
-/// Search finds a chat message by its words, its index keeps only short fields, and the hit
-/// opens the channel the message is in.
+/// Search finds a chat message by its words, and the hit opens the channel the message is in.
 #[test]
 fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
     let mut session = staged(CHAT, "a team's channels");
@@ -881,11 +880,10 @@ fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
         Some("general"),
         "the scenario opens another channel"
     );
-    let entries: Vec<_> = session
-        .index_deltas()
-        .into_iter()
-        .flat_map(|delta| delta.upsert)
-        .collect();
+    // What a hit of the message names, as search reads the workspace's store: the window itself
+    // publishes nothing.
+    session.assert_no_index_delta();
+    let entries = tilolang_tilo::search::whole(&session.instance_host());
     let hit = entries
         .iter()
         .find(|entry| entry.title.contains("third floor"))

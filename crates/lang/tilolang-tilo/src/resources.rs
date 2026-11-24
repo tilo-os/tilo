@@ -785,6 +785,14 @@ impl ResourceStore {
         Rc::clone(&self.inner.port)
     }
 
+    /// The resources the store's document `document` holds now, by kind and id: what search
+    /// reads of one document at a time ([`Port::held`]). Empty where the port keeps no document,
+    /// as a window's does.
+    #[must_use]
+    pub fn resources_in(&self, document: &str) -> Vec<(String, String)> {
+        self.inner.port.held(document).unwrap_or_default()
+    }
+
     /// Takes in the types `meta` declares, so its resources are stored as their kinds.
     /// Who places the reader fields this store writes, as the workspace's one read decision
     /// answers: what a host gives it where it gives the store the workspace's access.
