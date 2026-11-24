@@ -28,8 +28,64 @@ pub(super) fn launch(
     sockets: &Sockets,
     original: &super::original::OriginalLaunch,
 ) -> Result<Launch, String> {
+    let (mut command, launcher) = command(apps, app, workspace, sockets, original)?;
+    command.arg("--wayland-socket").arg(wayland_socket()?);
+    // The launcher waits here until the caller has recorded its pid, so it
+    // can never connect before the broker could attest it.
+    let registration = launcher::launch_hold::install(&mut command)
+        .map_err(|error| format!("refusing to launch: the launcher's launch hold: {error}"))?;
+    let child = command
+        .spawn()
+        .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
+    Ok(Launch {
+        pid: child.id(),
+        child,
+        registration: Some(registration),
+    })
+}
+
+/// Start `app`'s connector for `origin` in `workspace`: the app's own launch with no window
+/// (`tilo-launcher run --tilolang-connector <origin>`), in the sandbox its signed manifest
+/// declares for that origin, handed `socket` as its own service through the launch hold.
+pub(super) fn connector(
+    apps: &Apps,
+    app: &InstalledApp,
+    workspace: &str,
+    sockets: &Sockets,
+    original: &super::original::OriginalLaunch,
+    (origin, socket): (&str, std::os::fd::BorrowedFd<'_>),
+) -> Result<std::process::Child, String> {
+    let (mut command, launcher) = command(apps, app, workspace, sockets, original)?;
+    // A connector draws nothing, opens nothing and reads no record: no display goes with it.
+    command.arg("--tilolang-connector").arg(origin);
+    let hold = launcher::launch_hold::install(&mut command)
+        .map_err(|error| format!("{}'s connector has no launch hold: {error}", app.app_id))?;
+    let child = command
+        .spawn()
+        .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
+    drop(command);
+    if let Err(error) = hold.release_with_window_link(socket) {
+        let mut child = child;
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!(
+            "{}'s connector was not released: {error}",
+            app.app_id
+        ));
+    }
+    Ok(child)
+}
+
+/// The launcher's command for `app` in `workspace`, as installed, with the person's grants and
+/// the profile's services, and the launcher it runs: a window or a connector adds its own.
+fn command(
+    apps: &Apps,
+    app: &InstalledApp,
+    workspace: &str,
+    sockets: &Sockets,
+    original: &super::original::OriginalLaunch,
+) -> Result<(Command, PathBuf), String> {
     let launcher = resolve_launcher(&apps.launcher_candidates)?;
-    let wayland = wayland_socket()?;
     let runtime_dir = service_directory(&apps.root, sockets)
         .map_err(|error| format!("refusing to launch: the launcher's services: {error}"))?;
     let identity = tilo_identity::store::selected_identity_path(workspace)
@@ -46,9 +102,7 @@ pub(super) fn launch(
         .arg("--app-id")
         .arg(app.app_id.as_str())
         .arg("--expected-package-hash")
-        .arg(&original.package_hash)
-        .arg("--wayland-socket")
-        .arg(&wayland);
+        .arg(&original.package_hash);
     if let Some(identity) = identity {
         command.arg("--identity").arg(identity);
     }
@@ -81,18 +135,7 @@ pub(super) fn launch(
             command.env_remove(name);
         }
     }
-    // The launcher waits here until the caller has recorded its pid, so it
-    // can never connect before the broker could attest it.
-    let registration = launcher::launch_hold::install(&mut command)
-        .map_err(|error| format!("refusing to launch: the launcher's launch hold: {error}"))?;
-    let child = command
-        .spawn()
-        .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
-    Ok(Launch {
-        pid: child.id(),
-        child,
-        registration: Some(registration),
-    })
+    Ok((command, launcher))
 }
 
 /// The host session's Wayland socket, which the launcher binds into the

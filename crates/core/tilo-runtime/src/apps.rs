@@ -34,6 +34,8 @@ use tilo_workspace_service::apps::{
 };
 
 #[cfg(target_os = "linux")]
+mod connectors;
+#[cfg(target_os = "linux")]
 mod instances;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -81,6 +83,9 @@ pub struct Apps {
     /// The tilolang instances this daemon starts itself, with no session.
     #[cfg(target_os = "linux")]
     instances: instances::Instances,
+    /// The origin connectors this device runs for its tilolang apps' instances.
+    #[cfg(target_os = "linux")]
+    connectors: connectors::Connectors,
 }
 
 /// Where a launch reads what the person granted the app it starts: the
@@ -143,6 +148,8 @@ impl Apps {
             data_home,
             #[cfg(target_os = "linux")]
             instances: instances::Instances::new(profile, launcher_candidates.clone()),
+            #[cfg(target_os = "linux")]
+            connectors: connectors::Connectors::default(),
             #[cfg(target_os = "linux")]
             launcher_candidates,
             launched: Arc::default(),
@@ -241,9 +248,10 @@ impl Apps {
     ) -> Result<std::os::unix::net::UnixStream, String> {
         #[cfg(target_os = "linux")]
         return {
-            let view = self
-                .instances
-                .open_view(caller, app, workspace, record, reveal)?;
+            let origin = self.origin_connection(app, workspace)?;
+            let view =
+                self.instances
+                    .open_view(caller, (app, workspace, origin), record, reveal)?;
             self.processes()?
                 .show_page(app, workspace, view)
                 .map_err(|error| format!("the view's window: {error}"))
@@ -421,6 +429,78 @@ impl Apps {
         }
     }
 
+    /// The connection an instance of `app` in `workspace` reaches its origin's connector over,
+    /// starting the connector when none runs: `None` for an app whose types hold no outside
+    /// service's resources, or that is no tilolang app.
+    ///
+    /// # Errors
+    /// The app is not installed here, declares more than one origin, or its connector cannot
+    /// start ([`Self::start_connector`]).
+    #[cfg(target_os = "linux")]
+    fn origin_connection(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Result<Option<std::os::fd::OwnedFd>, String> {
+        // Any other app is refused where its instance would start, saying why.
+        if !crate::device::package_runs::runs_in_process(app) {
+            return Ok(None);
+        }
+        let Some((origin, signs_in)) = crate::device::package_runs::origin_of(app)? else {
+            return Ok(None);
+        };
+        self.connectors
+            .connection((app, &origin, workspace), signs_in, &|socket| {
+                self.start_connector(app, workspace, &origin, socket)
+            })
+            .map(Some)
+    }
+
+    /// Start `app_id`'s connector for `origin` in `workspace`, handed `socket`: the app's own
+    /// launch with no window, in the sandbox its signed manifest declares for that origin.
+    ///
+    /// # Errors
+    /// This device does not serve the workspace, the app is not installed here or its signed
+    /// package does not verify, or no launcher can start it.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn start_connector(
+        &self,
+        app_id: &str,
+        workspace: &str,
+        origin: &str,
+        socket: &std::os::fd::OwnedFd,
+    ) -> Result<std::process::Child, String> {
+        use std::os::fd::AsFd as _;
+        if !self
+            .grants
+            .get()
+            .is_some_and(|source| source.serves(workspace))
+        {
+            return Err(format!(
+                "workspace {workspace} is not served by this runtime"
+            ));
+        }
+        let app = self
+            .installed()
+            .into_iter()
+            .find(|app| app.app_id == app_id)
+            .ok_or_else(|| format!("{app_id} is not installed"))?;
+        let sockets = Sockets {
+            collab: self.sockets.join(COLLAB_SOCKET),
+            identity: self.sockets.join(IDENTITY_SOCKET),
+            blobs: self.sockets.join(BLOB_SOCKET),
+        };
+        let original = self.original_launch(&app)?;
+        linux::connector(
+            self,
+            &app,
+            workspace,
+            &sockets,
+            &original,
+            (origin, socket.as_fd()),
+        )
+    }
+
     fn launchable(&self, app_id: &str) -> Result<InstalledApp, String> {
         let app = self
             .installed()
@@ -518,8 +598,10 @@ impl tilo_workspace_service::search::records::RecordReader for Apps {
         &self,
         app: &str,
         doc: &[u8],
-    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, tilo_workspace_service::search::records::Unread>
-    {
+    ) -> Result<
+        Vec<tilo_resource::search_index::IndexEntry>,
+        tilo_workspace_service::search::records::Unread,
+    > {
         use std::io::Write as _;
         use std::os::unix::process::ExitStatusExt as _;
         use std::process::{Command, Stdio};
@@ -530,7 +612,9 @@ impl tilo_workspace_service::search::records::RecordReader for Apps {
             .iter()
             .find(|path| path.is_file())
             .ok_or_else(|| {
-                Unread::Refused("no tilo-launcher is installed, so no app's records are read".into())
+                Unread::Refused(
+                    "no tilo-launcher is installed, so no app's records are read".into(),
+                )
             })?;
         let installed = self
             .installed()
@@ -594,11 +678,13 @@ impl tilo_workspace_service::search::records::RecordReader for Apps {
         &self,
         app: &str,
         _doc: &[u8],
-    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, tilo_workspace_service::search::records::Unread>
-    {
-        Err(tilo_workspace_service::search::records::Unread::Refused(format!(
-            "{app} reads no record here: this platform starts no app in its record mode"
-        )))
+    ) -> Result<
+        Vec<tilo_resource::search_index::IndexEntry>,
+        tilo_workspace_service::search::records::Unread,
+    > {
+        Err(tilo_workspace_service::search::records::Unread::Refused(
+            format!("{app} reads no record here: this platform starts no app in its record mode"),
+        ))
     }
 }
 
@@ -665,7 +751,11 @@ impl LauncherServices for Apps {
     ) -> Result<Option<tilo_workspace_service::apps::services::WindowlessStart>, String> {
         #[cfg(target_os = "linux")]
         if crate::device::package_runs::runs_in_process(app) {
-            return self.instances.start_with_no_view(app, workspace).map(Some);
+            let origin = self.origin_connection(app, workspace)?;
+            return self
+                .instances
+                .start_with_no_view(app, workspace, origin)
+                .map(Some);
         }
         let _ = (app, workspace);
         Ok(None)

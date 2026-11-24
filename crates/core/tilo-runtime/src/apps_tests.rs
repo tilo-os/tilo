@@ -729,3 +729,59 @@ fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
         "an app that is no tilolang app is launched as it always was"
     );
 }
+
+/// A daemon nobody is signed in at starts an app's origin connector itself: the app's own launch
+/// through the launcher, with the origin named and no display, handed the connector's socket
+/// through its launch hold. An app it may not run there is refused, saying why, and starts
+/// nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_daemon_with_no_session_starts_an_apps_origin_connector_and_refuses_one_it_may_not_run() {
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    store.install(
+        VIEWER,
+        &manifest(VIEWER, "gui", ""),
+        &[("probe", b"binary")],
+    );
+    let asked = root.join("asked");
+    // Records what it was asked, reads its launch hold to the end, and ends.
+    let launcher = tilo_test_env::stand_in(
+        root.join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$*\" > '{asked}'\nexec cat >/dev/null\n",
+            asked = asked.display()
+        ),
+    )
+    .unwrap();
+    let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+    let (_ours, socket) = runtime_portal::origin_connector::pair().unwrap();
+
+    let mut connector = apps
+        .start_connector(VIEWER, WORKSPACE, "imap", &socket)
+        .unwrap();
+    assert!(connector.wait().unwrap().success());
+    let asked = std::fs::read_to_string(&asked).unwrap();
+    assert!(
+        asked.starts_with("run ")
+            && asked.contains(&format!("--app-id {VIEWER}"))
+            && asked.contains(&format!("--workspace-id {WORKSPACE}"))
+            && asked.contains("--tilolang-connector imap"),
+        "the launcher starts the app's connector for its origin: {asked}"
+    );
+    assert!(
+        !asked.contains("--wayland-socket"),
+        "a connector draws nothing: {asked}"
+    );
+
+    for (app, workspace, why) in [
+        (VIEWER, "another-workspace", "not served"),
+        ("so.tilo.unknown", WORKSPACE, "not installed"),
+    ] {
+        let refused = apps
+            .start_connector(app, workspace, "imap", &socket)
+            .map(drop)
+            .unwrap_err();
+        assert!(refused.contains(why), "{refused}");
+    }
+}

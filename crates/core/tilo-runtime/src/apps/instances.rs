@@ -106,13 +106,14 @@ impl Instances {
         &self,
         app: &str,
         workspace: &str,
+        origin: Option<OwnedFd>,
     ) -> Result<WindowlessStart, String> {
         let person = self
             .person
             .get()
             .cloned()
             .ok_or("this device runs no app's code before it is someone's")?;
-        self.start(app, workspace, person, None, None, (None, None))?;
+        self.start((app, workspace, origin), person, None, None, (None, None))?;
         let (started, start) = tokio::sync::oneshot::channel();
         let _ = started.send(Ok(()));
         Ok(start)
@@ -129,8 +130,7 @@ impl Instances {
     pub(crate) fn open_view(
         &self,
         caller: &Caller,
-        app: &str,
-        workspace: &str,
+        (app, workspace, origin): (&str, &str, Option<OwnedFd>),
         record: Option<String>,
         reveal: Option<String>,
     ) -> Result<OpenedView, String> {
@@ -151,8 +151,7 @@ impl Instances {
         let (link, page) = std::os::unix::net::UnixStream::pair()
             .map_err(|error| format!("the view's page link: {error}"))?;
         self.start(
-            app,
-            workspace,
+            (app, workspace, origin),
             person,
             Some(caller.clone()),
             Some(patch),
@@ -165,12 +164,12 @@ impl Instances {
         })
     }
 
-    /// Hand an instance of `app` in `workspace`, with `person` at it, to its process, starting
-    /// the process when none runs: shown over `patch` when it has one, opened for `view`.
+    /// Hand an instance of `app` in `workspace`, with `person` at it and reaching its origin's
+    /// connector over `origin` when its app has one, to its process, starting the process when
+    /// none runs: shown over `patch` when it has one, opened for `view`.
     fn start(
         &self,
-        app: &str,
-        workspace: &str,
+        (app, workspace, origin): (&str, &str, Option<OwnedFd>),
         person: String,
         view: Option<Caller>,
         patch: Option<OwnedFd>,
@@ -192,7 +191,7 @@ impl Instances {
                 patch,
                 collaboration,
                 identity,
-                origin: None,
+                origin,
                 content: None,
                 chooser: None,
                 clipboard: None,
