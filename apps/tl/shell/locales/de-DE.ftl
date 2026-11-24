@@ -466,11 +466,6 @@ d-3ezewqgy = Leiste
     .w-top-bar = Obere Leiste
 
 d-pvl6wwx6 = Leistenteil
-    .w-overview = Übersicht
-    .w-undo-layout-change = Layoutänderung zurücknehmen
-    .w-redo-layout-change = Layoutänderung wiederholen
-    .w-settings = Einstellungen
-    .w-about-this-computer = Über diesen Computer
     .w-tilo = Tilo
 
 d-vidcax4k = Arbeitsbereichsmenü
@@ -563,7 +558,20 @@ d-i4odzov3 = Anheften~present
 
 d-u2tma44r = Gerätebereich
     .w-devices = Geräte
+    .w-here-now = Jetzt hier
+    .w-away = Abwesend
     .w-nearby-send = In der Nähe senden
+    .w-offers-this-keep-it-in = { $peer } bietet das an; behalte es in { $name }
+    .w-offers-this = { $peer } bietet das an
+    .w-keep-it = Behalten
+    .w-no-folder-here-takes-the-file = Kein Ordner hier nimmt die Datei
+    .w-turn-down = Ablehnen
+    .w-stop = Stopp
+    .w-it-did-not-finish = Es ist nicht fertig geworden
+    .w-try-again = Erneut versuchen
+    .w-kept-here = Hier behalten
+    .w-sent = Gesendet
+    .w-turned-down = Abgelehnt
     .w-no-devices-in-reach = Keine Geräte in Reichweite
 
 d-niotqkfd = Bluetooth weitergeben
@@ -572,6 +580,10 @@ d-niotqkfd = Bluetooth weitergeben
 d-2abiywd2 = Kachel-Editor
     .w-customise-the-panel = Bedienfeld anpassen
     .w-panel-controls = Kacheln des Bedienfelds
+    .w-move-to-the-front = { $control_label } nach vorn holen
+    .w-hide = { $control_label } ausblenden
+    .w-not-on-the-panel = Nicht auf dem Panel
+    .w-show = { $control_label } einblenden
     .w-reset-the-panel = Bedienfeld zurücksetzen
 
 d-zzd3yipu = Leisten
@@ -591,8 +603,6 @@ d-afjfzjl6 = Leiste an der Kante
     .w-top-bar = Obere Leiste
 
 d-su7ogm3c = Obere Leiste
-
-d-37bjhdfb = In Ruhe
 
 d-6a3axsap = Oberfläche
 
@@ -683,6 +693,9 @@ d-gke2gvrj = Banner ganz
     .w-open = Öffnen
 
 d-wh7n4fhq = Bannerzeile
+    .w-answer = Antworten
+    .w-decline = Ablehnen
+    .w-snooze = Später
     .w-read = Lesen
     .w-dismiss = Verwerfen
 
@@ -709,39 +722,10 @@ d-7nxhynyj = Bild
 d-nxpbvfox = Fensterplatz
 
 d-6l3wldtm = Fenstermenü
-    .w-reveal = Einblenden
-    .w-it-is-in-front-already = Es ist schon vorn
-    .w-exit-full-screen = Vollbild verlassen
-    .w-full-screen = Vollbild
-    .w-restore = Wiederherstellen
-    .w-fill-the-strip = Streifen füllen
-    .w-snap-back = Zurückdocken
-    .w-float-this-window = Fenster schweben lassen
-    .w-half-the-strip = Halber Streifen
-    .w-narrow = Schmal
-    .w-normal = Normal
-    .w-wide = Breit
-    .w-every-window-the-same = Alle Fenster gleich
-    .w-wider = Breiter
-    .w-as-wide-as-it-gets = Breiter geht nicht
-    .w-narrower = Schmaler
-    .w-as-narrow-as-it-gets = Schmaler geht nicht
-    .w-move-left = Nach links
-    .w-move-right = Nach rechts
-    .w-new-tab-of-this-app = Neuer Tab dieser App
-    .w-move-to-a-new-strip = In einen neuen Streifen
-    .w-rename = Umbenennen
-    .w-split-right = Rechts teilen
-    .w-new-group = Neue Gruppe
-    .w-unpin-window = Fenster lösen
-    .w-pin-window = Fenster anheften
-    .w-stop-controlling-the-desktop = Desktop-Steuerung beenden
-    .w-close-tab = Tab schließen
-    .w-close-this-window = Fenster schließen
-    .w-rename-this-window = Fenster umbenennen
-    .w-a-new-name = Ein neuer Name
     .w-this-window = Dieses Fenster
     .w-go-there = Dorthin
+    .w-move-to = Nach { $strip_name } verschieben
+    .w-move-to-2 = Nach { $name } verschieben
     .w-close = Schließen
 
 d-6nn35yb7 = Gefunden
@@ -757,6 +741,8 @@ d-luuijvwf = Tastenhinweise Launcher
     .w-up = Hoch
     .w-down = Runter
     .w-choose = Wählen
+    .w-tab = Tab
+    .w-next-group = Nächste Gruppe
     .w-enter = Eingabe
     .w-open = Öffnen
     .w-esc = Esc
@@ -841,6 +827,13 @@ d-wvxjuiww = Tonbereich
     .w-unmute-the-microphone = Mikrofon einschalten
     .w-mute-the-microphone = Mikrofon stummschalten
     .w-microphone = Mikrofon
+    .w-playing-here = Spielt hier
+    .w-playing = Spielt
+    .w-paused = Pausiert
+    .w-unmute = Ton für { $application } einschalten
+    .w-mute = Ton für { $application } ausschalten
+    .w-play-through = { $application } zu Ende spielen
+    .w-recording-here = Nimmt hier auf
 
 d-thduakjg = Netzwerkbereich
     .w-wi-fi = WLAN
@@ -849,6 +842,9 @@ d-thduakjg = Netzwerkbereich
     .w-cable-unplugged = Kabel nicht angeschlossen
     .w-wi-fi-is-off = WLAN ist aus
     .w-scanning-for-networks = Netzwerke werden gesucht …
+    .w-known = Bekannt
+    .w-secured = Gesichert
+    .w-open = Offen
     .w-enter-the-password-for = Gib das Passwort für { $password_for } ein
     .w-password = Passwort
     .w-join = Verbinden
@@ -857,12 +853,22 @@ d-thduakjg = Netzwerkbereich
     .w-join-a-network-that-does-not = Einem Netzwerk beitreten, das seinen Namen nicht sendet
     .w-network-name = Netzwerkname
     .w-saved-networks = Gespeicherte Netzwerke
+    .w-joins-by-itself = Tritt von selbst bei
+    .w-saved = Gemerkt
+    .w-this-network = Dieses Netzwerk
+    .w-stop-joining-by-itself = Nicht mehr von selbst beitreten
+    .w-join-by-itself = Von selbst beitreten
+    .w-forget-this-network = Dieses Netzwerk vergessen
 
 d-zjz5sskl = Bluetooth-Bereich
     .w-bluetooth = Bluetooth
     .w-bluetooth-is-off = Bluetooth ist aus
+    .w-connected = Verbunden
+    .w-paired = Gekoppelt
+    .w-forget-this-device = Dieses Gerät vergessen
     .w-stop-looking = Suche beenden
     .w-look-for-devices = Nach Geräten suchen
+    .w-in-reach = Erreichbar
     .w-no-devices-found = Keine Geräte gefunden
 
 d-lcjohgdk = Akkulinie
@@ -902,16 +908,18 @@ d-2fofsa7f = Leistenfenster
     .w-nothing-here = Nichts hier
 
 d-p5wzoqr5 = Fensterbedienelemente
+    .w-this-window = Dieses Fenster
     .w-narrow = Schmal
     .w-normal = Normal
     .w-wide = Breit
     .w-bring-to-front = Nach vorn holen
     .w-unpin-window = Fenster lösen
     .w-pin-window = Fenster anheften
+    .w-move-into-as-a-tab = Als Tab nach { $window_name } verschieben
+    .w-move-to = Nach { $name } verschieben
     .w-restore = Wiederherstellen
     .w-maximize = Maximieren
     .w-close = Schließen
-    .w-this-window = Dieses Fenster
 
 d-bmd7xmln = Ein Platz für eine Suche
     .doc = Fügt `strip` einen Platz hinzu, der eine Suche nach `text` zeigt, mit den beiden Treffern, die die Notizen-App geantwortet hat, und gibt den Schlüssel des Platzes zurück: der Zustand, in dem ein Platz steht, bis die Person eine der gefundenen Ressourcen wählt.
@@ -1137,6 +1145,10 @@ d-zlo3t3an = Aufnahmestatus
     .w-watching-2 = Sieht zu
 
 d-fcxy4mu5 = Shell-Ansicht
+    .w-new-workspace = Neuer Arbeitsbereich
+    .w-join-a-workspace = Einem Arbeitsbereich beitreten
+    .w-workspace-settings = Einstellungen des Arbeitsbereichs
+    .w-overview = Übersicht
 
 d-54b5rqo4 = Zeilen der Shell
     .w-no-window-here-yet = Noch kein Fenster hier
@@ -1396,21 +1408,33 @@ d-vv7k7lcl = Super-Tasten
 d-fhub73iw = Platzinhalt
 
 d-m2ye55z2 = Arbeitsbereich umbenennen
+    .doc = Benennt den Arbeitsbereich `key` so, wie die Person getippt hat: über das eigene veröffentlichte `rename` des Arbeitsbereichs, damit der Name jedes Gerät und jede Liste von ihm erreicht.
+
 d-m2ye55z2-key = Schlüssel
+
 d-m2ye55z2-name = Name
 
 d-pkrgpzz5 = Leiste umbenennen
+    .doc = Benennt den Streifen `key` so, wie die Person getippt hat: eine ordnende Aktion der Sitzung, damit ein Skript und ein Agent so umbenennen wie ein Druck.
+
 d-pkrgpzz5-key = Schlüssel
+
 d-pkrgpzz5-name = Name
 
 d-jjrvri4g = Launcher-Zeile wählen
+    .doc = Was das Wählen der Zeile tut, die die Person erreicht hat, abgelesen am Wert der Zeile: hier eine Anwendung oder ein Fenster öffnen, eine Zeile ausführen, die die Suche fand, oder eine der eigenen Flächen der Shell.
+
 d-jjrvri4g-choice = Wahl
+
 d-jjrvri4g-current = Aktuell
 
 d-xxr3zm5d = Oberfläche öffnen
+    .doc = Öffnet die Fläche `surface` der Shell (`overview`, `workspaces`, `centre`), wie es die eigenen Bedienelemente der Leiste tun.
+
 d-xxr3zm5d-surface = Oberfläche
 
 d-dgcc5jwo = Launcher schließen
+    .doc = Verlässt den Starter: der Stapel der Flächen geht zurück zur Shell in Ruhe.
 
 d-jt4au2t2 = Leistenteil
     .w-strip-name = Name der Leiste
@@ -1424,48 +1448,115 @@ d-qivd66vw = Leistenliste
     .w-strips = Leisten
     .w-new-strip = Neue Leiste
     .w-done = Fertig
-d-2izlmelg = Fenster nach links verschieben
-    .doc = Verschiebt das Fenster `w` vor das Fenster `before` seines Streifens: einen Platz weiter.
+    .w-history = Verlauf
 
-d-dmy5qp2f = Fenster nach rechts verschieben
-    .doc = Verschiebt das Fenster `w` einen Platz nach hinten: vor das übernächste Fenster oder ans Ende seines Streifens.
+d-dpb7af4j = Meldung
+    .doc = Ob die Meldungsauswahl über den Fenstern steht: die Person wählt das Fenster, um das es in einer Meldung über ein Problem geht (`feedback.tl`).
 
-d-t3wvsnsd = Gleiche Breiten
-    .doc = Gibt jedem Fenster der Zeile denselben Anteil: was „alle Fenster gleich“ tut, wenn die Fenster nebeneinander stehen.
+d-7bxopjro = Fensterwahl einer Meldung
+    .doc = Die Fenster, um die es in der entstehenden Meldung geht, in der Reihenfolge, in der sie gewählt wurden: die eigene Aufzeichnung der Shell, worauf die Person gezeigt hat, damit eine Meldung etwas ist, das sie nachlesen kann.
 
-d-upqjhbml = Streifenmenü
+d-r6satdro = Meldungsbereich
+    .doc = Der Umriss des Rechtecks, das die Person über der Auswahl gezogen hat, als `x, y, Breite, Höhe` in Canvas-Pixeln: leer, solange kein Zug steht.
+
+d-cejnvssb-filter-reporting = Meldungen
+
+d-66jw6ezz = Fenster für eine Meldung wählen
+    .doc = Ein Problem melden: der Bildschirm dunkelt auf den Grund des Desktops ab, jedes Fenster des vorderen Arbeitsbereichs steht als Karte mit seinem eigenen lebenden Bild, und die Person wählt das Fenster, um das es in der Meldung geht: ein Klick auf seine Karte oder ein Rechteck, das sie darüber zieht.
+    .noun = { $count ->
+        [one] Fensterwahl einer Meldung
+       *[other] Fensterwahlen einer Meldung
+    }
+
+d-hb2dxuji = Schlüssel
+
+d-hu4bokd4 = Titel
+
+d-abe7lbj4 = App-Name
+
+d-cswol6ca = Zuletzt geöffnet
+    .doc = Was die Person zuletzt im vorderen Arbeitsbereich geöffnet hat, abgelesen am Verlauf des Arbeitsbereichs, was seine Fenster zeigten: jede Ressource einmal, die eigenen zuerst, das Neueste zuerst.
+
+d-rjnlecke = Zuletzt geöffnete Ressource
+    .doc = Eine Ressource, die die Person zuletzt geöffnet hat: was sie ist, ihre App und ihr Typ, und wer sie zuletzt geöffnet hat und wann.
+    .noun = { $count ->
+        [one] zuletzt geöffnete Ressource
+       *[other] zuletzt geöffnete Ressourcen
+    }
+
+d-zyqmwz53 = Schlüssel
+    .doc = Seine Kennung: die Adresse der Ressource.
+
+d-g5lvltn4 = Ressource
+    .doc = Die Ressource, über ihre Adresse, wie `session.open` sie nimmt.
+
+d-33ygyyvo = Titel
+
+d-rgnzsrl5 = Herkunfts-App
+    .doc = Die App, die sie hält, über ihre kanonische Kennung.
+
+d-qegnrgvk = App-Titel
+    .doc = Der Name dieser App.
+
+d-wpv5ccaw = Art
+    .doc = Ihr Typ, so wie ihre App ihn veröffentlicht.
+
+d-nk3qn5vg = Von
+    .doc = Wer sie zuletzt geöffnet hat, nach Namen.
+
+d-n77p6zrw = Um
+
+d-5xciib7g = Meine
+    .doc = Ob die Person, die gerade schaut, sie zuletzt selbst geöffnet hat.
+
+d-rjnlecke-filter-at = Um
+
+d-rjnlecke-filter-mine = Meine
+
+d-2cmvxqpt = Problem melden
+    .doc = Beginnt eine Auswahl: worum es in einer Meldung über ein Problem geht, auf dem ganzen Bildschirm gewählt.
+
+d-fipjigt5 = Fenster für die Meldung wählen
+    .doc = Das Fenster `key` ist das, um das es in der Meldung geht: es tritt der Meldung bei, die Auswahl schließt sich, und das Feld der Meldung öffnet sich über dem Fenster, die Person frei, auf den falschen Teil davon zu zeigen.
+
+d-fipjigt5-key = Fenster
+
+d-y6cjt65t = Das Fenster wählen, um das es in einer Meldung geht
+    .doc = Das Rechteck `area`, das die Person über der Auswahl gezogen hat, mit seinen x-, y-, Breiten- und Höhenkoordinaten in Canvas-Pixeln, wählt das Fenster, das es zuerst bedeckt, wie ein Klick auf diese Karte es tut.
+
+d-y6cjt65t-area = Bereich
+
+d-zek2dnmp = Abbrechen
+    .doc = Verlässt die Auswahl ohne etwas: kein Fenster, keine Meldung.
+
+d-otlw645x = Öffnen
+    .doc = Öffnet die zuletzt geöffnete Ressource `address` wieder, neben dem vorderen Fenster, und legt die Fläche weg: dasselbe `open`, das ein Agent und ein Druck auf einen Verweis ausführen.
+
+d-otlw645x-address = Adresse
+
+d-5giytccr = Zuerst öffnen
+    .doc = Die Arbeit von Eingabe auf einer Suchanfrage: die erste App, die der Text findet, öffnet sich, sodass „no“ tippen und Eingabe drücken Notizen öffnet; eine Anfrage, die keine App nennt, ist das, was die Suche überall beantwortet, wie Eingabe es immer für das getan hat, was die eigenen Zeilen der Shell nicht halten.
+
+d-d63pkwee = Zuletzt geöffnet an einem Nachmittag
+    .doc = Adas Öffnungen an einem Nachmittag und zwei von Mia, das Neueste zuerst, wie die Sitzung sie auflistet.
+
+d-7ugeomrq = Meldungsauswahl
+    .w-what-the-report-is-about = Worum es in der Meldung geht
+    .w-nothing-is-open-to-report-about = Nichts offen, worüber sich melden ließe
+    .w-click-the-window-that-isn-t = Klicke das Fenster an, das nicht funktioniert
+    .w-nothing-is-open-to-report-about-2 = Nichts offen, worüber sich melden ließe.
+    .w-click-the-window-that-isn-t-2 = Klicke das Fenster an, das nicht funktioniert, oder ziehe darüber.
+    .w-cancel = Abbrechen
+
+d-lcq7ufsf = Verlauf
+    .w-clear = Leeren
+    .w-nothing-opened-lately = Zuletzt nichts geöffnet
+    .w-what-you-open-shows-up-here = Was du öffnest, erscheint hier
+
+d-6eidrgir = Verlaufszeile
+
+d-o5w6ulql = Hinweise über Fenstern
+
+d-b5qgd2ou = Streifenleiste
+    .w-of = { $number } von { $len }
     .w-new-strip = Neuer Streifen
-    .w-move-left = Nach links
-    .w-move-right = Nach rechts
-    .w-delete-this-strip = Diesen Streifen löschen
-    .w-the-workspace-keeps-its-last-strip = Der Arbeitsbereich behält seinen letzten Streifen
-
-d-t52klmxp = Hinweis
-    .w-dismiss = Verwerfen
-
-d-spqug252 = Startkarten
-    .w-start-something = Fang etwas an
-    .w-only-you-see-what-you-make = Nur du siehst, was du hier machst, bis du jemanden einlädst.
-    .w-notes = Notizen
-    .w-write-ideas-down = Schreib Ideen auf
-    .w-tasks = Aufgaben
-    .w-write-down-what-needs-doing = Schreib auf, was getan werden muss
-    .w-invite-people = Leute einladen
-    .w-work-on-this-with-someone = Arbeite mit jemandem daran
-    .w-catch-up = Aufholen
-    .w-see-what-changed-and-why = Sieh, was sich geändert hat und warum
-    .w-arrows = Pfeile
-    .w-move = Bewegen
-    .w-enter = Eingabe
-    .w-open = Öffnen
-    .w-super = Super
-    .w-n = N
-    .w-every-app = Jede App
-    .w-open-an-app = Eine App öffnen
-
-d-7aze4rqi = Fensterleisten-Aktionen
-    .w-new-tab-of-this-window = Neuer Tab in diesem Fenster
-    .w-search-this-window = Dieses Fenster durchsuchen
-    .w-history-of-this-window = Verlauf dieses Fensters
-    .w-back-in-this-window = In diesem Fenster zurück
-    .w-forward-in-this-window = In diesem Fenster vorwärts
