@@ -2,15 +2,63 @@
 //! form and the scan form, and the engine work each asks for.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilolang::IdsLock;
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::host_work::EngineHost;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/print-centre/app.tl");
+
+/// The device the test runs on: its content store, of the content it was handed and the files
+/// it kept. The engine answers with addresses into it, and the app names the files there.
+#[derive(Clone, Default)]
+struct Device {
+    content: Rc<RefCell<HashMap<String, Vec<u8>>>>,
+}
+
+impl Device {
+    /// `bytes` held at `hash`, as content the engine's answers name.
+    fn holding(&self, hash: &str, bytes: &[u8]) {
+        self.content.borrow_mut().insert(hash.to_owned(), bytes.to_vec());
+    }
+}
+
+impl BlobHost for Device {
+    fn read(&self, hash: &str) -> Option<Vec<u8>> {
+        self.content.borrow().get(hash).cloned()
+    }
+
+    fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
+        Ok(Vec::new())
+    }
+
+    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
+        Err("this test writes no files out".to_owned())
+    }
+
+    fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+        // The content's own address: the same bytes are one file, as a content store keeps them.
+        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in bytes {
+            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let hash = format!("k{digest:x}");
+        self.content
+            .borrow_mut()
+            .insert(hash.clone(), bytes.to_vec());
+        Ok(FileValue::new(
+            name,
+            media,
+            i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            hash,
+        ))
+    }
+}
 
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
@@ -170,7 +218,14 @@ impl Installed {
             .map(|action| (action.name.clone(), action.id.clone()))
             .collect();
         let sent = Sent::default();
-        host.runtime().set_invoker(sent.clone());
+        host.runtime().set_foreign_invoker(sent.clone());
+        // What the engine's answers name: the chosen document's bytes, the scanned page's, and
+        // the pages it wrote as one PDF.
+        let device = Device::default();
+        device.holding("h1", b"%PDF-1.4\n% the document being printed\n");
+        device.holding("page1", b"\x89PNG\r\n\x1a\n% the scanned page\n");
+        device.holding("pdf1", b"%PDF-1.4\n% the scanned document\n");
+        host.runtime().set_blobs(device);
         host.runtime().set_reading(&printers(), PRINTERS).expect("the printers read");
         host.runtime().set_reading(&scanners(), SCANNERS).expect("the scanners read");
         let engine = Engine::default();
@@ -216,12 +271,13 @@ impl Installed {
     }
 }
 
+/// The words the page shows: each node's text, its title and the label a described component
+/// reads by.
 fn words(node: &UiNode, into: &mut Vec<String>) {
-    if let Some(Value::Text(text)) = node.props.get("value") {
-        into.push(text.clone());
-    }
-    if let Some(Value::Text(title)) = node.props.get("title") {
-        into.push(title.clone());
+    for prop in ["value", "title", "label", "text", "message", "action"] {
+        if let Some(Value::Text(text)) = node.props.get(prop) {
+            into.push(text.clone());
+        }
     }
     for child in &node.children {
         words(child, into);
@@ -236,6 +292,13 @@ fn shown(view: &ViewInstance) -> Vec<String> {
 
 fn has(view: &ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text == wanted)
+}
+
+/// Pick `value` for the window's `state`, as the person does, and let the view run again: the
+/// window draws what the person picked at its next turn.
+fn pick(window: &mut ViewInstance, state: &str, value: Value) {
+    window.set_view_state(state, value);
+    window.poll_patches().expect("the window runs again");
 }
 
 fn contains(view: &ViewInstance, wanted: &str) -> bool {
@@ -254,12 +317,12 @@ fn the_overview_shows_the_printers_their_supplies_and_what_prints() {
 #[test]
 fn the_queue_shows_the_active_jobs_and_the_history_the_finished_ones() {
     let app = Installed::new();
-    let window = app.window();
-    window.set_view_state("place", Value::text("queue"));
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("queue"));
     assert!(contains(&window, "Report"));
     assert!(!contains(&window, "Invoice"), "a printed job is history");
 
-    window.set_view_state("place", Value::text("history"));
+    pick(&mut window, "place", Value::text("history"));
     assert!(contains(&window, "Invoice"));
     assert!(contains(&window, "Lost"));
 }
@@ -267,8 +330,8 @@ fn the_queue_shows_the_active_jobs_and_the_history_the_finished_ones() {
 #[test]
 fn diagnostics_names_how_each_printer_stands_and_its_scanners() {
     let app = Installed::new();
-    let window = app.window();
-    window.set_view_state("place", Value::text("diagnostics"));
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("diagnostics"));
     for wanted in ["Accepting jobs", "Reachable", "Paused by a person", "Epson Perfection"] {
         assert!(contains(&window, wanted), "{wanted} shows: {:?}", shown(&window));
     }
@@ -277,23 +340,32 @@ fn diagnostics_names_how_each_printer_stands_and_its_scanners() {
 #[test]
 fn found_printers_are_offered_to_add() {
     let app = Installed::new();
-    let window = app.window();
-    window.set_view_state("place", Value::text("discover"));
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("discover"));
     assert!(has(&window, "Add"));
     assert!(contains(&window, "Studio printer"));
-    app.call(
-        "choose_printer",
-        vec![app.root_value(), Value::text("studio")],
-    );
+    let add = window
+        .tree()
+        .of_kind("ui.Button")
+        .into_iter()
+        .find(|button| matches!(button.props.get("label"), Some(Value::Text(text)) if text == "Add"))
+        .map(|button| button.key.clone())
+        .expect("the found printer's Add button");
+    window.press(&add).expect("the button adds the printer");
     let asked = app.sent.asked("add");
-    assert!(asked.is_empty() || true);
+    assert!(
+        asked
+            .iter()
+            .any(|value| matches!(value, Value::Text(text) if text == "ipp://studio.local/printer")),
+        "the printer it found is the one it adds: {asked:?}"
+    );
 }
 
 #[test]
 fn the_print_form_offers_the_printer_and_what_it_reports() {
     let app = Installed::new();
-    let window = app.window();
-    window.set_view_state("place", Value::text("print"));
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("print"));
     assert!(contains(&window, "Choose a document"));
     assert!(contains(&window, "studio"));
 }
@@ -319,8 +391,8 @@ fn choosing_a_document_on_a_printer_asks_the_engine_for_its_options() {
     );
     let asked = app.engine.asked.borrow().clone();
     assert!(asked.iter().any(|(op, _)| op == "options"), "{asked:?}");
-    let window = app.window();
-    window.set_view_state("place", Value::text("print"));
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("print"));
     assert!(contains(&window, "A4"), "the printer's paper: {:?}", shown(&window));
 }
 
@@ -356,8 +428,8 @@ fn a_scan_keeps_the_page_the_scanner_answered() {
     assert!(app.engine.ops().iter().any(|op| op == "scan"));
     app.call("poll_scan", vec![app.root_value()]);
     app.call("poll_scan", vec![app.root_value()]);
-    let window = app.window();
-    window.set_view_state("place", Value::text("scan"));
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("scan"));
     assert!(contains(&window, "Page"), "{:?}", shown(&window));
 }
 
@@ -367,8 +439,8 @@ fn a_page_is_turned_read_copied_and_removed() {
     app.call("scan_page", vec![app.root_value()]);
     app.call("poll_scan", vec![app.root_value()]);
     app.call("poll_scan", vec![app.root_value()]);
-    let window = app.window();
-    window.set_view_state("place", Value::text("scan"));
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("scan"));
     for wanted in ["Turn", "Read its text", "Remove", "Save this page"] {
         assert!(has(&window, wanted), "{wanted} shows: {:?}", shown(&window));
     }

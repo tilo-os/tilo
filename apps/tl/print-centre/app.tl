@@ -868,7 +868,8 @@ view discover_pane(printers: device.Printers) {
     }
 }
 
-/// The print form before anything is chosen: one press to a document.
+/// The print form before anything is chosen: one press to a document, and the printers this
+/// computer prints to beside it.
 view print_form(p: PrintCentre, printers: device.Printers) {
     ui.EmptyState(
         "Print a document",
@@ -890,6 +891,21 @@ view print_form(p: PrintCentre, printers: device.Printers) {
                 ".txt",
             ],
         )
+    }
+    if printers.queues.is_empty() {
+        ui.Text("No printer is added on this computer.", role: .caption, secondary: true)
+    } else {
+        ui.Section("Printer") {
+            for queue in printers.queues {
+                ui.ListRow(
+                    queue.name,
+                    secondary: queue_words(queue.state),
+                    icon: .printer,
+                ) {
+                    on activate: choose_printer(p, queue.name)
+                }
+            }
+        }
     }
 }
 
