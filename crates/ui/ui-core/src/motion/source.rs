@@ -2,6 +2,7 @@
 //! gets the motion (HIG §9.7).
 
 use crate::tokens::MotionSource;
+use vello::kurbo::Point;
 use winit::event::WindowEvent;
 
 /// The input `event` comes from, for a host that opens and closes surfaces on later frames and needs to
@@ -27,20 +28,52 @@ thread_local! {
         const { std::cell::Cell::new(MotionSource::Action) };
     static LAST_INPUT_AT: std::cell::Cell<Option<crate::time::Instant>> =
         const { std::cell::Cell::new(None) };
+    /// Where the pointer or a finger last was on this thread: the control the person pressed.
+    static LAST_POINTER: std::cell::Cell<Option<Point>> = const { std::cell::Cell::new(None) };
 }
 
 /// How soon after an input a change counts as that input's result: the frame it was handled in and the
 /// one after, wide enough for a model round trip on the UI thread.
 const CAUSED_WITHIN: crate::time::Duration = crate::time::Duration::from_millis(300);
 
-/// Note that `event` is being handled: what it opens or closes follows it ([`input_source`]).
+/// Note that `event` is being handled: what it opens or closes follows it ([`input_source`]). A host
+/// notes where the pointer was with [`note_pointer`] as it hands the event to its widgets, in the
+/// surface's own logical pixels.
 pub fn note_input(event: &WindowEvent) {
-    if matches!(event, WindowEvent::CursorMoved { .. }) {
+    if matches!(
+        event,
+        WindowEvent::CursorMoved { .. } | WindowEvent::Touch(_)
+    ) {
         return;
     }
     if let Some(source) = source_of(event) {
         note_source(source);
     }
+}
+
+/// Where a pointer or finger event puts the pointer, as the event carries it: a host divides by the
+/// scale it takes its input at before it notes the point.
+#[must_use]
+pub fn pointer_of(event: &WindowEvent) -> Option<Point> {
+    match event {
+        WindowEvent::CursorMoved { position, .. } => Some(Point::new(position.x, position.y)),
+        WindowEvent::Touch(touch) => Some(Point::new(touch.location.x, touch.location.y)),
+        _ => None,
+    }
+}
+
+/// Note that the pointer is at `at`: the place a surface opening now comes out of, the control the
+/// person pressed.
+pub fn note_pointer(at: Point) {
+    LAST_POINTER.with(|pointer| pointer.set(Some(at)));
+}
+
+/// Where the pointer or a finger last was, on this thread: the control that asked for what opens
+/// now, for a motion that comes out of it (a window out of the dock icon or the search row the
+/// person pressed).
+#[must_use]
+pub fn last_pointer() -> Option<Point> {
+    LAST_POINTER.with(std::cell::Cell::get)
 }
 
 /// Note that `source` is acting (an action API or agent performing a control is

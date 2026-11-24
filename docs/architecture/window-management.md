@@ -401,8 +401,8 @@ shortcut) and `Motion::context` for what only says where something went
 
 | Transition | Pointer or gesture | Shortcut or action |
 |---|---|---|
-| Open a window | its group's width grows from 0 at its slot while neighbours slide aside; the content fades in and scales 0.96 → 1 | the same: the window arrives when its app is ready, frames after the chord |
-| Close a window | the reverse, drawn from the last frame the client presented, so a dying client never flashes empty | the same, for the same reason |
+| Open a window | it comes out of the control the person pressed — the dock icon or the search row — and grows into its frame while its slot opens and neighbours slide aside | the window arrives where it stands when its app is ready, frames after the chord |
+| Close a window | the reverse, drawn from the last frame the client presented, so a dying client never flashes empty: a window the compositor draws flies back into the control it was asked for from | the same, for the same reason |
 | Move a group (reorder, strip, display) | the group springs to its new rect; neighbours spring to close and open the gap | in its new slot on the next frame; the viewport slides (`fast`) only if the group left the screen |
 | Resize | an edge drag is direct manipulation: the width follows the pointer every frame, a Tilo app lays out again every frame, a client is configured at frame rate and its last buffer is shown unscaled against the fixed edge until it answers ([Resizing a window](#resizing-a-window)) | the new width on the next frame |
 | Maximize / restore | the group's rect springs between its tiled rect and the work area; siblings on that display fade (`fast`) rather than being squashed | the end state on the next frame, no fade |

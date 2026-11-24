@@ -78,7 +78,10 @@ pub use presence::Presence;
 pub use reading::{Reading, ReadingValue};
 pub use rubber_band::RubberBand;
 pub use scroll_to::{ScrollJump, ScrollTo};
-pub use source::{input_source, note_input, note_source, recent_input, source_of};
+pub use source::{
+    input_source, last_pointer, note_input, note_pointer, note_source, pointer_of, recent_input,
+    source_of,
+};
 pub use spec::{Direction, MotionSpec, Pace, Reduced, Shortcut};
 pub use spring::SpringSpec;
 pub(crate) use transition::progress as transition_progress;
