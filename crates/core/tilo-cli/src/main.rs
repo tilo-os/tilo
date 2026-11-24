@@ -1125,15 +1125,6 @@ fn run_hosted(
 ) -> Result<Result<ExitCode>, Cmd> {
     let needs_workspace = || anyhow::anyhow!("name the workspace: -w <name or id>");
     let reach = api::Reach { key_file, json };
-    // Acting as this computer's own device (no key, or the device's own key named), each command
-    // is a call to this computer's daemon, which keeps the device's one session.
-    let as_device = !(key_file.is_none() && api::desktop_socket().is_some())
-        && reach.as_device().unwrap_or(false)
-        && api::entered_workspace(api::Reach::default())
-            .ok()
-            .flatten()
-            .is_some()
-        && acts_as_the_login(&cmd, workspace.is_some());
     Ok(match cmd {
         Cmd::Do {
             in_person,
@@ -1181,24 +1172,6 @@ fn run_hosted(
         }
         other => return Err(other),
     })
-}
-
-/// Whether `cmd` calls Tilo's API, which without a key is as this computer's login: a `do`
-/// in a named workspace or on the account (else it acts on this desktop), an `sdk` naming one,
-/// and every other workspace command.
-fn acts_as_the_login(cmd: &Cmd, named: bool) -> bool {
-    match cmd {
-        Cmd::Do { action, args, .. } => {
-            named
-                || hosted::on_account(action)
-                || args.iter().any(|arg| arg == "-w" || arg == "--workspace")
-        }
-        // A new key is asked of the API server, never of this computer's session: the session
-        // only names the workspace a key is to reach, when `-w` names it by its name.
-        Cmd::Sdk { .. } => named,
-        Cmd::View { .. } => true,
-        other => acts_in_a_workspace(other),
-    }
 }
 
 /// Every command as a page of documentation (`tilo help-markdown`).

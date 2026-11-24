@@ -97,14 +97,6 @@ fn show(json: bool, typed: &Value, said: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// A label as `--label` takes it: `NAME=VALUE`.
-fn label_of(label: &str) -> Result<(String, String), String> {
-    label
-        .split_once('=')
-        .map(|(name, value)| (name.to_owned(), value.to_owned()))
-        .ok_or_else(|| format!("`{label}` is no label: write NAME=VALUE, as customer_id=cus_8121"))
-}
-
 /// The id of the workspace `named` names, by its name or id; none for the account.
 async fn workspace_of(client: &Calls, named: Option<&str>) -> Result<Option<String>> {
     Ok(match named {
@@ -845,7 +837,7 @@ async fn put_in_tree(
         json!({"files": text(&put, "content")})
     };
     let answer = client
-        .act(workspace, "files", "open", &arguments, &title)
+        .act(Some(workspace), "files", "open", &arguments, &title)
         .await?;
     // A pending answer is a change Files has not saved yet: the command follows it and only
     // then says where each file is, so a put that failed is a failure here rather than a path

@@ -21,19 +21,17 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_device_identity::login::{Direction, REPORTED, Step, Ticket};
-use tilo_session_client::Outbox as _;
 use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent};
 use crate::api::Calls;
 pub(crate) use tilo_api::daemon::enter::{
-    LOGIN_ENDED, NOT_LOGGED_IN, UNREACHED, choose_workspace, connect, debug_why, enter_said,
-    host_of, server_of, signed_over_iroh,
+    LOGIN_ENDED, NOT_LOGGED_IN, UNREACHED, choose_workspace, connect, debug_why,
+    host_of, signed_over_iroh,
 };
+#[cfg(test)]
+use tilo_api::daemon::enter::enter_said;
 pub use tilo_device_identity::login::{Device, Place, served_device_key};
-
-/// The site a login names when the device that added this computer names none.
-pub const DEFAULT_SITE: &str = "https://tilo.sh";
 
 /// For tests only: PEM files (separated as `PATH` is) whose certificates
 /// HTTPS also trusts, each as a CA and as that exact server certificate.
@@ -48,10 +46,6 @@ const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where the
 
 /// The HTTPS client every request here goes through.
 static CLIENT: OnceLock<tilo_net::Client> = OnceLock::new();
-
-pub(crate) fn http() -> tilo_net::Client {
-    CLIENT.get_or_init(tilo_net::Client::new).clone()
-}
 
 /// Trust what [`TEST_CA_ENV`] names besides the system's roots, saying so
 /// on stderr, when it is set.
