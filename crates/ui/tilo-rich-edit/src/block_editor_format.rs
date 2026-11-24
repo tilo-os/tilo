@@ -42,6 +42,52 @@ fn points(argument: &str) -> Option<Option<f32>> {
         .map(|points| (points > 0.0).then_some(points))
 }
 
+/// `text` without `removed`, and where each later position lands: each range's end and the
+/// shift every position at or past it takes.
+fn strip_ranges(
+    text: &str,
+    removed: &mut Vec<std::ops::Range<usize>>,
+) -> (String, Vec<(usize, isize)>) {
+    removed.sort_by_key(|range| range.start);
+    let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
+    for range in removed.drain(..) {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+            continue;
+        }
+        merged.push(range);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    let mut taken = 0usize;
+    let mut shifts: Vec<(usize, isize)> = Vec::new();
+    for range in &merged {
+        out.push_str(text.get(cursor..range.start).unwrap_or_default());
+        cursor = range.end;
+        taken = taken.saturating_add(range.end.saturating_sub(range.start));
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "a document's length is far below the width of an isize"
+        )]
+        let shift = -(taken as isize);
+        shifts.push((range.end, shift));
+    }
+    out.push_str(text.get(cursor..).unwrap_or_default());
+    (out, shifts)
+}
+
+/// Where `at` stands after the removals `shifts` names.
+fn shifted(at: usize, shifts: &[(usize, isize)]) -> usize {
+    let shift = shifts
+        .iter()
+        .rev()
+        .find(|(end, _)| *end <= at)
+        .map_or(0, |(_, shift)| *shift);
+    usize::try_from(at.saturating_add_signed(shift)).unwrap_or(0)
+}
+
 impl BlockEditor {
     pub fn toggle_mark(&mut self, mark: Mark) -> bool {
         self.note_edit_anywhere();
@@ -184,6 +230,67 @@ impl BlockEditor {
             block.line.set_marks(spans);
         }
         self.edit_scope.widen(EditScope::Blocks(touched));
+        self.dirty = true;
+        true
+    }
+
+    /// Take every tracked change in the document, keeping the words that were inserted and the
+    /// words that were not deleted, or reject them all, taking back the insertions and keeping
+    /// what was deleted. Each block the change touches is rewritten as one edit.
+    pub fn resolve_changes(&mut self, accept: bool) -> bool {
+        self.note_edit_anywhere();
+        if self.read_only {
+            return false;
+        }
+        let mut touched: Vec<usize> = Vec::new();
+        for (index, block) in self.blocks.iter_mut().enumerate() {
+            let marks = block.line.marks().to_vec();
+            let tracked = marks
+                .iter()
+                .any(|span| matches!(span.mark, Mark::Insertion(_) | Mark::Deletion(_)));
+            if !tracked {
+                continue;
+            }
+            let (dropped, removed): (fn(&Mark) -> bool, fn(&Mark) -> bool) = if accept {
+                (
+                    |mark| matches!(mark, Mark::Insertion(_) | Mark::Deletion(_)),
+                    |mark| matches!(mark, Mark::Deletion(_)),
+                )
+            } else {
+                (
+                    |mark| matches!(mark, Mark::Insertion(_) | Mark::Deletion(_)),
+                    |mark| matches!(mark, Mark::Insertion(_)),
+                )
+            };
+            let text = block.line.value().to_owned();
+            let mut ranges: Vec<std::ops::Range<usize>> = marks
+                .iter()
+                .filter(|span| removed(&span.mark))
+                .map(|span| span.range.start.min(text.len())..span.range.end.min(text.len()))
+                .filter(|range| range.start < range.end)
+                .collect();
+            let (next_text, shifts) = strip_ranges(&text, &mut ranges);
+            let next_marks: Vec<MarkSpan> = marks
+                .into_iter()
+                .filter(|span| !dropped(&span.mark))
+                .filter_map(|span| {
+                    let start = shifted(span.range.start, &shifts);
+                    let end = shifted(span.range.end, &shifts);
+                    (start < end).then(|| MarkSpan::new(start..end, span.mark))
+                })
+                .collect();
+            block.line.set_text(&next_text);
+            block.line.set_marks(next_marks);
+            touched.push(index);
+        }
+        if touched.is_empty() {
+            return false;
+        }
+        let (Some(&first), Some(&last)) = (touched.first(), touched.last()) else {
+            return false;
+        };
+        self.edit_scope
+            .widen(EditScope::Blocks(first..last.saturating_add(1)));
         self.dirty = true;
         true
     }
@@ -471,6 +578,11 @@ impl BlockEditor {
                     named || kind
                 }
             }
+            "changes" => match argument.trim() {
+                "accept" => self.resolve_changes(true),
+                "reject" => self.resolve_changes(false),
+                _ => false,
+            },
             "bullets" => self.toggle_list(false),
             "numbers" => self.toggle_list(true),
             "heading" => match argument.trim().parse::<u8>() {
@@ -628,5 +740,31 @@ mod tests {
         assert_eq!(editor.blocks[0].kind, BlockKind::Heading(2));
         assert!(editor.format_asked(Some("style:Body:6".into())));
         assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
+    }
+    /// A tracked insertion and a tracked deletion are one document's change: accepting keeps
+    /// the inserted words and removes the deleted ones, and rejecting does the opposite. The
+    /// marks go with the change either way.
+    #[test]
+    fn tracked_changes_are_taken_or_rejected() {
+        let changed = || {
+            let block = Block::paragraph("keepadded");
+            block.line.set_marks(vec![
+                MarkSpan::new(0..4, Mark::Deletion("c1".into())),
+                MarkSpan::new(4..9, Mark::Insertion("c2".into())),
+            ]);
+            block
+        };
+
+        let mut accepted = BlockEditor::new();
+        accepted.set_blocks(vec![changed()]);
+        assert!(accepted.format_asked(Some("changes:accept:1".into())));
+        assert_eq!(accepted.blocks[0].text(), "added");
+        assert!(accepted.blocks[0].line.marks().is_empty());
+
+        let mut rejected = BlockEditor::new();
+        rejected.set_blocks(vec![changed()]);
+        assert!(rejected.format_asked(Some("changes:reject:1".into())));
+        assert_eq!(rejected.blocks[0].text(), "keep");
+        assert!(rejected.blocks[0].line.marks().is_empty());
     }
 }

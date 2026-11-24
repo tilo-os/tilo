@@ -342,7 +342,7 @@ template view side_panel(
             } else if panel == "format" {
                 text_format(format_ask, asked)
             } else {
-                review_panel(d)
+                review_panel(d, format_ask, asked)
             }
         }
     }
@@ -502,8 +502,22 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
 }
 
 /// What others proposed for the document, each proposal a card a person accepts or dismisses.
-view review_panel(d: Document) {
+view review_panel(d: Document, format_ask: State<Option<Text>>, asked: State<Int>) {
     stack(gap: .group) {
+        section("Tracked changes") {
+            row(gap: .tight, wrap: true) {
+                ui.Button("Accept all changes", icon: .check) {
+                    on press: set(asked, asked + 1).then(
+                        set(format_ask, "changes:accept:{asked + 1}"),
+                    )
+                }
+                ui.Button("Reject all changes", icon: .x) {
+                    on press: set(asked, asked + 1).then(
+                        set(format_ask, "changes:reject:{asked + 1}"),
+                    )
+                }
+            }
+        }
         std.suggestions(d)
         text(
             "A person or agent that suggests a change to the words leaves it here for you to accept.",

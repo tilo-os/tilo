@@ -1171,7 +1171,11 @@ impl RichTextLine {
                 | Mark::ExternalLink(_)
                 | Mark::ResourceLink(_)
                 | Mark::Underline => (theme.tokens.colors.text_primary, false),
+                // A tracked change says what it did: an insertion is underlined in the accent
+                // ink, a deletion struck in the danger one, until the person takes or rejects it.
+                Mark::Insertion(_) => (theme.tokens.colors.intent.accent_ink, false),
                 Mark::Strikethrough => (theme.tokens.colors.text_primary, true),
+                Mark::Deletion(_) => (theme.tokens.colors.semantic.danger, true),
                 _ => continue,
             };
             for bounds in self

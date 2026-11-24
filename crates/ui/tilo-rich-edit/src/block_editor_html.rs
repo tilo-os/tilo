@@ -166,6 +166,8 @@ fn mark_tags(mark: &Mark) -> Option<(String, &'static str)> {
             ),
             "</span>",
         ),
+        Mark::Insertion(_) => ("<ins>".into(), "</ins>"),
+        Mark::Deletion(_) => ("<del>".into(), "</del>"),
         Mark::Superscript => ("<sup>".into(), "</sup>"),
         Mark::Subscript => ("<sub>".into(), "</sub>"),
         Mark::Size(points) => (

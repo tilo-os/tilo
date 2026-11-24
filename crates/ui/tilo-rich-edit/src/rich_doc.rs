@@ -97,6 +97,8 @@ pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
         ("size", MarkValue::Int(points)) if *points > 0 => {
             Some(Mark::Size(u16::try_from(*points).unwrap_or(u16::MAX).max(1)))
         }
+        ("ins", MarkValue::Str(id)) => Some(Mark::Insertion(id.clone())),
+        ("del", MarkValue::Str(id)) => Some(Mark::Deletion(id.clone())),
         ("size", MarkValue::Str(size)) => size
             .trim()
             .trim_end_matches("pt")
@@ -333,6 +335,8 @@ fn stored_mark(mark: &Mark) -> Option<(&'static str, MarkValue)> {
             "mention",
             MarkValue::Str(mark.reference().filter(|value| !value.is_empty())?),
         ),
+        Mark::Insertion(id) => ("ins", MarkValue::Str(id.clone())),
+        Mark::Deletion(id) => ("del", MarkValue::Str(id.clone())),
         Mark::Superscript => ("super", MarkValue::Bool(true)),
         Mark::Subscript => ("sub", MarkValue::Bool(true)),
         Mark::Size(points) => ("size", MarkValue::Int(i64::from(*points))),

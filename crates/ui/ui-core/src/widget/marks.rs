@@ -45,6 +45,11 @@ pub enum Mark {
     Size(u16),
     /// The run's own face, overriding the block's.
     Font(FontFamily),
+    /// A run someone inserted, tracked as a change: the id of the change as the document keeps
+    /// it, so accepting takes the mark and rejecting takes the words.
+    Insertion(String),
+    /// A run someone deleted, tracked as a change: the words stay until the change is accepted.
+    Deletion(String),
     /// The run's own ink, as RGB.
     Color([u8; 3]),
     /// A band behind the run, as RGB: a highlighter's mark.
@@ -90,6 +95,8 @@ impl Mark {
                 )
                 | (Mark::Size(_), Mark::Size(_))
                 | (Mark::Font(_), Mark::Font(_))
+                | (Mark::Insertion(_), Mark::Insertion(_))
+                | (Mark::Deletion(_), Mark::Deletion(_))
                 | (Mark::Color(_), Mark::Color(_))
                 | (Mark::Highlight(_), Mark::Highlight(_))
         )
@@ -408,6 +415,10 @@ pub struct MarkSegment {
     pub family: Option<FontFamily>,
     /// The run's own ink.
     pub color: Option<[u8; 3]>,
+    /// The tracked change that inserted it.
+    pub insertion: Option<String>,
+    /// The tracked change that deleted it.
+    pub deletion: Option<String>,
     /// The band behind the run.
     pub highlight: Option<[u8; 3]>,
 }
@@ -430,6 +441,8 @@ impl MarkSegment {
             size: None,
             family: None,
             color: None,
+            insertion: None,
+            deletion: None,
             highlight: None,
         }
     }
@@ -486,6 +499,8 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                         }
                     }
                     Mark::Subscript => seg.baseline = BaselineShift::Sub,
+                    Mark::Insertion(id) => seg.insertion = Some(id.clone()),
+                    Mark::Deletion(id) => seg.deletion = Some(id.clone()),
                     Mark::Size(points) => seg.size = Some(*points),
                     Mark::Font(family) => seg.family = Some(*family),
                     Mark::Color(rgb) => seg.color = Some(*rgb),

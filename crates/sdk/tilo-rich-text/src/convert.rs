@@ -50,6 +50,8 @@ pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
             "mention",
             MarkVal::Str(mark.reference().unwrap_or_default()),
         ),
+        Mark::Insertion(id) => ("ins", MarkVal::Str(id.clone())),
+        Mark::Deletion(id) => ("del", MarkVal::Str(id.clone())),
         Mark::Superscript => ("super", MarkVal::Bool(true)),
         Mark::Subscript => ("sub", MarkVal::Bool(true)),
         Mark::Size(points) => ("size", MarkVal::Int(i64::from(*points))),
@@ -70,7 +72,7 @@ pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
 /// The marks the editor can show, by name. A document mark the editor has no
 /// form for (a colour, a comment anchor, a serif family) is neither shown nor
 /// ever written by the editor.
-pub(crate) const EDITOR_MARKS: [&str; 14] = [
+pub(crate) const EDITOR_MARKS: [&str; 16] = [
     "strong",
     "em",
     "underline",
@@ -85,6 +87,8 @@ pub(crate) const EDITOR_MARKS: [&str; 14] = [
     "font",
     "color",
     "highlight",
+    "ins",
+    "del",
 ];
 
 /// A paragraph as the paste vocabulary carries it: kind, text, marks and
