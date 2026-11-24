@@ -26,7 +26,8 @@ pub use recovery_words::{
     unknown_recovery_words,
 };
 pub use secure_store::{
-    BrokerFileProvider, FILE_SECRETS_ENV, SecretProvider, file_secrets_requested,
+    BrokerFileProvider, FILE_SECRETS_ENV, SEALED_FILE_BACKEND, SealedFileProvider, SecretProvider,
+    account_dir_uid, file_secrets_requested,
 };
 pub use tilo_identity_client::PortableBackupInfo;
 

@@ -286,6 +286,155 @@ impl SecretProvider for BrokerFileProvider {
     }
 }
 
+/// The backend this computer keeps each account's root in: its private share sealed at rest with
+/// a key of that account's login, or of a secret of the account's own where it has no login, and
+/// of this computer's device key.
+pub const SEALED_FILE_BACKEND: &str = "sealed-file-v1";
+
+/// A private identity share, sealed at rest: the daemon opens it only while that account is
+/// signed in, and a copy of the identity directory alone opens nothing.
+#[derive(Clone)]
+pub struct SealedFileProvider {
+    files: BrokerFileProvider,
+    key: tilo_seal::SymmetricKey,
+}
+
+impl SealedFileProvider {
+    /// The provider for the identity directory `identity_dir`, which names the account it
+    /// belongs to (`…/accounts/<uid>`).
+    ///
+    /// # Errors
+    /// The directory names no account, or its key cannot be read or made.
+    pub fn for_identity_dir(identity_dir: &Path) -> io::Result<Self> {
+        Ok(Self {
+            files: BrokerFileProvider::new(identity_dir),
+            key: account_seal_key(identity_dir)?,
+        })
+    }
+
+    /// The context a share is sealed under: its locator, so one share never opens as another.
+    fn context<'a>(locator: &'a str) -> tilo_seal::Context<'a> {
+        tilo_seal::Context::new(tilo_seal::Label::FileSecretStore, locator.as_bytes())
+    }
+}
+
+impl SecretProvider for SealedFileProvider {
+    fn protection(&self) -> KeyProtection {
+        KeyProtection::BrokerFile
+    }
+
+    fn backend_id(&self) -> &'static str {
+        SEALED_FILE_BACKEND
+    }
+
+    fn store(&self, locator: &str, secret: &[u8]) -> io::Result<()> {
+        // Sealing is randomized, so the same share is sealed differently each time: answer the
+        // same share this locator already keeps before writing another.
+        match self.load(locator) {
+            Ok(current) if current.as_slice() == secret => return Ok(()),
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "a different key already uses this identity locator",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let sealed = tilo_seal::envelope::seal(&self.key, Self::context(locator), secret)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        self.files.store(locator, &sealed)
+    }
+
+    fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>> {
+        let sealed = self.files.load(locator)?;
+        let opened = tilo_seal::envelope::open(&self.key, Self::context(locator), &sealed)
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("this account's identity share does not open: {error}"),
+                )
+            })?;
+        Ok(opened)
+    }
+
+    fn remove(&self, locator: &str) -> io::Result<()> {
+        self.files.remove(locator)
+    }
+}
+
+/// The account an identity directory belongs to, when it is kept apart for one: the uid under
+/// `accounts/`.
+#[must_use]
+pub fn account_dir_uid(identity_dir: &Path) -> Option<u32> {
+    if identity_dir.parent()?.file_name()? != "accounts" {
+        return None;
+    }
+    identity_dir.file_name()?.to_str()?.parse().ok()
+}
+
+/// The key the account `identity_dir` belongs to seals its shares with: its login name where
+/// the computer has one for the account, else a secret made for the account alone, bound to this
+/// computer's device key.
+fn account_seal_key(identity_dir: &Path) -> io::Result<tilo_seal::SymmetricKey> {
+    let uid = account_dir_uid(identity_dir).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} is no account's identity directory",
+                identity_dir.display()
+            ),
+        )
+    })?;
+    let mut key = blake3::Hasher::new();
+    key.update(b"tilo account identity seal v1\0");
+    key.update(&uid.to_le_bytes());
+    match crate::provisioning::account_login_name(uid) {
+        Some(login) => {
+            key.update(b"login\0");
+            key.update(login.as_bytes());
+        }
+        None => {
+            key.update(b"account secret\0");
+            key.update(&account_own_secret(identity_dir)?);
+        }
+    }
+    let device = fs::read(crate::provisioning::collaboration_identity_paths().device_privkey)
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("this computer's device key cannot be read: {error}"),
+            )
+        })?;
+    key.update(b"device\0");
+    key.update(&device);
+    tilo_seal::SymmetricKey::from_slice(key.finalize().as_bytes())
+        .map_err(|error| io::Error::other(error.to_string()))
+}
+
+/// A secret made for the account `identity_dir` belongs to, kept private in its directory: what
+/// an account the computer has no login for is sealed with.
+fn account_own_secret(identity_dir: &Path) -> io::Result<[u8; 32]> {
+    let path = identity_dir.join("seal.key");
+    match fs::read(&path) {
+        Ok(bytes) => <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "this account's sealing secret is damaged",
+            )
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut secret = [0_u8; 32];
+            getrandom::fill(&mut secret).map_err(|error| io::Error::other(error.to_string()))?;
+            let mut file = tilo_files::native::private::create_new(&path)?;
+            file.write_all(&secret)?;
+            file.sync_all()?;
+            Ok(secret)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn provider_for<'a>(
     identity_dir: &'a Path,
     reference: &SecretReference,
@@ -293,6 +442,9 @@ pub(crate) fn provider_for<'a>(
     match reference.backend.as_str() {
         "secret-service-v1" => Ok(Box::new(SecretServiceProvider::system())),
         "broker-file-v1" => Ok(Box::new(BrokerFileProvider::new(identity_dir))),
+        SEALED_FILE_BACKEND => Ok(Box::new(SealedFileProvider::for_identity_dir(
+            identity_dir,
+        )?)),
         "tpm2-sealed-v1" => Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "this identity is TPM-sealed, but no TPM provider is installed",

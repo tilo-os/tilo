@@ -137,6 +137,43 @@ pub fn account_display_name(uid: u32) -> String {
         .unwrap_or_else(|| format!("User {uid}"))
 }
 
+/// The login name of the Unix account `uid`, when the computer has one: what a per-account
+/// identity's root is sealed with. An account without a login is sealed with a secret of its
+/// own ([`crate::store::SealedFileProvider`]).
+#[cfg(unix)]
+#[must_use]
+pub fn account_login_name(uid: u32) -> Option<String> {
+    use std::ffi::CStr;
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            pwd.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            std::ptr::addr_of_mut!(result),
+        )
+    };
+    if status != 0 || result.is_null() {
+        return None;
+    }
+    let pwd = unsafe { pwd.assume_init() };
+    let username = unsafe { CStr::from_ptr(pwd.pw_name) }
+        .to_string_lossy()
+        .trim()
+        .to_owned();
+    (!username.is_empty()).then_some(username)
+}
+
+/// [`account_login_name`] on a computer without Unix accounts: none.
+#[cfg(not(unix))]
+#[must_use]
+pub fn account_login_name(_uid: u32) -> Option<String> {
+    None
+}
+
 #[cfg(not(unix))]
 pub fn login_account_display_name() -> String {
     std::env::var("USER")
@@ -1535,11 +1572,25 @@ fn import_identity_record(
 ) -> io::Result<PathBuf> {
     match storage {
         IdentityStorage::Files => {
-            let provider = crate::store::BrokerFileProvider::new(identity_dir);
-            crate::store::import_identity_with_provider(identity_dir, id, bytes, &provider)
+            let provider = file_provider(identity_dir)?;
+            crate::store::import_identity_with_provider(identity_dir, id, bytes, provider.as_ref())
         }
         IdentityStorage::Platform => crate::store::import_identity(identity_dir, id, bytes),
     }
+}
+
+/// The file provider an identity in `identity_dir` keeps its private share in: sealed with a key
+/// of the account where the directory is kept apart for one, and its private file alone where it
+/// is not.
+fn file_provider(identity_dir: &Path) -> io::Result<Box<dyn crate::store::SecretProvider>> {
+    if crate::store::account_dir_uid(identity_dir).is_some() {
+        return Ok(Box::new(
+            crate::store::SealedFileProvider::for_identity_dir(identity_dir)?,
+        ));
+    }
+    Ok(Box::new(crate::store::BrokerFileProvider::new(
+        identity_dir,
+    )))
 }
 
 fn protect_identity_record(identity_dir: &Path, storage: IdentityStorage) -> io::Result<()> {
@@ -1561,8 +1612,8 @@ fn protect_identity_record_at(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "identity has no valid id"))?;
     match storage {
         IdentityStorage::Files => {
-            let provider = crate::store::BrokerFileProvider::new(identity_dir);
-            crate::store::secure_identity_with_provider(identity_dir, id, &provider)?;
+            let provider = file_provider(identity_dir)?;
+            crate::store::secure_identity_with_provider(identity_dir, id, provider.as_ref())?;
         }
         IdentityStorage::Platform => {
             crate::store::secure_identity(identity_dir, id)?;
