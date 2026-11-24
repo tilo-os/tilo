@@ -1828,4 +1828,39 @@ mod cases {
             "the note keeps the picture's name beside the address of its bytes"
         );
     }
+
+    /// A note's export names its picture's file as the path it is, in angle brackets: a bare
+    /// Markdown destination cannot hold the space a folder's name may have, and the writer would
+    /// percent-encode it, so a reader would find no such file.
+    #[test]
+    fn an_exported_note_names_its_picture_path_as_it_is() {
+        let n = Notes::new();
+        let note = n.titled("Q3 plan");
+        let picture = n.device.keeping("fox.png", "image/png", &png());
+        n.call(
+            "insert_image",
+            vec![Value::resource(&note), Value::file(picture)],
+        );
+        let exported = match n.call("export_note", vec![Value::resource(&note)]) {
+            InvokeOutcome::Done(Value::File(file)) => (*file).clone(),
+            other => panic!("a note's export: {other:?}"),
+        };
+        let bytes = n.device.read(&exported.hash).expect("the export's bytes");
+        let files = bounded_zip::read_zip_parts(&bytes, &bounded_zip::ZipLimits::default())
+            .expect("the export is an archive");
+        let page = files
+            .iter()
+            .find(|(name, _)| name == "Q3 plan.md")
+            .map(|(_, bytes)| String::from_utf8(bytes.clone()).expect("Markdown is text"))
+            .expect("the note's Markdown");
+        assert!(
+            page.contains("](<Q3 plan/images/fox.png>)"),
+            "the picture's path is the path it is, in angle brackets: {page}"
+        );
+        assert!(
+            files.iter().any(|(name, _)| name == "Q3 plan/images/fox.png"),
+            "and the file it names is in the archive: {:?}",
+            files.iter().map(|(name, _)| name).collect::<Vec<_>>()
+        );
+    }
 }
