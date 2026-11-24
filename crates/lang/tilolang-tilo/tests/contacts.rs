@@ -1080,7 +1080,10 @@ fn a_card_is_written_folded_the_way_the_format_reads() {
     };
     let written = device.text(&four);
     assert!(written.contains("VERSION:4.0"), "{written}");
-    assert!(written.contains("N:Lovelace;Ada ;;;"), "{written}");
+    assert!(
+        written.contains("N:Lovelace;Ada Ada"),
+        "the structured name takes the family name after the last space: {written}"
+    );
 }
 
 /// A birthday a card keeps without its year is kept without one here, and written back without
@@ -1143,10 +1146,17 @@ fn a_birthday_kept_without_its_year_stays_without_one() {
         "{}",
         device.text(&three)
     );
+    let Value::File(alan_three) = call(
+        &ada,
+        "export_contact",
+        vec![Value::resource(&alan), vcard_version(&ada, "v3")],
+    ) else {
+        panic!("export_contact answered no file")
+    };
     assert!(
-        device.text(&three).contains("BDAY:1912-06-23"),
+        device.text(&alan_three).contains("BDAY:1912-06-23"),
         "a day with its year keeps it, with the dashes 3.0 writes: {}",
-        device.text(&three)
+        device.text(&alan_three)
     );
 }
 
@@ -1157,9 +1167,13 @@ fn the_window_sorts_by_organization_and_counts_its_places() {
     let device = Device::default();
     let (ada, root, _) = book(&device);
     let zoe = contact(&ada, &root, "Ada Lovelace");
-    ada.edit(&zoe, "org", &Value::text("Zeta Labs"));
+    let org = {
+        let package = ada.host.package(APP).expect("the contacts package");
+        crate::fixtures::field_id(&package.meta, "Contact", "org")
+    };
+    ada.edit(&zoe, &org, &Value::text("Zeta Labs"));
     let grace = contact(&ada, &root, "Grace Hopper");
-    ada.edit(&grace, "org", &Value::text("Alpha Works"));
+    ada.edit(&grace, &org, &Value::text("Alpha Works"));
     call(
         &ada,
         "group",
