@@ -64,13 +64,32 @@ view workspaces_here() {
                     on press: session.switch_workspace(workspace: w.key)
                 }
             }
-            if not layout.people.is_empty() {
-                ui.Facts {
+            ui.Facts {
+                ui.Fact(access_words(), icon: .lock)
+                if not layout.people.is_empty() {
                     ui.Fact("{layout.people.len()} here", icon: .users)
                 }
             }
         }
     }
+}
+
+/// Who the workspace in front is shared with, naming people while it helps and counting once it
+/// stops: "Shared with Ada and 4 others" is a fact where five names are a wall of text.
+fn access_words() -> Text {
+    let me = device.people.me.name
+    let others = workspace.members.people.filter(m -> m.name() != me)
+    let first = others.first()
+    let name = if let f = first { f.name() } else { "" }
+    let second = if let s = others.at(1) { s.name() } else { "" }
+    let more = others.len() - 1
+    if others.is_empty() {
+        std.say("Only you")
+    } else if others.len() == 1 {
+        std.say("Shared with {name}")
+    } else if others.len() == 2 {
+        std.say("Shared with {name} and {second}")
+    } else { std.say("Shared with {name} and {more} others") }
 }
 
 /// One strip: its windows as places leading to trailing, each at its share of the strip's

@@ -2049,3 +2049,13 @@ d-zx3hotic = Last-Widget
     .w-cpu = CPU
     .w-processor-load = Prozessorlast
     .w-of-gb-memory = { $to_int } von { $to_int2 } GB Speicher
+
+d-q6dyi7r7 = Zugriffsangabe
+    .w-only-you = Nur du
+    .w-shared-with = Geteilt mit { $name }
+    .w-shared-with-and = Geteilt mit { $name } und { $second }
+    .w-shared-with-and-others = Geteilt mit { $name } und { $more } weiteren
+
+d-3ytya6pk = Gesicht-Schaltfläche
+    .w-someone = Jemand
+    .w-follows-you = { $name }, folgt dir

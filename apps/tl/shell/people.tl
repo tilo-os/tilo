@@ -10,10 +10,10 @@ use tilo.workspace as workspace
 /// here reads a copy of presence. Every choice is an action the session publishes, so a person, an
 /// agent and a script follow, wave or write the same way.
 ///
-/// Who else is here, as one api: the faces alone, up to three and then a face counting the
-/// rest, so the group says who is here at a glance and takes no words from the bar. The one
-/// button opens the roster, and its name names the people for assistive technology. With
-/// nobody here it is the people button's own glyph.
+/// Who else is here: each of the first three people as their own face, a press on which opens
+/// their card, with a dot on the face of anyone who follows this person, and then the button that
+/// opens the roster, which counts the rest. Its name names everyone here for assistive
+/// technology. With nobody here it is the people button's own glyph.
 view people_button() {
     let people = layout.people
     if people.is_empty() {
@@ -21,24 +21,49 @@ view people_button() {
             on press: session.toggle_people()
         }
     } else {
-        // Who is here, in the fewest words that name them all: one name, two joined, or the
-        // first and how many others.
-        let one = people.first() ?? LayoutPerson(key: "", name: "People")
-        let others = people.len() - 1
-        let second = people.last() ?? one
-        let label = if others == 0 {
-            "{one.name} is here"
-        } else if others == 1 {
-            "{one.name} and {second.name} are here"
-        } else {
-            "{one.name} and {others} others are here"
+        let shown = device.people.rows.filter(p -> not p.agent).take(3)
+        row(gap: .none, align: .center) {
+            for p in shown {
+                face_button(p)
+            }
+            // Who is here, in the fewest words that name them all: one name, two joined, or the
+            // first and how many others.
+            let one = people.first() ?? LayoutPerson(key: "", name: "People")
+            let others = people.len() - 1
+            let second = people.last() ?? one
+            let label = if others == 0 {
+                "{one.name} is here"
+            } else if others == 1 {
+                "{one.name} and {second.name} are here"
+            } else {
+                "{one.name} and {others} others are here"
+            }
+            let rest = people.len() - shown.len()
+            if rest > 0 {
+                ui.Button(label, icon: .users, count: rest, icon_only: true, role: .bar) {
+                    on press: session.toggle_people()
+                }
+            } else {
+                ui.Button(label, icon: .users, icon_only: true, role: .bar) {
+                    on press: session.toggle_people()
+                }
+            }
         }
-        ui.Button(
-            label,
-            faces: workspace.members.people.filter(m -> people.any(p -> p.name == m.name())),
-            role: .bar,
-        ) {
-            on press: session.toggle_people()
+    }
+}
+
+/// One person here as their face on the bar: a press opens their card, and a dot says they follow
+/// this person.
+view face_button(p: device.Person) {
+    let name = if p.name != "" { p.name } else { std.say("Someone") }
+    let label = if is_follower(p) { std.say("{name}, follows you") } else { name }
+    if let face = face_of(p) {
+        ui.Button(label, faces: [face], icon_only: true, dot: is_follower(p), role: .bar) {
+            on press: device.show_person(device.people, person: p.key)
+        }
+    } else {
+        ui.Button(label, icon: .user, icon_only: true, dot: is_follower(p), role: .bar) {
+            on press: device.show_person(device.people, person: p.key)
         }
     }
 }
