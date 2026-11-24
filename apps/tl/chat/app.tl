@@ -479,7 +479,12 @@ migration action carry_direct_people(all: Conversations) {
 /// [`report_problem`] files in now. What this app has no place for is set aside in a category of its
 /// own instead of dropped: an archived channel, as a channel holding its messages. Each direct
 /// conversation is a direct conversation here too, of the people its id names, and read by them
-/// alone. The native app's own documents are left as they are.
+/// alone. The workspace's skills come too: what each is called, the work it is for, how the work
+/// is done here, the form of its result and the model, under the id it had there and in the order
+/// it stood, with the examples it kept, oldest first, each with what the result was, whether the
+/// person accepted it, what they said and when it was kept. Everything is carried in this one
+/// migration, so the carrying is one change, and one step takes it back. The native app's own
+/// documents are left as they are.
 migration action carry_native_chat(all: Conversations) {
     let earlier = earlier(all)
     // Oldest first: when each was written, the same time by id.
@@ -607,55 +612,30 @@ migration action carry_native_chat(all: Conversations) {
             }
         }
     }
-}
-
-/// The workspace's skills the native Chat kept before this app took its id over, carried into
-/// these once: what each is called, the work it is for, how the work is done here, the form of
-/// its result and the model, under the id it had there and in the order it stood, and the
-/// examples it kept, oldest first, each with what the result was, whether the person accepted
-/// it, what they said and when it was kept. The native app's own document is left as it is; a
-/// document whose examples do not read as records of their own carries nothing, so no skill
-/// comes without the examples it kept.
-migration action carry_native_skills(all: Conversations) {
-    let earlier = earlier(all)
-    let skills = earlier.filter(e -> e.of == "skills")
-    if not skills.any(e -> examples_problem(e) != "") {
-        for e in skills {
-            let skill = all.skills.insert(
-                Skill(
-                    name: e.texts.get("name") ?? "",
-                    work: e.texts.get("work") ?? "",
-                    how: e.texts.get("how") ?? "",
-                    form: e.texts.get("form") ?? "",
-                    model: e.texts.get("model") ?? "",
+    // The workspace's skills, each under the id it had there and in the order it stood, with
+    // the examples it kept, oldest first, and when each was kept there.
+    for e in earlier.filter(e -> e.of == "skills") {
+        let skill = all.skills.insert(
+            Skill(
+                name: e.texts.get("name") ?? "",
+                work: e.texts.get("work") ?? "",
+                how: e.texts.get("how") ?? "",
+                form: e.texts.get("form") ?? "",
+                model: e.texts.get("model") ?? "",
+            ),
+            id: e.id,
+        )
+        for example in e.records.get("examples") ?? [] {
+            skill.examples.insert(
+                Example(
+                    text: example.get("text") ?? "",
+                    accepted: (example.get("accepted") ?? "") == "true",
+                    note: example.get("note") ?? "",
+                    at: (example.get("at") ?? "").to_int() ?? 0,
                 ),
-                id: e.id,
             )
-            // Each example it kept, oldest first, with when it was kept there.
-            for example in e.records.get("examples") ?? [] {
-                skill.examples.insert(
-                    Example(
-                        text: example.get("text") ?? "",
-                        accepted: (example.get("accepted") ?? "") == "true",
-                        note: example.get("note") ?? "",
-                        at: (example.get("at") ?? "").to_int() ?? 0,
-                    ),
-                )
-            }
         }
     }
-}
-
-/// What of the examples the native skill `e` kept cannot be carried: a skill whose examples do
-/// not read as records of their own, or an example that says nothing. Empty when they all read.
-fn examples_problem(e: host.Earlier) -> Text {
-    let kept = e.lists.get("examples") ?? []
-    let held = e.records.get("examples") ?? []
-    if kept.len() != held.len() {
-        "examples that do not read as records"
-    } else if held.any(example -> (example.get("text") ?? "").trim() == "") {
-        "an example that says nothing"
-    } else { "" }
 }
 
 /// Who is in a direct conversation `opener` opens with `who`: the two of them, or `opener` alone

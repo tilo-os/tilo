@@ -55,7 +55,7 @@ conversion = "apps/tl/chat/app.tl:carry_native_chat"
 kind = "chat.skills"
 app = "chat"
 change = "removed"
-conversion = "apps/tl/chat/app.tl:carry_native_skills"
+conversion = "apps/tl/chat/app.tl:carry_native_chat"
 
 [[change]]
 kind = "tilo.moderation"
@@ -110,12 +110,14 @@ kind = "tube.library"
 app = "tube"
 change = "removed"
 conversion = "apps/tl/tube/app.tl:carry_native_tube"
+lost = "The comments the person liked: the tilolang YouTube keeps no like of its own on a comment, so there is nowhere to carry them."
 
 [[change]]
 kind = "tube.watch-history"
 app = "tube"
 change = "removed"
 conversion = "apps/tl/tube/app.tl:carry_native_tube"
+lost = "Where an unfinished video was left: the native app kept it in milliseconds, and the tilolang YouTube keeps it as a share of the video's length, which the carry does not know before the service answers about the video. The video is in the history, watched when it was."
 
 [[change]]
 kind = "mail.mailbox"

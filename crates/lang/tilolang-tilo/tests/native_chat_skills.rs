@@ -1,15 +1,14 @@
 //! The skills a workspace wrote for the native Chat, opened by the tilolang Chat: its migration
-//! carries each over once, with what it is called, the work it is for, how the work is done
-//! here, the form of its result and the model, under the id it had there and in the order it
-//! stood, and the examples it kept, oldest first, each with what the result was, whether the
-//! person accepted it, what they said and when it was kept. A document whose examples do not read
-//! as records of their own carries no skill at all, so none comes without the examples it kept.
-//! The native app's document is read, never written.
+//! carries each over once, as one change, with what it is called, the work it is for, how the
+//! work is done here, the form of its result and the model, under the id it had there and in the
+//! order it stood, and the examples it kept, oldest first, each with what the result was,
+//! whether the person accepted it, what they said and when it was kept. The native app's document
+//! is read, never written.
 //!
-//! The document is built here as the native Skills resource stored it: its record's layout
-//! version and its collection of skills, each an order key and its fields.
+//! `legacy/rust_skills.hex` is what the native Skills resource's own actions wrote: an agent wrote
+//! one skill and the person another, kept examples (one said again, one taken out again), and wrote
+//! and forgot a third.
 
-use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _};
 use tilolang_runtime::{ResourceRef, Value};
 
@@ -21,120 +20,36 @@ const CHAT: (&str, &str) = (
     include_str!("../../../../apps/tl/chat/app.ids"),
 );
 
-/// One skill as the native app kept it: its id, its order key, its name, the work it is for,
-/// how the work is done, the form of its result and its model.
-type Kept = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    Option<&'static str>,
-);
-
-/// One example as the native app kept it: its id, its order key, the result, whether the person
-/// accepted it, what they said and when it was kept.
-type KeptExample = (
-    &'static str,
-    &'static str,
-    &'static str,
-    bool,
-    &'static str,
-    i64,
-);
-
-/// The skills the fixture holds, oldest first.
-const KEPT: [Kept; 2] = [
-    (
-        "skill-weekly",
-        "a",
-        "Weekly report",
-        "Answering a request that asks for a weekly report",
-        "Read the numbers from the sheet.\nSay what moved first.",
-        "Three short paragraphs",
-        Some("Anthropic/claude-research"),
-    ),
-    (
-        "skill-brief",
-        "b",
-        "Brief",
-        "Answering a request for a short brief",
-        "Background first, then the decision.",
-        "",
-        None,
-    ),
-];
-
-/// The examples `skill` kept, oldest first.
-fn examples_of(skill: &str) -> &'static [KeptExample] {
-    match skill {
-        "skill-weekly" => &[
-            (
-                "e1",
-                "a",
-                "Revenue rose 4 %, churn fell.",
-                true,
-                "",
-                1_700_000_000_000,
-            ),
-            (
-                "e2",
-                "b",
-                "This week was a week of many things.",
-                false,
-                "Too vague",
-                1_700_000_100_000,
-            ),
-        ],
-        _ => &[],
-    }
+fn native_documents() -> Vec<(String, AutoCommit)> {
+    crate::fixtures::native_documents(include_str!("legacy/rust_skills.hex"))
 }
 
-/// The native workspace's skills document, as the native Skills resource kept it: the record's
-/// own fields at its root, the skills in a collection, each item an order key and its fields,
-/// and each skill's examples in a collection of its own.
-fn native_documents() -> Vec<(String, AutoCommit)> {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "tilo:version", 1_i64).unwrap();
-    let skills = doc.put_object(ROOT, "skills", ObjType::Map).unwrap();
-    for (id, order, name, work, how, form, model) in KEPT {
-        let entry = doc.put_object(&skills, id, ObjType::Map).unwrap();
-        doc.put(&entry, "k", order).unwrap();
-        let fields = doc.put_object(&entry, "v", ObjType::Map).unwrap();
-        for (field, said) in [("name", name), ("work", work), ("how", how), ("form", form)] {
-            let text = doc.put_object(&fields, field, ObjType::Text).unwrap();
-            doc.splice_text(&text, 0, 0, said).unwrap();
-        }
-        if let Some(model) = model {
-            let text = doc.put_object(&fields, "model", ObjType::Text).unwrap();
-            doc.splice_text(&text, 0, 0, model).unwrap();
-        }
-        doc.put(&fields, "at", 1_700_000_000_000_i64).unwrap();
-        let examples = doc.put_object(&fields, "examples", ObjType::Map).unwrap();
-        for &(example, order, text, accepted, note, at) in examples_of(id) {
-            let entry = doc.put_object(&examples, example, ObjType::Map).unwrap();
-            doc.put(&entry, "k", order).unwrap();
-            let fields = doc.put_object(&entry, "v", ObjType::Map).unwrap();
-            for (field, said) in [("text", text), ("note", note)] {
-                let at = doc.put_object(&fields, field, ObjType::Text).unwrap();
-                doc.splice_text(&at, 0, 0, said).unwrap();
-            }
-            doc.put(&fields, "accepted", accepted).unwrap();
-            doc.put(&fields, "at", at).unwrap();
-        }
-    }
-    vec![("chat.skills".to_owned(), doc)]
+/// The ids the native app gave its skills, in the order it kept them.
+fn native_ids(documents: &[(String, AutoCommit)]) -> Vec<String> {
+    let (_, doc) = &documents[0];
+    let Some((_, skills)) = doc.get(ROOT, "skills").unwrap() else {
+        panic!("the document keeps its skills");
+    };
+    assert_eq!(doc.object_type(&skills).unwrap(), ObjType::Map);
+    let mut ids: Vec<(String, String)> = doc
+        .keys(&skills)
+        .map(|id| {
+            let (_, entry) = doc.get(&skills, id.as_str()).unwrap().unwrap();
+            let order = match doc.get(&entry, "k").unwrap() {
+                Some((automerge::Value::Scalar(order), _)) => order.to_string(),
+                other => panic!("an order key: {other:?}"),
+            };
+            (order, id)
+        })
+        .collect();
+    ids.sort();
+    ids.into_iter().map(|(_, id)| id).collect()
 }
 
 /// Ada's workspace with the tilolang Chat, the native app's `documents` beside it, and its
 /// conversations as the window opens them.
 fn opened(documents: &[(String, AutoCommit)]) -> (Replica, ResourceRef) {
-    let (ada, _) = Replica::new(
-        "ada",
-        crate::fixtures::Workspace::new(),
-        &[CHAT],
-    );
+    let (ada, _) = Replica::new("ada", crate::fixtures::Workspace::new(), &[CHAT]);
     ada.host.runtime().set_earlier(CHAT_APP, documents);
     let all = ada.host.root_of(CHAT_APP).expect("the conversations");
     ada.commit();
@@ -173,10 +88,6 @@ fn number(ada: &Replica, at: &ResourceRef, field: &str) -> i64 {
     }
 }
 
-fn id_of(item: &ResourceRef) -> String {
-    item.item.clone().expect("an item")
-}
-
 /// An example as the test reads it: the result, whether the person accepted it, what they said
 /// and when it was kept.
 type ExampleRow = (String, bool, String, i64);
@@ -193,7 +104,7 @@ type Row = (
     Vec<ExampleRow>,
 );
 
-/// Each skill carried over, as the native app held it.
+/// Each skill carried over.
 fn carried(ada: &Replica, all: &ResourceRef) -> Vec<Row> {
     listed(ada, all, "skills")
         .iter()
@@ -210,7 +121,7 @@ fn carried(ada: &Replica, all: &ResourceRef) -> Vec<Row> {
                 })
                 .collect();
             (
-                id_of(skill),
+                skill.item.clone().expect("an item"),
                 text(ada, skill, "name"),
                 text(ada, skill, "work"),
                 text(ada, skill, "how"),
@@ -222,26 +133,60 @@ fn carried(ada: &Replica, all: &ResourceRef) -> Vec<Row> {
         .collect()
 }
 
-/// The fixture's skills and examples, as they should be carried over.
-fn expected() -> Vec<Row> {
-    KEPT.iter()
-        .map(|(id, _, name, work, how, form, model)| {
-            (
-                (*id).to_owned(),
-                (*name).to_owned(),
-                (*work).to_owned(),
-                (*how).to_owned(),
-                (*form).to_owned(),
-                model.unwrap_or_default().to_owned(),
-                examples_of(id)
-                    .iter()
-                    .map(|(_, _, text, accepted, note, at)| {
-                        ((*text).to_owned(), *accepted, (*note).to_owned(), *at)
-                    })
-                    .collect(),
-            )
-        })
-        .collect()
+fn row(
+    id: &str,
+    [name, work, how, form, model]: [&str; 5],
+    examples: &[(&str, bool, &str, i64)],
+) -> Row {
+    (
+        id.to_owned(),
+        name.to_owned(),
+        work.to_owned(),
+        how.to_owned(),
+        form.to_owned(),
+        model.to_owned(),
+        examples
+            .iter()
+            .map(|(text, accepted, note, at)| ((*text).to_owned(), *accepted, (*note).to_owned(), *at))
+            .collect(),
+    )
+}
+
+/// What the native app showed of its skills, oldest first: the skill its agent wrote, with the
+/// model and form it named, and the one the person wrote; the examples each kept, oldest first
+/// (the one said again last, the one taken out gone); the skill written and forgotten not at all.
+fn expected(documents: &[(String, AutoCommit)]) -> Vec<Row> {
+    let ids = native_ids(documents);
+    let [weekly, brief] = ids.as_slice() else {
+        panic!("the native app kept two skills: {ids:?}");
+    };
+    vec![
+        row(
+            weekly,
+            [
+                "Weekly report",
+                "Answering a request that asks for a weekly report",
+                "Read the numbers from the sheet.\nSay what moved first.",
+                "Three short paragraphs",
+                "Anthropic/claude-research",
+            ],
+            &[
+                ("It was a week of things.", false, "Too vague", 1_700_000_200_000),
+                ("Revenue rose 4 %, churn fell.", true, "Exactly this", 1_700_000_400_000),
+            ],
+        ),
+        row(
+            brief,
+            [
+                "Brief",
+                "Answering a request for a short brief",
+                "Background first, then the decision.",
+                "",
+                "",
+            ],
+            &[("Context: the move. Decision: Tuesday.", true, "", 1_700_000_500_000)],
+        ),
+    ]
 }
 
 #[test]
@@ -256,31 +201,12 @@ fn a_native_workspace_skills_document_is_carried_over_once_as_one_change() {
         listed(&ada, &all, "skills").is_empty(),
         "nothing is carried before the migration runs"
     );
-    assert!(
-        ada.host.migrate() > 0,
-        "the conversations' migrations run over what the native app left"
-    );
+    assert_eq!(ada.host.migrate(), 1, "one migration carries what the native app kept");
     assert_eq!(ada.commit(), 1, "as one change");
     assert_eq!(
         carried(&ada, &all),
-        expected(),
+        expected(&documents),
         "every skill and its examples, each keeping its id, in the order they stood"
-    );
-
-    let migration = ada
-        .host
-        .package(CHAT_APP)
-        .unwrap()
-        .meta
-        .migrations()
-        .find(|m| m.name == "carry_native_skills")
-        .unwrap()
-        .id
-        .clone();
-    let versions = ada.host.runtime().versions(&all).unwrap();
-    assert!(
-        versions.iter().any(|v| v.action == migration),
-        "history names the migration that carried them: {versions:?}"
     );
 
     assert_eq!(ada.host.migrate(), 0, "it runs once");
@@ -290,35 +216,33 @@ fn a_native_workspace_skills_document_is_carried_over_once_as_one_change() {
     assert_eq!(
         grace.host.migrate(),
         0,
-        "another device with the same document finds it done"
+        "another device opening the same document later finds it done"
     );
-    assert_eq!(carried(&grace, &all), expected());
+    assert_eq!(carried(&grace, &all), expected(&documents), "and nothing twice");
 
     let after: Vec<Vec<automerge::ChangeHash>> = documents
         .iter()
         .map(|(_, doc)| doc.clone().get_heads())
         .collect();
     assert_eq!(before, after, "the native app's document is not written");
+
+    // One step takes the whole carrying back, and redo makes it again.
+    assert!(ada.undo_last());
+    assert!(listed(&ada, &all, "skills").is_empty(), "undone at once");
+    assert!(ada.redo_last());
+    assert_eq!(carried(&ada, &all), expected(&documents));
 }
 
 #[test]
-fn a_skill_whose_examples_do_not_read_as_records_is_not_carried_without_them() {
+fn skills_opened_before_the_native_document_arrived_are_carried_once_it_does() {
     let documents = native_documents();
-    let mut documents = documents;
-    // An example the native app kept as a word instead of a record of its own: the skill's
-    // examples read as one id and no record, so the document carries no skill at all rather
-    // than one without the examples it kept.
-    let (_, doc) = &mut documents[0];
-    let (_, skills) = doc.get(ROOT, "skills").unwrap().unwrap();
-    let (_, skill) = doc.get(&skills, "skill-weekly").unwrap().unwrap();
-    let (_, fields) = doc.get(&skill, "v").unwrap().unwrap();
-    let (_, examples) = doc.get(&fields, "examples").unwrap().unwrap();
-    doc.put(&examples, "e3", "a whole week of things").unwrap();
+    let (ada, all) = opened(&[]);
+    assert_eq!(ada.host.migrate(), 0, "nothing to carry has arrived");
+    assert_eq!(ada.commit(), 0);
 
-    let (ada, all) = opened(&documents);
-    ada.host.migrate();
-    assert!(
-        listed(&ada, &all, "skills").is_empty(),
-        "a skill whose examples do not read is not carried part-way"
-    );
+    ada.host.runtime().set_earlier(CHAT_APP, &documents);
+    assert_eq!(ada.host.migrate(), 1, "the carrying waited for it");
+    assert_eq!(ada.commit(), 1);
+    assert_eq!(carried(&ada, &all), expected(&documents));
+    assert_eq!(ada.host.migrate(), 0, "and runs only once");
 }

@@ -44,22 +44,15 @@ const RECORD: &str = "derived:default@tab:0000000000000000";
 
 /// The documents of the fixture, each by its document id in a workspace.
 fn native_documents() -> Vec<(String, AutoCommit)> {
-    include_str!("legacy/rust_notes.hex")
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let (id, hex) = line.split_once('\t').expect("an id and the document");
-            let bytes: Vec<u8> = hex
-                .as_bytes()
-                .chunks(2)
-                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-                .collect();
+    crate::fixtures::native_documents(include_str!("legacy/rust_notes.hex"))
+        .into_iter()
+        .map(|(id, doc)| {
             let id = if id == "@tilo:package-primary" {
-                RECORD
+                RECORD.to_owned()
             } else {
                 id
             };
-            (id.to_owned(), AutoCommit::load(&bytes).unwrap())
+            (id, doc)
         })
         .collect()
 }

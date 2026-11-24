@@ -23,19 +23,7 @@ const CHAT: (&str, &str) = (
 
 /// The documents of the fixture, each by its document id in a workspace.
 fn native_documents() -> Vec<(String, AutoCommit)> {
-    include_str!("legacy/rust_chat.hex")
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let (id, hex) = line.split_once('\t').expect("an id and the document");
-            let bytes: Vec<u8> = hex
-                .as_bytes()
-                .chunks(2)
-                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-                .collect();
-            (id.to_owned(), AutoCommit::load(&bytes).unwrap())
-        })
-        .collect()
+    crate::fixtures::native_documents(include_str!("legacy/rust_chat.hex"))
 }
 
 /// Ada's workspace with the tilolang Chat, the native app's `documents` beside it, and its
@@ -278,8 +266,8 @@ fn a_native_chat_is_carried_over_once_as_one_change() {
     );
     assert_eq!(
         ada.host.migrate(),
-        2,
-        "the conversations' carrying and the direct conversations' repair run"
+        1,
+        "one migration carries everything the native app kept"
     );
     assert_eq!(ada.commit(), 1, "as one change");
     assert_carried(&ada, &all);
@@ -337,8 +325,8 @@ fn a_chat_whose_messages_are_still_arriving_is_carried_once_they_are_here() {
     ada.host.runtime().set_earlier(CHAT_APP, &all_here);
     assert_eq!(
         ada.host.migrate(),
-        2,
-        "every message is carried, once, and the direct conversations are repaired"
+        1,
+        "every message is carried, once"
     );
     assert_eq!(ada.commit(), 1);
     assert_carried(&ada, &all);
@@ -402,7 +390,7 @@ fn with_a_report(mut documents: Vec<(String, AutoCommit)>) -> Vec<(String, AutoC
 fn a_native_report_is_carried_into_the_channel_reports_are_filed_in_now() {
     let documents = with_a_report(native_documents());
     let (ada, all) = opened(&documents);
-    assert_eq!(ada.host.migrate(), 2);
+    assert_eq!(ada.host.migrate(), 1);
     ada.commit();
     let feedback = conversation(&ada, &all, "feedback");
     assert_eq!(
