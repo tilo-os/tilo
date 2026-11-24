@@ -200,10 +200,66 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                 }
                 current = false;
             }
+            for b in &built {
+                for (id, name, other) in ids_held_elsewhere(b) {
+                    eprintln!(
+                        "{}: id `{id}` of `{name}` is also {other}'s; packages load together, so remove its line from app.ids, write a fresh one with `tilolang check --write-ids`, and move its translations to the new key",
+                        b.dir.display()
+                    );
+                    current = false;
+                }
+            }
             Ok(current)
         }
         Err(error) => failed(error, o.json),
     }
+}
+
+/// The ids of `b`'s lock that another package already holds: the standard library's, or a
+/// package's beside it. Packages load into one registry, which refuses an id declared twice, so a
+/// lock drawn from a fixed seed (every package drawing the same ids) fails here rather than when
+/// a device loads the two together.
+fn ids_held_elsewhere(b: &BuiltPackage) -> Vec<(String, String, String)> {
+    let library = crate::stdlib::compiled();
+    let mut held: std::collections::HashMap<String, String> =
+        if library.meta.app == b.compiled.meta.app {
+            std::collections::HashMap::new()
+        } else {
+            library
+                .ids
+                .entries()
+                .map(|(_, id)| (id.to_owned(), "the standard library".to_owned()))
+                .collect()
+        };
+    let siblings = b
+        .dir
+        .parent()
+        .and_then(|parent| std::fs::read_dir(parent).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|dir| dir.is_dir() && *dir != b.dir);
+    for dir in siblings {
+        let Ok(lock) = crate::source::read_ids(&dir) else {
+            continue;
+        };
+        for (_, id) in lock.entries() {
+            held.entry(id.to_owned())
+                .or_insert_with(|| dir.display().to_string());
+        }
+    }
+    // The lock as committed: an id a check draws for a declaration the lock lacks yet is drawn
+    // from a fixed seed and never written, so only what the lock holds can collide.
+    let Ok(lock) = crate::source::read_ids(&b.dir) else {
+        return Vec::new();
+    };
+    lock.entries()
+        .filter_map(|(name, id)| {
+            held.get(id)
+                .map(|other| (id.to_owned(), name.to_owned(), other.clone()))
+        })
+        .collect()
 }
 
 fn lock_changes(b: &BuiltPackage) -> Vec<(char, String)> {

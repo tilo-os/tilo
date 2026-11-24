@@ -85,13 +85,13 @@ d-h5oo7js2 = Dock launcher
 d-5n4s55tz = Dock zoom
     .doc = A click on the dock's icons magnifies the item under the pointer, as macOS's Dock does.
 
-d-4zknrelh = Settings open
+d-7xqpekfu = Settings open
     .doc = Whether the chosen style's own settings stand over the shell (`style_settings`), opened from the bar's style menu: the one place a person changes the style they show without an agent, as `shell.md` §6 says.
 
-d-dwct4abs = Strips tabs
+d-ayatksvb = Strips tabs
     .doc = Strips: whether a strip of several places shows its tab bar.
 
-d-gfmzi3qr = Frames snap
+d-fyquhn4g = Frames snap
     .doc = Frames: whether a place let go on the canvas lands on the style's grid, so frames line up as they are placed.
 
 d-6bamt22e = Canvas asked
@@ -612,19 +612,19 @@ d-qqg4smi5 = The menu by its window's name, but not the tasks and who is here
 d-7caakb5b = The least: the menu stands as the window's icon, and only what a phone keeps stays
     .doc = The least: the menu stands as the window's icon, and only what a phone keeps stays.
 
-d-m2ye55z2 = Rename workspace
+d-fbymgkoh = Rename workspace
     .doc = Name the workspace `key` what the person typed: the workspace's own published `rename`, so the name reaches every device and every list of it.
 
-d-m2ye55z2-key = Key
+d-fbymgkoh-key = Key
 
-d-m2ye55z2-name = Name
+d-fbymgkoh-name = Name
 
-d-pkrgpzz5 = Rename strip
+d-lqy7sqnc = Rename strip
     .doc = Name the strip `key` what the person typed: one arranging action of the session's, so a script and an agent rename as a press does.
 
-d-pkrgpzz5-key = Key
+d-lqy7sqnc-key = Key
 
-d-pkrgpzz5-name = Name
+d-lqy7sqnc-name = Name
 
 d-aegu5nc6 = Don't allow
     .doc = Decline the question at `key`: its asked record's own `resolve`, called by its address as any caller calls it.
@@ -838,19 +838,19 @@ d-zek2dnmp = Cancel
 d-46uwq3gq = Close History
     .doc = Puts the surface away once a recent resource is opened again beside the window in front, by the same `open` an agent and a reference's press run.
 
-d-jjrvri4g = Choose launcher row
+d-rs2j4mmu = Choose launcher row
     .doc = What choosing the row the person reached does, read off the row's value: opening an application or a window here, running a row the search found, or one of the shell's own surfaces.
 
-d-jjrvri4g-choice = Choice
+d-rs2j4mmu-choice = Choice
 
-d-jjrvri4g-current = Current
+d-rs2j4mmu-current = Current
 
-d-xxr3zm5d = Open surface
+d-q6bzrju7 = Open surface
     .doc = Open the shell's surface `surface` (`overview`, `workspaces`, `centre`), as the bar's own controls do.
 
-d-xxr3zm5d-surface = Surface
+d-q6bzrju7-surface = Surface
 
-d-dgcc5jwo = Close launcher
+d-n2ucmbpe = Close launcher
     .doc = Leave the launcher: the surface stack goes back to the shell at rest.
 
 d-7j7tzynq = Show as
@@ -985,26 +985,26 @@ d-x6ly4cml = Equal widths
 
 d-x6ly4cml-w = The window
 
-d-jipcl6u3 = Style settings
+d-3ajs72ce = Style settings
     .doc = The style's own settings, and the two ways of changing a style (`docs/designs/app-language/ shell.md` §6): without an agent, in the one place a person's settings live, and with an agent, by the same actions the person's controls run.
 
-d-wxxxvca4 = Close
+d-33qlgb4v = Close
     .doc = Closes them.
 
-d-33wxlq7h = Style settings
+d-nhawvsi6 = Style settings
     .doc = Shows or hides their being open: one control for both, so a person sees the state where they press it.
 
-d-33wxlq7h-on = On
+d-nhawvsi6-on = On
 
-d-zitymayc = Strip tabs
+d-2ycpcfh4 = Strip tabs
     .doc = Whether the strip of several places shows its tab bar: the strips style's own setting.
 
-d-zitymayc-on = On
+d-2ycpcfh4-on = On
 
-d-lfa3rl6s = Snap places to a grid
+d-wjsjhild = Snap places to a grid
     .doc = Whether a place let go on the framed canvas lands on the grid: the frames style's own setting.
 
-d-lfa3rl6s-on = On
+d-wjsjhild-on = On
 
 d-4xei7g27 = Folder line
     .w-your-workspace = Your workspace
@@ -1078,7 +1078,7 @@ d-vidcax4k = Workspace menu
     .w-overview = Overview
     .w-history = History
 
-d-jt4au2t2 = Strip part
+d-rfepr4yx = Strip part
     .w-strip-name = Strip name
     .w-new-strip = New strip
     .w-rename = Rename { $name }
@@ -1086,7 +1086,7 @@ d-jt4au2t2 = Strip part
     .w-move-left = Move { $name } left
     .w-move-right = Move { $name } right
 
-d-qivd66vw = Strips list
+d-nojvjjii = Strips list
     .w-strips = Strips
     .w-new-strip = New strip
     .w-done = Done
@@ -1787,13 +1787,13 @@ d-vrlwh4vn = This window menu
     .w-close-tab = Close tab
     .w-close-this-window = Close this window
 
-d-b5qgd2ou = Strip rail
+d-c6mbdwcc = Strip rail
     .w-of = { $number } of { $len }
     .w-new-strip = New strip
 
-d-pjkvdmwk = Show style settings~present
+d-2nputj5f = Show style settings~present
 
-d-vseev2rl = Style panel
+d-htrvh33d = Style panel
     .w-settings-for = Settings for { $style_title }
     .w-close = Close
 
@@ -1813,20 +1813,20 @@ d-jdungghl = Theme settings
     .w-window-corners = Window corners
     .w-refraction = Refraction
 
-d-g476xvac = Desktop style settings
+d-tcyusdmx = Desktop style settings
     .w-show-the-top-bar = Show the top bar
     .w-show-the-dock = Show the dock
     .w-dock-edge = Dock edge
     .w-dock-size = Dock size
     .w-when-the-dock-shows = When the dock shows
 
-d-e3tczbcu = Strips style settings
+d-naeq6y2p = Strips style settings
     .w-show-the-tabs-of-a-strip = Show the tabs of a strip
 
-d-mnbjennf = Frames style settings
+d-xa2ijkev = Frames style settings
     .w-snap-places-to-a-grid = Snap places to a grid
 
-d-xwhxaimf = Frameless style settings
+d-uatqbuz2 = Frameless style settings
     .w-frameless-shows-each-place-as-its = Frameless shows each place as its own view and has nothing to set.
 
 d-fziuz57n = Switcher

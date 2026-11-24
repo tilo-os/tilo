@@ -59,6 +59,35 @@ fn a_workspace_action_checks_without_a_workspace_running() {
     assert!(passed, "{said}");
 }
 
+/// Packages load into one registry, which refuses an id two of them declare, so a check refuses
+/// a lock holding an id a package beside it holds, naming the declaration and where the id is
+/// already taken.
+#[test]
+fn a_check_refuses_an_id_a_package_beside_it_holds() {
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path().join("counter");
+    copy_package(&packages().join("counter"), &dir);
+    let taken = id_of(&dir, "increment@Counter");
+    let beside = scratch.path().join("beside");
+    std::fs::create_dir(&beside).unwrap();
+    std::fs::write(
+        beside.join("app.ids"),
+        format!("# tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.\nadd = {taken}\n"),
+    )
+    .unwrap();
+
+    let (passed, said) = check(&dir, false);
+    assert!(!passed, "the counter's increment shares its id:\n{said}");
+    assert!(
+        said.contains(&format!("id `{taken}` of `increment@Counter` is also {}'s", beside.display())),
+        "{said}"
+    );
+
+    std::fs::remove_dir_all(&beside).unwrap();
+    let (passed, said) = check(&dir, false);
+    assert!(passed, "an id no other package holds checks:\n{said}");
+}
+
 /// A message leaves the catalogue when its declaration leaves the source, so writing the catalogue
 /// has to prune it: what `--write-ids` writes is what a check calls current, and the id of what
 /// went is retired, never reused.
@@ -68,7 +97,7 @@ fn writing_the_source_catalogue_prunes_the_messages_its_source_no_longer_has() {
     let dir = scratch.path().join("counter");
     copy_package(&packages().join("counter"), &dir);
     drop_decrement(&dir);
-    let key = format!("d-{}", id_of(&dir, "decrement"));
+    let key = format!("d-{}", id_of(&dir, "decrement@Counter"));
     let catalogue = dir.join("locales/en-US.ftl");
     let stale = std::fs::read_to_string(&catalogue).unwrap();
     assert!(
@@ -93,7 +122,7 @@ fn writing_the_source_catalogue_prunes_the_messages_its_source_no_longer_has() {
         "writing prunes it:\n{written}"
     );
     assert!(
-        written.contains(&format!("d-{}", id_of(&dir, "increment"))),
+        written.contains(&format!("d-{}", id_of(&dir, "increment@Counter"))),
         "{written}"
     );
 
@@ -115,7 +144,7 @@ fn writing_the_source_catalogue_prunes_the_messages_its_source_no_longer_has() {
         "the translator's own words stay:\n{translated}"
     );
     assert!(
-        translated.contains(&format!("d-{} = Erhöhen", id_of(&dir, "increment"))),
+        translated.contains(&format!("d-{} = Erhöhen", id_of(&dir, "increment@Counter"))),
         "the messages the source still has stay translated:\n{translated}"
     );
 
@@ -133,7 +162,7 @@ fn writing_the_source_catalogue_keeps_a_translations_own_word_reported() {
     copy_package(&packages().join("counter"), &dir);
     drop_decrement(&dir);
     let translation = dir.join("locales/de-DE.ftl");
-    let increment = format!("d-{} = Erhöhen\n", id_of(&dir, "increment"));
+    let increment = format!("d-{} = Erhöhen\n", id_of(&dir, "increment@Counter"));
     std::fs::write(
         &translation,
         format!("{increment}\nd-zzzzzzzz = Verringern\n"),

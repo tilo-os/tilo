@@ -321,10 +321,10 @@ d-iphlnbkx = Replies
 d-epgpppzy = Playback
     .doc = Each member's own playback preferences.
 
-d-pnt3r5fh = Playing
+d-f5zuqdsr = Playing
     .doc = What plays, and where it stands: the shared session, which the player, the shell's live card and every device read.
 
-d-upzs3qkn = Sessions
+d-5hk5vbw4 = Sessions
     .doc = Every session this app made, kept as the resources they are; `playing` names the one.
 
 d-bqesicxq = Search text
@@ -393,27 +393,27 @@ d-6ux63onw = Play
 d-s334bmn6 = Resume
     .doc = Plays the video from where the person left off, when they did not finish it.
 
-d-pkrsaacd = Session
+d-xcpsyetf = Session
     .doc = The session this app plays through: the one it has, or one made now.
 
-d-3e5q2ijn = Play items
+d-oeosysgh = Play items
     .doc = Plays `videos` in the session, beginning with `at`'s place: what plays and what follows, so a shared next, the live card and another device move through the same list.
 
-d-3e5q2ijn-videos = Videos
+d-oeosysgh-videos = Videos
 
-d-3e5q2ijn-at = At
+d-oeosysgh-at = At
 
-d-kxi5h2rb = Playback quality
+d-sbfilmh5 = Playback quality
     .doc = Plays the video at `quality`, from where it stands: the player's own quality menu, which asks the service for a stream of that picture.
 
-d-kxi5h2rb-quality = Quality
+d-sbfilmh5-quality = Quality
 
-d-bxmkupyx = Autoplay next
+d-du3tcefl = Autoplay next
     .doc = When the video reaches its end and the person asked for the next one, the session moves on to what follows it: the queue's next video is watched now, so its place in the history is kept and its bytes are asked for when the service has not answered with them yet.
 
-d-bxmkupyx-p = P
+d-du3tcefl-p = P
 
-d-bxmkupyx-share = Share
+d-du3tcefl-share = Share
 
 d-jxokfijg = Progress
     .doc = Records how far into the video the person is, and that they watched it now: it moves to the front of the history, and asks the service for the address its bytes play from when that is not known yet.

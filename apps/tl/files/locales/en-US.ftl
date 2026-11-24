@@ -144,16 +144,16 @@ d-omzv6cq5 = Previewed
 
 d-l1bciwln = Words
 
-d-pnt3r5fh = Selected
+d-zgzedmq4 = Selected
     .doc = The entry the person chose, by its path; empty while nothing is chosen.
 
-d-ni4lcmis = Templates
+d-kljwn54u = Templates
     .doc = The templates the person keeps in `~/Templates`, offered when a new file is named.
 
-d-sdo2uhip = Opening
+d-uswipaet = Opening
     .doc = The path of the entry the person asked to open with, and the apps that open it.
 
-d-pkrgpzz5 = Openers
+d-v4v6h4ut = Openers
 
 d-fpb2xkum = Notice
     .doc = The last thing that went wrong, for the window to say; empty while nothing did.
@@ -239,11 +239,11 @@ d-52nrdgom = Up
     .doc = Goes to the folder above the one shown.
     .w-this-is-already-the-top-folder = This is already the top folder
 
-d-e3tczbcu = Send nearby
+d-mam33h3b = Send nearby
     .doc = Sends the entry the person chose to the nearby device `nearby`, as Nearby Send offers it.
     .w-choose-a-file-to-send-first = Choose a file to send first
 
-d-e3tczbcu-nearby = Nearby
+d-mam33h3b-nearby = Nearby
 
 d-v7sec4gx = Dismiss notice
     .doc = Dismisses what the window last said went wrong.
@@ -266,10 +266,10 @@ d-4a6l65gk = Show grid
 
 d-4a6l65gk-grid = Grid
 
-d-kxi5h2rb = Choose view
+d-jxhgmocg = Choose view
     .doc = Draws the folder the way the segment at place `i` says: the list at 0, the grid at 1.
 
-d-kxi5h2rb-i = I
+d-jxhgmocg-i = I
 
 d-6rs9uy5i = Show hidden files
     .doc = Shows or hides the names that start with a dot.
@@ -281,40 +281,40 @@ d-7di40kuf = Open entry
 
 d-7di40kuf-e = E
 
-d-fraiou23 = Find openers
+d-4j3db57u = Find openers
     .doc = Finds the apps that open the entry at `path`, for the person to choose one.
 
-d-fraiou23-path = Path
+d-4j3db57u-path = Path
 
-d-qvohweza = Open with
+d-al4xcvb7 = Open with
     .doc = Opens the entry the person asked to open with in `chosen`, one of the apps offered.
 
-d-qvohweza-chosen = Chosen
+d-al4xcvb7-chosen = Chosen
 
-d-jjrvri4g = Close openers
+d-msrzddf6 = Close openers
     .doc = Puts away the apps offered for the entry the person asked to open with.
 
-d-xxr3zm5d = Open terminal
+d-hdabwwa2 = Open terminal
     .doc = Opens a terminal in the folder at `folder`.
 
-d-xxr3zm5d-folder = Folder
+d-hdabwwa2-folder = Folder
 
-d-jt4au2t2 = Compress entry
+d-vzs2pkap = Compress entry
     .doc = Packs the entry at `path` into a new archive beside it, named after it: `zip` picks a ZIP, and TAR.ZST otherwise.
 
-d-jt4au2t2-path = Path
+d-vzs2pkap-path = Path
 
-d-jt4au2t2-zip = Zip
+d-vzs2pkap-zip = Zip
 
-d-33tyunh6 = Extract entry
+d-bjqwycd6 = Extract entry
     .doc = Extracts the archive at `path` into a new folder beside it, named after it.
 
-d-33tyunh6-path = Path
+d-bjqwycd6-path = Path
 
-d-bxmkupyx = Open recent
+d-f2p3xu5w = Open recent
     .doc = Opens a file from Recent again, as the entry it was.
 
-d-bxmkupyx-r = R
+d-f2p3xu5w-r = R
 
 d-0ibyyurl = Touch entry
     .doc = A press on an entry: a folder opens as a person presses it once, and a file is read into the inspector beside the list.
@@ -333,15 +333,15 @@ d-tjvt3ycq = New folder
 
 d-tjvt3ycq-name = Name
 
-d-k3lu4ge3 = Start new file
+d-2p5d6k2y = Start new file
     .doc = Reads the person's `~/Templates`, so naming a new file can offer them.
 
-d-m2ye55z2 = New from template
+d-xc7thuvo = New from template
     .doc = Copies the template `template` into the place shown under `typed`'s name, or the template's.
 
-d-m2ye55z2-template = Template
+d-xc7thuvo-template = Template
 
-d-m2ye55z2-typed = Typed
+d-xc7thuvo-typed = Typed
 
 d-o4nc1mt2 = New file
     .doc = Makes a text file named `name` in the place shown, for the person to fill.
@@ -417,21 +417,21 @@ d-86n0vq62-naming = Naming
 
 d-86n0vq62-typed = Typed
 
-d-upzs3qkn = Go~present
+d-npbyxhoy = Go~present
 
-d-pkrsaacd = Back~present
+d-tnjafyxk = Back~present
 
-d-mpazezbv = Forward~present
+d-kkf4qwdb = Forward~present
 
-d-3e5q2ijn = Up~present
+d-nuftacw2 = Up~present
 
-d-mnbjennf = Send nearby~present
+d-drltsrm6 = Send nearby~present
 
-d-4zknrelh = Rename entry~present
+d-ed3fdxi3 = Rename entry~present
 
-d-dwct4abs = Trash entries~present
+d-x6q5wlkw = Trash entries~present
 
-d-gfmzi3qr = Add favorite~present
+d-dkeycb6f = Add favorite~present
 
 d-n9jkqy4o = Files
     .w-add-the-folder-shown-to-favorites = Add the folder shown to Favorites
@@ -496,7 +496,7 @@ d-z6cheebf = Places
     .w-this-computer = This computer
     .w-nearby = Nearby
 
-d-dgcc5jwo = Openers row
+d-4faq5fwx = Openers row
     .w-open-with = Open “{ $name_of }” with
     .w-cancel = Cancel
 

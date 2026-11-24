@@ -973,13 +973,13 @@ d-cijhlzxf = Fensterbefehle
 d-yx7doxgr = Traditionelle Leiste
     .w-tilo = Tilo
 
-d-4zknrelh = Einstellungen offen
+d-7xqpekfu = Einstellungen offen
     .doc = Ob die eigenen Einstellungen des gewählten Stils über der Shell stehen (`style_settings`), geöffnet aus dem Stilmenü der Leiste: der eine Ort, an dem eine Person den gezeigten Stil ohne Agent ändert, wie es `shell.md` §6 sagt.
 
-d-dwct4abs = Reihen-Tabs
+d-ayatksvb = Reihen-Tabs
     .doc = Reihen: ob eine Reihe mit mehreren Plätzen ihre Tableiste zeigt.
 
-d-gfmzi3qr = Rahmen einrasten
+d-fyquhn4g = Rahmen einrasten
     .doc = Rahmen: ob ein auf der Arbeitsfläche losgelassener Platz auf dem Raster des Stils landet, damit Rahmen beim Platzieren in einer Linie stehen.
 
 d-cejnvssb-filter-settings_open = Einstellungen offen
@@ -1042,26 +1042,26 @@ d-wln2heq6 = Nach vorn holen
 
 d-wln2heq6-s = S
 
-d-jipcl6u3 = Einstellungen des Stils
+d-3ajs72ce = Einstellungen des Stils
     .doc = Die eigenen Einstellungen des Stils und die zwei Wege, einen Stil zu ändern (`docs/designs/app-language/ shell.md` §6): ohne Agent, an dem einen Ort, an dem die Einstellungen einer Person liegen, und mit Agent, über dieselben Aktionen, die die Bedienelemente der Person ausführen.
 
-d-wxxxvca4 = Schließen
+d-33qlgb4v = Schließen
     .doc = Schließt sie.
 
-d-33wxlq7h = Einstellungen des Stils
+d-nhawvsi6 = Einstellungen des Stils
     .doc = Zeigt oder verbirgt sie: ein Bedienelement für beides, damit eine Person den Zustand dort sieht, wo sie drückt.
 
-d-33wxlq7h-on = An
+d-nhawvsi6-on = An
 
-d-zitymayc = Reihen-Tabs
+d-2ycpcfh4 = Reihen-Tabs
     .doc = Ob die Reihe mit mehreren Plätzen ihre Tableiste zeigt: die eigene Einstellung des Reihenstils.
 
-d-zitymayc-on = An
+d-2ycpcfh4-on = An
 
-d-lfa3rl6s = Plätze am Raster einrasten
+d-wjsjhild = Plätze am Raster einrasten
     .doc = Ob ein auf der gerahmten Arbeitsfläche losgelassener Platz auf dem Raster landet: die eigene Einstellung des Rahmenstils.
 
-d-lfa3rl6s-on = An
+d-wjsjhild-on = An
 
 d-qxbh2c44 = Teilname
     .w-tilo = Tilo
@@ -1083,26 +1083,26 @@ d-6t5hb2z7 = Anfrageansicht
     .w-retry = Erneut versuchen
     .w-nothing-matched = Nichts passt zu { $text }
 
-d-pjkvdmwk = Stileinstellungen zeigen~present
+d-2nputj5f = Stileinstellungen zeigen~present
 
-d-vseev2rl = Stilbereich
+d-htrvh33d = Stilbereich
     .w-settings-for = Einstellungen für { $style_title }
     .w-close = Schließen
 
-d-g476xvac = Einstellungen des Desktopstils
+d-tcyusdmx = Einstellungen des Desktopstils
     .w-show-the-top-bar = Obere Leiste zeigen
     .w-show-the-dock = Dock zeigen
     .w-dock-edge = Dock-Kante
     .w-dock-size = Dock-Größe
     .w-when-the-dock-shows = Wann das Dock zeigt
 
-d-e3tczbcu = Einstellungen des Reihenstils
+d-naeq6y2p = Einstellungen des Reihenstils
     .w-show-the-tabs-of-a-strip = Tabs einer Reihe zeigen
 
-d-mnbjennf = Einstellungen des Rahmenstils
+d-xa2ijkev = Einstellungen des Rahmenstils
     .w-snap-places-to-a-grid = Plätze am Raster einrasten
 
-d-xwhxaimf = Einstellungen des rahmenlosen Stils
+d-uatqbuz2 = Einstellungen des rahmenlosen Stils
     .w-frameless-shows-each-place-as-its = Rahmenlos zeigt jeden Platz als eigene Ansicht und hat nichts einzustellen.
 
 d-st426t4p = Ein vorderer Arbeitsbereich
@@ -1396,36 +1396,36 @@ d-vv7k7lcl = Super-Tasten
 
 d-fhub73iw = Platzinhalt
 
-d-m2ye55z2 = Arbeitsbereich umbenennen
+d-fbymgkoh = Arbeitsbereich umbenennen
     .doc = Benennt den Arbeitsbereich `key` so, wie die Person getippt hat: über das eigene veröffentlichte `rename` des Arbeitsbereichs, damit der Name jedes Gerät und jede Liste von ihm erreicht.
 
-d-m2ye55z2-key = Schlüssel
+d-fbymgkoh-key = Schlüssel
 
-d-m2ye55z2-name = Name
+d-fbymgkoh-name = Name
 
-d-pkrgpzz5 = Leiste umbenennen
+d-lqy7sqnc = Leiste umbenennen
     .doc = Benennt den Streifen `key` so, wie die Person getippt hat: eine ordnende Aktion der Sitzung, damit ein Skript und ein Agent so umbenennen wie ein Druck.
 
-d-pkrgpzz5-key = Schlüssel
+d-lqy7sqnc-key = Schlüssel
 
-d-pkrgpzz5-name = Name
+d-lqy7sqnc-name = Name
 
-d-jjrvri4g = Launcher-Zeile wählen
+d-rs2j4mmu = Launcher-Zeile wählen
     .doc = Was das Wählen der Zeile tut, die die Person erreicht hat, abgelesen am Wert der Zeile: hier eine Anwendung oder ein Fenster öffnen, eine Zeile ausführen, die die Suche fand, oder eine der eigenen Flächen der Shell.
 
-d-jjrvri4g-choice = Wahl
+d-rs2j4mmu-choice = Wahl
 
-d-jjrvri4g-current = Aktuell
+d-rs2j4mmu-current = Aktuell
 
-d-xxr3zm5d = Oberfläche öffnen
+d-q6bzrju7 = Oberfläche öffnen
     .doc = Öffnet die Fläche `surface` der Shell (`overview`, `workspaces`, `centre`), wie es die eigenen Bedienelemente der Leiste tun.
 
-d-xxr3zm5d-surface = Oberfläche
+d-q6bzrju7-surface = Oberfläche
 
-d-dgcc5jwo = Launcher schließen
+d-n2ucmbpe = Launcher schließen
     .doc = Verlässt den Starter: der Stapel der Flächen geht zurück zur Shell in Ruhe.
 
-d-jt4au2t2 = Leistenteil
+d-rfepr4yx = Leistenteil
     .w-strip-name = Name der Leiste
     .w-new-strip = Neue Leiste
     .w-rename = { $name } umbenennen
@@ -1433,7 +1433,7 @@ d-jt4au2t2 = Leistenteil
     .w-move-right = { $name } nach rechts
     .w-delete = { $name } löschen
 
-d-qivd66vw = Leistenliste
+d-nojvjjii = Leistenliste
     .w-strips = Leisten
     .w-new-strip = Neue Leiste
     .w-done = Fertig
@@ -1538,7 +1538,7 @@ d-6eidrgir = Verlaufszeile
 
 d-o5w6ulql = Hinweise über Fenstern
 
-d-b5qgd2ou = Streifenleiste
+d-c6mbdwcc = Streifenleiste
     .w-of = { $number } von { $len }
     .w-new-strip = Neuer Streifen
 

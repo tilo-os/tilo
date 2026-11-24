@@ -144,10 +144,10 @@ d-d4zwmel2 = Set playing
 
 d-d4zwmel2-on = On
 
-d-pnt3r5fh = Set source
+d-osacia6u = Set source
     .doc = Where what plays comes from, as the app that knows it answered again: a video's other quality, or the address it was asked for once more.
 
-d-pnt3r5fh-source = Source
+d-osacia6u-source = Source
 
 d-pk7bfu5k = Set length
     .doc = What the player reports of its length, once the decoder knows it.

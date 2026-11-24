@@ -144,7 +144,7 @@ d-omzv6cq5 = Vorschau von
 
 d-l1bciwln = Worte
 
-d-pnt3r5fh = Ausgewählt
+d-zgzedmq4 = Ausgewählt
     .doc = Der Eintrag, den die Person gewählt hat, nach seinem Pfad; leer, solange nichts gewählt ist.
 
 d-fpb2xkum = Hinweis
@@ -252,10 +252,10 @@ d-4a6l65gk = Raster zeigen
 
 d-4a6l65gk-grid = Raster
 
-d-kxi5h2rb = Ansicht wählen
+d-jxhgmocg = Ansicht wählen
     .doc = Zeichnet den Ordner so, wie das Segment an Stelle `i` es sagt: die Liste bei 0, das Raster bei 1.
 
-d-kxi5h2rb-i = I
+d-jxhgmocg-i = I
 
 d-6rs9uy5i = Versteckte Dateien zeigen
     .doc = Zeigt oder verbirgt die Namen, die mit einem Punkt beginnen.
@@ -267,10 +267,10 @@ d-7di40kuf = Eintrag öffnen
 
 d-7di40kuf-e = E
 
-d-bxmkupyx = Zuletzt öffnen
+d-f2p3xu5w = Zuletzt öffnen
     .doc = Öffnet eine Datei aus Zuletzt erneut, als den Eintrag, der sie war.
 
-d-bxmkupyx-r = R
+d-f2p3xu5w-r = R
 
 d-0ibyyurl = Eintrag berühren
     .doc = Ein Druck auf einen Eintrag: ein Ordner öffnet sich bei einem einzigen Druck, und eine Datei wird in den Prüfer neben der Liste gelesen.
@@ -289,18 +289,18 @@ d-tjvt3ycq = Neuer Ordner
 
 d-tjvt3ycq-name = Name
 
-d-ni4lcmis = Vorlagen
+d-kljwn54u = Vorlagen
     .doc = Die Vorlagen, die die Person in `~/Templates` hält, angeboten, wenn eine neue Datei benannt wird.
 
-d-k3lu4ge3 = Neue Datei beginnen
+d-2p5d6k2y = Neue Datei beginnen
     .doc = Liest die Vorlagen der Person in `~/Templates`, damit das Benennen einer neuen Datei sie anbieten kann.
 
-d-m2ye55z2 = Aus einer Vorlage
+d-xc7thuvo = Aus einer Vorlage
     .doc = Kopiert die Vorlage `template` an den gezeigten Ort unter dem Namen `typed` oder dem der Vorlage.
 
-d-m2ye55z2-template = Vorlage
+d-xc7thuvo-template = Vorlage
 
-d-m2ye55z2-typed = Getippt
+d-xc7thuvo-typed = Getippt
 
 d-o4nc1mt2 = Neue Datei
     .doc = Legt eine Textdatei namens `name` an dem gezeigten Ort an, damit die Person sie füllt.
@@ -369,52 +369,52 @@ d-0nodt7ql = Prüfen
 
 d-0nodt7ql-e = E
 
-d-sdo2uhip = Wird geöffnet
+d-uswipaet = Wird geöffnet
     .doc = Der Pfad des Eintrags, den die Person mit einer App öffnen will, und die Apps, die ihn öffnen.
 
-d-pkrgpzz5 = Öffnende Apps
+d-v4v6h4ut = Öffnende Apps
 
-d-fraiou23 = Öffnende Apps finden
+d-4j3db57u = Öffnende Apps finden
     .doc = Findet die Apps, die den Eintrag unter `path` öffnen, damit die Person eine wählt.
 
-d-fraiou23-path = Pfad
+d-4j3db57u-path = Pfad
 
-d-qvohweza = Öffnen mit
+d-al4xcvb7 = Öffnen mit
     .doc = Öffnet den Eintrag, den die Person öffnen will, in `chosen`, einer der angebotenen Apps.
 
-d-qvohweza-chosen = Gewählt
+d-al4xcvb7-chosen = Gewählt
 
-d-jjrvri4g = Öffnende Apps schließen
+d-msrzddf6 = Öffnende Apps schließen
     .doc = Nimmt die angebotenen Apps für den Eintrag wieder weg.
 
-d-xxr3zm5d = Terminal öffnen
+d-hdabwwa2 = Terminal öffnen
     .doc = Öffnet ein Terminal im Ordner unter `folder`.
 
-d-xxr3zm5d-folder = Ordner
+d-hdabwwa2-folder = Ordner
 
-d-dgcc5jwo = Zeile der öffnenden Apps
+d-4faq5fwx = Zeile der öffnenden Apps
     .w-open-with = „{ $name_of }“ öffnen mit
     .w-cancel = Abbrechen
 
-d-jt4au2t2 = Eintrag komprimieren
+d-vzs2pkap = Eintrag komprimieren
     .doc = Packt den Eintrag unter `path` in ein neues Archiv daneben, nach ihm benannt: `zip` wählt ein ZIP, sonst TAR.ZST.
 
-d-jt4au2t2-path = Pfad
+d-vzs2pkap-path = Pfad
 
-d-jt4au2t2-zip = Zip
+d-vzs2pkap-zip = Zip
 
-d-33tyunh6 = Eintrag entpacken
+d-bjqwycd6 = Eintrag entpacken
     .doc = Entpackt das Archiv unter `path` in einen neuen Ordner daneben, nach ihm benannt.
 
-d-33tyunh6-path = Pfad
+d-bjqwycd6-path = Pfad
 
-d-e3tczbcu = In der Nähe senden
+d-mam33h3b = In der Nähe senden
     .doc = Sendet den Eintrag, den die Person gewählt hat, an das Gerät `nearby`, wie es „In der Nähe senden“ anbietet.
     .w-choose-a-file-to-send-first = Wähle zuerst eine Datei zum Senden
 
-d-e3tczbcu-nearby = In der Nähe
+d-mam33h3b-nearby = In der Nähe
 
-d-mnbjennf = In der Nähe senden~present
+d-drltsrm6 = In der Nähe senden~present
 
 d-86n0vq62 = Benennen
     .doc = Tut, wofür der Name die Person gefragt hat: legt den Ordner oder die Datei an oder benennt den Eintrag um.
@@ -423,19 +423,19 @@ d-86n0vq62-naming = Benennung
 
 d-86n0vq62-typed = Getippt
 
-d-upzs3qkn = Gehen~present
+d-npbyxhoy = Gehen~present
 
-d-pkrsaacd = Zurück~present
+d-tnjafyxk = Zurück~present
 
-d-mpazezbv = Vorwärts~present
+d-kkf4qwdb = Vorwärts~present
 
-d-3e5q2ijn = Nach oben~present
+d-nuftacw2 = Nach oben~present
 
-d-4zknrelh = Eintrag umbenennen~present
+d-ed3fdxi3 = Eintrag umbenennen~present
 
-d-dwct4abs = Einträge in den Papierkorb~present
+d-x6q5wlkw = Einträge in den Papierkorb~present
 
-d-gfmzi3qr = Favorit hinzufügen~present
+d-dkeycb6f = Favorit hinzufügen~present
 
 d-n9jkqy4o = Dateien
     .w-add-the-folder-shown-to-favorites = Den gezeigten Ordner zu Favoriten hinzufügen

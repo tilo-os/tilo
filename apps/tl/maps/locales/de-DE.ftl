@@ -5,59 +5,59 @@ d-so-tilo-maps = Karten
 
 d-so-tilo-maps-keywords = map, navigation, directions, route, openstreetmap, osm, location, places, navigate, apple maps, gnome maps, marble, karte, karten, wegbeschreibung, routenplaner, stadtplan, ort, orte, standort, navi, wege, landkarte, anfahrt
 
-d-b5qgd2ou = Ort
+d-cg37pq4z = Ort
     .doc = Ein Ort, den die Karte kennt: einer, den eine Suche gefunden hat, einer, den eine Person behalten hat, einer, den ein Agent übernommen hat.
     .noun = { $count ->
     .untitled = Ort
 
-d-7omk6fxl = Name
+d-rcalop4o = Name
     .doc = Wie Menschen ihn lesen.
 
-d-jzfkismo = Schlüssel
+d-m5b55osu = Schlüssel
     .doc = Der Name, den der Kartendienst ihm gibt, damit ein Ort, den eine Suche zweimal findet, einer bleibt.
 
-d-krefztsk = Kategorie
+d-lozw4dq7 = Kategorie
 
-d-oo5cyi2s = Adresse
+d-opf2vbzc = Adresse
     .doc = Seine Adresse, wie der Dienst sie schreibt.
 
-d-if6ecymb = Breitengrad
+d-fiavc35r = Breitengrad
 
-d-xj2tbyfv = Längengrad
+d-w552wzze = Längengrad
 
-d-yb5xojzc = Gespeichert
+d-qoo35pg5 = Gespeichert
     .doc = Ob die Person ihn in ihren Orten behalten hat.
 
-d-xrhsgfmm = Gefunden
+d-sewsxq7v = Gefunden
     .doc = Ob die letzte Suche ihn gefunden hat, statt dass die Person ihn behalten hat.
 
-d-b5qgd2ou-filter-saved = Gespeichert
+d-cg37pq4z-filter-saved = Gespeichert
 
-d-b5qgd2ou-filter-category = Kategorie
+d-cg37pq4z-filter-category = Kategorie
 
-d-nn64d3fw = Schritt
+d-rya6qtgf = Schritt
     .doc = Ein Richtungswechsel einer Route, in der Reihenfolge, in der die Person sie fährt.
     .noun = { $count ->
 
-d-jslvd2zo = Anweisung
+d-nfgqw3um = Anweisung
 
-d-bx4d2y62 = Entfernung m
+d-bvjnbo5z = Entfernung m
 
-d-2wu6uhb6 = Richtungswechsel
+d-a4qv6woo = Richtungswechsel
 
-d-nn64d3fw-filter-distance_m = Entfernung m
+d-rya6qtgf-filter-distance_m = Entfernung m
 
-d-nn64d3fw-filter-maneuver = Richtungswechsel
+d-rya6qtgf-filter-maneuver = Richtungswechsel
 
-d-rvxurton = Route
+d-yjofng4o = Route
     .doc = Eine Route, wie die Wegbeschreibung sie fand: wie weit, wie lange, die Linie zum Zeichnen und ihre Richtungswechsel.
     .noun = { $count ->
 
-d-w2mcf323 = Verkehrsmittel
+d-ymsz4m34 = Verkehrsmittel
 
-d-xl7mdkpo = Entfernung m
+d-ty6bfuoo = Entfernung m
 
-d-rdp44rmk = Dauer s
+d-wc6ysmvx = Dauer s
 
 d-uyrheaim = Linienverlauf
     .doc = Die Orte, durch die die Linie läuft, Breiten- dann Längengrad der Reihe nach.
@@ -76,19 +76,19 @@ d-3lxyvouf = Ziel-Längengrad
 
 d-ql4xlomv = Schritte
 
-d-rvxurton-filter-mode = Verkehrsmittel
+d-yjofng4o-filter-mode = Verkehrsmittel
 
-d-rvxurton-filter-distance_m = Entfernung m
+d-yjofng4o-filter-distance_m = Entfernung m
 
-d-rvxurton-filter-duration_s = Dauer s
+d-yjofng4o-filter-duration_s = Dauer s
 
-d-rvxurton-filter-from_latitude = Start-Breitengrad
+d-yjofng4o-filter-from_latitude = Start-Breitengrad
 
-d-rvxurton-filter-from_longitude = Start-Längengrad
+d-yjofng4o-filter-from_longitude = Start-Längengrad
 
-d-rvxurton-filter-to_latitude = Ziel-Breitengrad
+d-yjofng4o-filter-to_latitude = Ziel-Breitengrad
 
-d-rvxurton-filter-to_longitude = Ziel-Längengrad
+d-yjofng4o-filter-to_longitude = Ziel-Längengrad
 
 d-5ydr2uej = Abschnitt
     .doc = Ein Abschnitt einer Fahrt mit öffentlichen Verkehrsmitteln.
@@ -313,98 +313,98 @@ d-fsnuwhad = Gefunden
 
 d-3yeey62c = Grund
 
-d-pnt3r5fh = Kategorie
+d-rsx2fv33 = Kategorie
     .doc = Was ein Ort ist: die Farbe der Markierung, das Zeichen auf der Karte und die OpenStreetMap-Klasse, aus der er kommt.
 
-d-upzs3qkn = Eine Sehenswürdigkeit, ein Denkmal, eine Aussicht
+d-katnsazy = Eine Sehenswürdigkeit, ein Denkmal, eine Aussicht
     .doc = Eine Sehenswürdigkeit, ein Denkmal, eine Aussicht.
 
-d-pkrsaacd = Ein Café
+d-dwmys7kc = Ein Café
     .doc = Ein Café.
 
-d-mpazezbv = Ein Restaurant, ein Imbiss
+d-wgwv7izc = Ein Restaurant, ein Imbiss
     .doc = Ein Restaurant, ein Imbiss.
 
-d-3e5q2ijn = Eine Bar oder ein Pub
+d-fbdrx4mj = Eine Bar oder ein Pub
     .doc = Eine Bar oder ein Pub.
 
-d-kxi5h2rb = Ein Museum oder eine Galerie
+d-defusg33 = Ein Museum oder eine Galerie
     .doc = Ein Museum oder eine Galerie.
 
-d-bxmkupyx = Ein Park oder ein Garten
+d-6mnijskx = Ein Park oder ein Garten
     .doc = Ein Park oder ein Garten.
 
-d-4zknrelh = Eine Haltestelle, ein Bahnhof, ein Busstopp
+d-mpqmb3fv = Eine Haltestelle, ein Bahnhof, ein Busstopp
     .doc = Eine Haltestelle, ein Bahnhof, ein Busstopp.
 
-d-dwct4abs = Ein Hotel oder eine Jugendherberge
+d-qnfxpsra = Ein Hotel oder eine Jugendherberge
     .doc = Ein Hotel oder eine Jugendherberge.
 
-d-gfmzi3qr = Ein Geschäft
+d-zgobpwas = Ein Geschäft
     .doc = Ein Geschäft.
 
-d-jipcl6u3 = Ein Krankenhaus, eine Praxis, ein Arzt
+d-55kqxwnj = Ein Krankenhaus, eine Praxis, ein Arzt
     .doc = Ein Krankenhaus, eine Praxis, ein Arzt.
 
-d-wxxxvca4 = Etwas anderes
+d-lzvd4scw = Etwas anderes
     .doc = Etwas anderes.
 
-d-33wxlq7h = Verkehrsmittel
+d-e6na7xve = Verkehrsmittel
     .doc = Wie die Wegbeschreibung reist.
 
-d-pjkvdmwk = Mit dem Auto
+d-mmy624nv = Mit dem Auto
     .doc = Mit dem Auto.
 
-d-zitymayc = Mit öffentlichen Verkehrsmitteln
+d-ocawwcft = Mit öffentlichen Verkehrsmitteln
     .doc = Mit öffentlichen Verkehrsmitteln.
 
-d-lfa3rl6s = Mit dem Rad
+d-2bu2iz3z = Mit dem Rad
     .doc = Mit dem Rad.
 
-d-vseev2rl = Zu Fuß
+d-25o5zycs = Zu Fuß
     .doc = Zu Fuß.
 
-d-g476xvac = Richtungswechsel
+d-u6kxncxl = Richtungswechsel
     .doc = Ein Richtungswechsel einer Route.
 
-d-e3tczbcu = Losfahren
+d-h6typ3zf = Losfahren
 
-d-mnbjennf = Weiterfahren
+d-lhl7f6vi = Weiterfahren
 
-d-xwhxaimf = Leicht links
+d-x2u3cwfd = Leicht links
 
-d-ni4lcmis = Links
+d-vnz2o4e7 = Links
 
-d-k3lu4ge3 = Scharf links
+d-775sdalp = Scharf links
 
-d-m2ye55z2 = Leicht rechts
+d-33y6cimo = Leicht rechts
 
-d-jt4au2t2 = Rechts
+d-t7gp6hfh = Rechts
 
-d-33tyunh6 = Scharf rechts
+d-zjz365j3 = Scharf rechts
 
-d-aymgcjsx = Wenden
+d-wgi6ivzu = Wenden
 
-d-qivd66vw = Kreisverkehr
+d-6en7lkw2 = Kreisverkehr
 
-d-wyyyf2ov = Einfädeln
+d-uwljrlcv = Einfädeln
 
-d-sdo2uhip = Ankommen
+d-z5udoakd = Ankommen
 
-d-pkrgpzz5 = Verkehrsmittel
+d-5mwab6ae = Verkehrsmittel
     .doc = Wie ein Abschnitt einer Fahrt mit öffentlichen Verkehrsmitteln verläuft.
 
-d-fraiou23 = Zu Fuß
+d-xahjivum = Zu Fuß
 
-d-qvohweza = Bus
+d-lexscuyh = Bus
 
-d-jjrvri4g = Tram
+d-tws5oy7g = Tram
 
-d-xxr3zm5d = U-Bahn
+d-ujkjpup6 = U-Bahn
 
-d-dgcc5jwo = Bahn
+d-7ns2zsgh = Bahn
 
-d-d4iv5agm = Fähre
+d-dflvu5zs = Fähre
 
 d-5lof744b = Die gefundenen Orte wieder vergessen
     .doc = Merkt jeden von einer Suche gefundenen Ort als nicht mehr gefunden und vergisst die, die niemand behalten hat.

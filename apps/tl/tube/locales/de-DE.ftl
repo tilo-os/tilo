@@ -427,30 +427,30 @@ d-lcvxshh4-on = Ein
 d-lzop6dva-quality = Qualität
 
 # The shared playback session this app plays through.
-d-pnt3r5fh = Wiedergabe
+d-f5zuqdsr = Wiedergabe
     .doc = Was gerade läuft, und wo es steht: die gemeinsame Wiedergabe, die der Player, die Live-Karte der Shell und jedes Gerät lesen.
 
-d-upzs3qkn = Wiedergaben
+d-5hk5vbw4 = Wiedergaben
     .doc = Jede Wiedergabe, die diese App angelegt hat, als eigene Ressource; `playing` benennt die eine.
 
 d-thwdswkk-filter-playing = Läuft
 
-d-pkrsaacd = Wiedergabe
+d-xcpsyetf = Wiedergabe
     .doc = Die Wiedergabe, über die diese App abspielt: die vorhandene, oder eine jetzt angelegte.
 
-d-3e5q2ijn = Videos abspielen
+d-oeosysgh = Videos abspielen
     .doc = Spielt `videos` in der Wiedergabe ab, beginnend bei der Stelle von `at`: was läuft und was folgt, damit ein gemeinsames Weiter, die Live-Karte und ein anderes Gerät durch dieselbe Liste gehen.
-d-3e5q2ijn-videos = Videos
-d-3e5q2ijn-at = Bei
+d-oeosysgh-videos = Videos
+d-oeosysgh-at = Bei
 
-d-kxi5h2rb = Wiedergabequalität
+d-sbfilmh5 = Wiedergabequalität
     .doc = Spielt das Video in `quality` ab, von wo es steht: das Qualitätsmenü des Players, das den Dienst um einen Stream dieses Bildes bittet.
-d-kxi5h2rb-quality = Qualität
+d-sbfilmh5-quality = Qualität
 
-d-bxmkupyx = Nächstes automatisch abspielen
+d-du3tcefl = Nächstes automatisch abspielen
     .doc = Wenn das Video sein Ende erreicht und die Person das nächste verlangt hat, geht die Wiedergabe zum folgenden über: das nächste Video der Warteschlange wird jetzt angesehen, damit seine Stelle im Verlauf bleibt und seine Bytes angefragt werden, wenn der Dienst sie noch nicht geantwortet hat.
-d-bxmkupyx-p = P
-d-bxmkupyx-share = Anteil
+d-du3tcefl-p = P
+d-du3tcefl-share = Anteil
 
 d-2pryeqkt = Suchart
     .doc = Welche Arten die letzte Suche zeigt: `all`, `video`, `channel` oder `playlist`.

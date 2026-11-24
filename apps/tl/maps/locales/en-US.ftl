@@ -5,7 +5,7 @@ d-so-tilo-maps = Maps
 
 d-so-tilo-maps-keywords = map, navigation, directions, route, openstreetmap, osm, location, places, navigate, apple maps, gnome maps, marble, karte, karten, wegbeschreibung, routenplaner, stadtplan, ort, orte, standort, navi, wege, landkarte, anfahrt
 
-d-b5qgd2ou = Place
+d-cg37pq4z = Place
     .doc = A place the map knows: one a search found, one a person kept, one an agent accepted.
     .noun = { $count ->
         [one] place
@@ -13,60 +13,60 @@ d-b5qgd2ou = Place
     }
     .untitled = Place
 
-d-7omk6fxl = Name
+d-rcalop4o = Name
     .doc = What people read it as.
 
-d-jzfkismo = Key
+d-m5b55osu = Key
     .doc = The name the map service gives it, so what a search finds twice is one place.
 
-d-krefztsk = Category
+d-lozw4dq7 = Category
 
-d-oo5cyi2s = Address
+d-opf2vbzc = Address
     .doc = Its address, as the service writes it.
 
-d-if6ecymb = Latitude
+d-fiavc35r = Latitude
 
-d-xj2tbyfv = Longitude
+d-w552wzze = Longitude
 
-d-yb5xojzc = Saved
+d-qoo35pg5 = Saved
     .doc = Whether the person kept it in their places.
 
-d-xrhsgfmm = Found
+d-sewsxq7v = Found
     .doc = Whether the last search found it, rather than the person having kept it.
 
-d-b5qgd2ou-filter-saved = Saved
+d-cg37pq4z-filter-saved = Saved
 
-d-b5qgd2ou-filter-category = Category
+d-cg37pq4z-filter-category = Category
 
-d-nn64d3fw = Step
+d-rya6qtgf = Step
     .doc = One turn of a route, in the order the person takes them.
     .noun = { $count ->
         [one] step
        *[other] steps
     }
 
-d-jslvd2zo = Instruction
+d-nfgqw3um = Instruction
 
-d-bx4d2y62 = Distance m
+d-bvjnbo5z = Distance m
 
-d-2wu6uhb6 = Maneuver
+d-a4qv6woo = Maneuver
 
-d-nn64d3fw-filter-distance_m = Distance m
+d-rya6qtgf-filter-distance_m = Distance m
 
-d-nn64d3fw-filter-maneuver = Maneuver
+d-rya6qtgf-filter-maneuver = Maneuver
 
-d-rvxurton = Route
+d-yjofng4o = Route
     .doc = A route as directions found it: how far, how long, the line to draw, and its turns.
     .noun = { $count ->
         [one] route
        *[other] routes
     }
 
-d-w2mcf323 = Mode
+d-ymsz4m34 = Mode
 
-d-xl7mdkpo = Distance m
+d-ty6bfuoo = Distance m
 
-d-rdp44rmk = Duration s
+d-wc6ysmvx = Duration s
 
 d-uyrheaim = Geometry
     .doc = The places the line runs through, latitude then longitude in turn.
@@ -85,19 +85,19 @@ d-3lxyvouf = To longitude
 
 d-ql4xlomv = Steps
 
-d-rvxurton-filter-mode = Mode
+d-yjofng4o-filter-mode = Mode
 
-d-rvxurton-filter-distance_m = Distance m
+d-yjofng4o-filter-distance_m = Distance m
 
-d-rvxurton-filter-duration_s = Duration s
+d-yjofng4o-filter-duration_s = Duration s
 
-d-rvxurton-filter-from_latitude = From latitude
+d-yjofng4o-filter-from_latitude = From latitude
 
-d-rvxurton-filter-from_longitude = From longitude
+d-yjofng4o-filter-from_longitude = From longitude
 
-d-rvxurton-filter-to_latitude = To latitude
+d-yjofng4o-filter-to_latitude = To latitude
 
-d-rvxurton-filter-to_longitude = To longitude
+d-yjofng4o-filter-to_longitude = To longitude
 
 d-5ydr2uej = Leg
     .doc = One leg of a public transport journey.
@@ -355,98 +355,98 @@ d-fsnuwhad = Found
 
 d-3yeey62c = Why
 
-d-pnt3r5fh = Category
+d-rsx2fv33 = Category
     .doc = What a place is: the marker's ink, the card's glyph, and the OpenStreetMap class it maps from.
 
-d-upzs3qkn = A landmark, a monument, a sight
+d-katnsazy = A landmark, a monument, a sight
     .doc = A landmark, a monument, a sight.
 
-d-pkrsaacd = A café
+d-dwmys7kc = A café
     .doc = A café.
 
-d-mpazezbv = A restaurant, a fast food place
+d-wgwv7izc = A restaurant, a fast food place
     .doc = A restaurant, a fast food place.
 
-d-3e5q2ijn = A bar or a pub
+d-fbdrx4mj = A bar or a pub
     .doc = A bar or a pub.
 
-d-kxi5h2rb = A museum or a gallery
+d-defusg33 = A museum or a gallery
     .doc = A museum or a gallery.
 
-d-bxmkupyx = A park or a garden
+d-6mnijskx = A park or a garden
     .doc = A park or a garden.
 
-d-4zknrelh = A stop, a station, a bus stop
+d-mpqmb3fv = A stop, a station, a bus stop
     .doc = A stop, a station, a bus stop.
 
-d-dwct4abs = A hotel or a hostel
+d-qnfxpsra = A hotel or a hostel
     .doc = A hotel or a hostel.
 
-d-gfmzi3qr = A shop
+d-zgobpwas = A shop
     .doc = A shop.
 
-d-jipcl6u3 = A hospital, a clinic, a doctor
+d-55kqxwnj = A hospital, a clinic, a doctor
     .doc = A hospital, a clinic, a doctor.
 
-d-wxxxvca4 = Anything else
+d-lzvd4scw = Anything else
     .doc = Anything else.
 
-d-33wxlq7h = Travel mode
+d-e6na7xve = Travel mode
     .doc = How directions travel.
 
-d-pjkvdmwk = By car
+d-mmy624nv = By car
     .doc = By car.
 
-d-zitymayc = By public transport
+d-ocawwcft = By public transport
     .doc = By public transport.
 
-d-lfa3rl6s = By bike
+d-2bu2iz3z = By bike
     .doc = By bike.
 
-d-vseev2rl = On foot
+d-25o5zycs = On foot
     .doc = On foot.
 
-d-g476xvac = Maneuver
+d-u6kxncxl = Maneuver
     .doc = A turn of a route.
 
-d-e3tczbcu = Depart
+d-h6typ3zf = Depart
 
-d-mnbjennf = Continue on
+d-lhl7f6vi = Continue on
 
-d-xwhxaimf = Slight left
+d-x2u3cwfd = Slight left
 
-d-ni4lcmis = Left
+d-vnz2o4e7 = Left
 
-d-k3lu4ge3 = Sharp left
+d-775sdalp = Sharp left
 
-d-m2ye55z2 = Slight right
+d-33y6cimo = Slight right
 
-d-jt4au2t2 = Right
+d-t7gp6hfh = Right
 
-d-33tyunh6 = Sharp right
+d-zjz365j3 = Sharp right
 
-d-aymgcjsx = Uturn
+d-wgi6ivzu = Uturn
 
-d-qivd66vw = Roundabout
+d-6en7lkw2 = Roundabout
 
-d-wyyyf2ov = Merging
+d-uwljrlcv = Merging
 
-d-sdo2uhip = Arrive
+d-z5udoakd = Arrive
 
-d-pkrgpzz5 = Transit mode
+d-5mwab6ae = Transit mode
     .doc = The way one leg of a public transport journey travels.
 
-d-fraiou23 = Walk
+d-xahjivum = Walk
 
-d-qvohweza = Bus
+d-lexscuyh = Bus
 
-d-jjrvri4g = Tram
+d-tws5oy7g = Tram
 
-d-xxr3zm5d = Subway
+d-ujkjpup6 = Subway
 
-d-dgcc5jwo = Rail
+d-7ns2zsgh = Rail
 
-d-d4iv5agm = Ferry
+d-dflvu5zs = Ferry
 
 d-5lof744b = Forget the places a search found
     .doc = Marks every place a search found as no longer found, and forgets the ones nobody kept.

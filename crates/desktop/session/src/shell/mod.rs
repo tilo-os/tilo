@@ -2230,10 +2230,13 @@ mod tests {
             let compiled = built.last().expect("the shell package compiles last");
             let lock = compiled.compiled.ids.to_text();
             let on_disk = std::fs::read_to_string(dir.join("app.ids")).expect("app.ids reads");
+            // A new declaration's id is drawn here from a fixed seed, so the lock this compile
+            // makes is never one to copy into app.ids: every package would draw the same ids and
+            // collide when they load together. `tilolang check --write-ids` draws them at random.
             assert_eq!(
                 on_disk, lock,
                 "apps/tl/shell/app.ids is not the lock the whole package (scenarios included) \
-             compiles to; write:\n{lock}"
+             compiles to; write it with `tilolang check --write-ids apps/tl/shell`"
             );
             // Every scenario the package declares keeps the id the lock gives it, in the lock's live
             // entries and never among the retired: a scenario's id is as real as a type's.
