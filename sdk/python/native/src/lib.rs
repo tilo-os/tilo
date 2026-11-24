@@ -58,6 +58,26 @@ impl Daemon {
             Ok(answer.to_string())
         })
     }
+
+    /// The secret of the vault item `item` in `workspace` (`None`: the one this connection acts
+    /// in), released to this process ([`Calls::release`]): awaits JSON text of
+    /// `{"answer": {"secret": ...}}` or `{"refused": {"error": {...}}}`. The secret goes to the
+    /// caller alone.
+    fn release<'py>(
+        &self,
+        py: Python<'py>,
+        workspace: Option<String>,
+        item: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let calls = Arc::clone(&self.calls);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let answer = match calls.release(workspace.as_deref(), &item).await {
+                Ok(answer) => serde_json::json!({ "answer": answer }),
+                Err(refused) => serde_json::json!({ "refused": refused }),
+            };
+            Ok(answer.to_string())
+        })
+    }
 }
 
 /// Connect to the daemon's native endpoint ([`Calls::connect`]): the connection the launcher

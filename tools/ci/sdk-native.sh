@@ -89,7 +89,7 @@ run_tests() {
     as_person=(setpriv --reuid=1000 --regid=1000 --clear-groups
       env HOME="$scratch/home" TMPDIR="$scratch/tmp")
   fi
-  "${as_person[@]}" "$binaries/sdk-daemon" "$binaries/tilo-runtime" -- bash -euo pipefail -c '
+  RUST_LOG=${RUST_LOG:-info,tilo_runtime=debug} "${as_person[@]}" "$binaries/sdk-daemon" "$binaries/tilo-runtime" -- bash -euo pipefail -c '
     cd "$1/python"
     # A suite that stops answering prints where each of its threads waits, and then ends.
     timeout -k 10 300 uv run --frozen --extra dev python -m pytest -v -s -p no:cacheprovider \

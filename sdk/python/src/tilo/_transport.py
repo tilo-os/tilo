@@ -138,6 +138,24 @@ class DaemonTransport:
             raise refusal_of(refused)
         return body.get("answer")
 
+    async def release(self, workspace: str | None, item: str) -> str:
+        """The secret of the vault item `item`, released to this app's process.
+
+        One action frame to the vault, not a tool: the vault releases a secret
+        only to the process an app's connection was handed to, for an item its
+        grant covers, and refuses every agent. The secret is answered to the
+        caller alone and kept nowhere.
+        """
+        body = json.loads(await self.daemon.release(workspace, item))
+        refused = body.get("refused")
+        if refused is not None:
+            raise refusal_of(refused)
+        answer = body.get("answer")
+        secret = answer.get("secret") if isinstance(answer, Mapping) else None
+        if not isinstance(secret, str):
+            raise ProtocolError("the vault answered a release with no secret")
+        return secret
+
     async def aclose(self) -> None:
         """Close the connection to the daemon."""
         close = getattr(self.daemon, "aclose", None)

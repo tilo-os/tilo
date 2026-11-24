@@ -31,6 +31,11 @@ export interface Daemon {
     args: object,
     group: Group | null,
   ): Promise<CallAnswer>;
+  /**
+   * The secret of the vault item `item` in `workspace` (`null`: the one the daemon serves),
+   * released to this app's process: `{answer: {secret}}`, or the refusal.
+   */
+  release(workspace: string | null, item: string): Promise<CallAnswer>;
 }
 
 /**

@@ -51,6 +51,12 @@ export interface Transport {
     args: Record<string, unknown>,
     group: Group | null,
   ): Promise<Record<string, unknown>>;
+  /**
+   * The secret of the vault item `item` in `workspace`, released to this
+   * app's process. Only the daemon's transport carries one; without it a
+   * release is refused.
+   */
+  release?(workspace: string | null, item: string): Promise<string>;
 }
 
 /** `fetch`, unless you bring your own. */
@@ -65,6 +71,7 @@ interface NativeDaemon {
     args: Record<string, unknown>,
     group: Group | null,
   ): Promise<unknown>;
+  release(workspace: string | null, item: string): Promise<unknown>;
 }
 
 interface NativeModule {
@@ -141,6 +148,32 @@ export class DaemonTransport implements Transport {
       throw refusalOf(fields.refused);
     }
     throw new ProtocolError(`the daemon answered ${tool} in a shape the SDK does not know`);
+  }
+
+  /**
+   * The secret of the vault item `item`, released to this app's process: one
+   * action frame to the vault, not a tool. The vault releases a secret only to
+   * the process an app's connection was handed to, for an item its grant
+   * covers, and refuses every agent. The secret is answered to the caller
+   * alone and kept nowhere.
+   */
+  async release(workspace: string | null, item: string): Promise<string> {
+    const daemon = await this.#opened();
+    let answer: unknown;
+    try {
+      answer = await daemon.release(workspace, item);
+    } catch (error) {
+      throw new Unreachable(error instanceof Error ? error.message : String(error));
+    }
+    const fields = recordOf(answer);
+    if ("refused" in fields) {
+      throw refusalOf(fields.refused);
+    }
+    const secret = recordOf(fields.answer).secret;
+    if (typeof secret !== "string") {
+      throw new ProtocolError("the vault answered a release with no secret");
+    }
+    return secret;
   }
 }
 

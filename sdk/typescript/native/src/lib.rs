@@ -70,4 +70,16 @@ impl Daemon {
             Err(refused) => serde_json::json!({ "refused": refused }),
         }
     }
+
+    /// The secret of the vault item `item` in `workspace` (`null`: the one this connection acts
+    /// in), released to this process ([`Calls::release`]): `{answer: {secret}}`, or `{refused}`.
+    /// The secret goes to the caller alone.
+    #[napi]
+    pub async fn release(&self, workspace: Option<String>, item: String) -> serde_json::Value {
+        let calls = Arc::clone(&self.calls);
+        match calls.release(workspace.as_deref(), &item).await {
+            Ok(answer) => serde_json::json!({ "answer": answer }),
+            Err(refused) => serde_json::json!({ "refused": refused }),
+        }
+    }
 }

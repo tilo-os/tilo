@@ -18,7 +18,7 @@ import {
   type Transport,
   type Group,
 } from "./transport.ts";
-import { AskPending, ProtocolError, SurfaceChanged, Unreachable } from "./errors.ts";
+import { AskPending, ProtocolError, Refused, SurfaceChanged, Unreachable } from "./errors.ts";
 import {
   actionAnswerOf,
   type ActionAnswer,
@@ -182,6 +182,22 @@ export class Endpoint {
       throw new ProtocolError(`the workspace answered no view for ${path}`);
     }
     return answer as unknown as View;
+  }
+
+  /**
+   * The secret of the vault item `item`, released to this app's process. Only
+   * the daemon's transport carries a release; a key, or a transport a program
+   * brings, is refused.
+   */
+  async release(item: string): Promise<string> {
+    if (this.transport.release === undefined) {
+      throw new Refused(
+        "not_permitted",
+        "a vault item's secret is released only to an app this computer's daemon started, " +
+          "over the connection it was handed",
+      );
+    }
+    return this.transport.release(this.workspace, item);
   }
 
   /**

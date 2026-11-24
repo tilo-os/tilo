@@ -27,6 +27,14 @@ class Daemon:
         ``{"refused": {"error": {...}}}`` for one that was refused.
         """
 
+    async def release(self, workspace: str | None, item: str) -> str:
+        """Release the secret of the vault item ``item`` in ``workspace``
+        (``None``: the one this connection acts in) to this process.
+
+        Answers JSON text: ``{"answer": {"secret": ...}}``, or
+        ``{"refused": {"error": {...}}}``.
+        """
+
 async def connect(socket: str | None = None, workspace: str | None = None) -> Daemon:
     """Connect to the daemon's native endpoint.
 

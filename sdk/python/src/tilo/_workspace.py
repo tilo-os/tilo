@@ -90,9 +90,10 @@ class WorkspaceKeys:
 class Vault:
     """The workspace's vault: secrets it keeps, used without being read.
 
-    No secret leaves the vault: `web_call` sends one it keeps as the key of a
-    request, and `ask` has the person type a new one into a field the system
-    writes, on their own device.
+    `web_call` sends a secret it keeps as the key of a request, and `ask` has
+    the person type a new one into a field the system writes, on their own
+    device. Only an app's held connection is handed a secret itself
+    (`release`), where its grant on that item allows it.
     """
 
     def __init__(self, workspace: Workspace) -> None:
@@ -118,6 +119,16 @@ class Vault:
         return self.workspace.client.handoff(
             self.workspace._vault_web_call(url, key, method, headers, body, reason)
         )
+
+    def release(self, item: str) -> Any:
+        """The secret of the vault item `item` (`vault.item:…`), handed to this app.
+
+        Only the process the daemon launched to hold an app's connection is
+        handed one, and only for an item the workspace granted the app: an item
+        it has no grant on raises `Refused`, and its person is asked once
+        whether it may. The secret is answered to the caller and kept nowhere.
+        """
+        return self.workspace.client.handoff(self.workspace._vault_release(item))
 
     def ask(
         self,
@@ -627,6 +638,9 @@ class Workspace:
         except AskPending as ask:
             raise ask._then(_reference_of) from None
         return _reference_of(await _settled(answer))
+
+    async def _vault_release(self, item: str) -> str:
+        return await (await self._endpoint()).release(item)
 
     def __repr__(self) -> str:
         return f"Workspace({self._info.name if self._info else self.ref!r})"

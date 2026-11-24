@@ -289,6 +289,17 @@ export class Vault {
   }
 
   /**
+   * The secret of the vault item `item` (`vault.item:…`), handed to this app.
+   * Only the process the daemon launched to hold an app's connection is handed
+   * one, and only for an item the workspace granted the app: an item it has no
+   * grant on throws `Refused`, and its person is asked once whether it may.
+   * The secret is answered to the caller and kept nowhere.
+   */
+  async release(item: string): Promise<string> {
+    return (await this.workspace.endpoint()).release(item);
+  }
+
+  /**
    * Ask the person for a password, a key or another secret. They type it into
    * the system's protected field on their own device; the answer is the
    * reference the vault keeps it under, or `null` when they declined. It may

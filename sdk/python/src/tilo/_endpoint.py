@@ -250,6 +250,18 @@ class Endpoint:
         answer = await self.call("tilo_do", sent, grouped=grouped)
         return _renamed(_mapping(answer, "tilo_do"))
 
+    async def release(self, item: str) -> str:
+        """The secret of the vault item `item`, released to this app's process.
+
+        Only the daemon's transport carries a release; a key, or a transport
+        a program brings, is refused.
+        """
+        transport = await self.client._transport()
+        release = getattr(transport, "release", None)
+        if release is None:
+            raise Refused("not_permitted", "a vault item's secret is released only to an app this computer's daemon started, over the connection it was handed")
+        return await release(self.workspace, item)
+
     async def act(
         self, path: str, args: Mapping[str, Any], *, surface: str | None = None
     ) -> Any:

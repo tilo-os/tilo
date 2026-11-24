@@ -444,6 +444,39 @@ impl Calls {
             .map_err(|refused| refused.json())
     }
 
+    /// The secret of the vault item `item` (`vault.item:…`) in `workspace` (`None`: the one
+    /// this connection acts in), released to this process. The vault releases one only to the
+    /// process an app's connection was handed to, for an item the workspace granted that app; it
+    /// refuses every agent, so the call is one action frame to the vault, never a tool. A first
+    /// release of an item asks the app's person, and is refused until they allow it. The secret
+    /// is answered to the caller alone: nothing here keeps or logs it.
+    ///
+    /// # Errors
+    /// The release was refused, or could not be asked for: its refusal's body.
+    pub async fn release(&self, workspace: Option<&str>, item: &str) -> Result<Value, Value> {
+        let At::Daemon { line, .. } = &self.at else {
+            return Err(ApiError::new(
+                "not_permitted",
+                "a vault item's secret is released only to an app this computer's daemon \
+                 started, over the connection it was handed",
+            )
+            .json());
+        };
+        let provider: Provider = line.clone();
+        let caller = tilo_actions::remote::Caller::local_person("");
+        let caller = match workspace {
+            Some(workspace) => caller.in_workspace(workspace),
+            None => caller,
+        };
+        let target = tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_actions::remote::person_vault::PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(item, "release"),
+        };
+        settled(&provider, caller, target)
+            .await
+            .map_err(|refused| refused.json())
+    }
+
     async fn answered(
         &self,
         workspace: Option<&str>,
@@ -1229,23 +1262,37 @@ fn hash_file(path: &Path) -> Result<String> {
 }
 
 async fn founded(provider: &Provider) -> Result<Value> {
-    use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionTarget, settle_with};
-    let asked = InvokeRequest::plain(
-        RemoteActionTarget {
-            provider: crate::account::PROVIDER.into(),
-            address: tilo_actions::ActionAddress::new(crate::account::WORKSPACES, "list"),
-        },
-        serde_json::Map::new(),
-    );
-    let invocation = asked.invocation;
+    let target = tilo_actions::remote::RemoteActionTarget {
+        provider: crate::account::PROVIDER.into(),
+        address: tilo_actions::ActionAddress::new(crate::account::WORKSPACES, "list"),
+    };
     // The daemon decides the call as whoever connects; the caller here names nobody.
-    let caller = tilo_actions::remote::Caller::local_person("");
-    let unanswered = || anyhow!("this computer's daemon did not answer");
+    settled(provider, tilo_actions::remote::Caller::local_person(""), target)
+        .await
+        .map_err(|refused| anyhow!("this computer's daemon refused: {}", refused.body.message))
+}
+
+/// `target` invoked with no argument as `caller` over `provider`, waited for until it settles:
+/// what it completed with, or its refusal as the API answers one.
+async fn settled(
+    provider: &Provider,
+    caller: tilo_actions::remote::Caller,
+    target: tilo_actions::remote::RemoteActionTarget,
+) -> Result<Value, ApiError> {
+    use tilo_actions::remote::{ActionCallError, InvokeRequest, ReceiptStatus, settle_with};
+    // A provider's own refusal (the vault's among them) is what the caller may not do.
+    let refused = |error: ActionCallError| match error {
+        ActionCallError::Refused { reason } => ApiError::new("not_permitted", reason),
+        other => ApiError::new(other.code(), other.to_string()),
+    };
+    let unanswered = || ApiError::new("unanswered", "this computer's daemon did not answer");
+    let asked = InvokeRequest::plain(target, serde_json::Map::new());
+    let invocation = asked.invocation;
     let mut status = provider
         .invoke(&caller, asked)
         .await
         .ok_or_else(unanswered)?
-        .map_err(|error| anyhow!("this computer's daemon refused: {error}"))?
+        .map_err(refused)?
         .status;
     let now = tilo_clock::now();
     let until = now.checked_add(ANSWER_DEADLINE).unwrap_or(now);
@@ -1253,9 +1300,11 @@ async fn founded(provider: &Provider) -> Result<Value> {
         match status {
             ReceiptStatus::Accepted => {}
             ReceiptStatus::Completed { output } => return Ok(output.value.unwrap_or_default()),
-            ReceiptStatus::Failed { error } => bail!("{}", error.message),
-            ReceiptStatus::Rejected { error } => bail!("this computer's daemon refused: {error}"),
-            ReceiptStatus::Cancelled { .. } => bail!("listing the workspaces was stopped"),
+            ReceiptStatus::Failed { error } => return Err(ApiError::new(&error.code, error.message)),
+            ReceiptStatus::Rejected { error } => return Err(refused(error)),
+            ReceiptStatus::Cancelled { .. } => {
+                return Err(ApiError::new("action_failed", "the call was stopped"));
+            }
         }
         status = settle_with(provider, &caller, invocation, None, until)
             .await
