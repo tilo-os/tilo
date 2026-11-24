@@ -555,14 +555,18 @@ impl Page {
         if (places || overlaid) && matches!(place, Place::Flow) {
             css.push_str("position:relative;");
         }
-        if places || shows == Shows::Paint {
-            // What it places stands at its own size, which a flow around it does not give it.
-            let _ = write!(css, "min-height:{}px;", node.rect[3]);
-        }
-        if node.scroll.is_some() {
+        // What it places stands at points of its own, past its edges too: the box scrolls to
+        // them.
+        if places {
+            css.push_str("overflow:auto;");
+        } else if node.scroll.is_some() {
             css.push_str("overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;");
         } else if node.clip.is_some() {
             css.push_str("overflow:clip;");
+        }
+        if places || shows == Shows::Paint {
+            // What it places stands at its own size, which a flow around it does not give it.
+            let _ = write!(css, "min-height:{}px;", node.rect[3]);
         }
         if !css.is_empty() {
             element.attr("style", &css);
