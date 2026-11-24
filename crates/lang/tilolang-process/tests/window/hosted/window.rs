@@ -870,7 +870,8 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
     );
 }
 
-/// Search finds a chat message by its words, and the hit opens the channel the message is in.
+/// A message's `open`, as a search hit of it names it, shows the channel the message is in, and
+/// the window publishes no search entry of its own: the device's daemon indexes the store.
 #[test]
 fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
     let mut session = staged(CHAT, "a team's channels");
@@ -880,16 +881,12 @@ fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
         Some("general"),
         "the scenario opens another channel"
     );
-    // What a hit of the message names, as search reads the workspace's store: the window itself
-    // publishes nothing.
+    // The window publishes no search entry: the device's daemon indexes the workspace's store.
     session.assert_no_index_delta();
-    let entries = tilolang_tilo::search::whole(&session.instance_host());
-    let hit = entries
-        .iter()
-        .find(|entry| entry.title.contains("third floor"))
-        .unwrap_or_else(|| panic!("a message is found: {entries:#?}"))
-        .resource
-        .clone();
+    // The address a hit of the message names: the message it is, which its `open` shows in the
+    // channel it is in.
+    let hit = message_naming(&session, "third floor")
+        .unwrap_or_else(|| panic!("the scenario wrote the message"));
     session.instance_mut().reveal(hit);
     session.settle();
     assert_eq!(
@@ -903,6 +900,47 @@ fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
             .any(|text| text.contains(said)),
         "which shows the message"
     );
+}
+
+/// The address a search hit of the message saying `words` names, read from the chat the window
+/// shows: the message's own resource, which its `open` shows in the conversation it is in.
+fn message_naming(session: &Session, words: &str) -> Option<String> {
+    use tilolang_tilo::runtime::Value;
+    let host = session.instance_host();
+    let root = host.root_of(CHAT).ok()?;
+    let conversations = |at: &tilolang_tilo::runtime::ResourceRef| -> Vec<Value> {
+        match host.runtime().read(at, "channels") {
+            Ok(Value::List(items)) => items,
+            _ => Vec::new(),
+        }
+    };
+    let mut pending = conversations(&root);
+    while let Some(channel) = pending.pop() {
+        let Value::Ref(channel) = channel else {
+            continue;
+        };
+        // A category lists channels; a channel lists the messages said in it.
+        let nested = conversations(&channel.target);
+        if !nested.is_empty() {
+            pending.extend(nested);
+            continue;
+        }
+        let Ok(Value::List(messages)) = host.runtime().read(&channel.target, "messages") else {
+            continue;
+        };
+        for message in messages {
+            let Value::Ref(message) = message else {
+                continue;
+            };
+            let Ok(Value::Rich(body)) = host.runtime().read(&message.target, "body") else {
+                continue;
+            };
+            if body.written_text().contains(words) {
+                return Some(format!("tl:{CHAT}:{}", message.target.id_string()));
+            }
+        }
+    }
+    None
 }
 
 // ----- the Action API ----------------------------------------------------------------------
