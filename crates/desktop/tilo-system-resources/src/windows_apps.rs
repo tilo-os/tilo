@@ -65,7 +65,9 @@ pub enum AppStatus {
 }
 
 /// What a program may reach, as the compatibility layer's plan for it allows.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct Access {
     /// How many places it may read.
     pub files_read_only: usize,
@@ -119,6 +121,10 @@ impl From<bool> for Allowed {
 }
 
 /// One Windows program a person can open.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one action the person may take, and each stands on its own"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct WindowsApp {
     /// The entry's id, as the compatibility layer names it.
@@ -224,7 +230,9 @@ pub struct TemporaryConnection {
 }
 
 /// The managed Windows appliance: one Windows, set up for this computer's apps.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct Appliance {
     /// Whether it was set up at all.
     pub configured: bool,
@@ -246,7 +254,9 @@ pub struct Appliance {
 
 /// What the appliance's one interactive Windows session reaches: the grants its programs use,
 /// and who has programs open in it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct SharedSession {
     pub active: bool,
     /// The grants in force: `audio-playback`, `clipboard`, `microphone`, `network-egress`,
@@ -283,7 +293,9 @@ pub struct PendingInstall {
 }
 
 /// This computer's Windows programs as one manager reads them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct WindowsApps {
     /// Whether this computer's compatibility layer answers at all.
     pub serving: bool,
@@ -334,7 +346,11 @@ pub enum WindowsAppsAction {
     },
     /// Open the appliance's recovery desktop.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "wrench", keywords = "windows recovery, windows wiederherstellung")]
+    #[effect(
+        own_device,
+        icon = "wrench",
+        keywords = "windows recovery, windows wiederherstellung"
+    )]
     Recovery,
     /// Start Windows.
     #[effect(kind = "outside")]
@@ -342,23 +358,44 @@ pub enum WindowsAppsAction {
     Start,
     /// Restart Windows.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "rotate-cw", keywords = "restart windows, windows neu starten")]
+    #[effect(
+        own_device,
+        icon = "rotate-cw",
+        keywords = "restart windows, windows neu starten"
+    )]
     Restart,
     /// Suspend Windows.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "pause", keywords = "suspend windows, windows anhalten")]
+    #[effect(
+        own_device,
+        icon = "pause",
+        keywords = "suspend windows, windows anhalten"
+    )]
     Suspend,
     /// Resume Windows.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "play", keywords = "resume windows, windows fortsetzen")]
+    #[effect(
+        own_device,
+        icon = "play",
+        keywords = "resume windows, windows fortsetzen"
+    )]
     Resume,
     /// Shut Windows down.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "power", keywords = "shut down windows, windows herunterfahren")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "power",
+        keywords = "shut down windows, windows herunterfahren"
+    )]
     Shutdown,
     /// Connect the appliance long enough to activate Windows.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "network", keywords = "activate windows, windows aktivieren")]
+    #[effect(
+        own_device,
+        icon = "network",
+        keywords = "activate windows, windows aktivieren"
+    )]
     TemporaryNetwork,
     /// Connect the appliance long enough for Windows Update.
     #[effect(kind = "outside")]
@@ -366,40 +403,69 @@ pub enum WindowsAppsAction {
     UpdateNetwork,
     /// End the appliance's temporary connection.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "x", keywords = "disconnect windows, verbindung trennen")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "x",
+        keywords = "disconnect windows, verbindung trennen"
+    )]
     RevokeNetwork,
     /// Set the waiting setup up in a private capsule.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "shield", keywords = "private capsule, private kapsel")]
+    #[effect(
+        own_device,
+        icon = "shield",
+        keywords = "private capsule, private kapsel"
+    )]
     InstallPrivateCapsule,
     /// Set the waiting setup up in the Windows appliance.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "monitor", keywords = "install in windows, in windows installieren")]
+    #[effect(
+        own_device,
+        icon = "monitor",
+        keywords = "install in windows, in windows installieren"
+    )]
     InstallWindowsAppliance,
     /// Open a program.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "play", keywords = "launch windows app, windows-app starten")]
+    #[effect(
+        own_device,
+        icon = "play",
+        keywords = "launch windows app, windows-app starten"
+    )]
     Launch {
         #[param("The application's id")]
         program: String,
     },
     /// End a running program of a private capsule.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "square", keywords = "stop windows app, windows-app beenden")]
+    #[effect(
+        own_device,
+        icon = "square",
+        keywords = "stop windows app, windows-app beenden"
+    )]
     Stop {
         #[param("The application's id")]
         program: String,
     },
     /// Open a private-capsule program in the Windows appliance instead.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "monitor", keywords = "open in windows vm, in windows öffnen")]
+    #[effect(
+        own_device,
+        icon = "monitor",
+        keywords = "open in windows vm, in windows öffnen"
+    )]
     LaunchVmFallback {
         #[param("The application's id")]
         program: String,
     },
     /// Open one document this computer chose in an appliance application.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "file", keywords = "open file in windows, datei in windows öffnen")]
+    #[effect(
+        own_device,
+        icon = "file",
+        keywords = "open file in windows, datei in windows öffnen"
+    )]
     OpenFile {
         #[param("The application's id")]
         program: String,
@@ -415,7 +481,11 @@ pub enum WindowsAppsAction {
     },
     /// Run the setup whose private capsule this is again.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "rotate-cw", keywords = "retry setup, installation wiederholen")]
+    #[effect(
+        own_device,
+        icon = "rotate-cw",
+        keywords = "retry setup, installation wiederholen"
+    )]
     RetryInstall {
         #[param("The private capsule the setup installed into")]
         capsule: String,
@@ -429,28 +499,48 @@ pub enum WindowsAppsAction {
     },
     /// Remove a program's launcher; its files stay.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash", keywords = "remove launcher, verknüpfung entfernen")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash",
+        keywords = "remove launcher, verknüpfung entfernen"
+    )]
     RemoveLauncher {
         #[param("The application's id")]
         program: String,
     },
     /// Run the program's own uninstaller.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash", keywords = "uninstall windows app, deinstallieren")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash",
+        keywords = "uninstall windows app, deinstallieren"
+    )]
     Uninstall {
         #[param("The application's id")]
         program: String,
     },
     /// Delete everything the setup installed into its private capsule.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash", keywords = "delete windows app data, daten löschen")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash",
+        keywords = "delete windows app data, daten löschen"
+    )]
     DeleteData {
         #[param("The private capsule the setup installed into")]
         capsule: String,
     },
     /// Choose how an application opens from now on, or let the catalogue recommend it.
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "route", keywords = "open with wine, proton, windows vm")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "route",
+        keywords = "open with wine, proton, windows vm"
+    )]
     SetRoute {
         #[param("The application's id")]
         program: String,
