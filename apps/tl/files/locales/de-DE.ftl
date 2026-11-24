@@ -315,6 +315,7 @@ d-6x2g4o5k-drive_id = Laufwerkskennung
 d-2b6epu9v = Eintrag umbenennen
     .doc = Benennt den Eintrag unter `path` in seinem eigenen Ordner in `name` um.
     .w-a-name-cannot-be-empty = Ein Name darf nicht leer sein
+    .w-a-name-cannot-hold-a-slash = Ein Name darf keinen Schrägstrich enthalten
 
 d-2b6epu9v-path = Pfad
 
@@ -441,6 +442,14 @@ d-x6q5wlkw = Einträge in den Papierkorb~present
 d-dkeycb6f = Favorit hinzufügen~present
 
 d-n9jkqy4o = Dateien
+    .w-larger = Größer
+    .w-smaller = Kleiner
+    .w-extract-to = Nach „{ $name }“ entpacken
+    .w-extract-to-2 = Entpacken nach…
+    .w-move-to = Nach „{ $name }“ verschieben
+    .w-move-to-2 = Verschieben nach…
+    .w-copy-to = Nach „{ $name }“ kopieren
+    .w-copy-to-2 = Kopieren nach…
     .w-add-the-folder-shown-to-favorites = Den gezeigten Ordner zu Favoriten hinzufügen
     .w-new-folder = Neuer Ordner
     .w-how-the-folder-shows = Wie der Ordner erscheint
@@ -578,10 +587,96 @@ d-4dnpiqnl = Apps
     .w-an-app-this-workspace-installs-stands = Eine App, die dieser Arbeitsbereich installiert, steht hier, einen Druck vom Öffnen entfernt.
     .w-applications = Apps
 
-d-t73vg2dk = Anzeigen
-    .doc = Zeigt den Ort, den `path` nennt: den Ordner selbst oder den Ordner, der die Datei hält, mit dieser Datei markiert.
-    .w-a-place-is-named-by-its = Ein Ort wird durch seinen Pfad genannt
+d-bkr4ph6l = Vorschau
+    .doc = Die Vorschau, die für das Bild unter `path` erstellt wurde, einmal aufbewahrt, damit das Fenster sie erneut zeichnet, ohne das Gerät jedes Mal zu fragen; die Datei ist keine, solange das Gerät sagt, dass es keine Vorschau hat, und `modified` ist, wann sich das Bild so geändert hat, wie es war, als die Vorschau entstand — eine, die vor der Änderung des Bildes entstand, wird erneut erstellt.
+    .noun = { $count ->
+        [one] Vorschau
+       *[other] Vorschauen
+    }
 
-d-t73vg2dk-path = Pfad
+d-3knlafaw = Pfad
 
-d-oqb3l2oe = Anzeigen~present
+d-2gbzq5wu = Geändert
+
+d-e52oeizb = Datei
+
+d-bkr4ph6l-filter-modified = Geändert
+
+d-ybje77gc = Ziel
+    .doc = Ein Ordner, in den ein Eintrag gelegt werden kann, angeboten von den Zeilen, die etwas hineinverschieben, -kopieren oder -entpacken.
+    .noun = { $count ->
+        [one] Ziel
+       *[other] Ziele
+    }
+
+d-3wtmjgc5 = Name
+
+d-gpo7gdkp = Pfad
+
+d-2myooacl = Zoom
+    .doc = Wie groß die Einträge stehen: 0 kleiner, 1 normal, 2 größer.
+
+d-2kuloiux = Vorschauen
+    .doc = Die Vorschauen, die es von den aufgelisteten Bildern gezeichnet hat, je nach Pfad.
+
+d-rb1nrssu-filter-zoom = Zoom
+
+d-wxq55qbh = Vorschauschritt
+    .doc = Erstellt die Vorschauen einiger Bilder im gezeigten Ordner, die noch keine haben, während das Fenster ihn zeigt: ein Ordner voller Fotos füllt sich mit seinen Bildern, während die Person ihn ansieht, ohne dass das Fenster beim Lesen des Ordners auf alle wartet.
+
+d-7e6cchj6 = Zeigen
+    .doc = Zeigt `path` in diesem Fenster: den Ordner selbst, wenn es einer ist, und sonst den Ordner, der ihn enthält, mit dem Eintrag ausgewählt.
+
+d-7e6cchj6-path = Pfad
+
+d-l3hgnh4o = Hineinentpacken
+    .doc = Entpackt das Archiv unter `path` nach `folder`, dort in einen nach ihm benannten Ordner: was die Zeilen fragen, die einen Ordner zum Entpacken anbieten.
+
+d-l3hgnh4o-path = Pfad
+
+d-l3hgnh4o-folder = Ordner
+
+d-twnwvw27 = Hineinverschieben
+    .doc = Verschiebt die gewählten Einträge nach `folder` und behält einen belegten Namen beide.
+
+d-twnwvw27-folder = Ordner
+
+d-d3jn3s72 = Hineinkopieren
+    .doc = Kopiert die gewählten Einträge nach `folder` und behält einen belegten Namen beide.
+
+d-d3jn3s72-folder = Ordner
+
+d-ibi5ogyw = Hineinlegen
+    .doc = Legt die Einträge unter `paths` in `folder` ab, verschiebt oder kopiert sie: ein verschobener Eintrag, dessen Namen der Ordner schon hat, wird vor dem Verschieben umbenannt, ein kopierter unter einem freien Namen angelegt, sodass nichts ersetzt wird.
+    .w-choose-a-file-first = Wähle zuerst eine Datei
+    .w-choose-a-folder-to-put-them = Wähle einen Ordner, in den sie kommen
+
+d-ibi5ogyw-paths = Pfade
+
+d-ibi5ogyw-folder = Ordner
+
+d-ibi5ogyw-moving = Verschieben
+
+d-ukrsmyfs = Zoom setzen
+    .doc = Zeichnet die Einträge in `step`: 0 kleiner, 1 normal, 2 größer, wie die beiden Tasten es schrittweise tun.
+
+d-ukrsmyfs-step = Schritt
+
+d-iiscvk5b = Vergrößern
+    .doc = Zeichnet die Einträge einen Schritt größer.
+
+d-qirfqf3p = Verkleinern
+    .doc = Zeichnet die Einträge einen Schritt kleiner.
+
+d-dq5txyoz = Hineinlegen~present
+
+d-7qxtagjs = Hineinziehen
+    .doc = Verschiebt die Einträge, die die Person auf den Ordner `folder` gezogen hat, nach ihren `paths`, wie „Verschieben nach…“ es tut, und behält einen belegten Namen beide.
+
+d-7qxtagjs-paths = Pfade
+
+d-7qxtagjs-folder = Ordner
+
+d-456rxelx = Eintragskarte
+
+d-qs2kdhod = Eintragszeile

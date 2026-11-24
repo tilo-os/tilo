@@ -29,6 +29,9 @@ fn me() -> Actor {
 struct Disk {
     home: PathBuf,
     trash: Rc<RefCell<BTreeMap<String, String>>>,
+    /// The content store the device's preview cache keeps its pictures in; a disk without one
+    /// makes no previews, as a device that keeps no previews does.
+    previews: Option<Store>,
 }
 
 impl Disk {
@@ -36,7 +39,14 @@ impl Disk {
         Self {
             home: home.to_path_buf(),
             trash: Rc::new(RefCell::new(BTreeMap::new())),
+            previews: None,
         }
+    }
+
+    /// The device makes a preview of every picture it is asked about, kept in `store`.
+    fn making_previews(mut self, store: Store) -> Self {
+        self.previews = Some(store);
+        self
     }
 
     /// Where `path` is on this disk: `~` is the person's home, as the app names it.
@@ -119,6 +129,22 @@ impl FilesHost for Disk {
         Ok(format!("watch-{run}"))
     }
 
+    fn preview(&self, path: &str, _size: u32) -> Result<Option<FileValue>, String> {
+        let Some(store) = &self.previews else {
+            return Ok(None);
+        };
+        let name = self
+            .resolve(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "preview".to_owned());
+        Ok(Some(store.keeping(
+            &format!("{name}-preview.png"),
+            "image/png",
+            b"a preview",
+        )))
+    }
+
     fn mkdir(&self, path: &str) -> Result<Entry, String> {
         let dir = self.resolve(path);
         std::fs::create_dir(&dir).map_err(|error| error.to_string())?;
@@ -182,6 +208,17 @@ impl FilesHost for Disk {
         }
         std::fs::copy(&from, &to).map_err(|error| error.to_string())?;
         self.entry(&to, &named)
+            .ok_or_else(|| "the copy did not appear".to_owned())
+    }
+
+    fn copy_to(&self, path: &str, to: &str) -> Result<Entry, String> {
+        let from = self.resolve(path);
+        let at = self.resolve(to);
+        if at.exists() {
+            return Err(format!("{} already exists", at.display()));
+        }
+        std::fs::copy(&from, &at).map_err(|error| error.to_string())?;
+        self.entry(&at, to)
             .ok_or_else(|| "the copy did not appear".to_owned())
     }
 
@@ -343,12 +380,17 @@ struct Files {
 impl Files {
     fn new() -> Self {
         let home = tempfile::tempdir().expect("a home");
-        let disk = Disk::new(home.path());
         let store = Store::default();
+        let disk = Disk::new(home.path()).making_previews(store.clone());
         let host = Host::new(me(), || None).expect("a host");
         let metas = tilolang_tilo::platform_apps::platform_packages()
             .expect("the platform's packages read");
-        for meta in &metas {
+        // The host registers the actions catalogue itself, as the package whose calls it answers:
+        // loading it as a device's package again would declare its types twice.
+        for meta in metas
+            .iter()
+            .filter(|meta| meta.app != tilolang::ACTIONS_APP)
+        {
             host.runtime()
                 .load_foreign(meta.clone())
                 .expect("the device is loaded");
@@ -458,6 +500,20 @@ impl Files {
             InvokeOutcome::Done(value) => value,
             other => panic!("{name} answers {other:?}"),
         }
+    }
+
+    /// Whether `name` refuses `args`: the person is told why and nothing runs.
+    fn refuses(&self, name: &str, args: Vec<Value>) -> bool {
+        let id = self
+            .actions
+            .iter()
+            .find(|(asked, _)| asked == name)
+            .map(|(_, id)| id.clone())
+            .unwrap_or_else(|| panic!("no action {name}"));
+        self.host
+            .runtime()
+            .invoke_action(&me(), (id.as_str(), args))
+            .is_err()
     }
 
     fn window(&self) -> ViewInstance {
@@ -621,6 +677,97 @@ fn an_entry_cut_from_one_folder_moves_to_another_and_keeps_its_name() {
 }
 
 #[test]
+fn chosen_entries_move_or_copy_into_a_folder_the_menu_names_and_nothing_is_replaced() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Downloads/report.pdf", "report");
+    write(&home, "Downloads/photo.jpg", "photo");
+    write(&home, "Documents/report.pdf", "the older report");
+    std::fs::create_dir_all(home.join("Archive")).expect("a folder");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), app.text("~/Downloads")]);
+    app.call("select_all", vec![app.root_value()]);
+
+    app.call("copy_into", vec![app.root_value(), app.text("~/Documents")]);
+    assert_eq!(
+        std::fs::read_to_string(home.join("Documents/report.pdf")).expect("the older one"),
+        "the older report",
+        "a copy never replaces what the folder holds"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("Documents/report (2).pdf")).expect("the copy"),
+        "report"
+    );
+    assert!(
+        home.join("Documents/photo.jpg").exists(),
+        "every chosen entry is copied"
+    );
+    assert!(
+        home.join("Downloads/report.pdf").exists(),
+        "a copy leaves the original"
+    );
+
+    app.call("select_all", vec![app.root_value()]);
+    app.call("move_into", vec![app.root_value(), app.text("~/Archive")]);
+    assert!(home.join("Archive/report.pdf").exists() && home.join("Archive/photo.jpg").exists());
+    assert!(
+        !home.join("Downloads/report.pdf").exists() && !home.join("Downloads/photo.jpg").exists(),
+        "a move leaves nothing behind"
+    );
+}
+
+#[test]
+fn a_name_with_a_slash_or_one_already_taken_is_refused_in_the_persons_words() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Documents/notes.md", "notes");
+    write(&home, "Documents/plan.md", "plan");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), app.text("~/Documents")]);
+
+    app.call("new_folder", vec![app.root_value(), app.text("a/b")]);
+    assert!(
+        !home.join("Documents/a").exists(),
+        "no folder is made under a slash"
+    );
+    assert!(has(&app.window(), "A name cannot hold a slash"));
+
+    app.call(
+        "rename_entry",
+        vec![
+            app.root_value(),
+            app.text("~/Documents/notes.md"),
+            app.text("plan.md"),
+        ],
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("Documents/plan.md")).expect("plan"),
+        "plan",
+        "a rename never replaces another entry"
+    );
+    assert!(home.join("Documents/notes.md").exists());
+    assert!(has(&app.window(), "“plan.md” is already here"));
+
+    assert!(app.refuses(
+        "rename_entry",
+        vec![
+            app.root_value(),
+            app.text("~/Documents/notes.md"),
+            app.text("  ")
+        ],
+    ));
+    assert!(app.refuses(
+        "rename_entry",
+        vec![
+            app.root_value(),
+            app.text("~/Documents/notes.md"),
+            app.text("x/y.md")
+        ],
+    ));
+    assert!(home.join("Documents/notes.md").exists());
+}
+
+#[test]
 fn a_file_dropped_on_the_window_lands_in_the_folder_shown() {
     let app = Files::new();
     let home = app.disk.home.clone();
@@ -688,5 +835,212 @@ fn a_mounted_workspace_a_drive_and_the_apps_are_places_the_sidebar_offers() {
         opened.iter().any(|(name, args)| name == "open-app"
             && args.first() == Some(&Value::text("so.tilo.notes"))),
         "the session opens Notes: {opened:?}"
+    );
+}
+
+#[test]
+fn showing_a_file_opens_the_folder_that_holds_it_with_the_file_chosen() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Documents/Projects/plan.md", "# Plan");
+    app.call("arrive", vec![app.root_value()]);
+    app.call(
+        "show",
+        vec![app.root_value(), app.text("~/Documents/Projects/plan.md")],
+    );
+
+    let window = app.window();
+    let words = shown(&window);
+    assert!(
+        words.iter().any(|text| text == "plan.md"),
+        "the file stands in its folder: {words:?}"
+    );
+    assert!(
+        words.iter().any(|text| text == "~/Documents/Projects"),
+        "the inspector says where it stands: {words:?}"
+    );
+    assert!(
+        words.iter().any(|text| text.contains("# Plan")),
+        "the inspector reads its first words: {words:?}"
+    );
+}
+
+#[test]
+fn the_folder_above_a_place_in_the_home_folder_is_in_the_home_folder() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    std::fs::create_dir_all(home.join("Documents/Projects")).expect("a folder");
+    app.call("arrive", vec![app.root_value()]);
+    app.call(
+        "go",
+        vec![app.root_value(), app.text("~/Documents/Projects")],
+    );
+
+    app.call("up", vec![app.root_value()]);
+    let words = shown(&app.window());
+    assert!(
+        words.iter().any(|text| text == "Projects"),
+        "up from a folder in the home folder lands on its parent: {words:?}"
+    );
+}
+
+#[test]
+fn a_picture_shows_the_preview_the_device_made_and_the_entries_draw_larger_or_smaller() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Pictures/beach.png", "the bytes of a picture");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), app.text("~/Pictures")]);
+    app.call("choose_view", vec![app.root_value(), Value::Int(1)]);
+
+    // Before the device made one, the card shows the kind's glyph.
+    assert!(
+        app.window().tree().of_kind("ui.Image").is_empty(),
+        "no preview stands before the device made one"
+    );
+
+    app.call("preview_step", vec![app.root_value()]);
+    let window = app.window();
+    let pictures = window.tree().of_kind("ui.Image");
+    assert_eq!(pictures.len(), 1, "the picture's card shows its preview");
+    assert!(
+        matches!(
+            pictures[0].props.get("src"),
+            Some(Value::Text(url)) if url.starts_with("tilo-blob://")
+        ),
+        "the preview is the file the device kept: {:?}",
+        pictures[0].props.get("src")
+    );
+
+    // Smaller draws a row as one quiet line, and larger again gives it its height.
+    app.call("choose_view", vec![app.root_value(), Value::Int(0)]);
+    app.call("zoom_out", vec![app.root_value()]);
+    let window = app.window();
+    let row = window
+        .tree()
+        .first_of_kind("ui.ListRow")
+        .expect("the picture's row");
+    assert_eq!(row.props.get("dense"), Some(&Value::Bool(true)));
+
+    app.call("zoom_in", vec![app.root_value()]);
+    let window = app.window();
+    let row = window
+        .tree()
+        .first_of_kind("ui.ListRow")
+        .expect("the picture's row");
+    assert_eq!(row.props.get("dense"), Some(&Value::Bool(false)));
+}
+
+#[test]
+fn an_entry_is_picked_up_as_the_file_it_is_so_another_app_takes_it() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Pictures/beach.png", "the bytes of a picture");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), app.text("~/Pictures")]);
+
+    let window = app.window();
+    let source = window
+        .tree()
+        .first_of_kind("ui.DragSource")
+        .expect("the entry's row is a drag source");
+    assert_eq!(
+        source.props.get("files"),
+        Some(&Value::List(vec![app.text("~/Pictures/beach.png")])),
+        "dragging it carries the entry's own path: {:?}",
+        source.props.get("files")
+    );
+}
+
+/// Lets the entries at `dragged` go on a folder's row, as the window hands that row a drag of
+/// this window's own files: the folder's row is the drop target, and what it reports is the
+/// dragged files' paths and where they landed.
+fn drop_on_folder(app: &Files, folder: &str, dragged: &[&str]) {
+    let window = app.window();
+    let target = window
+        .tree()
+        .of_kind("ui.DropTarget")
+        .into_iter()
+        .find(|node| {
+            let mut said = Vec::new();
+            words(node, &mut said);
+            said.iter().any(|word| word == folder)
+        })
+        .unwrap_or_else(|| panic!("{folder}'s row takes a drop"))
+        .key
+        .clone();
+    let carried = Value::List(vec![
+        Value::List(dragged.iter().map(|path| app.text(path)).collect()),
+        Value::List(vec![Value::Int(12), Value::Int(8)]),
+    ]);
+    window
+        .fire_with(&target, "drop_files", Some(&carried))
+        .unwrap_or_else(|why| panic!("the drop on {folder} runs: {why:?}"));
+}
+
+#[test]
+fn entries_dragged_onto_a_folders_row_move_into_it() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Downloads/report.pdf", "report");
+    write(&home, "Downloads/photo.jpg", "photo");
+    write(&home, "Downloads/notes.md", "notes");
+    std::fs::create_dir_all(home.join("Downloads/Archive")).expect("a folder");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), app.text("~/Downloads")]);
+
+    // Only folders take a drop: a file's row is no target.
+    let window = app.window();
+    assert_eq!(
+        window.tree().of_kind("ui.DropTarget").len(),
+        1,
+        "the one folder's row is the one target"
+    );
+
+    drop_on_folder(&app, "Archive", &["~/Downloads/report.pdf"]);
+    assert!(
+        home.join("Downloads/Archive/report.pdf").exists(),
+        "it moved in"
+    );
+    assert!(
+        !home.join("Downloads/report.pdf").exists(),
+        "and left the folder"
+    );
+
+    // A chosen entry's row carries every chosen file, and they all move where it is let go.
+    app.call(
+        "choose",
+        vec![
+            app.root_value(),
+            Value::List(vec![
+                app.text("~/Downloads/photo.jpg"),
+                app.text("~/Downloads/notes.md"),
+            ]),
+        ],
+    );
+    let window = app.window();
+    assert!(
+        window.tree().of_kind("ui.DragSource").iter().any(|source| {
+            source.props.get("files")
+                == Some(&Value::List(vec![
+                    app.text("~/Downloads/photo.jpg"),
+                    app.text("~/Downloads/notes.md"),
+                ]))
+        }),
+        "a chosen row carries every chosen file"
+    );
+    drop_on_folder(
+        &app,
+        "Archive",
+        &["~/Downloads/photo.jpg", "~/Downloads/notes.md"],
+    );
+    assert!(home.join("Downloads/Archive/photo.jpg").exists());
+    assert!(home.join("Downloads/Archive/notes.md").exists());
+
+    // A folder let go on its own row moves nowhere.
+    drop_on_folder(&app, "Archive", &["~/Downloads/Archive"]);
+    assert!(
+        home.join("Downloads/Archive/report.pdf").exists(),
+        "it stays as it was"
     );
 }
