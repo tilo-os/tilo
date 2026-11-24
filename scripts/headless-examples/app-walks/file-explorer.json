@@ -114,7 +114,9 @@
         },
         {
           "wait_for": {
-            "shown": "Bold"
+            "actions": {
+              "app": "so.tilo.notes"
+            }
           }
         }
       ]
