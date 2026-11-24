@@ -54,6 +54,36 @@ fn store_disclosure(
     .map_err(|reason| ActionCallError::InvalidRequest { reason })
 }
 
+/// Whether `confirmation` is the person's approve of the asked record this call was kept as.
+/// Only the dispatch that admits the call again on their answer carries one, and where a frame
+/// enters the device it is refused unless the store that kept the record handed it back
+/// ([`tilo_actions::remote::asked::admit_frame`]).
+pub(super) fn approved_by_person(
+    confirmation: Option<&tilo_actions::remote::Confirmation>,
+) -> bool {
+    matches!(
+        confirmation,
+        Some(tilo_actions::remote::Confirmation::Asked(_))
+    )
+}
+
+/// The person's approve of the call `invocation`, kept as its asked record in `workspace`, as the
+/// store that kept it hands it back to the dispatch that admits the call again.
+#[cfg(test)]
+pub(crate) fn person_approved(
+    workspace: &str,
+    invocation: tilo_actions::InvocationId,
+) -> tilo_actions::remote::Confirmation {
+    tilo_actions::remote::Confirmation::Asked(tilo_actions::remote::asked::Approval::new(
+        tilo_actions::remote::asked::RecordRef {
+            workspace: workspace.to_owned(),
+            record: invocation.0.to_string(),
+            device: None,
+        },
+        None,
+    ))
+}
+
 impl AppBrokerState {
     /// Resolve only this provider's live publication. Host-owned providers
     /// have no application publication; unrelated discovery cannot change them.
@@ -133,19 +163,6 @@ impl AppBrokerState {
             resource: offered.1.resource.clone(),
             action: offered.1.action.clone(),
             argument_digest: super::argument_digest(argument),
-        }
-    }
-
-    pub(super) fn consume_answer(
-        &self,
-        confirmation: Option<&tilo_actions::remote::Confirmation>,
-        binding: &super::ApprovalBinding,
-    ) -> bool {
-        match confirmation {
-            Some(tilo_actions::remote::Confirmation::Approved(token)) => {
-                self.take_approval(token, binding)
-            }
-            _ => false,
         }
     }
 

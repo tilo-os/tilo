@@ -567,7 +567,7 @@ final class EngineTests: XCTestCase {
     func testAProviderOffTheEnginesListIsRefusedBeforeThePageIsAsked() async throws {
         try await enterAsADevice()
         XCTAssertEqual(PersonProvider.allCases.map(\.rawValue),
-                       ["tilo.models", "tilo.vault", "tilo.events", "tilo.telling", "tilo.initiative", "tilo.asking", "tilo.learned", "tilo.connections"])
+                       ["tilo.models", "tilo.vault", "tilo.events", "tilo.telling", "tilo.initiative", "tilo.learned", "tilo.connections"])
         // With the engine's own pass: what the device could ask its host, and the engine does not.
         let refused = try await engine.view.callAsyncJavaScript(#"""
             const said = [];

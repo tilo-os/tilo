@@ -319,7 +319,7 @@ impl ServiceSessions {
             }
         }
         // One store of the calls that wait for a person's yes serves this device: every
-        // dispatch here keeps its asked call in it, `tilo.asking#list` lists them, and
+        // dispatch here keeps its asked call in it, each workspace's invocations read them, and
         // `tilo.invocations#resolve` answers them, whichever embedder opened the service.
         Box::pin(workspaces.open_asked_store(tokio::runtime::Handle::current()))
             .await

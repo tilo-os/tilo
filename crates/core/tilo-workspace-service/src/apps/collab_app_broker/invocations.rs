@@ -7,7 +7,7 @@
 //! now.
 //!
 //! This is the one reader of those records. The questions that wait for a person
-//! (`tilo.asking/waiting#list`) are the same listing with [`InvocationStatus::Waiting`], never a
+//! are the same listing with [`InvocationStatus::Waiting`], never a
 //! second walk over the records.
 //!
 //! A caller reads the invocations its grants let it read now, each record checked on its own:
@@ -41,6 +41,17 @@ impl AppBrokerState {
     /// apps and agents this broker admits read with from now on.
     pub fn serve_records(&self, reads: Arc<dyn tilo_actions::remote::ResourceReads>) {
         let _ = self.records.set(reads);
+    }
+
+    /// Keep a read the person is asked about through `asked`, the device's dispatch: what an
+    /// app's join of such a record waits on from now on ([`Self::person_reads_joined`]).
+    pub fn serve_asked_reads(&self, asked: Arc<dyn tilo_actions::remote::asked::AskedReads>) {
+        let _ = self.asked_reads.set(asked);
+    }
+
+    /// Where a read the person is asked about waits for them, once its embedder served it.
+    pub(crate) fn asked_reads(&self) -> Option<Arc<dyn tilo_actions::remote::asked::AskedReads>> {
+        self.asked_reads.get().cloned()
     }
 
     /// The device's one record reader, once its embedder served it.

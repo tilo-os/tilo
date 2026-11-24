@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_actions::remote::asked::AskedRecords as _;
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
@@ -1385,7 +1386,10 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
             && ask.outcome.is_none()
     );
     assert!(
-        rootless_asked.asked_of(&cert.user_public_key).is_empty(),
+        rootless_asked
+            .store()
+            .asked_of(&cert.user_public_key)
+            .is_empty(),
         "a device without the root asks nothing of it"
     );
     let refused = rootless_store
@@ -1441,7 +1445,7 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
         .record(&invocation.0.to_string())
         .expect("the record waits for the person there");
     assert_eq!(
-        holder_asked.asked_of(&cert.user_public_key).len(),
+        holder_asked.store().asked_of(&cert.user_public_key).len(),
         1,
         "the person is asked there"
     );
@@ -1469,7 +1473,10 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
         Some(ask),
         "the record is not written again"
     );
-    assert_eq!(holder_asked.asked_of(&cert.user_public_key).len(), 1);
+    assert_eq!(
+        holder_asked.store().asked_of(&cert.user_public_key).len(),
+        1
+    );
 
     // The person answers once, there.
     let answering = tilo_actions::remote::Caller::authenticated(cert.user_public_key, holder_key);

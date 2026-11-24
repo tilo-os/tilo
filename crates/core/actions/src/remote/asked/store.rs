@@ -33,6 +33,9 @@ pub const MOST_WAITING: usize = 32;
 /// What keeping one call more than [`MOST_WAITING`] for a person is refused with.
 pub const TOO_MANY_WAIT: &str = "Too many questions already wait for this person's answer: answer or decline some of them first";
 
+/// What answering from a device that is not the person's own is refused with.
+pub const ON_YOUR_OWN_DEVICE: &str = "This is answered on a device of your own";
+
 /// What a resolve of a record nobody asks the caller is refused with.
 pub const NOT_YOURS: &str = "Only the person this question asks can answer it";
 /// What a resolve of a record no longer asked is refused with.
@@ -71,6 +74,9 @@ struct Record {
     /// The arguments as its person changed them with their approve, which the call was admitted
     /// again with: kept beside the call as it was asked.
     edited: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The window a person's press asked it in ([`AskedDispatch::pressed`]): where its question
+    /// stands.
+    pressed: Option<super::Pressed>,
 }
 
 /// The arguments `answer` changes `record`'s call to, through the form its ask offers
@@ -112,6 +118,7 @@ impl Record {
             taken: None,
             outcome: None,
             edited: self.edited.clone(),
+            pressed: self.pressed.clone(),
         }
     }
 }
@@ -250,6 +257,7 @@ impl AskedStore {
                 dispatch: ask.dispatch,
                 context: ask.context,
                 edited: None,
+                pressed: ask.pressed,
             });
         }
         kept.moved();
@@ -344,11 +352,15 @@ impl AskedStore {
         if waiting >= MOST_WAITING {
             return Err(TOO_MANY_WAIT.to_owned());
         }
-        let context = dispatch
-            .upgrade()
-            .map_or(serde_json::Value::Null, |dispatch| {
-                dispatch.context(request.invocation)
-            });
+        let (context, pressed) =
+            dispatch
+                .upgrade()
+                .map_or((serde_json::Value::Null, None), |dispatch| {
+                    (
+                        dispatch.context(request.invocation),
+                        dispatch.pressed(request.invocation),
+                    )
+                });
         let record = Record {
             at: at.clone(),
             invocation: request.invocation,
@@ -362,6 +374,7 @@ impl AskedStore {
             dispatch: name.to_owned(),
             context,
             edited: None,
+            pressed,
         };
         self.keep(&record.kept());
         kept.records.push(record);
@@ -470,6 +483,11 @@ impl AskedStore {
         answer: &Resolve,
     ) -> Result<Admitted, ActionCallError> {
         let person = answering_person(answering).ok_or_else(|| refused(NOT_YOURS))?;
+        // A person at a device that is not theirs made the call there; only a device of their own
+        // answers for them, so the device that asked never approves itself.
+        if answering.is_foreign_device() {
+            return Err(refused(ON_YOUR_OWN_DEVICE));
+        }
         let mut kept = self.kept.lock_recover();
         let record = kept.find(at).ok_or_else(|| refused(NOTHING_ASKED))?;
         if record.person != person {
@@ -582,16 +600,30 @@ impl AskedStore {
     }
 
     /// Every record the dispatch `name` keeps that is asked still, with the target its call
-    /// goes to: what a dispatch reads once it started again, to withdraw what asked of a
-    /// provider that ended with it.
+    /// goes to and what the dispatch kept beside it ([`AskedDispatch::context`]): what a
+    /// dispatch reads once it started again, to withdraw what asked of something that ended
+    /// with it.
     #[must_use]
-    pub fn asked_by(&self, name: &str) -> Vec<(RecordRef, super::super::RemoteActionTarget)> {
+    pub fn asked_by(
+        &self,
+        name: &str,
+    ) -> Vec<(
+        RecordRef,
+        super::super::RemoteActionTarget,
+        serde_json::Value,
+    )> {
         self.kept
             .lock_recover()
             .records
             .iter()
             .filter(|record| record.status == Status::Asked && record.dispatch == name)
-            .map(|record| (record.at.clone(), record.request.target.clone()))
+            .map(|record| {
+                (
+                    record.at.clone(),
+                    record.request.target.clone(),
+                    record.context.clone(),
+                )
+            })
             .collect()
     }
 
@@ -639,6 +671,7 @@ impl AskedStore {
                 dispatch: ask.dispatch,
                 context: ask.context,
                 edited: ask.edited,
+                pressed: ask.pressed,
             });
         }
         if kept.records.len() != before {
@@ -907,7 +940,7 @@ impl Record {
             },
             app,
             asked_at_ms: self.asked_at_ms,
-            pressed: None,
+            pressed: self.pressed.clone(),
             offers: Offer::of(&self.facts),
             facts: self.facts.clone(),
         }

@@ -354,10 +354,7 @@ impl AppBrokerState {
             .current_framework_authority(caller, origin, workspace_id)
             .map_err(abandon)?;
         // One answer covers both checks of this exact invocation.
-        let approved = self.consume_answer(
-            request.confirmation.as_ref(),
-            &self.approval_binding(policy.member(), workspace_id, request),
-        );
+        let approved = super::approval::approved_by_person(request.confirmation.as_ref());
         // An agent takes a step as any of its steps: on the workspace's grants, in an agent
         // session that still goes. A step of the session's own, or of an agent session's, is no
         // agent's outside one.

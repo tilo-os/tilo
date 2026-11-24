@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tilo_actions::remote::asked::{self, AskedList, AskedStore, Offer, Resolve};
+use tilo_actions::remote::asked::{self, Asked, AskedStore, Offer, Resolve};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvocationReceipt, InvokeArgument, InvokeRequest,
     ReceiptStatus, RemoteActionTarget, person_vault,
@@ -63,18 +63,16 @@ async fn invoked(
     .await
 }
 
-/// The questions that wait for `caller`, as their own list reads them.
-async fn waiting(
-    service: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    who: (&DeviceCert, &Caller),
-) -> Result<AskedList, ActionCallError> {
-    let listing = calling(asked::target(asked::WAITING, asked::LIST), json!({}));
-    let receipt = invoked(service, workspace_id, who, listing).await?;
-    let ReceiptStatus::Completed { output } = receipt.status else {
-        panic!("the list answers at once: {receipt:?}");
-    };
-    Ok(serde_json::from_value(output.value.unwrap_or(Value::Null)).unwrap())
+/// The questions that wait for the person `who` signs as in `workspace`, oldest first, as the
+/// reading of the workspace's invocations names each.
+fn waiting(store: &AskedStore, workspace: &str, who: &Caller) -> Vec<Asked> {
+    let person = who.user_public_key().map(hex::encode);
+    store
+        .waiting_in(workspace)
+        .into_iter()
+        .filter(|question| Some(&question.person) == person.as_ref())
+        .map(|question| question.asked)
+        .collect()
 }
 
 /// `answer` given to the asked record `record` by `who`.
@@ -161,15 +159,16 @@ async fn places(
 
 /// An agent's change waits in its record for its person, who alone finds it among what waits
 /// for them and answers it: their approve keeps the login once, a second approve finds nothing,
-/// and their decline of another keeps nothing. Another member, the agent itself and the person's
-/// key on another member's device read none of it and answer none of it.
+/// and their decline of another keeps nothing. Another member finds none of it, and neither he
+/// nor the agent itself answers it.
 #[tokio::test]
 async fn a_call_that_waits_is_its_persons_alone_and_their_approve_carries_it_out_once() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    workspaces.keep_asked_in(&Arc::new(AskedStore::default()));
+    let store = Arc::new(AskedStore::default());
+    workspaces.keep_asked_in(&store);
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -188,24 +187,13 @@ async fn a_call_that_waits_is_its_persons_alone_and_their_approve_carries_it_out
         .unwrap();
 
     // Hers alone, oldest first.
-    let hers = waiting(&service, workspace_id, (&ada, &as_ada))
-        .await
-        .unwrap();
-    assert_eq!(hers.questions.len(), 2, "{hers:?}");
-    let (first, second) = (&hers.questions[0], &hers.questions[1]);
+    let hers = waiting(&store, &workspace_id.to_string(), &as_ada);
+    assert_eq!(hers.len(), 2, "{hers:?}");
+    let (first, second) = (&hers[0], &hers[1]);
     assert_eq!(first.workspace, workspace_id.to_string());
     assert!(first.offers.contains(&Offer::Approve), "{first:?}");
-    let his = waiting(&service, workspace_id, (&bo, &as_bo))
-        .await
-        .unwrap();
-    assert!(his.questions.is_empty(), "{his:?}");
-    for (who, device, asking) in [
-        ("her own agent", &ada, agent.clone()),
-        ("her key on another member's device", &bo, as_ada.clone()),
-    ] {
-        let refused = waiting(&service, workspace_id, (device, &asking)).await;
-        assert!(refused.is_err(), "{who}: {refused:?}");
-    }
+    let his = waiting(&store, &workspace_id.to_string(), &as_bo);
+    assert!(his.is_empty(), "{his:?}");
 
     // Nobody but her answers it.
     for (who, device, asking) in [
@@ -271,10 +259,8 @@ async fn a_call_that_waits_is_its_persons_alone_and_their_approve_carries_it_out
         logins(&service, workspace_id, (&ada, &as_ada)).await,
         before + 1
     );
-    let left = waiting(&service, workspace_id, (&ada, &as_ada))
-        .await
-        .unwrap();
-    assert!(left.questions.is_empty(), "{left:?}");
+    let left = waiting(&store, &workspace_id.to_string(), &as_ada);
+    assert!(left.is_empty(), "{left:?}");
     server.shutdown().await;
 }
 
@@ -287,7 +273,8 @@ async fn a_call_whose_action_offers_no_form_runs_only_as_it_was_asked() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    workspaces.keep_asked_in(&Arc::new(AskedStore::default()));
+    let store = Arc::new(AskedStore::default());
+    workspaces.keep_asked_in(&store);
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
@@ -299,11 +286,8 @@ async fn a_call_whose_action_offers_no_form_runs_only_as_it_was_asked() {
     invoked(&service, workspace_id, (&ada, &agent), adding.clone())
         .await
         .unwrap();
-    let asked_now = waiting(&service, workspace_id, her).await.unwrap();
-    assert!(
-        asked_now.questions[0].facts.form.is_empty(),
-        "{asked_now:?}"
-    );
+    let asked_now = waiting(&store, &workspace_id.to_string(), &as_ada);
+    assert!(asked_now[0].facts.form.is_empty(), "{asked_now:?}");
     let changing = Resolve {
         resolution: Offer::Approve,
         edits: vec![tilo_actions::DraftEdit {
@@ -312,26 +296,19 @@ async fn a_call_whose_action_offers_no_form_runs_only_as_it_was_asked() {
         }],
         ..Resolve::default()
     };
-    let refused = answered(
-        &service,
-        workspace_id,
-        her,
-        &asked_now.questions[0].record,
-        &changing,
-    )
-    .await;
+    let refused = answered(&service, workspace_id, her, &asked_now[0].record, &changing).await;
     assert!(
         matches!(&refused, Err(ActionCallError::Refused { reason }) if reason == "belongsTo cannot be changed here"),
         "{refused:?}"
     );
-    let still = waiting(&service, workspace_id, her).await.unwrap();
-    assert_eq!(still.questions.len(), 1, "it still waits: {still:?}");
+    let still = waiting(&store, &workspace_id.to_string(), &as_ada);
+    assert_eq!(still.len(), 1, "it still waits: {still:?}");
 
     resolve(
         &service,
         workspace_id,
         her,
-        &still.questions[0].record,
+        &still[0].record,
         Offer::Approve,
     )
     .await

@@ -687,8 +687,7 @@ impl ActionProvider for Answers {
         governed(provider)
             || provider == HOST_ACTIONS_PROVIDER
             || provider == WORK_PROVIDER
-            // The calls that wait for a person's yes, listed and answered from their records.
-            || provider == tilo_actions::remote::asked::PROVIDER
+            // The calls that wait for a person's yes, read and answered from their records.
             || provider == tilo_actions::remote::workspace_invocations::PROVIDER
             || self.work.providers.serves(provider)
             || self.apps().is_some()
@@ -1054,7 +1053,6 @@ impl Answers {
             return self.work.answer_turn(caller, request);
         }
         if governed(&request.target.provider)
-            || request.target.provider == tilo_actions::remote::asked::PROVIDER
             || tilo_actions::remote::asked::is_resolve(&request.target)
         {
             return self.work.govern(caller, request);

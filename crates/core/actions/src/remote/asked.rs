@@ -11,7 +11,7 @@
 //! record, and a provider reads that it was approved
 //! ([`super::InvokeRequest::approval`]).
 //!
-//! [`WAITING`]`#`[`LIST`] lists the asked records a person may answer, each as
+//! The reading of a workspace's invocations carries each asked record a person may answer as
 //! an [`Asked`] row.
 //!
 //! The person answers with `<record>#`[`RESOLVE`] ([`Resolve`]), which [`AskedStore`] admits:
@@ -22,12 +22,12 @@
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use super::{ActionAddress, RemoteActionTarget};
+use super::RemoteActionTarget;
 
 mod store;
 pub use store::{
-    ANSWERED, ANSWERED_THERE, AskedStore, MOST_WAITING, NOT_YOURS, NOTHING_ASKED, TOO_MANY_WAIT,
-    Waiting,
+    ANSWERED, ANSWERED_THERE, AskedStore, MOST_WAITING, NOT_YOURS, NOTHING_ASKED,
+    ON_YOUR_OWN_DEVICE, TOO_MANY_WAIT, Waiting,
 };
 
 /// What a frame carrying an approve no resolve handed back is refused with
@@ -53,13 +53,6 @@ pub fn admit_frame(
     }
 }
 
-/// The provider the questions that wait for a person are listed under.
-pub const PROVIDER: &str = "tilo.asking";
-/// The resource the questions that wait for the person are read from: its
-/// [`LIST`] answers [`AskedList`].
-pub const WAITING: &str = "waiting";
-/// Every question that waits for the person, as [`AskedList`].
-pub const LIST: &str = "list";
 /// Answer an asked record: `<record>#resolve` with a [`Resolve`], on the
 /// [`super::workspace_invocations::PROVIDER`] provider.
 pub const RESOLVE: &str = "resolve";
@@ -68,15 +61,6 @@ pub const DECLINED: &str = "declined";
 /// The phase of an invocation's progress while it waits in its asked record: its message
 /// names the record (`<workspace>/<record>`).
 pub const ASKED_PHASE: &str = "asked";
-
-/// The target of action `action` of the resource `resource`.
-#[must_use]
-pub fn target(resource: &str, action: &str) -> RemoteActionTarget {
-    RemoteActionTarget {
-        provider: PROVIDER.to_owned(),
-        address: ActionAddress::new(resource, action),
-    }
-}
 
 /// One fact the person reads before answering: a label and its value, as a
 /// reviewer reads it, long values cut and secrets withheld.
@@ -647,6 +631,13 @@ pub trait AskedDispatch: Send + Sync {
     /// once it no longer remembers it (the host restarted): kept with its record.
     fn context(&self, invocation: super::InvocationId) -> serde_json::Value;
 
+    /// The window a person's press asked `invocation` in, where it did: kept with its record, so
+    /// the question stands over that window. `None` for a call no press asked (an agent's).
+    fn pressed(&self, invocation: super::InvocationId) -> Option<Pressed> {
+        let _ = invocation;
+        None
+    }
+
     /// Admit `request` again under its id for `caller`, who asked for it, carrying the person's
     /// approve ([`super::InvokeRequest::approval`]): only where it still waits in its asked
     /// record for the same call, or, where this dispatch no longer remembers it, as a new call
@@ -680,6 +671,25 @@ pub trait AskedDispatch: Send + Sync {
     }
 }
 
+/// The action of a record's read the person is asked about: an app's join of another app's
+/// record, waiting as `<record>#read` in its asked record ([`AskedReads`]).
+pub const READ: &str = "read";
+
+/// Where a read the person is asked about waits for them: as its asked record, an invocation of
+/// the record's [`READ`] that they answer as every asked call.
+pub trait AskedReads: Send + Sync {
+    /// Keep `caller`'s read of `address`, which the app `app` reads for them, as its asked record
+    /// showing `facts`: allowed once the person approves it, refused when they decline it or
+    /// it is withdrawn.
+    fn ask_read(
+        &self,
+        caller: &super::Caller,
+        app: &str,
+        address: &super::ResourceAddress,
+        facts: AskedFacts,
+    ) -> super::Pending<super::Decided>;
+}
+
 /// An asked record as the host keeps it in its own state: the call that waits, who asked it,
 /// what its person is shown, and what its dispatch needs to admit it again, so the call waits
 /// across the host's restarts.
@@ -711,6 +721,10 @@ pub struct KeptAsk {
     /// what a device that takes it again after a restart runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edited: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The window a person's press asked it in ([`AskedDispatch::pressed`]), so its question
+    /// stands over that window also after a restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pressed: Option<Pressed>,
 }
 
 /// Where a host keeps the asked records that wait, across its restarts: each kept once it is
@@ -752,8 +766,8 @@ pub struct Pressed {
     pub resource: String,
 }
 
-/// One question that waits for the person, as [`WAITING`]`#`[`LIST`] lists it:
-/// an asked invocation record they may answer with `<record>#resolve`.
+/// One question that waits for the person, as the reading of its workspace's invocations
+/// carries it: an asked invocation record they may answer with `<record>#resolve`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Asked {
@@ -776,13 +790,6 @@ pub struct Asked {
     pub offers: Vec<Offer>,
     #[serde(flatten)]
     pub facts: AskedFacts,
-}
-
-/// Every question that waits for the person, oldest first.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AskedList {
-    pub questions: Vec<Asked>,
 }
 
 #[cfg(test)]

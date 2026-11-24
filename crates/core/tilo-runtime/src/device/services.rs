@@ -1519,6 +1519,12 @@ impl Daemon {
             admits_again(&broker, &workspaces, &actor),
         );
         asked.withdraw_what_ended();
+        // A read an app's join asks the person about waits here as its asked record.
+        if let Some(broker) = broker.app_action_broker() {
+            broker.state().serve_asked_reads(
+                Arc::clone(&asked) as Arc<dyn tilo_actions::remote::asked::AskedReads>
+            );
+        }
         // A device that keeps the person's root says so in their devices record, signed by that
         // root, and answers what their devices without it hand on; every device follows the
         // calls kept for one, to take them up or to show how its own ended.
@@ -1786,7 +1792,8 @@ fn admits_again(
         let broker = broker.as_ref().ok_or("the action broker is unavailable")?;
         let workspace = match run {
             super::asked::Run::Agent { workspace, .. }
-            | super::asked::Run::Own { workspace, .. } => workspace,
+            | super::asked::Run::Own { workspace, .. }
+            | super::asked::Run::Read { workspace, .. } => workspace,
         };
         let (admitting, named, actor) = (Arc::clone(&workspaces), workspace.clone(), actor.clone());
         let admission =
@@ -3843,39 +3850,6 @@ fn whichever_first(
     waited
 }
 
-/// The answer to `tilo.asking/waiting#list`: every question that waits for `caller`'s person,
-/// oldest first, from the records the calls are kept as.
-fn asking(
-    request: &InvokeRequest,
-    caller: &Caller,
-    asked: &super::asked::DeviceAsked,
-) -> Result<InvocationReceipt, ActionCallError> {
-    use tilo_actions::remote::asked as one_ask;
-    let address = &request.target.address;
-    if (address.resource.as_str(), address.action.as_str()) != (one_ask::WAITING, one_ask::LIST) {
-        return Err(ActionCallError::UnknownAction);
-    }
-    let person = one_ask::asked_person(caller).ok_or(ActionCallError::NotPermitted)?;
-    let person: [u8; 32] = hex::decode(&person)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or(ActionCallError::NotPermitted)?;
-    let questions = asked.asked_of(&person);
-    let value = serde_json::to_value(one_ask::AskedList { questions }).map_err(|error| {
-        ActionCallError::Unavailable {
-            reason: error.to_string(),
-        }
-    })?;
-    Ok(InvocationReceipt {
-        invocation: request.invocation,
-        status: ReceiptStatus::Completed {
-            output: tilo_actions::ActionOutput {
-                value: Some(value),
-                resources: Vec::new(),
-            },
-        },
-    })
-}
 impl ActionProvider for RuntimeActionProvider {
     /// The device's one search index, read as the caller may read it.
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
@@ -4033,13 +4007,6 @@ impl ActionProvider for RuntimeActionProvider {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
-        }
-        // What waits for the person's yes, listed from the records the calls are kept as: a
-        // terminal answers them with their own `resolve`, as their shell does.
-        if request.target.provider == tilo_actions::remote::asked::PROVIDER
-            && let Some(asked) = &self.asked
-        {
-            return Pending::ready(asking(&request, caller, asked));
         }
         // The device's own actions: what it is, to the person and the agents acting for them;
         // what lets another device in, to the person alone.

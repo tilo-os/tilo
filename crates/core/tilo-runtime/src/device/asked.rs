@@ -26,13 +26,15 @@ use std::sync::{Arc, Mutex, Weak};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::asked::{
     self, AskedBy, AskedDispatch, AskedFacts, AskedRecords, AskedStore, KeptAsk, Named,
 };
 use tilo_actions::remote::invocation_record::{Invocations, Route, take_back_run};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus, pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer, Decided,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    RemoteActionTarget, ResourceAddress, pending,
 };
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -65,12 +67,18 @@ pub(crate) enum Run {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pressed: Option<asked::Pressed>,
     },
+    /// The person's read of a record of `workspace` that the app `app` joins for them: it waits
+    /// only while that join does, so it ends with the device ([`DeviceAsked::ask_read`]).
+    #[serde(rename_all = "camelCase")]
+    Read { workspace: String, app: String },
 }
 
 impl Run {
     fn workspace(&self) -> &str {
         match self {
-            Self::Agent { workspace, .. } | Self::Own { workspace, .. } => workspace,
+            Self::Agent { workspace, .. }
+            | Self::Own { workspace, .. }
+            | Self::Read { workspace, .. } => workspace,
         }
     }
 
@@ -83,6 +91,11 @@ impl Run {
                 id: agent.clone(),
                 name: name.clone(),
             })),
+            Self::Read { app, .. } => Some(AskedBy::App {
+                app: app.clone(),
+                title: app.clone(),
+                author: None,
+            }),
             Self::Own { .. } => None,
         }
     }
@@ -92,12 +105,14 @@ impl Run {
 pub(crate) type Admits = Box<dyn Fn(&Run) -> Result<Route, String> + Send + Sync>;
 
 /// A call that waits: the run it was made in, who follows it, where an approve sends it, and the
-/// provider whose record holds the changes it already made.
+/// provider whose record holds the changes it already made. A read waits for its join instead
+/// (`read`), which the person's answer lets through or refuses; nothing is sent.
 struct Waiting {
     run: Run,
     caller: Caller,
     route: Route,
     at: String,
+    read: Option<Completer<Decided>>,
 }
 
 /// The asked records of the device's dispatch, and the calls that wait in them.
@@ -185,15 +200,25 @@ impl DeviceAsked {
         })
     }
 
-    /// Withdraw what waited before the device started again on a provider that ended with it:
-    /// one the person's shell served over its link (a question a program outside Tilo asked
-    /// through it), which nothing serves until a shell links again, and whose program's call
-    /// ended with the device. A call to a provider the device serves itself (an app's, a
-    /// shortcut's, an agent's) waits on.
+    /// Withdraw what waited before the device started again on something that ended with it:
+    /// a provider the person's shell served over its link (a question a program outside Tilo
+    /// asked through it), which nothing serves until a shell links again, and whose program's
+    /// call ended with the device; and a press in an app's window, or a read its join waited on,
+    /// which closed with it. A call
+    /// an agent or a shortcut made, to a provider the device serves itself, waits on.
     pub(crate) fn withdraw_what_ended(&self) {
-        for (at, target) in self.store.asked_by(DISPATCH) {
+        for (at, target, context) in self.store.asked_by(DISPATCH) {
+            let pressed = matches!(
+                serde_json::from_value::<Run>(context),
+                Ok(Run::Own {
+                    pressed: Some(_),
+                    ..
+                } | Run::Read { .. })
+            );
             if runtime_collab::wire::shell::serves(&target.provider) {
                 self.store.withdraw(&at, PROGRAM_GONE);
+            } else if pressed {
+                self.store.withdraw(&at, WINDOW_GONE);
             }
         }
     }
@@ -324,12 +349,6 @@ impl DeviceAsked {
         &self.store
     }
 
-    /// The questions that wait for the person whose root key is `person`, oldest first: what
-    /// `tilo.asking/waiting#list` answers, so a terminal answers them as any other client does.
-    pub(crate) fn asked_of(&self, person: &[u8; 32]) -> Vec<asked::Asked> {
-        self.records.asked_of(person)
-    }
-
     /// Send the call `request` that `caller` made in `run` to `route`: one refused there for
     /// want of the person's yes is kept as its asked record, and waits there under way; anything
     /// else is answered as `route` answers it. The device's record of the invocation is
@@ -370,6 +389,7 @@ impl DeviceAsked {
                         caller,
                         route,
                         at: request.target.provider,
+                        read: None,
                     },
                     &call,
                     facts,
@@ -441,6 +461,10 @@ impl DeviceAsked {
         context: &Value,
     ) -> Result<Waiting, ActionCallError> {
         let run: Run = serde_json::from_value(context.clone()).map_err(|_| not_waiting())?;
+        // A read waited for the join that asked it, which ended with the device.
+        if matches!(run, Run::Read { .. }) {
+            return Err(not_waiting());
+        }
         let route = (self.admits)(&run).map_err(|why| ActionCallError::Refused {
             reason: format!("the run that asked could not be admitted again: {why}"),
         })?;
@@ -453,6 +477,7 @@ impl DeviceAsked {
             caller: restored.clone(),
             route,
             at: request.target.provider.clone(),
+            read: None,
         })
     }
 }
@@ -506,6 +531,13 @@ impl AskedDispatch for DeviceAsked {
             .unwrap_or(Value::Null)
     }
 
+    fn pressed(&self, invocation: InvocationId) -> Option<asked::Pressed> {
+        match &self.waiting.lock_recover().get(&invocation)?.run {
+            Run::Own { pressed, .. } => pressed.clone(),
+            Run::Agent { .. } | Run::Read { .. } => None,
+        }
+    }
+
     fn readmit(
         &self,
         restored: &Caller,
@@ -514,11 +546,32 @@ impl AskedDispatch for DeviceAsked {
     ) -> Result<(), ActionCallError> {
         let remembered = self.waiting.lock_recover().remove(&request.invocation);
         let Waiting {
-            run, caller, route, ..
+            run,
+            caller,
+            route,
+            read,
+            ..
         } = match remembered {
             Some(waiting) => waiting,
             None => self.admitted_again(restored, &request, context)?,
         };
+        // A read is let through to the join that waits for it; nothing is sent.
+        if let Some(read) = read {
+            let invocation = request.invocation;
+            Standing::stand(
+                &self.standing,
+                &route.1,
+                InvocationState::new(
+                    invocation,
+                    InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                ),
+            );
+            read.complete(Ok(()));
+            return Ok(());
+        }
         // It runs where it is sent from now on, and is read there.
         self.invocations.record(
             &caller,
@@ -586,6 +639,12 @@ impl AskedDispatch for DeviceAsked {
             &waiting.route.1,
             cancelled(invocation, asked::DECLINED),
         );
+        if let Some(read) = waiting.read {
+            read.complete(Err(ActionCallError::Refused {
+                reason: READ_DECLINED.into(),
+            }));
+            return Ok(());
+        }
         // What the run wrote before it asked is taken back, keyed by its invocation: the same
         // take-back `<record>#undo` runs, at the provider whose record holds it.
         let _ = take_back_run(&waiting.route, &waiting.at, None, &invocation.0.to_string());
@@ -599,6 +658,11 @@ impl AskedDispatch for DeviceAsked {
                 &waiting.route.1,
                 cancelled(invocation, message),
             );
+            if let Some(read) = waiting.read {
+                read.complete(Err(ActionCallError::Refused {
+                    reason: message.to_owned(),
+                }));
+            }
         }
     }
 }
@@ -670,6 +734,53 @@ const WAITS_FOR_ROOT: &str = "Waiting for a device of yours that keeps your iden
 
 /// What a question whose program stopped waiting with the device says, once withdrawn.
 pub(crate) const PROGRAM_GONE: &str = "The program that asked is no longer running";
+
+/// What an app's join is refused with when the person declined its read.
+const READ_DECLINED: &str = "The person declined this read";
+
+impl asked::AskedReads for DeviceAsked {
+    fn ask_read(
+        &self,
+        caller: &Caller,
+        app: &str,
+        address: &ResourceAddress,
+        facts: AskedFacts,
+    ) -> Pending<Decided> {
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: address.app.clone(),
+                address: ActionAddress::new(&address.record, asked::READ),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let (read, decided) = pending();
+        let waiting = Waiting {
+            run: Run::Read {
+                workspace: address.workspace.clone(),
+                app: app.to_owned(),
+            },
+            caller: caller.clone(),
+            route: self.route(caller),
+            at: address.app.clone(),
+            read: Some(read),
+        };
+        match self.keep(waiting, &request, facts) {
+            Ok(_) => decided,
+            Err(refused) => Pending::ready(Err(refused)),
+        }
+    }
+}
+
+/// What a question pressed in a window that closed with the device says, once withdrawn.
+pub(crate) const WINDOW_GONE: &str = "The window it was asked in is no longer open";
 
 /// What stopping a waiting call says it ended with.
 const STOPPED: &str = "stopped before its person answered";

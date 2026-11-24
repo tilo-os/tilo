@@ -166,17 +166,6 @@ impl OwnDeviceActions for AnotherDevice {
         Ok(outcome)
     }
 
-    fn ask_person(
-        &self,
-        _caller: &Caller,
-        _question: &tilo_actions::remote::ConfirmationQuestion,
-    ) -> Result<Pending<Result<tilo_actions::remote::Confirmation, ActionCallError>>, ActionCallError>
-    {
-        // A person's own word is asked of them where they are, by the device in front of them.
-        Err(ActionCallError::Unavailable {
-            reason: "this device does not ask the person on another of their devices".into(),
-        })
-    }
 }
 
 /// An app's offloadable invocation, placed by the device's daemon: the daemon holds the endpoint

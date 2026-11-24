@@ -140,14 +140,11 @@ mod https_completion {
         workspace: &Workspace,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::InvokeRequest {
-        let (actor, _) = workspace.caller();
-        let binding =
-            workspace
-                .state
-                .approval_binding(actor.member(), &workspace.route.cluster_id, request);
-        let approval = workspace.state.approval_confirmation(&binding).unwrap();
         tilo_actions::remote::InvokeRequest {
-            confirmation: Some(tilo_actions::remote::Confirmation::Approved(approval)),
+            confirmation: Some(crate::apps::collab_app_broker::person_approved(
+                &workspace.route.cluster_id,
+                request.invocation,
+            )),
             ..request.clone()
         }
     }

@@ -184,13 +184,9 @@ impl AppBrokerState {
         action: (&str, &ActionDescriptor),
         input: (&InvokeRequest, Option<&str>),
     ) -> Result<bool, ActionCallError> {
-        let (workspace, actor, _) = authority;
+        let (_, actor, _) = authority;
         let (request, argument) = input;
-        let workspace_id = workspace.id().to_string();
-        let approved = self.consume_answer(
-            request.confirmation.as_ref(),
-            &self.approval_binding(actor.member(), &workspace_id, request),
-        );
+        let approved = super::approval::approved_by_person(request.confirmation.as_ref());
         if !Self::confirmed_as_asked(
             actor,
             action.1,
@@ -588,15 +584,8 @@ impl AppBrokerState {
         if owner_action && !authority.1.direct() {
             return Err(ActionCallError::NotPermitted);
         }
-        let approved = owner_action
-            && self.consume_answer(
-                request.confirmation.as_ref(),
-                &self.approval_binding(
-                    authority.1.member(),
-                    &authority.0.id().to_string(),
-                    request,
-                ),
-            );
+        let approved =
+            owner_action && super::approval::approved_by_person(request.confirmation.as_ref());
         if owner_action && !approved && request.confirmation != Some(Confirmation::Confirmed) {
             return Err(ActionCallError::confirmation_required());
         }

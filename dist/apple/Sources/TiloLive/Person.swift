@@ -14,8 +14,6 @@ public enum PersonProvider: String, Sendable, CaseIterable {
     case telling = "tilo.telling"
     /// The assistant finding work on its own, and what it proposed.
     case initiative = "tilo.initiative"
-    /// What the person's agents ask them, and what they need not ask any more.
-    case asking = "tilo.asking"
     /// What the agents their host runs have learned about the person.
     case learned = "tilo.learned"
     /// The services the person connected by their address, and signing in to one.

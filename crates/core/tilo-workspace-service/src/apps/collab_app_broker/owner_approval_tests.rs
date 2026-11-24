@@ -1,5 +1,5 @@
-//! Owner governance admission consumes an exact existing confirmation, not a
-//! replacement approval, and never turns that approval into delegated ownership.
+//! An owner's workspace action is admitted on the person's approve of the call's asked
+//! record, never a token a caller brings, and that approve never confers delegated ownership.
 use super::super::ActionDirectoryRoot;
 use super::*;
 use crate::apps::services::{
@@ -132,63 +132,36 @@ fn invoke(
         .map(|_| ())
 }
 
-fn approval(
-    state: &AppBrokerState,
-    actor: &tilo_actions::MemberId,
-    request: &InvokeRequest,
-) -> Confirmation {
-    Confirmation::Approved(
-        state
-            .approval_confirmation(&state.approval_binding(
-                actor,
-                tilo_actions::remote::provider_workspace(&request.target.provider).unwrap(),
-                request,
-            ))
-            .unwrap(),
+/// The person's approve of `request`, as the store that kept its asked record hands it back.
+fn approval(request: &InvokeRequest) -> Confirmation {
+    crate::apps::collab_app_broker::person_approved(
+        tilo_actions::remote::provider_workspace(&request.target.provider).unwrap(),
+        request.invocation,
     )
 }
 
 tilo_test_env::scenario! {
-    fn an_owner_governance_approval_confirms_once_and_only_its_context;
+    fn an_owners_approve_confirms_only_its_own_call;
 
-    phase owner_governance_rejects_approval_from_other_original_contexts;
-    {
-        for changed in [
-            "provider",
-            "workspace",
-            "revision",
-            "invocation",
-            "publication",
-        ] {
-            let (state, service, owner, mut request) = broker(true);
-            let mut binding = state.approval_binding(&tilo_actions::MemberId::person("owner"), owner.workspace().unwrap(), &request);
-            match changed {
-                "provider" => binding.provider = "another-provider".into(),
-                "workspace" => binding.workspace = "another-workspace".into(),
-                "revision" => binding.revision = Some("previous-publication".into()),
-                "invocation" => binding.invocation = tilo_actions::InvocationId::new(),
-                "publication" => binding.publication.0 = binding.publication.0.wrapping_add(1),
-                _ => panic!("not exercised by this test"),
-            }
-            request.confirmation = Some(Confirmation::Approved(
-                state.approval_confirmation(&binding).unwrap(),
-            ));
-            assert_eq!(
-                invoke(&state, &owner, &request),
-                Err(ActionCallError::confirmation_required()),
-                "an approval for another {changed} never confirms this invocation",
-            );
-            assert!(service.calls.lock().unwrap().is_empty());
-            request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("owner"), &request));
-            invoke(&state, &owner, &request).expect("the exact answer remains usable");
-            assert_eq!(service.calls.lock().unwrap().len(), 1);
-        }
-    }
-
-    phase unrelated_publication_changes_preserve_host_governance_approval;
+    phase an_owner_action_takes_no_token_a_caller_brings;
     {
         let (state, service, owner, mut request) = broker(true);
-        request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("owner"), &request));
+        request.confirmation = Some(Confirmation::Approved("unregistered".into()));
+        assert_eq!(
+            invoke(&state, &owner, &request),
+            Err(ActionCallError::confirmation_required()),
+            "a token is no answer of the person's"
+        );
+        assert!(service.calls.lock().unwrap().is_empty());
+        request.confirmation = Some(approval(&request));
+        invoke(&state, &owner, &request).expect("their approve confirms it");
+        assert_eq!(service.calls.lock().unwrap().len(), 1);
+    }
+
+    phase unrelated_publication_changes_preserve_an_owners_approve;
+    {
+        let (state, service, owner, mut request) = broker(true);
+        request.confirmation = Some(approval(&request));
         state.surfaces_changed();
         state.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
             peer_id: 123,
@@ -200,22 +173,14 @@ tilo_test_env::scenario! {
         assert_eq!(service.calls.lock().unwrap().len(), 1);
     }
 
-    phase owner_governance_consumes_exact_approval_once;
+    phase an_owner_action_runs_an_approved_call_once;
     {
         let (state, service, owner, mut request) = broker(true);
         assert_eq!(
             invoke(&state, &owner, &request),
             Err(ActionCallError::confirmation_required())
         );
-        request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("owner"), &request));
-        let mut changed = request.clone();
-        changed.argument = InvokeArgument::Json(
-            serde_json::from_value(serde_json::json!({"hashes": ["other"]})).unwrap(),
-        );
-        assert_eq!(
-            invoke(&state, &owner, &changed),
-            Err(ActionCallError::confirmation_required())
-        );
+        request.confirmation = Some(approval(&request));
         invoke(&state, &owner, &request).unwrap();
         assert_eq!(
             *service.calls.lock().unwrap(),
@@ -223,6 +188,10 @@ tilo_test_env::scenario! {
         );
         invoke(&state, &owner, &request).expect("an exact retry returns its original receipt");
         assert_eq!(service.calls.lock().unwrap().len(), 1);
+        let mut changed = request.clone();
+        changed.argument = InvokeArgument::Json(
+            serde_json::from_value(serde_json::json!({"hashes": ["other"]})).unwrap(),
+        );
         assert_eq!(
             invoke(&state, &owner, &changed),
             Err(ActionCallError::InvocationConflict),
@@ -230,46 +199,22 @@ tilo_test_env::scenario! {
         );
         assert_eq!(service.calls.lock().unwrap().len(), 1);
         request.invocation = tilo_actions::InvocationId::new();
-        assert_eq!(
-            invoke(&state, &owner, &request),
-            Err(ActionCallError::confirmation_required())
-        );
         request.confirmation = Some(Confirmation::Confirmed);
         invoke(&state, &owner, &request).unwrap();
         assert_eq!(service.calls.lock().unwrap().len(), 2);
     }
 
-    phase owner_governance_approval_does_not_replace_current_policy_or_ownership;
+    phase an_owners_approve_does_not_replace_current_policy_or_ownership;
     {
         let (state, service, owner, mut request) = broker(true);
-        request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("someone-else"), &request));
-        assert_eq!(
-            invoke(&state, &owner, &request),
-            Err(ActionCallError::confirmation_required())
-        );
-        let mut other_address = request.clone();
-        other_address.target.address.resource = "another-resource".into();
-        request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("owner"), &other_address));
-        assert_eq!(
-            invoke(&state, &owner, &request),
-            Err(ActionCallError::confirmation_required())
-        );
-        other_address = request.clone();
-        other_address.target.address.action = "different-action".into();
-        request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("owner"), &other_address));
-        assert_eq!(
-            invoke(&state, &owner, &request),
-            Err(ActionCallError::confirmation_required())
-        );
         let agent = Caller::local_agent("limited").in_workspace(owner.workspace().unwrap());
-        request.confirmation = Some(approval(&state, &tilo_actions::MemberId::agent("limited"), &request));
+        request.confirmation = Some(approval(&request));
         assert_eq!(
             invoke(&state, &agent, &request),
             Err(ActionCallError::NotPermitted),
-            "even a grant and exact approval cannot confer direct owner ownership"
+            "even a grant and its person's approve cannot confer direct owner ownership"
         );
         let other = Caller::local_person("other").in_workspace(owner.workspace().unwrap());
-        request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("other"), &request));
         assert!(invoke(&state, &other, &request).is_err());
         request.target.address.resource = "not-published".into();
         request.confirmation = Some(Confirmation::Confirmed);
@@ -299,7 +244,7 @@ tilo_test_env::scenario! {
             invoke(&state, &person, &request).unwrap();
             service.calls.lock().unwrap().clear();
             request.invocation = tilo_actions::InvocationId::new();
-            let issued_before_change = approval(&state, &tilo_actions::MemberId::person("guest"), &request);
+            let issued_before_change = approval(&request);
             tree.write().workspaces[0].answer(Grantee::person("guest"), &path, KindSet::ALL, answer);
             request.confirmation = None;
             // Canonical governance checks confirmation before current policy.
@@ -333,35 +278,6 @@ tilo_test_env::scenario! {
             }
         }
     }
-
-    phase expired_owner_approval_cannot_confirm_governance;
-    {
-        let (state, service, owner, mut request) = broker(true);
-        let confirmation = approval(&state, &tilo_actions::MemberId::person("owner"), &request);
-        let Confirmation::Approved(token) = &confirmation else {
-            panic!("not exercised by this test")
-        };
-        state
-            .approved_confirmations
-            .lock()
-            .unwrap()
-            .get_mut(token)
-            .unwrap()
-            .expires = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_secs(1))
-            .unwrap();
-        request.confirmation = Some(confirmation);
-        assert_eq!(
-            invoke(&state, &owner, &request),
-            Err(ActionCallError::confirmation_required())
-        );
-        request.confirmation = Some(Confirmation::Approved("unregistered".into()));
-        assert_eq!(
-            invoke(&state, &owner, &request),
-            Err(ActionCallError::confirmation_required())
-        );
-        assert!(service.calls.lock().unwrap().is_empty());
-    }
 }
 
 tilo_test_env::scenario! {
@@ -371,20 +287,9 @@ tilo_test_env::scenario! {
     {
         let (state, service, owner, mut request) = broker(false);
         request.target.address.resource = "legacy-service-validates-this".into();
-        request.confirmation = Some(approval(&state, &tilo_actions::MemberId::person("owner"), &request));
-        let Some(Confirmation::Approved(token)) = request.confirmation.as_ref() else {
-            panic!("not exercised by this test")
-        };
+        request.confirmation = Some(approval(&request));
         invoke(&state, &owner, &request).unwrap();
         assert_eq!(*service.calls.lock().unwrap(), vec![serde_json::json!({})]);
-        assert!(
-            state
-                .approved_confirmations
-                .lock()
-                .unwrap()
-                .contains_key(token),
-            "service-owned admission does not consume a broker owner approval"
-        );
     }
 
     phase legacy_governance_preserves_service_confirmation_phrases;

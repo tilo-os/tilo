@@ -230,41 +230,48 @@ fn observed(
     ActionProvider::observe(remote, caller, &invocation)
 }
 
-/// Every question that waits for the person, as `tilo.asking#list` lists them.
+/// Every question that waits for the person, as the reading of the workspace's invocations names
+/// them: each call that waits for their answer, with what they are asked.
 async fn questions(
     remote: &RemoteDevice,
     caller: &Caller,
 ) -> Vec<tilo_actions::remote::asked::Asked> {
-    let request = InvokeRequest {
-        on_behalf_of: None,
-        invocation: InvocationId::new(),
-        target: tilo_actions::remote::asked::target(
-            tilo_actions::remote::asked::WAITING,
-            tilo_actions::remote::asked::LIST,
-        ),
-        argument: InvokeArgument::None,
-        context: None,
-        confirmation: None,
-        revision: None,
+    use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
+    let read = tilo_actions::remote::ResourceReadRequest {
+        workspace: WS_NAME.to_owned(),
+        app: workspace_invocations::PROVIDER.to_owned(),
+        record: String::new(),
+        joined: false,
+        after: None,
         wait_ms: None,
-        appearance: None,
-        signed: None,
+        answer: tilo_actions::remote::ReadAnswer::Reading,
     };
-    let receipt = ActionProvider::invoke(remote, caller, request)
+    let answer = remote
+        .ask_message(RemoteActionMessage::ResourceRead {
+            correlation: 1,
+            on_behalf_of: None,
+            read,
+        })
         .await
-        .expect("the host answers")
-        .expect("the questions are listed");
-    let value = match receipt.status {
-        ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),
-        other => panic!("the questions are listed: {other:?}"),
+        .flatten();
+    let Some(RemoteActionMessage::ResourceReading { result, .. }) = answer else {
+        panic!("the host reads its invocations: {answer:?}");
     };
-    serde_json::from_value::<tilo_actions::remote::asked::AskedList>(value)
-        .expect("a list of questions")
-        .questions
+    let readings: serde_json::Value =
+        serde_json::from_str(&result.expect("the person reads the workspace's invocations"))
+            .expect("the readings are JSON");
+    let items = readings["records"][0]["value"]["items"].clone();
+    let person = caller.user_public_key().map(hex::encode);
+    serde_json::from_value::<Vec<Invocation>>(items)
+        .expect("the items read as invocations")
+        .into_iter()
+        .filter(|item| item.status == InvocationStatus::Waiting && item.person == person)
+        .filter_map(|item| item.asked.map(|asked| *asked))
+        .collect()
 }
 
 /// The question the person's device sees waiting for them, once it is asked: an asked
-/// invocation record, listed as `tilo.asking#list`.
+/// invocation record, read in the workspace's invocations.
 async fn asked(remote: &RemoteDevice, caller: &Caller) -> tilo_actions::remote::asked::Asked {
     let deadline = tilo_test_env::hang_deadline();
     loop {

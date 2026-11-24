@@ -56,7 +56,7 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
     WORKSPACE_MEMBERS, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING,
-    asked, formats, mcp_server, person_accounts, person_connections, person_models, person_telling,
+    formats, mcp_server, person_accounts, person_connections, person_models, person_telling,
     person_vault, server_account, workspace_app, workspace_app_named, workspace_governance_address,
     workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
     workspace_member, workspace_person,
@@ -2104,9 +2104,6 @@ impl Workspaces {
                 self.person_vault_invoke(workspace_id, caller, certificate, request)
                     .await
             }
-            // The calls that wait for the person's yes, read from their asked records.
-            #[cfg(not(target_arch = "wasm32"))]
-            (asked::PROVIDER, _) => self.asking_invoke(workspace_id, caller, certificate, request),
             // The formats and zone the person reads dates in: theirs alone,
             // kept in their own workspace on their own devices.
             #[cfg(not(target_arch = "wasm32"))]
@@ -4155,7 +4152,7 @@ fn mcp_value(workspaces: &Workspaces) -> Value {
 pub(super) const LEARNED: &str = "tilo.learned";
 
 /// The providers a server that governs workspaces answers itself.
-const PROVIDERS: [&str; 11] = [
+const PROVIDERS: [&str; 10] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
     mcp_server::PROVIDER,
@@ -4167,8 +4164,6 @@ const PROVIDERS: [&str; 11] = [
     person_vault::PROVIDER,
     // What the person calls important, and what may interrupt them.
     person_telling::PROVIDER,
-    // The calls that wait for the person's yes.
-    asked::PROVIDER,
     // The services the person connected by their address.
     person_connections::PROVIDER,
     // What the agents on this server learned about the person.
@@ -4204,8 +4199,8 @@ impl GovernedServer {
             }
             RemoteActionMessage::Invoke(request) => {
                 PROVIDERS.contains(&request.target.provider.as_str())
-                    // The calls that wait for a person's yes: listed as `tilo.asking`, and
-                    // answered as `<record>#resolve` on the invocations provider.
+                    // The calls that wait for a person's yes: read in the workspace's invocations,
+                    // and answered as `<record>#resolve` on that provider.
                     || request.target.provider
                         == tilo_actions::remote::workspace_invocations::PROVIDER
                     || tilo_actions::remote::asked::is_resolve(&request.target)

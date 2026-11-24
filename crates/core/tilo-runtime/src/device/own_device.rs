@@ -13,10 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::{EndpointAddr, EndpointId};
-use tilo_actions::remote::{
-    ActionCallError, Caller, Confirmation, ConfirmationQuestion, InvokeRequest, Pending,
-    own_device, pending,
-};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest, Pending, own_device, pending};
 use tilo_actions::{ActionFailure, InvocationUpdate};
 use tilo_broker_core::services::{OwnDeviceActions, OwnDeviceOutcome};
 use tilo_lock::MutexRecover as _;
@@ -82,18 +79,6 @@ impl OwnDeviceActions for AnotherDevice {
                 complete.complete(outcome_of(answer));
             });
         Ok(outcome)
-    }
-
-    fn ask_person(
-        &self,
-        _caller: &Caller,
-        _question: &ConfirmationQuestion,
-    ) -> Result<Pending<Result<Confirmation, ActionCallError>>, ActionCallError> {
-        // A person's own word is asked of them where they are, by the device in front of them.
-        // Reaching another of their devices to ask there carries no question.
-        Err(ActionCallError::Unavailable {
-            reason: "this device does not ask the person on another of their devices".into(),
-        })
     }
 }
 

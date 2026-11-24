@@ -266,6 +266,8 @@ mod app_consent;
 mod app_open_api;
 mod approval;
 #[cfg(test)]
+pub(crate) use approval::person_approved;
+#[cfg(test)]
 mod cancel_tests;
 mod host_action_admission;
 mod invocation_update;
@@ -475,9 +477,6 @@ pub struct AppBrokerState {
     /// cache's bounded lifetime.
     untrusted_jobs: Mutex<std::collections::HashSet<u64>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
-    /// Confirmations people gave on their own device for an invocation
-    /// someone acting for them makes; see [`Self::approval_confirmation`].
-    approved_confirmations: Mutex<HashMap<String, Approval>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     /// The device's record of the invocations it was asked for, where its embedder
     /// shares it: what `tilo.invocations` reads and lists here.
@@ -485,6 +484,9 @@ pub struct AppBrokerState {
     /// The device's one record reader, where its embedder serves it: what an app or agent here
     /// reads a record outside its app through ([`Self::serve_records`]).
     records: std::sync::OnceLock<Arc<dyn tilo_actions::remote::ResourceReads>>,
+    /// Where a read the person is asked about waits for them, where its embedder serves it: the
+    /// device's dispatch, which keeps it as its asked record ([`Self::serve_asked_reads`]).
+    asked_reads: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedReads>>,
     invocation_id: AtomicU64,
     services: ProcessServices,
     workers: Mutex<Vec<PendingWorker>>,

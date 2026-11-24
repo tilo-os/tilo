@@ -4,15 +4,9 @@
 )]
 use super::*;
 
-/// A person's confirmation, given on their own device, of one invocation
-/// someone acting for them makes.
-pub(super) struct Approval {
-    pub(super) binding: ApprovalBinding,
-    pub(super) expires: std::time::Instant,
-}
-
-/// The original invocation and publication the person actually answered.
-/// Arguments are hashed so the registry never retains disclosure contents.
+/// The invocation and publication the host that certified this device answered for its person
+/// ([`super::person_answer`]). Arguments are hashed so the grant registry never retains
+/// disclosure contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ApprovalBinding {
     pub(super) actor: MemberId,
@@ -91,7 +85,7 @@ impl AppBrokerState {
                     && binding.resource == offered.resource
                     && binding.action == offered.action
                     && binding.argument_digest == argument_digest(argument)
-                    && (self.take_approval(token, binding) || person_answer::taken(token, binding))
+                    && person_answer::taken(token, binding)
             }
             _ => false,
         };
@@ -166,41 +160,5 @@ impl AppBrokerState {
         );
         drop(grants);
         Ok(token)
-    }
-    /// Record that the person `actor` acts for confirmed `actor`'s invocation
-    /// of `action` on `resource` with `argument` on their own device. The
-    /// returned token, carried as [`Confirmation::Approved`], answers that
-    /// one invocation once, within a minute.
-    ///
-    /// [`Confirmation::Approved`]: tilo_actions::remote::Confirmation::Approved
-    pub(crate) fn approval_confirmation(&self, binding: &ApprovalBinding) -> Option<String> {
-        let now = tilo_clock::now();
-        let expires = now.checked_add(std::time::Duration::from_secs(60))?;
-        let token = uuid::Uuid::new_v4().to_string();
-        let mut approved = self.approved_confirmations.lock().ok()?;
-        approved.retain(|_, approval| approval.expires >= now);
-        approved.insert(
-            token.clone(),
-            Approval {
-                binding: binding.clone(),
-                expires,
-            },
-        );
-        drop(approved);
-        Some(token)
-    }
-    /// Spend the person's answer `token` names, when it was given for this
-    /// very invocation.
-    pub(super) fn take_approval(&self, token: &str, binding: &ApprovalBinding) -> bool {
-        let Ok(mut approved) = self.approved_confirmations.lock() else {
-            return false;
-        };
-        let matches = approved.get(token).is_some_and(|approval| {
-            approval.expires >= tilo_clock::now() && approval.binding == *binding
-        });
-        if matches {
-            approved.remove(token);
-        }
-        matches
     }
 }

@@ -712,3 +712,30 @@ fn an_approve_runs_the_call_as_its_person_changed_it() {
     admit_frame(Some(&host.store), &handed).expect("the call she approved goes on");
     refused(&handed);
 }
+
+/// Ada at a device that is not hers calls there, and the call asks her: that device answers
+/// nothing for her, so it never approves its own call. Her own device does.
+#[test]
+fn the_foreign_device_that_asked_cannot_answer_for_its_person() {
+    let host = host();
+    let call = set_alarm();
+    let foreign = Caller::authenticated(ADA, [7; 32])
+        .in_workspace(WORKSPACE)
+        .from_foreign_device(true);
+    let at = host
+        .records
+        .write_asked(WORKSPACE, &foreign, &call, &facts())
+        .unwrap();
+    for resolution in [Offer::Approve, Offer::Decline] {
+        assert_eq!(
+            refusal(resolve(&host, &at, &foreign, resolution, None)),
+            tilo_actions::remote::asked::ON_YOUR_OWN_DEVICE
+        );
+    }
+    assert!(
+        host.dispatch.0.lock().unwrap().is_empty(),
+        "nothing was handed on"
+    );
+    resolve(&host, &at, &ada(), Offer::Approve, None).expect("her own device approves it");
+    assert_eq!(host.dispatch.0.lock().unwrap().len(), 1);
+}

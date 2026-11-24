@@ -144,7 +144,10 @@ mod external_moderation_rpc_tests {
                 Some(argument),
                 tilo_actions::InvocationId::new(),
             );
-            let approval = self.state.approval_confirmation(&binding).unwrap();
+            let approval = crate::apps::collab_app_broker::person_approved(
+                &self.route.cluster_id,
+                binding.invocation,
+            );
             let token = self
                 .state
                 .confirmation_token(
@@ -153,7 +156,7 @@ mod external_moderation_rpc_tests {
                     &offered,
                     Some(argument),
                     &actor,
-                    Some(&tilo_actions::remote::Confirmation::Approved(approval)),
+                    Some(&approval),
                     &binding,
                 )
                 .unwrap();
@@ -374,7 +377,10 @@ mod external_moderation_rpc_tests {
                         Ok(None)
                     ));
                     for altered in ["missing", "payload", "destination"] {
-                        let approval = workspace.state.approval_confirmation(&binding).unwrap();
+                        let approval = crate::apps::collab_app_broker::person_approved(
+                            &workspace.route.cluster_id,
+                            binding.invocation,
+                        );
                         let token = workspace
                             .state
                             .confirmation_token(
@@ -383,7 +389,7 @@ mod external_moderation_rpc_tests {
                                 &offered,
                                 Some(&exact),
                                 &actor,
-                                Some(&tilo_actions::remote::Confirmation::Approved(approval)),
+                                Some(&approval),
                                 &binding,
                             )
                             .unwrap()

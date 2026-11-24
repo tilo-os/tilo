@@ -1320,9 +1320,7 @@ mod tests {
                 on_behalf_of: None,
                 signed: None,
             };
-            let binding = state.approval_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
-            let approved = state.approval_confirmation(&binding).unwrap();
-            request.confirmation = Some(Confirmation::Approved(approved));
+            request.confirmation = Some(crate::apps::collab_app_broker::person_approved(&workspace, request.invocation));
             let call = |request: &InvokeRequest| {
                 state
                     .action_invoke(&agent, None, None, request)
@@ -1343,15 +1341,8 @@ mod tests {
                 "an exact retry never dispatches twice"
             );
             request.invocation = tilo_actions::InvocationId::new();
-            assert_eq!(
-                call(&request).err(),
-                Some(ActionCallError::confirmation_required())
-            );
-            let mut other_binding = state.approval_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
-            other_binding.action = "empty-trash".into();
-            request.confirmation = Some(Confirmation::Approved(
-                state.approval_confirmation(&other_binding).unwrap(),
-            ));
+            // A token no store handed back is no answer of the person's.
+            request.confirmation = Some(Confirmation::Approved("from-the-caller".into()));
             assert_eq!(
                 call(&request).err(),
                 Some(ActionCallError::confirmation_required())

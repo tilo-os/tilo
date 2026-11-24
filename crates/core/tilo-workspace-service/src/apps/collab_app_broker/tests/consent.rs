@@ -68,7 +68,6 @@ async fn approval_publication_is_target_scoped_and_rejects_republish_and_peer_re
                     )
                 };
                 let original = binding();
-                let token = fixture.state.approval_confirmation(&original).unwrap();
                 // Both another provider in this workspace and another workspace may publish,
                 // reregister and disconnect while the person's sheet is open.
                 for workspace in [fixture.cluster_id.clone(), other_workspace_id] {
@@ -81,31 +80,20 @@ async fn approval_publication_is_target_scoped_and_rejects_republish_and_peer_re
                     }
                     fixture.state.remove_connection(other_peer);
                 }
-                assert!(
-                    fixture.state.take_approval(&token, &binding()),
-                    "unrelated churn preserves consent"
-                );
+                assert_eq!(binding(), original, "unrelated churn preserves consent");
 
-                let token = fixture.state.approval_confirmation(&original).unwrap();
                 approval_publish(&fixture, &target, directory).await;
-                assert!(
-                    !fixture.state.take_approval(&token, &binding()),
+                assert_ne!(
+                    binding(),
+                    original,
                     "identical target republication revokes consent"
                 );
 
                 let current = binding();
-                let token = fixture.state.approval_confirmation(&current).unwrap();
                 fixture.state.remove_connection(fixture.peer_id);
-                assert!(
-                    !fixture.state.take_approval(&token, &binding()),
-                    "disconnect revokes consent"
-                );
-                let token = fixture.state.approval_confirmation(&current).unwrap();
+                assert_ne!(binding(), current, "disconnect revokes consent");
                 approval_publish(&fixture, &target, directory).await;
-                assert!(
-                    !fixture.state.take_approval(&token, &binding()),
-                    "peer reuse cannot restore old consent"
-                );
+                assert_ne!(binding(), current, "peer reuse cannot restore old consent");
             }
         })
         .await;

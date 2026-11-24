@@ -33,8 +33,8 @@ use tilo_automation::SHORTCUTS_APP_ID;
 #[path = "agent_app_list_tests.rs"]
 mod agent_app_list_tests;
 #[cfg(test)]
-#[path = "governance_approval_tests.rs"]
-mod governance_approval_tests;
+#[path = "owner_approval_tests.rs"]
+mod owner_approval_tests;
 
 mod app_admission;
 pub(super) mod delivering;

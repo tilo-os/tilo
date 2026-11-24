@@ -27,6 +27,8 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 
 use super::{Admits, DeviceAsked, Run};
+use tilo_actions::remote::asked::AskedReads as _;
+use tilo_actions::remote::{Decided, ResourceAddress};
 
 const ADA: [u8; 32] = [1; 32];
 const WORKSPACE: &str = "acme";
@@ -194,6 +196,7 @@ impl Device {
                     assert_eq!(workspace, WORKSPACE);
                     Ok((provider, ada()))
                 }
+                Run::Read { .. } => panic!("a read is never admitted again"),
             }
         });
         let asked = DeviceAsked::new(Arc::clone(&store), Arc::clone(&invocations), admits);
@@ -646,10 +649,19 @@ fn shortcut_asks() -> AskedFacts {
 
 /// Ada presses the key of her shortcut: its run reaches the dispatch as her own call.
 fn press(device: &Device, call: &InvokeRequest) -> InvocationReceipt {
+    press_in(device, call, None)
+}
+
+/// [`press`], made in the window `pressed` names when it was pressed in one.
+fn press_in(
+    device: &Device,
+    call: &InvokeRequest,
+    pressed: Option<asked::Pressed>,
+) -> InvocationReceipt {
     let route: Route = (device.workspace.clone(), ada());
     let run = Run::Own {
         workspace: WORKSPACE.into(),
-        pressed: None,
+        pressed,
     };
     device
         .asked
@@ -659,6 +671,62 @@ fn press(device: &Device, call: &InvokeRequest) -> InvocationReceipt {
         .flatten()
         .expect("the dispatch answers at once")
         .expect("kept, not refused")
+}
+
+/// Ada presses in an app's window, and what she pressed needs her yes: the window, which follows
+/// the call as hers, reads it as asked, naming the record she answers, with nothing of it run;
+/// her approve runs it once.
+#[test]
+fn a_press_in_a_window_reads_there_as_asked_until_she_answers() {
+    let workspace = Arc::<Workspace>::default();
+    *workspace.asks.lock().unwrap() = Some(shortcut_asks());
+    let device = Device::start(&Arc::default(), &workspace);
+    let call = send_mail();
+    let receipt = press_in(
+        &device,
+        &call,
+        Some(asked::Pressed {
+            device: "laptop".into(),
+            app: "so.tilo.mail".into(),
+            instance: "window-1".into(),
+            resource: "mail.draft".into(),
+        }),
+    );
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Accepted),
+        "it waits under way: {receipt:?}"
+    );
+    let shown = device
+        .invocations
+        .observe(&ada(), &call.invocation)
+        .map(|state| state.update);
+    let record = call.invocation.0.to_string();
+    assert!(
+        matches!(
+            &shown,
+            Some(InvocationUpdate::Progress { phase, message, .. })
+                if phase == asked::ASKED_PHASE
+                    && message.as_deref().is_some_and(|said| said.ends_with(&record))
+        ),
+        "the window reads it as asked, naming her record: {shown:?}"
+    );
+    assert!(
+        workspace.ran().is_empty(),
+        "nothing ran before she answered"
+    );
+    let pressed_at: Vec<_> = device
+        .store
+        .waiting_in(WORKSPACE)
+        .into_iter()
+        .map(|waiting| waiting.asked.pressed.map(|at| (at.device, at.instance)))
+        .collect();
+    assert_eq!(
+        pressed_at,
+        vec![Some(("laptop".to_owned(), "window-1".to_owned()))],
+        "her question lists the window she pressed in"
+    );
+    device.resolve(&call, &ada(), Offer::Approve).unwrap();
+    assert_eq!(workspace.ran().len(), 1, "her approve runs it once");
 }
 
 /// Ada presses the key of a shortcut with a step that needs her yes: it waits as the
@@ -706,25 +774,36 @@ fn a_declined_pressed_shortcut_runs_nothing() {
     );
 }
 
-/// The device restarts while a question a program asked through Ada's shell waits: the shell
-/// served that program's provider over its link, which ended with the device, so the question
-/// is withdrawn, saying so, and answers nothing. What her agent asked, and what her pressed
-/// shortcut asked of a provider the device serves itself, still wait, and her approve runs it.
+/// The device restarts while a question a program asked through Ada's shell waits, and one her
+/// press in an app's window asked: the shell served that program's provider over its link, and
+/// the window was open on the device, and both ended with it, so each question is withdrawn,
+/// saying so, and answers nothing. What her agent asked, and what her pressed shortcut asked of
+/// a provider the device serves itself, still wait, and her approve runs it.
 #[test]
-fn a_programs_question_is_withdrawn_when_the_device_restarts() {
+fn a_programs_and_a_windows_questions_are_withdrawn_when_the_device_restarts() {
     let (kept, workspace) = (Arc::<Kept>::default(), Arc::<Workspace>::default());
     let mut program = send_mail();
     program.target = RemoteActionTarget {
         provider: "session.asks".into(),
         address: ActionAddress::new("asks:polkit-1", "answer"),
     };
-    let (agents, shortcut) = (send_mail(), send_mail());
+    let (agents, shortcut, in_window) = (send_mail(), send_mail(), send_mail());
     {
         let before = Device::start(&kept, &workspace);
         before.send(&agents).unwrap();
         press(&before, &program);
         press(&before, &shortcut);
-        assert_eq!(before.store.asked_of(&ADA).len(), 3);
+        press_in(
+            &before,
+            &in_window,
+            Some(asked::Pressed {
+                device: "laptop".into(),
+                app: "so.tilo.mail".into(),
+                instance: "window-1".into(),
+                resource: "mail.draft".into(),
+            }),
+        );
+        assert_eq!(before.store.asked_of(&ADA).len(), 4);
     }
     let after = Device::start(&kept, &workspace);
     after.asked.withdraw_what_ended();
@@ -740,14 +819,120 @@ fn a_programs_question_is_withdrawn_when_the_device_restarts() {
         shortcut.invocation.0.to_string(),
     ];
     expected.sort();
-    assert_eq!(waiting, expected, "the agent's and the shortcut's questions wait");
     assert_eq!(
-        refusal(after.resolve(&program, &ada(), Offer::Approve)),
-        asked::ANSWERED
+        waiting, expected,
+        "the agent's and the shortcut's questions wait"
     );
-    assert_eq!(kept.0.lock().unwrap().len(), 2, "the withdrawn one is kept no more");
+    for (what, withdrawn) in [("the program's", &program), ("the window's", &in_window)] {
+        assert_eq!(
+            refusal(after.resolve(withdrawn, &ada(), Offer::Approve)),
+            asked::ANSWERED,
+            "{what} question is withdrawn, not left waiting"
+        );
+    }
+    assert_eq!(
+        kept.0.lock().unwrap().len(),
+        2,
+        "the withdrawn ones are kept no more"
+    );
     after.resolve(&shortcut, &ada(), Offer::Approve).unwrap();
     let ran = workspace.ran();
-    assert_eq!(ran.len(), 1, "the shortcut ran on her approve, after the restart");
+    assert_eq!(
+        ran.len(),
+        1,
+        "the shortcut ran on her approve, after the restart"
+    );
     assert_eq!(ran[0].invocation, shortcut.invocation);
+}
+
+/// Ada's board app joins a note of hers that she is asked about before it is read: the join
+/// waits in its read's asked record, named as the app that reads.
+fn join_note(device: &Device) -> (Pending<Decided>, RecordRef) {
+    let note = ResourceAddress {
+        workspace: WORKSPACE.into(),
+        app: "so.tilo.notes".into(),
+        record: "note-1".into(),
+    };
+    let join = device.asked.ask_read(
+        &ada(),
+        "so.tilo.board",
+        &note,
+        AskedFacts {
+            verb: asked::READ.into(),
+            on: Some("note-1".into()),
+            ..AskedFacts::default()
+        },
+    );
+    let asked = device.store.asked_of(&ADA);
+    assert_eq!(asked.len(), 1, "Ada is asked once: {asked:?}");
+    assert_eq!(asked[0].action, "so.tilo.notes#read", "{asked:?}");
+    assert_eq!(
+        asked[0].facts.by,
+        asked::AskedBy::App {
+            app: "so.tilo.board".into(),
+            title: "so.tilo.board".into(),
+            author: None,
+        },
+        "named as the app that reads"
+    );
+    (join, asked[0].record.clone())
+}
+
+fn answer(device: &Device, at: &RecordRef, resolution: Offer) {
+    device
+        .store
+        .resolve(
+            at,
+            &ada(),
+            &Resolve {
+                resolution,
+                ..Resolve::default()
+            },
+        )
+        .wait_timeout(WAIT)
+        .ok()
+        .flatten()
+        .expect("the answer is admitted at once")
+        .expect("her answer is taken");
+}
+
+/// A read Ada is asked about waits for her: her approve lets the join through, her decline
+/// refuses it, and nothing is sent for either. A read still waiting when the device starts again
+/// ended with the join that asked it: its record is withdrawn.
+#[test]
+fn a_join_waits_for_the_read_she_is_asked_about() {
+    let kept = Arc::<Kept>::default();
+    let workspace = Arc::<Workspace>::default();
+    let device = Device::start(&kept, &workspace);
+
+    let (join, at) = join_note(&device);
+    let join = join
+        .wait_timeout(Duration::from_millis(50))
+        .expect_err("the join waits for her answer");
+    answer(&device, &at, Offer::Approve);
+    assert_eq!(
+        join.wait_timeout(WAIT).ok().flatten(),
+        Some(Ok(())),
+        "her approve lets the join through"
+    );
+
+    let (join, at) = join_note(&device);
+    answer(&device, &at, Offer::Decline);
+    assert!(
+        matches!(
+            join.wait_timeout(WAIT).ok().flatten(),
+            Some(Err(ActionCallError::Refused { .. }))
+        ),
+        "her decline refuses the join"
+    );
+    assert!(workspace.ran().is_empty(), "a read sends nothing");
+
+    let (_join, _) = join_note(&device);
+    drop(device);
+    let again = Device::start(&kept, &workspace);
+    again.asked.withdraw_what_ended();
+    assert!(
+        again.store.asked_of(&ADA).is_empty(),
+        "the read is asked no more once the device started again"
+    );
 }

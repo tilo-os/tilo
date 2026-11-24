@@ -4,7 +4,7 @@
 //! ([`ActionCallError::ConfirmationRequired`]) unless the call carries their approve
 //! ([`InvokeRequest::approval`]). Whoever dispatches the call keeps it as its own asked
 //! `tilo.invocations` record ([`AskedRecords`]); nothing here keeps a question, waits for an
-//! answer or asks a device. [`asked::WAITING`]`#`[`asked::LIST`] lists the asked records a
+//! answer or asks a device. The reading of a workspace's invocations lists the asked records a
 //! person may answer, across the workspaces here, read from those records as they sync.
 //!
 //! Each record written here is told to the person it waits for as a thing of their log
@@ -19,17 +19,14 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
 use tilo_actions::remote::asked::{
-    self, AskedBy, AskedDispatch, AskedFacts, AskedList, AskedRecords, AskedStore, Named,
-    RecordRef, Resolve,
+    self, AskedBy, AskedDispatch, AskedFacts, AskedRecords, AskedStore, Named, RecordRef, Resolve,
 };
 use tilo_actions::remote::person_telling::{About, Kind, Offered, OfferedTarget, Tell, Teller};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_user_identity::DeviceCert;
 
-use super::person_settings::answer;
 use super::{ToTell, WeakWorkspaces, Workspaces};
 
 /// Who asks, as the system names `caller`: its agent by the name its key goes by, an app by
@@ -234,7 +231,8 @@ impl Workspaces {
     /// through its workspaces: grants written on the runtime `runtime` names, every waiting
     /// record kept in the record of the workspace it acts in, and the calls that waited before
     /// the host started waiting here again. The store asks on this device, and is handed every
-    /// dispatch of this host ([`Self::keep_asked_in`]), so `tilo.asking#list` lists what waits
+    /// dispatch of this host ([`Self::keep_asked_in`]), so the reading of each workspace's
+    /// invocations lists what waits there
     /// and `tilo.invocations#resolve` answers it.
     ///
     /// # Errors
@@ -377,26 +375,6 @@ impl Workspaces {
             &Context::at(tilo_clock::unix_now_ms()),
         );
         decision.answer == Answer::Allow && decision.grant().is_some()
-    }
-
-    /// Answer a [`asked::PROVIDER`] request: every asked record the calling person may answer.
-    pub(super) fn asking_invoke(
-        &self,
-        workspace_id: Option<collab_types::WorkspaceId>,
-        caller: &Caller,
-        certificate: Option<&DeviceCert>,
-        request: &InvokeRequest,
-    ) -> Result<Value, ActionCallError> {
-        let person = Self::asking_person(caller, certificate, workspace_id)?;
-        let address = &request.target.address;
-        if (address.resource.as_str(), address.action.as_str()) != (asked::WAITING, asked::LIST) {
-            return Err(ActionCallError::UnknownAction);
-        }
-        let questions = self
-            .asked_records()
-            .map(|records| records.asked_of(&person))
-            .unwrap_or_default();
-        answer(&Ok::<_, String>(AskedList { questions }))
     }
 }
 

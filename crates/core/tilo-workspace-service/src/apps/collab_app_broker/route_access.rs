@@ -1,7 +1,7 @@
 //! What the attested launch of an app may do on a route it joins: its own
 //! route, or another app's read-only as its surface declares.
 use super::{AdmittedJoinIdentity, AppBrokerState, CrdtRoute, person_document_join};
-use crate::apps::app_actions::{AppActionAnswer, AppActionConsentRequest};
+use tilo_actions::remote::asked::AskedFacts;
 use tilo_actions::remote::{ActionCallError, ResourceAddress};
 
 /// What the attested launch of an app may do on a route it joins.
@@ -50,7 +50,8 @@ pub(super) fn attested_route_access(
 
 impl AppBrokerState {
     /// Whether the person `identity` certifies may read `route`'s record, which `app` joins to
-    /// read: as the device's one reader decides, and where it would ask, once the person allows it.
+    /// read: as the device's one reader decides, and where the person is to be asked first, once
+    /// they answer the read's asked record ([`tilo_actions::remote::asked::AskedReads`]).
     pub(super) async fn person_reads_joined(
         &self,
         identity: &AdmittedJoinIdentity,
@@ -71,68 +72,31 @@ impl AppBrokerState {
             record: route.document_id.clone(),
         };
         // The device's reader may block to decide, never on the broker's own thread.
-        let decided = tokio::task::spawn_blocking(move || reads.may_read(&caller, &address))
+        let (deciding, deciding_for) = (caller.clone(), address.clone());
+        let decided = tokio::task::spawn_blocking(move || reads.may_read(&deciding, &deciding_for))
             .await
             .map_err(|_| refused())?
             .await;
-        match decided {
+        let facts = match decided {
+            Some(Ok(())) => return Ok(()),
+            Some(Err(ActionCallError::ConfirmationRequired(facts))) => *facts,
+            _ => return Err(refused()),
+        };
+        let asked = self.asked_reads().ok_or_else(refused)?;
+        let facts = AskedFacts {
+            verb: if facts.verb.is_empty() {
+                tilo_actions::remote::asked::READ.to_owned()
+            } else {
+                facts.verb
+            },
+            on: facts.on.or_else(|| Some(route.document_id.clone())),
+            ..facts
+        };
+        match asked.ask_read(&caller, app, &address, facts).await {
             Some(Ok(())) => Ok(()),
-            Some(Err(ActionCallError::ConfirmationRequired(_))) => {
-                if self.person_allows_read(identity, app, route).await {
-                    Ok(())
-                } else {
-                    Err(refused())
-                }
-            }
-            _ => Err(refused()),
+            Some(Err(why)) => Err(format!("{}: {why}", refused())),
+            None => Err(refused()),
         }
-    }
-
-    /// The person asked once whether `app` may read `route`'s record, on the sheet every other
-    /// question of theirs is put on: `true` when they allow it.
-    async fn person_allows_read(
-        &self,
-        identity: &AdmittedJoinIdentity,
-        app: &str,
-        route: &CrdtRoute,
-    ) -> bool {
-        let Some(prompter) = self
-            .app_action_consent
-            .read()
-            .ok()
-            .and_then(|prompter| prompter.clone())
-        else {
-            return false;
-        };
-        let Some(answer) = prompter.ask(AppActionConsentRequest {
-            handle: format!(
-                "read:{}/{}/{}",
-                route.cluster_id, route.app_id, route.document_id
-            ),
-            workspace: route.cluster_id.clone(),
-            person: identity.actor_key.clone(),
-            app_id: app.to_owned(),
-            agent_session: None,
-            target_app: route.app_id.clone(),
-            resource_label: route.document_id.clone(),
-            action_label: String::new(),
-            kind: tilo_action_policy::ActionKind::Read,
-            risk: tilo_actions::RiskLevel::None,
-            confirming: true,
-            moderation: None,
-            scope: None,
-            draft: None,
-            ask: None,
-        }) else {
-            return false;
-        };
-        matches!(
-            answer.await,
-            Ok(AppActionAnswer {
-                lifetime: Some(_),
-                ..
-            })
-        )
     }
 }
 
