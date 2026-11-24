@@ -1016,12 +1016,17 @@ impl Overlays {
     }
 
     /// The surface Escape closes, by the dismissal table: the topmost one whose kind answers Escape
-    /// and that the session may close.
+    /// and that the session may close. One opened over the field the person types in
+    /// ([`Self::open_over`]) stands above the surface it was opened for, so Escape puts it away
+    /// first and leaves that surface up.
     #[must_use]
     pub fn escape(&self) -> Option<Part> {
         let stack = self.0.borrow();
-        Part::ALL.into_iter().find(|part| {
-            part.session_closes() && part.role().closes_on_escape() && stack.is_shown(*part)
+        let closes = |part: &Part| part.session_closes() && part.role().closes_on_escape();
+        stack.over().filter(closes).or_else(|| {
+            Part::ALL
+                .into_iter()
+                .find(|part| closes(part) && stack.is_shown(*part))
         })
     }
 
@@ -1166,8 +1171,8 @@ mod tests {
             }
             assert!(Role::Popup.closes_on_escape() && Role::Dialog.closes_on_escape());
             assert!(
-                !Role::Overlay.closes_on_escape(),
-                "an overlay answers Escape only if its own model says so"
+                Role::Overlay.closes_on_escape(),
+                "an overlay is a mode the person leaves, and Escape leaves it"
             );
         }
 

@@ -335,9 +335,14 @@ impl DesktopNotifications {
 
     /// The centre stands open on the shell: what arrives joins its list, so no banner covers it. A
     /// banner up when it opens goes into it, since a stack over an open centre would take the
-    /// presses meant for its rows.
+    /// presses meant for its rows. Opened or closed, the person has seen what it holds: nothing is
+    /// unread after.
     pub fn set_centre_open(&self, open: bool) {
-        if open && !self.log.centre_open.get() {
+        if open == self.log.centre_open.get() {
+            return;
+        }
+        self.mark_read();
+        if open {
             self.retire_banners();
         }
         self.log.centre_open.set(open);
