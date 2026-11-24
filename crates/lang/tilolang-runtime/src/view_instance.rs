@@ -1012,6 +1012,11 @@ impl ViewInstance {
             SHORTCUT_ACTION => self.platform_shortcut(aref, gesture),
             ANSWER_ACTION => self.answer_steps(aref, gesture),
             COPY_LINK_ACTION => self.copy_link(aref),
+            // The system's Copy link as a resource's own verb (`card.share_link()`): an action
+            // of the type, whose id ends in the verb the system answers it by.
+            action if crate::host_ui::system_verb(action) == Some(tilo_actions::remote::SHARE_LINK_ACTION) => {
+                self.copy_link_of(aref)
+            }
             CHOOSE_ACTION => self.platform_choose(aref, false),
             CHOOSE_FOLDER_ACTION => self.platform_choose(aref, true),
             SAVE_ACTION => self.platform_save(aref),
@@ -1072,6 +1077,28 @@ impl ViewInstance {
             app: app.clone(),
         });
         Ok(InvokeOutcome::Done(Value::Unit))
+    }
+
+    /// The system's Copy link called as the resource type's own verb: the resource is the call's
+    /// first argument, and the app whose resource it is comes from its type.
+    fn copy_link_of(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        let Some(Value::Ref(r)) = aref.args.first() else {
+            return Err(RuntimeError::BadArgs("a malformed copy link".into()));
+        };
+        let app = {
+            let registry = self.core.registry.borrow();
+            registry
+                .type_id(&r.target.ty)
+                .and_then(|ty| registry.type_info(&ty))
+                .map(|(pkg, _)| pkg.meta.app.clone())
+        };
+        let Some(app) = app else {
+            return Err(RuntimeError::NotFound(format!("type {}", r.target.ty)));
+        };
+        self.copy_link(&ActionRef::new(
+            COPY_LINK_ACTION,
+            vec![Value::Ref(r.clone()), Value::text(app)],
+        ))
     }
 
     fn undo_step(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {

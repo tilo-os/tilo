@@ -6,7 +6,7 @@ use crate::diag::{Diagnostic, Span};
 use crate::ids::IdsLock;
 use crate::meta::PackageMeta;
 use crate::prims;
-use crate::types::{MergeKind, Ty, TypeKey};
+use crate::types::{EffectClass, MergeKind, Ty, TypeKey};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod effects;
@@ -728,6 +728,7 @@ pub fn resolve(
     r.imports(module, imports);
     r.types(module, lock);
     r.callables(module, lock);
+    r.system_verbs();
     r.triggers(module, lock);
     for item in &module.items {
         if let Item::View(v) = item
@@ -743,6 +744,48 @@ pub fn resolve(
     r.one_shortcut_each(module);
     r.one_settler_each(module);
     r.env
+}
+
+impl Resolver<'_> {
+    /// The verbs every resource has, offered on every record type the module can name: the
+    /// system's Copy link, which the host serving the resource mints. A package declares none of
+    /// them; a type whose meta already offers one (a native app's surface) keeps that one. The
+    /// host answers a call of one by the verb its id ends in, never as a package's action.
+    fn system_verbs(&mut self) {
+        let app = self.env.app.clone();
+        let types: Vec<TypeKey> = self.env.types.iter().map(|info| info.key.clone()).collect();
+        for key in types {
+            if self.env.action_on(&key, "share_link").is_some() {
+                continue;
+            }
+            let own = key.app == app;
+            self.env.callables.push(Callable {
+                kind: CKind::Action,
+                name: "share_link".to_owned(),
+                id: format!("{}#{}/share-link", key.app, key.name),
+                app: key.app.clone(),
+                own,
+                func: None,
+                params: vec![ParamInfo {
+                    name: "resource".to_owned(),
+                    ty: Ty::Record(key),
+                    default: None,
+                    place: false,
+                    label: None,
+                    entry: false,
+                }],
+                result: Ty::Text,
+                class: Some(EffectClass::Read),
+                uses: BTreeSet::new(),
+                present: Presentation {
+                    label: "Copy link".to_owned(),
+                    ..Presentation::default()
+                },
+                access: Access::Offered,
+                capture_protected: false,
+            });
+        }
+    }
 }
 
 /// The toolkit component a view body makes: its one call, after its state and `let`s, when that is

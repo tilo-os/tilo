@@ -97,6 +97,8 @@ fn a_verbs_id_names_its_type_and_stays_when_another_type_adds_the_verb() {
         [
             ("t.kitchen#Counter/wipe", "wipe"),
             ("t.kitchen#Oven/dismiss", "dismiss"),
+            ("t.kitchen#Oven/share-link", "share-link"),
+            ("t.kitchen#Timer/share-link", "share-link"),
         ],
         "a verb only one type offers is named by its type all the same"
     );
@@ -107,7 +109,9 @@ fn a_verbs_id_names_its_type_and_stays_when_another_type_adds_the_verb() {
             ("t.kitchen#Counter/dismiss", "dismiss"),
             ("t.kitchen#Counter/wipe", "wipe"),
             ("t.kitchen#Oven/dismiss", "dismiss"),
+            ("t.kitchen#Oven/share-link", "share-link"),
             ("t.kitchen#Timer/dismiss", "dismiss"),
+            ("t.kitchen#Timer/share-link", "share-link"),
         ],
         "the oven's `dismiss` keeps the id a grant or a record already names"
     );
@@ -230,6 +234,37 @@ fn a_press_reaches_the_action_of_the_type_it_names_first() {
             ("t.kitchen#Counter/wipe".to_owned(), "wipe".to_owned(), None),
         ],
         "each press is its type's own action, sent to the app as the verb"
+    );
+}
+
+/// Every resource type offers the system's Copy link beside its own verbs: a program calls it on
+/// a value as it calls the app's actions, and the host serving the resource mints the link. A
+/// kind no program reads (one with no fields and one of no set) keeps its verbs loose.
+#[test]
+fn every_resource_type_offers_the_systems_copy_link() {
+    let meta = package(OVEN_ONLY);
+    for ty in ["Oven", "Timer"] {
+        let id = format!("t.kitchen#{ty}/share-link");
+        let action = meta
+            .actions
+            .iter()
+            .find(|action| action.id == id)
+            .unwrap_or_else(|| panic!("the catalogue publishes `{id}`"));
+        assert_eq!(action.name, "share_link");
+        assert_eq!(action.verb, "share-link");
+        assert_eq!(
+            action.params.first().map(|param| param.ty.as_str()),
+            Some(ty),
+            "`{id}` acts on its own {ty}"
+        );
+        assert_eq!(action.class, tilolang_runtime::meta::EffectClass::Read);
+    }
+    assert!(
+        !meta
+            .actions
+            .iter()
+            .any(|action| action.id == "t.kitchen#Counter/share-link"),
+        "a kind that stores nothing code reads is no type"
     );
 }
 

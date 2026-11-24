@@ -2876,6 +2876,14 @@ impl Core {
                 })
             });
         match arity {
+            // The system verbs every resource has are no package's actions: `card.share_link()`
+            // takes the resource and nothing else, and the host answers it
+            // ([`crate::host_ui::system_verb`]).
+            None if crate::host_ui::system_verb(&action).is_some() => {
+                if args.len() != 1 {
+                    return trap(format!("the system action `{action}` takes its resource alone"));
+                }
+            }
             None => return trap(format!("unknown action `{action}`")),
             Some((n, defaulted, name))
                 if args.len() > n || args.len() < n.saturating_sub(defaulted) =>

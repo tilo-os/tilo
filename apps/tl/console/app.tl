@@ -671,6 +671,13 @@ view client_card(c: AgentCard) {
             } else { "No sessions yet" },
             square: true,
         )
+        row(gap: .related, wrap: true, align: .center) {
+            // The system's Copy link on the card: the link that opens this client's card for the
+            // people and devices of the workspace, minted where the resource is served.
+            ui.Button("Copy link", icon: .link) {
+                on press: c.share_link()
+            }
+        }
         if let one = newest {
             card_commands(c, one, sessions, server)
             if let blocked = one.undo_blocked {

@@ -234,6 +234,8 @@ mod cases {
                     "started_ms": 1_795_500_600_000_i64,
                     "last_ms": 1_795_502_400_000_i64,
                     "range": {"from": "aa", "to": "bb"},
+                    "in_effect": [],
+                    "changes_total": 0,
                     "undo_blocked": null,
                     "now": "cargo test",
                     "now_kind": "running",
@@ -319,6 +321,8 @@ mod cases {
                     "started_ms": 1_795_490_000_000_i64,
                     "last_ms": 1_795_491_000_000_i64,
                     "range": {"from": "01", "to": "02"},
+                    "in_effect": [],
+                    "changes_total": 0,
                     "undo_blocked": null,
                     "now": "",
                     "now_kind": "",
@@ -863,6 +867,31 @@ mod cases {
                 "{name}'s look"
             );
             assert!(action.key.is_none(), "{name} declares no shortcut");
+        }
+    }
+
+    /// The card offers the system's Copy link among its own actions: the press is the system's
+    /// copy link on the card, which the window's host mints and copies, not an action the app
+    /// writes. `card.share_link()` compiles against the verb every resource has.
+    #[test]
+    fn a_cards_copy_link_is_the_systems() {
+        let console = Console::new(&sessions_of(), &server_of(""));
+        console.publish();
+        let card = console.card("Claude Code");
+        let mut view = console.open(&card);
+        let key = button(&view, "Copy link").key.clone();
+        view.fire(&key, "press").unwrap();
+        view.poll_patches().unwrap();
+        match view.poll_events().as_slice() {
+            [ViewEvent::CopyLink { target, app }] => {
+                assert_eq!(
+                    target.id_string(),
+                    card.id_string(),
+                    "the link is the card's own"
+                );
+                assert_eq!(app, "so.tilo.console", "minted as the app's resource");
+            }
+            other => panic!("the press copies the card's link, not {other:?}"),
         }
     }
 
