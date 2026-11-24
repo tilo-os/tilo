@@ -12,8 +12,12 @@
 //! its own `tilo mcp` (each Claude Code window, `tilo agent check`), and each
 //! one relays its stdio to the daemon ([`held`]), which holds the device's one
 //! session for all of them and serves each connection as its own agent run.
+//!
+//! `tilo mcp --as-me` serves the same tools as the person, for a program of theirs that is no
+//! agent ([`person`]).
 
 pub(crate) mod held;
+pub(crate) mod person;
 
 use std::process::ExitCode;
 use std::time::Duration;

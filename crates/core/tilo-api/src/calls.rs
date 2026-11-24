@@ -363,6 +363,36 @@ impl Calls {
         }
     }
 
+    /// The tools these calls reach, as their MCP server's `tools/list` answers them.
+    ///
+    /// # Errors
+    /// The listing was refused, or could not be asked for.
+    pub async fn tools(&self) -> Result<Value> {
+        let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        let answer = match &self.at {
+            At::Daemon { server, .. } => Box::pin(server.handle(request)).await.unwrap_or_default(),
+            At::Key(direct, _) => direct.mcp(request).await.map_err(anyhow::Error::msg)?,
+            At::Desktop(desktop) => {
+                let refused = |error: ApiError| anyhow::Error::new(Refusal::said(&error));
+                let session = desktop.session().await.map_err(refused)?;
+                let (_, answer) = desktop
+                    .post(Some(&session), &request)
+                    .await
+                    .map_err(refused)?;
+                answer
+            }
+        };
+        answer.pointer("/result/tools").cloned().ok_or_else(|| {
+            anyhow!(
+                "{}",
+                answer
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the workspace listed no tools")
+            )
+        })
+    }
+
     async fn typed_once(
         &self,
         workspace: Option<&str>,

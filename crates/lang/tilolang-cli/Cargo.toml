@@ -55,12 +55,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # The generations a saved build is published into for the running app (`src/dev.rs`).
 tilo-app-module = { version = "0.1.0", path = "../tilo-app-module" }
 toml.workspace = true
-# `tilolang repl`: Tilo's API as the person, through the client `tilo` uses.
-tilo-api = { path = "../../core/tilo-api" }
-# This computer's login, which the REPL acts as.
-tilo-device-identity = { path = "../../core/tilo-device-identity" }
 tilo-paths.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 # The app window's half of a window and the patch protocol to it: what `layout-check` lays out.
 tilo-app-window = { path = "../../sdk/tilo-app-window" }

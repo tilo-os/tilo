@@ -367,7 +367,12 @@ enum Cmd {
     },
     /// Tilo's MCP server over stdio, for the agent on this computer
     /// (an agent adds it to its own MCP configuration).
-    Mcp,
+    Mcp {
+        /// Call as you, as `tilo do` does, rather than as an agent you admit: for a program of
+        /// yours that speaks MCP, such as `tilolang repl`. Honours --workspace and --key-file.
+        #[arg(long)]
+        as_me: bool,
+    },
     /// Your workspaces' synced folders on this computer: each workspace's
     /// one folder, at ~/<workspace> unless moved (`tilo login` adds the first).
     #[command(
@@ -1388,7 +1393,10 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
             agent.as_deref(),
             label.as_deref(),
         ),
-        Cmd::Mcp => mcp::serve(),
+        Cmd::Mcp { as_me: false } => mcp::serve(),
+        Cmd::Mcp { as_me: true } => {
+            mcp::person::serve(cli.key_file.as_deref(), cli.workspace.as_deref())
+        }
         Cmd::Folders { json, cmd } => folders::run(cmd.unwrap_or(folders::FoldersCmd::List), json),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
         Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),

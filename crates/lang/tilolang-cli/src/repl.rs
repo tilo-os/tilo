@@ -1,9 +1,12 @@
 //! `tilolang repl`: tilolang typed against one of the person's workspaces, as them.
 //!
-//! The REPL calls Tilo's actions through [`tilo_api::calls`], as the `tilo` command does: this
-//! computer's daemon at its socket with the key `tilo login` made of it (or `--key-file`), or a
-//! nested Tilo session running on this computer (`--session`), whose own API socket it asks with
-//! [`Calls::desktop`]. What it changes is the person's, attributed to them, in history and undo.
+//! The REPL reaches the workspace through the `tilo` command, run as its own program
+//! ([`tilo`]): `tilo mcp --as-me` serves Tilo's tools over its standard input and output, as the
+//! person, wherever `tilo do` reaches (this login's desktop, this computer's daemon with the key
+//! `tilo login` made of it, or the key file `--key-file` names), or in a nested Tilo session
+//! running on this computer (`--session`), whose API socket it is pointed at. What the REPL
+//! changes is the person's, attributed to them, in history and undo. Without `tilo` installed,
+//! the REPL says what to install.
 //! Each entry is a `tilo` program run in one program session the REPL carries from entry to
 //! entry: `let`s kept between entries, references (`n3`) naming what answers showed, one step
 //! per entry with a preview before a bulk or destructive change, and `undo`. `ls` and `find` are
@@ -13,11 +16,12 @@
 mod editor;
 mod render;
 pub mod style;
+pub mod tilo;
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use serde_json::{Value as Json, json};
-use tilo_api::calls::{Calls, Reach};
 
 use editor::{Complete, Editor, Read};
 use style::{Role, paint};
@@ -93,9 +97,8 @@ const METHODS: &[&str] = &[
 
 /// One workspace as the REPL works in it: the calls it makes there, and what completion offers.
 pub struct Repl {
-    /// The REPL's own calls: its program session is no other REPL's.
-    calls: Calls,
-    workspace: String,
+    /// The REPL's own `tilo`: its program session is no other REPL's.
+    tilo: tilo::Tilo,
     catalogue: Catalogue,
     names: Vec<String>,
 }
@@ -155,21 +158,20 @@ fn error_line(error: &str) -> Vec<String> {
 }
 
 impl Repl {
-    /// The REPL in `workspace` (its id), as `calls`' key, in a program session of its own: it
-    /// learns the apps the workspace runs, for completion.
+    /// The REPL in the workspace `tilo` acts in, in a program session of its own: it learns the
+    /// apps the workspace runs, for completion.
     ///
     /// # Errors
     /// The workspace does not answer, or does not list its apps.
-    pub async fn open(calls: &Calls, workspace: &str) -> Result<Self, String> {
+    pub fn open(tilo: tilo::Tilo) -> Result<Self, String> {
         let mut repl = Self {
-            calls: calls.apart(),
-            workspace: workspace.to_owned(),
+            tilo,
             catalogue: Catalogue::default(),
             names: Vec::new(),
         };
         // Every installed app, from the packages the workspace runs programs against: whether a
         // window of it is open does not matter.
-        let listed = repl.program("catalogue").await?;
+        let listed = repl.program("catalogue")?;
         let catalogue: Json = serde_json::from_str(text_of(&listed).trim())
             .map_err(|_| "the workspace did not list its apps".to_owned())?;
         for (alias, app) in catalogue.as_object().into_iter().flatten() {
@@ -186,7 +188,7 @@ impl Repl {
     }
 
     /// Answer the entry `text`.
-    pub async fn entry(&mut self, text: &str) -> Said {
+    pub fn entry(&mut self, text: &str) -> Said {
         Said::Lines(match parse_entry(text) {
             Entry::Nothing => Vec::new(),
             Entry::Command(name) => match name.as_str() {
@@ -198,27 +200,20 @@ impl Repl {
                     &format!("no command :{other}; :help lists them"),
                 )],
             },
-            Entry::List(path) => self.list(&path).await,
-            Entry::Find(query) => self.find(&query).await,
-            Entry::Program(program) => self.run(&program).await,
+            Entry::List(path) => self.list(&path),
+            Entry::Find(query) => self.find(&query),
+            Entry::Program(program) => self.run(&program),
         })
     }
 
     /// Run `source` in the REPL's program session: the answer.
-    async fn program(&self, source: &str) -> Result<Json, String> {
-        Box::pin(self.calls.typed(
-            Some(&self.workspace),
-            "tilo",
-            json!({"program": source}),
-            None,
-        ))
-        .await
-        .map_err(|error| error.to_string())
+    fn program(&mut self, source: &str) -> Result<Json, String> {
+        self.tilo.call("tilo", json!({"program": source}))
     }
 
     /// Send `program` and say its answer.
-    async fn run(&mut self, program: &str) -> Vec<String> {
-        let answer = match self.program(program).await {
+    fn run(&mut self, program: &str) -> Vec<String> {
+        let answer = match self.program(program) {
             Ok(answer) => answer,
             Err(error) => {
                 // A session the workspace no longer keeps is gone with its lets: the names it
@@ -251,24 +246,21 @@ impl Repl {
     }
 
     /// `ls [path]`: the workspace's listing, as its host words it.
-    async fn list(&self, path: &str) -> Vec<String> {
-        let path = (!path.is_empty()).then_some(path);
-        match Box::pin(self.calls.list(Some(&self.workspace), path, None)).await {
+    fn list(&mut self, path: &str) -> Vec<String> {
+        let arguments = if path.is_empty() {
+            json!({})
+        } else {
+            json!({"path": path})
+        };
+        match self.tilo.call("tilo_ls", arguments) {
             Ok(listed) => text_of(&listed).lines().map(str::to_owned).collect(),
-            Err(error) => error_line(&error.to_string()),
+            Err(error) => error_line(&error),
         }
     }
 
     /// `find words`: what the workspace holds that matches, best first.
-    async fn find(&self, query: &str) -> Vec<String> {
-        let found = Box::pin(self.calls.typed(
-            Some(&self.workspace),
-            "tilo_find",
-            json!({"query": query}),
-            None,
-        ))
-        .await;
-        match found {
+    fn find(&mut self, query: &str) -> Vec<String> {
+        match self.tilo.call("tilo_find", json!({"query": query})) {
             Ok(found) => {
                 let hits: Vec<String> = found
                     .pointer("/result/hits")
@@ -286,7 +278,7 @@ impl Repl {
                     hits
                 }
             }
-            Err(error) => error_line(&error.to_string()),
+            Err(error) => error_line(&error),
         }
     }
 }
@@ -429,44 +421,15 @@ fn attach(
     }
 }
 
-/// Whether anything on this computer signs the person in: a key file named, or the certificate
-/// `tilo login` filed.
-fn signed_in(options: &ReplOptions) -> bool {
-    if options.key_file.is_some() {
-        return true;
-    }
-    // This login's own desktop serves its person at its socket: a program of
-    // this login answers as the person there, with no key, because the
-    // socket's own permissions and the kernel's account of the peer admit it
-    // (`tilo_api::calls::desktop_socket`).
-    if tilo_api::calls::desktop_socket().is_some() {
-        return true;
-    }
-    // A computer a person's certificate names is one of their devices, its daemon serving it.
-    tilo_device_identity::login::served_device_key(&tilo_api::calls::device_keys()).is_some()
-}
-
-/// The workspace the REPL works in: the one `--workspace` names, else the one this computer's
-/// login is in, else the key's one workspace, else the one the person picks.
-async fn workspaces(
-    calls: &Calls,
-    entered: Option<(String, String)>,
-    named: Option<&str>,
-) -> Result<Result<(String, String), Vec<(String, String)>>, String> {
-    if let Some(named) = named {
-        let id = Box::pin(calls.workspace_id(named))
-            .await
-            .map_err(|error| error.to_string())?;
-        return Ok(Ok((id, named.to_owned())));
-    }
-    if let Some(entered) = entered {
-        return Ok(Ok(entered));
-    }
-    let listed = Box::pin(calls.workspaces())
-        .await
-        .map_err(|error| error.to_string())?;
+/// The workspace the REPL works in when `tilo` acts in none of its own: the person's one
+/// workspace, or the one they pick: its id and name.
+fn workspace(tilo: &mut tilo::Tilo, editor: &Editor) -> Result<(String, String), String> {
+    let listed = tilo.call(
+        "tilo_do",
+        json!({"path": "account/workspaces#list", "args": {}}),
+    )?;
     let mut all: Vec<(String, String)> = listed
-        .get("workspaces")
+        .pointer("/result/workspaces")
         .and_then(Json::as_array)
         .into_iter()
         .flatten()
@@ -485,8 +448,11 @@ async fn workspaces(
             "You have no Tilo workspace yet: make one in Tilo, then start the REPL again."
                 .to_owned(),
         ),
-        1 => Ok(Ok(all.remove(0))),
-        _ => Ok(Err(all)),
+        1 => Ok(all.remove(0)),
+        _ => {
+            let names: Vec<String> = all.iter().map(|(_, name)| name.clone()).collect();
+            Ok(all.swap_remove(pick(editor, "Which workspace?", &names)?))
+        }
     }
 }
 
@@ -526,37 +492,37 @@ impl Complete for NoCompletion {
 pub fn repl(options: &ReplOptions) -> Result<(), String> {
     let mut editor = Editor::new(Some(crate::state_dir().join("repl-history")));
     style::set(options.color.unwrap_or_else(|| editor.is_terminal()));
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| error.to_string())?;
-    let (calls, entered) = if let Some(named) = &options.session {
-        let running = attach(&editor, named.as_deref())?;
-        (Calls::desktop(running.socket), None)
+    // `tilo`'s own flags, then its server; a nested session is named by its API socket.
+    let mut args: Vec<OsString> = Vec::new();
+    let mut socket = None;
+    if let Some(named) = &options.session {
+        socket = Some(attach(&editor, named.as_deref())?.socket);
+    } else if let Some(key_file) = &options.key_file {
+        args.extend(["--key-file".into(), key_file.into()]);
+    }
+    if let Some(workspace) = &options.workspace {
+        args.extend(["--workspace".into(), workspace.into()]);
+    }
+    args.extend(["mcp".into(), "--as-me".into()]);
+    let program = tilo::find().ok_or_else(|| tilo::TILO_MISSING.to_owned())?;
+    let envs: Vec<(&str, &std::path::Path)> = socket
+        .as_deref()
+        .map(|socket| ("TILO_API_SOCKET", socket))
+        .into_iter()
+        .collect();
+    let (mut tilo, served) =
+        tilo::Tilo::start(&program, &args, &envs).map_err(|refused| match refused {
+            tilo::Refused::NotSignedIn => not_signed_in(),
+            tilo::Refused::Said(said) => said,
+        })?;
+    let name = if let Some((_, name)) = served {
+        name
     } else {
-        if !signed_in(options) {
-            return Err(not_signed_in());
-        }
-        let reach = Reach {
-            key_file: options.key_file.as_deref(),
-            json: false,
-        };
-        let entered =
-            tilo_api::calls::entered_workspace(reach).map_err(|error| error.to_string())?;
-        let calls = runtime
-            .block_on(Calls::open(reach))
-            .map_err(|error| error.to_string())?;
-        (calls, entered)
+        let (workspace, name) = workspace(&mut tilo, &editor)?;
+        tilo.workspace = Some(workspace);
+        name
     };
-    let (workspace, name) =
-        match runtime.block_on(workspaces(&calls, entered, options.workspace.as_deref()))? {
-            Ok(one) => one,
-            Err(mut all) => {
-                let names: Vec<String> = all.iter().map(|(_, name)| name.clone()).collect();
-                all.swap_remove(pick(&editor, "Which workspace?", &names)?)
-            }
-        };
-    let mut repl = runtime.block_on(Repl::open(&calls, &workspace))?;
+    let mut repl = Repl::open(tilo)?;
     println!(
         "{}  {}",
         paint(Role::Title, "tilolang"),
@@ -590,7 +556,7 @@ pub fn repl(options: &ReplOptions) -> Result<(), String> {
         }
         let entry = std::mem::take(&mut pending);
         editor.remember(&entry);
-        match runtime.block_on(repl.entry(&entry)) {
+        match repl.entry(&entry) {
             Said::Quit => return Ok(()),
             Said::Lines(lines) => {
                 for line in lines {
