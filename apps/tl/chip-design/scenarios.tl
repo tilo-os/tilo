@@ -434,6 +434,13 @@ scenario "an evidence flow" {
     )
     cpu.observed = .cpu_reference
     cpu.observation = "2048 words compared, 0 differing"
+    cpu.facts = Observation(
+        label: "CPU reference",
+        kind: .cpu_reference,
+        compared_words: 2048,
+        differing_words: 0,
+        output_sha256: "abababababababababababababababababababababababababababababababab",
+    )
     let rtl = r.stages.insert(
         Stage(
             key: "rtl",
@@ -447,6 +454,15 @@ scenario "an evidence flow" {
     )
     rtl.observed = .rtl_simulation
     rtl.observation = "64 accepted inputs, 64 outputs, 8192 cycles"
+    rtl.facts = Observation(
+        label: "RTL simulation",
+        kind: .rtl_simulation,
+        outcome: .completed,
+        cycles: 8192,
+        accepted_inputs: 64,
+        accepted_outputs: 64,
+        output_sha256: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    )
     let synth = r.stages.insert(
         Stage(
             key: "synth",
@@ -460,6 +476,12 @@ scenario "an evidence flow" {
     )
     synth.observed = .generic_synthesis
     synth.observation = "9940 logic cells, 0 logical memory bits"
+    synth.facts = Observation(
+        label: "Generic synthesis",
+        kind: .generic_synthesis,
+        logic_cells: 9940,
+        logical_memory_bits: 0,
+    )
     let physical = r.stages.insert(
         Stage(
             key: "physical",
@@ -473,6 +495,17 @@ scenario "an evidence flow" {
     )
     physical.observed = .library_physical
     physical.observation = "research-library: 1840 routed nets, 0 router violations"
+    physical.facts = Observation(
+        label: "Extracted library estimate",
+        kind: .library_physical,
+        library: "research-library",
+        clock_constraint_ns: "4",
+        setup_slack_ns: "0.12",
+        hold_slack_ns: "0.04",
+        routed_signal_nets: 1840,
+        router_violations: 0,
+        library_area_um2: "4820.25",
+    )
     physical.placed = true
     physical.database_artifact = "db.h5"
     physical.observation_artifact = "report.json"

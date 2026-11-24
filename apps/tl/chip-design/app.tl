@@ -217,7 +217,7 @@ type CellCount (title: name) {
 type Observation (title: label) {
     /// What the observation compared, in words.
     label: Text
-    kind: ObservationKind
+    kind: ObservationKind = .none
     /// What the comparison asserts.
     comparison: Comparison = .exact
     compared_words: Int = 0
@@ -310,6 +310,8 @@ type Stage (title: title) {
     input_identity_sha256: Text
     limitations: List<Text>
     observed: ObservationKind = .none
+    /// What the observation reported, as the producer stated it.
+    facts: Observation
     observation: Text = ""
     checks: Collection<Check>
     /// The reported macro placement, when the stage reports one.
@@ -893,7 +895,8 @@ action keep_receipt(p: Project, digest: Text, source: Text, facts: json.Value) {
             }
             if let observation = std.json_field(stage, "observations") {
                 held.observed = observation_kind_of(std.json_text(observation, "scope"))
-                held.observation = observation_said(observed_of(observation))
+                held.facts = observed_of(observation)
+                held.observation = observation_said(held.facts)
             }
             if let placement = std.json_field(stage, "placement") {
                 held.placed = true
@@ -1008,7 +1011,7 @@ fn number_said(value: Option<json.Value>) -> Text {
         .none => "",
         .some(held) => match held {
             .string(text) => text,
-            .number(number) => "",
+            .number(number) => number.to_text(),
             .object(fields) => "",
             .array(items) => "",
             .bool(flag) => "",
@@ -1815,6 +1818,16 @@ fn dependency_words(kind: DependencyKind) -> Text {
     if kind == .build {
         "Build dependency"
     } else if kind == .verification { "Verification dependency" } else { "Data dependency" }
+}
+
+fn comparison_words(value: Comparison) -> Text {
+    if value == .characterization { "Backend characterization" } else { "Exact comparison" }
+}
+
+fn outcome_words(value: Outcome) -> Text {
+    if value == .expected_refusal {
+        "Expected refusal; no completed result"
+    } else { "Completed simulation" }
 }
 
 fn observation_words(kind: ObservationKind) -> Text {

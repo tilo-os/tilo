@@ -679,6 +679,21 @@ template view stage_body(p: Project, r: Option<Receipt>, s: Stage) {
             ui.Property("Observation", observation_words(s.observed))
         }
         ui.Property("Original receipt artifact", s.original_receipt_artifact)
+        if let digest = declared_digest(r, s.original_receipt_artifact) {
+            ui.Property("Declared artifact SHA-256", digest)
+        }
+        if s.placed and s.database_artifact != "" {
+            ui.Property("Placement database artifact", s.database_artifact)
+            if let digest = declared_digest(r, s.database_artifact) {
+                ui.Property("Declared artifact SHA-256", digest)
+            }
+        }
+        if s.placed and s.observation_artifact != "" {
+            ui.Property("Placement observation artifact", s.observation_artifact)
+            if let digest = declared_digest(r, s.observation_artifact) {
+                ui.Property("Declared artifact SHA-256", digest)
+            }
+        }
         ui.Property("Declared producer SHA-256", s.producer_sha256)
         ui.Property("Declared input identity SHA-256", s.input_identity_sha256)
         for check in s.checks.sort_by(c -> c.name) {
@@ -696,8 +711,79 @@ template view stage_body(p: Project, r: Option<Receipt>, s: Stage) {
             }
         }
     }
+    if states_facts(s.observed) {
+        stage_facts(s.facts)
+    }
     if s.placed {
         placement_body(p, r, s)
+    }
+}
+
+/// The SHA-256 a receipt declares for one artifact, when it names one.
+fn declared_digest(r: Option<Receipt>, name: Text) -> Option<Text> {
+    if let held = r {
+        if name != "" {
+            if let digest = artifact_digest(held, name) {
+                if digest != "" {
+                    return .some(digest)
+                }
+            }
+        }
+    }
+    .none
+}
+
+/// Whether a stage's observation kind states numerical facts of its own.
+fn states_facts(kind: ObservationKind) -> Bool {
+    kind == .cpu_reference
+        or kind == .rtl_simulation
+        or kind == .generic_synthesis
+        or kind == .library_physical
+}
+
+/// The facts one observation states, in the app's words: a fact it does not report is absent.
+view stage_facts(o: Observation) {
+    ui.Section(title: "Reported numerical observation") {
+        ui.PropertyList {
+            if o.kind == .cpu_reference {
+                ui.Property("Comparison contract", comparison_words(o.comparison))
+                ui.Property("Compared words", "{o.compared_words}")
+                ui.Property("Differing words", "{o.differing_words}")
+                if o.output_sha256 != "" {
+                    ui.Property("Reported accepted output SHA-256", o.output_sha256)
+                }
+            } else if o.kind == .rtl_simulation {
+                ui.Property("Reported simulation outcome", outcome_words(o.outcome))
+                ui.Property("Expected refusals observed", "{o.refused_inputs}")
+                ui.Property("Observed RTL simulation cycles", "{o.cycles}")
+                ui.Property("Accepted inputs", "{o.accepted_inputs}")
+                ui.Property("Accepted outputs", "{o.accepted_outputs}")
+                if o.output_sha256 != "" {
+                    ui.Property("Reported accepted output SHA-256", o.output_sha256)
+                }
+            } else if o.kind == .generic_synthesis {
+                ui.Property("Generic logic cells", "{o.logic_cells}")
+                ui.Property("Logical memory bits", "{o.logical_memory_bits}")
+            } else if o.kind == .library_physical {
+                if o.library != "" {
+                    ui.Property("Declared library", o.library)
+                }
+                if o.clock_constraint_ns != "" {
+                    ui.Property("Declared clock constraint (ns)", o.clock_constraint_ns)
+                }
+                if o.setup_slack_ns != "" {
+                    ui.Property("Estimated setup slack (ns)", o.setup_slack_ns)
+                }
+                if o.hold_slack_ns != "" {
+                    ui.Property("Estimated hold slack (ns)", o.hold_slack_ns)
+                }
+                ui.Property("Routed signal nets", "{o.routed_signal_nets}")
+                ui.Property("Reported router violations", "{o.router_violations}")
+                if o.library_area_um2 != "" {
+                    ui.Property("Mapped library area estimate (µm²)", o.library_area_um2)
+                }
+            }
+        }
     }
 }
 

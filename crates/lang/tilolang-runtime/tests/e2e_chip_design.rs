@@ -37,6 +37,8 @@ mod cases {
         include_str!("../../../engines/tilo-chip-design-engine/fixtures/q4k-superblock.json");
     const RMS: &str =
         include_str!("../../../engines/tilo-chip-design-engine/fixtures/operators/rms-norm.json");
+    const FLOW: &str =
+        include_str!("../../../engines/tilo-chip-design-engine/fixtures/evidence-flow.json");
 
     /// The device's answer, from the engine a session registers for this app: the real checks,
     /// not a stand-in. Every ask it was sent is kept, and it can decline, as a device whose
@@ -207,6 +209,20 @@ mod cases {
             window
         }
 
+        /// One stage's own page, as a person opens it.
+        fn stage_page(&self, stage: &ResourceRef) -> ViewInstance {
+            let mut page = self
+                .rt
+                .open_view(
+                    &me(),
+                    &self.app.view("stage_page"),
+                    vec![Value::resource(stage)],
+                )
+                .unwrap_or_else(|e| panic!("stage page: {e}"));
+            page.set_lazy_rows(false).unwrap();
+            page
+        }
+
         fn add_operator(
             &self,
             node: &str,
@@ -309,6 +325,25 @@ mod cases {
 
     fn holds(tree: &UiNode, words: &str) -> bool {
         labels(tree).iter().any(|value| value.contains(words))
+    }
+
+    /// The properties a page states, each by its name and its value.
+    fn properties(tree: &UiNode) -> Vec<(String, String)> {
+        of_kind(tree, "ui.Property")
+            .into_iter()
+            .map(|node| (text_prop(node, "label"), text_prop(node, "value")))
+            .collect()
+    }
+
+    /// The value a page states for one property, which it states once.
+    fn fact(properties: &[(String, String)], name: &str) -> String {
+        let found: Vec<&String> = properties
+            .iter()
+            .filter(|(label, _)| label == name)
+            .map(|(_, value)| value)
+            .collect();
+        assert_eq!(found.len(), 1, "{name}: {properties:?}");
+        found[0].clone()
     }
 
     #[test]
@@ -503,6 +538,97 @@ mod cases {
         assert_eq!(c.text(&c.root, "macro"), c.text(&macro_ref, "slot"));
         let window = c.window();
         assert!(holds(window.tree(), "sram_1rw"));
+    }
+
+    #[test]
+    fn a_flow_stage_shows_the_facts_it_reports_and_the_artifacts_it_names() {
+        let c = Chip::new();
+        let hash = |byte: &str| byte.repeat(64);
+        c.receipt(&flow_with_facts());
+        let receipts = c.records(&c.root, "verifications");
+        let r = &receipts[0];
+        assert!(c.flag(r, "flow"));
+        let stages = c.records(r, "stages");
+        let mut by_key = BTreeMap::new();
+        for stage in &stages {
+            by_key.insert(c.text(stage, "key"), stage);
+        }
+
+        let cpu = properties(c.stage_page(by_key["cpu"]).tree());
+        assert_eq!(fact(&cpu, "Comparison contract"), "Backend characterization");
+        assert_eq!(fact(&cpu, "Compared words"), "8");
+        assert_eq!(fact(&cpu, "Differing words"), "1");
+        assert_eq!(fact(&cpu, "Reported accepted output SHA-256"), hash("a"));
+        assert!(cpu.contains(&("Original receipt artifact".to_owned(), "cpu.json".to_owned())));
+        assert!(cpu.contains(&("Declared artifact SHA-256".to_owned(), hash("1"))));
+
+        let rtl = properties(c.stage_page(by_key["rtl"]).tree());
+        assert_eq!(fact(&rtl, "Reported simulation outcome"), "Completed simulation");
+        assert_eq!(fact(&rtl, "Expected refusals observed"), "0");
+        assert_eq!(fact(&rtl, "Observed RTL simulation cycles"), "1200");
+        assert_eq!(fact(&rtl, "Accepted inputs"), "8");
+        assert_eq!(fact(&rtl, "Accepted outputs"), "8");
+        assert_eq!(fact(&rtl, "Reported accepted output SHA-256"), hash("a"));
+        assert!(rtl.contains(&("Declared artifact SHA-256".to_owned(), hash("2"))));
+
+        let refused = properties(c.stage_page(by_key["rtl-refused"]).tree());
+        assert_eq!(
+            fact(&refused, "Reported simulation outcome"),
+            "Expected refusal; no completed result"
+        );
+        assert_eq!(fact(&refused, "Expected refusals observed"), "3");
+        assert_eq!(fact(&refused, "Accepted outputs"), "0");
+        assert!(refused.contains(&("Declared artifact SHA-256".to_owned(), hash("3"))));
+
+        let synth = properties(c.stage_page(by_key["synth"]).tree());
+        assert_eq!(fact(&synth, "Generic logic cells"), "80");
+        assert_eq!(fact(&synth, "Logical memory bits"), "256");
+        assert!(synth.contains(&("Declared artifact SHA-256".to_owned(), hash("4"))));
+
+        let physical = c.stage_page(by_key["physical"]);
+        let facts = properties(physical.tree());
+        assert_eq!(fact(&facts, "Declared library"), "Synthetic research library");
+        assert_eq!(fact(&facts, "Declared clock constraint (ns)"), "6");
+        assert_eq!(fact(&facts, "Estimated setup slack (ns)"), "0.9");
+        assert_eq!(fact(&facts, "Estimated hold slack (ns)"), "0.04");
+        assert_eq!(fact(&facts, "Routed signal nets"), "40");
+        assert_eq!(fact(&facts, "Reported router violations"), "0");
+        assert_eq!(fact(&facts, "Mapped library area estimate (µm²)"), "120");
+        assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("5"))));
+        assert!(facts.contains(&("Placement database artifact".to_owned(), "db.h5".to_owned())));
+        assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("6"))));
+        assert!(
+            facts.contains(&("Placement observation artifact".to_owned(), "report.json".to_owned()))
+        );
+        assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("7"))));
+        assert!(holds(physical.tree(), "Reported numerical observation"));
+
+        // A stage that reports no observation states none of the facts.
+        let prepared = c.stage_page(by_key["prepared"]);
+        let none = properties(prepared.tree());
+        assert!(
+            !holds(prepared.tree(), "Reported numerical observation"),
+            "a stage that reports no observation shows no facts section"
+        );
+        for name in [
+            "Comparison contract",
+            "Reported simulation outcome",
+            "Generic logic cells",
+            "Declared library",
+            "Routed signal nets",
+            "Placement database artifact",
+            "Placement observation artifact",
+        ] {
+            assert!(
+                !none.iter().any(|(label, _)| label == name),
+                "{name}: {none:?}"
+            );
+        }
+        assert!(none.contains(&(
+            "Original receipt artifact".to_owned(),
+            "prepared.json".to_owned()
+        )));
+        assert!(none.contains(&("Declared artifact SHA-256".to_owned(), hash("9"))));
     }
 
     #[test]
@@ -868,6 +994,79 @@ mod cases {
             },
         })
         .to_string()
+    }
+
+    /// The repository's evidence flow, with an observation of each kind, a completed and a
+    /// refused RTL simulation, a stage that reports none, a placement, and one artifact digest
+    /// of its own for each name the receipt holds.
+    fn flow_with_facts() -> String {
+        let hash = |byte: &str| byte.repeat(64);
+        let mut receipt: serde_json::Value = serde_json::from_str(FLOW).unwrap();
+        receipt["artifact_sha256"] = serde_json::json!({
+            "cpu.json": hash("1"),
+            "rtl.json": hash("2"),
+            "rtl-refused.json": hash("3"),
+            "synth.json": hash("4"),
+            "physical.json": hash("5"),
+            "db.h5": hash("6"),
+            "report.json": hash("7"),
+            "next.json": hash("8"),
+            "prepared.json": hash("9"),
+        });
+        {
+            let flow = &mut receipt["evidence_flow"];
+            let stages = flow["stages"].as_array_mut().unwrap();
+            stages.push(serde_json::json!({
+                "id": "prepared",
+                "title": "Synthetic prepared inputs",
+                "status": "passed",
+                "original_receipt_artifact": "prepared.json",
+                "producer_sha256": hash("a"),
+                "input_identity_sha256": hash("a"),
+                "checks": {"synthetic_observation": "passed"},
+                "limitations": ["Synthetic contract fixture; not an actual executed design"],
+            }));
+            stages.push(serde_json::json!({
+                "id": "rtl-refused",
+                "title": "Synthetic refused simulation",
+                "status": "passed",
+                "original_receipt_artifact": "rtl-refused.json",
+                "producer_sha256": hash("a"),
+                "input_identity_sha256": hash("a"),
+                "checks": {"synthetic_observation": "passed"},
+                "limitations": ["Synthetic contract fixture; not an actual executed design"],
+                "observations": {
+                    "scope": "rtl_simulation",
+                    "outcome": "expected_refusal",
+                    "refused_inputs": 3,
+                    "cycles": 1200,
+                    "accepted_inputs": 0,
+                    "accepted_outputs": 0,
+                    "output_sha256": hash("a"),
+                },
+            }));
+            for stage in stages.iter_mut() {
+                if stage["id"] == "physical" {
+                    stage["placement"] = serde_json::json!({
+                        "database_artifact": "db.h5",
+                        "observation_artifact": "report.json",
+                        "dbu_per_micron": 1000,
+                        "die_dbu": [0, 0, 100000, 100000],
+                        "total_instances": 1,
+                        "omitted_instances": 0,
+                        "macros": [{
+                            "id": "m1",
+                            "name": "SRAM0",
+                            "master": "sram_1rw",
+                            "orientation": "R0",
+                            "status": "placed",
+                            "bounds_dbu": [0, 0, 1000, 2000],
+                        }],
+                    });
+                }
+            }
+        }
+        receipt.to_string()
     }
 
     fn study() -> String {

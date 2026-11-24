@@ -484,6 +484,9 @@ d-vxt23uic = Grenzen
 
 d-zistzyfl = Beobachtet
 
+d-ff56mklf = Fakten
+    .doc = Was die Beobachtung gemeldet hat, wie der Produzent es angegeben hat.
+
 d-4nxr5eoq = Beobachtung
 
 d-vqhz7zzv = Prüfungen
@@ -1398,6 +1401,9 @@ d-j65hkz24 = Flusskörper
     .w-reported-stage-result = Gemeldetes Stufenergebnis
     .w-observation = Beobachtung
     .w-original-receipt-artifact = Originalbeleg-Artefakt
+    .w-declared-artifact-sha-256 = Angegebenes Artefakt SHA-256
+    .w-placement-database-artifact = Platzierungsdatenbank-Artefakt
+    .w-placement-observation-artifact = Platzierungsbeobachtungs-Artefakt
     .w-declared-producer-sha-256 = Angegebener Hersteller SHA-256
     .w-scope-limitation = Grenze des Umfangs
     .w-declared-dependency = Angegebene Abhängigkeit
@@ -1418,10 +1424,34 @@ d-hus44a4k = Nachweisstufenkarte
 d-sze4ff2m = Unterflusskarte
     .w-subflow-reference = Verweis auf einen Unterfluss
 
+d-b6xciujw = Stufenfakten
+    .w-reported-numerical-observation = Gemeldete numerische Beobachtung
+    .w-comparison-contract = Vergleichsvertrag
+    .w-compared-words = Verglichene Wörter
+    .w-differing-words = Abweichende Wörter
+    .w-reported-accepted-output-sha-256 = Gemeldete übernommene Ausgabe SHA-256
+    .w-reported-simulation-outcome = Gemeldetes Ergebnis der Simulation
+    .w-expected-refusals-observed = Beobachtete erwartete Ablehnungen
+    .w-observed-rtl-simulation-cycles = Beobachtete Zyklen der RTL-Simulation
+    .w-accepted-inputs = Übernommene Eingaben
+    .w-accepted-outputs = Übernommene Ausgaben
+    .w-generic-logic-cells = Generische Logikzellen
+    .w-logical-memory-bits = Logische Speicherbits
+    .w-declared-library = Angegebene Bibliothek
+    .w-declared-clock-constraint-ns = Angegebene Taktvorgabe (ns)
+    .w-estimated-setup-slack-ns = Geschätzte Setup-Reserve (ns)
+    .w-estimated-hold-slack-ns = Geschätzte Hold-Reserve (ns)
+    .w-routed-signal-nets = Verlegte Signalnetze
+    .w-reported-router-violations = Gemeldete Verstöße des Routers
+    .w-mapped-library-area-estimate-m = Geschätzte Fläche der abgebildeten Bibliothek (µm²)
+
 d-n622kuhe = Stufenseite
     .w-reported-stage-result = Gemeldetes Stufenergebnis
     .w-observation = Beobachtung
     .w-original-receipt-artifact = Originalbeleg-Artefakt
+    .w-declared-artifact-sha-256 = Angegebenes Artefakt SHA-256
+    .w-placement-database-artifact = Platzierungsdatenbank-Artefakt
+    .w-placement-observation-artifact = Platzierungsbeobachtungs-Artefakt
     .w-declared-producer-sha-256 = Angegebener Hersteller SHA-256
     .w-declared-input-identity-sha-256 = Angegebene Eingabeidentität SHA-256
     .w-scope-limitation = Grenze des Umfangs
