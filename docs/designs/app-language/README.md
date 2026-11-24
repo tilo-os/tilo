@@ -420,6 +420,19 @@ Every view of `std` is one, so `std.list(...)` inside a view is that view's own 
 a template when it is written `template view`, or when it takes type parameters or takes view
 state, a function or a view (`template.rs`).
 
+A view that shows a secret or a code heads its body with `protect capture`:
+
+```
+view code(a: Account) {
+    protect capture
+    text(a.code)
+}
+```
+
+Wherever the view is shown — its window, a view showing it, a template expanding it, a shared
+screen, the web page, a capture an agent takes — a capture or a stream leaves it out. The view's
+metadata carries `capture_protected`, and so does every view showing it or that it is a row of.
+
 ## How it runs
 
 - Code compiles to wasm and runs sandboxed. Authority follows authorship: what code may do is

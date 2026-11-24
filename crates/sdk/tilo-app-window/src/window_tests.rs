@@ -107,8 +107,9 @@ fn titled_page() -> Vec<ToUi> {
             target: doc(),
             tree: page,
             front: None,
-        
-            capture_protected: false,},
+
+            capture_protected: false,
+        },
         ToUi::Bound {
             level: Level::Root,
             key: "title".to_owned(),
@@ -408,8 +409,9 @@ fn opened_note(id: &str, title: &str) -> Vec<ToUi> {
             target: note(id),
             tree: page,
             front: Some(wire::Front::Input),
-        
-            capture_protected: false,},
+
+            capture_protected: false,
+        },
         ToUi::Bound {
             level: Level::Detail,
             key: "title".to_owned(),
@@ -542,8 +544,9 @@ fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
         },
         tree: UiNode::empty("ui.NoSuchComponent", "root"),
         front: None,
-    
-        capture_protected: false,}];
+
+        capture_protected: false,
+    }];
     app.send(wire::encode_batch(&unknown).expect("encodes"))
         .expect("sends");
     assert!(window.receive());
@@ -767,8 +770,9 @@ fn keyed_menu(key: &str) -> Vec<ToUi> {
         target: doc(),
         tree: shell,
         front: None,
-    
-        capture_protected: false,}]
+
+        capture_protected: false,
+    }]
 }
 
 #[test]
@@ -883,8 +887,9 @@ fn plain_page() -> Vec<ToUi> {
         target: doc(),
         tree: UiNode::empty("ui.NavShell", "shell"),
         front: None,
-    
-        capture_protected: false,}]
+
+        capture_protected: false,
+    }]
 }
 
 /// The actions the window asked the app to run, as the app heard them.
@@ -1123,8 +1128,9 @@ fn a_press_runs_the_action_of_the_item_the_keyboard_is_on() {
         target: doc(),
         tree: page,
         front: None,
-    
-        capture_protected: false,}];
+
+        capture_protected: false,
+    }];
     open.extend(page_open);
     let (mut app, mut harness) = drawn(&open);
     harness
@@ -1253,8 +1259,9 @@ fn bound_page(kind: &str, props: &[(&str, Value)], value: Value) -> Vec<ToUi> {
             target: doc(),
             tree: page,
             front: None,
-        
-            capture_protected: false,},
+
+            capture_protected: false,
+        },
         ToUi::Bound {
             level: Level::Root,
             key: "field".to_owned(),
@@ -1547,8 +1554,9 @@ fn list_page_keyed(key: &str) -> Vec<ToUi> {
         target: doc(),
         tree: shell,
         front: None,
-    
-        capture_protected: false,}]
+
+        capture_protected: false,
+    }]
 }
 
 /// A shell built anew opens on the screen a new window opens on; the window remembers the column
@@ -1645,8 +1653,9 @@ fn chooser_page(content: Vec<UiNode>) -> Vec<ToUi> {
             target,
             tree: chooser_shell(content),
             front: None,
-        
-            capture_protected: false,},
+
+            capture_protected: false,
+        },
         ToUi::Actions(catalogue_of("New note", None)),
     ]
 }
@@ -1729,8 +1738,9 @@ fn a_one_column_window_whose_body_holds_only_an_empty_state_opens_on_its_sidebar
             },
             tree: chooser_shell(vec![page]),
             front: Some(wire::Front::Input),
-        
-            capture_protected: false,}],
+
+            capture_protected: false,
+        }],
     );
     drawn_window(&mut harness).receive();
     harness.relayout();
@@ -1932,8 +1942,9 @@ fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
         target: doc(),
         tree: root,
         front: None,
-    
-        capture_protected: false,}]);
+
+        capture_protected: false,
+    }]);
     assert!(
         drawn_window(&mut harness).failed().is_none(),
         "the window opened: {:?}",
@@ -1966,8 +1977,9 @@ fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
             target: note("p"),
             tree: project,
             front: None,
-        
-            capture_protected: false,}],
+
+            capture_protected: false,
+        }],
     );
     drawn_window(&mut harness).receive();
     harness.relayout();
@@ -2059,8 +2071,9 @@ fn a_window_showing_an_item_as_its_page_is_named_by_the_item() {
             target: doc(),
             tree: opened,
             front: None,
-        
-            capture_protected: false,}],
+
+            capture_protected: false,
+        }],
     );
     window.receive();
     send(
@@ -2433,8 +2446,9 @@ fn searching_list_page(rows: i64) -> Vec<ToUi> {
             target: doc(),
             tree: shell,
             front: None,
-        
-            capture_protected: false,},
+
+            capture_protected: false,
+        },
         ToUi::Rows {
             level: Level::Root,
             list: "list".to_owned(),
@@ -2572,8 +2586,9 @@ fn action_shell(listing: bool) -> Vec<ToUi> {
             target,
             tree: shell,
             front: None,
-        
-            capture_protected: false,},
+
+            capture_protected: false,
+        },
         ToUi::Actions(catalogue_of("New note", None)),
     ]
 }
@@ -3193,5 +3208,43 @@ fn a_call_picture_is_drawn_where_its_tile_reads_and_forgotten_when_it_stops_show
     assert!(
         ui::live_pictures::get(&slot).is_none(),
         "a tile nobody shows keeps no frame"
+    );
+}
+
+/// A view the app declared `protect capture` for: the window draws it as a secret's, so every
+/// capture leaves it out, and opening a view that declares nothing again makes it capturable.
+#[test]
+fn a_window_showing_a_protected_view_is_withheld_from_captures() {
+    let open = |protected| {
+        vec![ToUi::Open {
+            level: Level::Root,
+            target: doc(),
+            tree: UiNode::empty("stack", "page"),
+            front: None,
+            capture_protected: protected,
+        }]
+    };
+    let (_app, harness) = drawn(&open(true));
+    assert!(
+        harness.capture_protected(),
+        "the window keeps what it shows"
+    );
+
+    let (_app, harness) = drawn(&open(false));
+    assert!(!harness.capture_protected());
+
+    // A detail view that declares it protects the window over what the root view shows.
+    let mut page = open(false);
+    page.push(ToUi::Open {
+        level: Level::Detail,
+        target: doc(),
+        tree: UiNode::empty("stack", "detail"),
+        front: None,
+        capture_protected: true,
+    });
+    let (_app, harness) = drawn(&page);
+    assert!(
+        harness.capture_protected(),
+        "one view of the window is enough"
     );
 }

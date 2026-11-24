@@ -54,6 +54,9 @@ mod on_page;
 #[path = "hosted/typing.rs"]
 mod typing;
 
+#[path = "hosted/capture.rs"]
+mod capture;
+
 #[path = "hosted/controls.rs"]
 mod controls;
 
@@ -112,6 +115,8 @@ const FIELDBOX: &str = "so.tilo.lang.fieldbox";
 const OPENBY: &str = "so.tilo.lang.openby";
 /// The shelf, whose window its own view composes of the toolkit's components.
 const HANDMADE: &str = "so.tilo.lang.handmade";
+/// The authenticator whose view shows a rotating code: a capture or a stream leaves it out.
+const SECRET: &str = "t.totp";
 const VIEWPORT: (u32, u32) = (1280, 800);
 
 /// The resources a window keeps on this device alone, in `dir`: what a window without a session
