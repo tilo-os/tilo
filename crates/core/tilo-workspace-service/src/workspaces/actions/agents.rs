@@ -62,6 +62,30 @@ pub(crate) fn is_the_person(
         || (reaches && caller.device_public_key() == Some(&certificate.device_public_key))
 }
 
+/// Whether the certificate `certificate`, which `caller`'s person signed for the agent acting
+/// through it, grants it `operation` of the server itself (`workspace` `None`): their signature
+/// is their yes, so the agent is not asked again for it. An agent's grant that reaches all of
+/// its person's workspaces makes workspaces ([`tilo_user_identity::AgentScope::makes_workspaces`]);
+/// no certificate grants anything else of the server's own operations, which still ask.
+fn certificate_grants(
+    caller: &Caller,
+    certificate: &DeviceCert,
+    workspace: Option<WorkspaceId>,
+    operation: &Operation<'_>,
+) -> bool {
+    let its_own = caller.device_public_key() == Some(&certificate.device_public_key)
+        && caller.user_public_key() == Some(&certificate.user_public_key)
+        && certificate.capabilities.agent_grant_holds();
+    let makes = matches!(
+        operation.action,
+        tilo_server_protocol::workspaces::CREATE_OWN_WORKSPACE | CREATE_WORKSPACE
+    ) && certificate
+        .capabilities
+        .agent
+        .is_some_and(|scope| scope.makes_workspaces());
+    workspace.is_none() && its_own && makes
+}
+
 /// Whether `caller` acts for the person of its device: that person, or an
 /// agent of theirs. A bot acts for nobody here.
 pub(crate) fn acts_for_its_person(caller: &Caller) -> bool {
@@ -242,7 +266,11 @@ impl Workspaces {
                     operation.label.to_lowercase()
                 ),
             }),
-            Answer::Ask if approved => Ok(()),
+            Answer::Ask
+                if approved || certificate_grants(caller, certificate, workspace_id, operation) =>
+            {
+                Ok(())
+            }
             Answer::Ask => {
                 let place = match workspace_id {
                     Some(id) => self.workspace_name(id).await,

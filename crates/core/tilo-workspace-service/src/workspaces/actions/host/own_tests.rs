@@ -699,8 +699,8 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    // Its person allows what their agents ask of them.
-    Answering::approving();
+    // Nobody answers: the grant's own scope, which its person signed, is their yes to making a
+    // workspace.
     let home = open(workspaces).await;
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -805,6 +805,81 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     };
     let listed: Vec<Value> = serde_json::from_value(output.value.unwrap()).unwrap();
     assert_eq!(listed.len(), 1, "{listed:?}");
+    server.shutdown().await;
+}
+
+/// An agent's certificate is its person's yes only to what it grants. A grant for one workspace
+/// grants making none, so its agent asks before making its person's own workspace, and with
+/// nothing of theirs here to keep the question in, it is refused for that. A grant that makes
+/// workspaces makes one without asking, and still asks before deleting it: its certificate grants
+/// no deleting, and the question waits in the workspace it made.
+#[tokio::test]
+async fn an_agent_asks_before_a_host_operation_its_certificate_does_not_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let home = open(workspaces).await;
+    let host = ServiceWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(workspaces, &home, person).await;
+    let as_agent = |cert: &DeviceCert| {
+        Caller::authenticated(cert.user_public_key, cert.device_public_key).delegated_to("grant")
+    };
+
+    let narrow = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16])),
+    );
+    let refused = on_host(&host, &narrow, &as_agent(&narrow), own_request(json!({}))).await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason })
+            if reason.contains("could not be kept for them to answer")),
+        "{refused:?}"
+    );
+    assert!(
+        workspaces.own_workspaces_of(&person).is_empty(),
+        "nothing is made"
+    );
+
+    let all = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let made = on_host(&host, &all, &as_agent(&all), own_request(json!({})))
+        .await
+        .unwrap();
+    let ReceiptStatus::Completed { output } = made.status else {
+        panic!("its grant makes its person's own workspace at once: {made:?}");
+    };
+    let created: CreatedWorkspace = serde_json::from_value(output.value.unwrap()).unwrap();
+    let workspace = created.workspace.workspace.clone();
+    assert!(workspaces.owns(&person, &workspace));
+
+    let deleting = delete_request(&workspace);
+    let waits = on_host(&host, &all, &as_agent(&all), deleting)
+        .await
+        .unwrap();
+    assert!(
+        !matches!(waits.status, ReceiptStatus::Completed { .. }),
+        "deleting waits for its person: {waits:?}"
+    );
+    let asked = tilo_actions::remote::asked::AskedRecords::asked_of(
+        &*workspaces.asked_records().unwrap(),
+        &person,
+    );
+    assert!(
+        asked.iter().any(|asked| asked.workspace == workspace),
+        "the question waits in the workspace it made: {asked:?}"
+    );
+    assert!(
+        workspaces.owns(&person, &workspace),
+        "nothing is deleted before a yes"
+    );
     server.shutdown().await;
 }
 
