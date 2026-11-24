@@ -115,6 +115,28 @@ pub async fn endpoint(key: &SigningKey) -> Endpoint {
         .unwrap()
 }
 
+/// Ask `read` until it answers `Ok`; what it answered last is the failure.
+pub fn until<T>(what: &str, mut read: impl FnMut() -> Result<T, String>) -> T {
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(60))
+        .expect("a minute from now is on the clock");
+    loop {
+        match read() {
+            Ok(value) => return value,
+            Err(last) if Instant::now() > deadline => panic!("{what}: {last}"),
+            Err(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+}
+
+/// What the phone's view shows first: its device, once the daemon answers what it reads. The
+/// person asks the phone to sign in from there.
+pub fn shown(phone: &tilo_runtime::in_process::Device) -> tilo_runtime::in_process::Devices {
+    until("the phone's device answers what its view reads", || {
+        phone.devices().map_err(|error| format!("{error:#}"))
+    })
+}
+
 /// The person's laptop, serving one ticket: the workspace service's stand-in device, which the
 /// phone's tests and the flow's share without reaching into the sync engine.
 pub use tilo_workspace_service::device_tickets::test_support::Issuing;
