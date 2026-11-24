@@ -1060,10 +1060,10 @@ d-o2occ235 = Downloads
 
 d-cjw2xcfs = Download
     .noun = { $count ->
-    .doc = Eine Datei, die eine Seite herunterlädt: woher sie kommt, wohin sie ging und wie weit sie ist.
         [one] Download
        *[other] Downloads
     }
+    .doc = Eine Datei, die eine Seite herunterlädt: woher sie kommt, wohin sie ging und wie weit sie ist.
 
 d-anfisgsq = Übertragung
     .doc = Die Nummer des Motors für die Übertragung, die nennt, was die Person mit ihr tut.
@@ -1210,10 +1210,10 @@ d-znzxwmxa = Vorwärts
 
 d-frfmgq2w = Verlaufseintrag
     .noun = { $count ->
-    .doc = Eine Seite im eigenen Verlauf der Seite: wo sie ist, wie sie hieß und die Nummer des Motors für sie, die das Zurück- oder Vorwärtsgehen nennt.
         [one] Verlaufseintrag
        *[other] Verlaufseinträge
     }
+    .doc = Eine Seite im eigenen Verlauf der Seite: wo sie ist, wie sie hieß und die Nummer des Motors für sie, die das Zurück- oder Vorwärtsgehen nennt.
 
 d-eyk6uw4k = Eintrag
 
@@ -1254,10 +1254,10 @@ d-252payib = Seite
 
 d-qeovjxlz = Seiteninfo
     .noun = { $count ->
-    .doc = Verbindung, Berechtigungen und gespeicherte Daten einer Website, wie das Fenster der Seite sie zuletzt gelesen hat.
         [one] Seiteninfo
        *[other] Seiteninfos
     }
+    .doc = Verbindung, Berechtigungen und gespeicherte Daten einer Website, wie das Fenster der Seite sie zuletzt gelesen hat.
 
 d-hrkhpkbd = Ursprung
 

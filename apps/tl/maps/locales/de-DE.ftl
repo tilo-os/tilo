@@ -8,6 +8,9 @@ d-so-tilo-maps-keywords = map, navigation, directions, route, openstreetmap, osm
 d-cg37pq4z = Ort
     .doc = Ein Ort, den die Karte kennt: einer, den eine Suche gefunden hat, einer, den eine Person behalten hat, einer, den ein Agent übernommen hat.
     .noun = { $count ->
+        [one] Ort
+       *[other] Orte
+    }
     .untitled = Ort
 
 d-rcalop4o = Name
@@ -38,6 +41,9 @@ d-cg37pq4z-filter-category = Kategorie
 d-rya6qtgf = Schritt
     .doc = Ein Richtungswechsel einer Route, in der Reihenfolge, in der die Person sie fährt.
     .noun = { $count ->
+        [one] Schritt
+       *[other] Schritte
+    }
 
 d-nfgqw3um = Anweisung
 
@@ -52,6 +58,9 @@ d-rya6qtgf-filter-maneuver = Richtungswechsel
 d-yjofng4o = Route
     .doc = Eine Route, wie die Wegbeschreibung sie fand: wie weit, wie lange, die Linie zum Zeichnen und ihre Richtungswechsel.
     .noun = { $count ->
+        [one] Route
+       *[other] Routen
+    }
 
 d-ymsz4m34 = Verkehrsmittel
 
@@ -93,6 +102,9 @@ d-yjofng4o-filter-to_longitude = Ziel-Längengrad
 d-5ydr2uej = Abschnitt
     .doc = Ein Abschnitt einer Fahrt mit öffentlichen Verkehrsmitteln.
     .noun = { $count ->
+        [one] Abschnitt
+       *[other] Abschnitte
+    }
 
 d-3hgwl46g = Verkehrsmittel
 
@@ -132,6 +144,9 @@ d-5ydr2uej-filter-realtime = Echtzeit
 d-iapaez57 = Fahrt
     .doc = Eine Fahrt, die öffentliche Verkehrsmittel von einem Ort zu einem anderen anbieten.
     .noun = { $count ->
+        [one] Fahrt
+       *[other] Fahrten
+    }
 
 d-xjeu7nif = Abfahrt
 
@@ -150,6 +165,9 @@ d-iapaez57-filter-transfers = Umstiege
 d-unf4oqsm = Abfahrtszeit
     .doc = Wann die Fahrten einer Person abfahren oder wann sie ankommen müssen.
     .noun = { $count ->
+        [one] Abfahrtszeit
+       *[other] Abfahrtszeiten
+    }
 
 d-bv3pklkc = Ankommen bis
 
@@ -163,6 +181,9 @@ d-unf4oqsm-filter-offset_min = Minutenversatz
 d-hnngdhyc = Sehenswürdigkeit
     .doc = Eine Sehenswürdigkeit dort, wo die Person hinschaut, aus OpenStreetMap.
     .noun = { $count ->
+        [one] Sehenswürdigkeit
+       *[other] Sehenswürdigkeiten
+    }
 
 d-kghw4vpb = Name
 
@@ -194,6 +215,9 @@ d-hnngdhyc-filter-longitude = Längengrad
 d-hyiwxese = Suche
     .doc = Eine Suche, die eine Person gemacht hat, neueste zuerst: was das Panel anbietet, bevor sie tippt.
     .noun = { $count ->
+        [one] Suche
+       *[other] Suchen
+    }
 
 d-dozhur5v = Suchbegriff
 
@@ -204,6 +228,9 @@ d-hyiwxese-filter-at = Zeitpunkt
 d-gijd5vfp = Offline-Karte
     .doc = Ein Bereich der Karte, den dieses Gerät für die Offline-Nutzung behält: seine Grenzen, die Stufen, deren Kacheln es behält, und wie weit das Speichern gekommen ist.
     .noun = { $count ->
+        [one] Offline-Karte
+       *[other] Offline-Karten
+    }
 
 d-q2xakaa7 = Name
 
@@ -228,6 +255,9 @@ d-ueltqy2u = Fertig
 d-xlmztacf = Atlas
     .doc = Die Karte des Arbeitsbereichs: die Orte, die sie kennt, die Suchen, die sie gemacht hat, die Wegbeschreibungen, die sie fand, und die Bereiche, die dieses Gerät offline behält.
     .noun = { $count ->
+        [one] Atlas
+       *[other] Atlanten
+    }
 
 d-q3ezxhmv = Orte
     .doc = Jeder Ort, den die Karte kennt: die, die die Person behalten hat, und die, die eine Suche fand.
@@ -284,6 +314,9 @@ d-xlmztacf-filter-traffic = Verkehrslage
 d-ahqfw7eh = Orte
     .doc = Was die Antwort eines Geocoders hält: die Orte, die er fand, oder warum er keine hat.
     .noun = { $count ->
+        [one] Ort
+       *[other] Orte
+    }
 
 d-734zo2xo = Gefunden
 
@@ -292,6 +325,9 @@ d-73qevr6q = Grund
 d-d3y2ubxi = Routen
     .doc = Was die Antwort eines Routendienstes hält: die Routen, die er fand, oder warum er keine hat.
     .noun = { $count ->
+        [one] Route
+       *[other] Routen
+    }
 
 d-q2tnydqa = Gefunden
 
@@ -300,6 +336,9 @@ d-kmhzghib = Grund
 d-b7n4w3zo = Fahrten
     .doc = Was die Antwort eines Fahrplandienstes hält: die Fahrten, die er fand, oder warum er keine hat.
     .noun = { $count ->
+        [one] Fahrt
+       *[other] Fahrten
+    }
 
 d-ix3p2v56 = Gefunden
 
@@ -308,6 +347,9 @@ d-cddmwu37 = Grund
 d-lqxwwiug = Sehenswürdigkeiten
     .doc = Was eine auf einen Ort geöffnete Karte hält: die Sehenswürdigkeiten ringsum oder warum es keine gibt.
     .noun = { $count ->
+        [one] Sehenswürdigkeit
+       *[other] Sehenswürdigkeiten
+    }
 
 d-fsnuwhad = Gefunden
 

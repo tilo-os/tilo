@@ -1591,6 +1591,9 @@ d-dk2iupmd = Erkennungskarte
 d-ndaefmcq = Wartet auf Antwort
     .doc = Was auf das Ja der Person wartet: jeder Aufruf, der es braucht, gelesen aus seinem eigenen Eintrag in den Aufrufen des Arbeitsbereichs.
     .noun = { $count ->
+        [one] Wartet auf Antwort
+       *[other] Wartet auf Antwort
+    }
 
 d-5xjx7oct = Ordner
     .doc = Der gezeigte Ordner, nach seinem Pfad; leer, bis eine Frage nach Dateien fragt.
@@ -1601,6 +1604,9 @@ d-5esxwq2o = Einträge
 d-tlhktser = Aufruf ändern
     .doc = Eine Änderung, die die Person am Aufruf machte, bevor sie ihn zustimmte: ein Feld, nach seinem Pfad in den Argumenten des Aufrufs, und was sie hineinschrieb.
     .noun = { $count ->
+        [one] Aufruf ändern
+       *[other] Aufrufe ändern
+    }
 
 d-r6c6zjdg = Pfad
 

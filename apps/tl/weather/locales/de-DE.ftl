@@ -363,16 +363,6 @@ d-beqyw3ws = Ort speichern
     .w-a-place-lies-between-latitudes-90 = Ein Ort liegt zwischen den Breiten -90 und 90
     .w-a-place-lies-between-longitudes-180 = Ein Ort liegt zwischen den Längen -180 und 180
 
-d-beqyw3ws.doc = Speichert einen Ort, dem eine Person folgt.
-
-d-beqyw3ws.did = speicherte einen Ort
-
-d-beqyw3ws.w-a-place-needs-a-name = Ein Ort braucht einen Namen
-
-d-beqyw3ws.w-a-place-lies-between-latitudes-90 = Ein Ort liegt zwischen den Breiten -90 und 90
-
-d-beqyw3ws.w-a-place-lies-between-longitudes-180 = Ein Ort liegt zwischen den Längen -180 und 180
-
 d-beqyw3ws-name = Name
 
 d-beqyw3ws-latitude = Breite
@@ -391,29 +381,17 @@ d-sqjw6zx2 = Zuerst zeigen
     .doc = Zeigt die Vorhersage eines Ortes zuerst, wann immer die App geöffnet wird.
     .did = wählte den zuerst gezeigten Ort
 
-d-sqjw6zx2.doc = Zeigt die Vorhersage eines Ortes zuerst, wann immer die App öffnet.
-
-d-sqjw6zx2.did = wählte den zuerst gezeigten Ort
-
 d-sqjw6zx2-place = Ort
 
 d-nf7ixh7u = Nach oben
     .doc = Schiebt einen Ort an die Spitze der Liste.
     .w-this-place-is-already-at-the = Dieser Ort steht schon ganz oben
 
-d-nf7ixh7u.doc = Schiebt einen Ort an den Anfang der Liste.
-
-d-nf7ixh7u.w-this-place-is-already-at-the = Dieser Ort steht schon ganz oben
-
 d-nf7ixh7u-place = Ort
 
 d-3a546tol = Ort entfernen
     .doc = Entfernt einen Ort aus der Liste; was davon gelesen wurde, geht mit ihm.
     .did = entfernte einen Ort
-
-d-3a546tol.doc = Entfernt einen Ort aus der Liste; was von ihm gelesen war, geht mit.
-
-d-3a546tol.did = entfernte einen Ort
 
 d-3a546tol-place = Ort
 
@@ -423,28 +401,14 @@ d-ndqwjxtw = Vorhersagen aktualisieren
     .w-there-are-no-places-to-update = Es gibt keine Orte zu aktualisieren
     .w-an-update-is-already-running = Eine Aktualisierung läuft bereits
 
-d-ndqwjxtw.doc = Liest die Vorhersagen erneut: jeden Ort, oder den, den `place` nennt.
-
-d-ndqwjxtw.did = aktualisierte die Vorhersagen
-
-d-ndqwjxtw.w-there-are-no-places-to-update = Es gibt keine Orte zu aktualisieren
-
-d-ndqwjxtw.w-an-update-is-already-running = Eine Aktualisierung läuft bereits
-
 d-ndqwjxtw-place = Ort
 
 d-ebjgu5ua = Aktualisieren beenden
     .doc = Stoppt eine laufende Aktualisierung; die Orte, die sie noch nicht gelesen hatte, behalten, was sie hatten.
 
-d-ebjgu5ua.doc = Beendet eine laufende Aktualisierung.
-
 d-ctbwrcxw = Erneut versuchen
     .doc = Aktualisiert einen Ort, dessen letztes Lesen scheiterte, sobald die Person erneut fragt.
     .did = fragte erneut nach einer Vorhersage
-
-d-ctbwrcxw.doc = Aktualisiert einen Ort, dessen letztes Lesen scheiterte, sobald die Person erneut fragt.
-
-d-ctbwrcxw.did = fragte erneut nach einer Vorhersage
 
 d-ctbwrcxw-place = Ort
 
@@ -452,29 +416,19 @@ d-np2uffp7 = Wetter abholen
     .w-the-place-search-could-not-be = Die Ortssuche ließ sich nicht lesen: { $why }
     .doc = Nimmt, was das letzte Lesen fand: die Messung eines Ortes und seine Stunden und Tage landen zusammen, und die Zeilen der Suche neben dem Feld.
 
-d-np2uffp7.doc = Holt, was das Gerät bisher gelesen hat: die Antwort jedes Ortes, wie sie eintrifft, und was der Dienst dazu sagt.
-
 d-fiih6vhd = Ankommen
     .doc = Das Öffnen des Fensters liest die Orte, deren Vorhersage fehlt oder nicht mehr aktuell ist.
-
-d-fiih6vhd.doc = Das Öffnen des Fensters liest die Orte, deren Vorhersage fehlt oder nicht mehr aktuell ist.
 
 d-cevyiepd = Nach einem Ort suchen
     .doc = Sucht Orte nach Namen: das Fenster fragt den Dienst einmal pro Tippvorgang.
 
-d-cevyiepd.doc = Sucht Orte nach Namen.
-
 d-jblkootf = Suche beenden
     .doc = Leert das Feld und hört auf zu suchen.
-
-d-jblkootf.doc = Leert das Feld und beendet die Suche.
 
 d-jblkootf-reader = Suchender
 
 d-bplcjqoa = Gefundenen hinzufügen
     .doc = Speichert den Ort, den eine Suche fand, an seiner Stelle in der Liste des Gefundenen und zeigt ihn an.
-
-d-bplcjqoa.doc = Speichert den Ort, den eine Suche fand, nach seinem Platz in der Liste des Gefundenen, und zeigt ihn.
 
 d-bplcjqoa-reader = Suchender
 
@@ -483,13 +437,9 @@ d-bplcjqoa-at = Um
 d-uekzr2wm = Gefundenen übernehmen
     .doc = Nimmt die Zeile, die eine Person aus der Suche wählte: speichert den Ort und leert die Suche.
 
-d-uekzr2wm.doc = Nimmt die Zeile, die eine Person aus der Suche wählte: speichert den Ort und leert die Suche.
-
 d-uekzr2wm-reader = Suchender
 
 d-uekzr2wm-choice = Auswahl
-
-d-cnvt7jm5.w-the-weather-service-refused-the-request = Der Wetterdienst hat die Anfrage abgelehnt (HTTP { $status })
 
 d-lh3eadxk = Ort speichern
 

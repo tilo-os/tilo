@@ -953,6 +953,9 @@ d-5ltuj6t2 = Verbunden
 d-ry4nfmba = Verbunden
     .doc = Eine Aufgabe, mit der eine andere zusammenhängt, und wie: `blocks`, `blocked by`, `duplicate of` und so weiter.
     .noun = { $count ->
+        [one] Verbindung
+       *[other] Verbindungen
+    }
 
 d-h62xalud = Aufgabe
     .doc = Die Aufgabe, mit der sie zusammenhängt.
