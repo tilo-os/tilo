@@ -101,22 +101,40 @@ impl Workspace {
     /// Take in every document `other` holds, as sync does: each merged into this one's own.
     /// Whether anything changed here.
     pub fn take_in(&self, other: &Self) -> bool {
-        self.take_in_as(other, None)
+        self.take_in_as(other, None, None)
     }
 
-    /// As [`Self::take_in`], on a device of `person` when one is named: a document sealed to
-    /// readers they are not among reaches it, but its keys do not, so it opens none of it.
-    pub fn take_in_as(&self, other: &Self, person: Option<&str>) -> bool {
+    /// As [`Self::take_in`], on a device of `person` when one is named, whose role in the
+    /// workspace is `role`: a document sealed to readers they are not among reaches it, but its
+    /// keys do not, so it opens none of it. A set naming a role is theirs while their role
+    /// includes it, as its key group follows the workspace's governance.
+    pub fn take_in_as(
+        &self,
+        other: &Self,
+        person: Option<&str>,
+        role: Option<tilo_action_policy::Role>,
+    ) -> bool {
         // A document opens by the reader set its id names (a record's content names it too):
         // every member's, or one of the sets the person is among.
+        let among = |readers: &str, person: &str| {
+            let (named, people) = match readers.strip_prefix(collab_types::ROLE_READERS) {
+                Some(rest) => {
+                    let (named, people) = rest.split_once(',').unwrap_or((rest, ""));
+                    (tilo_action_policy::Role::parse(named), people)
+                }
+                None => (None, readers),
+            };
+            people.split(',').any(|reader| reader == person)
+                || named
+                    .zip(role)
+                    .is_some_and(|(named, held)| held.includes(named))
+        };
         let theirs: std::collections::BTreeSet<String> = other
             .0
             .documents()
             .iter()
             .filter_map(|doc| other.0.readers(doc))
-            .filter(|readers| {
-                person.is_some_and(|person| readers.split(',').any(|reader| reader == person))
-            })
+            .filter(|readers| person.is_some_and(|person| among(readers, person)))
             .map(|readers| collab_types::reader_set_name(&readers))
             .collect();
         let opens = |doc: &str| {
@@ -194,6 +212,9 @@ impl Invoker for Dispatch {
 /// One member's machine: a copy of the workspace and a host over it.
 pub struct Replica {
     pub name: String,
+    /// The person's role in the workspace, which decides the reader sets naming a role that
+    /// this replica opens: none until a test gives one ([`Self::hold`]).
+    role: std::cell::Cell<Option<tilo_action_policy::Role>>,
     pub doc: Workspace,
     pub host: Host,
     /// What moved in the store since [`Self::commit`] last looked.
@@ -243,12 +264,19 @@ impl Replica {
         (
             Self {
                 name: name.to_owned(),
+                role: std::cell::Cell::new(None),
                 doc,
                 host,
                 watch,
             },
             loaded,
         )
+    }
+
+    /// Give this replica's person `role` in the workspace, as its governance would: from now on
+    /// it opens what a reader set naming a role its role includes is sealed to.
+    pub fn hold(&self, role: tilo_action_policy::Role) {
+        self.role.set(Some(role));
     }
 
     /// A second replica of this one's workspace, for `name`, running the same packages.
@@ -299,7 +327,10 @@ impl Replica {
     /// replicas receive each other's changes in is theirs, so what they read must not depend
     /// on it.
     pub fn send_to(&self, other: &Self) {
-        if other.doc.take_in_as(&self.doc, Some(&other.name)) {
+        if other
+            .doc
+            .take_in_as(&self.doc, Some(&other.name), other.role.get())
+        {
             other.host.store().moved();
             let _ = other.watch.take();
         }

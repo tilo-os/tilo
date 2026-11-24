@@ -2,9 +2,12 @@
 //!
 //! A reader set is written as text, the way a workspace's resource store names it in its
 //! document ids (`<readers>/<owner>#<n>`): [`EVERY_MEMBER`] for every member of the workspace, or
-//! the people who read it, each by their root key in lowercase hex, sorted and joined by `,`.
-//! Each set has one key group: every member's is the workspace's own group, and any other set's
-//! is a group of its own ([`reader_group`]) whose keys only its people's devices hold.
+//! the people who read it, each by their root key in lowercase hex, sorted and joined by `,`. A
+//! set may begin with a governance role (`@role:moderator,<people>`): every member whose role
+//! includes it reads it too, whoever holds the role when it is read, so the text never changes
+//! when roles do. Each set has one key group: every member's is the workspace's own group, and
+//! any other set's is a group of its own ([`reader_group`]) whose keys only its readers' devices
+//! hold.
 //!
 //! Content is sealed under its group's keys scoped to the document it belongs to
 //! ([`content_artifact_id`]): the same key never opens another document's content, nor the
@@ -12,10 +15,16 @@
 
 use std::collections::BTreeSet;
 
+/// The governance roles a reader set may name ([`Readers::Role`]).
+pub use tilo_action_policy::Role;
+
 use crate::{ArtifactId, WorkspaceId, op::derived_uuid};
 
 /// The reader set of every member of a workspace: what its own key group reads.
 pub const EVERY_MEMBER: &str = "*";
+
+/// What begins a reader set read by the holders of a role: `@role:<role>`, then its people.
+pub const ROLE_READERS: &str = "@role:";
 
 const CONTENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-content-artifact-v1\0";
 const READER_GROUP_DOMAIN: &[u8] = b"tilo-reader-group-v1\0";
@@ -27,6 +36,34 @@ pub enum Readers {
     EveryMember,
     /// These people, by their root keys, and no one else.
     People(BTreeSet<[u8; 32]>),
+    /// Every member whose governance role includes `role` ([`Role::includes`]) at the moment
+    /// the set is read, and these people (none, or more).
+    Role {
+        role: Role,
+        people: BTreeSet<[u8; 32]>,
+    },
+}
+
+/// Who a reader set other than every member's names: its people, and the role whose holders
+/// read it beside them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NamedReaders {
+    pub role: Option<Role>,
+    pub people: BTreeSet<[u8; 32]>,
+}
+
+impl NamedReaders {
+    /// Whether the person of root key `person`, whose role in the workspace is `role` (none
+    /// for one who is no member), reads the set: they are one of its people, or a member whose
+    /// role includes the set's.
+    #[must_use]
+    pub fn includes(&self, person: &[u8; 32], role: Option<Role>) -> bool {
+        self.people.contains(person)
+            || self
+                .role
+                .zip(role)
+                .is_some_and(|(wanted, held)| held.includes(wanted))
+    }
 }
 
 impl Readers {
@@ -38,6 +75,24 @@ impl Readers {
         if text == EVERY_MEMBER {
             return Some(Self::EveryMember);
         }
+        if let Some(rest) = text.strip_prefix(ROLE_READERS) {
+            let (key, people) = rest.split_once(',').unwrap_or((rest, ""));
+            let role = Role::parse(key).filter(|role| role.key() == key)?;
+            let people = if people.is_empty() {
+                BTreeSet::new()
+            } else {
+                match Self::parse_people(people)? {
+                    Self::People(people) => people,
+                    _ => return None,
+                }
+            };
+            return Some(Self::Role { role, people });
+        }
+        Self::parse_people(text)
+    }
+
+    /// One person or more, sorted, each once, as [`Self::parse`] reads them.
+    fn parse_people(text: &str) -> Option<Self> {
         let mut people = BTreeSet::new();
         let mut last: Option<[u8; 32]> = None;
         for person in text.split(',') {
@@ -62,12 +117,46 @@ impl Readers {
         (!people.is_empty()).then_some(Self::People(people))
     }
 
+    /// The set of the holders of `role` and of `people`.
+    #[must_use]
+    pub fn role(role: Role, people: impl IntoIterator<Item = [u8; 32]>) -> Self {
+        Self::Role {
+            role,
+            people: people.into_iter().collect(),
+        }
+    }
+
     /// The set's text: what a document id and [`reader_group`] name it by.
     #[must_use]
     pub fn text(&self) -> String {
+        let people = |people: &BTreeSet<[u8; 32]>| {
+            people.iter().map(hex::encode).collect::<Vec<_>>().join(",")
+        };
         match self {
             Self::EveryMember => EVERY_MEMBER.to_owned(),
-            Self::People(people) => people.iter().map(hex::encode).collect::<Vec<_>>().join(","),
+            Self::People(named) => people(named),
+            Self::Role { role, people: named } if named.is_empty() => {
+                format!("{ROLE_READERS}{}", role.key())
+            }
+            Self::Role { role, people: named } => {
+                format!("{ROLE_READERS}{},{}", role.key(), people(named))
+            }
+        }
+    }
+
+    /// Who the set names, when it is not every member's.
+    #[must_use]
+    pub fn named(&self) -> Option<NamedReaders> {
+        match self {
+            Self::EveryMember => None,
+            Self::People(people) => Some(NamedReaders {
+                role: None,
+                people: people.clone(),
+            }),
+            Self::Role { role, people } => Some(NamedReaders {
+                role: Some(*role),
+                people: people.clone(),
+            }),
         }
     }
 }
@@ -78,7 +167,7 @@ impl Readers {
 pub fn reader_group(workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
     match Readers::parse(readers)? {
         Readers::EveryMember => Some(workspace),
-        Readers::People(_) => Some(WorkspaceId::from_uuid(derived_uuid(
+        Readers::People(_) | Readers::Role { .. } => Some(WorkspaceId::from_uuid(derived_uuid(
             READER_GROUP_DOMAIN,
             &[&workspace.to_string(), readers],
         ))),
@@ -171,6 +260,25 @@ mod tests {
         assert_eq!(reader_group(workspace, &text), Some(group));
         assert_ne!(reader_group(WorkspaceId::new(), &text), Some(group));
         assert_eq!(reader_group(workspace, &reversed), None);
+
+        // A role's set is its own text, group and scope, read back as written.
+        let moderators = Readers::role(Role::Moderator, [ada]);
+        let held = moderators.text();
+        assert_eq!(held, format!("@role:moderator,{}", hex::encode(ada)));
+        assert_eq!(Readers::parse(&held), Some(moderators));
+        let alone = Readers::role(Role::Moderator, []);
+        assert_eq!(alone.text(), "@role:moderator");
+        assert_eq!(Readers::parse("@role:moderator"), Some(alone));
+        assert_eq!(Readers::parse("@role:Moderator"), None);
+        assert_eq!(Readers::parse("@role:janitor"), None);
+        assert_ne!(reader_group(workspace, &held), Some(group));
+        assert_ne!(reader_group(workspace, &held), Some(workspace));
+        let named = Readers::parse(&held).and_then(|set| set.named()).unwrap();
+        assert!(named.includes(&ada, None), "its people read it");
+        assert!(named.includes(&bob, Some(Role::Moderator)), "so does a moderator");
+        assert!(named.includes(&bob, Some(Role::Owner)), "and the owner, whose role includes it");
+        assert!(!named.includes(&bob, Some(Role::Editor)), "an editor does not");
+        assert!(!named.includes(&bob, None), "nor does one who is no member");
 
         let id = workspace.to_string();
         let scope = content_artifact_id(&id, &text, "doc");

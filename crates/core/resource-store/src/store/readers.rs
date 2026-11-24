@@ -176,15 +176,26 @@ struct Author {
 }
 
 /// The reader set of a resource whose kind's rule is `rule`, made by `author`, with `fields`:
-/// [`collab_types::EVERY_MEMBER`], or each person it names, sorted, each once. A person reads on
-/// each of their devices; an agent's record is the person's it acts for.
-///
+/// [`collab_types::EVERY_MEMBER`], or each person it names, sorted, each once, after the role
+/// whose holders read it beside them when the rule names one (`@role:moderator,<author>`). Who
+/// holds that role is never written here: the set's key group follows the workspace's governance.
+/// A person reads on each of their devices; an agent's record is the person's it acts for.
 fn readers_by_rule(
     rule: &ReaderRule,
     author: &Author,
     fields: &BTreeMap<String, Cell>,
 ) -> Result<String, String> {
     let mut people: Vec<String> = match rule {
+        ReaderRule::AuthorAnd { role } => {
+            let author = author
+                .person()
+                .ok_or("its author reads it, and no person made it")?;
+            return Ok(format!(
+                "{}{},{author}",
+                collab_types::ROLE_READERS,
+                role.key()
+            ));
+        }
         ReaderRule::Author { until } => {
             if until.as_deref().is_some_and(|until| holds(fields, until)) {
                 return Ok(collab_types::EVERY_MEMBER.to_owned());

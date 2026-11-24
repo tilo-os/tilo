@@ -284,18 +284,20 @@ pub trait KeyDirectory: collab_types::signer::MaybeSendSync {
         workspace: WorkspaceId,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>>;
-    /// The devices of `people` among those that hold `workspace`'s keys at wall-clock `now`
-    /// ([`Self::allowed_devices`]): who holds the keys of a group only those people read
-    /// ([`collab_types::reader_group`]). `None` while this device cannot tell, as there; a
-    /// directory that names no one's devices answers `None` always, and so admits and removes
-    /// no one in such a group.
+    /// The devices of the readers `named` names among those that hold `workspace`'s keys at
+    /// wall-clock `now` ([`Self::allowed_devices`]): who holds the keys of a group only they read
+    /// ([`collab_types::reader_group`]) — its people, and every member whose role includes the
+    /// role it names, as the workspace's governance has them at `now`. Never a device outside
+    /// [`Self::allowed_devices`], so no group of a workspace reaches a device the workspace does
+    /// not admit. `None` while this device cannot tell, as there; a directory that names no one's
+    /// devices answers `None` always, and so admits and removes no one in such a group.
     fn reader_devices(
         &self,
         workspace: WorkspaceId,
-        people: &BTreeSet<[u8; 32]>,
+        named: &collab_types::NamedReaders,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let _ = (workspace, people, now);
+        let _ = (workspace, named, now);
         None
     }
     /// The [`tilo_identity::policy_change`] epoch (or a test's own) when

@@ -83,6 +83,9 @@ pub struct Policy {
     pub unknown: Arc<std::sync::atomic::AtomicBool>,
     /// The person each device is one of, by their root key: who reads a reader set's group.
     pub people: Arc<Mutex<BTreeMap<Ed25519PublicKey, [u8; 32]>>>,
+    /// Each person's role in the workspace, by their root key, as its governance has it now:
+    /// who reads a group that names a role.
+    pub roles: Arc<Mutex<BTreeMap<[u8; 32], collab_types::readers::Role>>>,
 }
 
 /// The epoch a test [`Directory`] reports as its
@@ -142,15 +145,16 @@ impl KeyDirectory for Directory {
     fn reader_devices(
         &self,
         workspace: WorkspaceId,
-        people: &BTreeSet<[u8; 32]>,
+        named: &collab_types::NamedReaders,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let theirs = self.policy.people.lock().unwrap().clone();
+        let roles = self.policy.roles.lock().unwrap().clone();
         let mut allowed = self.allowed_devices(workspace, now)?;
         allowed.retain(|device| {
             theirs
                 .get(device)
-                .is_some_and(|person| people.contains(person))
+                .is_some_and(|person| named.includes(person, roles.get(person).copied()))
         });
         Some(allowed)
     }

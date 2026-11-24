@@ -100,8 +100,10 @@ type Message {
 }
 
 /// One person's report of a message to the workspace's moderators, kept by the conversation
-/// the message is in so it outlives the message: who filed it is its history's.
-type Report {
+/// the message is in so it outlives the message: who filed it is its history's. It names who
+/// reported whom, so only its reporter and the workspace's moderators read it, whoever
+/// moderates when it is read; everyone else reading the conversation sees no report at all.
+type Report (readers: author and moderator) {
     /// The message reported; none once it was deleted.
     message: Option<Message>
     /// Who wrote the reported message.
@@ -962,7 +964,7 @@ action edit(m: Message, body: RichText = m.body, turn: Text = m.turn) (
 /// Deletes a message from the channel or thread it is in. Its author, or anyone the
 /// channel's permissions allow, may: the platform undoes it rather than asking first, and the
 /// removal is a version of the message, so who removed it stays answerable. Its reports stay,
-/// saying it was deleted.
+/// saying it was deleted, as far as the one deleting reads them.
 destructive action delete(to: TextChannel | Thread | Direct, m: Message) (
     icon: .trash,
     label: "Delete",

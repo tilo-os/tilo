@@ -726,7 +726,7 @@ impl Resolver<'_> {
         for t in decls {
             let Some(readers) = &t.readers else { continue };
             let (field, wanted, ty) = match &readers.rule {
-                ReaderRule::Author { until: None } => continue,
+                ReaderRule::Author { until: None } | ReaderRule::AuthorAnd { .. } => continue,
                 ReaderRule::Author { until: Some(field) } => (field, "a `Bool`", Ty::Bool),
                 ReaderRule::Field { field } => {
                     (field, "a `Set<Actor>`", Ty::Set(Box::new(Ty::Actor)))
@@ -744,7 +744,7 @@ impl Resolver<'_> {
                     "E144",
                     readers.span,
                     format!(
-                        "`{}` is read by its `author`, or by the members a `Set<Actor>` field names; `{field}` is to be {wanted} field of it",
+                        "`{}` is read by its `author`, by its `author and` a role, or by the members a `Set<Actor>` field names; `{field}` is to be {wanted} field of it",
                         t.name.name
                     ),
                 );

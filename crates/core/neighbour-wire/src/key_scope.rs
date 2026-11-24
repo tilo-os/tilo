@@ -30,7 +30,7 @@ impl KeyScope {
             (Some(name), Some(readers))
                 if matches!(
                     collab_types::Readers::parse(readers),
-                    Some(collab_types::Readers::People(_))
+                    Some(collab_types::Readers::People(_) | collab_types::Readers::Role { .. })
                 ) && collab_types::reader_set_name(readers) == name => {}
             _ => return None,
         }

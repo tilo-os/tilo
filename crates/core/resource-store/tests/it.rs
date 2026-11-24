@@ -2627,4 +2627,111 @@ mod store {
         assert!(store.changed().is_empty());
         let _ = notes;
     }
+
+    /// A record whose type names its readers is placed by its own rule wherever it is nested: a
+    /// report filed in a channel every member reads goes to the document of its reporter and the
+    /// workspace's moderators, named by the role and never by who holds it, and a record nested
+    /// in the report without a rule of its own goes where the report went.
+    #[test]
+    fn a_nested_record_is_placed_by_its_own_rule_and_a_role_is_named_not_its_holders() {
+        use tilo_actions::policy::Role;
+        use tilo_actions::surface::ReaderRule;
+
+        const CHANNEL: &str = "Channel";
+        const REPORT: &str = "Report";
+        const NOTE: &str = "Note";
+        let mut store = Store::new();
+        store.declare(Schema {
+            readers: BTreeMap::from([(
+                REPORT.to_owned(),
+                ReaderRule::AuthorAnd {
+                    role: Role::Moderator,
+                },
+            )]),
+            ..Schema::default()
+        });
+        let ben = Stamp {
+            invoker: "ben".to_owned(),
+            ..Stamp::default()
+        };
+        let put = |store: &mut Store, kind: &str, id: &str, resource: Resource| {
+            tilo_resource_store::wire::write(
+                store,
+                tilo_resource_store::wire::Command::Put {
+                    kind: kind.to_owned(),
+                    id: id.to_owned(),
+                    resource,
+                    stamp: ben.clone(),
+                },
+            )
+        };
+        let placed = |written: &[Written]| -> BTreeSet<String> {
+            written.iter().map(|write| write.readers.clone()).collect()
+        };
+        let channel = put(
+            &mut store,
+            CHANNEL,
+            "c1",
+            Resource {
+                readers: MEMBERS.to_owned(),
+                parent: None,
+                order: None,
+                fields: fields("design", "open"),
+            },
+        )
+        .unwrap();
+        assert_eq!(placed(&channel), BTreeSet::from([MEMBERS.to_owned()]));
+
+        let report = put(
+            &mut store,
+            REPORT,
+            "r1",
+            Resource {
+                readers: String::new(),
+                parent: Some("c1".to_owned()),
+                order: Some("a".to_owned()),
+                fields: fields("spam", "open"),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            placed(&report),
+            BTreeSet::from(["@role:moderator,ben".to_owned()]),
+            "the report is sealed to its reporter and the moderators, not to the channel's readers"
+        );
+
+        let note = put(
+            &mut store,
+            NOTE,
+            "n1",
+            Resource {
+                readers: String::new(),
+                parent: Some("r1".to_owned()),
+                order: Some("a".to_owned()),
+                fields: fields("seen it", "open"),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            placed(&note),
+            BTreeSet::from(["@role:moderator,ben".to_owned()]),
+            "what a report holds is read by whoever reads the report"
+        );
+
+        let named = put(
+            &mut store,
+            REPORT,
+            "r2",
+            Resource {
+                readers: MEMBERS.to_owned(),
+                parent: Some("c1".to_owned()),
+                order: Some("b".to_owned()),
+                fields: fields("named", "open"),
+            },
+        );
+        assert!(
+            named.is_err(),
+            "a write names no readers for a kind whose rule names them"
+        );
+    }
 }

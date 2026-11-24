@@ -317,12 +317,12 @@ impl KeyDirectory for Directory {
     fn reader_devices(
         &self,
         workspace: WorkspaceId,
-        people: &BTreeSet<[u8; 32]>,
+        named: &collab_types::NamedReaders,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
         let readers = self.state(workspace, |state| {
-            state.governance().reader_key_holders(people, at).ok()
+            state.governance().reader_key_holders(named, at).ok()
         })??;
         Some(
             readers

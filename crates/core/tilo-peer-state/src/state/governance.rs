@@ -350,30 +350,53 @@ impl PeerGovernance<'_> {
             .collect())
     }
 
-    /// The devices of `people` among the workspace's key holders at `now`
-    /// ([`Self::key_holders`]): who holds the keys of a group only those
-    /// people read. A person it no longer has as a member, and a revoked key,
-    /// hold none, so the commit that follows either rotates that group's keys.
+    /// The devices of the readers `named` names among the workspace's key
+    /// holders at `now` ([`Self::key_holders`]): who holds the keys of a group
+    /// only they read — its people, and every member whose role includes the
+    /// role it names, as the governance has them now. A person it no longer
+    /// has as a member, one whose role no longer includes the set's, and a
+    /// revoked key hold none, so the commit that follows any of them rotates
+    /// that group's keys; one given the role joins it by the next commit.
     pub fn reader_key_holders(
         self,
-        people: &BTreeSet<[u8; 32]>,
+        named: &collab_types::NamedReaders,
         now: SystemTime,
     ) -> Result<BTreeSet<[u8; 32]>, String> {
         let mut theirs: BTreeSet<[u8; 32]> = self
             .governed_set(now)?
             .into_iter()
-            .filter(|(root, member)| !member.removed && people.contains(root))
+            .filter(|(root, member)| !member.removed && named.includes(root, Some(member.role)))
             .flat_map(|(_, member)| member.devices)
             .collect();
         theirs.extend(
             self.keeping_devices()
                 .iter()
-                .filter(|hint| people.contains(&hint.host.user_public_key))
+                .filter(|hint| named.people.contains(&hint.host.user_public_key))
                 .map(|hint| hint.host.device_public_key),
         );
         let mut holders = self.key_holders(now)?;
         holders.retain(|device| theirs.contains(device));
         Ok(holders)
+    }
+
+    /// Whether the person of root key `person` reads the set `named` at
+    /// `now`: one of its people, or a member the workspace has not removed
+    /// whose role includes the set's ([`collab_types::NamedReaders::includes`]).
+    pub fn reads_named(
+        self,
+        named: &collab_types::NamedReaders,
+        person: &[u8; 32],
+        now: SystemTime,
+    ) -> bool {
+        if named.people.contains(person) {
+            return true;
+        }
+        named.role.is_some()
+            && self.governed_set(now).is_ok_and(|members| {
+                members
+                    .get(person)
+                    .is_some_and(|member| !member.removed && named.includes(person, Some(member.role)))
+            })
     }
 
     /// The workspace's people and grants as its governance records them: its

@@ -141,7 +141,7 @@ pub use op::{
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use readers::{
-    EVERY_MEMBER, Readers, app_document_id, content_artifact_id, is_store_document, reader_group,
+    EVERY_MEMBER, NamedReaders, ROLE_READERS, Readers, app_document_id, content_artifact_id, is_store_document, reader_group,
     reader_set_name, store_document_readers,
 };
 pub use receipt::{

@@ -1238,9 +1238,24 @@ impl<'a> Parser<'a> {
                     "readers" => {
                         let span = self.span();
                         let who = self.ident(
-                            "who reads the type's records: `author`, or a field naming members",
+                            "who reads the type's records: `author`, `author and` a role, or a field naming members",
                         )?;
-                        let rule = if who.name == "author" {
+                        let rule = if who.name == "author" && self.eat_kw("and") {
+                            // `author and moderator`: the author, and whoever holds the role.
+                            let role = self.ident(
+                                "the role whose members read them too: `viewer`, `commenter`, `editor`, `moderator` or `owner`",
+                            )?;
+                            let Some(named) = tilo_action_policy::Role::parse(&role.name) else {
+                                return self.fail(
+                                    role.span,
+                                    format!(
+                                        "`{}` is not a role; a workspace's roles are `viewer`, `commenter`, `editor`, `moderator` and `owner`",
+                                        role.name
+                                    ),
+                                );
+                            };
+                            crate::meta::ReaderRule::AuthorAnd { role: named }
+                        } else if who.name == "author" {
                             let until = if matches!(self.peek(), Tok::Ident(w) if w == "until") {
                                 self.bump();
                                 Some(

@@ -184,6 +184,22 @@ async fn fetch_store(
     Err("the device's store ended the history before the last frame".into())
 }
 
+/// Whether `device` is one of the devices of the readers the reader set
+/// `readers` names, as `peer`'s governance has them now: a document sealed to
+/// that set reaches no other device over a link.
+fn reads_named(peer: &StatePeer, readers: &str, device: [u8; 32]) -> bool {
+    let Some(named) = collab_types::Readers::parse(readers).and_then(|set| set.named()) else {
+        return false;
+    };
+    let now = tilo_clock::wall();
+    peer.certificates().iter().any(|certificate| {
+        certificate.device_public_key == device
+            && peer
+                .governance()
+                .reads_named(&named, &certificate.user_public_key, now)
+    })
+}
+
 /// The certificate `device` takes part in `peer`'s workspace under: its own
 /// in the member list, or, for a device the workspace names among those
 /// keeping it, the one its signed address carries. A device keeping the
@@ -2517,17 +2533,9 @@ impl DirectSync {
                     ..
                 } => {
                     let replica = link.0.replica.lock();
-                    let named_matches = readers.as_deref().is_none_or(|readers| {
-                        let Some(collab_types::Readers::People(people)) =
-                            collab_types::Readers::parse(readers)
-                        else {
-                            return false;
-                        };
-                        replica.certificates().iter().any(|certificate| {
-                            certificate.device_public_key == device
-                                && people.contains(&certificate.user_public_key)
-                        })
-                    });
+                    let named_matches = readers
+                        .as_deref()
+                        .is_none_or(|readers| reads_named(&replica, readers, device));
                     // A device the workspace names among those keeping it is
                     // sent what it keeps: the workspace's policy answers a
                     // member's access, and such a device is no member, so what
@@ -2560,17 +2568,10 @@ impl DirectSync {
                         }) => {
                             let replica = link.0.replica.lock();
                             let now = tilo_clock::wall();
-                            readers.as_deref().is_none_or(|readers| {
-                                let Some(collab_types::Readers::People(people)) =
-                                    collab_types::Readers::parse(readers)
-                                else {
-                                    return false;
-                                };
-                                replica.certificates().iter().any(|certificate| {
-                                    certificate.device_public_key == device
-                                        && people.contains(&certificate.user_public_key)
-                                })
-                            }) && replica
+                            readers
+                                .as_deref()
+                                .is_none_or(|readers| reads_named(&replica, readers, device))
+                                && replica
                                 .check_document_read(device, &app, &document, now)
                                 .is_ok()
                         }

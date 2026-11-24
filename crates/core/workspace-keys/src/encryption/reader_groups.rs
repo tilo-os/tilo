@@ -26,11 +26,12 @@ use tilo_desktop_model::WorkspaceId;
 
 use super::KeyDirectory;
 
-/// The workspace a reader set's group belongs to, and the people who read it.
+/// The workspace a reader set's group belongs to, and who reads it: its people, and the role
+/// whose holders read it beside them.
 struct ReaderGroup {
     workspace: WorkspaceId,
     readers: String,
-    people: BTreeSet<[u8; 32]>,
+    named: collab_types::NamedReaders,
 }
 
 /// A host's [`KeyDirectory`] that also names who reads each reader set's group this device
@@ -54,11 +55,11 @@ impl Directory {
     /// names no set.
     pub(super) fn group(&mut self, workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
         let group = collab_types::reader_group(workspace, readers)?;
-        if let Some(Readers::People(people)) = Readers::parse(readers) {
+        if let Some(named) = Readers::parse(readers).and_then(|set| set.named()) {
             self.groups.entry(group).or_insert_with(|| ReaderGroup {
                 workspace,
                 readers: readers.to_owned(),
-                people,
+                named,
             });
         }
         Some(group)
@@ -105,10 +106,8 @@ impl Directory {
             .workspaces
             .document_devices(*workspace, app, document, now)?;
         if let Some(readers) = readers {
-            let Readers::People(people) = Readers::parse(readers)? else {
-                return None;
-            };
-            let named = self.workspaces.reader_devices(*workspace, &people, now)?;
+            let named = Readers::parse(readers)?.named()?;
+            let named = self.workspaces.reader_devices(*workspace, &named, now)?;
             devices.retain(|device| named.contains(device));
         }
         Some(devices)
@@ -215,7 +214,7 @@ impl KeyDirectory for Directory {
         match self.groups.get(&workspace) {
             Some(group) => self
                 .workspaces
-                .reader_devices(group.workspace, &group.people, now),
+                .reader_devices(group.workspace, &group.named, now),
             None => self.workspaces.allowed_devices(workspace, now),
         }
     }
@@ -244,10 +243,10 @@ impl KeyDirectory for Directory {
     fn reader_devices(
         &self,
         workspace: WorkspaceId,
-        people: &BTreeSet<[u8; 32]>,
+        named: &collab_types::NamedReaders,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        self.workspaces.reader_devices(workspace, people, now)
+        self.workspaces.reader_devices(workspace, named, now)
     }
 
     fn policy_epoch(&self) -> Option<u64> {

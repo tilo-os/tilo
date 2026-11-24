@@ -676,7 +676,7 @@ impl KeyDirectory for OwnerDirectory {
     fn reader_devices(
         &self,
         workspace: ModelWorkspaceId,
-        people: &BTreeSet<[u8; 32]>,
+        named: &collab_types::NamedReaders,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
@@ -684,9 +684,9 @@ impl KeyDirectory for OwnerDirectory {
         let readers = self
             .owner
             .with_current(workspace, |view| {
-                let mut readers = view.reader_key_holders(people, at)?;
+                let mut readers = view.reader_key_holders(named, at)?;
                 let device = view.device();
-                if reader && people.contains(&device.user_public_key) {
+                if reader && named.people.contains(&device.user_public_key) {
                     readers.insert(device.device_public_key);
                 }
                 Ok(readers)

@@ -917,11 +917,11 @@ impl StatePeer {
     ) -> Result<BTreeSet<[u8; 32]>, String> {
         let mut devices = self.document_key_holders(app, document, now)?;
         if let Some(named) = named {
-            let Some(collab_types::Readers::People(people)) = collab_types::Readers::parse(named)
+            let Some(named) = collab_types::Readers::parse(named).and_then(|set| set.named())
             else {
                 return Err("invalid named readers".into());
             };
-            let allowed = self.governance().reader_key_holders(&people, now)?;
+            let allowed = self.governance().reader_key_holders(&named, now)?;
             devices.retain(|device| allowed.contains(device));
         }
         Ok(devices)

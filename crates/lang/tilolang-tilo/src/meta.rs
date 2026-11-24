@@ -206,7 +206,7 @@ impl MetaExt for Meta {
                         .iter()
                         .find(|candidate| &candidate.name == field)
                         .map(|candidate| candidate.id.clone()),
-                    ReaderRule::Author { .. } => None,
+                    ReaderRule::Author { .. } | ReaderRule::AuthorAnd { .. } => None,
                 });
                 for field in &ty.fields {
                     schema.fields.push(field_schema(self, field));

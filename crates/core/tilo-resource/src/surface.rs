@@ -169,17 +169,7 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
 /// The rule `#[resource(readers = "...")]` wrote, which the macro checked:
 /// `None` for a kind every member reads.
 fn reader_rule(readers: &str) -> Option<tilo_actions::surface::ReaderRule> {
-    use tilo_actions::surface::ReaderRule;
-    match readers.split(' ').collect::<Vec<_>>().as_slice() {
-        [""] => None,
-        ["author"] => Some(ReaderRule::Author { until: None }),
-        ["author", "until", until] => Some(ReaderRule::Author {
-            until: Some((*until).to_owned()),
-        }),
-        _ => Some(ReaderRule::Field {
-            field: readers.to_owned(),
-        }),
-    }
+    tilo_actions::surface::ReaderRule::parse(readers)
 }
 
 /// The surface of a resource a service publishes outside any record (the

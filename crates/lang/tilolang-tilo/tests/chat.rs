@@ -1823,3 +1823,69 @@ fn a_report_is_settled_by_a_moderator_and_refused_to_anyone_else() {
         "a moderator settles it: {settled:?}"
     );
 }
+
+/// A report reaches its reporter and the workspace's moderators alone: a member reading the
+/// conversation it was filed in sees no report there, while whoever holds the moderator role,
+/// or one that includes it, does, without Chat naming who moderates.
+#[test]
+fn a_report_is_read_by_its_reporter_and_the_moderators_and_no_other_member() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let message = call(
+        &ada,
+        "send",
+        vec![design.clone(), rich("Buy cheap followers")],
+    );
+    ada.commit();
+    let meta = ada.host.package(APP).unwrap().meta;
+    let report = match ada.host.runtime().invoke_action(
+        &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben")),
+        (
+            crate::fixtures::action_id(&meta, "report").as_str(),
+            vec![design.clone(), message, Value::text("spam")],
+        ),
+    ) {
+        Ok(InvokeOutcome::Done(report)) => target(&report),
+        other => panic!("Ben files the report: {other:?}"),
+    };
+    ada.commit();
+
+    let [ben, cy, mo, owner] = ["ben", "cy", "mo", "ola"]
+        .map(|name| Replica::new(name, Workspace::new(), &[(CHAT, CHAT_IDS)]).0);
+    mo.hold(tilo_action_policy::Role::Moderator);
+    owner.hold(tilo_action_policy::Role::Owner);
+    cy.hold(tilo_action_policy::Role::Editor);
+    for other in [&ben, &cy, &mo, &owner] {
+        ada.send_to(other);
+    }
+    let channel = target(&design);
+    let reports = |replica: &Replica| match replica.read(&channel, "reports") {
+        Value::List(reports) => reports.len(),
+        other => panic!("a channel's reports are a list, got {other:?}"),
+    };
+    let reads =
+        |replica: &Replica| match replica
+            .doc
+            .command(tilo_resource_store::wire::Command::Get {
+                kind: tilolang_tilo::meta::MetaExt::kind_of(&meta, "Report"),
+                id: report.id_string(),
+            }) {
+            tilo_resource_store::wire::Reply::Resource(found) => found.is_some(),
+            other => panic!("a read answered {other:?}"),
+        };
+    assert_eq!(
+        (reports(&cy), reads(&cy)),
+        (0, false),
+        "a member reading the channel sees no report"
+    );
+    assert_eq!((reports(&ben), reads(&ben)), (1, true), "its reporter does");
+    assert_eq!((reports(&mo), reads(&mo)), (1, true), "a moderator does");
+    assert_eq!(
+        (reports(&owner), reads(&owner)),
+        (1, true),
+        "an owner, whose role includes moderating, does"
+    );
+}

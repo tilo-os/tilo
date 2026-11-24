@@ -17,8 +17,8 @@ pub(crate) struct ResourceOptions {
     /// `catalogue = "dir"`: where the catalogue its words are keys of is,
     /// relative to the crate.
     catalogue: Option<String>,
-    /// `readers = "author"`, `"author until sent"` or a field's name: who
-    /// reads a record of the kind, when not every member.
+    /// `readers = "author"`, `"author until sent"`, `"author and moderator"` or a
+    /// field's name: who reads a record of the kind, when not every member.
     readers: Option<String>,
     /// The app that publishes records of this kind, which its typed
     /// references name their actions by (`#[resource(app = "…")]`); the
@@ -166,17 +166,24 @@ fn set_option(options: &mut ResourceOptions, meta: &Meta) -> syn::Result<()> {
                 let field = |word: &str| {
                     !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                 };
+                // The roles a workspace's governance gives its members
+                // (`tilo_action_policy::Role::key`).
+                let role = |word: &str| {
+                    matches!(word, "viewer" | "commenter" | "editor" | "moderator" | "owner")
+                };
                 let well_formed = match words.as_slice() {
                     ["author"] => true,
                     ["author", "until", until] => field(until),
+                    ["author", "and", named] => role(named),
                     [name] => field(name),
                     _ => false,
                 };
                 if !well_formed {
                     return Err(syn::Error::new(
                         pair.value.span(),
-                        "expected `readers = \"author\"`, `\"author until field\"` or a \
-                         `Set<Actor>` field's name",
+                        "expected `readers = \"author\"`, `\"author until field\"`, \
+                         `\"author and role\"` (a role such as `moderator`) or a `Set<Actor>` \
+                         field's name",
                     ));
                 }
                 options.readers = Some(words.join(" "));

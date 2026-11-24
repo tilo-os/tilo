@@ -497,6 +497,10 @@ fn a_reader_sets_keys_are_held_by_its_peoples_devices_alone() {
         .map(|cert| cert.user_public_key)
         .chain([[0xee; 32]])
         .collect();
+    let readers = collab_types::NamedReaders {
+        role: None,
+        people: readers,
+    };
     let holders = peer.governance().reader_key_holders(&readers, now).unwrap();
     let theirs: std::collections::BTreeSet<[u8; 32]> = people[..2]
         .iter()

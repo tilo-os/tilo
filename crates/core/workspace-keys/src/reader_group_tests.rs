@@ -332,3 +332,147 @@ fn a_device_that_was_away_catches_up_on_its_reader_groups_from_another_of_its_pe
             .is_empty()
     );
 }
+
+/// A group whose readers name a role follows who holds it in the workspace's governance, as a
+/// group of people follows who is admitted: a member given the role joins it and opens what was
+/// sealed before, one demoted or gone leaves it and opens nothing sealed after, and a device the
+/// workspace does not admit gets none of it whatever role its person is written down with.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk of a role's holders through a grant, a demotion and a leave"
+)]
+fn a_group_naming_a_role_is_read_by_whoever_holds_it_and_only_inside_the_workspace() {
+    use collab_types::readers::Role;
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    // Ada files a report; Cleo moderates; Bob is an editor; device 5 is a stranger's.
+    let policy = people_policy([1, 2, 3]);
+    let stranger = [0xd0; 32];
+    policy.people.lock().unwrap().insert(public(5), stranger);
+    {
+        let mut roles = policy.roles.lock().unwrap();
+        roles.insert(person_of(1), Role::Editor);
+        roles.insert(person_of(2), Role::Editor);
+        roles.insert(person_of(3), Role::Moderator);
+        roles.insert(stranger, Role::Owner);
+    }
+    let dirs = [(); 4].map(|()| tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let mut ada = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
+    let mut bob = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
+    let mut cleo = device(&workspace, workspace_id, 2, 3, &policy, dirs[2].path());
+    let mut outside = device(&workspace, workspace_id, 3, 5, &policy, dirs[3].path());
+    create(&mut ada, workspace_id, now);
+    for member in [&mut bob, &mut cleo, &mut outside] {
+        member.service.access(workspace_id, now);
+    }
+    pump_for(
+        &mut [&mut ada, &mut bob, &mut cleo, &mut outside],
+        &mut now,
+        20,
+    );
+
+    let readers = collab_types::Readers::role(Role::Moderator, [person_of(1)]).text();
+    let group = collab_types::reader_group(workspace_id, &readers).unwrap();
+    for device in [&mut ada, &mut bob, &mut cleo, &mut outside] {
+        reader_access(device, workspace_id, &readers, now);
+    }
+    pump_for(
+        &mut [&mut ada, &mut bob, &mut cleo, &mut outside],
+        &mut now,
+        20,
+    );
+    // The reporter and the moderator hold the keys; the editor and the stranger do not.
+    let filed = reader_keys(&mut ada, workspace_id, &readers, now);
+    let moderators = reader_keys(&mut cleo, workspace_id, &readers, now);
+    assert!(matches!(
+        reader_access(&mut bob, workspace_id, &readers, now),
+        KeyAccess::Unavailable
+    ));
+    assert!(!matches!(outside.service.record_keys(group), Some(Ok(_))));
+    let id = workspace_id.to_string();
+    let artifact = collab_types::content_artifact_id(&id, &readers, "reports/spam#0");
+    let (metadata, payload) = filed
+        .seal_content(artifact, ContentRetention::Delta, b"spam in #design")
+        .unwrap();
+    assert_eq!(
+        moderators
+            .open_content(artifact, &metadata, &payload)
+            .unwrap()
+            .as_slice(),
+        b"spam in #design"
+    );
+
+    // Bob is made a moderator: he joins the group and reads the report filed before.
+    policy
+        .roles
+        .lock()
+        .unwrap()
+        .insert(person_of(2), Role::Moderator);
+    reader_access(&mut bob, workspace_id, &readers, now);
+    pump_for(
+        &mut [&mut ada, &mut bob, &mut cleo, &mut outside],
+        &mut now,
+        20,
+    );
+    let bobs = reader_keys(&mut bob, workspace_id, &readers, now);
+    assert!(metadata.epoch < bobs.epoch(), "sealed before Bob moderated");
+    assert_eq!(
+        bobs.open_content(artifact, &metadata, &payload)
+            .unwrap()
+            .as_slice(),
+        b"spam in #design"
+    );
+
+    // Cleo is demoted: she leaves the group and opens nothing sealed after.
+    policy
+        .roles
+        .lock()
+        .unwrap()
+        .insert(person_of(3), Role::Editor);
+    pump_for(
+        &mut [&mut ada, &mut bob, &mut cleo, &mut outside],
+        &mut now,
+        5,
+    );
+    assert!(matches!(
+        reader_access(&mut cleo, workspace_id, &readers, now),
+        KeyAccess::Removed
+    ));
+    let after_demotion = reader_keys(&mut ada, workspace_id, &readers, now);
+    assert!(after_demotion.epoch() > moderators.epoch());
+    let (metadata, payload) = after_demotion
+        .seal_content(artifact, ContentRetention::Delta, b"after Cleo")
+        .unwrap();
+    assert!(
+        moderators
+            .open_content(artifact, &metadata, &payload)
+            .is_err()
+    );
+
+    // Bob leaves the workspace, moderator still in name: he leaves the group too.
+    leaves(
+        &policy,
+        2,
+        &mut [&mut ada, &mut bob, &mut cleo, &mut outside],
+        &mut now,
+    );
+    assert!(matches!(
+        reader_access(&mut bob, workspace_id, &readers, now),
+        KeyAccess::Removed
+    ));
+    let after_leave = reader_keys(&mut ada, workspace_id, &readers, now);
+    assert!(after_leave.epoch() > after_demotion.epoch());
+    let (metadata, payload) = after_leave
+        .seal_content(artifact, ContentRetention::Delta, b"Ada alone")
+        .unwrap();
+    assert!(bobs.open_content(artifact, &metadata, &payload).is_err());
+    // The stranger, an owner somewhere, was never let in.
+    assert!(!matches!(outside.service.record_keys(group), Some(Ok(_))));
+    assert!(
+        ada.service
+            .frames_for(group, &public(5), 0, 1_000)
+            .is_empty()
+    );
+}
