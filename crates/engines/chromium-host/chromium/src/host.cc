@@ -1487,8 +1487,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     settings.landscape=false;
     settings.prefer_css_page_size=false;
     const CefString where(path.string());
-    if(!browser_->GetHost()->PrintToPDF(where,settings,new PrintCallback(id_,request_id,where.ToString(),path.filename().string())))
-      PrintAnswer(id_,request_id,false,"","","The page could not be printed");
+    // The engine answers through the callback alone: a print it could not write reports there.
+    browser_->GetHost()->PrintToPDF(where,settings,new PrintCallback(id_,request_id,where.ToString(),path.filename().string()));
   }
   void Command(CefRefPtr<CefDictionaryValue> d) {
     CEF_REQUIRE_UI_THREAD();
