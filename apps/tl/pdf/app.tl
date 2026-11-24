@@ -430,6 +430,9 @@ fn runs_of(rows: List<GlyphRow>, p: Page) -> Runs {
                 runs = add_run(runs, word.trim(), x1, y1, x2, y2, p)
                 word = ""
             }
+            // The run is finished: the next word starts its own box, wherever it stands, rather
+            // than growing out of the last one's first letter.
+            line = -1
         }
         if not blank {
             if line != row.line {
@@ -598,6 +601,27 @@ action mark_text(d: Document, p: Page, style: Text, colour: Text, rects: List<Fl
 ) {
     require not rects.is_empty() "A mark covers something"
     d.marks.insert(Mark(page: p, kind: .markup, style: style, colour: colour, rects: rects))
+}
+
+/// Marks exactly the words a selection covers: the runs of `p` from `first` to `last`, both
+/// counted in, as a highlight, an underline, a strikethrough or a squiggle in the colour the
+/// reader holds. This is how a person marks lines of text they selected, the way the words are
+/// read; dragging a box still marks the words the box covers.
+action mark_selection(
+    d: Document,
+    p: Page,
+    style: Text,
+    colour: Text,
+    first: Int,
+    last: Int,
+) -> Mark (icon: .highlighter, label: "Mark the selected words", did: "marked text") {
+    require first >= 0 and last >= first "A mark covers the words a selection holds"
+    mark_text(d, p, style, colour, run_rects_between(p, first, last))
+}
+
+/// The boxes, in points of `p`, of the runs from `first` to `last`, both counted in.
+fn run_rects_between(p: Page, first: Int, last: Int) -> List<Float> {
+    count_between(first, last).flat_map(i -> run_box(p, i))
 }
 
 /// Draws ink on a page: one list of points a stroke, its points as x and y in turn in fractions

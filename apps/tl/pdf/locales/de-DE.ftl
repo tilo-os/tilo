@@ -753,6 +753,21 @@ d-ocfsjb5a-colour = Farbe
 
 d-ocfsjb5a-rects = Rechtecke
 
+d-6tod6rqt = Die ausgewählten Wörter markieren
+    .doc = Markiert genau die Wörter, die eine Auswahl bedeckt: die Abschnitte von `p` von `first` bis `last`, beide gezählt, als Markierung, Unterstreichung, Durchstreichen oder Wellenlinie in der Farbe, die der Betrachter hält. So markiert eine Person Zeilen, die sie ausgewählt hat, so wie die Wörter gelesen werden; ein gezogener Kasten markiert weiterhin die Wörter, die der Kasten bedeckt.
+    .did = hat Text markiert
+    .w-a-mark-covers-the-words-a = Eine Markierung bedeckt die Wörter einer Auswahl
+
+d-6tod6rqt-p = P
+
+d-6tod6rqt-style = Stil
+
+d-6tod6rqt-colour = Farbe
+
+d-6tod6rqt-first = Erste
+
+d-6tod6rqt-last = Letzte
+
 d-kc6nzzkh = Zeichnen
     .doc = Zeichnet Tinte auf eine Seite: eine Punktliste ein Strich, seine Punkte als x und y nacheinander in Bruchteilen des Kastens der Seite.
     .did = hat auf eine Seite gezeichnet
@@ -1019,6 +1034,8 @@ d-4qnr3itw = Seite verschieben~present
 d-3d6agjuu = Seite löschen~present
 
 d-gzdwyydw = Text markieren~present
+
+d-jvpw7pw2 = Die ausgewählten Wörter markieren~present
 
 d-5i3rvbg2 = Unterschrift platzieren~present
 

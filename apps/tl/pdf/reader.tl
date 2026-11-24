@@ -497,8 +497,28 @@ view page_sheet(
             }
         }
         if sel_from >= 0 and sel_to >= 0 {
-            row(gap: .related, align: .center) {
+            row(gap: .related, align: .center, wrap: true) {
                 ui.Text("{selected_words(p, sel_from, sel_to)}", role: .caption, secondary: true)
+                ui.Button("Highlight", icon: .highlighter, size: .small) {
+                    on press: mark_selection(d, p, "highlight", colour, sel_from, sel_to)
+                        .then(set(sel_from, -1))
+                        .then(set(sel_to, -1))
+                }
+                ui.Button("Underline", icon: .underline, size: .small) {
+                    on press: mark_selection(d, p, "underline", colour, sel_from, sel_to)
+                        .then(set(sel_from, -1))
+                        .then(set(sel_to, -1))
+                }
+                ui.Button("Strike through", icon: .strikethrough, size: .small) {
+                    on press: mark_selection(d, p, "strikeout", colour, sel_from, sel_to)
+                        .then(set(sel_from, -1))
+                        .then(set(sel_to, -1))
+                }
+                ui.Button("Squiggle", icon: .pencil, size: .small) {
+                    on press: mark_selection(d, p, "squiggly", colour, sel_from, sel_to)
+                        .then(set(sel_from, -1))
+                        .then(set(sel_to, -1))
+                }
                 ui.Button("Copy", icon: .copy, size: .small) {
                     on press: copy_selected(d, p, sel_from, sel_to)
                 }

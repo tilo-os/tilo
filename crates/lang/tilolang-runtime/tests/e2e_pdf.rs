@@ -739,4 +739,86 @@ mod cases {
             "the rail carries each page's picture, in page order"
         );
     }
+
+    /// A list of numbers a resource holds.
+    fn floats(reader: &Reader, at: &ResourceRef, field: &str) -> Vec<f64> {
+        match reader.rt.read(at, field).unwrap() {
+            Value::List(items) => items
+                .iter()
+                .map(|item| match item {
+                    Value::Float(value) => *value,
+                    Value::Int(value) => *value as f64,
+                    other => panic!("{field} holds {other:?}"),
+                })
+                .collect(),
+            other => panic!("{field} reads {other:?}"),
+        }
+    }
+
+    /// Every number within a page point of its expected place: what a fraction of the page and
+    /// back leaves as its rounding.
+    fn near(got: &[f64], want: &[f64]) -> bool {
+        got.len() == want.len()
+            && got
+                .iter()
+                .zip(want)
+                .all(|(got, want)| (got - want).abs() < 0.01)
+    }
+
+    #[test]
+    fn marking_a_selection_marks_exactly_its_runs() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        let first = reader.page(&doc, 0);
+        reader.call(
+            "read_page",
+            vec![Value::resource(&doc), Value::resource(&first)],
+        );
+        let marked = returned_ref(reader.call(
+            "mark_selection",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&first),
+                Value::text("underline"),
+                Value::text("#4ade80"),
+                Value::Int(0),
+                Value::Int(1),
+            ],
+        ));
+        assert_eq!(reader.text(&marked, "style"), "underline");
+        let rects = floats(&reader, &marked, "rects");
+        assert!(
+            near(&rects, &[72.0, 72.0, 40.0, 12.0, 120.0, 72.0, 40.0, 12.0]),
+            "exactly the two runs' boxes: {rects:?}"
+        );
+        let one = returned_ref(reader.call(
+            "mark_selection",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&first),
+                Value::text("highlight"),
+                Value::text("#facc15"),
+                Value::Int(1),
+                Value::Int(1),
+            ],
+        ));
+        assert!(
+            near(&floats(&reader, &one, "rects"), &[120.0, 72.0, 40.0, 12.0]),
+            "one run marks one line"
+        );
+
+        // With lines selected, the window offers the four marks of them.
+        let mut window = reader.window("reader", vec![Value::resource(&doc)]);
+        window.set_lazy_rows(false).unwrap();
+        window.set_view_state("sel_from", Value::Int(0));
+        window.set_view_state("sel_to", Value::Int(1));
+        window.poll_patches().expect("the window runs again");
+        let said = crate::common::dump(window.tree());
+        for label in ["Highlight", "Underline", "Strike through", "Squiggle"] {
+            assert!(
+                said.contains(label),
+                "{label} marks the selected words:\n{said}"
+            );
+        }
+    }
 }
