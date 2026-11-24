@@ -118,9 +118,9 @@ mod writes;
 // The person's mail accounts and model providers, kept where their
 // workspace runs: a page has no mail connection and no vault of its own.
 #[cfg(not(target_arch = "wasm32"))]
-pub mod person_learned;
-#[cfg(not(target_arch = "wasm32"))]
 mod model_providers;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod person_learned;
 pub use model_providers::OpenAiSignIn;
 #[cfg(not(target_arch = "wasm32"))]
 mod person_settings;
@@ -1027,6 +1027,21 @@ impl WorkspaceServices {
     pub(crate) fn holder(&self) -> HolderClaim {
         self.holder.read_recover().clone()
     }
+
+    /// The key this device's endpoint is keyed by, which its device actions sign as, and the
+    /// certificate of that key: a member device's own where its service writes under a key of
+    /// its own, else the host's.
+    pub(crate) fn endpoint_identity(
+        &self,
+    ) -> (Arc<dyn collab_types::signer::DeviceSigner>, DeviceCert) {
+        let endpoint_key = *self.endpoint.id().as_bytes();
+        match &self.member {
+            Some(member) if member.cert.device_public_key == endpoint_key => {
+                (Arc::clone(&member.signer), member.cert.clone())
+            }
+            _ => (Arc::new(self.key.clone()), self.cert.clone()),
+        }
+    }
 }
 
 /// Who reads a resource this device publishes of its own ([`Workspaces::publish_own`]), beside
@@ -1468,16 +1483,8 @@ impl Workspaces {
         let host = record_authority::host_serving(host, &dir);
         let workspaces = Arc::new(device_actions::WorkspacesMap::default());
         // The device actions answer on the endpoint, so they sign as the key it is keyed by, and
-        // hand whoever asks the certificate of that key: a member device's own where its service
-        // writes under a key of its own, else the host's.
-        let endpoint_key = *host.endpoint.id().as_bytes();
-        let (signer, answering): (Arc<dyn collab_types::signer::DeviceSigner>, _) =
-            match &host.member {
-                Some(member) if member.cert.device_public_key == endpoint_key => {
-                    (Arc::clone(&member.signer), member.cert.clone())
-                }
-                _ => (Arc::new(host.key.clone()), host.cert.clone()),
-            };
+        // hand whoever asks the certificate of that key.
+        let (signer, answering) = host.endpoint_identity();
         let (action_service, jobs, answers) =
             device_actions::action_service(Arc::clone(&workspaces), signer);
         action_service.answer_under(answering);

@@ -1412,11 +1412,9 @@ impl Workspaces {
     /// The connection pins the device, whoever's it is.
     async fn reach_host(&self, device: [u8; 32], addr: EndpointAddr) -> Result<OtherHost, String> {
         let host = &self.inner.host;
-        let actions = Arc::new(self.action_service().remote(
-            &host.endpoint,
-            &addr,
-            &tilo_server_protocol::WorkspaceId::nil().to_string(),
-        ));
+        // The host's own operations are asked naming no workspace: the other host decides them
+        // by the signed invocation each one carries, not by a workspace's roster.
+        let actions = Arc::new(self.action_service().remote(&host.endpoint, &addr, ""));
         if actions.device() != device {
             return Err(format!(
                 "the device reached is {}, not {}",
@@ -1428,9 +1426,12 @@ impl Workspaces {
             .certificate()
             .await
             .map_err(|error| format!("the host did not say who it is: {error}"))?;
+        let (signer, signing) = host.endpoint_identity();
         Ok(OtherHost {
             certificate,
             actions,
+            signer,
+            signing,
         })
     }
 }
@@ -1441,13 +1442,29 @@ struct OtherHost {
     certificate: DeviceCert,
     /// Its actions, asked over the link this host holds to it.
     actions: Arc<RemoteDevice>,
+    /// What this device signs each operation it asks with, as its endpoint's key.
+    signer: Arc<dyn collab_types::signer::DeviceSigner>,
+    /// The certificate of that key, which each signed operation carries.
+    signing: DeviceCert,
 }
 
 impl OtherHost {
     /// Ask the host the host operation `action` with `arguments`, and answer
     /// what it produced.
     async fn ask(&self, action: &str, arguments: Map<String, Value>) -> Result<Value, String> {
-        let request = host_invocation(action, arguments);
+        let mut request = host_invocation(action, arguments);
+        // A request naming no workspace proves its device by the invocation it carries.
+        request.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation(
+                "",
+                &request,
+                &self.signing,
+                self.signer.as_ref(),
+                tilo_clock::unix_now_ns(),
+            )
+            .await
+            .map_err(|error| error.to_string())?,
+        ));
         match Arc::clone(&self.actions)
             .invoke_until_settled(request, HOST_ANSWERED)
             .await
