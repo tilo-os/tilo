@@ -117,24 +117,31 @@ impl Histogram {
         }
         let sample_count =
             f64::from(u32::try_from(self.samples.len()).unwrap_or(u32::MAX)).max(1.0);
-        let data = counts
-            .into_iter()
-            .enumerate()
-            .map(|(index, count)| {
-                let index_f64 = f64::from(u32::try_from(index).unwrap_or(u32::MAX));
-                let low = min + index_f64 * width;
-                let high = low + width;
-                let count_f64 = f64::from(u32::try_from(count).unwrap_or(u32::MAX));
-                let value = match self.normalization {
-                    HistogramNormalization::Count => count_f64,
-                    HistogramNormalization::Probability => count_f64 / sample_count,
-                    HistogramNormalization::Density => count_f64 / sample_count / width,
-                };
-                PlotDatum::new(format!("bin-{index}"), low.midpoint(high), value)
-                    .labelled(format!("{low:.2} – {high:.2}"))
-                    .with_detail(format!("{count} observations"))
-            })
-            .collect();
+        // Nothing measured is nothing to show: empty bins would draw axes, a grid and a
+        // "Frequency" legend around no bars, which reads as a chart of zeros. Without readings
+        // the chart keeps no data, so it says it has nothing to show instead.
+        let data = if self.samples.is_empty() {
+            Vec::new()
+        } else {
+            counts
+                .into_iter()
+                .enumerate()
+                .map(|(index, count)| {
+                    let index_f64 = f64::from(u32::try_from(index).unwrap_or(u32::MAX));
+                    let low = min + index_f64 * width;
+                    let high = low + width;
+                    let count_f64 = f64::from(u32::try_from(count).unwrap_or(u32::MAX));
+                    let value = match self.normalization {
+                        HistogramNormalization::Count => count_f64,
+                        HistogramNormalization::Probability => count_f64 / sample_count,
+                        HistogramNormalization::Density => count_f64 / sample_count / width,
+                    };
+                    PlotDatum::new(format!("bin-{index}"), low.midpoint(high), value)
+                        .labelled(format!("{low:.2} – {high:.2}"))
+                        .with_detail(format!("{count} observations"))
+                })
+                .collect()
+        };
         // Bars are sized in logical pixels against a representative 720 px width.
         let bar_width = (720.0 / f64::from(bin_count) - self.bar_gap).max(2.0);
         let series = match self.palette {
@@ -180,6 +187,7 @@ impl Histogram {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::plot::PlotMarks;
 
     #[test]
     fn histogram_builder_handles_empty_and_constant_samples() {
@@ -194,7 +202,19 @@ mod tests {
             assert!(plot.take_activated().is_none());
         }
 
+        // Nothing measured is nothing to show: the chart must not draw axes and a legend
+        // around empty bins, which reads as a chart of zeros.
+        fn no_samples_leave_nothing_to_show() {
+            let samples = Histogram::new([], Color::WHITE).bins(8).build();
+            assert!(samples.marks.items().is_empty());
+            let measured = Histogram::new([4.0, 5.0, 6.0], Color::WHITE)
+                .bins(8)
+                .build();
+            assert!(!measured.marks.items().is_empty());
+        }
+
         constant_samples_get_a_nonzero_range();
         builder_accepts_empty_samples();
+        no_samples_leave_nothing_to_show();
     }
 }

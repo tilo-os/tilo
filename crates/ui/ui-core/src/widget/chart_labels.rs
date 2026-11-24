@@ -123,12 +123,22 @@ fn half_chord(radius: f64, y0: f64, y1: f64) -> f64 {
     (radius * radius - y * y).max(0.0).sqrt()
 }
 
+/// A chart's centre copy, placed in its hole: the words, the role they take and the rect they
+/// cover, with the caption's rect under them where it fits too.
+pub(crate) struct CentreLabel {
+    pub(crate) role: TextRole,
+    pub(crate) text: String,
+    pub(crate) rect: Rect,
+    pub(crate) subtitle: Option<Rect>,
+}
+
 /// Paint a chart's centre copy (a value over a caption) inside the hole of
 /// `radius` round `center`, at the largest role that fits the hole: the
-/// value as a large title, a title or a heading; the caption under it only
-/// where it fits too. Where not even the value fits at a heading, the copy
-/// is left out (the chart's title and tooltip carry it). Returns the rect
-/// the copy covers, for the other labels to keep clear of.
+/// value as a large title, a title, a heading or a smaller line; the caption
+/// under it only where it fits too. Where not even a short line fits, it is
+/// shortened into the hole rather than dropped, so a narrow chart still says
+/// its total. Returns the rect the copy covers, for the other labels to keep
+/// clear of.
 pub(crate) fn paint_centre_label(
     scene: &mut Scene,
     transform: Affine,
@@ -139,20 +149,18 @@ pub(crate) fn paint_centre_label(
     title: &str,
     subtitle: &str,
 ) -> Option<Rect> {
-    let (title_rect, subtitle_rect) =
-        centre_label_layout(tr, theme, center, radius, title, subtitle)?;
-    let (role, rect) = title_rect;
-    let style = theme.text(role).strong();
+    let label = centre_label_layout(tr, theme, center, radius, title, subtitle)?;
+    let style = theme.text(label.role).strong();
     tr.draw_style(
         scene,
-        title,
+        &label.text,
         theme.tokens.colors.text_primary,
-        transform * Affine::translate((rect.x0, rect.y0)),
+        transform * Affine::translate((label.rect.x0, label.rect.y0)),
         None,
         &style,
     );
-    let mut covered = rect;
-    if let Some(sub) = subtitle_rect {
+    let mut covered = label.rect;
+    if let Some(sub) = label.subtitle {
         tr.draw_style(
             scene,
             subtitle,
@@ -173,7 +181,7 @@ pub(crate) fn centre_label_layout(
     radius: f64,
     title: &str,
     subtitle: &str,
-) -> Option<((TextRole, Rect), Option<Rect>)> {
+) -> Option<CentreLabel> {
     if title.is_empty() || radius <= 0.0 {
         return None;
     }
@@ -185,10 +193,23 @@ pub(crate) fn centre_label_layout(
         let (w, h) = tr.measure_style(subtitle, None, &caption);
         (f64::from(w), f64::from(h))
     };
-    for role in [TextRole::LargeTitle, TextRole::Title, TextRole::Heading] {
+    for role in [
+        TextRole::LargeTitle,
+        TextRole::Title,
+        TextRole::Heading,
+        TextRole::Body,
+        TextRole::Label,
+        TextRole::Caption,
+    ] {
         let style = theme.text(role).strong();
         let (tw, th) = tr.measure_style(title, None, &style);
         let (tw, th) = (f64::from(tw), f64::from(th));
+        let centred = Rect::new(
+            center.x - tw / 2.0,
+            center.y - th / 2.0,
+            center.x + tw / 2.0,
+            center.y + th / 2.0,
+        );
         if sh > 0.0 {
             let top = -(th + sh) / 2.0;
             if tw / 2.0 <= half_chord(radius, top, top + th)
@@ -201,18 +222,50 @@ pub(crate) fn centre_label_layout(
                     center.y + top + th,
                 );
                 let s = Rect::new(center.x - sw / 2.0, t.y1, center.x + sw / 2.0, t.y1 + sh);
-                return Some(((role, t), Some(s)));
+                return Some(CentreLabel {
+                    role,
+                    text: title.to_owned(),
+                    rect: t,
+                    subtitle: Some(s),
+                });
             }
         }
         if tw / 2.0 <= half_chord(radius, -th / 2.0, th / 2.0) {
-            let t = Rect::new(
-                center.x - tw / 2.0,
-                center.y - th / 2.0,
-                center.x + tw / 2.0,
-                center.y + th / 2.0,
-            );
-            return Some(((role, t), None));
+            return Some(CentreLabel {
+                role,
+                text: title.to_owned(),
+                rect: centred,
+                subtitle: None,
+            });
         }
+    }
+    // No role holds the whole line: shorten it into the hole at the largest role that still
+    // shows more than an ellipsis, so a small chart says as much of its total as it can.
+    for role in [
+        TextRole::Title,
+        TextRole::Heading,
+        TextRole::Body,
+        TextRole::Label,
+        TextRole::Caption,
+    ] {
+        let style = theme.text(role).strong();
+        let line = f64::from(style.line_height_px());
+        let room = 2.0 * half_chord(radius, -line / 2.0, line / 2.0);
+        let Some((text, tw, th)) = fit_label(tr, title, room, &style) else {
+            continue;
+        };
+        let rect = Rect::new(
+            center.x - tw / 2.0,
+            center.y - th / 2.0,
+            center.x + tw / 2.0,
+            center.y + th / 2.0,
+        );
+        return Some(CentreLabel {
+            role,
+            text,
+            rect,
+            subtitle: None,
+        });
     }
     None
 }
@@ -270,10 +323,10 @@ mod tests {
             let mut tr = TextRenderer::new();
             let center = Point::new(0.0, 0.0);
             for radius in [12.0, 24.0, 36.0, 60.0, 120.0] {
-                if let Some(((_, title), subtitle)) =
+                if let Some(label) =
                     centre_label_layout(&mut tr, &theme, center, radius, "126", "projects")
                 {
-                    for rect in std::iter::once(title).chain(subtitle) {
+                    for rect in std::iter::once(label.rect).chain(label.subtitle) {
                         for corner in [
                             Point::new(rect.x0, rect.y0),
                             Point::new(rect.x1, rect.y0),
@@ -287,9 +340,31 @@ mod tests {
                         }
                     }
                 } else {
-                    assert!(radius < 36.0, "{radius}: a wide hole shows its copy");
+                    assert!(radius < 24.0, "{radius}: a hole with room shows its copy");
                 }
             }
+        }
+
+        phase a_narrow_hole_shortens_its_total_rather_than_dropping_it;
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let center = Point::new(0.0, 0.0);
+            // A phone-width sunburst hole: too narrow for the whole total at any role, wide
+            // enough to read a shortened one.
+            let radius = 36.7;
+            let label = centre_label_layout(&mut tr, &theme, center, radius, "73 hours", "")
+                .expect("the hole is wide enough to say the total");
+            assert!(
+                label.text.ends_with('…') || label.text == "73 hours",
+                "the total is shown, shortened only where it must be: {:?}",
+                label.text
+            );
+            assert!(
+                label.rect.width() <= 2.0 * radius && label.rect.height() <= 2.0 * radius,
+                "the total stays in the hole: {:?}",
+                label.rect
+            );
         }
 
         phase placed_labels_never_overlap;
