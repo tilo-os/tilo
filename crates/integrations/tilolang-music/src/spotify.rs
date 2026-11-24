@@ -219,7 +219,8 @@ impl Spotify {
     fn disconnect(&self) -> Result<SpotifyReply, ServiceError> {
         self.store
             .forget_oauth(&Self::account())
-            .map_err(|error| ServiceError(format!("Spotify's sign-in was not forgotten: {error}")))
+            .map_err(|error| ServiceError(format!("Spotify's sign-in was not forgotten: {error}")))?;
+        Ok(SpotifyReply::default())
     }
 
     fn status(&self) -> Result<SpotifyReply, ServiceError> {
