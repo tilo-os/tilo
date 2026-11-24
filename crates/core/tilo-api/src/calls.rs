@@ -173,13 +173,15 @@ pub struct Calls {
 
 enum At {
     /// This computer's daemon, serving `workspace` to `person` over `line`; `again` when a lost
-    /// connection is made again at its socket.
+    /// connection is made again at its socket. The same line reaches every other workspace the
+    /// device holds, each call naming its own: `elsewhere` keeps the server of each one called.
     Daemon {
         server: Box<McpServer<Provider>>,
         line: Arc<LineClient>,
         workspace: String,
         person: String,
         again: bool,
+        elsewhere: Elsewhere,
     },
     /// A key's own session with its host, and the program session each workspace's programs
     /// continue.
@@ -190,6 +192,9 @@ enum At {
     /// A Tilo desktop's own API socket.
     Desktop(Desktop),
 }
+
+/// The servers of the workspaces besides its own a daemon's calls reached, by workspace.
+type Elsewhere = std::sync::Mutex<std::collections::HashMap<String, Arc<McpServer<Provider>>>>;
 
 impl Calls {
     /// The actions `reach` names, this computer's daemon reached at its socket when one listens
@@ -279,6 +284,7 @@ impl Calls {
                 workspace,
                 person,
                 again: false,
+                elsewhere: Elsewhere::default(),
             },
         })
     }
@@ -311,6 +317,7 @@ impl Calls {
                     workspace: workspace.clone(),
                     person: person.clone(),
                     again: *again,
+                    elsewhere: Elsewhere::default(),
                 }
             }
             At::Key(direct, _) => At::Key(direct.clone(), tokio::sync::Mutex::default()),
@@ -403,24 +410,32 @@ impl Calls {
         match &self.at {
             At::Daemon {
                 server,
-                workspace: served,
+                workspace: own,
+                line,
+                person,
+                elsewhere,
                 ..
             } => {
-                if let Some(asked) = workspace.filter(|asked| asked != served) {
-                    return Err(ApiError::new(
-                        "beyond_scope",
-                        format!(
-                            "this computer acts in workspace {served}, the one it logged in to, \
-                             not {asked}"
-                        ),
-                    )
-                    .next("leave -w out, or name that workspace's key with --key-file"));
-                }
-                Box::pin(server.typed(tool, arguments, group))
-                    .await
-                    .map_err(|refused| {
-                        ApiError::of_answer(Some(&refused.error), refused.action.as_ref())
-                    })
+                // Another workspace goes over the same line, its calls naming it: the daemon
+                // admits them there as it admits this account, or refuses them.
+                let answer = match workspace.filter(|asked| asked != own) {
+                    None => Box::pin(server.typed(tool, arguments, group)).await,
+                    Some(asked) => {
+                        let there = Arc::clone(
+                            elsewhere
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .entry(asked.to_owned())
+                                .or_insert_with(|| {
+                                    Arc::new(served(line.clone(), asked, person))
+                                }),
+                        );
+                        Box::pin(there.typed(tool, arguments, group)).await
+                    }
+                };
+                answer.map_err(|refused| {
+                    ApiError::of_answer(Some(&refused.error), refused.action.as_ref())
+                })
             }
             // A program goes on in the program session the workspace's last one left, as it
             // does in the one session the other ways keep.

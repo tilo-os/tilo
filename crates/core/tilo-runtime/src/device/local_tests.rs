@@ -88,6 +88,9 @@ fn the_native_endpoints_frames_carry_a_commands_calls_as_its_account() {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    // The person's workspace is founded the first time it is asked for: before a command reaches
+    // it, as `tilo login` and `tilo status` have by then.
+    let workspace = daemon.workspace().expect("the workspace");
     let socket = native_endpoint(&daemon, &root);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -100,7 +103,6 @@ fn the_native_endpoints_frames_carry_a_commands_calls_as_its_account() {
     let calls = runtime
         .block_on(tilo_api::calls::Calls::over(person))
         .unwrap();
-    let workspace = daemon.workspace().expect("the workspace");
     assert_eq!(calls.served_workspace(), Some(workspace.as_str()));
     let listed = runtime
         .block_on(calls.list(Some(workspace.as_str()), None, None))
@@ -145,14 +147,20 @@ const MIGRATE_TEST: &str =
     "device::local::tests::a_commands_migration_steps_reach_the_devices_own_migrations";
 
 /// `tilo migrate` invokes the device's migrations as any caller does: a step it sends on the
-/// daemon's native endpoint, as the person whose account connects, reaches the provider the daemon
-/// registered on `devices/<this device>/migrate`, and its answer comes back on that invocation.
+/// daemon's native endpoint, as the agent of the person whose account connects, waits for the
+/// person's yes, then reaches the provider the daemon registered on
+/// `devices/<this device>/migrate`, and its answer comes back on that invocation.
 #[test]
 fn a_commands_migration_steps_reach_the_devices_own_migrations() {
     let Some(root) = isolated_root(MIGRATE_TEST) else {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    // The person's workspace is founded before a command reaches it, as `tilo login` and
+    // `tilo status` have by then.
+    let workspace = daemon
+        .workspace()
+        .expect("the device founds its person's workspace");
     daemon.serve_migrations();
     let socket = native_endpoint(&daemon, &root);
     let person = line_client(&socket, OWN);
@@ -178,6 +186,50 @@ fn a_commands_migration_steps_reach_the_devices_own_migrations() {
         .expect("the daemon answered")
         .expect("the person's step is admitted");
     let mut status = receipt.status;
+    // The connection is an agent of the person's: its step waits for their yes, which they give
+    // through their own dispatch, as their shell does.
+    let questions = tilo_migrate::provider::caller::Steps::new(
+        Arc::clone(&person) as _,
+        Caller::local_person("").in_workspace(workspace.clone()),
+        &daemon.device_key(),
+        workspace.clone(),
+        None,
+    )
+    .questions()
+    .expect("the questions read");
+    let question = questions
+        .iter()
+        .find(|question| question.action.ends_with("#sources"))
+        .unwrap_or_else(|| panic!("the step's question reads: {questions:?}"));
+    let mut approve = serde_json::Map::new();
+    approve.insert("resolution".into(), serde_json::json!("approve"));
+    let resolve = tilo_actions::remote::InvokeRequest::plain(
+        tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_actions::remote::workspace_invocations::PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(
+                question.record.record.clone(),
+                tilo_actions::remote::asked::RESOLVE,
+            ),
+        },
+        approve,
+    );
+    let (theirs, as_them) = daemon
+        .person_tree_in(&workspace)
+        .expect("the person's own dispatch serves their workspace");
+    let allowed = theirs
+        .invoke(&as_them, resolve)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("the daemon answered")
+        .expect("the person's yes is admitted");
+    assert!(
+        matches!(
+            allowed.status,
+            tilo_actions::remote::ReceiptStatus::Completed { .. }
+        ),
+        "the person allows the step: {allowed:?}"
+    );
     let until = std::time::Instant::now()
         .checked_add(tilo_test_env::hang_bound())
         .expect("a time in reach");
@@ -469,8 +521,15 @@ const ASKS: &str = "so.tilo.probe";
 
 /// A provider offering `probe#publish`, which asks its person before it runs.
 fn asking() -> Arc<tilo_actions::remote::TestProvider> {
+    probe(tilo_actions::ConfirmationPolicy::Confirm)
+}
+
+/// A provider offering `probe#publish`, confirmed as `confirmation` says.
+fn probe(
+    confirmation: tilo_actions::ConfirmationPolicy,
+) -> Arc<tilo_actions::remote::TestProvider> {
     use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow, TestProvider};
-    Arc::new(TestProvider::new().with_catalogue(|caller, query| {
+    Arc::new(TestProvider::new().with_catalogue(move |caller, query| {
         let row = CatalogueRow::for_action(
             ASKS,
             ASKS,
@@ -488,7 +547,7 @@ fn asking() -> Arc<tilo_actions::remote::TestProvider> {
                 locus: tilo_actions::ExecutionLocus::ClientLocal,
                 kind: tilo_actions::OperationKind::Effect,
                 contract: tilo_actions::ActionContract {
-                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                    confirmation: confirmation.clone(),
                     ..tilo_actions::ActionContract::default()
                 },
                 input: tilo_actions::InputSpec::None,
@@ -667,4 +726,102 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
         "{refusal}"
     );
     assert_eq!(probe.asked().len(), ran, "nothing ran in it");
+}
+
+const CLI_TEST: &str =
+    "device::local::tests::the_clis_calls_reach_a_second_workspace_through_the_daemon_and_no_other";
+
+/// `tilo ls -w <workspace>` and `tilo do -w <workspace>` on a computer whose person is in two
+/// workspaces: the command's calls go to the daemon as every command's do, each naming the
+/// workspace it was given, and the second workspace answers them as it admits the person's
+/// account. A workspace the person is not in refuses the command, saying so, and runs nothing.
+#[test]
+fn the_clis_calls_reach_a_second_workspace_through_the_daemon_and_no_other() {
+    let Some(root) = isolated_root(CLI_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let own = daemon
+        .workspace()
+        .expect("the device founds its person's workspace");
+    let studio = tilo_desktop_model::WorkspaceId::new();
+    let serving = Arc::clone(daemon.serving());
+    tilo_rt::app()
+        .block_on(async move { serving.found(studio, "Studio").await })
+        .expect("the runtime runs the founding")
+        .expect("the device founds Studio");
+    let studio = studio.to_string();
+    let probe = probe(tilo_actions::ConfirmationPolicy::default());
+    daemon.provide(ASKS, Arc::clone(&probe) as _);
+    let socket = native_endpoint(&daemon, &root);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    // The command's calls, as `tilo` opens them on this computer: over the daemon's socket.
+    let calls = runtime
+        .block_on(tilo_api::calls::Calls::over(line_client(&socket, OWN)))
+        .unwrap();
+    assert_eq!(calls.served_workspace(), Some(own.as_str()));
+    let ls = |workspace: &str| {
+        runtime.block_on(async {
+            let workspace = calls.workspace_id(workspace).await?;
+            calls.list(Some(&workspace), Some("probe"), None).await
+        })
+    };
+
+    // `tilo ls probe -w <studio>`: the second workspace lists what the probe offers there, asked
+    // of the probe in that workspace.
+    let listed = ls(&studio).expect("the second workspace lists what it holds");
+    assert!(
+        listed.to_string().contains("publish"),
+        "the probe's action is listed: {listed:#}"
+    );
+    let asked_in: Vec<Option<String>> = probe
+        .callers()
+        .iter()
+        .map(|caller| caller.workspace().map(str::to_owned))
+        .collect();
+    assert!(
+        asked_in.contains(&Some(studio.clone())),
+        "the listing was asked in the second workspace: {asked_in:?}"
+    );
+
+    // `tilo ls probe -w <elsewhere>` and `tilo do -w <elsewhere> probe#publish`, in a workspace the
+    // person is not in: each refused, saying which workspace refused it.
+    let elsewhere = tilo_desktop_model::WorkspaceId::new().to_string();
+    let refused_by = |said: String| {
+        assert!(
+            said.contains(&elsewhere) && said.contains("does not let you act"),
+            "the command says the workspace refused it: {said}"
+        );
+    };
+    let asked_before = probe.callers().len();
+    refused_by(format!(
+        "{:#}",
+        ls(&elsewhere).expect_err("a workspace they are not in lists nothing")
+    ));
+    let done = runtime.block_on(async {
+        let workspace = calls.workspace_id(&elsewhere).await?;
+        let started = calls
+            .start(
+                Some(&workspace),
+                "probe",
+                "publish",
+                &serde_json::json!({}),
+                "probe#publish",
+            )
+            .await?;
+        calls.follow(Some(&workspace), started).await
+    });
+    refused_by(format!(
+        "{:#}",
+        done.expect_err("a workspace they are not in runs nothing")
+    ));
+    assert_eq!(
+        probe.callers().len(),
+        asked_before,
+        "nothing reached the provider from it"
+    );
+    assert!(probe.asked().is_empty(), "nothing ran in it");
 }

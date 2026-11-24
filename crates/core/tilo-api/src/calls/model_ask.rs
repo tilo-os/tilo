@@ -416,8 +416,7 @@ mod tests {
                 std::thread::spawn(move || {
                     let output = stream.try_clone().unwrap();
                     serve_lines(
-                        &stand,
-                        &Caller::local_person("ada"),
+                        |_| Ok((stand.clone(), Caller::local_person("ada"))),
                         &tilo_actions::remote::HostedContentPuts::default(),
                         None,
                         BufReader::new(stream),
