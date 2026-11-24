@@ -2429,7 +2429,8 @@ impl<R: Resource> Effects<R> {
                 return Ok(None);
             };
             let dispatch = dispatch.clone();
-            let apply: ApplySettlement = Box::new(move |edits| dispatch.apply_now(edits, &action));
+            let apply: ApplySettlement =
+                Box::new(move |edits| dispatch.apply_now_external(edits, &action));
             Ok(Some((apply, told)))
         });
         let completing = env;
