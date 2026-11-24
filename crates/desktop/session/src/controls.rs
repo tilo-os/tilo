@@ -19,7 +19,6 @@ use tilo_service::{Service, Started};
 use tilo_session_core::desktop::osd::{Hint, OsdKind};
 
 use crate::displays::DisplayMode;
-use tilo_sheets::SheetState as _;
 
 use crate::i18n::t;
 use crate::{displays, input_sources};
@@ -184,7 +183,7 @@ pub enum ScreenEffect {
     PowerMenu,
 }
 
-pub(crate) use tilo_device_surfaces::controls::{App, Apps, NightLightEffect, NightLightReading};
+pub(crate) use tilo_device_surfaces::controls::{App, Apps, NightLightEffect};
 
 /// The screen magnifier.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]

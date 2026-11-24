@@ -99,8 +99,9 @@ impl WindowMotions {
         let mut rects: BTreeMap<u64, Rect> = BTreeMap::new();
         for (info, at) in &windows {
             rects.insert(info.id, rect_of(*at));
-            if !self.known.contains_key(&info.id) {
-                self.known.insert(info.id, Some(now));
+            if let std::collections::btree_map::Entry::Vacant(appearing) = self.known.entry(info.id)
+            {
+                appearing.insert(Some(now));
                 if let Some(control) =
                     control(ui::motion::recent_input(now), compositor.pointer_location())
                 {

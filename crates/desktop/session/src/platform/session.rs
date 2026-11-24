@@ -54,6 +54,7 @@ pub use crate::vpn::Vpn;
 pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 
+#[cfg(test)]
 use crate::app_wire::AppWire;
 use crate::search::SessionSearch;
 use crate::services::app_wire::{mount_services, start_app_wire};
