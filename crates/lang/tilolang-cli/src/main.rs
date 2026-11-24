@@ -42,7 +42,8 @@ const USAGE: &[(&str, &str)] = &[
                [--repo DIR]
       build the package, install it into a locally built nested Tilo session
       (dist/dev/nested-session-build.sh target/nested-session) and open it there; from then on
-      as `tilolang dev`. --software renders with lavapipe only and never opens this machine's
+      as `tilolang dev`. Needs a Tilo checkout: DIR's, the current directory's, --repo's or
+      $TILO_REPO's. --software renders with lavapipe only and never opens this machine's
       GPU.",
     ),
     (
@@ -54,10 +55,12 @@ const USAGE: &[(&str, &str)] = &[
       develop the package as an ordinary window on this desktop: every saved .tl file is
       compiled, published to the running app and taken over with its state (the same window,
       its records, scroll and selection); a compile error is printed and the app keeps running.
-      The app's records persist across runs. Without --runtime the tool builds tilolang-process
-      from the checkout with cargo, and again on every change of its sources, restarting the
-      window on it with its state.
-      With --session, develop it in a running nested session instead (SESSION: its --ready
+      The app's records persist across runs. Without --runtime the window runs on the tilolang
+      runtime of the Tilo installed on this computer; in a Tilo checkout (DIR's, the current
+      directory's, --repo's or $TILO_REPO's) the tool builds tilolang-process from it with cargo
+      instead, and again on every change of its sources, restarting the window on it with its
+      state.
+      With --session (in a Tilo checkout), develop it in a running nested session instead (SESSION: its --ready
       file, runtime directory, control socket or state directory): every saved .tl file is compiled, installed
       and taken over by the app there, and --runtime BIN bakes the runtime binary into a signed
       runtime bundle installed in that session. See docs/tilolang-dev.md.",

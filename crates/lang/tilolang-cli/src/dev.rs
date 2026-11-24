@@ -14,9 +14,10 @@
 //! process restarts and later runs. The running app takes a new generation on the same store and
 //! windows; when it cannot read the state the old one wrote ([`tilolang_tilo::upgrade`]), the
 //! tool says why in one line and the app starts over on the new build with its data, as its next
-//! start would. The runtime binary is `--runtime BIN`, or a build of
+//! start would. The runtime binary is `--runtime BIN`; in a Tilo checkout, a build of
 //! `crates/lang/tilolang-process` the tool makes with cargo and remakes on every change of its
-//! sources, restarting the window on it. A
+//! sources, restarting the window on it; and outside one (a tool installed on its own), the
+//! tilolang runtime of the Tilo installed on this computer (`crate::installed_runtime`). A
 //! binary built by hand is taken when the file it was written to is whole again, by whichever
 //! of the events a build makes: the tool watches the binary's directory, and the one above it,
 //! and starts the window again on the new program once it has stopped growing.
@@ -523,9 +524,9 @@ pub(crate) struct Dev {
     /// it.
     reload_pending: Option<(PathBuf, std::time::SystemTime)>,
     wake: Option<Arc<WakeFd>>,
-    /// The checkout the tool was built from: whose sources being newer than the tool mean the tool
-    /// cannot know all the types they declare.
-    repo: PathBuf,
+    /// The checkout the tool works in, when there is one: whose sources being newer than the tool
+    /// mean the tool cannot know all the types they declare.
+    repo: Option<PathBuf>,
     sources: BTreeSet<PathBuf>,
     runtime_taken: Option<Program>,
     watching: BTreeMap<PathBuf, ChangeWatch>,
@@ -536,7 +537,7 @@ impl Dev {
         build: BuildOptions,
         identity: SigningIdentity,
         delivery: Delivery,
-        repo: &Path,
+        repo: Option<&Path>,
     ) -> Self {
         Self {
             build,
@@ -547,7 +548,7 @@ impl Dev {
             runtime: None,
             reload_pending: None,
             wake: None,
-            repo: repo.to_path_buf(),
+            repo: repo.map(Path::to_path_buf),
             sources: BTreeSet::new(),
             runtime_taken: None,
             watching: BTreeMap::new(),
@@ -559,7 +560,7 @@ impl Dev {
         identity: SigningIdentity,
         peers: Vec<Peer>,
         bin: PathBuf,
-        repo: &Path,
+        repo: Option<&Path>,
     ) -> Self {
         Self::new(build, identity, Delivery::Session { peers, bin }, repo)
     }
@@ -568,7 +569,7 @@ impl Dev {
         build: BuildOptions,
         identity: SigningIdentity,
         root: &Path,
-        repo: &Path,
+        repo: Option<&Path>,
     ) -> Result<Self, String> {
         Ok(Self::new(
             build,
@@ -739,6 +740,9 @@ impl Dev {
 
     /// Whether the checkout's sources of the tool are newer than the tool itself.
     fn older_than_sources(&self) -> bool {
+        let Some(repo) = &self.repo else {
+            return false;
+        };
         let Ok(built) = std::env::current_exe()
             .and_then(std::fs::metadata)
             .and_then(|meta| meta.modified())
@@ -747,7 +751,7 @@ impl Dev {
         };
         TOOL_SOURCES
             .iter()
-            .filter_map(|dir| newest_source(&self.repo.join(dir)))
+            .filter_map(|dir| newest_source(&repo.join(dir)))
             .any(|newest| newest > built)
     }
 
@@ -1730,12 +1734,21 @@ fn build_local_runtime_binary(repo: &Path) -> Result<PathBuf, String> {
 /// `options.session`, or on this desktop when there is none,
 /// until interrupted.
 pub fn dev(options: &DevOptions) -> Result<(), String> {
-    let repo = session::repo_root(options.repo.as_deref(), &options.dir)?;
     let identity = crate::publisher_identity()?;
     let (sender, wakes) = mpsc::channel();
     match &options.session {
-        Some(session) => dev_in_session(options, &repo, session, identity, &sender, &wakes),
-        None => dev_on_desktop(options, &repo, identity, &sender, &wakes),
+        Some(session) => {
+            let repo = session::repo_root(
+                options.repo.as_deref(),
+                &options.dir,
+                "tilolang dev --session",
+            )?;
+            dev_in_session(options, &repo, session, identity, &sender, &wakes)
+        }
+        None => {
+            let repo = session::checkout(options.repo.as_deref(), &options.dir)?;
+            dev_on_desktop(options, repo.as_deref(), identity, &sender, &wakes)
+        }
     }
 }
 
@@ -1777,7 +1790,7 @@ fn dev_in_session(
         version: "0.1.0".to_owned(),
         locked: false,
     };
-    let mut dev = Dev::in_session(build, identity, vec![peer], bin, repo);
+    let mut dev = Dev::in_session(build, identity, vec![peer], bin, Some(repo));
     dev.runtime = runtime;
     if dev.runtime.is_some() {
         dev.build_runtime()?;
@@ -1806,17 +1819,33 @@ fn dev_in_session(
 /// directory it follows, until its window closes.
 fn dev_on_desktop(
     options: &DevOptions,
-    repo: &Path,
+    repo: Option<&Path>,
     identity: SigningIdentity,
     sender: &mpsc::Sender<Wake>,
     wakes: &mpsc::Receiver<Wake>,
 ) -> Result<(), String> {
     let root = dev_build_dir(&crate::state_dir(), &options.dir)?;
-    let built_in = (options.build_runtime || options.runtime.is_none()).then(|| repo.to_path_buf());
-    let runtime = options
-        .runtime
-        .clone()
-        .map(|binary| std::path::absolute(&binary).unwrap_or(binary));
+    // The runtime: a binary named, one built from the checkout (and again on every change of its
+    // sources), or, with no checkout here, the one of the Tilo installed on this computer.
+    let (runtime, built_in, loaders) = match (&options.runtime, repo) {
+        (Some(binary), _) if !options.build_runtime => (
+            Some(std::path::absolute(binary).unwrap_or_else(|_| binary.clone())),
+            None,
+            Vec::new(),
+        ),
+        (_, Some(repo)) => (None, Some(repo.to_path_buf()), Vec::new()),
+        (_, None) if options.build_runtime => {
+            return Err(
+                "--build-runtime builds the tilolang runtime from a Tilo checkout, and there is \
+                 none here: run it in a checkout, or name one with --repo DIR or $TILO_REPO"
+                    .to_owned(),
+            );
+        }
+        (_, None) => {
+            let installed = crate::installed_runtime::find()?;
+            (Some(installed.binary), None, installed.loaders)
+        }
+    };
     let build = BuildOptions {
         dir: options.dir.clone(),
         search: options.search.clone(),
@@ -1831,7 +1860,7 @@ fn dev_on_desktop(
         binary: runtime,
         built_in,
         reloads_in_place: false,
-        loaders: Vec::new(),
+        loaders,
         identity_file: None,
         version: dev_runtime_version(),
     });

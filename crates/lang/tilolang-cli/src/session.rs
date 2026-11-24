@@ -20,15 +20,19 @@ pub(crate) const RUNTIME_BINARY: &str = "thin-app/tilolang-process";
 /// socket, runtime directory and state directory, as JSON.
 pub(crate) const SESSION_FILE: &str = "session.json";
 
-/// The Tilo checkout: `explicit`, `$TILO_REPO`, or the first directory above `dir` or the current
-/// directory that has the nested session.
-pub(crate) fn repo_root(explicit: Option<&Path>, dir: &Path) -> Result<PathBuf, String> {
+/// The Tilo checkout the tool works in: `explicit`, `$TILO_REPO`, or the first directory above
+/// `dir` or the current directory that has the nested session; `None` when nothing names one and
+/// none is above, as for a tool installed on its own.
+///
+/// # Errors
+/// `explicit` or `$TILO_REPO` names a directory that is no checkout.
+pub(crate) fn checkout(explicit: Option<&Path>, dir: &Path) -> Result<Option<PathBuf>, String> {
     if let Some(repo) = explicit
         .map(Path::to_path_buf)
         .or_else(|| std::env::var_os("TILO_REPO").map(PathBuf::from))
     {
         return if repo.join(SESSION_SCRIPT).is_file() {
-            Ok(repo)
+            Ok(Some(repo))
         } else {
             Err(format!("{}: no {SESSION_SCRIPT} there", repo.display()))
         };
@@ -37,18 +41,29 @@ pub(crate) fn repo_root(explicit: Option<&Path>, dir: &Path) -> Result<PathBuf, 
         std::fs::canonicalize(dir).ok(),
         std::env::current_dir().ok(),
     ];
-    starts
-        .into_iter()
-        .flatten()
-        .find_map(|start| {
-            start
-                .ancestors()
-                .find(|dir| dir.join(SESSION_SCRIPT).is_file())
-                .map(Path::to_path_buf)
-        })
-        .ok_or_else(|| {
-            "no Tilo checkout above the package; name one with --repo or $TILO_REPO".to_owned()
-        })
+    Ok(starts.into_iter().flatten().find_map(|start| {
+        start
+            .ancestors()
+            .find(|dir| dir.join(SESSION_SCRIPT).is_file())
+            .map(Path::to_path_buf)
+    }))
+}
+
+/// The checkout a nested session is started from or attached in ([`checkout`]), or what to do
+/// without one: `command` (`tilolang run`) needs it, and `tilolang dev` does not.
+pub(crate) fn repo_root(
+    explicit: Option<&Path>,
+    dir: &Path,
+    command: &str,
+) -> Result<PathBuf, String> {
+    checkout(explicit, dir)?.ok_or_else(|| {
+        format!(
+            "`{command}` runs the app in a nested Tilo session, which is built and started from a \
+             Tilo checkout ({SESSION_SCRIPT}), and there is none here: run it in a checkout of \
+             https://code.tilo.so/tilo/tilo, or name one with --repo DIR or $TILO_REPO. \
+             `tilolang dev DIR` runs the app as a window on this desktop without one"
+        )
+    })
 }
 
 /// The nested-session build the session's tools come from: `$TILO_NESTED_SESSION_BUILD` when set,

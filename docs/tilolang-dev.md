@@ -13,15 +13,33 @@ There are two ways to run them:
 
 - **On this desktop.** `tilolang dev DIR` runs the package as an ordinary window, with no
   Tilo session: it is the developer's own app, and its records are its local store. This
-  is the everyday loop.
+  is the everyday loop, and the one an installed `tilolang` runs.
 - **In a real session.** `tilolang dev DIR --session SESSION` develops the package inside
   a running nested session, where it runs as an installed app: launched by the launcher,
   in its sandbox, under its own id and ownership. Use it to test a change against a real
-  session.
+  session. A nested session is built and started from a Tilo checkout, so this way needs
+  one.
 
 ## On this desktop
 
-Build the tool with the workspace's `fast` profile, the one it names for the desktop:
+With `tilolang` installed (`curl -fsSL https://tilolang.dev/install | sh` or `cargo install
+tilolang-cli`), start the loop in the package's directory:
+
+```sh
+tilolang dev
+```
+
+The window runs on the tilolang runtime of the Tilo installed on this computer: the runtime
+bundle its launcher runs every tilolang app on, from the person's own runtimes
+(`$XDG_DATA_HOME/tilo-runtime`) or the system's (`/usr/lib/tilo-runtime`). Without Tilo
+installed, `tilolang dev` says where it looked; install Tilo, or name a runtime binary with
+`--runtime BIN`.
+
+### In a Tilo checkout
+
+Inside a checkout of Tilo (or with one named by `--repo DIR` or `$TILO_REPO`), the loop
+runs on the checkout's own runtime instead, and rebuilds it as you change it. Build the tool
+with the workspace's `fast` profile, the one it names for the desktop:
 
 ```sh
 cargo build --profile fast -p tilolang-cli --bin tilolang
@@ -37,6 +55,8 @@ The first start builds `tilolang-process` from the checkout in the same profile 
 build; a thin build runs only against a session's runtime library) and opens the package's
 window. `--runtime BIN` runs a binary you built yourself instead, and a new build of it
 restarts the window on it.
+
+### What reaches the window
 
 What the loop counts as a save: anything that changes what a build reads. That is every
 `.tl` file of the package and of the packages it uses, the translations in their
@@ -75,6 +95,9 @@ because nothing installs it.
 - `Ctrl-C` stops the tool and the window. Closing the window stops the loop.
 
 ## In a real session
+
+This needs a Tilo checkout: run the commands below in one, or name it with `--repo DIR` or
+`$TILO_REPO`. Outside one, `tilolang run` and `tilolang dev --session` say so and stop.
 
 You need a nested-session build (`dist/dev/nested-session-build.sh
 target/nested-session`, which `dist/dev/nested-session.sh` builds) and the tool, built

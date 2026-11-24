@@ -947,7 +947,10 @@ tilolang check [dir] [--json] [--watch] [--write-ids] [--path DIR]...
 tilolang build [dir] [--out DIR]          writes a signed Tilo app per package: OUT/<name>.tapp
 tilolang fmt [dir] [--check]              rewrites every file in canonical form
 tilolang ids [dir] [--rename old new]     prints or edits the ids lock
+tilolang dev [dir]                        runs the package as a window on this desktop and
+                                          applies each saved change to it, with its state
 tilolang run [dir] [--peers N] [--headless]  runs the package as an app in a nested Tilo session
+                                          (in a Tilo checkout)
 tilolang describe [dir] [--search DIR]    prints what an app publishes as tilolang: a native app
                                           (its surface.toml) and a tilolang package alike
 tilolang profile [dir] [--seed N] [--then INTERACTION]...
@@ -1027,6 +1030,13 @@ another app's records only as its surface declares (`reads`), read-only; it chan
 app's resources only by invoking that app's actions.
 
 ## The development loop
+
+`tilolang dev` in the package's directory opens the app as a window on this desktop, on the
+tilolang runtime of the Tilo installed on this computer, and applies every saved change to the
+running window with its state ([the development loop](../../../docs/tilolang-dev.md)).
+
+In a Tilo checkout, `run` also runs the package in nested Tilo sessions built from the
+checkout's sources:
 
 ```
 dist/dev/nested-session-build.sh target/nested-session   # once; TILO_NESTED_APPS="" builds no other app

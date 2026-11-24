@@ -155,7 +155,7 @@ fn wait_for_file(
 }
 
 pub fn run(options: &RunOptions) -> Result<(), String> {
-    let repo = session::repo_root(options.repo.as_deref(), &options.dir)?;
+    let repo = session::repo_root(options.repo.as_deref(), &options.dir, "tilolang run")?;
     let build_dir = session::build_dir(&repo);
     if !build_dir.join(session::RUNTIME_BINARY).is_file() {
         return Err(format!(
@@ -183,7 +183,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         locked: false,
     };
     let identity = crate::publisher_identity()?;
-    let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"), &repo);
+    let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"), Some(&repo));
     let apps = dev.build_for_start()?;
 
     let (sender, wakes) = mpsc::channel();

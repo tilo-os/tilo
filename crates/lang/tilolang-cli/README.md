@@ -35,6 +35,9 @@ tilolang repl             # type tilolang in one of your workspaces
 each one. A command works out what kind of app it's looking at: a directory of
 `.tl` files is a tilolang package, and a Cargo crate is a Rust app.
 
+`dev` runs a tilolang app's window on the tilolang runtime of the Tilo
+installed on your computer.
+
 `repl` and `push` reach your workspace through the `tilo` command, as you, so
 they need it installed and signed in.
 

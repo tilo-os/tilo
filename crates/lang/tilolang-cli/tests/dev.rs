@@ -96,28 +96,55 @@ struct Loop {
     reported: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
+/// Where the window's program comes from.
+#[cfg(unix)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Runtime {
+    /// `--runtime BIN`, in the checkout.
+    Named,
+    /// The tilolang runtime bundle of the Tilo installed here, found by a tool with no checkout
+    /// around it, started in the package's directory.
+    Installed,
+}
+
 #[cfg(unix)]
 impl Loop {
     fn start() -> Self {
+        Self::on(Runtime::Named)
+    }
+
+    fn on(runs: Runtime) -> Self {
         let scratch = tempfile::tempdir().unwrap();
         let package = scratch.path().join("counter");
         copy_package(&packages().join("counter"), &package);
-        let bin = scratch.path().join("bin");
+        let data = scratch.path().join("data");
+        let bin = match runs {
+            Runtime::Named => scratch.path().join("bin"),
+            Runtime::Installed => installed_runtime(&data).join("bin"),
+        };
         std::fs::create_dir_all(&bin).unwrap();
         let runtime = bin.join("tilolang-process");
         let starts = scratch.path().join("starts.log");
         std::fs::write(&starts, "").unwrap();
         write_program(&runtime, "the window's program", &starts);
         let state = scratch.path().join("state");
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tilolang"))
-            .arg("dev")
-            .arg(&package)
-            .arg("--runtime")
-            .arg(&runtime)
-            .arg("--repo")
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."))
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_tilolang"));
+        command.arg("dev");
+        match runs {
+            Runtime::Named => {
+                command
+                    .arg(&package)
+                    .arg("--runtime")
+                    .arg(&runtime)
+                    .arg("--repo")
+                    .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+            }
+            // As a person runs it: in the package's own directory, naming none.
+            Runtime::Installed => outside_checkout(&mut command, &package),
+        }
+        let mut child = command
             .env("XDG_STATE_HOME", &state)
-            .env("XDG_DATA_HOME", scratch.path().join("data"))
+            .env("XDG_DATA_HOME", &data)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -177,7 +204,7 @@ impl Loop {
     /// Replace the runtime with a new build, as a build does: a new file, renamed over the old one,
     /// which leaves a new inode where the old file was.
     fn replace_runtime(&self, note: &str) {
-        let staged = self.scratch.path().join("bin/.tilolang-process.new");
+        let staged = self.runtime.with_file_name(".tilolang-process.new");
         write_program(&staged, note, &self.starts);
         std::fs::rename(&staged, &self.runtime).unwrap();
     }
@@ -203,6 +230,27 @@ impl Loop {
             );
         }
     }
+}
+
+/// The directory of the tilolang runtime bundle a Tilo installed for the person whose data
+/// directory is `data` keeps, where its launcher finds it: one the tool runs a window on.
+#[cfg(unix)]
+fn installed_runtime(data: &Path) -> PathBuf {
+    let (_, version) = package::DEFAULT_TILOLANG_RUNTIME.split_once('/').unwrap();
+    let bundle = data.join("tilo-runtime").join(version);
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("bundle.toml"), "").unwrap();
+    bundle
+}
+
+/// Run `command` as a tool installed on its own runs: from `dir`, outside any Tilo checkout, with
+/// none named.
+#[cfg(unix)]
+fn outside_checkout(command: &mut std::process::Command, dir: &Path) {
+    command
+        .current_dir(dir)
+        .env_remove("TILO_REPO")
+        .env_remove("TILO_RUNTIME_BUNDLE_DIR");
 }
 
 /// Write the runtime's stand-in program, which records each of its starts in `starts` and runs
@@ -305,4 +353,75 @@ fn wait_generation(updates: &Path, generation: Option<u64>) {
         format!("the app's builds to reach generation {generation:?}"),
         || tilo_app_module::current(updates).unwrap() == generation,
     );
+}
+
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn a_tool_with_no_checkout_runs_the_window_on_the_installed_runtime;
+
+    phase the_window_runs_on_the_installed_tilos_runtime_and_takes_a_save;
+    // No checkout and no runtime named: the window runs on the tilolang runtime of the Tilo
+    // installed here, and a save reaches it as the next generation.
+    {
+        let dev = Loop::on(Runtime::Installed);
+        dev.wait_starts(1);
+        let updates = dev.updates();
+        wait_generation(&updates, Some(1));
+        let file = dev.package.join("app.tl");
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, text.replace("section(\"Count\")", "section(\"Total\")")).unwrap();
+        wait_generation(&updates, Some(2));
+        dev.stop();
+    }
+
+    phase with_no_tilo_installed_dev_says_what_to_do;
+    {
+        let scratch = tempfile::tempdir().unwrap();
+        let package = scratch.path().join("counter");
+        copy_package(&packages().join("counter"), &package);
+        let said = refused(scratch.path(), &["dev", package.to_str().unwrap()]);
+        assert!(said.contains("no tilolang runtime to run the app on"), "{said}");
+        assert!(said.contains("--runtime BIN"), "{said}");
+    }
+
+    phase run_and_a_session_say_they_need_a_checkout;
+    // A nested session is built and started from a checkout: without one, the commands that need
+    // it say so, and point at `tilolang dev`.
+    {
+        let scratch = tempfile::tempdir().unwrap();
+        let package = scratch.path().join("counter");
+        copy_package(&packages().join("counter"), &package);
+        let dir = package.to_str().unwrap();
+        for (args, command) in [
+            (&["run", dir, "--headless"][..], "`tilolang run`"),
+            (&["dev", dir, "--session", "/nonexistent"][..], "`tilolang dev --session`"),
+        ] {
+            let said = refused(scratch.path(), args);
+            assert!(said.contains(command), "{said}");
+            assert!(said.contains("Tilo checkout"), "{said}");
+            assert!(said.contains("`tilolang dev DIR`"), "{said}");
+        }
+    }
+}
+
+/// What the tool says on its way out when `args` fail, run from `dir` outside any checkout with
+/// nothing installed.
+#[cfg(unix)]
+fn refused(dir: &Path, args: &[&str]) -> String {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_tilolang"));
+    command.args(args);
+    outside_checkout(&mut command, dir);
+    let output = command
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("XDG_DATA_HOME", dir.join("data"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn_locked()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!output.status.success(), "{args:?} ran: {said}");
+    said
 }

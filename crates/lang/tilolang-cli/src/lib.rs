@@ -3,6 +3,7 @@
 
 pub mod describe;
 pub mod dev;
+mod installed_runtime;
 pub mod layout_check;
 pub mod package;
 pub mod profile;

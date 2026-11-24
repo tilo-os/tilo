@@ -43,6 +43,9 @@ ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 runtime-portal = { version = "0.1.0", package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+# `dev` outside a checkout: the tilolang runtime bundle of the Tilo installed here, where its
+# launcher finds it.
+runtime-bundle = { version = "0.1.0", package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
 bounded-command = { version = "0.1.0", package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 rustix = { workspace = true, features = ["event", "process", "termios"] }
 serde.workspace = true
@@ -76,7 +79,6 @@ tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 # The outside-repository journey publishes into a real registry on loopback.
 registry-server = { path = "../../core/registry-server" }
 tokio = { workspace = true, features = ["rt"] }
-runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
 blake3.workspace = true
 tilo-rich-edit = { path = "../../ui/tilo-rich-edit" }
 tilo-test-env = { path = "../../../tools/test-env" }
