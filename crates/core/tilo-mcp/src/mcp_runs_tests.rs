@@ -76,6 +76,16 @@ struct RunsRead {
 }
 
 impl tilo_actions::remote::ResourceReads for RunsRead {
+    // Each run is noted as the call is taken, so the next read sees it without a wake.
+    fn watch(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::remote::ResourceAddress,
+        _: &tilo_actions::remote::ResourceWake,
+    ) -> Result<(), ActionCallError> {
+        Ok(())
+    }
+
     fn read(
         &self,
         _: &Caller,
