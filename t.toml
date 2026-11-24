@@ -65,9 +65,9 @@ CARGO_PROFILE_TEST_DEBUG = "0"
 # symbol table keep it (`[profile.test.package.*] strip = false` in Cargo.toml).
 # To keep symbols in every test binary again, delete this line.
 CARGO_PROFILE_TEST_STRIP = "symbols"
-# A warning in any crate of a target the CI builds is an error, in every check that compiles.
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-D warnings"
-CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-D warnings"
+# Warnings are the lint checks' to refuse: clippy and the per-package lints pass `-D warnings`
+# themselves (their `trailing`), so a stray unused binding fails the lint and not every build and
+# test that compiles the crate.
 # Software Vulkan everywhere: no CI node has a GPU, and every render check renders the same way
 # on all of them.
 WGPU_BACKEND = "vulkan"
