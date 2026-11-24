@@ -189,6 +189,7 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
             standing: Arc::new(NoStanding),
             published: None,
             workspaces: host.workspaces().clone(),
+            identity: None,
         })),
         ..ProcessServices::default()
     };

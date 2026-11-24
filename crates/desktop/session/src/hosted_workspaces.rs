@@ -2,7 +2,7 @@
 //!
 //! A person's desktop reaches the hosts of its workspaces through the device's daemon, which
 //! publishes the person's workspace list with each one's host and sends the person's record
-//! actions there on its one dispatch ([`crate::broker_services::DaemonHosts`]). A session the host
+//! actions there on its one dispatch. A session the host
 //! placed in a workspace's VM (a hosted Browser, a workspace's Linux apps,
 //! [`crate::hosted_browser`]) is a device of its own that runs no daemon: it holds the workspace
 //! as a confined member and asks the host, which certified it, for what it may not hold or write

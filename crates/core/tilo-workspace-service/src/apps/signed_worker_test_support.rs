@@ -224,6 +224,7 @@ pub fn rpc_pair(
         directories,
         peer,
         worker,
+        None,
     ));
     let (r, w) = tokio::net::UnixStream::from_std(client)
         .unwrap()

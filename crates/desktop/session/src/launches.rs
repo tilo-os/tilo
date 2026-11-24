@@ -504,6 +504,42 @@ impl Window {
     }
 }
 
+impl Launches {
+    /// Start `app` in the workspace `workspace` names at `place`, opening `record` of it when one
+    /// is named: [`LauncherServices::launch`], for a caller that names the workspace by its id (the
+    /// device's daemon, for the apps it admits).
+    ///
+    /// # Errors
+    /// `app` names nothing this session starts, or the launch did not start.
+    pub(crate) fn launch_in(
+        &self,
+        app: &str,
+        workspace: &str,
+        record: Option<&str>,
+        place: &LaunchPlace,
+    ) -> Result<(), String> {
+        let launch = if let Some(record) = record {
+            tilo_app_launch::Launch::Record {
+                app: app.to_owned(),
+                record: record.to_owned(),
+                visitor: false,
+            }
+        } else {
+            match tilo_app_launch::Launch::parse(app) {
+                Some(launch) => launch,
+                None => return Err(format!("{app} is not an application")),
+            }
+        };
+        if matches!(
+            launch,
+            tilo_app_launch::Launch::Window { .. } | tilo_app_launch::Launch::Crashed { .. }
+        ) {
+            return Err(format!("{app} starts no process"));
+        }
+        self.ask(launch, workspace, place.clone(), None)
+    }
+}
+
 impl LauncherServices for Launches {
     /// This device's apps, as its lists last read them: what an app or a service asking the action
     /// API may open here, and what each app declared it may do.
@@ -529,25 +565,7 @@ impl LauncherServices for Launches {
         record: Option<&str>,
         place: &LaunchPlace,
     ) -> Result<(), String> {
-        let launch = if let Some(record) = record {
-            tilo_app_launch::Launch::Record {
-                app: app.to_owned(),
-                record: record.to_owned(),
-                visitor: false,
-            }
-        } else {
-            match tilo_app_launch::Launch::parse(app) {
-                Some(launch) => launch,
-                None => return Err(format!("{app} is not an application")),
-            }
-        };
-        if matches!(
-            launch,
-            tilo_app_launch::Launch::Window { .. } | tilo_app_launch::Launch::Crashed { .. }
-        ) {
-            return Err(format!("{app} starts no process"));
-        }
-        self.ask(launch, &workspace.id().to_string(), place.clone(), None)
+        self.launch_in(app, &workspace.id().to_string(), record, place)
     }
 
     fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {

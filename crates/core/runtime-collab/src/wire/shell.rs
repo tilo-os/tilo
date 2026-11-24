@@ -38,11 +38,6 @@ pub const SHELL_SECRET_BYTES: usize = 32;
 /// Names the descriptor of the shell link the daemon handed the shell it started.
 pub const SHELL_FD_ENV: &str = "TILO_SHELL_FD";
 
-/// What a connection the shell opens for one of the apps it launched begins with, followed by the
-/// one-use secret the daemon answered the shell's [`ShellCall::Vouch`] with: the daemon admits the
-/// connection as the app that vouch named. As long as [`SHELL_MAGIC`].
-pub const VOUCH_MAGIC: &[u8; 4] = b"QSV1";
-
 /// What a connection the shell opens to hand the device's tilolang processes an instance begins
 /// with, followed by the one-use secret the daemon answered the shell's [`ShellCall::Processes`]
 /// with: both written in one message that carries the shell's end of a packet socket pair
@@ -51,17 +46,52 @@ pub const VOUCH_MAGIC: &[u8; 4] = b"QSV1";
 /// [`SHELL_MAGIC`].
 pub const PROCESSES_MAGIC: &[u8; 4] = b"QSP1";
 
-/// The app a shell vouches for ([`ShellCall::Vouch`]): one the shell launched and admitted on its
-/// own connection, in the workspace that launch named. The connection the vouch admits then
-/// carries that app's calls on its documents.
+/// A connection the shell hands the daemon ([`ShellCall::Vouch`]), made on the shell's app
+/// socket: the apps the person runs reach the shell there, and only the shell can tell them apart
+/// (they run as the person, beside it; the daemon runs as the device's own account and sees
+/// neither their processes nor the sockets they could reach). The connection itself travels on
+/// the shell link as a descriptor, so it speaks to the daemon directly from then on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vouch {
+    /// The number, on the shell link, of the descriptor of the connection.
+    pub connection: u32,
+    /// The app the shell launched and attested the connection as, by its own launch record: the
+    /// daemon admits the connection as that app, workspace and window. `None` for a client that
+    /// named no launch, which the daemon admits by what it presents, as it admits any connection
+    /// to its socket.
+    pub app: Option<VouchedApp>,
+    /// The service of the daemon's the connection was made for.
+    #[serde(default)]
+    pub to: HandedTo,
+}
+
+/// The service of the daemon's a [`Vouch`]'s connection was made for: each the shell serves at a
+/// socket of its own, where the person's apps reach it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HandedTo {
+    /// The collaboration broker: the app's documents, actions and services.
+    #[default]
+    Collaboration,
+    /// The identity service: what the app signs with in its workspace. An app presents itself
+    /// there by what it says, so the connection carries no [`VouchedApp`].
+    Identity,
+}
+
+/// The app a [`Vouch`] admits its connection as.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VouchedApp {
     pub app: String,
     pub workspace: String,
     /// The window the app runs in, as the shell's launch named it.
     pub window: Option<u64>,
     /// The app runs with no window: it takes its actions on its records, never an open.
     pub windowless: bool,
+    /// The ticket the shell's launch answered, which the app's open is tied back to.
+    pub ticket: Option<u64>,
+    /// The number of the descriptor pinning the app's process (a pidfd), and of its launcher's
+    /// when the launcher handed the app's process over.
+    pub process: u32,
+    pub launcher: Option<u32>,
 }
 
 /// What a shell asks of the device's documents and actions.
@@ -121,8 +151,8 @@ pub enum ShellCall {
     },
     /// Keep or release an account's sign-in in a workspace's vault, or forget the account.
     Vault(VaultCall),
-    /// Admit one connection as the app `Vouch` names, which the shell launched: answered with the
-    /// one-use secret that connection opens with after [`VOUCH_MAGIC`].
+    /// Admit the connection the vouch hands over as the app it names, which the shell launched:
+    /// answered once the daemon serves it.
     Vouch(Vouch),
     /// Record the receipt of an effect an action the shell ran had, in `workspace`, as this
     /// device's: `redacted` is the redacted `tilo_desktop_model::WorkspaceEffectReceipt` JSON.
@@ -160,10 +190,45 @@ pub enum ShellCall {
 /// ([`tilo_actions::remote::session_actions::PROVIDER`]).
 pub const SHELL_PROVIDERS: &str = "session.";
 
-/// Whether `provider` is one a shell serves: its own, never one the device or an app answers.
+/// The providers a shell serves under the ids apps have always called them by, each with the
+/// application the dispatch admits its calls under (the one whose window offers them). Each needs
+/// the person's seat, so the desktop session answers it: the activity the shell shows, the person's
+/// settings and model keys on this computer, the account this computer is signed in to, the
+/// machines it plans and the tickets it issues to add another, and the workspace's events and
+/// its assistant's look-round, which read the shortcuts this session saves.
+pub const SEAT_PROVIDERS: &[(&str, &str)] = {
+    use tilo_actions::remote::{
+        device_tickets, machines, person_models, server_account, settings_resources,
+        workspace_activity, workspace_events, workspace_initiative,
+    };
+    const SETTINGS: &str = "so.tilo.settings";
+    &[
+        (workspace_activity::PROVIDER, workspace_activity::APP_ID),
+        (device_tickets::PROVIDER, SETTINGS),
+        (machines::PROVIDER, "so.tilo.imager"),
+        (person_models::PROVIDER, SETTINGS),
+        (server_account::PROVIDER, SETTINGS),
+        (settings_resources::PROVIDER, SETTINGS),
+        (workspace_events::PROVIDER, workspace_events::PROVIDER),
+        (workspace_initiative::PROVIDER, workspace_initiative::PROVIDER),
+    ]
+};
+
+/// The application the dispatch admits the calls of `provider` under, when it is one of the
+/// [`SEAT_PROVIDERS`].
+#[must_use]
+pub fn seat_app(provider: &str) -> Option<&'static str> {
+    SEAT_PROVIDERS
+        .iter()
+        .find_map(|(served, app)| (*served == provider).then_some(*app))
+}
+
+/// Whether `provider` is one a shell serves: its own, or one of the [`SEAT_PROVIDERS`], never one
+/// the device or an app answers.
 #[must_use]
 pub fn serves(provider: &str) -> bool {
     provider == tilo_actions::remote::session_actions::PROVIDER
+        || seat_app(provider).is_some()
         || provider
             .strip_prefix(SHELL_PROVIDERS)
             .is_some_and(|name| !name.is_empty())
@@ -301,12 +366,8 @@ pub enum ShellReply {
     Resources(Result<String, String>),
     /// A [`ShellCall::Vault`]: what the call is answered with, or why it was refused.
     Vault(Result<VaultAnswer, String>),
-    /// A [`ShellCall::Vouch`]: the daemon's socket the vouched connection opens on, and the secret
-    /// it opens with.
-    Vouched {
-        socket: std::path::PathBuf,
-        secret: [u8; SHELL_SECRET_BYTES],
-    },
+    /// A [`ShellCall::Vouch`]: the daemon serves the connection as the app.
+    Vouched,
     /// A [`ShellCall::Receipt`]: kept in the workspace, or why it was not.
     Receipted(Result<(), String>),
     /// A [`ShellCall::Authorizes`]: allowed, or why not.

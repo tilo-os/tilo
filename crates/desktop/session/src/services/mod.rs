@@ -208,8 +208,8 @@ pub(crate) const TABLE: &[Row] = &[
 /// The services this session started, kept for as long as it runs.
 #[derive(Default)]
 pub(crate) struct Served {
-    /// The identity broker apps sign in through.
-    identity: Option<IdentityBrokerHandle>,
+    /// The identity service apps sign in through.
+    identity: Option<Identity>,
     /// The machine's readings, served to the apps the launcher connects.
     system_info: Option<Server>,
     /// What this device's traffic counters said since the last pass.
@@ -261,6 +261,18 @@ pub(crate) struct Serving {
     pub documents: Option<tilo_documents::Documents>,
     /// The apps this session started, for a session that starts apps.
     pub launches: Option<Arc<crate::Launches>>,
+    /// The shell link the device's daemon handed this session: its identity service is the one
+    /// the apps sign in through. `None` for a session the host placed in a workspace's VM, which
+    /// runs no device daemon and serves its apps' identity itself.
+    pub daemon: Option<runtime_collab::ShellClient>,
+}
+
+/// The identity service apps sign in through, held for as long as the session serves it.
+enum Identity {
+    /// The device daemon's, each connection handed to it.
+    Daemon { _socket: crate::app_socket::AppSocket },
+    /// This session's own, in a workspace's VM.
+    Hosted { _broker: IdentityBrokerHandle },
 }
 
 /// Start every service of [`TABLE`] this module owns, and keep what serves them for as long as the
@@ -284,10 +296,14 @@ pub(crate) fn start(mut serving: Serving) -> Served {
         };
         match service {
             Service::Identity => {
-                served.identity = identity(
-                    serving.shell.as_ref().map(Arc::clone),
-                    std::mem::take(&mut serving.keys),
-                );
+                served.identity = match serving.daemon.clone() {
+                    Some(daemon) => identity_at_daemon(serving.shell.is_some(), daemon),
+                    None => identity(
+                        serving.shell.as_ref().map(Arc::clone),
+                        std::mem::take(&mut serving.keys),
+                    )
+                    .map(|broker| Identity::Hosted { _broker: broker }),
+                };
             }
             Service::Render => {
                 let shell = serving.shell.as_ref().map(Arc::clone);
@@ -410,7 +426,33 @@ fn windows(serving: &mut Serving) -> Option<crate::windows_compat::Served> {
         .ok()
 }
 
-/// The identity service at the launcher's socket for it, signing in the workspace the shell shows.
+/// The device daemon's identity service at the launcher's socket for it, each connection handed
+/// to the daemon over its shell link `daemon`: the daemon signs in the workspace an app names, as
+/// the one identity service of the device. A session that serves no app wire (`serves`) has
+/// nothing to sign in.
+fn identity_at_daemon(serves: bool, daemon: runtime_collab::ShellClient) -> Option<Identity> {
+    if !serves {
+        return None;
+    }
+    if let Err(error) = launcher::services::ensure_services_root() {
+        tracing::warn!(%error, "the identity service is unavailable");
+        return None;
+    }
+    let path = launcher::services::socket_for(launcher::services::IDENTITY_SERVICE);
+    match crate::app_socket::serve_identity(&path, daemon) {
+        Ok(socket) => {
+            tracing::info!("serving the device's app identity to the apps the launcher starts");
+            Some(Identity::Daemon { _socket: socket })
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the identity service is unavailable");
+            None
+        }
+    }
+}
+
+/// The identity service of a session in a workspace's VM, which runs no device daemon, at the
+/// launcher's socket for it, signing in the workspace the shell shows.
 fn identity(
     shell: Option<Arc<LayoutAuthority>>,
     keys: KeyProvider,

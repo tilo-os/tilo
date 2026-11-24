@@ -140,7 +140,7 @@ impl JoinedChannel {
         self: Rc<Self>,
         bytes: &[u8],
         parent: &[u8],
-    ) -> Result<Vec<u8>, BrokerError> {
+    ) -> Result<super::wire::FileAnswer, BrokerError> {
         let failed = |message: String| BrokerError::failed(message);
         if bytes.len() > MAX_WIRE_BYTES {
             return Err(failed("clipboard command exceeds bound".into()));
@@ -152,7 +152,7 @@ impl JoinedChannel {
         }
         // Whatever this command names and does not take, it releases: a
         // handed-over object lives no longer than the request naming it.
-        let _handed = HandedRelease {
+        let handed = HandedRelease {
             descriptors: self.handed_descriptors(),
             numbers: command
                 .selected()
@@ -182,14 +182,22 @@ impl JoinedChannel {
             .state
             .services
             .file_clipboard
-            .as_ref()
+            .clone()
             .ok_or_else(|| failed("local Files clipboard unavailable".into()))?;
-        let reply = service.command(&context, command).map_err(failed)?;
-        let reply = serde_json::to_vec(&reply).map_err(|error| failed(error.to_string()))?;
-        if reply.len() > MAX_WIRE_BYTES {
-            return Err(failed("clipboard reply exceeds bound".into()));
-        }
-        Ok(reply)
+        // The clipboard may be the seat's to ask: off the broker's event loop, which carries that
+        // ask. What the command names and does not take is released once it is answered.
+        Ok(Box::pin(async move {
+            let reply = tokio::task::spawn_blocking(move || service.command(&context, command))
+                .await
+                .map_err(|error| failed(error.to_string()))?
+                .map_err(failed)?;
+            drop(handed);
+            let reply = serde_json::to_vec(&reply).map_err(|error| failed(error.to_string()))?;
+            if reply.len() > MAX_WIRE_BYTES {
+                return Err(failed("clipboard reply exceeds bound".into()));
+            }
+            Ok(reply)
+        }))
     }
 }
 

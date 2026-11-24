@@ -81,6 +81,71 @@ pub struct IdentityBrokerHandle {
     stop: Arc<AtomicBool>,
     listener: Option<thread::JoinHandle<()>>,
     clients: Arc<Mutex<HashMap<u64, Stream>>>,
+    admit: Admit,
+}
+
+impl IdentityBrokerHandle {
+    /// What serves a connection another process took for this broker and handed over, as if it
+    /// had connected to the broker's socket, for as long as the broker runs: the person's shell
+    /// takes its apps' connections where the broker's own socket is out of their reach.
+    #[must_use]
+    pub fn handover(&self) -> Arc<dyn Fn(Stream) + Send + Sync> {
+        let admit = self.admit.clone();
+        Arc::new(move |stream| {
+            admit.client(stream);
+        })
+    }
+}
+
+/// What a connection is served with, and the clients the broker closes when it stops.
+#[derive(Clone)]
+struct Admit {
+    tree: Arc<dyn WorkspaceMembership>,
+    groups: Arc<dyn GroupKeySource>,
+    person: Arc<dyn PersonResourceTypes>,
+    clients: Arc<Mutex<HashMap<u64, Stream>>>,
+    next_client: Arc<std::sync::atomic::AtomicU64>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Admit {
+    /// Serve `stream` on a worker of its own, which the broker's stop closes; `None` when no
+    /// worker started.
+    fn client(&self, stream: Stream) -> Option<thread::JoinHandle<()>> {
+        if self.stop.load(Ordering::Acquire) {
+            return None;
+        }
+        let cancellation = match stream.try_clone() {
+            Ok(cancellation) => cancellation,
+            Err(error) => {
+                tracing::warn!(%error, "identity broker cannot own client cancellation");
+                return None;
+            }
+        };
+        let id = self.next_client.fetch_add(1, Ordering::Relaxed);
+        self.clients.lock_recover().insert(id, cancellation);
+        let connection = ClientConnection {
+            id,
+            clients: self.clients.clone(),
+        };
+        let (tree, groups, person) = (
+            Arc::clone(&self.tree),
+            Arc::clone(&self.groups),
+            Arc::clone(&self.person),
+        );
+        match thread::Builder::new()
+            .name("tilo-identity-client".into())
+            .spawn(move || {
+                serve(stream, &*tree, &*groups, &*person);
+                drop(connection);
+            }) {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                tracing::warn!(%error, "identity broker could not spawn client worker");
+                None
+            }
+        }
+    }
 }
 
 impl Drop for IdentityBrokerHandle {
@@ -126,40 +191,25 @@ pub fn spawn(
     let thread_stop = Arc::clone(&stop);
     let clients = Arc::new(Mutex::new(HashMap::new()));
     let thread_clients = clients.clone();
+    let admit = Admit {
+        tree,
+        groups,
+        person,
+        clients: clients.clone(),
+        next_client: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        stop: Arc::clone(&stop),
+    };
+    let accepting = admit.clone();
     let listener_thread = thread::Builder::new()
         .name("tilo-identity-broker".into())
         .spawn(move || {
             let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
-            let mut next_client = 0_u64;
             loop {
                 match listener.accept() {
                     Ok(_) if thread_stop.load(Ordering::Acquire) => break,
                     Ok((stream, _)) => {
-                        let tree = Arc::clone(&tree);
-                        let groups = Arc::clone(&groups);
-                        let person = Arc::clone(&person);
-                        let cancellation = match stream.try_clone() {
-                            Ok(cancellation) => cancellation,
-                            Err(error) => {
-                                tracing::warn!(%error, "identity broker cannot own client cancellation");
-                                continue;
-                            }
-                        };
-                        let Some(id) = next_client.checked_add(1) else { break; };
-                        next_client = id;
-                        thread_clients.lock_recover().insert(id, cancellation);
-                        let connection = ClientConnection { id, clients: thread_clients.clone() };
                         workers.retain(|worker| !worker.is_finished());
-                        match thread::Builder::new()
-                            .name("tilo-identity-client".into())
-                            .spawn(move || {
-                                serve(stream, &*tree, &*groups, &*person);
-                                drop(connection);
-                            })
-                        {
-                            Ok(worker) => workers.push(worker),
-                            Err(error) => tracing::warn!(%error, "identity broker could not spawn client worker"),
-                        }
+                        workers.extend(accepting.client(stream));
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) => {
@@ -181,6 +231,7 @@ pub fn spawn(
         stop,
         listener: Some(listener_thread),
         clients,
+        admit,
     })
 }
 
@@ -1247,13 +1298,14 @@ params = []
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(committed);
             let socket = temp.path().join("identity.sock");
-            let _broker = spawn(
+            let broker = spawn(
                 socket.clone(),
                 Arc::new(tree.shared()),
                 Arc::new(()),
                 Arc::new(()),
             )
             .unwrap();
+            let handover = broker.handover();
             let connect = |version| {
                 let mut client = UnixStream::connect(&socket).unwrap();
                 client
@@ -1282,6 +1334,34 @@ params = []
                 client.metadata().group_public_key(),
                 profile.user_public_key
             );
+            // A connection the person's shell took for the broker and handed over is served as
+            // one made on its socket: the app it came from signs in the same.
+            {
+                let (mut handed, served) = UnixStream::pair().unwrap();
+                handover(served);
+                handed
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                write_frame(
+                    &mut handed,
+                    &tilo_identity_client::wire::PresentationHandshake {
+                        handshake: Handshake {
+                            workspace_id: workspace.to_string(),
+                            app_id: "so.tilo.notes".into(),
+                            surface: None,
+                        },
+                        presentation_version: tilo_identity_client::wire::PRESENTATION_VERSION,
+                    },
+                )
+                .unwrap();
+                let handed = tilo_identity_client::BrokerSigningIdentity::from_connected_io(handed)
+                    .unwrap();
+                assert_eq!(handed.metadata().profile_photo(), Some(&photo));
+                assert_eq!(
+                    handed.metadata().group_public_key(),
+                    profile.user_public_key
+                );
+            }
             assert!(
                 client
                     .sign_collaboration_join(&WorkspaceId::new().to_string())

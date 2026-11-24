@@ -110,9 +110,6 @@ pub trait AppActions {
         );
         invoked
     }
-    /// Tell each [`Self::invoke_answered`] caller its action's answer once the action settled. A
-    /// host that answers at once has nothing to tell.
-    fn poll_answers(&self) {}
     /// Open `item`, what the `open` `target` shows when run with `arguments`, in a window of the
     /// app's own beside the one it has: what the person asked by the modifier they held over its
     /// row. A host that starts no windows opens it where `open` does.
@@ -1311,13 +1308,6 @@ impl SessionSearch {
         };
         kept.workspace = Some(built.clone());
         built
-    }
-
-    /// Tell the callers of [`Self::perform_answered`] what their actions answered, once settled.
-    pub(crate) fn poll_answers(&self) {
-        if let Some(apps) = &self.apps {
-            apps.poll_answers();
-        }
     }
 
     /// Carry out `target`, an app's own action, and tell `answered` what it answered once it

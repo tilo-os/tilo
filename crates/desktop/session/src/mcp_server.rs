@@ -51,7 +51,6 @@ use tilo_service::{Answer, AskSender, Asked, Question, Wake};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::{word, words};
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed};
-use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 use crate::Shared;
 use crate::agent_sessions::{AgentSessions, Doing};
@@ -302,7 +301,7 @@ pub(crate) struct Loop {
     requests: Sender<Request>,
     asked: Receiver<Request>,
     /// The broker admitted agents are served from, once the session starts it.
-    broker: Option<Arc<AppBrokerState>>,
+    broker: Option<Arc<Dispatch>>,
     waiting: Vec<Waiting>,
     session: HashMap<BindingKey, String>,
     always: HashMap<BindingKey, String>,
@@ -339,7 +338,7 @@ pub(crate) struct Loop {
 /// What serving one connection takes, on a thread of its own.
 #[derive(Clone)]
 struct Serving {
-    broker: Option<Arc<AppBrokerState>>,
+    broker: Option<Arc<Dispatch>>,
     services: Arc<SessionServices>,
     requests: Sender<Request>,
     launches: Arc<Launches>,
@@ -378,7 +377,7 @@ impl Mounted {
     /// on `shell` is what lets the client act.
     pub(crate) fn serve(
         mut self,
-        broker: Option<Arc<AppBrokerState>>,
+        broker: Option<Arc<Dispatch>>,
         shell: Option<Arc<LayoutAuthority>>,
     ) -> Loop {
         self.server.broker = broker;
@@ -1231,10 +1230,8 @@ struct HeldFounding {
     workspace: String,
     caller: Caller,
     request: InvokeRequest,
-    /// Whether the ask is the person at this device's own ([`Host::invoke_within`]).
-    local_person: bool,
-    /// The broker that would have taken it: the same one, once the workspace is the service's.
-    state: Option<Arc<AppBrokerState>>,
+    /// The dispatch that would have taken it: the same one, once the workspace is the service's.
+    state: Option<Arc<Dispatch>>,
     done: Completer<Result<InvocationReceipt, ActionCallError>>,
 }
 
@@ -1458,15 +1455,13 @@ impl SessionServices {
         workspace: String,
         caller: Caller,
         request: InvokeRequest,
-        local_person: bool,
-        state: Option<Arc<AppBrokerState>>,
+        state: Option<Arc<Dispatch>>,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let (done, answer) = tilo_actions::remote::pending();
         self.held.lock_recover().push(HeldFounding {
             workspace,
             caller,
             request,
-            local_person,
             state,
             done,
         });
@@ -1496,14 +1491,9 @@ impl SessionServices {
             // taken off the loop, as every ask the broker takes is: the loop that holds the ask is
             // the one that would have to answer it.
             let deliver = async move {
-                let delivered = match (&ask.state, ask.local_person) {
-                    (Some(state), true) => {
-                        state.action_invoke_local_person(&ask.caller, &ask.request)
-                    }
-                    (Some(state), false) => {
-                        state.action_invoke(&ask.caller, None, None, &ask.request)
-                    }
-                    (None, _) => Pending::ready(Err(ActionCallError::Unavailable {
+                let delivered = match &ask.state {
+                    Some(dispatch) => dispatch.invoke(&ask.caller, ask.request),
+                    None => Pending::ready(Err(ActionCallError::Unavailable {
                         reason: "this desktop's apps are not running here".to_owned(),
                     })),
                 };
@@ -1749,6 +1739,11 @@ type Answered =
 /// How many answered session steps a connection remembers.
 const ANSWERED_KEPT: usize = 256;
 
+/// The device's one dispatch, as this session's person, over the shell's link to its daemon: what
+/// every call a connection makes outside the session's own steps is decided by, as the caller
+/// that made it.
+pub(crate) type Dispatch = runtime_collab::ShellDispatch;
+
 /// The broker as an admitted client's API: every call passes the check as the agent or person
 /// and workspace the connection was admitted for, and the session's own actions are among what
 /// the same broker publishes.
@@ -1756,7 +1751,7 @@ const ANSWERED_KEPT: usize = 256;
 pub(crate) struct Host {
     /// The session's broker, once it starts one. Without it (a session in a window of another
     /// desktop) the session's own services are all it offers.
-    state: Option<Arc<AppBrokerState>>,
+    state: Option<Arc<Dispatch>>,
     /// What a connection asks the session on its pass: the one search, the records a package
     /// the session runs itself keeps, and the person's own steps on its actions.
     session: Arc<SessionServices>,
@@ -1768,8 +1763,6 @@ pub(crate) struct Host {
     /// The agent session an admitted agent's connection is: each step it takes says there what
     /// it is doing. `None` for the person's own connection.
     agent_session: Option<Arc<SessionAt>>,
-    /// Whether every invocation is the person at this device's own ([`Self::for_local_person`]).
-    local_person: bool,
 }
 
 /// What the catalogue says of one action a session was offered: the words the person reads the step
@@ -1857,23 +1850,14 @@ impl SessionAt {
 
 impl Host {
     /// The API over `state` , with `session` beside it.
-    pub(crate) fn new(state: Option<Arc<AppBrokerState>>, session: Arc<SessionServices>) -> Self {
+    pub(crate) fn new(state: Option<Arc<Dispatch>>, session: Arc<SessionServices>) -> Self {
         Self {
             state,
             session,
             answered: Arc::default(),
             session_actions: None,
             agent_session: None,
-            local_person: false,
         }
-    }
-
-    /// The same API, invoking every action as the person at this device
-    /// ([`Self::invoke_as_local_person`]): what this device's own control sockets answer frames
-    /// with.
-    pub(crate) const fn for_local_person(mut self) -> Self {
-        self.local_person = true;
-        self
     }
 
     /// The same server, for the agent session `session` of `sessions`: what it does is said there,
@@ -1904,32 +1888,13 @@ impl Host {
         self
     }
 
-    /// An invocation the person at this device made through this device's own control sockets: the
-    /// same as [`ActionProvider::invoke`], except that the broker keeps the device's certificate ownership for it
-    /// ([`AppBrokerState::action_invoke_local_person`]), as it does for the palette's actions, so
-    /// what the person may do here is what the person may do anywhere.
-    /// Only this device's own control sockets call it — the owner's socket, whose peer is the account
-    /// whose desktop this is ([`crate::test_control::owner_decision`]), the API socket of this
-    /// login's programs ([`crate::api_server`]), and the development test-control socket, which
-    /// drives it as the person at this device. An agent, or a person over
-    /// a network, MCP or app connection, invokes as itself through [`ActionProvider::invoke`], and the
-    /// broker's per-action and per-role permissions decide; the broker refuses ownership to anything
-    /// but the person at this device.
-    pub(crate) fn invoke_as_local_person(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.invoke_within(caller, request, true)
-    }
-
-    /// The broker's answer to `request` for `caller` , as the person at this device or as the caller
-    /// itself.
+    /// The answer to `request` for `caller`: the session's own step on its loop, else the device's
+    /// dispatch's, which decides it as the caller itself (the person at this device as the person
+    /// the session's link was made for).
     fn invoke_within(
         &self,
         caller: &Caller,
         request: InvokeRequest,
-        as_local_person: bool,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // An app of a workspace this device is not admitted to yet takes part in nothing there:
         // asked of it, an action would wait for an app that never answers. It is refused now, with
@@ -2000,13 +1965,11 @@ impl Host {
                 workspace.to_owned(),
                 caller.clone(),
                 request,
-                as_local_person,
                 self.state.clone(),
             );
         }
         match &self.state {
-            Some(state) if as_local_person => state.action_invoke_local_person(caller, &request),
-            Some(state) => state.action_invoke(caller, None, None, &request),
+            Some(dispatch) => dispatch.invoke(caller, request),
             None => Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "this desktop's apps are not running here".to_owned(),
             })),
@@ -2132,7 +2095,7 @@ impl ActionProvider for Host {
             let session = Arc::clone(&self.session);
             let agent_session = self.agent_session.clone();
             let page = match &self.state {
-                Some(state) => state.action_query(caller, &query),
+                Some(dispatch) => dispatch.query(caller, query),
                 None => Pending::ready(Ok(CataloguePage::from_rows(
                     String::new(),
                     self.session_rows(),
@@ -2154,7 +2117,7 @@ impl ActionProvider for Host {
             });
         }
         match &self.state {
-            Some(state) => state.action_query(caller, &query),
+            Some(dispatch) => dispatch.query(caller, query),
             // A desktop that runs no broker (a session in a window of another, a test with no
             // app wire) still publishes its own actions: they are read on the loop and
             // held here, so the services list them itself.
@@ -2171,16 +2134,13 @@ impl ActionProvider for Host {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        // A person typing at a REPL is the person at this device: their own step is carried out on the loop's
-        // pass, where the layout and the windows are, as their own input is — never
-        // through the broker, which decides for an actor on another's word but has no
-        // certificate for the person alone. An agent's step is the turn's, and the broker
-        // decides it exactly as it decides the agent's app action in that turn.
-        // An admitted connection invokes as itself: the broker decides by its per-action and
-        // per-role permissions. Device identity belongs to this device's own control sockets alone
-        // ([`Host::invoke_as_local_person`]), and the person's own steps on the session go to the loop
-        // wherever they come from ([`Host::invoke_within`]).
-        self.invoke_within(caller, request, self.local_person)
+        // A person typing at a REPL is the person at this device: their own step is carried out on
+        // the loop's pass, where the layout and the windows are, as their own input is. An agent's
+        // step is the turn's, and the device's dispatch decides it exactly as it decides the
+        // agent's app action in that turn. An admitted connection invokes as itself, and the
+        // person's own steps on the session go to the loop wherever they come from
+        // ([`Host::invoke_within`]).
+        self.invoke_within(caller, request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
@@ -2194,14 +2154,14 @@ impl ActionProvider for Host {
         ours.or_else(|| {
             self.state
                 .as_ref()
-                .and_then(|state| state.action_observe(caller, id))
+                .and_then(|dispatch| dispatch.observe(caller, id))
         })
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         self.state
             .as_ref()
-            .and_then(|state| state.action_next_change_after_now(caller, id))
+            .and_then(|dispatch| dispatch.next_change(caller, id))
     }
 
     fn cancel(
@@ -2210,7 +2170,7 @@ impl ActionProvider for Host {
         id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), ActionCallError>> {
         match &self.state {
-            Some(state) => state.action_cancel(caller, id),
+            Some(dispatch) => dispatch.cancel(caller, id),
             None => Pending::ready(Err(ActionCallError::UnknownInvocation)),
         }
     }
@@ -2218,7 +2178,7 @@ impl ActionProvider for Host {
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
         self.state
             .as_ref()
-            .and_then(tilo_workspace_service::apps::collab_app_broker::AppBrokerState::content_puts)
+            .and_then(|dispatch| dispatch.content_puts())
     }
 
     /// The session's one search, the one the palette and text typed on the canvas run: what an
@@ -2291,31 +2251,7 @@ pub(crate) struct Published {
     reading: serde_json::Value,
 }
 
-/// The app the session publishes its own resources as, at whose nodes a read of them is decided.
-const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
 
-/// Whether `caller` may read the resource `target` (app, kind, resource) the session publishes:
-/// decided by the broker at the resource's node, in the workspace the caller acts in, with its
-/// actor, as every read of a record is: an agent rides its person's authority. The person acting
-/// as themselves reads their own device, as their own catalogue is theirs; with no broker, nobody
-/// else reads it.
-///
-/// # Errors
-///
-/// [`ActionCallError::Refused`] or [`ActionCallError::NotPermitted`]: the read is not the caller's.
-fn may_read_published(
-    state: Option<&AppBrokerState>,
-    caller: &Caller,
-    target: (&str, &str, &str),
-) -> Result<(), ActionCallError> {
-    if caller.acting().is_person() {
-        return Ok(());
-    }
-    match (state, caller.workspace()) {
-        (Some(state), Some(workspace)) => state.may_read_resource(caller, workspace, target),
-        _ => Err(ActionCallError::NotPermitted),
-    }
-}
 
 /// The kind the session's services publish the resource `resource` as, when one serves it.
 fn published_kind(services: &tilo_service::Services, resource: &str) -> Option<String> {
@@ -2510,7 +2446,7 @@ fn serve_admitted(
     stream: UnixStream,
     first: Vec<u8>,
     facts: Facts,
-    broker: &Arc<AppBrokerState>,
+    broker: &Arc<Dispatch>,
     session: &Arc<SessionServices>,
     (requests, wake, sessions): (&Sender<Request>, &Wake, &Arc<AgentSessions>),
 ) {

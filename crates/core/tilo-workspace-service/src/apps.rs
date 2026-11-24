@@ -33,6 +33,7 @@ pub mod nearby_send;
 pub use tilo_broker_core::workspace_commits;
 pub mod policy_clock;
 pub mod published_authorization;
+pub mod seat;
 /// The route an app's traffic is addressed on, the same on every host.
 pub use tilo_broker_core::route;
 pub mod service_reads;

@@ -99,7 +99,7 @@ fn a_pressed_chord_runs_its_shortcut_through_the_dispatch_as_its_saver() {
     let armed = [armed_with(&pressed)];
     let fired = chord_pressed(&armed, &KeyChord::parse("Super+Shift+N").expect("a chord"));
     let dispatch = Dispatch::default();
-    run_pressed(&dispatch, &fired[0]);
+    run_fired(&dispatch, &fired[0]);
     let calls = dispatch
         .0
         .lock()

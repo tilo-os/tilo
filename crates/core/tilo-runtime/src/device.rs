@@ -20,6 +20,8 @@
 //! History groups its actions under.
 
 pub(crate) mod account;
+#[cfg(target_os = "linux")]
+mod agent_tools;
 mod asked;
 // The account sign-ins socket a Unix login's cloud service and origin connectors reach.
 #[cfg(unix)]
@@ -89,6 +91,7 @@ mod unclaimed_tests;
 #[cfg(unix)]
 mod vision;
 pub mod wifi;
+mod window_follow;
 pub mod workspaces;
 
 use std::sync::Arc;

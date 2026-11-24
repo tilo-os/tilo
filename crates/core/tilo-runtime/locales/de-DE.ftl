@@ -27,3 +27,15 @@ other-devices-name-workspace = { $device } ist hier in mehr als einem deiner Arb
 so-tilo-layout-read = Lies das Layout: die Workspaces, Streifen und Fenster darauf, die App und den Record, die jedes Fenster zeigt, und die anderen Workspaces, die der Aufrufer hier erreicht.
 so-tilo-layout-place = Öffne ein Fenster einer App im Layout, als das des Aufrufers: neben dem vordersten Fenster, auf dem Record, das es nennt, oder dem der App eigenen. Ein Record, den ein Fenster bereits zeigt, bleibt, wo er ist.
 so-tilo-layout-close = Schließe ein Fenster im Layout, überall wo es gezeigt wird. Sein Record bleibt im Workspace.
+
+agent-tools-resource = Agentenwerkzeuge
+agent-tools-list = Werkzeuge auflisten
+agent-tools-list-detail = Listet die Werkzeuge, mit denen ein Agent in seiner Sitzung arbeitet.
+agent-tools-call = Ein Werkzeug aufrufen
+agent-tools-call-detail = Führt eines der Werkzeuge des Agenten als Schritt seiner Sitzung aus und antwortet, was es gesagt hat.
+
+window-follow-resource = Fenster
+window-follow-follow = Der Ansicht von jemandem folgen
+window-follow-follow-detail = Sagt den Apps eines Arbeitsbereichs auf diesem Gerät, wessen Ansicht du folgst.
+window-follow-handoff = Ein Fenster verschieben
+window-follow-handoff-detail = Bittet eine App auf diesem Gerät um den nächsten Schritt, ihr Fenster auf ein anderes Gerät zu verschieben.

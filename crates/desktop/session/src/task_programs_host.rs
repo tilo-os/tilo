@@ -50,8 +50,7 @@ pub(crate) struct TaskProgramHost {
     services: Arc<crate::mcp_server::SessionServices>,
     /// The state this desktop serves, once it serves one: what the person's own line calls
     /// through, decided where it lands exactly as their own click is.
-    state:
-        std::sync::OnceLock<Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>>,
+    state: std::sync::OnceLock<Arc<crate::mcp_server::Dispatch>>,
     sessions: std::sync::Mutex<Sessions>,
 }
 
@@ -68,7 +67,7 @@ impl TaskProgramHost {
     /// The state the person's own line's calls are decided by, once the app wire serves one.
     pub(crate) fn keep_state(
         &self,
-        state: Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>,
+        state: Arc<crate::mcp_server::Dispatch>,
     ) {
         let _ = self.state.set(state);
     }
@@ -78,8 +77,7 @@ impl TaskProgramHost {
     fn person_api(&self, stop: Arc<std::sync::atomic::AtomicBool>) -> Provider {
         let api =
             crate::mcp_server::Host::new(self.state.get().cloned(), Arc::clone(&self.services))
-                .with_session_actions(self.services.actions())
-                .for_local_person();
+                .with_session_actions(self.services.actions());
         Arc::new(Stopped { api, stop })
     }
 

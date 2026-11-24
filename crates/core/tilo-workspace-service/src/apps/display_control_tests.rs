@@ -148,13 +148,13 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
                 .only(401)
                 .unwrap()
                 .clone();
-            let retained = private_display_control(&state, &env.route, &identity).unwrap();
+            let retained = display_authority(&state, &env.route, &identity).unwrap();
             let mut agent = identity.clone();
             agent.agent_id = Some("foreign-agent".into());
-            assert!(private_display_control(&state, &env.route, &agent).is_none());
+            assert!(display_authority(&state, &env.route, &agent).is_none());
             let mut other_app = env.route.clone();
             other_app.app_id = "so.tilo.browser".into();
-            assert!(private_display_control(&state, &other_app, &identity).is_none());
+            assert!(display_authority(&state, &other_app, &identity).is_none());
             *env.authority.certificate.lock().unwrap() = None;
             assert!(
                 settings

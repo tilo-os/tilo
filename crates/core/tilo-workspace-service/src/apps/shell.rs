@@ -13,7 +13,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use runtime_collab::wire::shell::Vouch;
 use tilo_actions::remote::{ActionProvider, Caller};
 use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
 
@@ -30,13 +29,11 @@ pub struct ShellCaller {
 }
 
 /// The shell links the daemon made and no shell took yet: each a one-use secret the daemon
-/// sends on a connection it opens itself, then hands to the shell it starts. And the connections
-/// an admitted shell vouched for, one for each app it launched, that did not open yet, and those
-/// it asked to hand the device's tilolang processes an instance on.
+/// sends on a connection it opens itself, then hands to the shell it starts. And the
+/// connections it asked to hand the device's tilolang processes an instance on.
 #[derive(Default)]
 pub struct ShellLinks {
     shells: std::sync::Mutex<std::collections::HashMap<[u8; 32], ShellCaller>>,
-    vouched: std::sync::Mutex<std::collections::HashMap<[u8; 32], Vouch>>,
     processes: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
 }
 
@@ -53,21 +50,6 @@ impl ShellLinks {
     #[must_use]
     pub fn take(&self, secret: &[u8; 32]) -> Option<ShellCaller> {
         lock(&self.shells).remove(secret)
-    }
-
-    /// A secret admitting one connection as the app `vouch` names: what an admitted shell is
-    /// answered when it vouches for an app it launched.
-    #[must_use]
-    pub fn vouch(&self, vouch: Vouch) -> [u8; 32] {
-        let secret: [u8; 32] = rand::random();
-        lock(&self.vouched).insert(secret, vouch);
-        secret
-    }
-
-    /// The app the vouch with `secret` named, once.
-    #[must_use]
-    pub fn take_vouched(&self, secret: &[u8; 32]) -> Option<Vouch> {
-        lock(&self.vouched).remove(secret)
     }
 
     /// A secret admitting one connection to the device's tilolang processes: what an admitted
@@ -122,7 +104,8 @@ pub type DocumentWrites = tokio::sync::broadcast::Receiver<crate::workspaces::Re
 pub struct ShellServices {
     /// The links of the shells the daemon starts: a connection is a shell's only with one.
     pub links: Arc<ShellLinks>,
-    /// The socket this dispatch answers on: where a connection a shell vouched for opens.
+    /// The socket this dispatch answers on: where a connection to the device's tilolang processes
+    /// opens.
     pub socket: std::path::PathBuf,
     /// The device's documents, read for the device itself.
     pub documents: Arc<dyn DeviceDocuments>,
@@ -145,4 +128,7 @@ pub struct ShellServices {
     /// The workspaces the device holds: what the resource commands of the apps the shell runs
     /// itself, and its asks of a workspace's vault, run on.
     pub workspaces: crate::workspaces::Workspaces,
+    /// The device's identity service, serving a connection the shell took for it from one of the
+    /// person's apps: `None` where the device runs none.
+    pub identity: Option<std::sync::Arc<dyn Fn(std::os::unix::net::UnixStream) + Send + Sync>>,
 }

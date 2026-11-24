@@ -120,11 +120,104 @@ impl ShellDispatch {
     pub async fn settled(
         &self,
         workspace: Option<String>,
-        mut request: InvokeRequest,
+        request: InvokeRequest,
     ) -> Result<serde_json::Value, String> {
+        Self::settled_output(&self.0.shell, workspace, request)
+            .await
+            .map(|output| output.value.unwrap_or_default())
+    }
+
+    /// [`Self::settled`] on the dispatch's own runtime, for a caller that is not on one: what the
+    /// action answered whole, told once it ended.
+    #[must_use]
+    pub fn follow(
+        &self,
+        workspace: Option<String>,
+        request: InvokeRequest,
+    ) -> Pending<Result<tilo_actions::ActionOutput, String>> {
+        let (done, result) = tilo_actions::remote::pending();
+        let shell = self.0.shell.clone();
+        self.0.runtime.spawn(async move {
+            done.complete(Self::settled_output(&shell, workspace, request).await);
+        });
+        result
+    }
+
+    /// Every action the apps publish on the device's dispatch that the shell's person is offered,
+    /// as rows of each app's listing, read on the dispatch's own runtime: what the shell offers in
+    /// its search and on an app's links, whether the app is open or closed.
+    #[must_use]
+    pub fn app_actions(&self) -> Pending<Result<Vec<tilo_actions::remote::CatalogueRow>, String>> {
+        let (done, result) = tilo_actions::remote::pending();
+        let shell = self.0.shell.clone();
+        self.0.runtime.spawn(async move {
+            done.complete(Self::app_rows(&shell).await.map_err(|error| error.to_string()));
+        });
+        result
+    }
+
+    async fn app_rows(
+        shell: &ShellClient,
+    ) -> Result<Vec<tilo_actions::remote::CatalogueRow>, ActionCallError> {
+        let publishers = CatalogueQuery {
+            max_results: 0,
+            ..CatalogueQuery::default()
+        };
+        let providers = Self::page(shell, publishers).await?.providers;
+        let mut rows = Vec::new();
+        for provider in providers {
+            if tilo_actions::remote::application_provider(&provider.provider).is_none() {
+                continue;
+            }
+            let mut query = CatalogueQuery {
+                provider: Some(provider.provider.clone()),
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            };
+            loop {
+                let page = Self::page(shell, query.clone()).await?;
+                rows.extend(
+                    tilo_actions::remote::expand(page.rows)
+                        .into_iter()
+                        .filter(|row| row.action.is_some()),
+                );
+                if page.exhausted || page.next_cursor.is_empty() {
+                    break;
+                }
+                query.revision = Some(page.revision);
+                query.cursor = page.next_cursor;
+            }
+        }
+        Ok(rows)
+    }
+
+    /// One page of the person's catalogue, asked of the daemon.
+    async fn page(
+        shell: &ShellClient,
+        query: CatalogueQuery,
+    ) -> Result<CataloguePage, ActionCallError> {
+        match Self::ask(
+            shell,
+            None,
+            RemoteActionMessage::CatalogueRequest {
+                correlation: 0,
+                query,
+            },
+        )
+        .await?
+        {
+            RemoteActionMessage::CatalogueResponse { result, .. } => result,
+            _ => Err(unexpected()),
+        }
+    }
+
+    async fn settled_output(
+        shell: &ShellClient,
+        workspace: Option<String>,
+        mut request: InvokeRequest,
+    ) -> Result<tilo_actions::ActionOutput, String> {
         let invocation = request.invocation;
         request.wait_ms = held();
-        let shell = &self.0.shell;
         let receipt = match Self::ask(
             shell,
             workspace.clone(),
@@ -172,9 +265,9 @@ impl ShellDispatch {
 }
 
 /// What a receipt that ended at once comes to.
-fn settled(status: ReceiptStatus) -> Result<serde_json::Value, String> {
+fn settled(status: ReceiptStatus) -> Result<tilo_actions::ActionOutput, String> {
     match status {
-        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+        ReceiptStatus::Completed { output } => Ok(output),
         ReceiptStatus::Rejected { error } => Err(error.to_string()),
         ReceiptStatus::Failed { error } => Err(error.message),
         ReceiptStatus::Cancelled { message } => {
@@ -185,10 +278,10 @@ fn settled(status: ReceiptStatus) -> Result<serde_json::Value, String> {
 }
 
 /// What a call that ended comes to.
-fn finished(update: tilo_actions::InvocationUpdate) -> Result<serde_json::Value, String> {
+fn finished(update: tilo_actions::InvocationUpdate) -> Result<tilo_actions::ActionOutput, String> {
     use tilo_actions::InvocationUpdate;
     match update {
-        InvocationUpdate::Succeeded { output, .. } => Ok(output.value.unwrap_or_default()),
+        InvocationUpdate::Succeeded { output, .. } => Ok(output),
         InvocationUpdate::Failed { error, .. } => Err(error.message),
         InvocationUpdate::Cancelled { message, .. } => {
             Err(message.unwrap_or_else(|| "the action was cancelled".to_owned()))

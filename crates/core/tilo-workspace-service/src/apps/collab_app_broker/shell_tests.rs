@@ -5,16 +5,16 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-//! A launched app on its one connection to the shell's host: its documents answered by the
-//! device's daemon, the services only the shell's host keeps answered there, on the same launch.
+//! An app the person's shell launched, on the connection the shell attests and hands the device's
+//! daemon over its link: served by the daemon as that app from then on.
 
 use super::*;
+use super::seat;
 use crate::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use crate::apps::shell::{ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices};
 use ed25519_dalek::SigningKey;
 use runtime_collab::wire::{
-    Call, Changes, Event, FRAMING, Handle, HostFrame, Join, Operation, Receipt, Reply, Service,
-    SettingsCall,
+    Call, Event, FRAMING, HostFrame, Join, Operation, Receipt, Reply, Service,
 };
 use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
@@ -204,37 +204,24 @@ impl NativeDocumentReads for DaemonReads {
     }
 }
 
-/// The person's apps, as the shell's host tells Files they changed.
-struct Apps;
-
-impl crate::apps::services::ApplicationServices for Apps {
-    fn changed(&self, after: u64) -> Option<crate::apps::services::ApplicationChange> {
-        Some(Box::pin(std::future::ready(after.wrapping_add(1))))
-    }
-}
-
-/// Why a shell has no daemon, in a test of one that has none.
-const NO_DAEMON: &str = "this desktop was not started by the device's daemon";
-
-/// The device's daemon and the shell's host, each answering on its own socket, and the app the
-/// shell launched.
+/// The device's daemon, its shell linked to it, and the shell's app socket with the launches the
+/// shell recorded.
 struct Device {
     _dir: tempfile::TempDir,
     _host: crate::workspaces::fixtures::TestHost,
     _daemon: crate::apps::collab_broker::BrokerHandle,
-    _shell: crate::apps::collab_broker::BrokerHandle,
-    shell_socket: PathBuf,
     daemon_socket: PathBuf,
     workspace: String,
-    _settings: Arc<settings_store::HostDocument>,
-    /// The daemon's shell links.
     links: Arc<ShellLinks>,
+    shell: runtime_collab::ShellClient,
+    seat: seat::AppSocket,
+    seat_socket: PathBuf,
+    launched: Arc<Launched>,
     /// How many connections reached the device's processes.
     reached_processes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-/// The device, its shell linked to its daemon when `linked`, and with no daemon otherwise.
-async fn device_with_both(linked: bool) -> Device {
+async fn device_with_shell() -> Device {
     let dir = tempfile::tempdir().unwrap();
     super::tests::secure_socket_parent(dir.path()).unwrap();
     let mut workspace = crate::apps::test_support::Workspace::new(
@@ -263,6 +250,7 @@ async fn device_with_both(linked: bool) -> Device {
         None,
         ProcessServices {
             committed_documents: Some(Arc::new(DaemonReads)),
+            published: Some(Arc::new(Published)),
             shell: Some(Arc::new(ShellServices {
                 processes: Some(processes_fake(Arc::clone(&reached_processes))),
                 links: Arc::clone(&links),
@@ -274,6 +262,7 @@ async fn device_with_both(linked: bool) -> Device {
                 standing: Arc::new(Published),
                 published: None,
                 workspaces: host.workspaces().clone(),
+                identity: None,
             })),
             ..membership.services()
         },
@@ -284,56 +273,62 @@ async fn device_with_both(linked: bool) -> Device {
     .unwrap();
 
     // The link the daemon makes for the shell it starts.
-    let link = if linked {
-        let secret = links.make(ShellCaller {
-            person: root(3).verifying_key().to_bytes(),
-        });
-        let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
-        opening.extend_from_slice(&secret);
-        Ok(runtime_collab::ShellClient::open(
-            Endpoint::connect(&daemon_socket, &opening).await.stream,
-        )
-        .0)
-    } else {
-        Err(NO_DAEMON.to_owned())
-    };
-
-    let shell_socket = dir.path().join("shell.sock");
-    let shell_launched = Arc::new(Launched::default());
-    shell_launched.record(std::process::id(), APP, &id);
-    let settings = Arc::new(settings_store::HostDocument::new(
-        serde_json::Map::new(),
-        |_| Ok(()),
-    ));
-    let shell = crate::apps::collab_broker::spawn_with_test_services(
-        shell_socket.clone(),
-        Some(membership.authority()),
-        PeerPublisher::disabled(),
-        None,
-        ProcessServices {
-            launcher: Some(shell_launched as _),
-            settings: Some(Arc::clone(&settings) as _),
-            published: Some(Arc::new(Published)),
-            applications: Some(Arc::new(Apps)),
-            device_daemon: Some(link),
-            ..membership.services()
-        },
-        trusted(),
-        Arc::default(),
-        Arc::new(FanoutState::new()),
-    )
-    .unwrap();
+    let secret = links.make(ShellCaller {
+        person: root(3).verifying_key().to_bytes(),
+    });
+    let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
+    opening.extend_from_slice(&secret);
+    let shell =
+        runtime_collab::ShellClient::open(Endpoint::connect(&daemon_socket, &opening).await.stream)
+            .0;
+    let seat_socket = dir.path().join("seat.sock");
+    let seat = seat::AppSocket::bind(&seat_socket).unwrap();
     Device {
         _dir: dir,
         _host: host,
         _daemon: daemon,
-        _shell: shell,
-        shell_socket,
         daemon_socket,
         workspace: id,
-        _settings: settings,
         links,
+        shell,
+        seat,
+        seat_socket,
+        launched: Arc::new(Launched::default()),
         reached_processes,
+    }
+}
+
+impl Device {
+    /// An app connecting to the shell's app socket with its launcher's `opening`: the app's
+    /// end, and the shell's taking of it, attested by its launches and handed to the daemon as
+    /// the seat does.
+    async fn app(
+        &self,
+        opening: &[u8],
+    ) -> (Endpoint, std::pin::Pin<Box<dyn Future<Output = ()> + '_>>) {
+        let listener = self.seat.listener().unwrap();
+        let app = Endpoint::connect(&self.seat_socket, opening).await;
+        (app, Box::pin(self.take(listener)))
+    }
+
+    async fn take(&self, listener: tokio::net::UnixListener) {
+        let (stream, _) = listener.accept().await.unwrap();
+        let launcher: Arc<dyn crate::apps::services::LauncherServices> =
+            Arc::clone(&self.launched) as _;
+        match seat::attest(stream, launcher).await {
+            seat::Attested::App {
+                connection,
+                app: vouched,
+                process,
+                launcher,
+            } => self
+                .shell
+                .vouch(connection, Some((vouched, process, launcher)))
+                .await
+                .unwrap(),
+            seat::Attested::Unnamed(connection) => self.shell.vouch(connection, None).await.unwrap(),
+            seat::Attested::Refused => {}
+        }
     }
 }
 
@@ -429,20 +424,21 @@ fn launch_opening(app: &str, workspace: &str) -> Vec<u8> {
     opening
 }
 
+/// An app the shell launched is attested by the shell and handed to the daemon, which answers it
+/// as that app from then on: its record as the daemon keeps it, and the device's published
+/// resources.
 #[tokio::test(flavor = "current_thread")]
-async fn a_launched_app_reads_its_record_from_the_daemon_and_the_shells_services_from_the_shell() {
-    let device = device_with_both(true).await;
-    let mut app = Endpoint::connect(
-        &device.shell_socket,
-        &launch_opening(APP, &device.workspace),
-    )
-    .await;
+async fn an_app_the_shell_launched_is_served_by_the_daemon() {
+    let device = device_with_shell().await;
+    device
+        .launched
+        .record(std::process::id(), APP, &device.workspace);
+    let (mut app, taken) = device.app(&launch_opening(APP, &device.workspace)).await;
+    taken.await;
     let joined = app.join(&device.workspace).await;
     let Ok(Reply::Opened(channel)) = joined else {
         panic!("the app joins its record: {joined:?}");
     };
-
-    // Its record reads as the daemon keeps it: the shell's host keeps no copy to answer from.
     let open = runtime_collab::committed_document::Request::Open {
         known_revision: None,
     }
@@ -468,26 +464,8 @@ async fn a_launched_app_reads_its_record_from_the_daemon_and_the_shells_services
         }
         other => panic!("the daemon's record, not {other:?}"),
     }
-
-    // The person's settings are the shell's host's: the app's own entry is written there.
-    let written = app
-        .call(Operation::Settings {
-            channel,
-            call: SettingsCall::Update {
-                section: "app_personal".into(),
-                values: serde_json::to_vec(&serde_json::json!({APP: {"columns": 3}})).unwrap(),
-                action: None,
-            },
-        })
-        .await;
-    assert!(
-        matches!(written, Ok(Reply::Settings { .. })),
-        "the shell's host takes the app's setting: {written:?}"
-    );
-
-    // A Quick Settings change is taken by the resources the shell's host publishes.
     let Ok(Reply::Opened(services)) = app.call(Operation::Services).await else {
-        panic!("the shell's published resources open");
+        panic!("the device's published resources open");
     };
     assert_eq!(
         app.call(Operation::Invoke {
@@ -499,41 +477,48 @@ async fn a_launched_app_reads_its_record_from_the_daemon_and_the_shells_services
         .await,
         Ok(Reply::Receipt(Receipt::Accepted))
     );
+}
 
-    // Files hears from the shell's host when the person's apps change.
-    assert_eq!(
-        app.call(Operation::Changed {
-            channel,
-            of: Changes::Applications,
-            after: 6,
-        })
-        .await,
-        Ok(Reply::Changed(7))
-    );
-
-    // A handle the app never opened is no side's.
+/// A process the shell never launched is refused at the shell's socket, saying why, and nothing
+/// of it reaches the daemon.
+#[tokio::test(flavor = "current_thread")]
+async fn a_launch_the_shell_never_recorded_is_refused() {
+    let device = device_with_shell().await;
+    let (mut app, taken) = device.app(&launch_opening(APP, &device.workspace)).await;
+    let ((), joined) = tokio::join!(taken, app.join(&device.workspace));
+    let refused = joined.unwrap_err();
     assert!(
-        app.call(Operation::Changed {
-            channel: Handle(99),
-            of: Changes::Applications,
-            after: 0,
-        })
-        .await
-        .is_err()
+        refused.contains("not an authenticated shell-managed process"),
+        "{refused}"
     );
 }
 
+/// A vouch is for a connection the shell handed over on its own link: one naming a descriptor the
+/// link never carried admits nothing.
 #[tokio::test(flavor = "current_thread")]
-async fn an_app_vouching_for_itself_is_refused() {
-    let device = device_with_both(true).await;
-    // Only the daemon's answer to a vouch the shell asked for on its own link admits a connection
-    // as an app: one naming any other secret is no app's.
-    let mut opening = runtime_collab::wire::shell::VOUCH_MAGIC.to_vec();
-    opening.extend_from_slice(&[9; runtime_collab::wire::shell::SHELL_SECRET_BYTES]);
-    let mut app = Endpoint::connect(&device.daemon_socket, &opening).await;
-    let refused = app.join(&device.workspace).await.unwrap_err();
+async fn a_vouch_for_a_connection_never_handed_over_is_refused() {
+    let device = device_with_shell().await;
+    let refused = device
+        .shell
+        .call(runtime_collab::wire::shell::ShellCall::Vouch(
+            runtime_collab::wire::shell::Vouch {
+                connection: 40,
+                app: Some(runtime_collab::wire::shell::VouchedApp {
+                    app: APP.to_owned(),
+                    workspace: device.workspace.clone(),
+                    window: None,
+                    windowless: false,
+                    ticket: None,
+                    process: 41,
+                    launcher: None,
+                }),
+                to: runtime_collab::wire::shell::HandedTo::Collaboration,
+            },
+        ))
+        .await
+        .unwrap_err();
     assert!(
-        refused.contains("only the person's shell vouches for an app"),
+        refused.to_string().contains("handed no connection"),
         "{refused}"
     );
 }
@@ -545,7 +530,7 @@ async fn an_app_vouching_for_itself_is_refused() {
 async fn only_the_shell_hands_the_device_processes_an_instance() {
     use runtime_portal::device_processes::{FromDevice, ToDevice};
     use runtime_portal::packet::Packet as _;
-    let device = device_with_both(true).await;
+    let device = device_with_shell().await;
     let ask = |connection: std::os::fd::OwnedFd| {
         tokio::task::spawn_blocking(move || {
             ToDevice::Running.send(&connection)?;
@@ -578,9 +563,7 @@ async fn only_the_shell_hands_the_device_processes_an_instance() {
     let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
     opening.extend_from_slice(&secret);
     let (shell, _) = runtime_collab::ShellClient::open(
-        Endpoint::connect(&device.daemon_socket, &opening)
-            .await
-            .stream,
+        Endpoint::connect(&device.daemon_socket, &opening).await.stream,
     );
     let connection = shell.processes().await.unwrap();
     assert_eq!(
@@ -594,23 +577,6 @@ async fn only_the_shell_hands_the_device_processes_an_instance() {
             .load(std::sync::atomic::Ordering::SeqCst),
         1
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn a_shell_without_its_daemon_refuses_an_apps_join_saying_why() {
-    let device = device_with_both(false).await;
-    let mut app = Endpoint::connect(
-        &device.shell_socket,
-        &launch_opening(APP, &device.workspace),
-    )
-    .await;
-    let refused = app.join(&device.workspace).await.unwrap_err();
-    assert!(refused.contains(NO_DAEMON), "{refused}");
-    // What only the shell serves still answers: the app is told why its documents do not.
-    assert!(matches!(
-        app.call(Operation::Services).await,
-        Ok(Reply::Opened(_))
-    ));
 }
 
 /// A resource the device's services publish is answered on the person's shell link alone: a

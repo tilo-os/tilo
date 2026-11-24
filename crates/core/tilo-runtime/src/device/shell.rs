@@ -48,6 +48,7 @@ pub(crate) fn services(
     dispatching: Arc<Dispatching>,
     published: Arc<dyn PublishedResources>,
     processes: Option<tilo_workspace_service::apps::shell::ShellProcesses>,
+    identity: Arc<dyn Fn(std::os::unix::net::UnixStream) + Send + Sync>,
 ) -> ShellServices {
     let standing = Standing::new(Arc::clone(workspaces));
     standing.follow();
@@ -76,6 +77,7 @@ pub(crate) fn services(
         }),
         standing,
         published: Some(published),
+        identity: Some(identity),
     }
 }
 

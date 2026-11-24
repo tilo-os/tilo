@@ -240,7 +240,7 @@ pub(super) async fn serve_broker_thread(
                 let result = async {
                     let stream = tokio::net::UnixStream::from_std(worker.stream)
                         .map_err(BrokerError::from)?;
-                    drive_connection(stream, state, directories, peer_id, Some(worker.binding))
+                    drive_connection(stream, state, directories, peer_id, Some(worker.binding), None)
                         .await
                 }
                 .await;
@@ -300,7 +300,7 @@ pub(super) async fn serve_broker_thread(
         let directories = Rc::clone(&directories);
         let peer_id = state.next_peer_id();
         tokio::task::spawn_local(async move {
-            if let Err(e) = drive_connection(stream, state, directories, peer_id, None).await {
+            if let Err(e) = drive_connection(stream, state, directories, peer_id, None, None).await {
                 tracing::warn!("collaboration broker: peer-{peer_id} disconnected: {e}");
             }
         });
@@ -350,6 +350,13 @@ impl AppBrokerState {
     }
     pub(crate) fn is_accepting(&self) -> bool {
         self.accepting.load(Ordering::Acquire) && !self.is_stopped()
+    }
+    /// The seat, reached through the providers this broker serves, for a service this host keeps
+    /// none of itself; `None` for a host with no providers, or asked off its runtime.
+    pub(crate) fn seat(&self) -> Option<crate::apps::seat::Seat> {
+        let providers = self.services.providers.clone()?;
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        Some(crate::apps::seat::Seat::new(providers, runtime))
     }
     pub(crate) fn request_stop(&self) {
         self.accepting.store(false, Ordering::Release);

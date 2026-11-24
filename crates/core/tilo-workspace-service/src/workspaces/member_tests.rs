@@ -1473,6 +1473,7 @@ async fn shell_on_a_joined_workspace(
                 standing: Arc::new(NoStanding),
                 published: None,
                 workspaces: member.workspaces().clone(),
+                identity: None,
             })),
             ..crate::apps::services::ProcessServices::default()
         },

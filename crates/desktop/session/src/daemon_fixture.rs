@@ -85,6 +85,7 @@ impl TestDaemon {
                 standing: Arc::new(NoStanding),
                 published: None,
                 workspaces,
+                identity: None,
             })),
             ..ProcessServices::default()
         };
@@ -332,6 +333,16 @@ impl tilo_actions::remote::ActionProvider for GovernanceCall {
         _id: &tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::InvocationState> {
         None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionCallError::UnknownInvocation,
+        ))
     }
 }
 

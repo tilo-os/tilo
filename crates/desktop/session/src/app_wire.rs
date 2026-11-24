@@ -20,11 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
-use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, RESOURCE_PROVIDER, RemoteActionMessage, RemoteActionTarget,
-    ResourceReadRequest,
-};
-use tilo_actions::{ActionAddress, ApiError, InvocationId};
+use tilo_actions::ApiError;
 use tilo_broker_core::services::{
     ContentStoreServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
@@ -52,7 +48,6 @@ use crate::lists::Lists;
 /// that connection was last sent.
 struct Watch {
     id: ResourceWatch,
-    caller: Caller,
     resource: String,
     /// The services' revision this watch was last served at.
     revision: Option<u64>,
@@ -62,12 +57,8 @@ struct Watch {
     missing: Option<u64>,
     /// What it was last sent, so a change elsewhere does not re-send it.
     reading: Option<Vec<u8>>,
-    /// Where its readings go; taken by the device's follow
-    /// ([`follow_at_device`]) once the resource is the daemon's.
-    sink: Option<mpsc::UnboundedSender<Event>>,
-    /// The follow of the device's daemon, for a resource no service here publishes: what reads
-    /// and watches it there instead, as the app.
-    fallback: Option<tokio::task::AbortHandle>,
+    /// Where its readings go.
+    sink: mpsc::UnboundedSender<Event>,
 }
 
 /// What a connection asked, waiting for the loop's pass.
@@ -100,9 +91,6 @@ pub struct Link {
     /// the session runs itself, without a package's sandbox, is its own code. Set once the broker
     /// serves the link.
     launches: std::sync::OnceLock<std::sync::Arc<Launches>>,
-    /// The device's daemon, as this session's shell link reaches it: where a resource no service
-    /// here publishes is read, watched and invoked, as the app asking.
-    daemon: std::sync::OnceLock<tilo_session_client::daemon_documents::DaemonShell>,
     wake: Wake,
 }
 
@@ -140,6 +128,11 @@ impl Personal {
 }
 
 impl Link {
+    /// The apps this session started, which the connections it takes are admitted by.
+    pub(crate) fn admitting(&self, launches: std::sync::Arc<Launches>) {
+        let _ = self.launches.set(launches);
+    }
+
     /// A link that wakes the session's loop with `wake`.
     #[must_use]
     pub fn new(wake: Wake) -> std::sync::Arc<Self> {
@@ -149,118 +142,8 @@ impl Link {
             next_watch: AtomicU64::new(1),
             personal: Mutex::new(Personal::default()),
             launches: std::sync::OnceLock::new(),
-            daemon: std::sync::OnceLock::new(),
             wake,
         })
-    }
-
-    /// Serve the resources no service here publishes from this device's `daemon`, its shell link:
-    /// read and watched there, and changed by their actions, as the app asking.
-    pub(crate) fn reaching(&self, daemon: tilo_session_client::daemon_documents::DaemonShell) {
-        let _ = self.daemon.set(daemon);
-    }
-
-    /// The device's daemon, when this session was started by it.
-    fn device(&self) -> Option<tilo_session_client::daemon_documents::DaemonShell> {
-        self.daemon.get().cloned()
-    }
-
-    /// Read `resource` at the device's daemon, as `caller`'s app, and answer `reply` with the
-    /// reading there: what a resource no service here publishes reads. The app is the one the
-    /// broker admitted this connection as (`publishing()`, from the launch it attested), never
-    /// one a request of the app's names.
-    fn read_at_device(
-        &self,
-        caller: Caller,
-        resource: String,
-        reply: oneshot::Sender<Result<Reading, String>>,
-    ) {
-        let Some(daemon) = self.device() else {
-            let _ = reply.send(Ok((0, None)));
-            return;
-        };
-        let request = read_at(&caller, &resource, None, None);
-        let runtime = daemon.runtime().clone();
-        runtime.spawn(async move {
-            let answer = match daemon.read(request).await {
-                Ok(readings) => match reading_of(&readings) {
-                    Ok(Some((revision, reading))) => Ok((revision, Some(reading))),
-                    Ok(None) => Err(format!("the device publishes no `{resource}` resource")),
-                    Err(error) => Err(error),
-                },
-                Err(error) => Err(error),
-            };
-            let _ = reply.send(answer);
-        });
-    }
-
-    /// Invoke `action` of `resource`, which no service here publishes, at the device's daemon as
-    /// `caller`'s app: the admitted one, as [`Self::read_at_device`] says.
-    fn invoke_at_device(
-        &self,
-        caller: Caller,
-        resource: String,
-        action: String,
-        arguments: Vec<u8>,
-        reply: oneshot::Sender<Receipt>,
-    ) {
-        let refuse = |reply: oneshot::Sender<Receipt>, message: String| {
-            let _ = reply.send(Receipt::Refused {
-                code: "refused".to_owned(),
-                message,
-            });
-        };
-        let Some(daemon) = self.device() else {
-            refuse(
-                reply,
-                format!("this session publishes no `{resource}` resource"),
-            );
-            return;
-        };
-        let arguments = match serde_json::from_slice::<Map<String, serde_json::Value>>(&arguments) {
-            Ok(arguments) => arguments,
-            Err(error) => {
-                refuse(
-                    reply,
-                    format!("the arguments are not a JSON object: {error}"),
-                );
-                return;
-            }
-        };
-        let runtime = daemon.runtime().clone();
-        runtime.spawn(async move {
-            let request = InvokeRequest {
-                invocation: InvocationId::new(),
-                target: RemoteActionTarget {
-                    provider: format!("{RESOURCE_PROVIDER}:{}:{resource}", caller.app_id),
-                    address: ActionAddress::new(resource, action),
-                },
-                argument: InvokeArgument::Json(arguments),
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
-                signed: None,
-            };
-            let answered = daemon
-                .dispatch(None, &RemoteActionMessage::Invoke(request))
-                .await;
-            let _ = reply.send(match answered {
-                Ok(value) => match serde_json::to_vec(&value) {
-                    Ok(answer) => Receipt::Done(answer),
-                    Err(error) => Receipt::Refused {
-                        code: "failed".to_owned(),
-                        message: format!("the answer does not encode: {error}"),
-                    },
-                },
-                Err(message) => Receipt::Refused {
-                    code: "refused".to_owned(),
-                    message,
-                },
-            });
-        });
     }
 
     /// A link that serves a test's services: nothing wakes its session.
@@ -317,7 +200,10 @@ impl Link {
                         "an app invokes a published action"
                     );
                     if services.read(&resource).is_none() {
-                        self.invoke_at_device(caller, resource, action, arguments, reply);
+                        let _ = reply.send(Receipt::Refused {
+                            code: "refused".to_owned(),
+                            message: format!("this session publishes no `{resource}` resource"),
+                        });
                     } else {
                         answer(services, &resource, &action, &arguments, reply);
                     }
@@ -328,7 +214,7 @@ impl Link {
     }
 
     /// Answer a snapshot of `resource` for `caller`: from the services when one of them publishes
-    /// it, and otherwise from the device's daemon, the one server of its own resources.
+    /// it, and with no reading when none does.
     fn answer_snapshot(
         &self,
         services: &Services,
@@ -344,7 +230,9 @@ impl Link {
                 Some(value) => {
                     let _ = reply.send(Ok((services.revision(), Some(encoded(&value)))));
                 }
-                None => self.read_at_device(caller, resource, reply),
+                None => {
+                    let _ = reply.send(Ok((0, None)));
+                }
             },
         }
     }
@@ -371,20 +259,6 @@ impl Link {
             let reading = services.read(&watch.resource).map(|value| encoded(&value));
             watch.revision = Some(revision);
             if reading.is_none() {
-                // No service here publishes it: the device's daemon does, or does not, and the
-                // follow there is the one that answers from now on.
-                if watch.fallback.is_none()
-                    && let Some(daemon) = self.device()
-                    && let Some(sink) = watch.sink.take()
-                {
-                    watch.fallback = Some(follow_at_device(
-                        daemon,
-                        watch.caller.clone(),
-                        watch.resource.clone(),
-                        sink,
-                    ));
-                    return true;
-                }
                 // No service publishes it yet: the app is told once, and
                 // again only once a service was added, which is the only
                 // thing that can make one publish it.
@@ -399,14 +273,14 @@ impl Link {
                 }
             }
             watch.reading.clone_from(&reading);
-            watch.sink.as_ref().is_none_or(|sink| {
-                sink.send(Event::Reading {
+            watch
+                .sink
+                .send(Event::Reading {
                     resource: watch.resource.clone(),
                     revision,
                     reading,
                 })
                 .is_ok()
-            })
         });
     }
 }
@@ -438,28 +312,18 @@ impl PublishedResources for Link {
         let id = ResourceWatch::new(self.next_watch.fetch_add(1, Ordering::Relaxed));
         self.watches.lock_recover().push(Watch {
             id,
-            caller: caller.clone(),
             resource: resource.to_owned(),
             revision: None,
             missing: None,
             reading: None,
-            sink: Some(sink),
-            fallback: None,
+            sink,
         });
         (self.wake)();
         Ok(id)
     }
 
     fn unwatch(&self, id: ResourceWatch) {
-        self.watches.lock_recover().retain(|watch| {
-            if watch.id != id {
-                return true;
-            }
-            if let Some(fallback) = &watch.fallback {
-                fallback.abort();
-            }
-            false
-        });
+        self.watches.lock_recover().retain(|watch| watch.id != id);
     }
 
     fn invoke(
@@ -541,11 +405,11 @@ pub struct Sealed {
     pub keys: Option<KeyProvider>,
 }
 
-/// What this session hands the broker besides the link and the launcher: the
-/// board every app's live activity shows on, what notes its records changing,
-/// the session it decides a workspace against, the shortcuts it saves and
-/// runs, the workspace's activity it serves, and the runs of what people ask
-/// its agents.
+/// What a session the host placed in a workspace's VM hands the broker it keeps
+/// ([`serve_hosted`]) besides the link and the launcher: the board every app's
+/// live activity shows on, what notes its records changing, the session it
+/// decides a workspace against, the shortcuts it saves and runs, the
+/// workspace's activity it serves, and the runs of what people ask its agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
     /// The calls this session's apps join: the service a view's call steps
@@ -589,13 +453,6 @@ pub struct Hosted {
     /// the write is committed by the service, into the copy the session's own writes reach and its
     /// reads answer from, and the owner keeps only a workspace the service holds none of.
     pub service: tilo_workspace_service::service::ServiceSlot,
-    /// The shell link the device's daemon handed this session, or why it has none: each app this
-    /// session launches is joined at the daemon on a connection vouched for on it, and its
-    /// documents are answered there.
-    pub daemon: tilo_workspace_service::apps::services::DeviceDaemon,
-    /// Each write the daemon takes, as the session follows them: what a query an agent holds open
-    /// here is asked again on.
-    pub daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed,
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
@@ -647,8 +504,12 @@ pub fn journal_root(state: &std::path::Path) -> PathBuf {
     state.join("tilo").join("invocations")
 }
 
-/// Serve the session's published resources to the apps on `socket`: the
-/// broker admits each connection by the launch `launches` recorded, asks
+/// Serve a hosted session's published resources to the apps on `socket`, on a broker this
+/// session keeps itself. A session the host placed in a workspace's VM runs no device daemon
+/// yet, so its window's page is admitted, decided and served here: every other session's apps
+/// are the daemon's ([`crate::app_socket`]). The broker admits each connection by the launch
+/// `launches` recorded, and decides a join and a retained action against the identity store's
+/// device-certificate checks and this session's workspaces' members. It asks
 /// `link` for what the services publish, hands Settings the speaker groups
 /// of `fabric` when this session runs on one, and decides what an app may do
 /// in a workspace against `session`. What apps publish of their own content lands
@@ -662,20 +523,14 @@ pub fn journal_root(state: &std::path::Path) -> PathBuf {
 ///
 /// The socket's directory is not this user's private directory, another
 /// session answers on the socket, or the broker's thread could not start.
-pub fn serve(
+pub fn serve_hosted(
     socket: PathBuf,
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
     fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
 ) -> std::io::Result<(BrokerHandle, Option<crate::workspace_terminals::Terminals>)> {
-    let _ = link.launches.set(std::sync::Arc::clone(&launches));
-    // The device's daemon is where the resources no service here publishes live, read and
-    // changed there as the app asking.
-    link.reaching(tilo_session_client::daemon_documents::DaemonShell::new(
-        hosted.daemon.clone(),
-        tilo_rt::app().handle().clone(),
-    ));
+    link.admitting(std::sync::Arc::clone(&launches));
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.layout) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
     let fanout = std::sync::Arc::clone(&hosted.fanout);
@@ -704,23 +559,8 @@ pub fn serve(
     // lists as each app's name and offered actions, and what decides the
     // reach the device's settings app has of the settings document.
     launches.watching(hosted.lists.clone());
-    // An app's writes go to the device's daemon on its own connection there; the receipts of the
-    // effects the actions this session runs had are recorded by the daemon too.
-    let publisher = match hosted.daemon.clone() {
-        Ok(link) => PeerPublisher::with_commits(std::sync::Arc::new(
-            tilo_session_client::daemon_documents::DaemonReceipts(
-                tilo_session_client::daemon_documents::DaemonShell::new(
-                    Ok(link),
-                    tilo_rt::app().handle().clone(),
-                ),
-            ),
-        )),
-        Err(reason) => {
-            tracing::warn!(%reason, "no daemon records the effects of this session's actions");
-            PeerPublisher::disabled()
-        }
-    };
-    let daemon = hosted.daemon.clone();
+    // No daemon records the effects of a hosted session's actions.
+    let publisher = PeerPublisher::disabled();
     let (services, terminals) = host_services_with_hosts(
         link,
         launches,
@@ -738,13 +578,6 @@ pub fn serve(
         channels,
         fanout,
     )?;
-    // A record outside an app's own is read at the device's daemon, which holds the workspaces
-    // and decides the read as the caller reading it: this session keeps no reader of its own.
-    if let (Ok(link), Some(apps)) = (daemon, broker.app_action_broker()) {
-        let _inside = tilo_rt::app().handle().enter();
-        apps.state()
-            .serve_records(std::sync::Arc::new(link.dispatch()));
-    }
     Ok((broker, terminals))
 }
 
@@ -1188,14 +1021,13 @@ impl tilo_workspace_service::apps::services::WorkspaceGrants for SessionGrants {
     }
 }
 
-/// The steps an agent session takes here, registered: the programs its task writes, and the
-/// workspace's tools an agent in a process of its own calls.
+/// The steps an agent session takes here, registered: the programs its task writes. The
+/// workspace's tools an agent in a process of its own calls are the device daemon's.
 fn agent_session_steps(
     programs: std::sync::Arc<tilo_workspace_service::workspaces::task_programs::TaskPrograms>,
     providers: &Providers,
 ) {
     programs.register(providers);
-    std::sync::Arc::new(crate::agent_tools::AgentToolSteps::default()).register(providers);
 }
 
 /// What the apps this session runs reach of it: the resources its services
@@ -1226,52 +1058,28 @@ fn host_services_with_hosts(
     ProcessServices,
     Option<crate::workspace_terminals::Terminals>,
 ) {
-    // The hosts of the workspaces placed away from this device: where the person's actions on
-    // those workspaces go. The device's daemon publishes each workspace's host on the person's
-    // list and carries the actions there on its one dispatch; a session the host placed in a
-    // workspace's VM runs no daemon, and reaches its host itself.
+    // The host this session's VM is placed on, where the person's actions on its workspace go.
     let runtime = tilo_rt::app().handle().clone();
-    let on_daemon = hosted
-        .view
-        .clone()
-        .zip(hosted.daemon.clone().ok())
-        .map(|(view, link)| {
-            let _inside = runtime.enter();
-            (view, link.dispatch())
-        });
-    let placed: Option<std::sync::Arc<crate::hosted_workspaces::HostedWorkspaces>> =
-        match &on_daemon {
-            Some(_) => None,
-            None => hosted
-                .engine
-                .as_ref()
-                .and_then(|engine| {
-                    crate::hosted_workspaces::HostedWorkspaces::service(
-                        Some(engine),
-                        hosted.endpoint.clone(),
-                        runtime.clone(),
-                    )
-                })
-                .map(std::sync::Arc::new),
-        };
-    let hosting: Option<
-        std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
-    > = match &on_daemon {
-        Some((view, dispatch)) => Some(std::sync::Arc::new(crate::broker_services::DaemonHosts {
-            view: std::sync::Arc::clone(view),
-            dispatch: dispatch.clone(),
-        })),
-        None => placed.as_ref().map(|hosting| {
-            std::sync::Arc::clone(hosting)
-                as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
-        }),
-    };
-    // The person's devices, as this session admits them: the daemon that holds their record
-    // answers them, or the host this session's VM is placed on, or the workspaces it keeps
-    // itself. Installed here, before the broker or the identity authority decides any device of
-    // theirs.
+    let placed: Option<std::sync::Arc<crate::hosted_workspaces::HostedWorkspaces>> = hosted
+        .engine
+        .as_ref()
+        .and_then(|engine| {
+            crate::hosted_workspaces::HostedWorkspaces::service(
+                Some(engine),
+                hosted.endpoint.clone(),
+                runtime,
+            )
+        })
+        .map(std::sync::Arc::new);
+    let hosting = placed.as_ref().map(|hosting| {
+        std::sync::Arc::clone(hosting)
+            as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
+    });
+    // The person's devices, as this session admits them: the host this session's VM is placed
+    // on answers them. Installed here, before the broker or the identity authority decides any
+    // device of theirs.
     crate::device_trust::install(
-        &hosted.daemon,
+        &Err("a session in a workspace's VM runs no device daemon".to_owned()),
         &hosted.service,
         hosted
             .engine
@@ -1279,17 +1087,7 @@ fn host_services_with_hosts(
             .map(|engine| engine.identity().device_cert.clone()),
         placed.as_ref(),
     );
-    let terminals = on_daemon
-        .zip(hosted.engine.as_ref())
-        .map(
-            |((view, dispatch), engine)| crate::workspace_terminals::Terminals {
-                view,
-                dispatch,
-                endpoint: hosted.endpoint.clone(),
-                device: engine.identity().device_cert.device_public_key,
-                runtime,
-            },
-        );
+    let terminals = None;
     let decided = broker_services(
         link,
         launches,
@@ -1341,8 +1139,6 @@ fn broker_services(
         view,
         endpoint: _,
         service,
-        daemon,
-        daemon_writes,
         document_content,
         action_offload,
         journal_root,
@@ -1402,7 +1198,7 @@ fn broker_services(
                 std::sync::Arc::clone(engine),
                 std::sync::Arc::clone(&item_lending),
                 tilo_session_client::daemon_documents::DaemonShell::new(
-                    daemon.clone(),
+                    Err("a session in a workspace's VM runs no device daemon".to_owned()),
                     tilo_rt::app().handle().clone(),
                 ),
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
@@ -1417,45 +1213,10 @@ fn broker_services(
     crate::machine_steps::MachineSteps::session(view.clone()).register(&providers);
     crate::model_steps::ModelSteps::session(view.clone()).register(&providers);
     crate::server_account::ServerAccountApi::session().register(&providers);
-    std::sync::Arc::new(tilo_workspace_service::agents::assistant::Transforms::new(
-        service.clone(),
-        tilo_rt::app().handle().clone(),
-    ))
-    .register(&providers);
-    std::sync::Arc::new(tilo_workspace_service::agents::WebSearch::new(
-        tilo_rt::app().handle().clone(),
-    ))
-    .register(&providers);
-    std::sync::Arc::new(tilo_workspace_service::agents::triggered::Answers::new(
-        service.clone(),
-        std::sync::Arc::clone(&fanout),
-    ))
-    .register(&providers);
     if let Some(programs) = task_programs {
         agent_session_steps(programs, &providers);
     }
-    // The workspace's events and its assistants' look-round are the device's daemon's, saved as
-    // the shortcuts it keeps: a call of them is carried there as the app or agent that made it.
-    if let Ok(link) = &daemon {
-        let _inside = tilo_rt::app().handle().enter();
-        for provider in [
-            tilo_actions::remote::workspace_events::PROVIDER,
-            tilo_actions::remote::workspace_initiative::PROVIDER,
-        ] {
-            providers.provide(
-                provider,
-                provider,
-                tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
-                std::sync::Arc::new(link.dispatch()),
-            );
-        }
-    }
     if let Some(actions) = session_actions {
-        // The device's dispatch reaches them over the shell's link too: what the daemon's own
-        // endpoint and its agents ask of the layout, the windows and the notices.
-        if let Ok(link) = &daemon {
-            actions.serve_on(link.clone());
-        }
         actions.register(&providers);
     }
     if let Some(settings) = settings_steps {
@@ -1467,20 +1228,10 @@ fn broker_services(
         approved_checks: BrokerService::unserved(
             "no project's approved check runs here: this session installs no check service",
         ),
-        // The device's daemon keeps the workspaces: an app's Open of a record is answered there,
-        // on the connection the router joins for it, and an agent's read of one is read from it
-        // over the shell's link, never from a copy here.
-        committed_documents: BrokerService::when(daemon.clone().ok().map(|link| {
-            std::sync::Arc::new(crate::broker_services::DaemonRecordReads(
-                tilo_session_client::daemon_documents::DaemonDocuments(
-                    tilo_session_client::daemon_documents::DaemonShell::new(
-                        Ok(link),
-                        tilo_rt::app().handle().clone(),
-                    ),
-                ),
-            ))
-                as std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>
-        })),
+        // No device daemon keeps a hosted session's workspaces for it to read.
+        committed_documents: BrokerService::unserved(
+            "a session in a workspace's VM runs no device daemon to read records at",
+        ),
         // A call an app joins is this session's: the channel it is in, who
         // else is there, and what the app hears of it until it leaves.
         native_media: BrokerService::when(native_media.map(|media| {
@@ -1591,18 +1342,9 @@ fn broker_services(
         // Every app shows its live activity (a running timer, a stopwatch)
         // outside its windows on this one board.
         live_activities: BrokerService::served(live_activities),
-        // Settings reads here where this computer's network can wake it, and shares a
-        // passphrase it learned with the person's other devices, or joins with one they shared:
-        // the passphrases are the person's, kept by the device's daemon.
-        wifi_continuity: BrokerService::when(daemon.clone().ok().and_then(|link| {
-            crate::wifi_continuity::WifiContinuity::new(
-                tilo_session_client::daemon_documents::DaemonShell::new(
-                    Ok(link),
-                    tilo_rt::app().handle().clone(),
-                ),
-            )
-            .map(|wifi| std::sync::Arc::new(wifi) as std::sync::Arc<dyn WifiContinuityServices>)
-        })),
+        // The passphrases are the person's, kept by the device's daemon, which a session in a
+        // workspace's VM has none of.
+        wifi_continuity: BrokerService::when(None::<std::sync::Arc<dyn WifiContinuityServices>>),
         // The session is the owner of the person's account secrets: Browser
         // resolves, lists and forgets its website sessions here, Settings seals
         // an account's secret, and Mail is released the one it keeps. Every
@@ -1659,26 +1401,13 @@ fn broker_services(
         // person's actions on them are sent to the host, which decides and
         // runs them, and the change reaches the windows here by sync.
         hosted_workspaces: BrokerService::when(hosting),
-        // Apps write and read their resources in the device's one store, which the daemon keeps:
-        // the router sends an app's commands there, and an agent this session admits reads them
-        // over the shell's link.
-        resources: BrokerService::when(daemon.clone().ok().map(|link| {
-            std::sync::Arc::new(crate::broker_services::DaemonResources {
-                shell: tilo_session_client::daemon_documents::DaemonShell::new(
-                    Ok(link),
-                    tilo_rt::app().handle().clone(),
-                ),
-                writes: daemon_writes,
-            })
-                as std::sync::Arc<dyn tilo_workspace_service::apps::services::ResourceServices>
-        })),
+        // Apps keep their resources in the device's one store, which no daemon keeps here.
+        resources: BrokerService::unserved(
+            "a session in a workspace's VM runs no device daemon to keep resources in",
+        ),
         shell: BrokerService::unserved(
             "the person's shell is answered by this computer's Tilo service, never by a session",
         ),
-        // An app's documents are the person's workspaces', which the device's daemon keeps: each
-        // app this session launches is joined there too, on a connection vouched for on the shell
-        // link, and this session answers only the services it keeps itself.
-        device_daemon: BrokerService::served(daemon),
         // The providers this session answers: the steps only it may take for the person — the
         // workspace's activity the Activity app reads, a ticket for a new computer, administering
         // their identities and the devices trusted under them, the machines they planned, their
@@ -1687,110 +1416,6 @@ fn broker_services(
         // take, and the person's settings. Each was registered above under the id a call names.
         providers: BrokerService::served(providers),
     }
-}
-
-/// A read of `resource` at the device's daemon, as `caller`'s app: `after` is the revision it was
-/// last shown, and `wait_ms` how long the daemon may hold the answer for the next one. `app` is
-/// the app the broker admitted the connection as, which the daemon decides the reading for.
-fn read_at(
-    caller: &Caller,
-    resource: &str,
-    after: Option<String>,
-    wait_ms: Option<u32>,
-) -> ResourceReadRequest {
-    ResourceReadRequest {
-        // A device's own resource is in no workspace: its app and id name it.
-        workspace: String::new(),
-        app: caller.app_id.clone(),
-        record: resource.to_owned(),
-        joined: false,
-        after,
-        wait_ms,
-        answer: tilo_actions::remote::ReadAnswer::Reading,
-    }
-}
-
-/// What a read at the device's daemon answered of one resource: its revision, as the session's
-/// services count one, and the reading's JSON; `None` when the device publishes no reading of it.
-fn reading_of(readings: &serde_json::Value) -> Result<Option<(u64, Vec<u8>)>, String> {
-    let Some(value) = readings["records"]
-        .get(0)
-        .and_then(|record| record.get("value"))
-    else {
-        return Ok(None);
-    };
-    let revision = readings["revision"].as_str().unwrap_or_default();
-    // The daemon's revision, as the number the session's services count with: the same text is
-    // the same number, which is all a watch compares.
-    let revision = revision
-        .bytes()
-        .fold(1_469_598_103_934_665_603_u64, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211)
-        });
-    let reading = serde_json::to_vec(value)
-        .map_err(|error| format!("the reading does not encode: {error}"))?;
-    Ok(Some((revision, reading)))
-}
-
-/// Follow `resource` at the device's daemon as `caller`'s app, sending each reading to `sink`: a
-/// resource no service here publishes is that device's own.
-fn follow_at_device(
-    daemon: tilo_session_client::daemon_documents::DaemonShell,
-    caller: Caller,
-    resource: String,
-    sink: mpsc::UnboundedSender<Event>,
-) -> tokio::task::AbortHandle {
-    /// How long a follow waits at the daemon for the next reading.
-    const FOLLOW_WAIT_MS: u32 = 25_000;
-    let runtime = daemon.runtime().clone();
-    let follow = runtime.spawn(async move {
-        let mut after: Option<String> = None;
-        loop {
-            let request = read_at(
-                &caller,
-                &resource,
-                after.clone(),
-                after.as_ref().map(|_| FOLLOW_WAIT_MS),
-            );
-            let readings = match daemon.read(request).await {
-                Ok(readings) => readings,
-                Err(error) => {
-                    tracing::warn!(%error, %resource, "a follow at the device's daemon ended");
-                    let _ = sink.send(Event::Reading {
-                        resource,
-                        revision: 0,
-                        reading: None,
-                    });
-                    return;
-                }
-            };
-            let Some((revision, reading)) = (match reading_of(&readings) {
-                Ok(reading) => reading,
-                Err(error) => {
-                    tracing::warn!(%error, %resource, "a reading at the device's daemon does not read");
-                    None
-                }
-            }) else {
-                // No service at the device publishes it either: the app is told once.
-                let _ = sink.send(Event::Reading {
-                    resource,
-                    revision: 0,
-                    reading: None,
-                });
-                return;
-            };
-            let sent = sink.send(Event::Reading {
-                resource: resource.clone(),
-                revision,
-                reading: Some(reading),
-            });
-            if sent.is_err() {
-                return;
-            }
-            after = readings["revision"].as_str().map(str::to_owned);
-        }
-    });
-    follow.abort_handle()
 }
 
 /// A value as the wire carries it: its JSON.
@@ -1870,9 +1495,13 @@ pub(crate) struct AppWire {
     /// The session the apps' broker decides against, which the loop keeps level
     /// with the session it shows.
     pub(crate) layout: std::sync::Arc<LayoutAuthority>,
-    /// Held so the broker's thread ends and its socket is unlinked with the
-    /// session.
-    pub(crate) broker: tilo_workspace_service::apps::collab_broker::BrokerHandle,
+    /// The broker a session the host placed in a workspace's VM keeps itself, which runs no
+    /// device daemon yet ([`serve_hosted`]): held so its thread ends and its socket is unlinked
+    /// with the session. `None` for every other session, whose apps the daemon serves.
+    pub(crate) hosted: Option<tilo_workspace_service::apps::collab_broker::BrokerHandle>,
+    /// Where this session's apps connect, each connection handed to the device's daemon, while
+    /// it serves them ([`crate::app_socket`]).
+    pub(crate) _socket: Option<crate::app_socket::AppSocket>,
     /// The calls of the workspaces this session takes part in, as the loop
     /// heard them: what a voice channel shows.
     pub(crate) calls: std::sync::Arc<crate::calls::Calls>,
@@ -1890,6 +1519,15 @@ pub(crate) struct AppWire {
     /// What Browser's asks for vault items are answered with, shared with the service that
     /// answers them.
     pub(crate) item_lending: std::sync::Arc<crate::item_lending::ItemLending>,
+    /// The device's one dispatch as this session's person, over the shell's link, when the
+    /// device's daemon handed this session one.
+    pub(crate) dispatch: Option<std::sync::Arc<runtime_collab::ShellDispatch>>,
+    /// The hosts of the workspaces this device takes part in but does not host, as the device's
+    /// daemon reaches them: `None` for a hosted session, whose broker knows them itself.
+    pub(crate) hosts:
+        Option<std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>>,
+    /// The providers of the person's seat as the daemon reaches them.
+    pub(crate) seat: Option<crate::session_providers::SeatServed>,
 }
 
 impl AppWire {
@@ -1939,15 +1577,29 @@ impl AppWire {
     pub(crate) fn action_broker(
         &self,
     ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_broker::AppActionBroker>> {
-        self.broker.app_action_broker().map(std::sync::Arc::new)
+        self.hosted
+            .as_ref()?
+            .app_action_broker()
+            .map(std::sync::Arc::new)
+    }
+
+    /// The hosts of the workspaces this device takes part in but does not host: where a page of
+    /// a hosted window asks the host holding it about a departure it holds for the person.
+    pub(crate) fn hosted_workspaces(
+        &self,
+    ) -> Option<std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>> {
+        self.hosts.clone().or_else(|| {
+            self.action_broker()
+                .and_then(|broker| broker.hosted_workspaces())
+        })
     }
 
     /// What the session tells the workspace's apps of its own session: whose view this person
     /// follows, and the step of a move one window's app is asked for.
-    pub(crate) fn follow_dispatcher(
-        &self,
-    ) -> tilo_workspace_service::apps::collab_broker::SessionFollowDispatcher {
-        self.broker.follow_dispatcher()
+    pub(crate) fn follow_dispatcher(&self) -> Option<crate::window_follow::WindowFollow> {
+        self.dispatch
+            .clone()
+            .map(crate::window_follow::WindowFollow::new)
     }
 
     /// The broker a program the person admitted as an agent is served
@@ -1956,17 +1608,7 @@ impl AppWire {
         &self,
     ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>>
     {
-        self.broker.fanout.app_broker()
-    }
-
-    /// The hosts of the workspaces this device takes part in but does not
-    /// host, while the broker reaches them: where a page of a hosted window
-    /// asks the host holding it about a departure it holds for the person.
-    pub(crate) fn hosted_workspaces(
-        &self,
-    ) -> Option<std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>> {
-        self.action_broker()
-            .and_then(|broker| broker.hosted_workspaces())
+        self.hosted.as_ref()?.fanout.app_broker()
     }
 }
 
@@ -2146,13 +1788,6 @@ mod tests {
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
             service: tilo_workspace_service::service::ServiceSlot::default(),
-            daemon: Err("a test's session has no daemon".to_owned()),
-            daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed::start(
-                &tilo_session_client::daemon_documents::DaemonShell::new(
-                    Err("a test's session has no daemon".to_owned()),
-                    tilo_rt::app().handle().clone(),
-                ),
-            ),
         }
     }
 

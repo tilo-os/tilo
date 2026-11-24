@@ -117,6 +117,21 @@ struct Inner {
     /// The hosts of the workspaces placed on another device, once the embedder says where they
     /// are reached.
     hosts: std::sync::RwLock<Option<HostsOf>>,
+    /// What answers for the seat while a person's shell serves it ([`Providers::serve_seat`]):
+    /// held apart from the providers a call names, so no caller reaches it.
+    seat: std::sync::RwLock<Option<ServedSeat>>,
+}
+
+/// How a call of the seat hands the shell that serves it a file: queued on its link ahead of the
+/// call, answered with the number the shell knows it by there.
+pub type HandOver = Arc<dyn Fn(std::fs::File) -> std::io::Result<u32> + Send + Sync>;
+
+/// The seat as a shell serves it: what answers its calls, and how a call hands it a file, when
+/// its link carries descriptors.
+#[derive(Clone)]
+pub struct ServedSeat {
+    pub answers: Arc<dyn ActionProvider + Send + Sync>,
+    pub hand_over: Option<HandOver>,
 }
 
 /// The actions of the host a workspace is placed on, by workspace: `None` for one this device
@@ -320,6 +335,48 @@ impl Providers {
                 provided.get(token.as_str())
             })
             .cloned()
+    }
+
+    /// Answer for the seat with `answers` from now on: the services of the screen, the sound, the
+    /// person's settings and the windows a desktop session holds for this device
+    /// (`crate::apps::seat`). It is kept apart from every provider a call names: no app, agent
+    /// or other device reaches it, only the services this device's broker forwards to it, with
+    /// the facts it admitted the asking app on. One seat at a time; a later shell's replaces it.
+    pub fn serve_seat(
+        &self,
+        answers: Arc<dyn ActionProvider + Send + Sync>,
+        hand_over: Option<HandOver>,
+    ) {
+        *self.0.seat.write_recover() = Some(ServedSeat { answers, hand_over });
+    }
+
+    /// No seat answers through `answers` any more; a seat served since by another is left as it
+    /// is.
+    pub fn withdraw_seat(&self, answers: &Arc<dyn ActionProvider + Send + Sync>) {
+        let mut seat = self.0.seat.write_recover();
+        if seat
+            .as_ref()
+            .is_some_and(|serving| Arc::ptr_eq(&serving.answers, answers))
+        {
+            *seat = None;
+        }
+    }
+
+    /// What answers for the seat now, while a shell serves it.
+    #[must_use]
+    pub fn seat(&self) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
+        self.0
+            .seat
+            .read_recover()
+            .as_ref()
+            .map(|seat| Arc::clone(&seat.answers))
+    }
+
+    /// The seat now, while a shell serves it, with how a call hands that shell a file: both of
+    /// the one shell.
+    #[must_use]
+    pub fn served_seat(&self) -> Option<ServedSeat> {
+        self.0.seat.read_recover().clone()
     }
 
     /// Send the typed actions of the records of each workspace `hosts` places on another device

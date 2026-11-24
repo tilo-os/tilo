@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crate::platform::surfaces::ShellDesktop;
 use runtime_portal::device_processes::{Device as DeviceProcesses, HandedFds, HandedInstance};
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, InvokeArgument, InvokeRequest,
     RemoteActionTarget, application_open_target, application_provider, provider_workspace,
 };
 use tilo_actions::{ActionDescriptor, ApiError, ExecutionLocus, InvocationId};
@@ -28,7 +28,6 @@ use tilo_desktop_search::LaunchPlace as OpenPlace;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_session_core::desktop::outcome::{Closed, Outcome};
-use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 mod launch;
 mod reach;
@@ -114,18 +113,21 @@ pub struct Apps {
     link_home: RefCell<Option<LinkHomeOf>>,
     /// What the person is asked about an app's network before it first starts ([`reach`]).
     reach: reach::Reach,
-    /// The deliveries whose answer a caller waits for, admitted and not settled yet: the broker
-    /// answers a person's action as soon as it is admitted, and the action's own answer is read
-    /// from its state once it settles ([`AppActions::poll_answers`]).
-    awaited: Arc<std::sync::Mutex<Vec<Awaited>>>,
+    /// What the apps publish on the device's dispatch, as last read ([`AppActions::published`]).
+    published: Arc<std::sync::Mutex<PublishedRows>>,
 }
 
-/// A delivery whose answer its caller waits for: the invocation, who asked it, and who hears.
-struct Awaited {
-    invocation: tilo_actions::InvocationId,
-    caller: Caller,
-    answered: crate::search::Answered,
+/// The rows of what the apps publish, as the device's dispatch last answered them, and whether a
+/// read of them is under way.
+#[derive(Default)]
+struct PublishedRows {
+    rows: Vec<tilo_actions::remote::CatalogueRow>,
+    read_at: Option<std::time::Instant>,
+    reading: bool,
 }
+
+/// How long what the apps publish is offered as last read before it is read again.
+const PUBLISHED_FRESH: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Why the apps of a workspace, by its id, may not start yet: `None` once they may.
 pub(crate) type Admission = Rc<dyn Fn(&str) -> Option<String>>;
@@ -193,12 +195,12 @@ struct State {
     /// (`TILO_TOOL_CONTEXT`): set only while a launch a service asked for is being started, and
     /// read where it is planned.
     tool_context: Option<String>,
-    /// The session's action broker, once it starts one: what an action an app publishes is
-    /// delivered through, so a row or a card that names one reaches the app whether it runs or has
-    /// to start for it.
-    broker: Option<Arc<AppBrokerState>>,
-    /// What wakes the session's loop: a delivery completes on the broker's own runtime, and the
-    /// loop reads its answer on its next pass.
+    /// The device's dispatch, as the person, once the session reaches its daemon: what an action
+    /// an app publishes is delivered through, so a row or a card that names one reaches the app
+    /// whether it runs or has to start for it.
+    dispatch: Option<runtime_collab::ShellDispatch>,
+    /// What wakes the session's loop: an answer arrives on the dispatch's own runtime, and the
+    /// loop shows it on its next pass.
     wake: Option<tilo_service::Wake>,
     /// The device's tilolang processes, once the session lent its links: the daemon runs one per
     /// workspace and app, and the session hands each tilolang window's instance to it. `Err` says
@@ -384,7 +386,7 @@ impl Apps {
             admission: RefCell::new(None),
             link_home: RefCell::new(None),
             reach: reach::Reach::default(),
-            awaited: Arc::default(),
+            published: Arc::default(),
             state: RefCell::new(State {
                 environment,
                 x11: None,
@@ -407,7 +409,7 @@ impl Apps {
                 sign_ins_over: std::collections::BTreeSet::new(),
                 session_ending: crate::termination::asked,
                 tool_context: None,
-                broker: None,
+                dispatch: None,
                 wake,
                 processes: None,
                 handed_over: false,
@@ -554,16 +556,16 @@ impl Apps {
         self.state.borrow_mut().launches = Some(launches);
     }
 
-    /// The session's action broker: from here on an action an app publishes is delivered through
-    /// it, so a row, a link or a card that names one opens the app on it, starting the app when it
-    /// is not up.
-    pub fn lend_broker(&self, broker: Option<Arc<AppBrokerState>>) {
-        self.state.borrow_mut().broker = broker;
+    /// The device's dispatch: from here on an action an app publishes is delivered through it,
+    /// so a row, a link or a card that names one opens the app on it, starting the app when it is
+    /// not up.
+    pub fn lend_dispatch(&self, dispatch: Option<runtime_collab::ShellDispatch>) {
+        self.state.borrow_mut().dispatch = dispatch;
     }
 
     /// Hand the app action `target` to the app that publishes it, as the person at this device: the
-    /// broker starts the app when it is closed, waits for it to publish the action and delivers the
-    /// call on its own runtime.
+    /// device's dispatch starts the app when it is closed, waits for it to publish the action and
+    /// delivers the call.
     fn deliver(
         &self,
         target: RemoteActionTarget,
@@ -573,8 +575,7 @@ impl Apps {
         self.deliver_answered(target, arguments, workspace, None)
     }
 
-    /// [`Self::deliver`], telling `answered` what the action answered: at once when the broker
-    /// answers it settled, else once it settles ([`AppActions::poll_answers`]).
+    /// [`Self::deliver`], telling `answered` what the action answered once it ended.
     fn deliver_answered(
         &self,
         target: RemoteActionTarget,
@@ -582,18 +583,12 @@ impl Apps {
         workspace: &str,
         answered: Option<crate::search::Answered>,
     ) -> Result<(), ApiError> {
-        let (broker, caller, wake) = {
+        let (dispatch, wake) = {
             let state = self.state.borrow();
-            let Some(broker) = &state.broker else {
+            let Some(dispatch) = &state.dispatch else {
                 return Err(no_action_provider());
             };
-            (
-                Arc::clone(broker),
-                Caller::local_person(state.person.clone())
-                    .in_new_execution()
-                    .in_workspace(workspace),
-                state.wake.clone(),
-            )
+            (dispatch.clone(), state.wake.clone())
         };
         let request = InvokeRequest {
             invocation: InvocationId::new(),
@@ -607,42 +602,20 @@ impl Apps {
             appearance: None,
             signed: None,
         };
-        // The delivery outlives this pass: its answer runs on the thread that completed it, and
+        // The delivery outlives this pass: its answer arrives on the dispatch's runtime, and
         // wakes this loop, which reports what a person's own action could not do.
         let resource = request.target.address.resource.clone();
         let action = request.target.address.action.clone();
-        let asker = caller.clone();
-        let awaited = Arc::clone(&self.awaited);
-        broker
-            .action_invoke_local_person(&caller, &request)
+        dispatch
+            .follow(Some(workspace.to_owned()), request)
             .then(move |answer| {
-                if let Some(Err(error)) = &answer {
+                let answer =
+                    answer.unwrap_or_else(|| Err("the action host never answered".to_owned()));
+                if let Err(error) = &answer {
                     tracing::warn!(%error, %resource, %action, "an app action was not delivered");
                 }
                 if let Some(answered) = answered {
-                    use tilo_actions::remote::{InvocationReceipt, ReceiptStatus};
-                    match answer {
-                        Some(Ok(InvocationReceipt { status, invocation })) => match status {
-                            ReceiptStatus::Completed { output } => answered(Ok(output)),
-                            // Admitted and running: its answer is read once it settled.
-                            ReceiptStatus::Accepted => {
-                                if let Ok(mut held) = awaited.lock() {
-                                    held.push(Awaited {
-                                        invocation,
-                                        caller: asker,
-                                        answered,
-                                    });
-                                }
-                            }
-                            ReceiptStatus::Failed { error } => answered(Err(error.message)),
-                            ReceiptStatus::Rejected { error } => answered(Err(error.to_string())),
-                            ReceiptStatus::Cancelled { message } => answered(Err(
-                                message.unwrap_or_else(|| "it was cancelled".to_owned())
-                            )),
-                        },
-                        Some(Err(error)) => answered(Err(error.to_string())),
-                        None => answered(Err("the action host never answered".to_owned())),
-                    }
+                    answered(answer);
                 }
                 if let Some(wake) = &wake {
                     wake();
@@ -1855,20 +1828,68 @@ impl Apps {
         self.deliver(target, arguments, &workspace)
     }
 
+    /// What the apps publish on the device's dispatch, as last read: read again on the
+    /// dispatch's runtime once it is older than [`PUBLISHED_FRESH`], waking the loop when the
+    /// answer lands, so a search shows what was read and is shown again with what changed.
+    pub(crate) fn published_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
+        let (dispatch, wake) = {
+            let state = self.state.borrow();
+            (state.dispatch.clone(), state.wake.clone())
+        };
+        let mut held = self
+            .published
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stale = held
+            .read_at
+            .is_none_or(|read| read.elapsed() >= PUBLISHED_FRESH);
+        let rows = held.rows.clone();
+        if let Some(dispatch) = dispatch
+            && stale
+            && !held.reading
+        {
+            held.reading = true;
+            // The answer may land before it is waited on, and is then taken on this thread.
+            drop(held);
+            let published = Arc::clone(&self.published);
+            dispatch.app_actions().then(move |answer| {
+                let mut held = published
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                held.reading = false;
+                held.read_at = Some(std::time::Instant::now());
+                match answer {
+                    Some(Ok(rows)) => {
+                        let changed = rows != held.rows;
+                        held.rows = rows;
+                        drop(held);
+                        if changed && let Some(wake) = &wake {
+                            wake();
+                        }
+                    }
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "what the apps publish could not be read");
+                    }
+                    None => {}
+                }
+            });
+        }
+        rows
+    }
+
     /// The app whose own view `target` changes, when it is one: an action of the
     /// [`tilo_actions::OperationKind::View`] kind, as the app published it (a live surface's word
     /// before the one kept from before the app closed).
     fn navigates(&self, target: &RemoteActionTarget) -> Option<String> {
         let (workspace, app) = application_provider(&target.provider)?;
-        let broker = self.state.borrow().broker.clone()?;
         let address = &target.address;
-        let kind = broker
-            .published_surfaces()
+        let kind = self
+            .published_rows()
             .into_iter()
-            .filter(|surface| surface.app_id == app && surface.route.cluster_id == workspace)
-            .flat_map(|surface| surface.actions)
-            .find(|action| action.resource == address.resource && action.action == address.action)?
-            .operation_kind;
+            .filter(|row| application_provider(&row.provider) == Some((workspace, app)))
+            .filter_map(|row| row.action)
+            .find(|action| action.address == *address)?
+            .kind;
         (kind == tilo_actions::OperationKind::View).then(|| app.to_owned())
     }
 
@@ -2368,34 +2389,31 @@ fn window_opens(
 }
 
 impl AppActions for Apps {
-    /// What the apps publish, read from the session's action broker: the one host every app
-    /// publishes on, whatever it is built with. The broker keeps the last surface an app published
-    /// after it closes, which is why a closed app's actions are offered too: choosing one starts
-    /// the app and delivers the call there.
+    /// What the apps publish, read from the device's dispatch: the one host every app publishes
+    /// on, whatever it is built with. It keeps the last surface an app published after it closes,
+    /// which is why a closed app's actions are offered too: choosing one starts the app and
+    /// delivers the call there.
     fn published(&self, workspace: &str) -> Vec<PublishedActions> {
-        let state = self.state.borrow();
-        let Some(broker) = &state.broker else {
-            return Vec::new();
-        };
-        // By app, workspace and address: the broker holds a surface per record, and an action two
-        // of them carry is still the one action that workspace addresses.
+        // By app, workspace and address: the dispatch lists a surface per record, and an action
+        // two of them carry is still the one action that workspace addresses.
         let mut listed: BTreeMap<(String, String), BTreeMap<(String, String), ActionDescriptor>> =
             BTreeMap::new();
-        for surface in broker.published_surfaces() {
-            let published_in = &surface.route.cluster_id;
+        for row in self.published_rows() {
+            let Some((published_in, app)) = application_provider(&row.provider) else {
+                continue;
+            };
             if !workspace.is_empty() && published_in != workspace {
                 continue;
             }
-            let actions = listed
-                .entry((surface.app_id.clone(), published_in.clone()))
-                .or_default();
-            for action in &surface.actions {
-                // A live surface is listed before the one retained from before the app closed, and
-                // is the one to keep.
-                actions
-                    .entry((action.resource.clone(), action.action.clone()))
-                    .or_insert_with(|| action.descriptor(ExecutionLocus::ClientLocal));
-            }
+            let Some(mut action) = row.action else {
+                continue;
+            };
+            action.locus = ExecutionLocus::ClientLocal;
+            listed
+                .entry((app.to_owned(), published_in.to_owned()))
+                .or_default()
+                .entry((action.address.resource.clone(), action.address.action.clone()))
+                .or_insert(action);
         }
         listed
             .into_iter()
@@ -2410,14 +2428,14 @@ impl AppActions for Apps {
             .collect()
     }
 
-    /// The broker follows each invocation it delivered, but offers no listing that names the app,
+    /// The dispatch follows each invocation it delivered, but offers no listing that names the app,
     /// workspace and action label a job's row reads, so there is nothing to list here yet.
     fn jobs(&self) -> Vec<JobEntry> {
         Vec::new()
     }
 
     /// The workspace's `open` of an app is the app's own action on its own resource, and is carried
-    /// out here. Every other action goes to the session's broker, which starts the app when it is
+    /// out here. Every other action goes to the device's dispatch, which starts the app when it is
     /// closed, waits for it to publish the action and delivers the call there.
     fn invoke(
         &self,
@@ -2427,7 +2445,7 @@ impl AppActions for Apps {
         self.invoke_at(target, arguments, OpenPlace::Focus)
     }
 
-    /// An app's own action, its answer told to `answered`: the broker delivers it as
+    /// An app's own action, its answer told to `answered`: the dispatch delivers it as
     /// [`Self::invoke`] does.
     fn invoke_answered(
         &self,
@@ -2442,45 +2460,6 @@ impl AppActions for Apps {
                 .to_owned(),
         };
         self.deliver_answered(target, arguments, &workspace, Some(answered))
-    }
-
-    /// Tell each delivery's caller its action's answer once the action settled: read from the
-    /// broker's state of the invocation, on the pass after what the action wrote woke the loop.
-    fn poll_answers(&self) {
-        let Some(broker) = self.state.borrow().broker.clone() else {
-            return;
-        };
-        let held = match self.awaited.lock() {
-            Ok(mut held) => std::mem::take(&mut *held),
-            Err(error) => {
-                tracing::warn!(%error, "the deliveries awaiting their answer are poisoned");
-                return;
-            }
-        };
-        let mut waiting = Vec::new();
-        for awaited in held {
-            match broker
-                .action_observe(&awaited.caller, &awaited.invocation)
-                .map(|state| state.update)
-            {
-                Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-                    (awaited.answered)(Ok(output));
-                }
-                Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
-                    (awaited.answered)(Err(error.message));
-                }
-                Some(tilo_actions::InvocationUpdate::Cancelled { message, .. }) => {
-                    (awaited.answered)(Err(
-                        message.unwrap_or_else(|| "it was cancelled".to_owned())
-                    ));
-                }
-                None => (awaited.answered)(Err("the action host forgot it".to_owned())),
-                Some(_) => waiting.push(awaited),
-            }
-        }
-        if let Ok(mut held) = self.awaited.lock() {
-            held.extend(waiting);
-        }
     }
 
     /// Open `app` where the person asked it, through the same run of the workspace's `open`
@@ -2520,7 +2499,7 @@ impl AppActions for Apps {
     }
 
     fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), ApiError> {
-        // A job's row carries the invocation the broker follows, and no row is listed yet
+        // A job's row carries the invocation the dispatch follows, and no row is listed yet
         // ([`Self::jobs`]), so nothing names one to stop.
         Err(no_action_provider())
     }

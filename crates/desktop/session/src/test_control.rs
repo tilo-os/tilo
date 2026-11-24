@@ -546,7 +546,7 @@ impl Control {
         let (asks, asked) = channel();
         let changes = Arc::new(Changes::new(options.wake.handle()));
         let actions = Arc::new(Actions {
-            person: host.as_ref().clone().for_local_person(),
+            person: host.as_ref().clone(),
             host,
             caller: Caller::local_person(options.person.clone()).in_new_execution(),
             front: Front::default(),
@@ -1375,9 +1375,9 @@ struct Actions {
     caller: Caller,
     /// The workspace in front, as the loop last served it: what an invocation opens into.
     front: Front,
-    /// The broker as the person at this device invokes through it
-    /// ([`mcp_server::Host::for_local_person`]): what a frame on the owner's or the development
-    /// socket is answered by.
+    /// What the person at this device invokes through: the device's dispatch, which decides a
+    /// call as the person the session's link was made for. What a frame on the owner's or the
+    /// development socket is answered by.
     person: mcp_server::Host,
     /// Whether the screen is locked, as the loop last read it: the owner's socket invokes nothing
     /// there.

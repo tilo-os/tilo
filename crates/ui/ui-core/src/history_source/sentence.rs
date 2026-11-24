@@ -373,6 +373,11 @@ pub fn learn_published(app: &str, actions: &[tilo_actions::published::PublishedA
     ACTION_LABELS.with(|labels| labels.borrow_mut().learn_published(app, actions));
 }
 
+/// Remember the words of the actions `app` offers, as the device's catalogue describes them.
+pub fn learn_described(app: &str, actions: &[tilo_actions::ActionDescriptor]) {
+    ACTION_LABELS.with(|labels| labels.borrow_mut().learn_described(app, actions));
+}
+
 /// Remember the words of the actions the record type `R` declares, for a reader that holds such
 /// records itself (the session's workspace agents): each action's label and what it did.
 pub fn learn_declared<R: tilo_resource::Resource>() {

@@ -221,18 +221,7 @@ pub mod host {
         /// view does.
         #[must_use]
         pub fn view(&self) -> (u64, Map<String, Value>) {
-            let document = self.source.load();
-            let mut view = app_view(&document, &self.app_id);
-            for (section, values) in &document {
-                if !view.contains_key(section) && granted(&self.grants, section, None) {
-                    view.insert(section.clone(), values.clone());
-                }
-            }
-            settings_store::personal_dictionary::delivery::project(
-                &document,
-                &self.app_id,
-                &mut view,
-            );
+            let view = view(self.source.as_ref(), &self.app_id, &self.grants);
             let mut answered = self.answered.borrow_mut();
             if answered.0 == 0 || answered.1 != view {
                 answered.0 = answered.0.wrapping_add(1).max(1);
@@ -240,6 +229,21 @@ pub mod host {
             }
             answered.clone()
         }
+    }
+
+    /// What `app` sees of `source` with `grants`: its own preferences, the shared sections, the
+    /// sections its grants name, and the personal dictionary's delivery to it.
+    #[must_use]
+    pub fn view(source: &dyn SettingsSource, app: &str, grants: &[String]) -> Map<String, Value> {
+        let document = source.load();
+        let mut view = app_view(&document, app);
+        for (section, values) in &document {
+            if !view.contains_key(section) && granted(grants, section, None) {
+                view.insert(section.clone(), values.clone());
+            }
+        }
+        settings_store::personal_dictionary::delivery::project(&document, app, &mut view);
+        view
     }
 
     /// The shared sections every app reads: how text, motion and colour look to the person.
@@ -346,6 +350,64 @@ pub mod host {
             .map_err(|error| error.to_string())
     }
 
+    /// Merge `values` (a JSON object, at most [`MAX_SETTINGS_WIRE_BYTES`]) into `section` as app
+    /// `app`: through the setters `grants` cover, held to `check` as well, or else into its own
+    /// preferences. `action` names the action that made the change, for the history.
+    ///
+    /// # Errors
+    /// The write is out of bounds, no JSON object, beyond the app's grants, or the source
+    /// refused it.
+    pub fn update(
+        source: &dyn SettingsSource,
+        app: &str,
+        (grants, check): (&[String], Option<&Check>),
+        (section, values, action): (&str, &[u8], Option<&str>),
+    ) -> Result<(), String> {
+        if values.len() > MAX_SETTINGS_WIRE_BYTES {
+            return Err("settings write exceeds the wire bound".into());
+        }
+        let Ok(Value::Object(values)) = serde_json::from_slice(values) else {
+            return Err("a settings write is a JSON object".into());
+        };
+        // The action the app says made the change, for the history; who
+        // invoked it is not the app's to say.
+        let origin = settings_store::ChangeOrigin {
+            action: action
+                .filter(|action| !action.is_empty())
+                .map(str::to_owned),
+            actor: None,
+        };
+        if settings_store::personal_dictionary::delivery::command(
+            source,
+            app,
+            section,
+            &values,
+        )
+        .map_err(|e| e.to_string())?
+        {
+            return Ok(());
+        }
+        if section == settings_store::personal_dictionary::SECTION {
+            return Err("the personal dictionary is edited through its own command".to_owned());
+        }
+        if !values.is_empty()
+            && values
+                .keys()
+                .all(|field| granted(grants, section, Some(field)))
+        {
+            if let Some(check) = check {
+                check(&source.load(), section, &values)?;
+            }
+            // Each field is set by its own setter, which the store records it under.
+            source
+                .update_section_by(section, values, &origin)
+                .map_err(|error| error.to_string())?;
+        } else {
+            update_for_app(source, app, section, values, &origin)?;
+        }
+        Ok(())
+    }
+
     fn encode(view: &Map<String, Value>) -> Result<Vec<u8>, String> {
         let bytes = serde_json::to_vec(view).map_err(|e| e.to_string())?;
         if bytes.len() > MAX_SETTINGS_WIRE_BYTES {
@@ -407,49 +469,12 @@ pub mod host {
             action: Option<&str>,
         ) -> Result<(u64, Vec<u8>), String> {
             (self.revalidate)()?;
-            if values.len() > MAX_SETTINGS_WIRE_BYTES {
-                return Err("settings write exceeds the wire bound".into());
-            }
-            let Ok(Value::Object(values)) = serde_json::from_slice(values) else {
-                return Err("a settings write is a JSON object".into());
-            };
-            // The action the app says made the change, for the history; who
-            // invoked it is not the app's to say.
-            let origin = settings_store::ChangeOrigin {
-                action: action
-                    .filter(|action| !action.is_empty())
-                    .map(str::to_owned),
-                actor: None,
-            };
-            if settings_store::personal_dictionary::delivery::command(
+            update(
                 self.source.as_ref(),
                 &self.app_id,
-                section,
-                &values,
-            )
-            .map_err(|e| e.to_string())?
-            {
-                let (revision, view) = self.view();
-                return Ok((revision, encode(&view)?));
-            }
-            if section == settings_store::personal_dictionary::SECTION {
-                return Err("the personal dictionary is edited through its own command".to_owned());
-            }
-            if !values.is_empty()
-                && values
-                    .keys()
-                    .all(|field| granted(&self.grants, section, Some(field)))
-            {
-                if let Some(check) = &self.check {
-                    check(&self.source.load(), section, &values)?;
-                }
-                // Each field is set by its own setter, which the store records it under.
-                self.source
-                    .update_section_by(section, values, &origin)
-                    .map_err(|error| error.to_string())?;
-            } else {
-                update_for_app(self.source.as_ref(), &self.app_id, section, values, &origin)?;
-            }
+                (&self.grants, self.check.as_ref()),
+                (section, values, action),
+            )?;
             let (revision, view) = self.view();
             Ok((revision, encode(&view)?))
         }

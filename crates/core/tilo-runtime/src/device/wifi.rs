@@ -199,6 +199,29 @@ impl WifiContinuityServices for Wifi {
     }
 }
 
+/// The person's Wi-Fi continuity as the apps attached to this daemon reach it: the passphrases
+/// are the daemon's, and what this computer's networks wake and saved is asked of the desktop
+/// session serving its seat.
+pub(crate) struct WithSeat {
+    pub(crate) daemon: Arc<Wifi>,
+    pub(crate) seat: Arc<dyn WifiContinuityServices>,
+}
+
+impl WifiContinuityServices for WithSeat {
+    fn command(
+        &self,
+        command: runtime_collab::WifiContinuityCommand,
+    ) -> runtime_collab::WifiContinuityReply {
+        use runtime_collab::WifiContinuityCommand as Command;
+        match command {
+            Command::NetworkWake { .. } | Command::ShareSavedProfile { .. } => {
+                self.seat.command(command)
+            }
+            Command::Lookup { .. } | Command::Share { .. } => self.daemon.command(command),
+        }
+    }
+}
+
 /// The two actions, as the device's dispatch lists them.
 fn descriptors() -> Vec<ActionDescriptor> {
     let descriptor = |action: &str, label: &str, kind, params| ActionDescriptor {

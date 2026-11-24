@@ -1458,9 +1458,11 @@ impl Daemon {
                 shell_links: &shell_links,
                 #[cfg(unix)]
                 shell_dispatch: &shell_dispatch,
+                #[cfg(unix)]
+                identity: identity_broker.handover(),
             },
             brokers,
-            fanout,
+            Arc::clone(&fanout),
         )?;
         // The device's record of every invocation it was asked for is what the workspace's
         // dispatch reads and follows; the workspace service writes what a model call cost into
@@ -1555,6 +1557,11 @@ impl Daemon {
                 (&policy_origin, &first),
             )?;
         }
+        serve_agent_steps(&workspaces, &fanout);
+        // The person's shell tells the apps whose view it follows and moves their windows
+        // through this daemon, whose fan-out holds the apps' connections.
+        Arc::new(super::window_follow::WindowFollow::new(Arc::clone(&fanout)))
+            .register(&workspaces.copies().providers());
         start_agents(&broker, &workspaces, &tickets, initiative);
         start_triggers(&broker, &workspaces, &invocations);
         let replicas = take_work_files(
@@ -1962,6 +1969,10 @@ struct BrokerParts<'a> {
     shell_dispatch: &'a Arc<super::shell::Dispatching>,
     /// The person's shortcuts, which the workspaces' events are saved as.
     shortcuts: Arc<dyn ShortcutLibraryServices>,
+    /// The identity service, serving the connections those shells take for it from the person's
+    /// apps.
+    #[cfg(unix)]
+    identity: Arc<dyn Fn(std::os::unix::net::UnixStream) + Send + Sync>,
 }
 
 /// Start the collaboration broker over this profile's services.
@@ -2060,14 +2071,42 @@ fn broker_services(
     let server_settings: Arc<dyn PublishedResources> = Arc::new(
         super::server_settings::Published::new(super::server_settings::Served::this_device()),
     );
+    // What only the desktop session signed in here holds (the screen and its windows, the sound,
+    // capture, the person's settings, Nearby Send's spool, the speaker groups),
+    // reached through the seat its shell serves: while none does, those calls say so.
+    let seat = tilo_workspace_service::apps::seat::Seat::new(
+        parts.workspaces.copies().providers(),
+        tilo_rt::app().handle().clone(),
+    );
+    let forwarded = seat.forwarders();
     // Everything this device publishes to the apps attached to it: each resource served by the
-    // provider that keeps it, through one table.
-    let published: Arc<dyn PublishedResources> =
-        Arc::new(super::published::Published::new().serving(
-            &[super::server_settings::SERVER],
-            Arc::clone(&server_settings),
-        ));
+    // provider that keeps it, through one table; what the seat's services publish (the sound, the
+    // network, the displays Quick Settings changes) is every other one.
+    let published: Arc<dyn PublishedResources> = Arc::new(
+        super::published::Published::new()
+            .serving(
+                &[super::server_settings::SERVER],
+                Arc::clone(&server_settings),
+            )
+            .serving_the_rest(Arc::new(
+                tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
+            )),
+    );
     Ok(ProcessServices {
+        audio_output: Some(forwarded.audio_output),
+        native_media: Some(forwarded.native_media),
+        continuations: Some(forwarded.continuations),
+        document_index_changes: Some(forwarded.document_index_changes),
+        drives: Some(forwarded.drives),
+        applications: Some(forwarded.applications),
+        speakers: Some(forwarded.speakers),
+        nearby_transfer: Some(forwarded.nearby_transfer),
+        workspace_nodes: Some(forwarded.workspace_nodes),
+        // The device's keyboard shortcuts, the person's account credentials and Files'
+        // clipboard are the desktop session's.
+        keyboard_shortcuts: Some(forwarded.keyboard_shortcuts),
+        browser_service_sessions: Some(forwarded.browser_service_sessions),
+        file_clipboard: Some(forwarded.file_clipboard),
         // The records of the workspaces this device keeps, read for the apps, agents and programs
         // it serves: each capture opens the record's document here, and counts it.
         committed_documents: Some(Arc::new(
@@ -2082,7 +2121,14 @@ fn broker_services(
             workspaces: Arc::downgrade(parts.workspaces),
         })),
         launchable_catalogue: Some(parts.root.join("state/launchable-actions.json")),
-        launcher: Some(Arc::clone(parts.apps) as Arc<dyn LauncherServices>),
+        // An app's window opens in the person's desktop session while one serves the seat; the
+        // instances that show nothing, and the processes it starts, are this daemon's.
+        launcher: Some(Arc::new(
+            tilo_workspace_service::apps::seat::SeatLauncher::new(
+                seat,
+                Arc::clone(parts.apps) as Arc<dyn LauncherServices>,
+            ),
+        )),
         app_action_access: Some(parts.apps.access_resolver()),
         app_resource_kinds: Some(parts.apps.resource_kinds_resolver()),
         record_founding: Some({
@@ -2116,7 +2162,7 @@ fn broker_services(
         shortcut_library: Some(parts.shortcuts),
         // This device's server settings, as the apps attached to this daemon read and change them:
         // the work its machine takes and the services it offers, saved to the configuration the
-        // daemon keeps.
+        // daemon keeps; and what the seat's services publish.
         published: Some(Arc::clone(&published)),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
@@ -2138,6 +2184,7 @@ fn broker_services(
             Arc::clone(parts.shell_dispatch),
             published,
             shell_processes(parts.apps, parts.workspaces),
+            Arc::clone(&parts.identity),
         ))),
         // A workspace placed on a host has its records changed there: the person's actions on
         // them are sent to the host, which decides and runs them, and the change reaches this
@@ -2151,9 +2198,11 @@ fn broker_services(
         search_index: parts.workspaces.search_publications(),
         // Settings shares the passphrase of a network with the person's other devices, and joins
         // with one they shared.
-        wifi_continuity: Some(
-            parts.wifi as Arc<dyn tilo_workspace_service::apps::services::WifiContinuityServices>,
-        ),
+        // What this computer's networks wake and saved is its desktop session's to read.
+        wifi_continuity: Some(Arc::new(super::wifi::WithSeat {
+            daemon: parts.wifi,
+            seat: forwarded.wifi_continuity,
+        })),
         ..ProcessServices::default()
     })
 }
@@ -4541,6 +4590,27 @@ impl Daemon {
     pub fn joined_files_status(&self, workspace: &str) -> Option<tilo_fs::tree_sync::Status> {
         self.replicas.as_ref()?.status(workspace)
     }
+}
+
+/// Serve the steps the workspaces' agents and assistant take on this device's dispatch, under the
+/// ids apps and agents call them by: an assistant's transform of a selection, a web search, the
+/// answers a triggered agent gives, and the tools an agent in a process of its own works through.
+/// Each reads the workspaces this daemon holds, so they answer with no desktop session open.
+fn serve_agent_steps(workspaces: &ServiceWorkspaces, fanout: &Arc<FanoutState>) {
+    use tilo_workspace_service::agents;
+    let providers = workspaces.copies().providers();
+    let service = tilo_workspace_service::service::ServiceSlot::default();
+    service.install(Arc::clone(workspaces.service()));
+    let runtime = tilo_rt::app().handle().clone();
+    Arc::new(agents::assistant::Transforms::new(
+        service.clone(),
+        runtime.clone(),
+    ))
+    .register(&providers);
+    Arc::new(agents::WebSearch::new(runtime)).register(&providers);
+    Arc::new(agents::triggered::Answers::new(service, Arc::clone(fanout))).register(&providers);
+    #[cfg(target_os = "linux")]
+    Arc::new(super::agent_tools::AgentToolSteps::default()).register(&providers);
 }
 
 /// Run the agents of the workspaces this device's service holds, in this daemon: the one engine

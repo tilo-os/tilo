@@ -52,6 +52,7 @@ pub mod search;
 mod search_agent;
 mod search_ask;
 mod session_actions;
+mod session_providers;
 #[cfg(all(any(test, feature = "test-support"), target_os = "linux"))]
 pub mod shell_session;
 // The person's settings, which Settings' window drives through the broker as another provider's
@@ -79,8 +80,6 @@ mod activity_models;
 #[cfg(target_os = "linux")]
 mod agent_sessions;
 #[cfg(target_os = "linux")]
-mod agent_tools;
-#[cfg(target_os = "linux")]
 mod agents;
 #[cfg(target_os = "linux")]
 mod ambient_brightness;
@@ -93,6 +92,8 @@ mod app_liveness;
 mod app_names;
 #[cfg(target_os = "linux")]
 mod app_sheets;
+#[cfg(target_os = "linux")]
+mod app_socket;
 #[cfg(target_os = "linux")]
 mod app_stores;
 #[cfg(target_os = "linux")]
@@ -358,6 +359,8 @@ pub mod run;
 #[cfg(target_os = "linux")]
 pub mod seeded_apps;
 #[cfg(target_os = "linux")]
+mod seat_services;
+#[cfg(target_os = "linux")]
 mod send_to;
 #[cfg(target_os = "linux")]
 mod server_account;
@@ -425,6 +428,8 @@ mod wake;
 mod wallpapers;
 #[cfg(target_os = "linux")]
 mod wifi_continuity;
+#[cfg(target_os = "linux")]
+mod window_follow;
 #[cfg(target_os = "linux")]
 mod window_motion;
 #[cfg(target_os = "linux")]

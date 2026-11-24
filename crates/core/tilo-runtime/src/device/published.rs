@@ -17,6 +17,9 @@ use tokio::sync::{mpsc, oneshot};
 #[derive(Default)]
 pub struct Published {
     providers: Vec<(&'static [&'static str], std::sync::Arc<dyn PublishedResources>)>,
+    /// The provider of every resource no other names: what the desktop session signed in here
+    /// publishes, which it decides as it runs.
+    rest: Option<std::sync::Arc<dyn PublishedResources>>,
     /// The watches this table minted, and the provider each was asked of: the numbers are this
     /// table's, so watches of two providers never collide.
     watches: Mutex<HashMap<u64, (std::sync::Arc<dyn PublishedResources>, ResourceWatch)>>,
@@ -41,12 +44,20 @@ impl Published {
         self
     }
 
+    /// The table with `provider` serving every resource no other provider names.
+    #[must_use]
+    pub fn serving_the_rest(mut self, provider: std::sync::Arc<dyn PublishedResources>) -> Self {
+        self.rest = Some(provider);
+        self
+    }
+
     /// The provider that answers `resource`, where one does.
     fn provider(&self, resource: &str) -> Option<&std::sync::Arc<dyn PublishedResources>> {
         self.providers
             .iter()
             .find(|(served, _)| served.contains(&resource))
             .map(|(_, provider)| provider)
+            .or(self.rest.as_ref())
     }
 }
 

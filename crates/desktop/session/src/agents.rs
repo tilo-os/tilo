@@ -284,8 +284,6 @@ impl crate::Shared {
         // A turn the person asked on the canvas stands where they asked once Chat's record holds
         // the agent's answer to the message Chat posted for the ask (canvas.md §3).
         if self.layout.borrow().awaits_turns() {
-            // What Chat answered the asks' sends, once they settled.
-            self.search.poll_answers();
             let services = self.services.borrow();
             self.layout.borrow_mut().stand_asked(
                 &|sent| {

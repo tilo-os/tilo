@@ -59,8 +59,6 @@ impl tilo_session_core::desktop::activity::GovernanceReader for GovernanceValues
 }
 #[cfg(target_os = "linux")]
 use crate::device_state::DeviceState;
-#[cfg(target_os = "linux")]
-use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 use crate::platform::Store;
 use crate::platform::apps::Apps;
@@ -76,9 +74,13 @@ use crate::platform::fabric::SharedLink;
 #[cfg(target_os = "linux")]
 use crate::unlock_history::UnlockHistory;
 
-/// The session's action broker and the generation of its published actions History last learned.
+/// What the apps publish on the device's dispatch, as the session last read it, and the rows of
+/// it History last learned.
 #[cfg(target_os = "linux")]
-type LearnedBroker = (Arc<AppBrokerState>, Cell<Option<u64>>);
+type LearnedPublished = (
+    Rc<dyn Fn() -> Vec<tilo_actions::remote::CatalogueRow>>,
+    RefCell<Vec<tilo_actions::remote::CatalogueRow>>,
+);
 
 /// The package this device's view of the activity is kept under: the session's.
 const VIEW_PACKAGE: &str = "so.tilo.session.activity";
@@ -187,10 +189,10 @@ struct Inner {
     /// The records' content this device keeps.
     #[cfg(target_os = "linux")]
     content: RefCell<Option<Arc<crate::content::ContentService>>>,
-    /// The session's action broker, whose apps' published actions say in their own words what
-    /// each of their changes did, and the generation of them History last learned.
+    /// What the apps publish, whose actions say in their own words what each of their changes
+    /// did, and what of it History last learned.
     #[cfg(target_os = "linux")]
-    broker: RefCell<Option<LearnedBroker>>,
+    published: RefCell<Option<LearnedPublished>>,
     #[cfg(target_os = "linux")]
     undos: run_undo::Undos,
     /// The records each workspace holds, read on a worker of its own, told by the change stream
@@ -242,24 +244,29 @@ impl Inner {
     /// Learn, on the thread that words History, the words of every action the apps publish,
     /// once they published anything new: a change an app made reads as that app says it.
     fn learn_published_words(&self) {
-        let broker = self.broker.borrow();
-        let Some((broker, learned)) = broker.as_ref() else {
+        let published = self.published.borrow();
+        let Some((published, learned)) = published.as_ref() else {
             return;
         };
-        let generation = broker.published_surfaces_generation();
-        if learned.get() == Some(generation) {
+        let rows = published();
+        if *learned.borrow() == rows {
             return;
         }
-        learned.set(Some(generation));
         // The workspace's agents are a record the session holds, published by no app's surface.
         ui::history_source::sentence::learn_declared::<
             tilo_app::tilo_workspace_agent::WorkspaceAgents,
         >();
         // A live surface is listed before the one kept from before its app closed: learned last,
         // its words are the ones kept.
-        for surface in broker.published_surfaces().iter().rev() {
-            ui::history_source::sentence::learn_published(&surface.app_id, &surface.actions);
+        for row in rows.iter().rev() {
+            if let Some(action) = &row.action {
+                ui::history_source::sentence::learn_described(
+                    &row.app_id,
+                    std::slice::from_ref(action),
+                );
+            }
         }
+        *learned.borrow_mut() = rows;
     }
 }
 
@@ -371,7 +378,7 @@ impl Activity {
             #[cfg(target_os = "linux")]
             content: RefCell::default(),
             #[cfg(target_os = "linux")]
-            broker: RefCell::default(),
+            published: RefCell::default(),
             #[cfg(target_os = "linux")]
             undos: run_undo::Undos::default(),
             person,
@@ -527,11 +534,14 @@ impl Activity {
         *self.0.content.borrow_mut() = Some(content);
     }
 
-    /// Word the apps' changes by what `broker` says they publish: each action's label and what
-    /// the app says it did, as the apps publish them now.
+    /// Word the apps' changes by what `published` reads they publish: each action's label and
+    /// what the app says it did, as the apps publish them now.
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_broker(&self, broker: Arc<AppBrokerState>) {
-        *self.0.broker.borrow_mut() = Some((broker, Cell::new(None)));
+    pub(crate) fn attach_published(
+        &self,
+        published: Rc<dyn Fn() -> Vec<tilo_actions::remote::CatalogueRow>>,
+    ) {
+        *self.0.published.borrow_mut() = Some((published, RefCell::default()));
     }
 
     /// Read the records the session's own services keep from `services` : what History lists and
@@ -1964,40 +1974,6 @@ mod run_undo {
     /// How long a record has to answer one request at all.
     const ANSWER: Duration = Duration::from_millis(100);
 
-    /// The session's action API as the person at the screen: an undo is their own step, not a
-    /// decision about someone else's.
-    struct AsThePerson(Arc<crate::mcp_server::Host>);
-
-    impl ActionProvider for AsThePerson {
-        fn query(
-            &self,
-            caller: &Caller,
-            query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionCallError>> {
-            ActionProvider::query(&*self.0, caller, query)
-        }
-
-        fn invoke(
-            &self,
-            caller: &Caller,
-            request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-            self.0.invoke_as_local_person(caller, request)
-        }
-
-        fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-            ActionProvider::observe(&*self.0, caller, id)
-        }
-
-        fn cancel(
-            &self,
-            caller: &Caller,
-            id: &InvocationId,
-        ) -> Pending<Result<(), ActionCallError>> {
-            ActionProvider::cancel(&*self.0, caller, id)
-        }
-    }
-
     /// Where `step`'s changes may be taken back, in the order asked: the app's record, the app's
     /// own record of the workspace, and the session's services for the records they keep.
     fn candidates(app: &str, record: &str) -> Vec<(String, Option<String>)> {
@@ -2024,7 +2000,7 @@ mod run_undo {
     ) -> Result<Vec<TaskRunDocument>, String> {
         let now = Instant::now();
         let until = now.checked_add(timeout).unwrap_or(now);
-        let provider: Arc<dyn ActionProvider + Send + Sync> = Arc::new(AsThePerson(api));
+        let provider: Arc<dyn ActionProvider + Send + Sync> = api;
         let route: (Arc<dyn ActionProvider + Send + Sync>, Caller) = (provider, caller);
         let mut done = Vec::new();
         let mut refused = Vec::new();

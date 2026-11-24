@@ -1,10 +1,10 @@
 //! The shortcuts a person saved that a trigger of this device starts: a chord pressed at its
 //! keyboard, an app it started, a focus mode switching on it. These happen on this device only,
-//! so it starts them itself. A chord the person pressed runs its shortcut as they run it from
-//! anywhere: through the device's one dispatch, as them, where a step that needs their yes asks
-//! them as the shortcut's asked record and the run starts once they approve. The others start
-//! through the apps' broker, which checks again that the shortcut still exists and that its
-//! saver may still run it. A trigger every device of the workspace can see (a
+//! so it starts them itself. Each runs its shortcut as the person runs it from anywhere: through
+//! the device's one dispatch, as them, which checks again that the shortcut still exists and that
+//! its saver may still run it, and where a step that needs their yes asks them as the shortcut's
+//! asked record and the run starts once they approve. A trigger every device of the workspace can
+//! see (a
 //! schedule, a record changing, a folder, a workspace joined) is the device's daemon's to watch
 //! ([`tilo_workspace_service::apps::triggers`]), which places each firing on one device.
 //! Only the person this device acts for has armed shortcuts
@@ -25,8 +25,7 @@ use tilo_automation::{FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, Tri
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_workspace_service::apps::automation::{chord_target, fired_context};
-use tilo_workspace_service::apps::collab_broker::AppActionBroker;
-use tilo_workspace_service::apps::triggers::{Armed, Firing, StartRun as _, armed, seen_here};
+use tilo_workspace_service::apps::triggers::{Armed, Firing, armed, seen_here};
 
 /// How often the apps running and the focus modes are looked at.
 const TICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -52,11 +51,8 @@ impl FocusState {
 
 /// The session's own triggers: the shortcuts it arms, what it shows them, and the runs it starts.
 pub struct Automation {
-    /// The apps' broker, while the session serves one: every firing but a pressed chord's starts
-    /// through it.
-    broker: Option<Arc<AppActionBroker>>,
-    /// The device's one dispatch, on the session's shell link: where a pressed chord's shortcut
-    /// runs, as the person.
+    /// The device's one dispatch, on the session's shell link: where every firing's shortcut runs,
+    /// as the person.
     dispatch: Option<Arc<dyn ActionProvider + Send + Sync>>,
     /// The apps this session started, which an application-opened trigger follows.
     launches: Arc<crate::launches::Launches>,
@@ -81,9 +77,6 @@ pub struct Automation {
     focus: Option<FocusState>,
     /// When the apps and focus modes were last looked at.
     last_tick: RefCell<Option<Instant>>,
-    /// Firings that came while the apps' broker was still starting: they start once it serves,
-    /// rather than being lost.
-    waiting: RefCell<Vec<Firing>>,
 }
 
 /// What the session shows its triggers besides its shell: the apps it starts, the person's
@@ -108,7 +101,6 @@ impl Automation {
             dispatch,
         } = feeds;
         Self {
-            broker: None,
             dispatch,
             launches,
             policy,
@@ -121,19 +113,7 @@ impl Automation {
             running: None,
             focus: None,
             last_tick: RefCell::new(None),
-            waiting: RefCell::new(Vec::new()),
         }
-    }
-
-    /// Start every firing through `broker`.
-    pub fn attach(&mut self, broker: Arc<AppActionBroker>) {
-        self.broker = Some(broker);
-    }
-
-    /// Whether the broker a firing starts on is missing still.
-    #[must_use]
-    pub fn needs_broker(&self) -> bool {
-        self.broker.is_none()
     }
 
     /// The broker's copy of the shell has to follow the shell the loop shows: a firing starts on
@@ -152,10 +132,6 @@ impl Automation {
 
     /// Look at the apps and focus modes when it is time, and start whatever fired. Once per pass.
     pub fn settle(&mut self, shell: Option<&crate::app_wire::LayoutAuthority>) {
-        if self.broker.is_some() {
-            let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
-            self.start(waiting);
-        }
         if self.armed_at != Some(self.handle.revision()) {
             self.arm();
             self.publish_layout(shell);
@@ -272,62 +248,40 @@ impl Automation {
 
     /// Start every firing as its saver.
     fn start(&self, firings: Vec<Firing>) {
-        let (pressed, firings): (Vec<Firing>, Vec<Firing>) = firings
-            .into_iter()
-            .partition(|firing| matches!(firing.trigger, TriggerSpec::Keyboard { .. }));
-        for firing in &pressed {
+        for firing in &firings {
             match &self.dispatch {
-                Some(dispatch) => run_pressed(dispatch.as_ref(), firing),
+                Some(dispatch) => run_fired(dispatch.as_ref(), firing),
                 None => {
-                    tracing::warn!(shortcut = %firing.shortcut, "a chord was pressed, but this session reaches no dispatch to run its shortcut");
+                    tracing::warn!(shortcut = %firing.shortcut, trigger = firing.trigger.kind(), "a shortcut's trigger fired, but this session reaches no dispatch to run it");
                 }
-            }
-        }
-        if firings.is_empty() {
-            return;
-        }
-        let Some(broker) = self.broker.clone() else {
-            // The broker may still be starting: what fired waits for it, and starts from the pass
-            // that finds it.
-            self.waiting.borrow_mut().extend(firings);
-            return;
-        };
-        for firing in firings {
-            if let Err(error) = broker.start(&firing, firing.invocation) {
-                // A shortcut deleted or changed elsewhere, or one whose saver may not run it here:
-                // nothing started, and the next arming drops it.
-                tracing::info!(
-                    shortcut = %firing.shortcut,
-                    trigger = firing.trigger.kind(),
-                    %error,
-                    "a shortcut trigger fired but the shortcut did not start"
-                );
             }
         }
     }
 }
 
-/// Run the shortcut a pressed chord names through the device's one dispatch, `dispatch`, as the
-/// person who saved it: the run they would start from anywhere, saying a key started it. One
-/// that needs their yes waits for it as its asked record, which they answer from any device.
-fn run_pressed(dispatch: &dyn ActionProvider, firing: &Firing) {
+/// Run the shortcut `firing` names through the device's one dispatch, `dispatch`, as the person
+/// who saved it: the run they would start from anywhere, saying what started it. One that needs
+/// their yes waits for it as its asked record, which they answer from any device. A shortcut
+/// deleted or changed elsewhere, or one whose saver may not run it here, starts nothing, and the
+/// next arming drops it.
+fn run_fired(dispatch: &dyn ActionProvider, firing: &Firing) {
     let shortcut = firing.shortcut.clone();
+    let trigger = firing.trigger.kind();
     dispatch
-        .invoke(&firing.caller(), pressed_run(firing))
+        .invoke(&firing.caller(), fired_run(firing))
         .then(move |answered| match answered {
             Some(Ok(_)) => {}
             Some(Err(error)) => {
-                tracing::info!(%shortcut, %error, "a chord was pressed but its shortcut did not start");
+                tracing::info!(%shortcut, trigger, %error, "a shortcut's trigger fired but the shortcut did not start");
             }
             None => {
-                tracing::info!(%shortcut, "a chord was pressed but the dispatch stopped before its shortcut started");
+                tracing::info!(%shortcut, trigger, "a shortcut's trigger fired but the dispatch stopped before it started");
             }
         });
 }
 
-/// The call a pressed chord makes: its shortcut's `run`, under the firing's id, saying the key
-/// started it.
-fn pressed_run(firing: &Firing) -> InvokeRequest {
+/// The call a firing makes: its shortcut's `run`, under the firing's id, saying what started it.
+fn fired_run(firing: &Firing) -> InvokeRequest {
     let target = chord_target(&firing.workspace, &firing.shortcut);
     let mut request = InvokeRequest::plain(
         RemoteActionTarget {

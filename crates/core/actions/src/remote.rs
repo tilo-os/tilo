@@ -86,6 +86,7 @@ mod wait;
 mod watch;
 pub use watch::{CHANGED_UNAVAILABLE, Here, HereWindow, KEY_GRANTS, PRESENCE, WatchScope};
 mod window_actions;
+pub mod window_follow;
 mod within;
 pub mod workspace_activity;
 pub mod workspace_events;

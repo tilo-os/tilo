@@ -42,13 +42,15 @@ pub(super) struct Served {
 impl Served {
     /// Register `provider`, offering `catalogue`, in `providers` for the shell whose asks
     /// `asks` carries on `channel`: a provider of the shell's own alone, and one nothing else
-    /// serves.
+    /// serves. `hand_over` hands that shell a file on its link, for the seat's calls that name
+    /// one.
     pub(super) fn register(
         providers: &Providers,
         (provider, catalogue): (String, &str),
         channel: Handle,
         asks: mpsc::UnboundedSender<Asking>,
         asked_in: Option<Arc<AskedStore>>,
+        hand_over: Option<crate::workspaces::providers::HandOver>,
     ) -> Result<Self, String> {
         if !runtime_collab::wire::shell::serves(&provider) {
             return Err(format!(
@@ -68,10 +70,26 @@ impl Served {
             asked_in,
             closed: AtomicBool::new(false),
         });
-        // The session's own actions are a turn's steps, under the session's own app, as the
-        // session registers them in its own registry; any other is the shell's, on this device.
+        // The seat is held apart from every provider a call names: only this device's broker
+        // reaches it, for the apps it admitted.
+        if provider == crate::apps::seat::PROVIDER {
+            providers.serve_seat(
+                Arc::clone(&link) as Arc<dyn ActionProvider + Send + Sync>,
+                hand_over,
+            );
+            return Ok(Self {
+                provider,
+                link,
+                providers: providers.clone(),
+            });
+        }
+        // The session's own actions are a turn's steps, under the session's own app; a provider
+        // of the person's seat is admitted under the app whose window offers it, as it always
+        // was; any other is the shell's. All but the first answer on this device alone.
         let (app, reach) = if provider == session_actions::PROVIDER {
             (session_actions::PROVIDER, Reach::Turns)
+        } else if let Some(app) = runtime_collab::wire::shell::seat_app(&provider) {
+            (app, Reach::ThisDevice)
         } else {
             (crate::apps::shell::SHELL_APP, Reach::ThisDevice)
         };
@@ -103,7 +121,11 @@ impl Served {
     /// one under way ends failed.
     pub(super) fn close(self) {
         let answers = Arc::clone(&self.link) as Arc<dyn ActionProvider + Send + Sync>;
-        self.providers.withdraw(&self.provider, &answers);
+        if self.provider == crate::apps::seat::PROVIDER {
+            self.providers.withdraw_seat(&answers);
+        } else {
+            self.providers.withdraw(&self.provider, &answers);
+        }
         self.link.close();
     }
 }

@@ -1,11 +1,12 @@
 //! A shell connection's calls ([`runtime_collab::wire::shell`]), answered from the dispatch's
 //! [`ShellServices`] as the person it admitted.
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use runtime_collab::wire::Reply;
 use runtime_collab::wire::shell::{
-    DocumentWritten, PROCESSES_MAGIC, SHELL_MAGIC, ShellCall, ShellReply, ShellWrite, VOUCH_MAGIC,
+    DocumentWritten, PROCESSES_MAGIC, SHELL_MAGIC, ShellCall, ShellReply, ShellWrite,
 };
 use tilo_actions::remote::{
     Caller, InvokeArgument, ReceiptStatus, RemoteActionMessage, ResourceReadRequest, resource_parts,
@@ -23,7 +24,34 @@ pub(super) struct Shell {
     /// The writes the device took since the shell last asked, followed from the moment it
     /// connected, so none falls between two asks.
     pub(super) writes: Arc<tokio::sync::Mutex<crate::apps::shell::DocumentWrites>>,
+    /// The descriptors the shell handed over on its link: the connections of the apps it vouches
+    /// for, and the processes they run in.
+    received: runtime_portal::descriptors::ReceivedDescriptors,
+    /// Where the daemon hands the shell descriptors on its link: the open objects a call of the
+    /// seat names, which only this device's broker forwards.
+    sending: runtime_portal::descriptors::DescriptorSender,
+    /// Where a connection the shell hands over is served: the dispatch's own broker.
+    broker: Rc<Broker>,
 }
+
+impl Shell {
+    /// How a call of the seat this shell serves hands it a file: queued on the link, ahead of
+    /// the call that names it by the number answered.
+    pub(super) fn hand_over(&self) -> crate::workspaces::providers::HandOver {
+        let sending = self.sending.clone();
+        Arc::new(move |file: std::fs::File| sending.send(std::os::fd::OwnedFd::from(file)))
+    }
+}
+
+/// The broker a shell's handed connections are served by, on the dispatch's `LocalSet`.
+pub(super) struct Broker {
+    pub(super) state: Arc<super::AppBrokerState>,
+    pub(super) directories: Rc<super::LocalActionDirectoryRegistry>,
+}
+
+/// The most descriptors a shell link holds that no vouch named yet: a vouch hands three at most,
+/// and a shell vouches for one app at a time per launch.
+const MAX_HANDED: usize = 64;
 
 /// Serve `stream`, which opened with the shell's marker, as the shell its link's secret was made
 /// for; a connection whose secret is no link's is refused before its first call.
@@ -34,6 +62,7 @@ pub(super) struct Shell {
 pub(super) async fn serve(
     mut stream: tokio::net::UnixStream,
     services: Arc<ShellServices>,
+    broker: Broker,
 ) -> Result<(), crate::apps::BrokerError> {
     use runtime_collab::wire::shell::SHELL_SECRET_BYTES;
     use tokio::io::AsyncReadExt as _;
@@ -49,12 +78,19 @@ pub(super) async fn serve(
         return Ok(());
     };
     let followed = Arc::new(tokio::sync::Mutex::new((services.document_writes)()));
+    let received = runtime_portal::descriptors::ReceivedDescriptors::new(MAX_HANDED);
+    let sending = runtime_portal::descriptors::DescriptorSender::new();
     let (connection, outgoing) = super::wire::WireConnection::shell(Shell {
         caller,
         services,
         writes: followed,
+        received: received.clone(),
+        sending: sending.clone(),
+        broker: Rc::new(broker),
     });
-    let (reader, writer) = stream.into_split();
+    let (reader, writer) = tokio::io::split(runtime_portal::descriptors::DescriptorStream::duplex(
+        stream, sending, received,
+    ));
     super::wire::serve(connection, outgoing, reader, writer)
         .await
         .map_err(|error| crate::apps::BrokerError::failed(error.to_string()))
@@ -104,63 +140,112 @@ pub(super) async fn processes(
     Ok(())
 }
 
-/// Admit `stream`, which opened with [`VOUCH_MAGIC`], as the app an admitted shell vouched for
-/// on its own link ([`ShellCall::Vouch`]): the secret that follows the marker is the one the
-/// daemon answered that vouch with, taken by this connection alone. A connection with any other
-/// secret, an app's own above all, is refused before its first call. The connection is then the
-/// app's, as a launch the daemon started would be.
-pub(super) async fn vouched(
-    stream: &mut tokio::net::UnixStream,
-    services: &crate::apps::services::ProcessServices,
-) -> Result<super::socket::AuthenticatedHandoff, super::socket::LaunchRefusal> {
-    use runtime_collab::wire::shell::SHELL_SECRET_BYTES;
-    use tokio::io::AsyncReadExt as _;
-    let peer = super::launcher_handoff::credentialed_peer(stream);
-    let refused = |error: String, answerable: bool| super::socket::LaunchRefusal {
-        error: crate::apps::BrokerError::failed(error),
-        peer: peer.clone(),
-        answerable,
+/// An app's connection a shell handed over and vouched for ([`ShellCall::Vouch`]), with the
+/// process it pinned: served as that app, as a launch the daemon attested itself would be.
+pub(super) struct Handed {
+    pub(super) vouch: runtime_collab::wire::shell::VouchedApp,
+    pub(super) process: super::native_media::PeerProcess,
+}
+
+impl Handed {
+    /// What the shell's vouch established about the connection: the app's process, and the
+    /// launch its open is tied back to.
+    pub(super) fn admitted(self) -> Result<super::socket::AuthenticatedHandoff, String> {
+        let Self { vouch, process } = self;
+        let launch = crate::apps::services::AuthenticatedApplicationLaunch {
+            continuation_instance: vouch.window,
+            launch_ticket: vouch.ticket,
+            windowless: vouch.windowless,
+            opened_for: None,
+        };
+        let opened = vouch
+            .ticket
+            .map(|ticket| super::workspace_open::ConnectedLaunch {
+                ticket,
+                app_id: vouch.app.clone(),
+                workspace: vouch.workspace.clone(),
+            });
+        let local_media = super::native_media::LocalAppConnection::attested_keeping(
+            vouch.app,
+            vouch.workspace,
+            process,
+            launch,
+        )
+        .ok_or("the app the shell vouched for has ended")?;
+        Ok(super::socket::AuthenticatedHandoff {
+            local_media: Some(local_media),
+            launch: opened,
+        })
+    }
+}
+
+/// Serve the connection `vouch` hands over as the app it names, on `shell`'s broker: the
+/// descriptors it numbers are taken off the shell's link.
+fn vouch_for(
+    shell: &Shell,
+    runtime_collab::wire::shell::Vouch {
+        connection,
+        app,
+        to,
+    }: runtime_collab::wire::shell::Vouch,
+) -> Result<ShellReply, String> {
+    let taken = |number: u32, what: &str| {
+        shell
+            .received
+            .take(number)
+            .ok_or_else(|| format!("the shell handed no {what} as descriptor {number}"))
     };
-    let shell = services
-        .shell
+    let connection = taken(connection, "connection")?;
+    if to == runtime_collab::wire::shell::HandedTo::Identity {
+        if app.is_some() {
+            return Err("an identity connection is vouched for by no launch".to_owned());
+        }
+        let identity = shell
+            .services
+            .identity
+            .as_ref()
+            .ok_or("this device runs no identity service")?;
+        identity(std::os::unix::net::UnixStream::from(connection));
+        return Ok(ShellReply::Vouched);
+    }
+    let handed = match app {
+        Some(vouch) => {
+            if vouch.app.trim().is_empty() || vouch.workspace.trim().is_empty() {
+                return Err("a vouch names an empty app or workspace".to_owned());
+            }
+            let task = taken(vouch.process, "app process")?;
+            let launcher = vouch
+                .launcher
+                .map(|number| taken(number, "launcher process"))
+                .transpose()?;
+            let process = super::native_media::PeerProcess::handed(task, launcher)
+                .ok_or("the app the shell vouched for has ended")?;
+            Some(Handed { vouch, process })
+        }
+        None => None,
+    };
+    let connection = std::os::unix::net::UnixStream::from(connection);
+    connection
+        .set_nonblocking(true)
+        .map_err(|error| format!("the app's connection cannot be served: {error}"))?;
+    let stream = tokio::net::UnixStream::from_std(connection)
+        .map_err(|error| format!("the app's connection cannot be served: {error}"))?;
+    let broker = Rc::clone(&shell.broker);
+    let state = Arc::clone(&broker.state);
+    let directories = Rc::clone(&broker.directories);
+    let peer_id = state.next_peer_id();
+    let app = handed
         .as_ref()
-        .ok_or_else(|| refused("this host answers no shell".to_owned(), false))?;
-    let unread =
-        |error: std::io::Error| refused(format!("a vouch's opening does not read: {error}"), false);
-    let mut marker = [0_u8; VOUCH_MAGIC.len()];
-    stream.read_exact(&mut marker).await.map_err(unread)?;
-    let mut secret = [0_u8; SHELL_SECRET_BYTES];
-    stream.read_exact(&mut secret).await.map_err(unread)?;
-    let vouch = shell.links.take_vouched(&secret).ok_or_else(|| {
-        refused(
-            "only the person's shell vouches for an app, on its own link".to_owned(),
-            true,
-        )
-    })?;
-    // The shell's process stands for the app here: the connection lasts while it does.
-    let process = super::native_media::PeerProcess::from_socket(stream).ok_or_else(|| {
-        refused(
-            "the vouching process cannot be pinned on this system".to_owned(),
-            true,
-        )
-    })?;
-    let launch = crate::apps::services::AuthenticatedApplicationLaunch {
-        continuation_instance: vouch.window,
-        launch_ticket: None,
-        windowless: vouch.windowless,
-        opened_for: None,
-    };
-    let local_media = super::native_media::LocalAppConnection::attested_keeping(
-        vouch.app,
-        vouch.workspace,
-        process,
-        launch,
-    )
-    .ok_or_else(|| refused("the vouching process ended".to_owned(), false))?;
-    Ok(super::socket::AuthenticatedHandoff {
-        local_media: Some(local_media),
-        launch: None,
-    })
+        .map_or_else(String::new, |handed| handed.vouch.app.clone());
+    tokio::task::spawn_local(async move {
+        if let Err(error) =
+            super::session::drive_connection(stream, state, directories, peer_id, None, handed)
+                .await
+        {
+            tracing::warn!(%app, "collaboration broker: peer-{peer_id} disconnected: {error}");
+        }
+    });
+    Ok(ShellReply::Vouched)
 }
 
 /// Answer `call` for `shell`; a connection that is no shell is refused.
@@ -204,7 +289,7 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
         | ShellCall::Receipt { .. }
         | ShellCall::KeepsReceipts { .. }
         | ShellCall::Authorizes { .. }) => kept(&services.workspaces, call).await,
-        ShellCall::Vouch(vouch) => vouch_for(&services, vouch)?,
+        ShellCall::Vouch(vouch) => vouch_for(&shell, vouch)?,
         ShellCall::Processes => {
             if services.processes.is_none() {
                 return Err("no tilolang process can start on this device".to_owned());
@@ -575,21 +660,6 @@ async fn write(services: &ShellServices, call: ShellCall) -> Result<ShellReply, 
         Err(refusal) => Err(serde_json::to_string(&refusal)
             .map_err(|error| format!("a refusal does not encode: {error}"))?),
     }))
-}
-
-/// Where and with which secret a connection opens to be admitted as the app `vouch` names, which
-/// the shell launched.
-fn vouch_for(
-    services: &ShellServices,
-    vouch: runtime_collab::wire::shell::Vouch,
-) -> Result<ShellReply, String> {
-    if vouch.app.trim().is_empty() || vouch.workspace.trim().is_empty() {
-        return Err("a vouch names an empty app or workspace".to_owned());
-    }
-    Ok(ShellReply::Vouched {
-        socket: services.socket.clone(),
-        secret: services.links.vouch(vouch),
-    })
 }
 
 /// The writes `writes` took since it was last asked, waiting for the first; `None` once it missed

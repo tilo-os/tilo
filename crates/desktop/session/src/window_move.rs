@@ -19,7 +19,6 @@ use collab_types::handoff::{HandoffReport, HandoffRequest, Successor};
 use tilo_app_launch::Launch;
 use tilo_compositor::Compositor;
 use tilo_desktop_model::{Layout, TabId, TileContent, Workspace, WorkspaceId};
-use tilo_workspace_service::apps::collab_broker::SessionFollowDispatcher;
 use ui::resource::DocumentId;
 use ui::resource::transfer::{Origin, Retirement, TransferError};
 
@@ -28,6 +27,7 @@ use crate::apps::launch_of;
 use crate::continuations::{Continuations, HandoffNote};
 use crate::i18n::{t, t_args};
 use crate::platform::notice::{Notice, Notices};
+use crate::window_follow::WindowFollow;
 use crate::window_transfer::{self, Arrived, Fault, Merged, Profile};
 
 /// The action a move's notice offers: carry the window into its destination.
@@ -186,7 +186,7 @@ impl Moves {
         &self,
         shared: &Shared,
         compositor: &mut Compositor,
-        handoff: Option<&SessionFollowDispatcher>,
+        handoff: Option<&WindowFollow>,
     ) {
         self.notes
             .borrow_mut()
@@ -216,7 +216,7 @@ impl Moves {
     fn consider(
         &self,
         shared: &Shared,
-        handoff: Option<&SessionFollowDispatcher>,
+        handoff: Option<&WindowFollow>,
         tab: TabId,
         to: WorkspaceId,
     ) {
@@ -296,7 +296,7 @@ impl Moves {
     }
 
     /// Carry the tab to the workspace the person chose, and take the record the window shows along.
-    fn carry(&self, shared: &Shared, handoff: Option<&SessionFollowDispatcher>, asked: Asked) {
+    fn carry(&self, shared: &Shared, handoff: Option<&WindowFollow>, asked: Asked) {
         let Asked {
             tab,
             from,
@@ -403,7 +403,7 @@ impl Moves {
         &self,
         shared: &Shared,
         compositor: &mut Compositor,
-        handoff: Option<&SessionFollowDispatcher>,
+        handoff: Option<&WindowFollow>,
         mut crossing: Crossing,
     ) {
         match std::mem::replace(&mut crossing.phase, Phase::Finished) {
@@ -468,7 +468,7 @@ impl Moves {
         &self,
         shared: &Shared,
         compositor: &mut Compositor,
-        handoff: Option<&SessionFollowDispatcher>,
+        handoff: Option<&WindowFollow>,
         crossing: Crossing,
         since: Instant,
         reopening: bool,
@@ -734,7 +734,7 @@ impl Moves {
         &self,
         shared: &Shared,
         compositor: &mut Compositor,
-        handoff: Option<&SessionFollowDispatcher>,
+        handoff: Option<&WindowFollow>,
         crossing: Crossing,
     ) {
         let Some(target) = crossing
@@ -998,7 +998,7 @@ impl crate::Session {
         let handoff = self
             .app_wire
             .as_ref()
-            .map(crate::app_wire::AppWire::follow_dispatcher);
+            .and_then(crate::app_wire::AppWire::follow_dispatcher);
         self.shared
             .moves
             .follow(&self.shared, &mut self.compositor, handoff.as_ref());

@@ -1267,11 +1267,6 @@ profile-agent-undo-run = Lauf rückgängig machen
 profile-agent-take-over = Übernehmen
 profile-agent-revoke = Zugriff entziehen
 profile-agent-now = Gerade
-agent-tools-resource = Agentenwerkzeuge
-agent-tools-list = Werkzeuge auflisten
-agent-tools-list-detail = Listet die Werkzeuge, mit denen ein Agent in seiner Sitzung arbeitet.
-agent-tools-call = Ein Werkzeug aufrufen
-agent-tools-call-detail = Führt eines der Werkzeuge des Agenten als Schritt seiner Sitzung aus und antwortet, was es gesagt hat.
 
 ## What a grant covers when it covers the whole tree
 workspace-settings-scope-everything = Alles

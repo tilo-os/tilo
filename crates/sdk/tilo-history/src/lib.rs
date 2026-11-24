@@ -143,6 +143,20 @@ impl ActionLabels {
         }
     }
 
+    /// Remember the words of the actions `app` offers on the device's dispatch, as its catalogue
+    /// describes them: what [`Self::learn_published`] learns of a surface the app published.
+    pub fn learn_described(&mut self, app: &str, actions: &[tilo_actions::ActionDescriptor]) {
+        for action in actions {
+            self.know(
+                app,
+                &action.resource_kind,
+                &action.address.action,
+                &action.action_label,
+                action.did.as_deref(),
+            );
+        }
+    }
+
     /// Remember the words of the actions a record of `kind` declares (id, label, what it did)
     /// that the reader holds itself rather than hears from an app: the session's own records.
     pub fn learn_declared<'a>(

@@ -302,7 +302,6 @@ impl Shared {
     /// it names. A send is settled once Chat answered it: its caller is told whether the message
     /// landed, and a send of the person's own that did not is told them, with why.
     pub(crate) fn deliver_sends(&self) {
-        self.search.poll_answers();
         let waiting = std::mem::take(&mut *self.sends.waiting.borrow_mut());
         for sending in waiting {
             let workspace = sending

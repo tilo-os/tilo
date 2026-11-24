@@ -387,37 +387,167 @@ pub(super) fn app_settings_capability(
     state: &Arc<AppBrokerState>,
     route: CrdtRoute,
     identity: AdmittedJoinIdentity,
-) -> Result<runtime_collab::settings::host::AppSettingsServer, BrokerError> {
+) -> Result<AppSettings, BrokerError> {
     if route.app_id.is_empty() {
         return Err(BrokerError::failed(
             "settings belong to a certified app route".into(),
         ));
     }
-    let Some(source) = state.services.settings.clone() else {
-        return Err(BrokerError::failed(
-            "this host keeps no settings for apps".into(),
-        ));
-    };
     let app_id = route.app_id.clone();
     // An app that administers the model providers sets them only as their own rules allow.
     let providers = app_id == tilo_app_id::apps::MODEL_PROVIDERS;
-    let display = private_display_control(state, &route, &identity);
     let grants = settings_grants(state, &route, &identity);
-    let state = Arc::clone(state);
-    let revalidate: runtime_collab::settings::host::Revalidate = Arc::new(move || {
-        state
-            .revalidate_admission(&route, &identity)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+    let authority = display_authority(state, &route, &identity);
+    let revalidate: runtime_collab::settings::host::Revalidate = {
+        let (state, route, identity) = (Arc::clone(state), route.clone(), identity.clone());
+        Arc::new(move || {
+            state
+                .revalidate_admission(&route, &identity)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+    };
+    // A host keeping the person's settings itself answers them from its source; the device's
+    // daemon asks the seat, which keeps them in the person's own home.
+    let Some(source) = state.services.settings.clone() else {
+        let seat = state.seat().ok_or_else(|| {
+            BrokerError::failed("this host keeps no settings for apps".into())
+        })?;
+        return Ok(AppSettings::Seat {
+            settings: crate::apps::seat::SeatSettings {
+                seat,
+                app_id,
+                grants,
+                providers,
+                display: authority,
+            },
+            revalidate,
+        });
+    };
+    let display = authority.and_then(|authority| {
+        let service = state.services.display_control.clone()?;
+        Some(Arc::new(move |command: &[u8], origin| {
+            let context = authority(command, origin)?;
+            service.command(&context, command)
+        }) as runtime_collab::settings::host::DisplayControl)
     });
     let server = runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
         .with_grants(grants)
         .with_display(display);
-    Ok(if providers {
+    Ok(AppSettings::Local(if providers {
         server.with_check(Arc::new(agent_provider_config::management::check_write))
     } else {
         server
-    })
+    }))
+}
+
+/// One app's settings, as the broker answers its calls on them.
+pub(super) enum AppSettings {
+    /// From the settings source this host keeps.
+    Local(runtime_collab::settings::host::AppSettingsServer),
+    /// From the person's settings the seat keeps.
+    Seat {
+        settings: crate::apps::seat::SeatSettings,
+        revalidate: runtime_collab::settings::host::Revalidate,
+    },
+}
+
+impl AppSettings {
+    /// The view once its revision differs from `after`; at once for 0.
+    pub(super) async fn read(&self, after: u64) -> Result<(u64, Vec<u8>), String> {
+        match self {
+            Self::Local(local) => local.read(after).await,
+            Self::Seat {
+                settings,
+                revalidate,
+            } => {
+                revalidate()?;
+                let read = settings.read(after).await;
+                revalidate()?;
+                read
+            }
+        }
+    }
+
+    /// Merge `values` into the app's entry in `section`, answering the view after the write.
+    pub(super) async fn update(
+        &self,
+        section: &str,
+        values: &[u8],
+        action: Option<&str>,
+    ) -> Result<(u64, Vec<u8>), String> {
+        match self {
+            Self::Local(local) => local.update(section, values, action),
+            Self::Seat {
+                settings,
+                revalidate,
+            } => {
+                revalidate()?;
+                settings.update(section, values, action).await
+            }
+        }
+    }
+
+    /// Run a display transaction for the device's settings app.
+    pub(super) async fn display(
+        &self,
+        command: &[u8],
+        origin: runtime_collab::DisplayOrigin,
+    ) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Local(local) => local.display(command, origin),
+            Self::Seat {
+                settings,
+                revalidate,
+            } => {
+                revalidate()?;
+                settings.display(command, origin).await
+            }
+        }
+    }
+}
+
+/// One app's live activity, as the broker answers its calls on it.
+pub(super) enum AppLiveActivity {
+    /// On the board this host presents.
+    Local(runtime_collab::live_activity::LiveActivityServer),
+    /// On the seat's board.
+    Seat {
+        activity: crate::apps::seat::SeatLiveActivity,
+        revalidate: runtime_collab::live_activity::Revalidate,
+    },
+}
+
+impl AppLiveActivity {
+    /// Show `activity` (a JSON object) as the app's activity; empty ends it.
+    pub(super) fn show(&self, activity: &[u8]) -> Result<(), String> {
+        match self {
+            Self::Local(local) => local.show(activity),
+            Self::Seat {
+                activity: seat,
+                revalidate,
+            } => {
+                revalidate()?;
+                seat.show(activity)
+            }
+        }
+    }
+
+    /// The controls pressed after `after`, once there is one, and the serial of the last.
+    pub(super) async fn controls(&self, after: u64) -> Result<(u64, Vec<u8>), String> {
+        match self {
+            Self::Local(local) => local.controls(after).await,
+            Self::Seat {
+                activity,
+                revalidate,
+            } => {
+                revalidate()?;
+                let controls = activity.controls(after).await;
+                revalidate()?;
+                controls
+            }
+        }
+    }
 }
 
 /// The setters of the settings the app `route` certifies may invoke: every one for the device's
@@ -452,11 +582,13 @@ pub(super) fn settings_grants(
     setters.iter().map(|&grant| grant.to_owned()).collect()
 }
 
-pub(super) fn private_display_control(
+/// Who runs a display transaction the private Settings worker of `route` asks for: its context,
+/// decided again for each, or why it is refused. `None` for any other app.
+pub(super) fn display_authority(
     state: &Arc<AppBrokerState>,
     route: &CrdtRoute,
     identity: &AdmittedJoinIdentity,
-) -> Option<runtime_collab::settings::host::DisplayControl> {
+) -> Option<crate::apps::seat::SeatDisplay> {
     if route.app_id != tilo_app_id::apps::SETTINGS || identity.agent_id.is_some() {
         return None;
     }
@@ -466,7 +598,6 @@ pub(super) fn private_display_control(
     {
         return None;
     }
-    let service = state.services.display_control.clone()?;
     let state = state.clone();
     let route = route.clone();
     let identity = identity.clone();
@@ -534,14 +665,11 @@ pub(super) fn private_display_control(
                 )?
             }
         };
-        service.command(
-            &crate::apps::services::DisplayControlContext {
-                workspace: route.cluster_id.clone(),
-                root: certificate.user_public_key,
-                device: certificate.device_public_key,
-            },
-            command,
-        )
+        Ok(crate::apps::services::DisplayControlContext {
+            workspace: route.cluster_id.clone(),
+            root: certificate.user_public_key,
+            device: certificate.device_public_key,
+        })
     }))
 }
 
@@ -551,18 +679,16 @@ pub(super) fn live_activity_capability(
     state: &Arc<AppBrokerState>,
     route: CrdtRoute,
     identity: AdmittedJoinIdentity,
-) -> Result<runtime_collab::live_activity::LiveActivityServer, BrokerError> {
+) -> Result<AppLiveActivity, BrokerError> {
     if route.app_id.is_empty() {
         return Err(BrokerError::failed(
             "a live activity belongs to a certified app route".into(),
         ));
     }
-    let Some(board) = state.services.live_activities.clone() else {
-        return Err(BrokerError::failed(
-            "this host presents no live activities".into(),
-        ));
-    };
     let app_id = route.app_id.clone();
+    let board = state.services.live_activities.clone();
+    // The device's daemon presents no board itself: the seat's shell does.
+    let seat = if board.is_none() { state.seat() } else { None };
     let state = Arc::clone(state);
     let revalidate: runtime_collab::live_activity::Revalidate = Arc::new(move || {
         state
@@ -570,9 +696,22 @@ pub(super) fn live_activity_capability(
             .map(|_| ())
             .map_err(|error| error.to_string())
     });
-    Ok(runtime_collab::live_activity::LiveActivityServer::new(
-        app_id, board, revalidate,
-    ))
+    match (board, seat) {
+        (Some(board), _) => Ok(AppLiveActivity::Local(
+            runtime_collab::live_activity::LiveActivityServer::new(app_id, board, revalidate),
+        )),
+        (None, Some(seat)) => Ok(AppLiveActivity::Seat {
+            activity: crate::apps::seat::SeatLiveActivity {
+                seat,
+                app_id,
+                shown: std::sync::atomic::AtomicBool::new(false),
+            },
+            revalidate,
+        }),
+        (None, None) => Err(BrokerError::failed(
+            "this host presents no live activities".into(),
+        )),
+    }
 }
 
 pub(super) fn delegate_realtime_command(
@@ -943,6 +1082,7 @@ pub(super) async fn drive_connection(
     directories: Rc<LocalActionDirectoryRegistry>,
     peer_id: u64,
     worker: Option<WorkerBinding>,
+    handed: Option<super::shell::Handed>,
 ) -> Result<(), BrokerError> {
     let _exit = ConnectionExit {
         state: Arc::clone(&state),
@@ -951,22 +1091,30 @@ pub(super) async fn drive_connection(
     };
     let mut stream = stream;
     let local_media = if worker.is_none() {
-        // A person's shell, where this host answers one, opens with its own marker, and so does
-        // a connection it opens for one of its apps; any other is an app the launcher started.
-        let mut vouching = false;
-        if let Some(shell) = state.services.shell.clone() {
-            let marker = super::socket::peeked_marker(&stream).await?;
-            if marker == *runtime_collab::wire::shell::SHELL_MAGIC {
-                return super::shell::serve(stream, shell).await;
-            }
-            if marker == *runtime_collab::wire::shell::PROCESSES_MAGIC {
-                return super::shell::processes(stream, shell).await;
-            }
-            vouching = marker == *runtime_collab::wire::shell::VOUCH_MAGIC;
-        }
-        let admitted = if vouching {
-            super::shell::vouched(&mut stream, &state.services).await
+        // A person's shell, where this host answers one, opens with its own marker, and so does a
+        // connection it opens to hand the device's processes an instance; an app's connection the
+        // shell handed over was admitted by the shell's vouch; any other is an app the launcher
+        // started, or a client admitted by what it presents.
+        let admitted = if let Some(handed) = handed {
+            handed.admitted().map_err(|error| LaunchRefusal {
+                error: BrokerError::failed(error),
+                peer: "an app the shell vouched for".to_owned(),
+                answerable: true,
+            })
         } else {
+            if let Some(shell) = state.services.shell.clone() {
+                let marker = super::socket::peeked_marker(&stream).await?;
+                if marker == *runtime_collab::wire::shell::SHELL_MAGIC {
+                    let broker = super::shell::Broker {
+                        state: Arc::clone(&state),
+                        directories: Rc::clone(&directories),
+                    };
+                    return super::shell::serve(stream, shell, broker).await;
+                }
+                if marker == *runtime_collab::wire::shell::PROCESSES_MAGIC {
+                    return super::shell::processes(stream, shell).await;
+                }
+            }
             authenticate_launcher_handoff(&mut stream, &state.services).await
         };
         match admitted {
@@ -1007,7 +1155,6 @@ pub(super) async fn drive_connection(
     let handed_descriptors = local_media
         .as_ref()
         .and_then(|local| local.descriptors.clone());
-    let daemon = super::router::daemon_for(&state.services, local_media.as_deref()).await;
     let app_worker = local_media
         .as_ref()
         .map(|app| (uuid::Uuid::new_v4(), app.app_id.clone()));
@@ -1028,16 +1175,6 @@ pub(super) async fn drive_connection(
     // Files hands over the objects it selects on its own connection; the
     // broker keeps them for the request naming them. Every other peer's
     // descriptors are closed on receipt.
-    if let Some(daemon) = daemon {
-        return super::router::serve_routed(
-            connection,
-            outgoing,
-            stream,
-            handed_descriptors,
-            daemon,
-        )
-        .await;
-    }
     let served = if let Some(received) = handed_descriptors {
         let (reader, writer) = tokio::io::split(
             runtime_portal::descriptors::DescriptorStream::receiving(stream, received),

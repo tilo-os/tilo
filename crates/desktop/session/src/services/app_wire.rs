@@ -147,8 +147,6 @@ pub(crate) struct Collaboration<'a> {
     pub sync: Option<&'a crate::sync::Client>,
     /// The shell link the device's daemon handed this session, or why it has none.
     pub daemon: tilo_workspace_service::apps::services::DeviceDaemon,
-    /// Each write the daemon takes, as the session follows them.
-    pub daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed,
     /// Where this device's own workspace service is installed: the workspaces it holds take an
     /// app's window write, the one store the session's own writes and reads go through.
     pub service: tilo_workspace_service::service::ServiceSlot,
@@ -248,7 +246,6 @@ pub(crate) fn start_app_wire(
         revocations,
         sync,
         daemon,
-        daemon_writes,
         engine,
         view,
         service,
@@ -264,7 +261,6 @@ pub(crate) fn start_app_wire(
     let Some(path) = app_wire_path(options)? else {
         return Ok(None);
     };
-    let agents_service = service.clone();
     let link = app_wire::Link::new(options.wake.handle());
     let layout = layout_authority(options, handle, revocations, engine.clone());
     // The workspace's activity as this session's apps read it: the shell's own model.
@@ -294,79 +290,148 @@ pub(crate) fn start_app_wire(
     // What Browser's asks for vault items are answered with: kept here as well, so a session
     // that holds a workspace's Browser can say so and name who asks its server.
     let item_lending = std::sync::Arc::new(crate::item_lending::ItemLending::default());
-    let (broker, terminals) = app_wire::serve(
-        path.clone(),
-        std::sync::Arc::clone(&link),
-        std::sync::Arc::clone(&options.launches),
-        // The fabric this session acts on, and what its services offer on it.
-        acting_fabric(options, sync),
-        app_wire::Hosted {
-            live_activities: std::sync::Arc::clone(live_activities),
-            native_media: calls_service.clone(),
-            records,
-            layout: std::sync::Arc::clone(&layout),
-            shortcuts,
-            activity: activity_wire,
-            agents: services.agents,
-            agent_sessions: services.agent_sessions,
-            sealed,
-            own_device,
-            document_content: content.clone(),
-            action_offload,
-            // What the broker writes a workspace's people through, and where it keeps what it
-            // admits: this session's own workspaces, else the ones its peer network holds.
-            engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
-            view,
-            daemon,
-            daemon_writes,
-            service: service.clone(),
-            endpoint: sync.map(|sync| sync.endpoint_handle()),
-            journal_root: match options.state.as_deref() {
-                Some(state) => {
-                    std::fs::create_dir_all(state.join("tilo"))?;
-                    Some(app_wire::journal_root(state))
-                }
-                None => None,
+    // The model keys the person's Settings changes are this session's engine's, else the ones its
+    // peer network holds.
+    let engine = engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned());
+    // The device's one dispatch as this session's person, over the shell's link: what the
+    // session's own callers (its automations, its agent servers, the palette's actions) and the
+    // person's other devices reach the workspaces through.
+    let dispatch = daemon
+        .as_ref()
+        .ok()
+        .map(|shell| std::sync::Arc::new(shell.dispatch()));
+    // What only this seat answers is served on that dispatch under the ids apps call it by.
+    let seat = daemon.as_ref().ok().map(|shell| {
+        crate::session_providers::serve_on(
+            shell,
+            crate::session_providers::SeatProviders {
+                activity: std::sync::Arc::clone(&activity_wire),
+                machines: crate::machine_steps::MachineSteps::session(view.clone()),
+                models: crate::model_steps::ModelSteps::session(view.clone()),
+                settings: settings_steps.clone(),
             },
-            // What each installed app declares it may do on the action API,
-            // read by search's own worker off the session's thread.
-            lists: options.lists.clone(),
-            // Files' waits for the drive and app lists to change, which the tools service answers.
-            tools: services.tools,
-            task_programs,
-            session_actions,
-            settings_steps,
-            nearby,
-            // What a person copies or cuts in Files, pasted here, and what the loop puts on the
-            // desktop's clipboard for another app.
-            file_clipboard: std::sync::Arc::clone(&file_clipboard),
-            item_lending: std::sync::Arc::clone(&item_lending),
-            fanout: std::sync::Arc::clone(&fanout),
-        },
-    )?;
+        )
+    });
+    // A person session reaches the hosts of its workspaces through the daemon's dispatch.
+    let hosts = daemon.as_ref().ok().zip(view.as_ref()).map(|(shell, view)| {
+        std::sync::Arc::new(crate::broker_services::DaemonHosts {
+            view: std::sync::Arc::clone(view),
+            dispatch: shell.dispatch(),
+        }) as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
+    });
+    let fabric = acting_fabric(options, sync);
+    let (hosted, socket, terminals) = match &daemon {
+        // The device's daemon serves this session's apps: each connection is attested here and
+        // handed to it, and what only this seat answers is served to it on the shell's link.
+        Ok(shell) => {
+            link.admitting(std::sync::Arc::clone(&options.launches));
+            options.launches.watching(options.lists.clone());
+            crate::seat_services::serve_on(
+                shell.clone(),
+                seat_parts(SeatInputs {
+                    options,
+                    live_activities,
+                    link: &link,
+                    layout: &layout,
+                    calls_service: calls_service.as_ref(),
+                    records,
+                    tools: services.tools,
+                    fabric: fabric.clone(),
+                    nearby,
+                    view: view.as_ref(),
+                    engine: engine.as_ref(),
+                    shell,
+                    file_clipboard: &file_clipboard,
+                    item_lending: &item_lending,
+                }),
+            );
+            // The session's own actions, as the daemon's endpoint and its agents ask them of the
+            // layout, the windows and the notices.
+            if let Some(actions) = &session_actions {
+                actions.serve_on(shell.clone());
+            }
+            let socket = crate::app_socket::serve(
+                &path,
+                std::sync::Arc::clone(&options.launches),
+                shell.clone(),
+            )?;
+            let terminals = view.clone().zip(engine.as_ref()).map(|(view, engine)| {
+                let runtime = tilo_rt::app().handle().clone();
+                let dispatch = {
+                    let _inside = runtime.enter();
+                    shell.dispatch()
+                };
+                crate::workspace_terminals::Terminals {
+                    view,
+                    dispatch,
+                    endpoint: sync.map(|sync| sync.endpoint_handle()),
+                    device: engine.identity().device_cert.device_public_key,
+                    runtime,
+                }
+            });
+            (None, Some(socket), terminals)
+        }
+        // A session the host placed in a workspace's VM runs no daemon yet: its window's page is
+        // served by the broker it keeps itself ([`app_wire::serve_hosted`]).
+        Err(_) => {
+            let (broker, terminals) = app_wire::serve_hosted(
+                path.clone(),
+                std::sync::Arc::clone(&link),
+                std::sync::Arc::clone(&options.launches),
+                fabric,
+                app_wire::Hosted {
+                    live_activities: std::sync::Arc::clone(live_activities),
+                    native_media: calls_service.clone(),
+                    records,
+                    layout: std::sync::Arc::clone(&layout),
+                    shortcuts,
+                    activity: activity_wire,
+                    agents: services.agents,
+                    agent_sessions: services.agent_sessions,
+                    sealed,
+                    own_device,
+                    document_content: content.clone(),
+                    action_offload,
+                    engine,
+                    view,
+                    service: service.clone(),
+                    endpoint: sync.map(|sync| sync.endpoint_handle()),
+                    journal_root: match options.state.as_deref() {
+                        Some(state) => {
+                            std::fs::create_dir_all(state.join("tilo"))?;
+                            Some(app_wire::journal_root(state))
+                        }
+                        None => None,
+                    },
+                    lists: options.lists.clone(),
+                    tools: services.tools,
+                    task_programs,
+                    session_actions,
+                    settings_steps,
+                    nearby,
+                    file_clipboard: std::sync::Arc::clone(&file_clipboard),
+                    item_lending: std::sync::Arc::clone(&item_lending),
+                    fanout: std::sync::Arc::clone(&fanout),
+                },
+            )?;
+            (Some(broker), None, terminals)
+        }
+    };
     // The person's other devices are dialled as this session's siblings, and the session's pass
     // wakes when their own workspace moves: the session between two of theirs is where they tell
     // each other what they hold, and what their device fabric says.
     if let Some(sync) = sync {
         sync.follow_person(tilo_rt::app().handle(), options.wake.handle());
     }
-    let files_tree = serve_files_tree(service, content.as_deref(), options, services.folders)?;
-    // This device runs its workspaces' agents in its own workspace service once that opens: the
-    // one engine a workspace's host runs, in this process, each turn's calls decided by this
-    // broker as the person's own calls are.
-    if let Some(broker) = broker.app_action_broker() {
-        tilo_rt::app()
-            .handle()
-            .spawn(tilo_workspace_service::agents::on_device(
-                agents_service,
-                broker.device_host(),
-            ));
-    }
     Ok(Some(AppWire {
+        dispatch,
+        hosts,
+        seat,
         link,
         path,
         layout,
-        broker,
+        hosted,
+        _socket: socket,
         calls,
         calls_service,
         carets: crate::carets::Carets::new(fanout, options.wake.handle()),
@@ -374,6 +439,104 @@ pub(crate) fn start_app_wire(
         item_lending,
         terminals,
     }))
+}
+
+/// What [`seat_parts`] builds the seat's services from.
+struct SeatInputs<'a> {
+    options: &'a Options,
+    live_activities: &'a std::sync::Arc<runtime_collab::LiveActivities>,
+    link: &'a std::sync::Arc<app_wire::Link>,
+    layout: &'a std::sync::Arc<LayoutAuthority>,
+    calls_service: Option<&'a tilo_native_media::NativeMediaService>,
+    records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
+    tools: Option<crate::tools::Handle>,
+    fabric: Option<crate::platform::fabric::SharedLink>,
+    nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
+    view: Option<&'a std::sync::Arc<crate::workspace_view::WorkspaceView>>,
+    engine: Option<&'a std::sync::Arc<crate::engine::Engine>>,
+    shell: &'a runtime_collab::ShellClient,
+    file_clipboard: &'a std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
+    item_lending: &'a std::sync::Arc<crate::item_lending::ItemLending>,
+}
+
+/// What only this seat answers for the apps the device's daemon serves: the screen, the sound,
+/// the calls, the person's settings and keys, the windows this session opened, and the person's
+/// account credentials in the vault this session opens.
+fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
+    let SeatInputs {
+        options,
+        live_activities,
+        link,
+        layout,
+        calls_service,
+        records,
+        tools,
+        fabric,
+        nearby,
+        view,
+        engine,
+        shell,
+        file_clipboard,
+        item_lending,
+    } = inputs;
+    // This person's settings on this device: each app reaches its own entries and the shared
+    // sections, and a display change is written here too.
+    let settings = settings_store::source();
+    let display_control = settings.as_ref().map(|source| {
+        std::sync::Arc::new(crate::display_control::DisplayControl::native(
+            std::sync::Arc::clone(source),
+            layout,
+        ))
+            as std::sync::Arc<dyn tilo_workspace_service::apps::services::DisplayControlServices>
+    });
+    crate::seat_services::SeatParts {
+        #[cfg(target_os = "linux")]
+        audio_output: Some(std::sync::Arc::new(crate::audio_output::AppAudioOutput::new())),
+        #[cfg(not(target_os = "linux"))]
+        audio_output: None,
+        native_media: calls_service.map(|media| {
+            std::sync::Arc::new(media.clone())
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeMediaServices>
+        }),
+        continuations: options.launches.notes(),
+        records,
+        tools,
+        // Where this computer's networks wake it and what it saved: the passphrases are the
+        // daemon's, which this session asks them of.
+        wifi_continuity: crate::wifi_continuity::WifiContinuity::new(
+            tilo_session_client::daemon_documents::DaemonShell::new(
+                Ok(shell.clone()),
+                tilo_rt::app().handle().clone(),
+            ),
+        )
+        .map(|wifi| {
+            std::sync::Arc::new(wifi)
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::WifiContinuityServices>
+        }),
+        fabric,
+        nearby,
+        published: std::sync::Arc::clone(link) as _,
+        workspace_nodes: crate::workspace_nodes::WorkspaceNodes::service(view),
+        settings,
+        display_control,
+        live_activities: std::sync::Arc::clone(live_activities),
+        launches: Some(std::sync::Arc::clone(&options.launches)),
+        keyboard_shortcuts: crate::keyboard_shortcuts::servable(),
+        service_sessions: engine.map(|engine| {
+            std::sync::Arc::new(crate::service_sessions::ServiceSessions::new(
+                std::sync::Arc::clone(engine),
+                std::sync::Arc::clone(item_lending),
+                tilo_session_client::daemon_documents::DaemonShell::new(
+                    Ok(shell.clone()),
+                    tilo_rt::app().handle().clone(),
+                ),
+            ))
+                as std::sync::Arc<
+                    dyn tilo_workspace_service::apps::services::BrowserServiceSessionServices,
+                >
+        }),
+        file_clipboard: Some(std::sync::Arc::clone(file_clipboard)),
+    }
 }
 
 /// What the broker decides against, from this pass on: the shell as it is

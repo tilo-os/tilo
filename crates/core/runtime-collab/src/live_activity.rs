@@ -178,6 +178,21 @@ impl LiveActivities {
         self.controls_after(app_id, after)
     }
 
+    /// The controls pressed on `app_id`'s activity after `after`, once there is one, and the
+    /// serial of the last: what its app waits for, here or through the host that keeps the board.
+    pub async fn controls(&self, app_id: &str, after: u64) -> (u64, Vec<Value>) {
+        loop {
+            // Armed before looking, so a press between the look and the wait still wakes it.
+            let pressed = self.changed.notified();
+            tokio::pin!(pressed);
+            pressed.as_mut().enable();
+            if let Some(taken) = self.controls_after(app_id, after) {
+                return taken;
+            }
+            pressed.await;
+        }
+    }
+
     /// The controls app `app_id` has not taken after `after`, and the
     /// serial of the last; `None` while there are none.
     fn controls_after(&self, app_id: &str, after: u64) -> Option<(u64, Vec<Value>)> {
@@ -195,6 +210,23 @@ impl LiveActivities {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, App>> {
         self.apps.lock_recover()
+    }
+}
+
+/// An app's `activity` as the wire carries it, read: `None` for an empty one, which ends it.
+///
+/// # Errors
+/// It exceeds the wire bound or is no JSON object.
+pub fn read_activity(activity: &[u8]) -> Result<Option<Value>, String> {
+    if activity.len() > MAX_LIVE_ACTIVITY_BYTES {
+        return Err("live activity exceeds the wire bound".into());
+    }
+    if activity.is_empty() {
+        return Ok(None);
+    }
+    match serde_json::from_slice(activity) {
+        Ok(activity @ Value::Object(_)) => Ok(Some(activity)),
+        _ => Err("a live activity is a JSON object".into()),
     }
 }
 
@@ -240,17 +272,7 @@ impl LiveActivityServer {
     /// Show `activity` (a JSON object) as the app's activity; empty ends it.
     pub fn show(&self, activity: &[u8]) -> Result<(), String> {
         (self.revalidate)()?;
-        if activity.len() > MAX_LIVE_ACTIVITY_BYTES {
-            return Err("live activity exceeds the wire bound".into());
-        }
-        let activity = if activity.is_empty() {
-            None
-        } else {
-            match serde_json::from_slice(activity) {
-                Ok(activity @ Value::Object(_)) => Some(activity),
-                _ => return Err("a live activity is a JSON object".into()),
-            }
-        };
+        let activity = read_activity(activity)?;
         self.shown.set(activity.is_some());
         self.board.show(&self.app_id, activity);
         Ok(())
@@ -263,19 +285,11 @@ impl LiveActivityServer {
         reason = "the host answers each app on its single-threaded broker task"
     )]
     pub async fn controls(&self, after: u64) -> Result<(u64, Vec<u8>), String> {
-        loop {
-            (self.revalidate)()?;
-            // Armed before looking, so a press between the look and the
-            // wait still wakes it.
-            let pressed = self.board.changed.notified();
-            tokio::pin!(pressed);
-            pressed.as_mut().enable();
-            if let Some((serial, controls)) = self.board.controls_after(&self.app_id, after) {
-                let bytes = serde_json::to_vec(&controls).map_err(|error| error.to_string())?;
-                return Ok((serial, bytes));
-            }
-            pressed.await;
-        }
+        (self.revalidate)()?;
+        let (serial, controls) = self.board.controls(&self.app_id, after).await;
+        (self.revalidate)()?;
+        let bytes = serde_json::to_vec(&controls).map_err(|error| error.to_string())?;
+        Ok((serial, bytes))
     }
 }
 

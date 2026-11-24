@@ -42,6 +42,22 @@ impl NativeDocumentReadContext {
             revalidate: Arc::new(|| Ok(())),
         }
     }
+    /// A read of `route` by `certificate`'s device that this device's broker admitted, as the
+    /// seat answers a call the broker forwarded to it (`crate::apps::seat`): only the broker
+    /// reaches the seat, and it checks the connection before and after every call it forwards.
+    #[must_use]
+    pub fn seat_forwarded(
+        route: CrdtRoute,
+        certificate: tilo_user_identity::DeviceCert,
+        resource_type: Option<String>,
+    ) -> Self {
+        Self {
+            route,
+            certificate,
+            resource_type,
+            revalidate: Arc::new(|| Ok(())),
+        }
+    }
     pub fn route(&self) -> &CrdtRoute {
         &self.route
     }

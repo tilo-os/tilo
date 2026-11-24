@@ -518,17 +518,10 @@ impl Session {
         // Which message Chat posted for each ask, as soon as it answered: a step the agent takes in
         // the turn before the turn's view stands goes where the person asked (canvas.md §3).
         {
-            let search = Rc::clone(&session_search);
             let sends = sends.clone();
-            layout.borrow().know_posted(Rc::new(move |sent: u64| {
-                if sends.posted(sent).is_none()
-                    && let Some(search) = search.get()
-                {
-                    // What Chat answered the asks' sends, once they settled.
-                    search.poll_answers();
-                }
-                sends.posted(sent)
-            }));
+            layout
+                .borrow()
+                .know_posted(Rc::new(move |sent: u64| sends.posted(sent)));
         }
         published.add(Rc::new(RefCell::new(layout::LayoutActions::new(
             Rc::clone(&layout),
@@ -1258,7 +1251,6 @@ impl Session {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
                 daemon: daemon_link.clone(),
-                daemon_writes,
                 service: workspace_service.clone(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 view: view.clone(),
@@ -1275,16 +1267,21 @@ impl Session {
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
         )?;
-        // The person's own line calls through the broker this session serves, as their own click
-        // does, so what it reads and changes is decided where it lands.
-        if let Some(broker) = app_wire.as_ref().and_then(AppWire::agent_broker) {
-            task_program_host.keep_state(broker);
+        // The person's own line calls through the device's one dispatch, as their own click does,
+        // so what it reads and changes is decided where it lands.
+        if let Some(dispatch) = app_wire.as_ref().and_then(|app_wire| app_wire.dispatch.clone()) {
+            task_program_host.keep_state(dispatch);
         }
         // An action an app publishes, named by a search row, a link or a
-        // person's card, is delivered through the broker: the app starts for
-        // it when it is closed, and the action reaches it wherever it runs.
+        // person's card, is delivered through the device's dispatch: the app
+        // starts for it when it is closed, and the action reaches it wherever
+        // it runs.
         if let Some(launch) = &options.launch {
-            launch.lend_broker(app_wire.as_ref().and_then(AppWire::agent_broker));
+            launch.lend_dispatch(
+                app_wire
+                    .as_ref()
+                    .and_then(|app_wire| app_wire.dispatch.as_deref().cloned()),
+            );
         }
         // A session in a workspace's VM is started for one workspace, and everything it does
         // of what a person's session does is the window it holds: it is told here what wakes its
@@ -1367,6 +1364,7 @@ impl Session {
                 .and_then(|desktop| desktop.documents())
                 .cloned(),
             launches: Some(std::sync::Arc::clone(&options.launches)),
+            daemon: daemon_link.clone().ok(),
         });
         // The system's media controls show every Playback the session's apps play, and a media
         // key reaches the one the person touched last: the host of each app's windows says what
@@ -1378,20 +1376,21 @@ impl Session {
         }
         tilo_startup_metrics::mark("published-done");
         // The control API `tilo-control` reaches: the development socket and the device admin's,
-        // both answered over the broker this session's app wire starts. It exists whether or not a
+        // both answered over the device's one dispatch. It exists whether or not a
         // socket opens, because a program inside an app this session started is served at it too.
         // The activity undoes an agent's run in the records it changed through the same API.
         let host = std::sync::Arc::new(
             crate::mcp_server::Host::new(
-                app_wire.as_ref().and_then(AppWire::agent_broker),
+                app_wire.as_ref().and_then(|app_wire| app_wire.dispatch.clone()),
                 std::sync::Arc::clone(&session_services),
             )
             .with_session_actions(Some(std::sync::Arc::clone(&session_actions))),
         );
         let undo_api: std::sync::Arc<crate::mcp_server::Host> = host.clone();
         activity.attach_api(undo_api);
-        if let Some(broker) = app_wire.as_ref().and_then(AppWire::agent_broker) {
-            activity.attach_broker(broker);
+        if let Some(launch) = &options.launch {
+            let apps = Rc::clone(launch);
+            activity.attach_published(Rc::new(move || apps.published_rows()));
         }
         activity.attach_content(std::sync::Arc::clone(&document_content));
         let control = crate::test_control::Control::open(&options, std::sync::Arc::clone(&host));
@@ -1413,13 +1412,13 @@ impl Session {
         if let Some(path) = options.api_server.as_deref() {
             crate::api_server::serve(
                 path,
-                app_wire.as_ref().and_then(AppWire::agent_broker),
+                app_wire.as_ref().and_then(|app_wire| app_wire.dispatch.clone()),
                 std::sync::Arc::clone(&session_services),
             );
         }
         let mcp_server = server.map(|server| {
             let mut server = server.serve(
-                app_wire.as_ref().and_then(AppWire::agent_broker),
+                app_wire.as_ref().and_then(|app_wire| app_wire.dispatch.clone()),
                 app_wire
                     .as_ref()
                     .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
@@ -1440,7 +1439,7 @@ impl Session {
                 launches: std::sync::Arc::clone(&options.launches),
                 policy: std::sync::Arc::clone(&notification_policy),
                 revocations,
-                // A chord the person presses runs its shortcut through the device's one dispatch.
+                // Every shortcut a trigger here fires runs through the device's one dispatch.
                 dispatch: daemon_link.ok().map(|daemon| {
                     let _entered = tilo_rt::app().handle().enter();
                     let dispatch: std::sync::Arc<
@@ -2849,8 +2848,8 @@ impl Session {
         };
         // The rows read here, on the loop that holds the layout: nothing off this thread
         // reads a place. They are read again only once the API moved, and what is offered then
-        // is compared with what was offered before, so the broker is told only when the rows
-        // themselves moved.
+        // is compared with what was offered before, so the daemon is handed them only when the
+        // rows themselves moved.
         // A held pointer drags or resizes a window: every frame of it moves the shell, never what
         // the steps offer, so the rows are read once the person lets go.
         if self.shared.underway.get().gesture
@@ -2861,37 +2860,34 @@ impl Session {
         let mut resources = self.shared.published.resources();
         // The settings are published by the session's settings service, and offered under
         // their own provider ([`crate::settings_steps::SettingsSteps`]) wherever the session
-        // serves a broker. The session's own provider must not offer a second copy of them:
-        // one address has one entry.
-        if self
-            .app_wire
-            .as_ref()
-            .and_then(AppWire::agent_broker)
-            .is_some()
-            && self.settings_steps.is_some()
-        {
+        // serves its seat's providers. The session's own provider must not offer a second copy
+        // of them: one address has one entry.
+        if self.seat().is_some() && self.settings_steps.is_some() {
             crate::settings_steps::SettingsSteps::leave_out(&mut resources);
         }
-        let rows = tilo_actions::api::survey_placed(&resources);
-        if actions.offer(rows)
-            && let Some(broker) = self.app_wire.as_ref().and_then(AppWire::agent_broker)
-        {
-            broker.providers_changed();
-        }
+        // What the session offers moved is handed to the daemon by the provider itself
+        // ([`crate::session_actions::SessionActions::serve_on`]).
+        actions.offer(tilo_actions::api::survey_placed(&resources));
     }
 
-    /// Hand the broker the settings the session publishes again when they moved: what Settings'
+    /// Hand the daemon the settings the session publishes again when they moved: what Settings'
     /// window's controls are decided against, read here on the loop that holds the service, so a
-    /// catalogue built on the broker's own thread never waits on it.
+    /// catalogue the daemon lists never waits on it.
     pub(crate) fn follow_settings_steps(&self) {
         let Some(steps) = &self.settings_steps else {
             return;
         };
         if steps.offer(&self.shared.services.borrow())
-            && let Some(broker) = self.app_wire.as_ref().and_then(AppWire::agent_broker)
+            && let Some(seat) = self.seat()
         {
-            broker.providers_changed();
+            seat.moved();
         }
+    }
+
+    /// The providers of the person's seat as the device's daemon reaches them, where this session
+    /// serves them.
+    fn seat(&self) -> Option<&crate::session_providers::SeatServed> {
+        self.app_wire.as_ref().and_then(|wire| wire.seat.as_ref())
     }
 
     /// Keep the broker's copy of the shell level with the shell as the pass leaves it: the workspaces
@@ -2910,13 +2906,6 @@ impl Session {
     /// starting there checks the shortcut against it.
     pub(crate) fn follow_automation(&mut self) {
         if let Some(app_wire) = &self.app_wire {
-            // The broker may take a moment to accept connections after it
-            // starts; its runs start from the first pass that finds it.
-            if self.automation.needs_broker()
-                && let Some(broker) = app_wire.action_broker()
-            {
-                self.automation.attach(broker);
-            }
             self.automation.settle(Some(&app_wire.layout));
         } else {
             self.automation.settle(None);

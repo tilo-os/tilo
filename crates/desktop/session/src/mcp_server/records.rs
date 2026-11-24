@@ -1,19 +1,19 @@
 //! The records a connection reads and changes through the session's API: the ones this session's
 //! own services keep for the packages it runs (the shell), which answer on the loop's pass, and the
-//! workspace's, which its broker answers.
+//! workspace's, which the device's daemon answers.
 
 use std::sync::Arc;
 
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 use super::{ApiAsk, SessionServices, WAIT, unanswered};
 
 /// The records a connection reads and changes as any app's: those the session's services keep for
-/// packages it runs itself (the shell), on the loop's pass, and the workspace's through the broker.
+/// packages it runs itself (the shell), on the loop's pass, and the workspace's through the device's
+/// dispatch.
 pub(crate) struct ServiceRecords {
-    pub(crate) state: Option<std::sync::Weak<AppBrokerState>>,
+    pub(crate) state: Option<std::sync::Weak<super::Dispatch>>,
     pub(crate) session: Arc<SessionServices>,
     /// The agent session an admitted connection is, when it is one: the records it changes are
     /// kept there, as what taking its work back undoes.
@@ -43,20 +43,14 @@ impl ServiceRecords {
             .map_err(|_| unanswered())
     }
 
-    fn broker(&self) -> Result<Arc<AppBrokerState>, ActionCallError> {
-        self.state
-            .as_ref()
-            .and_then(std::sync::Weak::upgrade)
-            .ok_or_else(|| ActionCallError::Unavailable {
-                reason: "this desktop keeps no records of its own".to_owned(),
-            })
-    }
-
+    /// The device's reader of the workspaces' records, which decides each read as the caller.
     fn workspace_reads(
         &self,
     ) -> Result<Arc<dyn tilo_actions::remote::ResourceReads>, ActionCallError> {
-        self.broker()?
-            .resource_reads()
+        self.state
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .map(|dispatch| dispatch as Arc<dyn tilo_actions::remote::ResourceReads>)
             .ok_or_else(|| ActionCallError::Unavailable {
                 reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.to_owned(),
             })
@@ -115,31 +109,25 @@ impl tilo_actions::remote::ResourceReads for ServiceRecords {
 }
 
 impl ServiceRecords {
-    /// The reading of `address` when it names a resource the session publishes itself, decided for
-    /// `caller` as every read of it is; `None` when it names an app's record, which the workspace
-    /// answers.
+    /// The reading of `address` when it names a resource the session publishes itself, read by the
+    /// person at this device as their own; `None` when it names an app's record, or when the
+    /// caller is not the person: the device's daemon answers both, deciding the read as the caller.
     fn published(
         &self,
         caller: &Caller,
         address: &tilo_actions::remote::ResourceAddress,
     ) -> Result<Option<tilo_actions::remote::ResourceCopy>, ActionCallError> {
-        if !super::published_root(&address.app, &address.record) {
+        if !super::published_root(&address.app, &address.record) || !caller.acting().is_person() {
             return Ok(None);
         }
         let Some(published) = self.session.reading(&address.app, &address.record)? else {
             return Ok(Some(tilo_actions::remote::ResourceCopy::Absent));
         };
-        // A read is decided at the resource's node, which its published kind names: a resource no
-        // service publishes a kind for has no node to decide it at, so it is read by nobody.
-        let Some(kind) = &published.kind else {
+        // A resource no service publishes a kind for has no node to decide a read at, so it is
+        // read by nobody.
+        if published.kind.is_none() {
             return Ok(Some(tilo_actions::remote::ResourceCopy::Absent));
-        };
-        let state = self.state.as_ref().and_then(std::sync::Weak::upgrade);
-        super::may_read_published(
-            state.as_deref(),
-            caller,
-            (super::SESSION_APP, kind, &address.record),
-        )?;
+        }
         Ok(Some(tilo_actions::remote::ResourceCopy::reading(
             published.reading,
             None,
@@ -166,11 +154,8 @@ impl tilo_actions::remote::ResourceChanges for ServiceRecords {
         })? {
             return answer;
         }
-        self.broker()?
-            .resource_changes()
-            .ok_or_else(|| ActionCallError::Unavailable {
-                reason: "this desktop applies no task's changes at a record's origin".to_owned(),
-            })?
-            .apply(caller, change)
+        Err(ActionCallError::Unavailable {
+            reason: "this desktop applies no task's changes at a record's origin".to_owned(),
+        })
     }
 }

@@ -1,6 +1,6 @@
 //! The one engine that runs a workspace's agents: on the workspace's host, around the clock, for
 //! the workspaces it governs, and on a person's own device for the workspaces it holds
-//! ([`on_device`]).
+//! ([`run_on_device`]).
 //!
 //! Who they are is the workspace's own record of its agents (Assistant's
 //! `tilo.workspace.agent`): every active agent no MCP client connects as works here, whoever
@@ -448,23 +448,14 @@ impl ChangeFeed for WorkspaceActionProvider {
     }
 }
 
-/// Run the agents of the workspaces a person's own device holds, in the device's own workspace
-/// service once `service` holds it: the one engine a host runs, in this one daemon, with its
-/// turns' calls decided by the device's broker (`actions`) as the person's own calls are. It
-/// takes every turn its workspaces' records ask of their agents that is this device's to take
-/// ([`ServerAgents::run`], [`crate::work::takes_turn`]).
-pub async fn on_device(
-    service: crate::service::ServiceSlot,
-    actions: Arc<dyn ActionProvider + Send + Sync>,
-) {
-    let workspaces = service.installed().await.workspaces().clone();
-    run_on_device(workspaces, actions, None, None).await;
-}
-
-/// [`on_device`] for the service whose `workspaces` the device opened already. Where the device
-/// serves tickets (`tickets`), it asks with one to run the agents of other people it may take
-/// turns of, and runs each once its person redeemed the ticket. What the assistants' look-round
-/// (`initiative`) proposes is filed through the same calls, each signed by its agent's key.
+/// Run the agents of the workspaces a person's own device holds, `workspaces`, in the device's
+/// one daemon: the one engine a host runs, with its turns' calls decided by the device's dispatch
+/// (`actions`) as the person's own calls are. It takes every turn its workspaces' records ask of
+/// their agents that is this device's to take ([`ServerAgents::run`],
+/// [`crate::work::takes_turn`]). Where the device serves tickets (`tickets`), it asks with one to
+/// run the agents of other people it may take turns of, and runs each once its person redeemed
+/// the ticket. What the assistants' look-round (`initiative`) proposes is filed through the same
+/// calls, each signed by its agent's key.
 pub async fn run_on_device(
     workspaces: Workspaces,
     actions: Arc<dyn ActionProvider + Send + Sync>,

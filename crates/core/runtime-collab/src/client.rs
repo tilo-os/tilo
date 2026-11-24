@@ -1865,7 +1865,15 @@ pub(crate) mod testing {
 #[derive(Clone)]
 pub struct ShellClient {
     client: CollabClient,
+    /// The descriptors the daemon hands the shell on its link: the open objects a call of the
+    /// seat names (what Files selected for the clipboard), each by its number on the link.
+    handed: runtime_portal::descriptors::ReceivedDescriptors,
 }
+
+/// The most descriptors the daemon hands the shell that no call took yet: one clipboard command's
+/// selection, and as many again for one more on its way.
+#[cfg(unix)]
+const MAX_HANDED_TO_SHELL: usize = 2 * (crate::file_clipboard::MAX_ENTRIES + 1);
 
 #[cfg(unix)]
 impl ShellClient {
@@ -1874,37 +1882,103 @@ impl ShellClient {
     /// task spawned on the current runtime.
     #[must_use]
     pub fn open(link: tokio::net::UnixStream) -> (Self, ConnectionEnd) {
-        let (client, end) = CollabClient::connected(link);
-        (Self { client }, end)
+        // The link carries descriptors to the daemon too: the connections of the apps the shell
+        // launched, which it hands over as it vouches for them. And from it: what a call of the
+        // seat names, which the daemon hands over as it forwards the call.
+        let descriptors = runtime_portal::descriptors::DescriptorSender::new();
+        let handed = runtime_portal::descriptors::ReceivedDescriptors::new(MAX_HANDED_TO_SHELL);
+        let (client, end) =
+            CollabClient::connected(runtime_portal::descriptors::DescriptorStream::duplex(
+                link,
+                descriptors.clone(),
+                handed.clone(),
+            ));
+        (
+            Self {
+                client: client.with_descriptors(descriptors),
+                handed,
+            },
+            end,
+        )
     }
 
-    /// A connection the daemon admits as the app `vouch` names, one this shell launched: asked for
-    /// on the shell's own link, then opened on the daemon's socket with the secret it answered.
+    /// The descriptors the daemon handed over on this link, by their numbers on it: a call that
+    /// names one takes it.
+    #[must_use]
+    pub const fn handed(&self) -> &runtime_portal::descriptors::ReceivedDescriptors {
+        &self.handed
+    }
+
+    /// Hand the daemon `connection`, made on this shell's app socket, to serve: as the app `app`
+    /// names when the shell attested it (its `process` and `launcher` numbers are filled here
+    /// from `pinned`, the pidfds of the app's process and of its launcher's when the launcher
+    /// handed the app over), or as a client admitted by what it presents. From here on the
+    /// connection speaks to the daemon directly.
     ///
     /// # Errors
-    /// The daemon refused the vouch, or its socket does not answer.
-    pub async fn vouched(
+    /// The link carries no descriptors, or the daemon refused the vouch.
+    pub async fn vouch(
         &self,
-        vouch: crate::wire::shell::Vouch,
-    ) -> Result<tokio::net::UnixStream, NotAvailable> {
-        use tokio::io::AsyncWriteExt as _;
-        let (socket, secret) = match self
+        connection: std::os::fd::OwnedFd,
+        app: Option<(
+            crate::wire::shell::VouchedApp,
+            std::os::fd::OwnedFd,
+            Option<std::os::fd::OwnedFd>,
+        )>,
+    ) -> Result<(), NotAvailable> {
+        self.hand(crate::wire::shell::HandedTo::Collaboration, connection, app)
+            .await
+    }
+
+    /// Hand the daemon's identity service `connection`, made on this shell's socket for it, to
+    /// serve as a client that presents itself.
+    ///
+    /// # Errors
+    /// The link carries no descriptors, or the daemon refused the connection.
+    pub async fn hand_identity(
+        &self,
+        connection: std::os::fd::OwnedFd,
+    ) -> Result<(), NotAvailable> {
+        self.hand(crate::wire::shell::HandedTo::Identity, connection, None)
+            .await
+    }
+
+    async fn hand(
+        &self,
+        to: crate::wire::shell::HandedTo,
+        connection: std::os::fd::OwnedFd,
+        app: Option<(
+            crate::wire::shell::VouchedApp,
+            std::os::fd::OwnedFd,
+            Option<std::os::fd::OwnedFd>,
+        )>,
+    ) -> Result<(), NotAvailable> {
+        let sender = self.client.descriptors.as_ref().ok_or_else(|| {
+            NotAvailable::Refused("this shell link carries no descriptors".to_owned())
+        })?;
+        let connection = sender.send(connection)?;
+        let app = match app {
+            Some((mut app, process, launcher)) => {
+                app.process = sender.send(process)?;
+                app.launcher = launcher.map(|launcher| sender.send(launcher)).transpose()?;
+                Some(app)
+            }
+            None => None,
+        };
+        let vouch = crate::wire::shell::Vouch {
+            connection,
+            app,
+            to,
+        };
+        match self
             .call(crate::wire::shell::ShellCall::Vouch(vouch))
             .await?
         {
-            crate::wire::shell::ShellReply::Vouched { socket, secret } => (socket, secret),
-            other => {
-                return Err(NotAvailable::Refused(format!(
-                    "the daemon answered a vouch with {other:?}"
-                )));
-            }
-        };
-        let mut stream = tokio::net::UnixStream::connect(&socket).await?;
-        let mut opening = crate::wire::shell::VOUCH_MAGIC.to_vec();
-        opening.extend_from_slice(&secret);
-        stream.write_all(&opening).await?;
-        stream.flush().await?;
-        Ok(stream)
+            crate::wire::shell::ShellReply::Vouched => Ok(()),
+            other => Err(NotAvailable::Refused(format!(
+                "the daemon answered a vouch with {other:?}"
+            ))),
+        }
     }
 
     /// A packet socket to the device's tilolang processes, for one ask

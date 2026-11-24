@@ -75,10 +75,10 @@ pub(super) struct ChannelSession {
     channel: Rc<JoinedChannel>,
     presence: PresenceSession,
     /// The app's settings, opened on its first call.
-    settings: RefCell<Option<Rc<runtime_collab::settings::host::AppSettingsServer>>>,
+    settings: RefCell<Option<Rc<super::session::AppSettings>>>,
     /// The app's live activity, opened on its first call; it ends when the
     /// app closes the channel.
-    live_activity: RefCell<Option<Rc<runtime_collab::live_activity::LiveActivityServer>>>,
+    live_activity: RefCell<Option<Rc<super::session::AppLiveActivity>>>,
     /// The runs of a change of the channel's record that came before its last.
     record_runs: RefCell<Vec<u8>>,
 }
@@ -100,7 +100,7 @@ impl ChannelSession {
         }
     }
 
-    fn settings(&self) -> Result<Rc<runtime_collab::settings::host::AppSettingsServer>, String> {
+    fn settings(&self) -> Result<Rc<super::session::AppSettings>, String> {
         let route = self.route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)
@@ -116,9 +116,7 @@ impl ChannelSession {
         Ok(settings)
     }
 
-    fn live_activity(
-        &self,
-    ) -> Result<Rc<runtime_collab::live_activity::LiveActivityServer>, String> {
+    fn live_activity(&self) -> Result<Rc<super::session::AppLiveActivity>, String> {
         let route = self.route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)
@@ -153,18 +151,20 @@ impl ChannelSession {
                 section,
                 values,
                 action,
-            } => Box::pin(std::future::ready(
+            } => Box::pin(async move {
                 settings
                     .update(&section, &values, action.as_deref())
+                    .await
                     .map(view)
-                    .map_err(BrokerError::failed),
-            )),
-            SettingsCall::Display { command, origin } => Box::pin(std::future::ready(
+                    .map_err(BrokerError::failed)
+            }),
+            SettingsCall::Display { command, origin } => Box::pin(async move {
                 settings
                     .display(&command, origin)
+                    .await
                     .map(Reply::Answer)
-                    .map_err(BrokerError::failed),
-            )),
+                    .map_err(BrokerError::failed)
+            }),
         }
     }
 
@@ -217,8 +217,7 @@ impl JoinedChannel {
                 serde_json::to_vec(&reply).map_err(|error| BrokerError::failed(error.to_string()))
             }));
         }
-        let reply = self.file_clipboard_dispatch(bytes, on_behalf_of)?;
-        Ok(Box::pin(std::future::ready(Ok(reply))))
+        self.file_clipboard_dispatch(bytes, on_behalf_of)
     }
 }
 
@@ -282,9 +281,12 @@ impl ChannelSession {
                 Service::Realtime => {
                     ready(channel.realtime_dispatch(&channel.route().app_id, body))
                 }
-                Service::NearbyTransfer => {
-                    ready(channel.nearby_transfer_dispatch(&channel.route().app_id, body))
-                }
+                Service::NearbyTransfer => channel
+                    .nearby_transfer_dispatch(&channel.route().app_id, body)
+                    .map_err(failed)
+                    .map(|reply| -> Answering {
+                        Box::pin(async move { reply.await.map_err(Refusal::refusal) })
+                    }),
                 // The secret answer moves onto the wire without a copy left
                 // behind. An item's use is waited for here, by the answer, and
                 // never by the dispatch that started it.
@@ -305,7 +307,14 @@ impl ChannelSession {
                     .map(|reply| -> Answering {
                         Box::pin(async move { reply.await.map_err(Refusal::refusal) })
                     }),
-                Service::Speaker => ready(channel.speaker_dispatch(body)),
+                Service::Speaker => {
+                    channel
+                        .speaker_dispatch(body)
+                        .map_err(failed)
+                        .map(|reply| -> Answering {
+                            Box::pin(async move { reply.await.map_err(Refusal::refusal) })
+                        })
+                }
                 Service::CommittedDocument => {
                     runtime_collab::committed_document::Request::decode(body)
                         .map_err(Into::into)
@@ -669,7 +678,7 @@ impl JoinedChannel {
         &self,
         claimed_app: &str,
         bytes: &[u8],
-    ) -> Result<Vec<u8>, BrokerError> {
+    ) -> Result<impl Future<Output = Result<Vec<u8>, BrokerError>> + use<>, BrokerError> {
         let route = self.route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
@@ -683,7 +692,17 @@ impl JoinedChannel {
                 .is_none()
                 .then(|| self.verified_identity.actor_key.clone()),
         );
-        delegate_nearby_transfer_command(&self.state.services, &context, claimed_app, bytes)
+        let services = self.state.services.clone();
+        let (claimed_app, command) = (claimed_app.to_owned(), bytes.to_vec());
+        Ok(async move {
+            // The spool and the fabric may be the seat's to ask: off the broker's event loop,
+            // which carries that ask.
+            tokio::task::spawn_blocking(move || {
+                delegate_nearby_transfer_command(&services, &context, &claimed_app, &command)
+            })
+            .await
+            .map_err(|error| BrokerError::failed(error.to_string()))?
+        })
     }
 
     /// Answer a Wi-Fi continuity command `claimed_app` sent, JSON both
@@ -749,12 +768,25 @@ impl JoinedChannel {
         ) {
             return awaited;
         }
-        delegate_browser_service_session_command(&self.state.services, &context, bytes).map(ready)
+        // The service may be the seat's to ask: off the broker's event loop, which carries that
+        // ask.
+        let services = self.state.services.clone();
+        let bytes = zeroize::Zeroizing::new(bytes.to_vec());
+        Ok(Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                delegate_browser_service_session_command(&services, &context, &bytes)
+            })
+            .await
+            .map_err(|error| BrokerError::failed(error.to_string()))?
+        }))
     }
 
     /// Answer a speaker-group command, JSON both ways. Only the certified
     /// Settings route manages the person's speaker groups.
-    pub(super) fn speaker_dispatch(&self, bytes: &[u8]) -> Result<Vec<u8>, BrokerError> {
+    pub(super) fn speaker_dispatch(
+        &self,
+        bytes: &[u8],
+    ) -> Result<impl Future<Output = Result<Vec<u8>, BrokerError>> + use<>, BrokerError> {
         let route = self.route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
@@ -775,17 +807,24 @@ impl JoinedChannel {
                 "speaker command is structurally invalid".into(),
             ));
         }
-        let speakers = self.state.services.speakers.as_ref().ok_or_else(|| {
+        let speakers = self.state.services.speakers.clone().ok_or_else(|| {
             BrokerError::failed("speaker groups are unsupported by this provider".into())
         })?;
-        let reply = serde_json::to_vec(&speakers.command(command))
-            .map_err(|error| BrokerError::failed(error.to_string()))?;
-        if reply.len() > runtime_collab::MAX_SPEAKER_WIRE_BYTES {
-            return Err(BrokerError::failed(
-                "speaker reply exceeds the local protocol bound".into(),
-            ));
-        }
-        Ok(reply)
+        Ok(async move {
+            // The groups are the fabric's, which may be the seat's to ask: off the broker's
+            // event loop, which carries that ask.
+            let reply = tokio::task::spawn_blocking(move || speakers.command(command))
+                .await
+                .map_err(|error| BrokerError::failed(error.to_string()))?;
+            let reply = serde_json::to_vec(&reply)
+                .map_err(|error| BrokerError::failed(error.to_string()))?;
+            if reply.len() > runtime_collab::MAX_SPEAKER_WIRE_BYTES {
+                return Err(BrokerError::failed(
+                    "speaker reply exceeds the local protocol bound".into(),
+                ));
+            }
+            Ok(reply)
+        })
     }
 
     /// Answer the app's remote-action `frame` with the frame its caller,
@@ -1640,6 +1679,7 @@ impl WireConnection {
             handle,
             asks,
             shell.services.workspaces.asked_store(),
+            Some(shell.hand_over()),
         )?;
         self.next_handle.set(handle.0.wrapping_add(1));
         self.served.borrow_mut().insert(handle, served);

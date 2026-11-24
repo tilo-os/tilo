@@ -111,9 +111,9 @@ mod published_invocation;
 mod record_changes;
 mod resolved_invocation;
 mod route_holds;
-mod router;
+pub mod seat;
 #[cfg(test)]
-mod router_tests;
+mod shell_tests;
 #[cfg_attr(
     not(test),
     allow(

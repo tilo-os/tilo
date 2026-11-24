@@ -2,7 +2,7 @@
 //! `$XDG_RUNTIME_DIR/tilo-session/api.sock`: what their own programs on this computer (the REPL,
 //! scripts, the SDKs) reach this desktop with, as them. It is the API server's own code
 //! ([`tilo_api::direct::Direct::here`]) acting as this device's key, and this session answers each
-//! workspace itself, through the broker's ordinary permission checks, as the person. Only this account's programs
+//! workspace itself, through the device's one dispatch, as the person. Only this account's programs
 //! are served: the socket sits in the login's private directory, and a connection from another
 //! account is refused.
 //!
@@ -12,13 +12,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
-
-use crate::mcp_server::{Host as SessionApi, SessionServices, person_tasks};
+use crate::mcp_server::{Dispatch, Host as SessionApi, SessionServices, person_tasks};
 
 /// This session, as the API server inside it reaches the person's workspaces.
 struct Desktop {
-    broker: Arc<AppBrokerState>,
+    dispatch: Arc<Dispatch>,
     services: Arc<SessionServices>,
 }
 
@@ -59,12 +57,8 @@ impl tilo_api::session::Here for Desktop {
         {
             return Err("no such workspace".into());
         }
-        // The socket is this login's alone, as the owner's socket is: what comes through it is
-        // the person at this device, and the broker keeps the device's certificate as the owner
-        // of each step, as it does for the person's clicks.
-        let api = SessionApi::new(Some(Arc::clone(&self.broker)), Arc::clone(&self.services))
-            .with_session_actions(self.services.actions())
-            .for_local_person();
+        let api = SessionApi::new(Some(Arc::clone(&self.dispatch)), Arc::clone(&self.services))
+            .with_session_actions(self.services.actions());
         Ok(tilo_api::session::Reached {
             provider: Arc::new(api),
             person: self.services.person().to_owned(),
@@ -74,15 +68,16 @@ impl tilo_api::session::Here for Desktop {
     }
 }
 
-/// Serve the API at `path`, over `broker`, as this device's key with its certificate. Nothing is
-/// served, saying why, when the session has no broker or this device holds no key of its own.
+/// Serve the API at `path`, over `dispatch`, the device's own as the person, as this device's key
+/// with its certificate. Nothing is served, saying why, when the session reaches no daemon or this
+/// device holds no key of its own.
 pub(crate) fn serve(
     path: &Path,
-    broker: Option<Arc<AppBrokerState>>,
+    dispatch: Option<Arc<Dispatch>>,
     services: Arc<SessionServices>,
 ) {
-    let Some(broker) = broker else {
-        tracing::warn!("no API for this computer's programs: the session serves no broker");
+    let Some(dispatch) = dispatch else {
+        tracing::warn!("no API for this computer's programs: the session reaches no daemon");
         return;
     };
     let device = crate::sync::device_identity().and_then(|identity| {
@@ -98,7 +93,7 @@ pub(crate) fn serve(
     };
     let name = cert.device_label.clone();
     let direct = match tilo_api::direct::Direct::here(
-        Arc::new(Desktop { broker, services }),
+        Arc::new(Desktop { dispatch, services }),
         key,
         cert,
         &name,

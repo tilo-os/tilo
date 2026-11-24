@@ -17,6 +17,25 @@ pub struct NativeMediaRequestContext {
 }
 
 impl NativeMediaRequestContext {
+    /// The context of a connection this device's broker admitted, as the seat answers a call the
+    /// broker forwarded to it (`crate::apps::seat`): only the broker reaches the seat, and it
+    /// checks the connection again before every call it forwards.
+    #[must_use]
+    pub fn seat_forwarded(
+        peer_id: u64,
+        app_id: String,
+        workspace_id: String,
+        document_id: String,
+    ) -> Self {
+        Self {
+            peer_id,
+            app_id,
+            workspace_id,
+            document_id,
+            revalidate: Arc::new(|| Ok(())),
+        }
+    }
+
     pub fn peer_id(&self) -> u64 {
         self.peer_id
     }
@@ -126,6 +145,33 @@ impl PeerProcess {
         };
         process.alive().then_some(process)
     }
+    /// The process a shell pinned and handed over with an app's connection (`task`), beneath the
+    /// launcher that handed the app over (`launcher`), when one did: both pidfds.
+    #[cfg(target_os = "linux")]
+    pub(super) fn handed(
+        task: std::os::fd::OwnedFd,
+        launcher: Option<std::os::fd::OwnedFd>,
+    ) -> Option<Self> {
+        let process = Self {
+            task: Arc::new(task),
+            launcher: launcher.map(Arc::new),
+        };
+        process.alive().then_some(process)
+    }
+    /// Copies of the pidfds pinning this process and its launcher: what a shell hands the
+    /// daemon with the app's connection.
+    #[cfg(target_os = "linux")]
+    pub(super) fn pidfds(
+        &self,
+    ) -> std::io::Result<(std::os::fd::OwnedFd, Option<std::os::fd::OwnedFd>)> {
+        Ok((
+            self.task.try_clone()?,
+            self.launcher
+                .as_ref()
+                .map(|launcher| launcher.try_clone())
+                .transpose()?,
+        ))
+    }
     #[cfg(target_os = "linux")]
     pub(super) fn with_executing(
         self,
@@ -176,6 +222,13 @@ impl PeerProcess {
     }
     #[cfg(not(target_os = "linux"))]
     pub(super) fn from_socket(_: &tokio::net::UnixStream) -> Option<Self> {
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn handed(
+        _: std::os::fd::OwnedFd,
+        _: Option<std::os::fd::OwnedFd>,
+    ) -> Option<Self> {
         None
     }
 
@@ -255,6 +308,19 @@ impl LocalAppConnection {
         process.and_then(|process| {
             Self::attested_keeping(handoff.app_id, handoff.workspace_id, process, launch)
         })
+    }
+    /// Copies of the pidfds pinning the app's process, and its launcher's when the launcher
+    /// handed it over: what the seat hands the daemon with the app's connection. `None` where the
+    /// kernel pins no process.
+    pub(super) fn pidfds(&self) -> Option<(std::os::fd::OwnedFd, Option<std::os::fd::OwnedFd>)> {
+        #[cfg(target_os = "linux")]
+        {
+            self.process.pidfds().ok()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
     }
     pub(super) fn current(&self) -> bool {
         self.connected.load(Ordering::Acquire) && self.process.alive()

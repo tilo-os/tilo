@@ -281,8 +281,9 @@ pub trait WifiContinuityServices: Send + Sync {
 }
 
 /// The broker-authenticated connection a Nearby Send command came from: every handle the host
-/// issues is bound to this peer and channel, never to what the caller claims.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// issues is bound to this peer and channel, never to what the caller claims. It crosses to the
+/// seat (`crate::apps::seat`) as the broker made it, and only the broker reaches the seat.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NearbyTransferRequestContext {
     peer_id: u64,
     app_id: String,
@@ -405,6 +406,17 @@ impl BrowserServiceSessionRequestContext {
             person,
             read,
         }
+    }
+    /// The context of a connection this device's broker admitted, as the seat answers a call
+    /// the broker forwarded to it (`crate::apps::seat`): the broker checked the connection's read
+    /// before it forwarded the call, and checks it again after.
+    #[must_use]
+    pub fn seat_forwarded(
+        peer_id: u64,
+        person: String,
+        read: crate::apps::collab_app_broker::NativeDocumentReadContext,
+    ) -> Self {
+        Self::authenticated(peer_id, person, read)
     }
     pub fn peer_id(&self) -> u64 {
         self.peer_id
@@ -532,6 +544,33 @@ pub struct FileClipboardContext {
     pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
 impl FileClipboardContext {
+    /// The context of a Files window this device's broker admitted, as the seat answers a
+    /// clipboard command the broker forwarded to it (`crate::apps::seat`): the broker checked the
+    /// caller for what the command needs before it forwarded it, and checks again after; the
+    /// objects Files selected came with the call, in `selected` by the numbers the command names
+    /// them by.
+    #[must_use]
+    pub fn seat_forwarded(
+        (peer, window, app_id): (u64, String, String),
+        (workspace, owner): (String, tilo_action_policy::MemberId),
+        selected: std::collections::HashMap<u32, std::fs::File>,
+    ) -> Self {
+        Self {
+            peer,
+            window,
+            app_id,
+            duplicate: Arc::new(move |descriptor| {
+                selected
+                    .get(&descriptor)
+                    .ok_or("Files did not hand over this selected descriptor")?
+                    .try_clone()
+                    .map_err(|error| error.to_string())
+            }),
+            workspace,
+            owner,
+            check: Arc::new(|_| Ok(())),
+        }
+    }
     pub fn window(&self) -> &str {
         &self.window
     }
@@ -600,8 +639,9 @@ pub trait WorkspaceGrants: Send + Sync {
     fn revoke(&self, workspace: &str, grant: &str);
 }
 
-/// The identity of an exact private Settings worker, derived by the broker.
-#[derive(Clone, Debug)]
+/// The identity of an exact private Settings worker, derived by the broker. It crosses to the seat
+/// (`crate::apps::seat`) as the broker derived it, and only the broker reaches the seat.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DisplayControlContext {
     pub(crate) workspace: String,
     pub(crate) root: [u8; 32],
@@ -801,7 +841,7 @@ pub trait DisplayControlServices: Send + Sync {
 /// Whether `app` may found a record of the resource kind `kind`.
 pub type RecordFounding = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 
-/// The shell's link to the device's daemon ([`ProcessServices::device_daemon`]), or why it has
+/// The shell's link to the device's daemon, or why it has
 /// none.
 pub type DeviceDaemon = Result<runtime_collab::ShellClient, String>;
 
@@ -907,12 +947,6 @@ pub struct ProcessServices {
     /// What the person's shell is answered with, on a connection admitted as that shell by the
     /// link the daemon handed it ([`crate::apps::shell`]); without it no connection is the shell.
     pub shell: Option<Arc<crate::apps::shell::ShellServices>>,
-    /// The person's shell's link to the device's daemon, which keeps the person's workspaces, or
-    /// why this shell has none: each app this host admits by its launch is joined at the daemon
-    /// too, on a connection the shell vouches for on that link, and its calls on its documents go
-    /// there; this host answers the rest. Where the shell has no link, an app's join is refused
-    /// saying why. Without it (the daemon's own dispatch) this host answers every call itself.
-    pub device_daemon: Option<DeviceDaemon>,
 }
 
 impl ProcessServices {
@@ -965,6 +999,5 @@ impl ProcessServices {
         "hosted_workspaces",
         "resources",
         "shell",
-        "device_daemon",
     ];
 }

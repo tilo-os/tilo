@@ -168,6 +168,21 @@ impl DescriptorStream {
         }
     }
 
+    /// A stream that carries descriptors both ways: what `sender` queues goes out with its
+    /// writes, and what the peer sends is kept in `received`.
+    #[must_use]
+    pub const fn duplex(
+        stream: UnixStream,
+        sender: DescriptorSender,
+        received: ReceivedDescriptors,
+    ) -> Self {
+        Self {
+            stream,
+            outbound: Some(sender),
+            inbound: Some(received),
+        }
+    }
+
     fn sends_descriptors(&self) -> bool {
         self.outbound.as_ref().is_some_and(|outbound| {
             outbound
