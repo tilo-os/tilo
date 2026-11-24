@@ -23,9 +23,9 @@ use tilo_actions::remote::{
     RESOURCE_PROVIDER, pending,
 };
 use tilo_actions::{ActionContext, ActionFailure, ActionInvoker, OperationKind};
-use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{RecordCall, built_in, built_in_apps, member, runs_elsewhere, with_tl_record};
+use tilo_workspace_service::workspaces::DocumentRoute;
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::providers::Reach;
 

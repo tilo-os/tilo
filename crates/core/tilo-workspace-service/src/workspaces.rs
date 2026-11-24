@@ -20,6 +20,9 @@
 mod actions;
 /// The invitation actions a member asks a workspace for, beside its `invite`.
 pub use actions::{CANCEL_INVITATION, INVITATIONS};
+/// The route a workspace's record is addressed at, as this service's record reads take it: a
+/// program answers with its app's route without naming the store's own crates.
+pub use tilo_peer_state::document_frame::DocumentRoute;
 mod admissions;
 mod admitting;
 #[cfg(feature = "agents")]
