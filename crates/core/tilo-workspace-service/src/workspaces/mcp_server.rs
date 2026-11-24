@@ -161,6 +161,9 @@ impl McpServer {
                     None => Reach::Account,
                 },
                 browser_pages: agent.cert.capabilities.browser_pages,
+                // This listing keeps no stop: a stop is the workspace's answer, held and read
+                // where the person asks the device that runs the agent.
+                stopped: false,
                 granted_ms: agent.granted_ms,
                 last_ms: Some(agent.last_ms),
                 sessions: agent

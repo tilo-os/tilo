@@ -20,7 +20,7 @@ use tilo_server_protocol::workspaces::{
 use tilo_user_identity::{AgentScope, DeviceCert};
 
 use tilo_action_policy::roles::governance;
-use tilo_action_policy::{Grantee, Role};
+use tilo_action_policy::Grantee;
 
 use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
