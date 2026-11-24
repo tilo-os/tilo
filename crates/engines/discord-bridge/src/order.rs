@@ -30,16 +30,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use discord_wire::op::{ArrangeOp, CategoryPlace, ChannelKind, ChannelPlace, DiscordOp};
+use discord_wire::op::{ArrangeOp, CategoryPlace, ChannelKind, ChannelPlace};
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Id, JsonSchema, Keyed};
+use crate::guild::{Id, Keyed};
 
 use crate::guild::{DChannel, Guild, MappedKind};
 use crate::tilo::WorkspaceChat;
 
 /// One move of Chat's sidebar into Discord's order: a category or a channel put at `at` in its
 /// list, the channel under `category` when it has one.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMove {
     /// `category` or `channel`.
     pub kind: String,
@@ -170,19 +170,19 @@ fn sort_key(id: &str, position: i64) -> (i64, usize, String) {
 /// not answered yet, or done and not all of their places seen. A failed
 /// one changed nothing.
 #[must_use]
-pub fn in_flight(guild: &Guild) -> Vec<&ArrangeOp> {
+pub fn in_flight(guild: &Guild) -> Vec<ArrangeOp> {
     guild
         .outbox
         .entries()
-        .filter_map(|(_, entry)| match &entry.value.op {
-            DiscordOp::ArrangeChannels(op) => match &entry.settled {
+        .filter_map(|(_, entry)| {
+            let op: ArrangeOp = serde_json::from_value(entry.op.get("arrange-channels")?.clone()).ok()?;
+            match &entry.settled {
                 None => Some(op),
-                Some(settled) if settled.is_done() && !shown(guild, op, &guild.channels) => {
+                Some(settled) if settled.is_done() && !shown(guild, &op, &guild.channels) => {
                     Some(op)
                 }
                 Some(_) => None,
-            },
-            _ => None,
+            }
         })
         .collect()
 }
@@ -221,15 +221,18 @@ pub fn finished(guild: &Guild, after: &Keyed<DChannel>) -> Vec<Id> {
     guild
         .outbox
         .entries()
-        .filter_map(|(id, entry)| match (&entry.value.op, &entry.settled) {
-            (DiscordOp::ArrangeChannels(op), Some(settled))
-                if !settled.is_done()
-                    || shown(guild, op, &guild.channels)
-                    || shown(guild, op, after) =>
-            {
-                Some(id.clone())
+        .filter_map(|(id, entry)| {
+            let op: ArrangeOp = serde_json::from_value(entry.op.get("arrange-channels")?.clone()).ok()?;
+            match &entry.settled {
+                Some(settled)
+                    if !settled.is_done()
+                        || shown(guild, &op, &guild.channels)
+                        || shown(guild, &op, after) =>
+                {
+                    Some(id)
+                }
+                _ => None,
             }
-            _ => None,
         })
         .collect()
 }

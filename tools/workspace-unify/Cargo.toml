@@ -266,9 +266,9 @@ doc = false
 "digest-0_11_3" = { package = "digest", version = "^0.11.3", default-features = false, features = ["alloc", "block-api", "default", "mac", "oid", "rand_core"] }
 "dirs-5_0_1" = { package = "dirs", version = "^5.0.1", default-features = false, features = [] }
 "dirs-sys-0_4_1" = { package = "dirs-sys", version = "^0.4.1", default-features = false, features = [] }
-"discord" = { path = "../../apps/discord", default-features = false, features = ["samples"] }
-"discord-wire" = { path = "../../apps/discord-model", default-features = false, features = ["resource"] }
-"discord-worker" = { path = "../../apps/discord/worker", default-features = false, features = [] }
+"discord-wire" = { path = "../../crates/engines/discord-wire", default-features = false, features = ["resource"] }
+"discord-worker" = { path = "../../crates/engines/discord-worker", default-features = false, features = [] }
+"discord-bridge" = { path = "../../crates/engines/discord-bridge", default-features = false, features = [] }
 "disk-usage" = { path = "../../apps/disk-usage", default-features = false, features = [] }
 "disk-usage-model" = { path = "../../apps/disk-usage-model", default-features = false, features = [] }
 "disk-usage-model-wasm" = { path = "../../apps/disk-usage-model-wasm", default-features = false, features = [] }
@@ -3071,9 +3071,9 @@ doc = false
 "digest-0_11_3" = { package = "digest", version = "^0.11.3", default-features = false, features = ["alloc", "block-api", "default", "mac", "oid", "rand_core"] }
 "dirs-5_0_1" = { package = "dirs", version = "^5.0.1", default-features = false, features = [] }
 "dirs-sys-0_4_1" = { package = "dirs-sys", version = "^0.4.1", default-features = false, features = [] }
-"discord" = { path = "../../apps/discord", default-features = false, features = ["samples"] }
-"discord-wire" = { path = "../../apps/discord-model", default-features = false, features = ["resource"] }
-"discord-worker" = { path = "../../apps/discord/worker", default-features = false, features = [] }
+"discord-wire" = { path = "../../crates/engines/discord-wire", default-features = false, features = ["resource"] }
+"discord-worker" = { path = "../../crates/engines/discord-worker", default-features = false, features = [] }
+"discord-bridge" = { path = "../../crates/engines/discord-bridge", default-features = false, features = [] }
 "disk-usage" = { path = "../../apps/disk-usage", default-features = false, features = [] }
 "disk-usage-model" = { path = "../../apps/disk-usage-model", default-features = false, features = [] }
 "disk-usage-model-wasm" = { path = "../../apps/disk-usage-model-wasm", default-features = false, features = [] }

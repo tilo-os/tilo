@@ -17,7 +17,7 @@
 //! reaction. A server's own emoji in a Discord message arrives as its
 //! `:name:` too ([`from_discord_text`]).
 
-use ui::tilo_resource::{custom_emoji_name, valid_custom_emoji_name};
+use tilo_resource::{custom_emoji_name, valid_custom_emoji_name};
 
 use crate::guild::{Guild, MappedKind};
 use crate::tilo::Reaction;
@@ -79,7 +79,7 @@ pub fn discord_name(name: &str) -> String {
                 '_'
             }
         })
-        .take(ui::tilo_resource::reactions::MAX_CUSTOM_NAME)
+        .take(tilo_resource::reactions::MAX_CUSTOM_NAME)
         .collect();
     while named.len() < 2 {
         named.push('_');

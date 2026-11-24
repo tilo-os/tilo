@@ -11,7 +11,7 @@ use discord_wire::op::{FetchAssetOp, InAttachment, MemberRolesOp};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, JsonSchema, MemberId};
+use tilo_resource::MemberId;
 
 use crate::guild::{Guild, MAX_FETCH_BYTES, MappedKind, Origin};
 use crate::{roles, tilo};
@@ -20,7 +20,7 @@ use crate::{roles, tilo};
 pub const MAX_AVATAR_BYTES: u64 = 1024 * 1024;
 
 /// Who a Discord-origin change is shown as (bots.md §7, `Appearance`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Appearance {
     pub name: String,
     /// The avatar's content address.
@@ -29,7 +29,7 @@ pub struct Appearance {
     pub persona: Persona,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Persona {
     pub service: String,
     pub account: String,
@@ -39,14 +39,14 @@ pub struct Persona {
 }
 
 /// Copy an avatar, then `remember-avatar(hash, result.blob)`, then plan again.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvatarFetch {
     pub op: FetchAssetOp,
     pub hash: String,
 }
 
 /// A Chat `post` with an appearance, then `map` of the new message.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostItem {
     pub channel: String,
     pub text: String,
@@ -62,21 +62,21 @@ pub struct PostItem {
 
 /// `fetch-asset`, then a Chat `post` whose attachment is the result's
 /// `/attachment`, then `map`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilePost {
     pub fetch: FetchAssetOp,
     pub post: PostItem,
 }
 
 /// A Chat `edit-message`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditItem {
     pub message: String,
     pub text: String,
 }
 
 /// A Chat `remove-message` by the bot: a Tilo message deleted in Discord.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveItem {
     pub message: String,
     pub reason: String,
@@ -84,7 +84,7 @@ pub struct RemoveItem {
 
 /// A reaction the bot relays onto a Chat message for a Discord member: Chat's `relay_reaction`,
 /// which shows it under that member's name rather than the bot's.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReactItem {
     pub message: String,
     pub emoji: String,
@@ -97,7 +97,7 @@ pub struct ReactItem {
 /// `offer-link` or `offer-sign-in`: a Discord account Discord vouched for,
 /// offered to whoever holds the token whose check this is. Empty fields
 /// are none; `interaction` is `/link`'s, `state_sha256` a sign-in's.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfferItem {
     pub check: String,
     pub discord_user: String,
@@ -109,7 +109,7 @@ pub struct OfferItem {
 }
 
 /// `rename-link`: a linked account seen under newer names or avatar.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenameItem {
     pub discord_user: String,
     pub user_name: String,
@@ -146,7 +146,7 @@ pub const MAX_LINK_PHOTO_BYTES: u64 = 32 * 1024;
 
 /// Fetch a linked account's avatar small and inline, then `set-link-photo`
 /// with it: the person's Tilo picture until they upload their own.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotoFetch {
     pub discord_user: String,
     pub avatar: String,
@@ -185,7 +185,7 @@ pub fn plan_link_photos(guild: &Guild) -> Vec<PhotoFetch> {
 }
 
 /// Everything one Discord event does in Tilo, each list one verb.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboundPlan {
     /// Run first; the rest waits for the next plan.
     pub avatars: Vec<AvatarFetch>,
@@ -617,7 +617,7 @@ pub fn plan_member(
 }
 
 /// What a reply to a slash command is edited to: the outcome, in words.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnswerItem {
     pub interaction: String,
     pub content: String,

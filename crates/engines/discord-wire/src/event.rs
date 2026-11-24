@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "resource")]
-use ui::tilo_resource::{self, JsonSchema};
+use tilo_resource::{self, JsonSchema};
 
 use crate::op::ChannelKind;
 

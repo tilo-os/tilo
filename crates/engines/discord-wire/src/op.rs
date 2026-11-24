@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "resource")]
-use ui::tilo_resource::{self, JsonSchema};
+use tilo_resource::{self, JsonSchema};
 
 /// One outbox entry: the op, plus the content-store blobs the host must publish (an
 /// author's avatar, served at a public URL) or hand to the worker (an uploaded attachment)

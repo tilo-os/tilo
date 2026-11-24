@@ -10,23 +10,23 @@
 //! simply run again. A channel whose category has no Discord counterpart yet waits for
 //! the next run, which the category's creation triggers.
 
-use discord_wire::op::{ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp, DiscordOp};
+use discord_wire::op::{ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp};
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Id, JsonSchema};
+use crate::guild::Id;
 
 use crate::guild::{DChannel, Guild, MappedKind, Mapping, Origin, Ownership};
 use crate::slug;
 use crate::tilo::{Channel, WorkspaceChat};
 
 /// Create or correct one Discord channel, then map the result as `kind`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplyItem {
     pub op: ChannelSpec,
     pub kind: MappedKind,
 }
 
 /// Forget a mapping; with `keep_apart`, neither side is bridged again.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnmapItem {
     pub kind: MappedKind,
     pub tilo: String,
@@ -34,7 +34,7 @@ pub struct UnmapItem {
 }
 
 /// Everything one reconcile run does, each list one verb.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayoutPlan {
     /// `apply-channel`, then `map` with the result.
     pub apply: Vec<ApplyItem>,
@@ -252,7 +252,9 @@ fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, workspace: &WorkspaceChat) 
 fn queued(guild: &Guild, tilo: &str) -> bool {
     guild.outbox.entries().any(|(_, entry)| {
         entry.settled.is_none()
-            && matches!(&entry.value.op, DiscordOp::ApplyChannel(op) if op.tilo == tilo)
+            && entry.op.get("apply-channel").is_some_and(|op| {
+                op.get("tilo").and_then(serde_json::Value::as_str) == Some(tilo)
+            })
     })
 }
 

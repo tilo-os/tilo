@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
     {
         let mut guild = mirroring();
         guild.ownership = Ownership::Importing;
-        guild.map = ui::tilo_resource::Keyed::new();
+        guild.map = Default::default();
         assert!(plan(&guild, &workspace_chat()).is_empty());
     }
 
@@ -278,9 +278,10 @@ tilo_test_env::scenario! {
     {
         let mut guild = mirroring();
         guild.outbox.push(
-            Id::from_raw("op1"),
-            Queued {
-                op: discord_wire::op::DiscordOp::ApplyChannel(ChannelSpec {
+            crate::guild::Id::from_raw("op1"),
+            crate::guild::Queued {
+                key: String::new(),
+                op: serde_json::json!({"apply-channel": ChannelSpec {
                     id: None,
                     tilo: "c_ideas".into(),
                     kind: ChannelKind::Text,
@@ -288,9 +289,8 @@ tilo_test_env::scenario! {
                     topic: String::new(),
                     parent: Some("d_chat".into()),
                     position: 1,
-                }),
-                publish: Vec::new(),
-                attach: Vec::new(),
+                }}),
+                settled: None,
             },
         );
         let _: Option<&DiscordResult> = None;

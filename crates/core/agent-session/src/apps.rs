@@ -74,8 +74,6 @@ pub fn component_apps() -> Vec<&'static ApplicationDefinition> {
     let mut apps = crate::web_apps::web_apps();
     // Connectors run on a workspace's host, never in a browser; the bots there
     // work on their records.
-    #[cfg(target_os = "linux")]
-    apps.push(discord::definition());
     apps
 }
 

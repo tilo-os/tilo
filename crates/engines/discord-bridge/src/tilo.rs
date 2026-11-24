@@ -8,7 +8,7 @@
 //! is what Chat's own actions take, and `id` inside a reference is the id Chat keeps.
 
 use serde_json::Value;
-use ui::tilo_resource::MemberId;
+use tilo_resource::MemberId;
 
 /// Who reacted, and with what.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -268,7 +268,7 @@ impl ChatRead {
             .get("created")
             .and_then(|created| created.get("who"))
             .and_then(|who| who.get("actor"))
-            .and_then(|actor| serde_json::from_value::<ui::tilo_actions::Actor>(actor.clone()).ok())
+            .and_then(|actor| serde_json::from_value::<tilo_actions::Actor>(actor.clone()).ok())
             .and_then(|actor| actor.member_id().cloned())?;
         Some(Message {
             id: item(row),
@@ -511,7 +511,7 @@ fn reactions(row: &Value) -> Vec<Reaction> {
             let member = actor
                 .get("actor")
                 .and_then(|actor| {
-                    serde_json::from_value::<ui::tilo_actions::Actor>(actor.clone()).ok()
+                    serde_json::from_value::<tilo_actions::Actor>(actor.clone()).ok()
                 })
                 .and_then(|actor| actor.member_id().cloned());
             out.push(Reaction {

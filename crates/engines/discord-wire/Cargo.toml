@@ -12,10 +12,10 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 # The resource-facing schema the app needs; the worker leaves it out.
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", optional = true }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 
 [features]
-resource = ["dep:ui"]
+resource = ["dep:tilo-resource"]
 
 [lints]
 workspace = true

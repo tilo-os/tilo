@@ -16,8 +16,7 @@ use discord_wire::event::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use ui::tilo_actions::Acting;
-use ui::tilo_resource::MemberId;
+use tilo_resource::{Acting, MemberId};
 
 use crate::guild::{Guild, MappedKind, Ownership};
 use crate::inbound::{self, InboundPlan};

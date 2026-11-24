@@ -301,59 +301,21 @@ tilo_test_env::scenario! {
 
     phase clearing_an_attachment_caption_queues_an_empty_discord_edit;
     {
-        use crate::guild::{guild, tests};
-
-        let mut bot = tests::connected();
-        for action in [
-            tests::map(MappedKind::Channel, &at("c1"), "d_general"),
-            tests::map(MappedKind::Webhook, &at("c1"), "wh1"),
-        ] {
-            bot.apply(action).unwrap();
-        }
+        // The app's verbs queue the edit; the planner's part is the content one carries.
+        let mut bot = guild();
+        bot.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
         let attachment = json!({"attachments": {"items": [
             {"fields": {"name": "notes.txt", "media": "text/plain", "size": 5, "blob": "tilo-blob://ff"}}
         ]}});
-        let before = chat(&[msg("m1", "u_ada", "old caption", &attachment)]);
-        let post = plan_post(&bot.state().unwrap(), &before, "m1", &context());
-        assert_eq!(post.sends.len(), 1);
-        assert_eq!(post.sends[0].op.attachments.len(), 1);
-        bot.apply(Guild::SEND.with(guild::Send {
-            op: post.sends[0].op.clone(),
-        }))
-        .unwrap();
-        bot.apply(tests::map(MappedKind::Message, &at("m1"), "dm1"))
-            .unwrap();
-
         let after = chat(&[msg("m1", "u_ada", "", &attachment)]);
-        let edits = plan_edit(&bot.state().unwrap(), &after, "m1", &context());
+        let edits = plan_edit(&bot, &after, "m1", &context());
         assert_eq!(edits.len(), 1, "clearing a caption must reach Discord");
         assert_eq!(edits[0].message, "dm1");
         assert_eq!(edits[0].content, "");
-        bot.apply(Guild::EDIT.with(guild::Edit {
-            op: edits[0].clone(),
-        }))
-        .unwrap();
-        let state = bot.state().unwrap();
-        let queued: Vec<_> = state
-            .outbox
-            .pending()
-            .filter_map(|(_, queued)| match &queued.op {
-                discord_wire::op::DiscordOp::Edit(op) => Some(op),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(queued, [&edits[0]]);
-        let mut oversized = edits[0].clone();
-        oversized.content = "x".repeat(MAX_CONTENT_CHARS + 1);
-        assert!(
-            bot.apply(Guild::EDIT.with(guild::Edit { op: oversized }))
-                .is_err(),
-            "empty captions must not relax Discord's length limit"
-        );
 
         let empty_post = chat(&[msg("m2", "u_ada", "", &json!({}))]);
         assert!(
-            plan_post(&state, &empty_post, "m2", &context())
+            plan_post(&bot, &empty_post, "m2", &context())
                 .sends
                 .is_empty(),
             "an empty new post still has nothing to send"
