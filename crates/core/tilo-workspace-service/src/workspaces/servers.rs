@@ -105,6 +105,9 @@ pub struct Server {
     pub web: String,
     /// Gigabytes of storage it offers its workspaces.
     pub storage_gb: u64,
+    /// Bytes of kept content each workspace it governs may take; 0 for the
+    /// default ([`tilo_action_policy::content::DEFAULT_WORKSPACE_BYTES`]).
+    pub kept_bytes: u64,
     /// Whether it does its workspaces' actions and jobs.
     pub compute: bool,
     /// How many Linux machines it serves its workspaces at once.
@@ -593,6 +596,25 @@ impl Servers {
         server.compute = compute;
         server.machines = machines;
         Ok(())
+    }
+
+    /// Set how many bytes of kept content a server lets each workspace it
+    /// governs take; 0 for the default.
+    #[action(external)]
+    pub fn set_kept_bytes(&mut self, device: Id, bytes: u64) -> Result<(), Refusal> {
+        self.server(&device)?.kept_bytes = bytes;
+        Ok(())
+    }
+
+    /// The bytes of kept content `device`, one of the person's servers, lets
+    /// each workspace it governs take; the default when it holds no entry or
+    /// set none.
+    #[must_use]
+    pub fn kept_bytes_of(&self, device: &[u8; 32]) -> u64 {
+        self.active(device)
+            .map(|server| server.kept_bytes)
+            .filter(|bytes| *bytes > 0)
+            .unwrap_or(tilo_action_policy::content::DEFAULT_WORKSPACE_BYTES)
     }
 
     /// Set the updates a server follows.

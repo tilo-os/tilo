@@ -14,6 +14,7 @@ tilo-servers-rename-server = Server umbenennen
 tilo-servers-hand-planned-workspace = Einem Server einen Arbeitsbereich aus seinem Plan übergeben
 tilo-servers-set-keeping = Arbeitsbereich behalten oder nicht
 tilo-servers-set-appetite = Angebot festlegen
+tilo-servers-set-kept-bytes = Festlegen, wie viele Bytes gehaltenen Inhalts es je Arbeitsbereich behält
 tilo-servers-set-updates = Die Updates festlegen, denen ein Server folgt
 tilo-servers-set-relay-url = Sagen, unter welcher Adresse sein Paket-Relay erreichbar ist
 tilo-servers-set-web = Festlegen, ob er seine Web-Oberfläche anbietet

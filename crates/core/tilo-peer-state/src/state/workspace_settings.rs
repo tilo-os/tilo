@@ -97,6 +97,9 @@ impl StatePeer {
                 let entry = entry.clone().checked().map_err(|error| error.to_string())?;
                 self.governance_mut().put_governed_entry(&entry, key, now)
             }
+            SettingsChange::Content(policy) => {
+                self.governance_mut().put_governed_content(policy, key, now)
+            }
             SettingsChange::Shortcuts(change) => self
                 .workspace_mut()
                 .apply_shortcut_change(caller, change, key, now),
@@ -155,6 +158,18 @@ impl PeerGovernance<'_> {
             .unwrap_or_default()
     }
 
+    /// The content policy the workspace's owners set, as its governance
+    /// records it: the limits its content keeps when they set none.
+    #[must_use]
+    pub fn governed_content(self) -> tilo_action_policy::ContentPolicy {
+        self.peer
+            .core
+            .workspace_doc
+            .as_deref()
+            .map(projection::workspace_content_of)
+            .unwrap_or_default()
+    }
+
     /// The grant sets the workspace has saved, as its governance records them.
     #[must_use]
     pub fn governed_presets(self) -> Vec<tilo_action_policy::Preset> {
@@ -183,6 +198,24 @@ impl PeerGovernanceMut<'_> {
     ) -> Result<bool, String> {
         self.author(key, now, |doc| {
             projection::project_workspace_entry(doc, entry).map_err(super::err)
+        })
+    }
+
+    /// Settle the workspace's content policy as `policy`, written by `key`:
+    /// the largest file a host keeps, and what one member's files may take,
+    /// now and in any hour. Answers whether governance changed.
+    ///
+    /// # Errors
+    ///
+    /// `key` is not a member's device, or governance cannot be updated.
+    pub fn put_governed_content(
+        self,
+        policy: &tilo_action_policy::ContentPolicy,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.author(key, now, |doc| {
+            projection::project_workspace_content(doc, policy).map_err(|error| error.to_string())
         })
     }
 

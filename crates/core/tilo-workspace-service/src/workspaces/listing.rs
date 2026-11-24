@@ -275,6 +275,63 @@ impl Workspaces {
         Ok(entry)
     }
 
+    /// The content policy `workspace`'s governance records here now: the
+    /// largest file a host keeps, and what one member's files may take, now
+    /// and in any hour. The defaults when its owners set none. `None` when this
+    /// host does not govern the workspace.
+    pub async fn content_policy(
+        &self,
+        workspace: &str,
+    ) -> Option<tilo_action_policy::ContentPolicy> {
+        let governed = self.workspace(workspace).await.ok()?;
+        let governed = governed.lock().await;
+        Some(governed.peer().governance().governed_content())
+    }
+
+    /// Settle `workspace`'s content policy as `policy`, as `device`: the
+    /// workspace's governance must let its person change its settings
+    /// ([`governance::SETTINGS`]). Answers the policy the workspace now
+    /// records, which every host of it obeys.
+    ///
+    /// # Errors
+    ///
+    /// Returns why `device` may not change the workspace's settings, or why
+    /// the change could not be kept.
+    pub async fn settle_content_policy(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        policy: tilo_action_policy::ContentPolicy,
+    ) -> Result<tilo_action_policy::ContentPolicy, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        let key = self.inner.host.key.clone();
+        let state = self.workspace(workspace).await?;
+        let mut governed = state.lock().await;
+        self.authorize(
+            device,
+            Some(&governed),
+            WorkspaceOp::Govern(governance::SETTINGS),
+            now,
+        )?;
+        if governed.peer().governance().governed_content() == policy {
+            return Ok(policy);
+        }
+        let digest = request_digest(&("the workspace's content policy", &policy))
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        self.administer(
+            &mut governed,
+            rand::random(),
+            digest,
+            |peer| {
+                peer.governance_mut()
+                    .put_governed_content(&policy, &key, super::system_time(now))
+            },
+            now,
+        )
+        .await?;
+        Ok(policy)
+    }
+
     /// Make `workspace` public with `listing`, as `device` asks: the workspace's
     /// governance must let its person change the workspace's settings.
     pub async fn publish(
@@ -1129,6 +1186,75 @@ pub(crate) mod entry_tests {
             ),
             "the default is read at the entry, not when the listing was first made"
         );
+        server.shutdown().await;
+    }
+
+    /// The workspace's owners set what members may post through its action,
+    /// every member reads it there, and every host of the workspace obeys it.
+    #[tokio::test]
+    async fn the_owners_set_what_members_may_post_and_the_host_keeps_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let summary = workspaces.create("Lobby").await.unwrap();
+        let workspace = summary.workspace.clone();
+
+        let policy = govern(
+            workspaces,
+            summary.workspace_id,
+            &owner,
+            invocation(
+                &workspace,
+                super::super::actions::SET_CONTENT_POLICY,
+                serde_json::json!({
+                    "file_bytes": 4_096,
+                    "member_bytes": 8_192,
+                    "hourly_bytes": 16_384,
+                }),
+            ),
+        )
+        .await;
+        let wanted = tilo_action_policy::ContentPolicy {
+            file_bytes: 4_096,
+            member_bytes: 8_192,
+            hourly_bytes: 16_384,
+        };
+        assert_eq!(policy["file_bytes"], 4_096);
+        assert_eq!(policy["member_bytes"], 8_192);
+        assert_eq!(policy["hourly_bytes"], 16_384);
+
+        // A read is the policy the workspace records, and what a host keeping
+        // its content answers from.
+        let read = govern(
+            workspaces,
+            summary.workspace_id,
+            &owner,
+            invocation(
+                &workspace,
+                super::super::actions::CONTENT_POLICY,
+                serde_json::json!({}),
+            ),
+        )
+        .await;
+        assert_eq!(read, policy);
+        assert_eq!(workspaces.content_policy(&workspace).await, Some(wanted));
+
+        // A value left out stays as it is: the owners raise one limit only.
+        let raised = govern(
+            workspaces,
+            summary.workspace_id,
+            &owner,
+            invocation(
+                &workspace,
+                super::super::actions::SET_CONTENT_POLICY,
+                serde_json::json!({ "member_bytes": 65_536 }),
+            ),
+        )
+        .await;
+        assert_eq!(raised["file_bytes"], 4_096);
+        assert_eq!(raised["member_bytes"], 65_536);
+        assert_eq!(raised["hourly_bytes"], 16_384);
         server.shutdown().await;
     }
 

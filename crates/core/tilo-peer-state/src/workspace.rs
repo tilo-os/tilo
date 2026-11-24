@@ -318,7 +318,7 @@ fn held_bytes(value: &Value<'_>) -> Vec<u8> {
 /// writes is a change too.
 fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
     use tilo_desktop_model::projection::{
-        WORKSPACE_ENTRY_KEY, WORKSPACE_NAME_KEY, WORKSPACE_PRESETS_KEY,
+        WORKSPACE_CONTENT_KEY, WORKSPACE_ENTRY_KEY, WORKSPACE_NAME_KEY, WORKSPACE_PRESETS_KEY,
     };
     let Some(doc) = doc else {
         return Vec::new();
@@ -328,6 +328,7 @@ fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
         WORKSPACE_NAME_KEY,
         WORKSPACE_PRESETS_KEY,
         WORKSPACE_ENTRY_KEY,
+        WORKSPACE_CONTENT_KEY,
     ] {
         let Some((value, obj)) = doc.get(ROOT, key).ok().flatten() else {
             continue;

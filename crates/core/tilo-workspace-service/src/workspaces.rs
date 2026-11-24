@@ -68,7 +68,7 @@ mod surfaces_tests;
 pub mod terminal;
 #[cfg(all(test, feature = "agents"))]
 mod terminal_tests;
-pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
+pub use content::{ContentKeeper, ContentRefusal, WholeDocuments, WorkspaceContent};
 pub(crate) mod device_actions;
 mod follow;
 mod founding;

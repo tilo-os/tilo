@@ -40,6 +40,29 @@ pub trait WorkspaceContent: Send + Sync {
     fn read(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>>;
 }
 
+/// Content a host stopped keeping because a limit said so: what the member
+/// who posted it reads, naming the limit and who can raise it. The record
+/// itself is untouched: it syncs between the members' devices as any does.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ContentRefusal {
+    /// The app and record whose content it is.
+    pub app: String,
+    pub record: String,
+    /// The content's address, lowercase BLAKE3 hex.
+    pub hash: String,
+    /// The device that posted it, lowercase hex.
+    pub member: String,
+    /// How many bytes it is.
+    pub bytes: u64,
+    /// The limit it went over, and what that limit allowed.
+    pub limit: tilo_action_policy::ContentLimit,
+    pub allowed: u64,
+    /// Who can raise the limit, in the person's words.
+    pub raise: String,
+    /// When it was refused, milliseconds since the Unix epoch.
+    pub at_ms: u64,
+}
+
 /// Where content members answer the host with goes.
 pub trait ContentKeeper: Send + Sync {
     /// `frame`, a `NeighbourMsg::DocumentContentPiece` the member device
@@ -67,6 +90,17 @@ pub trait ContentKeeper: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + 'a>> {
         let _ = (workspace, waiting, beside);
         Box::pin(std::future::ready(0))
+    }
+
+    /// The content of `workspace` this keeper stopped keeping because a limit
+    /// said so: what the member who posted it reads, naming the limit and who
+    /// can raise it.
+    fn refused<'a>(
+        &'a self,
+        workspace: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<ContentRefusal>> + Send + 'a>> {
+        let _ = workspace;
+        Box::pin(std::future::ready(Vec::new()))
     }
 
     /// The addresses of the content the resources of `workspace` that open
@@ -550,6 +584,17 @@ impl Workspaces {
             lacking = lacking.saturating_add(keeping.lacks(workspace, waiting, beside).await);
         }
         lacking
+    }
+
+    /// The content of `workspace` this host stopped keeping because a limit
+    /// said so: each refusal names the limit, what it allowed, and who can
+    /// raise it, so the member who posted it reads why.
+    pub async fn content_refused(&self, workspace: &str) -> Vec<ContentRefusal> {
+        let mut refused = Vec::new();
+        for keeping in self.inner.content.keepers() {
+            refused.extend(keeping.refused(workspace).await);
+        }
+        refused
     }
 
     /// The addresses of the content the resources of `workspace` that open

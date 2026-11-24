@@ -58,6 +58,9 @@ pub const WORKSPACE_SANDBOX_KEY: &str = "sandbox";
 /// Key of the workspace's entry policy: whether a directory lists it, and
 /// whom it admits (JSON bytes, [`tilo_action_policy::EntryPolicy`]).
 pub const WORKSPACE_ENTRY_KEY: &str = "entry_v1";
+/// Key of the workspace's content policy: the limits its owners set on what
+/// members post there (JSON bytes, [`tilo_action_policy::ContentPolicy`]).
+pub const WORKSPACE_CONTENT_KEY: &str = "content_policy_v1";
 
 /// The map a workspace is founded with at `key`, or why this document is not
 /// one: a map that devices write their own rows into exists once, from the
@@ -238,6 +241,45 @@ pub fn workspace_entry_of(doc: &AutoCommit) -> tilo_action_policy::EntryPolicy {
     match scalar.as_ref() {
         ScalarValue::Bytes(bytes) => serde_json::from_slice(bytes).unwrap_or_default(),
         _ => tilo_action_policy::EntryPolicy::default(),
+    }
+}
+
+/// Project the workspace's content policy: the limits its owners set on what
+/// members post there.
+///
+/// # Errors
+///
+/// The document's error when the value cannot be written.
+pub fn project_workspace_content(
+    doc: &mut AutoCommit,
+    policy: &tilo_action_policy::ContentPolicy,
+) -> Result<(), automerge::AutomergeError> {
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+    let bytes = serde_json::to_vec(policy).unwrap_or_default();
+    let held = doc.get(&ROOT, WORKSPACE_CONTENT_KEY)?;
+    if let Some((Value::Scalar(value), _)) = held
+        && value.as_ref() == &ScalarValue::Bytes(bytes.clone())
+    {
+        return Ok(());
+    }
+    doc.put(&ROOT, WORKSPACE_CONTENT_KEY, ScalarValue::Bytes(bytes))
+}
+
+/// The content policy a workspace document records: the limits the content
+/// keeps when its owners set none ([`tilo_action_policy::ContentPolicy::default`]).
+pub fn workspace_content_of(doc: &AutoCommit) -> tilo_action_policy::ContentPolicy {
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+    let Some((value, _)) = doc.get(&ROOT, WORKSPACE_CONTENT_KEY).ok().flatten() else {
+        return tilo_action_policy::ContentPolicy::default();
+    };
+    let Value::Scalar(scalar) = value else {
+        return tilo_action_policy::ContentPolicy::default();
+    };
+    match scalar.as_ref() {
+        ScalarValue::Bytes(bytes) => serde_json::from_slice(bytes).unwrap_or_default(),
+        _ => tilo_action_policy::ContentPolicy::default(),
     }
 }
 

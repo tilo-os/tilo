@@ -14,6 +14,7 @@ tilo-servers-rename-server = Rename server
 tilo-servers-hand-planned-workspace = Hand a server a workspace its plan names
 tilo-servers-set-keeping = Keep a workspace or not
 tilo-servers-set-appetite = Set what it offers
+tilo-servers-set-kept-bytes = Set how many bytes of kept content it keeps for each workspace
 tilo-servers-set-updates = Set the updates a server follows
 tilo-servers-set-relay-url = Say where its packet relay is reached
 tilo-servers-set-web = Set whether it serves its web UI

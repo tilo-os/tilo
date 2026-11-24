@@ -164,6 +164,16 @@ pub(crate) const CONTENT_HELD: &str = "content.held";
 /// What checks choosing the workspace's servers: its owners', which no grant
 /// of its governance gives ([`Workspaces::chooses_servers`]).
 const CHOOSES_SERVERS: &str = "choose-servers";
+/// The limits the workspace's owners set on what members post there: the
+/// largest file a host keeps, and what one member's files may take, now and in
+/// any hour. Every member reads them, as what their posts may take.
+pub(crate) const CONTENT_POLICY: &str = "content.policy";
+/// Settling the workspace's content policy: its owners'.
+pub(crate) const SET_CONTENT_POLICY: &str = "content.set-policy";
+/// The content this host stopped keeping because a limit said so: each
+/// refusal names the limit and who can raise it, so the member who posted it
+/// reads why.
+pub(crate) const CONTENT_REFUSED: &str = "content.refused";
 /// Listing the workspace as a public workspace, with its description and the
 /// role everyone who joins gets.
 pub(crate) const PUBLISH: &str = "publish";
@@ -246,7 +256,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 48] = [
+const VERBS: [Verb; 51] = [
     Verb {
         id: WORKSPACE_INVITE,
         label: "Invite",
@@ -356,6 +366,30 @@ const VERBS: [Verb; 48] = [
         id: CONTENT_HELD,
         label: "Count the content still only on members' devices",
         check: CHOOSES_SERVERS,
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: CONTENT_POLICY,
+        label: "What members may post here",
+        // Every member posts there, so every member reads what a post may take.
+        check: "",
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: SET_CONTENT_POLICY,
+        label: "Set what members may post here",
+        check: governance::SETTINGS,
+        kind: roles::GOVERNANCE_KIND,
+        params: content_policy_params,
+    },
+    Verb {
+        id: CONTENT_REFUSED,
+        label: "The content this server stopped keeping, and why",
+        // The refusal is the poster's to read: reaching the workspace is the
+        // check, as reading the copies it keeps is.
+        check: "",
         kind: ActionKind::Read,
         params: Vec::new,
     },
@@ -729,6 +763,37 @@ fn rename_params() -> Vec<ActionParam> {
 
 fn person_params() -> Vec<ActionParam> {
     vec![person_param()]
+}
+
+/// A workspace's content policy as its reading and its settling answer it.
+fn content_policy_json(policy: &tilo_action_policy::ContentPolicy) -> Value {
+    json!({
+        "file_bytes": policy.file_bytes,
+        "member_bytes": policy.member_bytes,
+        "hourly_bytes": policy.hourly_bytes,
+    })
+}
+
+/// The limits a workspace's owners set on what members post there, each one
+/// left out staying as it is.
+fn content_policy_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::optional(
+            "file_bytes",
+            ParamType::Integer,
+            "The largest file a host keeps; a larger one stays with the member who posted it.",
+        ),
+        ActionParam::optional(
+            "member_bytes",
+            ParamType::Integer,
+            "What one member's files may take in the workspace together.",
+        ),
+        ActionParam::optional(
+            "hourly_bytes",
+            ParamType::Integer,
+            "What one member's files may take in the workspace in any hour.",
+        ),
+    ]
 }
 
 /// What a call's moderator does to it.
@@ -2337,6 +2402,11 @@ impl Workspaces {
             }
             ADD_MEMBER => self.governance_add_member(call).await,
             CONTENT_HELD => Ok(self.content_held(call.workspace).await),
+            CONTENT_POLICY | SET_CONTENT_POLICY => self.governance_content_policy(call).await,
+            CONTENT_REFUSED => Ok(json!({
+                "workspace": call.workspace,
+                "refused": self.content_refused(call.workspace).await,
+            })),
             READ_COPIES => self.read_copies(call.workspace).await,
             SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER | SET_COPIES => {
                 self.governance_hosts(action, call).await
@@ -3337,6 +3407,44 @@ impl Workspaces {
             .await;
         let named = self.content_named(workspace).await;
         json!({ "workspace": workspace, "lacking": lacking, "named": named })
+    }
+
+    /// The workspace's content policy: the largest file a host keeps, and what
+    /// one member's files may take, now and in any hour. `content.set-policy`
+    /// settles it as the person who may change the workspace's settings gives
+    /// the values it names; one left out stays as it is. Answers the policy the
+    /// workspace now records, which every host of it obeys.
+    async fn governance_content_policy(
+        &self,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionCallError> {
+        let workspace = call.workspace;
+        let current = self
+            .content_policy(workspace)
+            .await
+            .ok_or(ActionCallError::UnknownAction)?;
+        if call.args.0.is_empty() {
+            return Ok(content_policy_json(&current));
+        }
+        let policy = tilo_action_policy::ContentPolicy {
+            file_bytes: call
+                .args
+                .integer("file_bytes")?
+                .unwrap_or(current.file_bytes),
+            member_bytes: call
+                .args
+                .integer("member_bytes")?
+                .unwrap_or(current.member_bytes),
+            hourly_bytes: call
+                .args
+                .integer("hourly_bytes")?
+                .unwrap_or(current.hourly_bytes),
+        };
+        let settled = self
+            .settle_content_policy(workspace, call.device, policy)
+            .await
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        Ok(content_policy_json(&settled))
     }
 
     /// [`Self::read_copies`] of `workspace`, asked from a session in another workspace by

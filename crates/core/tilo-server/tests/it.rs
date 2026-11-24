@@ -51,6 +51,8 @@ mod holder_copies;
 mod hosted_browser;
 #[path = "hosting_member.rs"]
 mod hosting_member;
+#[path = "kept_limits.rs"]
+mod kept_limits;
 #[path = "member_copy.rs"]
 mod member_copy;
 #[cfg(target_os = "linux")]

@@ -419,6 +419,10 @@ pub enum SettingsChange {
     /// takes people by invitation only, and how many requests it keeps
     /// ([`tilo_action_policy::EntryPolicy`]).
     Entry(tilo_action_policy::EntryPolicy),
+    /// Settle the workspace's content policy: the largest file a host keeps,
+    /// and what one member's files may take, now and in any hour
+    /// ([`tilo_action_policy::ContentPolicy`]).
+    Content(tilo_action_policy::ContentPolicy),
 }
 
 /// The name a workspace is founded with, trimmed: none, which every reader
@@ -537,6 +541,7 @@ impl WorkspaceMembershipCommand {
                 // against what the broker offers its saver, held to the proof
                 // of who saved it that its workspace's admission asks for.
                 SettingsChange::AssignPreset { .. }
+                | SettingsChange::Content(_)
                 | SettingsChange::GrantSandbox { .. }
                 | SettingsChange::RevokeSandbox { .. }
                 | SettingsChange::Shortcuts(_) => Ok(()),
