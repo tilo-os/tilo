@@ -327,7 +327,6 @@ pub(crate) mod tests {
     pub(crate) struct Fixture {
         identity_dir: PathBuf,
         paths: IdentityPaths,
-        pub(crate) identity_id: String,
         pub(crate) user_public_key: [u8; 32],
         pub(crate) workspace: String,
         _env: tilo_test_env::ScopedEnv,
@@ -358,7 +357,6 @@ pub(crate) mod tests {
             let fixture = Self {
                 identity_dir,
                 paths,
-                identity_id: profile.id,
                 user_public_key: profile.user_public_key,
                 workspace,
                 _env: env,
@@ -416,13 +414,6 @@ pub(crate) mod tests {
                     .expect("a time ten seconds ago"),
             )
             .expect("date identity file back");
-    }
-
-    pub(crate) fn proof_issued_at(fixture: &Fixture) -> u64 {
-        trusted_current_join_proof(&fixture.workspace)
-            .expect("trusted device")
-            .certificate
-            .issued_at_ns
     }
 
     tilo_test_env::scenario! {
