@@ -30,6 +30,7 @@
 //! ([`Opened::open_with`]). The caller names the member it acts as; code on this device that
 //! calls here is the device's own.
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
@@ -177,6 +178,24 @@ impl Packages {
                 Some((package.meta.app.clone(), bytes))
             })
             .collect()
+    }
+
+    /// The name of each field of the type `ty` one of the packages declares, by the id the
+    /// record keeps it under: how a value the record holds whole is read by its names.
+    #[must_use]
+    pub fn field_names(&self, ty: &str) -> BTreeMap<String, String> {
+        self.0
+            .iter()
+            .flat_map(|package| &package.meta.types)
+            .find(|declared| declared.name == ty)
+            .map(|declared| {
+                declared
+                    .fields
+                    .iter()
+                    .map(|field| (field.id.clone(), field.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The name the app publishes the action whose declaration id is `id`: what a change it made

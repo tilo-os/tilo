@@ -82,6 +82,10 @@ pub(super) struct Resources {
     /// ([`collab_types::app_surface::Surfaces::registered`]).
     #[cfg(any(feature = "apps", feature = "agents"))]
     declared: u64,
+    /// Whom a resource's people field names reads it as, by the workspace's policy as this
+    /// device last read it: the store places reader sets by it.
+    #[cfg(any(feature = "apps", feature = "agents"))]
+    readers: Option<std::sync::Arc<PolicyReaders>>,
     /// The queries apps hold open, by the store's watch of their kind.
     #[cfg(feature = "apps")]
     opened: BTreeMap<u64, Opened>,
@@ -92,6 +96,68 @@ pub(super) struct Resources {
     live: Option<(crate::live::LiveRows, String)>,
     /// The store's [`Store::live_revision`] the rows were last shown at.
     live_shown: Option<u64>,
+}
+
+/// The workspace's one read decision, for the store of the workspace: a person reads as
+/// themselves, an agent of the member list as the person it acts for where its preset, narrowed
+/// to that person's reach, reads the resource, and anyone else reads none of it.
+#[cfg(any(feature = "apps", feature = "agents"))]
+struct PolicyReaders(std::sync::RwLock<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>);
+
+#[cfg(any(feature = "apps", feature = "agents"))]
+impl PolicyReaders {
+    fn follow(&self, policy: std::sync::Arc<tilo_action_policy::WorkspacePolicy>) {
+        *self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
+    }
+}
+
+#[cfg(any(feature = "apps", feature = "agents"))]
+impl tilo_resource_store::RecordReader for PolicyReaders {
+    fn reader_of(
+        &self,
+        actor: &tilo_actions::Actor,
+        kind: &str,
+        id: &str,
+    ) -> Option<tilo_action_policy::PersonId> {
+        use tilo_action_policy::{
+            Acting, ActionKind, Answer, Authority as Policy, Context, MemberId, TreePath,
+        };
+        let policy = self
+            .0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match actor.member_id()? {
+            MemberId::Person(person) => Some(person.clone()),
+            MemberId::Agent(agent) => {
+                let member = policy.agents.get(agent.as_str())?;
+                let workspace = TreePath::workspace(&policy.workspace);
+                // A tilolang record's kind names its app: `tl.<app>.<Type>`.
+                let node = kind
+                    .strip_prefix("tl.")
+                    .and_then(|rest| rest.rsplit_once('.'))
+                    .map_or_else(
+                        || workspace.clone(),
+                        |(app, _)| workspace.app(app).kind(kind).resource(id.to_owned()),
+                    );
+                let acting = Acting::handed_agent(agent.as_str(), member.for_person.as_str());
+                let preset = acting.handed_preset(&policy.workspace);
+                let reads = Policy::of_acting(&acting, &policy, &preset)
+                    .decide(
+                        &node,
+                        ActionKind::Read,
+                        &Context::at_time(tilo_clock::wall()),
+                    )
+                    .answer
+                    == Answer::Allow;
+                reads.then(|| tilo_action_policy::PersonId::from(member.for_person.as_str()))
+            }
+            MemberId::Bot(_) => None,
+        }
+    }
 }
 
 /// A query an app holds open: whenever a change makes what its page shows different, the page
@@ -159,6 +225,8 @@ impl Resources {
             unsnapshotted,
             #[cfg(any(feature = "apps", feature = "agents"))]
             declared: 0,
+            #[cfg(any(feature = "apps", feature = "agents"))]
+            readers: None,
             #[cfg(feature = "apps")]
             opened: BTreeMap::new(),
             workspace: id.to_string(),
@@ -225,6 +293,19 @@ impl Resources {
         self.store
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Place the reader sets the store writes by `policy` from now on: an agent a resource's
+    /// people field names reads it as its person, where the policy lets it read the resource.
+    #[cfg(any(feature = "apps", feature = "agents"))]
+    fn follow_policy(&mut self, policy: std::sync::Arc<tilo_action_policy::WorkspacePolicy>) {
+        if let Some(readers) = &self.readers {
+            readers.follow(policy);
+            return;
+        }
+        let readers = std::sync::Arc::new(PolicyReaders(std::sync::RwLock::new(policy)));
+        self.store_mut().set_record_reader(readers.clone());
+        self.readers = Some(readers);
     }
 
     /// The reader set the store knows `doc` by.
@@ -1533,6 +1614,12 @@ impl Workspaces {
             governed
                 .resources
                 .show_live(rows, hex::encode(device.cert.user_public_key));
+        }
+        if let Ok(permissions) = governed
+            .peer()
+            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+        {
+            governed.resources.follow_policy(permissions.policy.clone());
         }
         governed.store_with_surfaces(&self.inner.host.surfaces)
     }

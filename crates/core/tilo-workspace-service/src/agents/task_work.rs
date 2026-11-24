@@ -138,7 +138,14 @@ impl Work {
     /// refers to (its id, or a reference as tilolang writes one). The default where the task
     /// keeps none.
     async fn where_kept(workspaces: &Workspaces, workspace: &str, held: Option<&Value>) -> Self {
-        match unwrapped(held.cloned()) {
+        // A value the record holds whole comes as its JSON form: `{"json": …}`.
+        let held = held.cloned().map(|held| match held {
+            Value::Object(mut wrapped) if wrapped.len() == 1 && wrapped.contains_key("json") => {
+                wrapped.remove("json").unwrap_or_default()
+            }
+            other => other,
+        });
+        match unwrapped(held) {
             Some(Value::String(id)) if !id.is_empty() => Self::at(workspaces, workspace, &id).await,
             Some(Value::Object(record)) => match record.get("ref").and_then(Value::as_str) {
                 Some(id) => Self::at(workspaces, workspace, id).await,
@@ -160,8 +167,18 @@ impl Work {
             .unwrap_or_default()
     }
 
-    /// The work a record held in its holder keeps, by the field names Tasks gives them.
+    /// The work a record held in its holder keeps, by the field names Tasks gives them: a field
+    /// kept under its declaration's id is read by its name.
     fn held(fields: &Map<String, Value>) -> Self {
+        let names = crate::tl_records::built_in(TASKS)
+            .expect("the packages built into this build compile")
+            .map(|packages| packages.field_names("Work"))
+            .unwrap_or_default();
+        let fields: Map<String, Value> = fields
+            .iter()
+            .map(|(key, value)| (names.get(key).unwrap_or(key).clone(), value.clone()))
+            .collect();
+        let fields = &fields;
         let number = |field: &str| {
             fields
                 .get(field)
