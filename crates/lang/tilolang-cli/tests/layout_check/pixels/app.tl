@@ -1,7 +1,7 @@
 app so.tilo.lang.layoutpixels "Pixel edges" (icon: .layout_grid, category: .utility)
 
 /// A sample whose views are sized in fractions of a rem, so its edges fall between pixels unless
-/// layout snaps them, for `tilolang layout-check`.
+/// layout snaps them, for `tilo-layout-check`.
 type Sample {
     name: Text
 }

@@ -3,7 +3,7 @@
 //! window ([`tilo_app_window::AppWindow`]), which the toolkit's frame pipeline lays out
 //! ([`ui::headless::FrameHarness`]). Nothing is rasterised and no GPU is opened.
 //!
-//! `tilolang layout-check` lays these windows out to check them, and a browser page
+//! `tilo-layout-check` lays these windows out to check them, and a browser page
 //! (`tilolang-web`) writes them as HTML: one way to open a window, one exchange between it and its
 //! instance, one platform ([`Packages`]) under both.
 

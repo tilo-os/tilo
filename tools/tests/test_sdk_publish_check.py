@@ -375,6 +375,35 @@ class EmbeddedTests(unittest.TestCase):
             self.assertIn("apps/none.bin", rewritten, "a missing file is left for the build to name")
             self.assertEqual(check.carry_embedded(crate, tree), [], "carried once")
 
+    def test_a_directory_a_concat_path_starts_with_is_carried_whole_under_names_cargo_keeps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            crate = tree / "crates/example"
+            (crate / "src").mkdir(parents=True)
+            (tree / "examples/apps/counter/src").mkdir(parents=True)
+            (tree / "examples/apps/counter/src/lib.rs").write_text("// counter\n")
+            (tree / "examples/apps/counter/Cargo.toml").write_text("[package]\n")
+            (tree / ".cargo").mkdir()
+            (tree / ".cargo/config.toml").write_text("[build]\n")
+            (crate / "src/lib.rs").write_text(
+                'const FILES: &str = include_str!(concat!("../../../examples/apps/", "counter", '
+                '"/src/lib.rs"));\n'
+                'const CONFIG: &str = include_str!("../../../.cargo/config.toml");\n')
+            self.assertEqual(check.carry_embedded(crate, tree), [
+                ".cargo/config.toml", "examples/apps/counter/Cargo.toml",
+                "examples/apps/counter/src/lib.rs"])
+            carried = crate / "published-files"
+            self.assertEqual((carried / "examples/apps/counter/src/lib.rs").read_text(), "// counter\n")
+            # A Cargo.toml would make cargo leave the directory out of the package, and it leaves
+            # hidden files out too.
+            self.assertTrue((carried / "examples/apps/counter/Cargo.toml.embedded").is_file())
+            self.assertFalse((carried / "examples/apps/counter/Cargo.toml").exists())
+            rewritten = (crate / "src/lib.rs").read_text()
+            self.assertIn('include_str!(concat!("../published-files/examples/apps/", "counter"',
+                          rewritten)
+            self.assertIn('include_str!("../published-files/dot.cargo/config.toml")', rewritten)
+            self.assertEqual(check.carry_embedded(crate, tree), [], "carried once")
+
 
 class OversizeTests(unittest.TestCase):
     def test_a_package_over_the_limit_names_its_biggest_files(self):

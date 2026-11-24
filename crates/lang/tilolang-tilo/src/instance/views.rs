@@ -199,7 +199,7 @@ impl Instance {
     /// Show `resource` in the detail level with the view `view` (an id) rather than its type's
     /// window: what `open(r, with: v)` asks for, for a view the system shows on a surface of
     /// its own (a row view as a search result, a proposal view in its card), which
-    /// `tilolang layout-check` lays out as it lays out a window.
+    /// `tilo-layout-check` lays out as it lays out a window.
     pub fn open_with(&mut self, resource: &ui::ResourceRef, view: &str) {
         if let Some(target) = wire::runtime_resource(resource) {
             self.open_detail(&target, Some(view), None);

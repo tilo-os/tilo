@@ -5,7 +5,7 @@ use so.tilo.tasks as tasks
 /// Scenarios: the shell as people meet it, in the states its views are for. Each fills
 /// the layout's own fields (the ones the session writes, which a scenario may set) and the
 /// resources the session's origin carries, so every surface is staged as a screenshot and laid
-/// out by `tilolang layout-check` with nothing running.
+/// out by `tilo-layout-check` with nothing running.
 ///
 /// They are seed data for shots, tests and benchmarks, never a person's: a real first launch
 /// starts empty. They stage the places over notes and chat documents, which is why only they use

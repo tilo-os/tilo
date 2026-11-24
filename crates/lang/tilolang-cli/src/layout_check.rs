@@ -1,4 +1,4 @@
-//! `tilolang layout-check` (docs/designs/app-language/layout.md, "Checking"): every view of an
+//! `tilo-layout-check` (docs/designs/app-language/layout.md, "Checking"): every view of an
 //! app, staged from each of its scenarios, laid out headlessly through the app window's path at
 //! the sizes, display scales and text scales people use, and what is wrong with each layout
 //! reported at the view's node in its source.

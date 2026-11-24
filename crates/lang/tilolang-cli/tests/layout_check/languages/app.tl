@@ -1,7 +1,7 @@
 app so.tilo.lang.layoutlanguages "Layout languages" (icon: .layout_grid, category: .utility)
 
 /// A sample whose words ship in two languages, one of them short a message, for the check that
-/// a window reads in one language throughout (`tilolang layout-check --locale`).
+/// a window reads in one language throughout (`tilo-layout-check --locale`).
 type Sample {
     name: Text
 }

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license.workspace = true
-description = "`tilolang layout-check` as Tilo's own checks run it over the apps in apps/tl: with the sample data the Mail and Tube apps' outside services hold."
+description = "The layout check Tilo's own checks run over the apps in apps/tl: with the sample data the Mail and Tube apps' outside services hold."
 
 [[bin]]
 name = "tilo-layout-check"

@@ -18,7 +18,7 @@ tilolang-runtime = { version = "0.1.0", path = "../tilolang-runtime", default-fe
 # The platform's packages and the native apps' surfaces a package compiles against, and the
 # links a window's resources mint.
 tilolang-tilo = { version = "0.1.0", path = "../tilolang-tilo" }
-# The window `tilolang layout-check` lays out: an app's instance staged with a scenario, its
+# The window `tilo-layout-check` lays out: an app's instance staged with a scenario, its
 # views laid out by the toolkit.
 tilolang-window = { version = "0.1.0", path = "../tilolang-window" }
 # The page a laid-out window is written as, and the code editor's colours for tilolang.

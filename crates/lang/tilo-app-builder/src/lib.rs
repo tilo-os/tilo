@@ -8745,11 +8745,14 @@ fn create_app_interactive_from(
     if choose_sdk && interactive {
         prompt_sdk(current_dir, &mut request, input, output)?;
     }
-    let toolkit = match request.sdk_request() {
-        SdkRequest::Git { url, rev } => git_sdk_source(url, rev).describe(),
+    let asked = match request.sdk_request() {
         SdkRequest::Discover if discover_ui_dir(current_dir, repo.as_deref()).is_none() => {
-            git_sdk_source(None, None).describe()
+            sdk_without_checkout()
         }
+        asked => asked,
+    };
+    let toolkit = match asked {
+        SdkRequest::Git { url, rev } => git_sdk_source(url, rev).describe(),
         SdkRequest::Registry(version) => standalone::SdkSource::Registry {
             version: version
                 .or_else(|| {
@@ -8805,9 +8808,13 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("an app name is required"))?;
     validate_package_name(package_name)?;
-    let sdk_request = request.sdk_request();
-
     let repo = find_repo_root(current_dir);
+    let sdk_request = match request.sdk_request() {
+        SdkRequest::Discover if discover_ui_dir(current_dir, repo.as_deref()).is_none() => {
+            sdk_without_checkout()
+        }
+        asked => asked,
+    };
     let destination = new_app_destination(
         current_dir,
         repo.as_deref(),
@@ -8986,6 +8993,21 @@ fn resolve_standalone_sdk(
         source: git_sdk_source(url, rev),
         baseline: standalone::Baseline::embedded()?,
     })
+}
+
+/// What an app builds against when no checkout is around it, this CLI or `TILO_UI_PATH`: a released
+/// `tilolang` (one built for a release, or from its published package, which carries no commit)
+/// puts it on the published SDK of its release; any other on the Tilo repository at the commit it
+/// came from.
+fn sdk_without_checkout() -> SdkRequest {
+    match standalone::RELEASE {
+        Some(version) => SdkRequest::Registry(Some(version.to_owned())),
+        None if standalone::BUILT_FROM_REV.is_none() => SdkRequest::Registry(None),
+        None => SdkRequest::Git {
+            url: None,
+            rev: None,
+        },
+    }
 }
 
 /// The Tilo repository, at the commit this CLI came from unless named.
@@ -9506,14 +9528,15 @@ fn discover_ui_dir(current_dir: &Path, repo: Option<&Path>) -> Option<PathBuf> {
     if let Some(root) = repo {
         return Some(root.join("crates/ui/ui-core"));
     }
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(ui) = ui_dir_from_ancestor(&executable)
-        && !standalone::in_cargo_cache(&ui)
-    {
-        return Some(ui);
-    }
-    ui_dir_from_ancestor(Path::new(env!("CARGO_MANIFEST_DIR")))
-        .filter(|ui| !standalone::in_cargo_cache(ui))
+    // A `tilolang` run from a checkout's `target`. Where the CLI was compiled is no answer: an
+    // installed one runs on machines that never had that directory. This crate's tests stand in
+    // for a CLI of the checkout they are built from, wherever their target directory is.
+    let own = std::env::current_exe()
+        .ok()
+        .and_then(|executable| ui_dir_from_ancestor(&executable));
+    #[cfg(test)]
+    let own = own.or_else(|| ui_dir_from_ancestor(Path::new(env!("CARGO_MANIFEST_DIR"))));
+    own.filter(|ui| !standalone::in_cargo_cache(ui))
 }
 
 fn resolve_ui_dir(

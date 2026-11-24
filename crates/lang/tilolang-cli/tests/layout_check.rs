@@ -1,4 +1,4 @@
-//! `tilolang layout-check` through its library: a fixture app whose views are each laid out
+//! `tilo-layout-check` through its library: a fixture app whose views are each laid out
 //! wrong in one way is caught for every kind of problem, at the view that is wrong. The shipped
 //! apps are laid out by the `layout-check` t checks, which read the allow-list
 //! (`tests/layout_check/allowed`) and keep every size's dump and shots.

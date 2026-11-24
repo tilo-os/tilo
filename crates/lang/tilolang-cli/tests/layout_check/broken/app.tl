@@ -1,6 +1,6 @@
 app so.tilo.lang.layoutbroken "Broken layouts" (icon: .layout_grid, category: .utility)
 
-/// A sample whose views are each laid out wrong in one way, for `tilolang layout-check`.
+/// A sample whose views are each laid out wrong in one way, for `tilo-layout-check`.
 type Sample {
     name: Text
 }

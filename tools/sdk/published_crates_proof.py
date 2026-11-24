@@ -19,8 +19,14 @@ So the guide cannot show code that does not build on what is published, nor outp
 does not print, and a crate whose package does not build on its own (a build script reading
 the repository, a file the package leaves out) fails here before a release does.
 
+The `tilolang` proof does the same for the command: it installs the packaged `tilolang-cli`
+with `cargo install` into a directory outside the repository, and there, with no checkout
+anywhere around it, starts an app with `tilolang new`, checks it and builds it, then checks and
+builds a tilolang package copied out of the repository. A command that reads a file of the
+checkout it was compiled in fails here, as it would on a machine that never had one.
+
     python3 -I tools/sdk/published_crates_proof.py            # every proof
-    python3 -I tools/sdk/published_crates_proof.py tilolang   # one
+    python3 -I tools/sdk/published_crates_proof.py embedding  # one
     python3 -I tools/sdk/published_crates_proof.py --work DIR # keep the projects and registry in DIR
 
 Resolving the registry asks crates.io for the packages Cargo's caches lack; building the
@@ -63,10 +69,16 @@ class Proof:
 
 PROOFS = {
     # Compile a tilolang package, run an action on its resource, read it back and build its view.
-    "tilolang": Proof(guide="docs/tilolang/embedding.md", crates=("tilolang", "tilolang-runtime")),
+    "embedding": Proof(guide="docs/tilolang/embedding.md", crates=("tilolang", "tilolang-runtime")),
     # Lay out a window's shared components and press its button in the toolkit's headless host.
     "tilo-ui": Proof(guide="docs/tilolang/tilo-ui.md", crates=("tilo-ui",), args=("--headless",)),
 }
+
+# The `tilolang` command, installed from its package: what it is installed from, and the
+# tilolang package from this repository it checks and builds, copied out first.
+COMMAND = "tilolang"
+COMMAND_CRATES = ("tilolang-cli",)
+COMMAND_PACKAGE = "apps/tl/counter"
 
 FILE = re.compile(r"^<!-- file: (\S+) -->$")
 OUTPUT = "<!-- output -->"
@@ -175,6 +187,56 @@ def prove(name: str, proof: Proof, shown: Program, work: pathlib.Path,
     return True
 
 
+def prove_command(work: pathlib.Path, registry: pathlib.Path, version: str) -> bool:
+    """Install the packaged `tilolang` outside the repository, and with it start, check and
+    build an app and check and build a package, as someone with no checkout does."""
+    root = work / COMMAND
+    if root.exists():
+        shutil.rmtree(root)
+    apps = root / "apps"
+    (apps / ".cargo").mkdir(parents=True)
+    # The registry stands in for crates.io, for the install and for every app under `apps`.
+    (apps / ".cargo/config.toml").write_text(
+        '[source.crates-io]\nreplace-with = "tilo-published"\n\n'
+        f'[source.tilo-published]\nlocal-registry = {str(registry)!r}\n'
+        '[net]\noffline = true\n')
+    home = root / "home"
+    env = {key: value for key, value in os.environ.items()
+           if key not in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "TILO_REPO",
+                          "TILO_UI_PATH", "TILO_NESTED_SESSION_BUILD")}
+    env.update({"CARGO_NET_OFFLINE": "true",
+                "XDG_CONFIG_HOME": str(home / "config"), "XDG_DATA_HOME": str(home / "data"),
+                "XDG_STATE_HOME": str(home / "state"), "XDG_CACHE_HOME": str(home / "cache")})
+    bin_dir = root / "install/bin"
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+
+    def step(what: str, command: list[str], cwd: pathlib.Path) -> bool:
+        if run(command, cwd=cwd, env=env).returncode == 0:
+            return True
+        print(f"error: {COMMAND}: {what} failed", file=sys.stderr)
+        return False
+
+    package = apps / pathlib.Path(COMMAND_PACKAGE).name
+    shutil.copytree(REPO / COMMAND_PACKAGE, package)
+    ok = (step("cargo install tilolang-cli",
+               # `cargo install` reads no configuration of the directory it runs in.
+               ["cargo", "install", "tilolang-cli", "--version", f"={version}",
+                "--root", str(root / "install"),
+                "--config", 'source.crates-io.replace-with="tilo-published"',
+                "--config", f"source.tilo-published.local-registry={str(registry)!r}"], apps)
+          and step("tilolang --help", ["tilolang", "--help"], apps)
+          and step("tilolang new", ["tilolang", "new", "demo"], apps)
+          and step("tilolang check (the new app)", ["tilolang", "check"], apps / "demo")
+          and step("tilolang build (the new app)", ["tilolang", "build"], apps / "demo")
+          and step("tilolang check (a package)", ["tilolang", "check", str(package)], apps)
+          and step("tilolang build (a package)",
+                   ["tilolang", "build", str(package), "--out", str(root / "out")], apps))
+    if ok:
+        print(f"{COMMAND}: the installed command starts, checks and builds an app and checks and "
+              "builds a package, with no checkout")
+    return ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("proofs", nargs="*", metavar="PROOF",
@@ -183,18 +245,22 @@ def main() -> int:
                         help="keep the packages, registry and projects here (default: a "
                         "directory removed afterwards); outside the repository")
     args = parser.parse_args()
-    unknown = [name for name in args.proofs if name not in PROOFS]
+    every = [*PROOFS, COMMAND]
+    unknown = [name for name in args.proofs if name not in every]
     if unknown:
-        parser.error(f"no proof {', '.join(unknown)}; the proofs are {', '.join(PROOFS)}")
-    chosen = {name: PROOFS[name] for name in (args.proofs or PROOFS)}
-    shown = {name: program(REPO / proof.guide) for name, proof in chosen.items()}
+        parser.error(f"no proof {', '.join(unknown)}; the proofs are {', '.join(every)}")
+    command = not args.proofs or COMMAND in args.proofs
+    chosen = {name: PROOFS[name] for name in (args.proofs or PROOFS) if name in PROOFS}
+    # Every guide's version, chosen or not: the command is packaged at the release's too.
+    shown = {name: program(REPO / proof.guide) for name, proof in PROOFS.items()}
     versions = {asked_version(shown[name].files["Cargo.toml"], crate)
-                for name, proof in chosen.items() for crate in proof.crates}
+                for name, proof in PROOFS.items() for crate in proof.crates}
     if len(versions) != 1:
         # One release carries every crate at one version (publish_check.py).
         raise SystemExit(f"the guides ask for the crates at more than one version: {sorted(versions)}")
     version = versions.pop()
-    crates = sorted({crate for proof in chosen.values() for crate in proof.crates})
+    crates = sorted({crate for proof in chosen.values() for crate in proof.crates}
+                    | (set(COMMAND_CRATES) if command else set()))
 
     work = args.work.resolve() if args.work else pathlib.Path(
         tempfile.mkdtemp(prefix="tilo-published-proof-", dir=os.environ.get("TMPDIR")))
@@ -213,6 +279,8 @@ def main() -> int:
             return 1
         failed = [name for name, proof in chosen.items()
                   if not prove(name, proof, shown[name], work, registry)]
+        if command and not prove_command(work, registry, version):
+            failed.append(COMMAND)
     finally:
         if not args.work:
             shutil.rmtree(work, ignore_errors=True)

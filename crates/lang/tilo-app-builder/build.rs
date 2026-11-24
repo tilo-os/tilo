@@ -6,15 +6,25 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=TILO_SDK_REV");
+    // A release build names its version; an app started outside a checkout then builds on the
+    // SDK crates published at it.
+    println!("cargo:rerun-if-env-changed=TILO_CLI_VERSION");
+    if let Ok(version) = std::env::var("TILO_CLI_VERSION")
+        && !version.trim().is_empty()
+    {
+        println!("cargo:rustc-env=TILO_SDK_RELEASE={}", version.trim());
+    }
     let rev = std::env::var("TILO_SDK_REV")
         .ok()
         .filter(|rev| !rev.trim().is_empty())
-        .or_else(checkout_head)
-        .or_else(detached_head);
+        .or_else(|| (!packaged()).then(checkout_head).flatten())
+        .or_else(|| (!packaged()).then(detached_head).flatten());
     if let Some(rev) = rev {
         println!("cargo:rustc-env=TILO_SDK_REV={}", rev.trim());
     }
-    watch_head();
+    if !packaged() {
+        watch_head();
+    }
 }
 
 /// Rerun when the checkout moves to another commit. A build directory that
@@ -50,6 +60,14 @@ fn watch_head() {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
+}
+
+/// Whether this is a build of the published package (`cargo package` keeps the manifest it
+/// rewrote as `Cargo.toml.orig`): a repository around it, such as one holding the home directory,
+/// is not the one it came from.
+fn packaged() -> bool {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .is_some_and(|dir| std::path::Path::new(&dir).join("Cargo.toml.orig").is_file())
 }
 
 /// `cargo install --git` builds from a clean clone of the requested commit.

@@ -1164,14 +1164,16 @@ secrets = ["CARGO_REGISTRY_TOKEN"]
 # read the resource, build the view) is written into a new project that depends on the crates
 # by version, with no patch and no path, built offline against a local registry of the crates
 # packaged here and what they resolve to on crates.io, and run; its output must be what the
-# guide shows.
+# guide shows. The `tilolang` command is installed from its package the same way, into a
+# directory outside the repository, and there starts an app (`tilolang new`), checks and builds
+# it, and checks and builds a package copied out of apps/tl: no checkout is anywhere around it.
 [[check]]
 name = "published-crates-proof"
 # Packaging and the registry resolve against crates.io: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "python3 -I tools/sdk/published_crates_proof.py"
 requires = ["arch=x86_64"]
-timeout_secs = 3600
+timeout_secs = 7200
 on = ["dispatch", "idle"]
 
 # tilolang in a browser, as the npm package `tilolang`, tools/ci/publish/tilolang-npm.sh:
@@ -3250,7 +3252,7 @@ timeout_secs = 5400
 default = false
 
 # The tilolang apps laid out headlessly at the standard window sizes: 320x568 and 390x844, a
-# phone's, and 1280x800, a laptop's. What `tilolang layout-check` finds is the check's verdict (a
+# phone's, and 1280x800, a laptop's. What `tilo-layout-check` finds is the check's verdict (a
 # finding the allow-list does not name, a line it names that no longer shows, a view no scenario
 # reaches), and each size's report, the layout of the frames its findings came from and its PNG
 # captures are its outputs: `t outputs layout-check/390x844 --to DIR`. `t test layout-check` runs

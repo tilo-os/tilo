@@ -20,6 +20,10 @@ pub const INSTALL_COMMAND: &str =
 /// The Tilo commit this CLI was built from, when the build could see it.
 pub const BUILT_FROM_REV: Option<&str> = option_env!("TILO_SDK_REV");
 
+/// The release this CLI was built for (`TILO_CLI_VERSION`, set by the release build), whose SDK
+/// crates are published at this same version.
+pub const RELEASE: Option<&str> = option_env!("TILO_SDK_RELEASE");
+
 const EMBEDDED_MANIFEST: &str = include_str!("../../../../Cargo.toml");
 const EMBEDDED_LOCK: &str = include_str!("../../../../Cargo.lock");
 const EMBEDDED_TOOLCHAIN: &str = include_str!("../../../../rust-toolchain.toml");

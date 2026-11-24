@@ -408,7 +408,7 @@ Assert on the record, not the widget: the body the store holds, the history entr
 
 ## Layout checks on the build servers
 
-`tilolang layout-check` lays every view of the tilolang apps (`apps/tl`) out headlessly at window
+`tilo-layout-check` lays every view of the tilolang apps (`apps/tl`) out headlessly at window
 sizes from 320x568 to 3440x1440, at display and text scales, and reports overflow, clipped text,
 overlaps, hit targets below the minimum, pages that scroll sideways and the rest of
 `docs/designs/app-language/layout.md`, each at the view's node in the source. It takes the

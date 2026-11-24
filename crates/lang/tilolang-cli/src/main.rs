@@ -3,7 +3,7 @@
 //! crate) alike.
 //!
 //! Two halves answer it. This file's answers what only a package has (`profile`, `repl`,
-//! `layout-check`, the compiler's `fmt` and `ids`) and `describe`; [`cli`] answers what only a
+//! the compiler's `fmt` and `ids`) and `describe`; [`cli`] answers what only a
 //! Rust app has (`new`, `add`, `test`, `shot`, the platforms' builds, ...) and what every app shares
 //! (`guide`, `keys`, `publish`, ...). A command both have (`build`, `package`, `run`, `dev`,
 //! `check`) goes by the app it is given: a directory holding `.tl` files is a package, any other
@@ -107,39 +107,6 @@ const USAGE: &[(&str, &str)] = &[
       step back.",
     ),
     (
-        "layout-check",
-        "\
-  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--hover X,Y]... [--press LABEL]... [--dump|--dump-findings WxH [--shots DIR [--theme NAME]... [--bar-at-rest] [--shot-height H]]] [--locale TAG]
-      lay out every view of each app headlessly, staged from each of its scenarios, at window
-      sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
-      report overflow, clipped text, overlapping siblings, hit targets below the minimum and
-      pages that scroll sideways, each at its view's node in the source. Exits 1 on a finding
-      the allow-list (one finding id per line) does not name; --strict exits 1 on an allow-list
-      line whose finding no longer shows and on a view no layout showed, too; --json prints the
-      report as JSON;
-      --dump prints each layout at that window size as the check reads it (boxes, clips and
-      semantics of every widget) to stderr, for a run narrowed to the views it reads;
-      --dump-findings prints only the layouts a finding was read from, which is what a check over
-      every app asks for, and --shots writes the window at that size (display
-      and text scale 1) as each stage leaves it, light and dark, to PNGs in DIR. --theme takes
-      them in that shipped theme (default, glass, block, ...) instead of the stock pair, light and
-      dark each. --bar-at-rest takes them as a maximized window stands at rest, its bar hidden
-      until the person reaches for the top edge, instead of under the bar. --shot-height takes
-      them in a window H tall at that width, so the lower part of a long page shows; the check
-      itself still reads the window at its size. --root lays out the
-      layer a package with more than one root names (the shell's `Shell`, the one with the bar
-      and the dock), instead of the package's first root.
-      --state stages a view state at a value the app's own code names (`place=Task.today`, a
-      filter; `side=Side.right`, a case of its enum) before any window opens: the place a
-      window stands on when nobody has picked one, as a scenario that laid it out would.
-      --key sends a key press (`Tab`, `Down`, `Space`) to each window before it is read, in the
-      order given, at the `--dump` size, so a shot and a dump show the layout a person reaches
-      by keyboard. --hover rests the pointer at X,Y (logical pixels of the window) once the keys
-      are sent, so a shot shows what pointing there shows. --locale lays every window out for a
-      person reading in that language (`en-US`, `de-DE`; default en-US), whatever locale this
-      machine runs in.",
-    ),
-    (
         "check|fmt|ids",
         "\
   tilolang check|fmt|ids [DIR] [--json] [--watch] [--write-ids] [--path DIR]... [--check] [--rename OLD NEW] [--help]
@@ -149,7 +116,7 @@ const USAGE: &[(&str, &str)] = &[
 ];
 
 /// The commands only a package has: this half answers them whatever the directory holds.
-const PACKAGE_COMMANDS: [&str; 6] = ["describe", "profile", "repl", "layout-check", "fmt", "ids"];
+const PACKAGE_COMMANDS: [&str; 5] = ["describe", "profile", "repl", "fmt", "ids"];
 
 /// The commands a package and a Rust app both have, each its own way: the app named decides.
 const SHARED_COMMANDS: [&str; 5] = ["build", "package", "run", "dev", "check"];
@@ -200,10 +167,6 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             (
                 "profile",
                 "Count what the app costs to open and to use, by source line, calls and fuel.",
-            ),
-            (
-                "layout-check",
-                "Lay out every view at every window size and scale, and report what breaks.",
             ),
             ("repl", "Type tilolang in one of your workspaces, as you."),
             ("fmt", "Write the package in its canonical form."),
@@ -425,9 +388,8 @@ fn tilolang_command(args: &[String]) -> ExitCode {
         Some("describe") => describe_command(rest),
         Some("profile") => profile_command(rest),
         Some("repl") => repl_command(rest),
-        Some("layout-check") => return tilolang_cli::layout_check::command::run(rest),
         // A package may `use` a native app or the platform's (the device, Settings): their
-        // published types are found as `build` and `layout-check` find them.
+        // published types are found as `build` finds them.
         Some(_) | None => {
             return tilolang::cli::main_with(args, tilolang_tilo::catalogue::published_packages);
         }

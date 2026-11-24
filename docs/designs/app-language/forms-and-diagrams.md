@@ -174,4 +174,4 @@ guarded like lists.
 3. `ui.Chart`, first used by Tasks' project page (done per week).
 4. `ui.Graph`, first used by Tasks' dependencies (`blocked_by`).
 5. `ui.Timeline`, first used by Tasks' project schedule.
-6. `tilolang layout-check` (layout.md §6) checks all of these from its first landing.
+6. `tilo-layout-check` (layout.md §6) checks all of these from its first landing.

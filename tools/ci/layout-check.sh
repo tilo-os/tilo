@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Lay every view of the tilolang apps out headlessly at one standard window size, on the build
-# server: what `tilolang layout-check` finds is the check's verdict, and the size's report, the
+# server: what `tilo-layout-check` finds is the check's verdict, and the size's report, the
 # layout of each frame a finding came from (dump.txt) and PNG captures (one per window, in its
 # light and dark theme) are its outputs. It runs the command as `tilo-layout-check`
 # (tools/layout-check), which stages the Mail and Tube apps over the sample data their outside

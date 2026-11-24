@@ -403,8 +403,23 @@ def rewrite_manifest(text: str, base: pathlib.Path, published: set[pathlib.Path]
 # A file a crate's code embeds by a literal path: `include_str!("…")`, `include_bytes!("…")`,
 # `include!("…")`.
 EMBEDDED = re.compile(r'\b(include_str|include_bytes|include)!\(\s*"([^"\n]+)"\s*\)')
+# A directory a crate's code embeds files of by a path `concat!` starts with:
+# `include_str!(concat!("../examples/apps/", $name, "/", $file))`.
+EMBEDDED_DIR_PREFIX = re.compile(
+    r'\b(include_str|include_bytes|include)!\(\s*concat!\(\s*"([^"\n]+/)"')
 # Where a package carries the files it embeds from elsewhere in the repository.
 EMBEDDED_DIR = "published-files"
+
+
+def stored(relative: pathlib.Path) -> pathlib.Path:
+    """Where under EMBEDDED_DIR the repository file RELATIVE is carried. `cargo package` leaves
+    out a directory holding a `Cargo.toml` (it takes it for another package) and hidden files,
+    so those names are carried under other ones."""
+    def name(part: str) -> str:
+        if part in ("Cargo.toml", "Cargo.lock"):
+            return part + ".embedded"
+        return "dot" + part if part.startswith(".") else part
+    return pathlib.Path(*(name(part) for part in relative.parts))
 
 
 def embed_outside_files(tree: pathlib.Path, names: set[str]) -> list[str]:
@@ -436,14 +451,31 @@ def carry_embedded(root: pathlib.Path, tree: pathlib.Path) -> list[str]:
             if (embedded.is_relative_to(root) or not embedded.is_relative_to(tree)
                     or not embedded.is_file()):
                 return match.group(0)
-            copy = root / EMBEDDED_DIR / embedded.relative_to(tree)
+            copy = root / EMBEDDED_DIR / stored(embedded.relative_to(tree))
             copy.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(embedded, copy)
             copied.append(str(embedded.relative_to(tree)))
             path = os.path.relpath(copy, source.parent).replace(os.sep, "/")
             return f'{match.group(1)}!("{path}")'
 
-        new = EMBEDDED.sub(carried, text)
+        def carried_dir(match: re.Match) -> str:
+            embedded = (source.parent / match.group(2)).resolve()
+            if (embedded.is_relative_to(root) or not embedded.is_relative_to(tree)
+                    or not embedded.is_dir()):
+                return match.group(0)
+            for file in sorted(embedded.rglob("*")):
+                inside = file.relative_to(embedded)
+                if not file.is_file() or "target" in inside.parts:
+                    continue
+                copy = root / EMBEDDED_DIR / stored(file.relative_to(tree))
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(file, copy)
+                copied.append(str(file.relative_to(tree)))
+            copy = root / EMBEDDED_DIR / stored(embedded.relative_to(tree))
+            path = os.path.relpath(copy, source.parent).replace(os.sep, "/") + "/"
+            return match.group(0).replace(f'"{match.group(2)}"', f'"{path}"', 1)
+
+        new = EMBEDDED_DIR_PREFIX.sub(carried_dir, EMBEDDED.sub(carried, text))
         if new != text:
             source.write_text(new)
     return sorted(set(copied))

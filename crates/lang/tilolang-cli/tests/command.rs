@@ -127,7 +127,6 @@ tilo_test_env::scenario! {
                 "describe",
                 "profile",
                 "repl",
-                "layout-check",
                 "new",
                 "add",
                 "test",

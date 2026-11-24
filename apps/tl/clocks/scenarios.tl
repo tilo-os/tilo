@@ -1,4 +1,4 @@
-/// Scenarios: the app as people meet it, staged for the gallery, `tilolang layout-check` and the
+/// Scenarios: the app as people meet it, staged for the gallery, `tilo-layout-check` and the
 /// tests. They are seed data for shots and tests, never a person's: a real first launch starts
 /// empty.
 ///

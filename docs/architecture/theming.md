@@ -387,7 +387,7 @@ and registers each module under its name, then reads the document like any
 other. Set names are lowercase letters, digits, `-`, `_` and `.`. A
 bundle that is missing a module, or carries one the host refuses, is
 refused. The material bench (`ui-perf material_bench DIR`) and
-`tilolang layout-check --theme DIR` take a bundle directory where they
+`tilo-layout-check --theme DIR` take a bundle directory where they
 take a theme's name.
 
 **Writing a set.** A set is a crate that depends on `tilo-theme-sdk`
@@ -658,7 +658,7 @@ Verified against the code at the time of writing:
   light, Pixelated, Liquid Glass and Liquid Glass light are documents in
   `crates/sdk/ui-core/tests/fixtures/finishes/`, rendered by the painter tests. Legibility is checked
   against the worst backdrop each material can show (`audit_materials`), and
-  `tilolang layout-check --theme NAME` lays a view out under a theme. Reduce
+  `tilo-layout-check --theme NAME` lays a view out under a theme. Reduce
   transparency, forced colours and the high-contrast palettes keep floating
   chrome opaque. The selector finish
   (`material.selector`) is read by `chrome::paint_selector`; the same three

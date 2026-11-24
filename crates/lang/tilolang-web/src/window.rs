@@ -1,4 +1,4 @@
-//! An app's window as a web page: the window `tilolang layout-check` lays out
+//! An app's window as a web page: the window `tilo-layout-check` lays out
 //! ([`tilolang_window::Window`]), staged with one of the app's scenarios, its laid-out frame
 //! written as semantic HTML ([`ui::composition::page`]), and what the person does on that page
 //! acted on the window as their click or their typing is.

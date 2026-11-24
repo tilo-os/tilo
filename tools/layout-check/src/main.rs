@@ -1,10 +1,10 @@
-//! `tilolang layout-check` as Tilo's own checks run it over the apps in `apps/tl`
-//! (`tools/ci/layout-check.sh`): the same command, with the sample data of the outside services
-//! the Mail and Tube apps stand on registered first, so their scenarios lay out over a sample
-//! inbox and feed. The published `tilolang` links neither service's engine, so it lays those apps
-//! out without them; this tool stays in the repository.
+//! The layout check Tilo's own checks run over the apps in `apps/tl`
+//! (`tools/ci/layout-check.sh`), with the sample data of the outside services the Mail and Tube
+//! apps stand on registered first, so their scenarios lay out over a sample inbox and feed. It
+//! reads the apps from this repository and stays here; the published `tilolang` has no
+//! `layout-check`.
 //!
-//!   tilo-layout-check [DIR]... [the options `tilolang layout-check` takes]
+//!   tilo-layout-check [DIR]... [OPTION]... (`--help` lists them)
 
 use std::process::ExitCode;
 
