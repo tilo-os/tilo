@@ -11,22 +11,25 @@
 //!
 //! This module is what the server does about it:
 //!
-//! - **Place** ([`HostedBrowsers::place`]): after `app.so.tilo.browser#open`
-//!   made a record, certify a device for the session scoped to the
-//!   workspace, list it as a member device, ask the hosted-VM service to
-//!   start it ([`BrowserSessions::start`]) with that material, and
-//!   remember the window it answered. The open answers once the window is
-//!   live; a second open attaches to the same session.
+//! - **Place** ([`HostedBrowsers::place`]): the workspace's open of Browser
+//!   (`app.so.tilo.browser#open`) reaches this host as a provider on its
+//!   device's one dispatch ([`HostedBrowsers::provide_in`]); it certifies a
+//!   device for the session scoped to the workspace, lists it as a member
+//!   device, asks the hosted-VM service to start it
+//!   ([`BrowserSessions::start`]) with that material, and remembers the window
+//!   it answered. The open answers once the window is live; a second open
+//!   attaches to the same session.
 //! - **Route** ([`HostedBrowsers::route`]): an action addressed to that
 //!   window reaches this host (an agent's calls go to the workspace's
-//!   host device) and is handed to the device holding the window, stamped
+//!   host device) through the same registry, which answers the window's
+//!   provider, and is handed to the device holding the window, stamped
 //!   with the caller, so it runs there as the caller's: History records the
 //!   agent's run for the person it acts for. The server runs none of it. A
-//!   listing of the window is handed over the same way, and the workspace's
-//!   own listing names the window among its publishers
-//!   ([`HostedBrowsers::listed`]), so a caller finds it as it finds any
-//!   app's window. What the window answers such a caller reaches it as this
-//!   host's, the device it asked ([`HostedBrowsers::answers_for_host`]).
+//!   listing of the window is handed over the same way, and a listing naming
+//!   no provider names the window among its publishers
+//!   ([`ActionProvider::query`]), so a caller finds it as it finds any app's
+//!   window. What the window answers such a caller reaches it as this host's,
+//!   the device it asked ([`HostedBrowsers::answers_for_host`]).
 //! - **Ask**: a page action asks the person first, and nobody stands in front
 //!   of a window in a VM to ask. The window refuses such an action for want
 //!   of their answer, stating what leaves and where
@@ -82,11 +85,15 @@ use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refusal};
 use tilo_actions::remote::asked::{AskedDispatch, AskedRecords, AskedStore, RecordRef};
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, Completer,
-    Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage, argument_digest, pending, provider_workspace,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
+    CataloguePage, CatalogueProvider, CatalogueQuery, Completer, Confirmation,
+    ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus,
+    RemoteActionMessage, argument_digest, pending, provider_workspace, workspace_provider,
 };
-use tilo_actions::{ActionFailure, InvocationUpdate};
+use tilo_actions::{
+    ActionFailure, ActionKind, ActionSpec, EncodedAction, ExecutionMode, InvocationUpdate,
+    OperationKind, ResourceSpec,
+};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::{
     Answered, DeviceCapabilities, DeviceCert, HostApproval, Parties, sign_device_cert,
@@ -94,6 +101,7 @@ use tilo_user_identity::{
 use tilo_workspace_service::agents::windows::{
     Ends, Releasing, TurnFill, Windows, opened_resource, opens_browser_at, page_action,
 };
+use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 // A page action handed to a window for a turn this server carries out itself.
 mod turn_pages;
@@ -102,6 +110,14 @@ mod turn_pages;
 pub use tilo_app_id::apps::BROWSER as APP;
 /// What people read Browser's name as.
 pub const TITLE: &str = "Browser";
+
+/// The provider a workspace's Browser calls reach on this host: the app this host places, whose
+/// `app.so.tilo.browser#open` starts its window here.
+pub const PROVIDER: &str = APP;
+
+/// The record a workspace's Browser window opens on, in the workspace's Browser app: one per
+/// workspace, so opening Browser again attaches to the window already holding it.
+const RECORD: &str = "browser";
 
 /// Browser as a host that places its windows lists it: a workspace opens
 /// `app.so.tilo.browser`, and the record it makes is opened by the session in
@@ -134,6 +150,41 @@ pub fn placed_linux_apps() -> tilo_agent_session::PlacedApp {
 
 /// The label the workspace shows a Linux apps session's device under.
 pub const APPS_DEVICE_LABEL: &str = "Linux apps";
+
+/// What this host publishes: Browser's open, the action a workspace starts Browser by
+/// (`app.so.tilo.browser#open`), which places its window in the workspace's VM here. A caller
+/// naming the address reaches this host whichever provider token it asks under.
+fn published() -> Vec<ResourceSpec> {
+    let mut spec = ResourceSpec::new(
+        format!("{APPLICATION_RESOURCE_PREFIX}{APP}"),
+        tilo_actions::remote::APPLICATION_RESOURCE_KIND,
+        TITLE,
+    );
+    spec.app_id = Some(APP.to_owned());
+    let type_id = format!("{PROVIDER}/{APPLICATION_OPEN_ACTION}");
+    let encoded = type_id.clone();
+    let mut action = ActionSpec::typed_operation(
+        APPLICATION_OPEN_ACTION,
+        format!("Open {TITLE}"),
+        "",
+        OperationKind::Effect,
+        type_id,
+        Vec::new(),
+        move |_| EncodedAction {
+            type_id: encoded.clone(),
+            payload: Vec::new(),
+        },
+    );
+    let contract = &mut action.type_mut().contract;
+    contract.kind = ActionKind::Outside;
+    // Starting the session takes as long as its VM takes to wake: the call is answered once the
+    // window is up, and followed meanwhile as any background action is.
+    contract.execution = ExecutionMode::Background {
+        cancellable: false,
+    };
+    spec.actions.push(action);
+    vec![spec]
+}
 
 /// Make this host the person's stand-in approver, from their root:
 /// a browser session joins a workspace as a device of theirs, and a stand-in
@@ -522,6 +573,22 @@ pub struct HostedBrowsers {
     /// The fills of a page's field this server handed to windows for the turns it carries
     /// out itself ([`turn_fills`]).
     turn_fills: turn_fills::TurnFills,
+    /// What this host publishes at fixed addresses: Browser's open, which places its window here.
+    resources: Vec<ResourceSpec>,
+    /// Where this host answers as a provider, once its device registers it
+    /// ([`Self::provide_in`]): the registry that admits its calls, what it registered, and itself,
+    /// weakly, for what it follows on the runtime.
+    publishing: Mutex<Option<RegisteredAs>>,
+}
+
+/// Where a host that places Browser answers as a provider: the registry its calls are admitted
+/// on, what it registered there, and itself, all by weak reference, as each of them refers to
+/// this host.
+#[derive(Clone)]
+struct RegisteredAs {
+    providers: tilo_workspace_service::workspaces::providers::WeakProviders,
+    answers: std::sync::Weak<dyn ActionProvider + Send + Sync>,
+    this: std::sync::Weak<HostedBrowsers>,
 }
 
 #[allow(
@@ -551,6 +618,8 @@ impl HostedBrowsers {
             next_waiter: AtomicU64::new(0),
             reconnect: RECONNECT,
             turn_fills: turn_fills::TurnFills::default(),
+            resources: published(),
+            publishing: Mutex::default(),
         }
     }
 
@@ -596,6 +665,58 @@ impl HostedBrowsers {
             account,
         )))
     }
+
+    /// Answer this device's workspaces' calls as the provider this host is: `app.so.tilo.browser#open`
+    /// places its window here, and the page actions of a window it placed reach it as every other
+    /// action reaches its handler, admitted the same way. A host that places no window registers
+    /// nothing, so an open is answered by its device's own refusal.
+    pub fn provide_in(self: &Arc<Self>, providers: &Providers) {
+        let answers: Arc<dyn ActionProvider + Send + Sync> = Arc::clone(self);
+        providers.provide(PROVIDER, APP, Reach::Devices, Arc::clone(&answers));
+        *self.publishing.lock_recover() = Some(RegisteredAs {
+            providers: providers.downgrade(),
+            answers: Arc::downgrade(&answers),
+            this: Arc::downgrade(self),
+        });
+    }
+
+    /// This host as the registry holds it, for what it follows on the runtime.
+    fn me(&self) -> Option<Arc<Self>> {
+        self.publishing.lock_recover().as_ref()?.this.upgrade()
+    }
+
+    /// Answer the page actions of the window published under `provider`: the provider is named by
+    /// the window's own device, so a caller naming it reaches this host, which hands the action to
+    /// the device.
+    fn publish_window(&self, provider: &str) {
+        let Some(RegisteredAs {
+            providers, answers, ..
+        }) = self.publishing.lock_recover().clone()
+        else {
+            return;
+        };
+        let (Some(providers), Some(answers)) = (providers.upgrade(), answers.upgrade()) else {
+            return;
+        };
+        if let Err(error) = providers.serve(provider, APP, Reach::Devices, answers) {
+            tracing::warn!(%error, "a Browser window's provider is served on this device already");
+        }
+    }
+
+    /// Answer no more calls under `provider`: the window it named stopped.
+    fn unpublish_window(&self, provider: &str) {
+        let Some(RegisteredAs {
+            providers, answers, ..
+        }) = self.publishing.lock_recover().clone()
+        else {
+            return;
+        };
+        let (Some(providers), Some(answers)) = (providers.upgrade(), answers.upgrade()) else {
+            return;
+        };
+        providers.withdraw(provider, &answers);
+    }
+
 
     /// Name the host's identity and workspaces, once it runs: needed to
     /// certify a session's device and to list it in its workspace. It is also
@@ -643,54 +764,6 @@ impl HostedBrowsers {
             .lock_recover()
             .get(&workspace_id)
             .map(|open| open.window.clone())
-    }
-
-    /// `answer`, this host's own answer to `query` in `workspace_id`, with
-    /// the Browser window among the publishers it lists while one is up: the
-    /// window runs in the workspace's VM, not on this host, yet it is the
-    /// workspace's like any app's window, so a caller asking what runs there
-    /// finds it, and reads and acts on it through this host. Only a listing
-    /// naming no provider lists publishers; any other answer is as it was.
-    #[must_use]
-    pub fn listed(
-        &self,
-        workspace_id: WorkspaceId,
-        query: &tilo_actions::remote::CatalogueQuery,
-        mut answer: RemoteActionMessage,
-    ) -> RemoteActionMessage {
-        if query.provider.is_some() {
-            return answer;
-        }
-        let RemoteActionMessage::CatalogueResponse {
-            result: Ok(page), ..
-        } = &mut answer
-        else {
-            return answer;
-        };
-        let open = self.open.lock_recover();
-        let Some(up) = open.get(&workspace_id) else {
-            return answer;
-        };
-        if page
-            .providers
-            .iter()
-            .any(|listed| listed.provider == up.window.provider)
-        {
-            return answer;
-        }
-        // Named by the workspace it was opened in: a caller holding what runs
-        // in its own workspace to that workspace keeps it. The host's own rows
-        // name no workspace (they are the caller's by the host serving them),
-        // so theirs is not the name to copy.
-        page.providers
-            .push(tilo_actions::remote::CatalogueProvider {
-                provider: up.window.provider.clone(),
-                app_id: APP.to_owned(),
-                workspace: up.workspace.clone(),
-                document_id: up.record.clone(),
-                browsable: true,
-            });
-        answer
     }
 
     /// Where `workspace_id`'s page action goes: to the device holding its
@@ -937,7 +1010,12 @@ impl HostedBrowsers {
                 ));
             }
         }
-        hand.hand(
+        // The window it is handed to runs it once, counted as any page action is; so that its
+        // answer reaches this caller, this host follows the answer and answers the invocation
+        // with it (nothing on a connection asked for this run).
+        let browsers = self.me().ok_or_else(not_waiting)?;
+        let runtime = self.runtime().ok_or_else(not_waiting)?;
+        let answer = hand.frame(
             workspace_id,
             (
                 device,
@@ -946,6 +1024,11 @@ impl HostedBrowsers {
             window,
             RemoteActionMessage::Invoke(request),
         );
+        runtime.spawn(async move {
+            if let Some(Some(reply)) = answer.await {
+                let _ = browsers.relayed(workspace_id, window, &reply);
+            }
+        });
         Ok(())
     }
 
@@ -1391,6 +1474,9 @@ impl HostedBrowsers {
                 callers: std::collections::HashSet::new(),
             },
         );
+        // A page action names the window's own provider: from now on this host answers it, and
+        // hands the action to the device holding the window.
+        self.publish_window(&window.provider);
         Ok(window)
     }
 
@@ -1498,6 +1584,10 @@ impl HostedBrowsers {
     pub fn stopped(&self, workspace_id: WorkspaceId) {
         let stopped = self.open.lock_recover().remove(&workspace_id);
         let stopped_apps = self.apps.lock_recover().remove(&workspace_id);
+        if let Some(stopped) = &stopped {
+            // The window's provider is gone with it: a call naming it reaches no page action now.
+            self.unpublish_window(&stopped.window.provider);
+        }
         let devices = {
             let authority = self.authority.lock_recover();
             authority.as_ref().map_or_else(Vec::new, |authority| {
@@ -1544,6 +1634,9 @@ impl HostedBrowsers {
                 Some(_) | None => None,
             }
         };
+        if let Some(stopped) = &stopped {
+            self.unpublish_window(&stopped.window.provider);
+        }
         if let Some(stopped) = stopped.as_ref().or(stopped_apps.as_ref()) {
             tracing::info!(
                 workspace = %stopped.workspace,
@@ -1674,6 +1767,295 @@ impl HostedBrowsers {
                 "a browser session's device was not listed in its workspace"
             );
         }
+    }
+}
+
+/// What this host answers before it runs: a window can be neither placed nor reached yet.
+fn still_starting() -> ActionCallError {
+    ActionCallError::Unavailable {
+        reason: "Browser is still starting. Try again in a minute.".to_owned(),
+    }
+}
+
+/// `message`, a window's answer to a call, as the call's receipt.
+fn receipt_answer(
+    message: Option<RemoteActionMessage>,
+) -> Result<InvocationReceipt, ActionCallError> {
+    match message {
+        Some(RemoteActionMessage::Receipt(receipt)) => Ok(receipt),
+        Some(_) | None => Err(ActionCallError::Unavailable {
+            reason: "the Browser window did not answer the call".to_owned(),
+        }),
+    }
+}
+
+/// Whether `request` opens Browser here: `app.so.tilo.browser#open` addressed to the workspace it
+/// opens in, or to the app in that workspace.
+fn opens_browser_here(request: &InvokeRequest) -> bool {
+    opens_browser_at(&request.target)
+        || (request.target.address.resource == format!("{APPLICATION_RESOURCE_PREFIX}{APP}")
+            && request.target.address.action == APPLICATION_OPEN_ACTION
+            && tilo_actions::remote::application_provider(&request.target.provider).is_some())
+}
+
+/// The workspace an open of Browser names: the one its provider token names, whichever token it
+/// is addressed under.
+fn opened_workspace(target: &tilo_actions::remote::RemoteActionTarget) -> Option<&str> {
+    provider_workspace(&target.provider).or_else(|| {
+        tilo_actions::remote::application_provider(&target.provider).map(|(workspace, _)| workspace)
+    })
+}
+
+impl HostedBrowsers {
+    /// `request`, which this host's device admitted for `caller`: an open of Browser places the
+    /// workspace's window here, and a page action of a window it placed is handed to the device
+    /// holding that window and answered with what it said.
+    async fn carry_out(
+        self: &Arc<Self>,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        if opens_browser_here(&request) {
+            return self.open_browser(caller, request).await;
+        }
+        let Some(workspace_id) = caller.workspace().and_then(WorkspaceId::parse) else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        let Some(window) = self.window(workspace_id) else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        if !page_action(&request.target, &window.provider) {
+            return Err(ActionCallError::UnknownAction);
+        }
+        self.carry_page_action(workspace_id, caller, request).await
+    }
+
+    /// `request`, an open of Browser in the workspace its provider token names: place the
+    /// workspace's window on its record here, and answer the record it was opened on.
+    async fn open_browser(
+        self: &Arc<Self>,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let Some(workspace) = opened_workspace(&request.target) else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        // A window is placed in the workspace the open names, and nowhere else: an open naming
+        // one this caller is not in is answered as one naming nothing.
+        if caller.workspace() != Some(workspace) {
+            return Err(ActionCallError::UnknownAction);
+        }
+        let Some(name) = self.ready_workspace_name(workspace_id).await else {
+            return Err(ActionCallError::Refused {
+                reason: "The workspace isn't ready yet. Open it again in a minute.".to_owned(),
+            });
+        };
+        let placed = Arc::clone(self);
+        let record = RECORD.to_owned();
+        let opening = record.clone();
+        let placement = tokio::task::spawn_blocking(move || placed.place(&name, workspace_id, &opening))
+            .await
+            .unwrap_or_else(|error| Err(format!("the placement ended: {error}")));
+        match placement {
+            Ok(_) => Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({ "record": record })),
+                        ..tilo_actions::ActionOutput::default()
+                    },
+                },
+            }),
+            Err(reason) => {
+                tracing::warn!(%workspace_id, %reason, "the workspace's Browser did not open");
+                Err(ActionCallError::Refused { reason })
+            }
+        }
+    }
+
+    /// A page action of the window up in `workspace_id`, as `caller` asked it: routed as the host
+    /// routes one — counted, answered for the person where their key may operate the page, or
+    /// kept as the call's asked record — and handed to the device holding the window.
+    async fn carry_page_action(
+        self: &Arc<Self>,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let device = *caller
+            .device_public_key()
+            .ok_or(ActionCallError::NotPermitted)?;
+        let certificate = self.certificate(workspace_id, device).await;
+        let message = RemoteActionMessage::Invoke(request.clone());
+        let routed = match &certificate {
+            Some(certificate) => self.route_certified(workspace_id, caller, certificate, &message),
+            None => self.route(workspace_id, caller, &message),
+        };
+        let Some(routed) = routed else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        let (window, message) = match routed {
+            // The host answers this one itself: its typed refusal, or how an invocation it holds
+            // went.
+            crate::app_serving::Routing::Answer(answer) => return receipt_answer(answer.await),
+            crate::app_serving::Routing::Device(window) => (window, message),
+            crate::app_serving::Routing::Replaced { to, message } => (to, *message),
+        };
+        let Some(hand) = self.hand() else {
+            return Err(still_starting());
+        };
+        let from = (
+            device,
+            caller.user_public_key().copied().unwrap_or([0; 32]),
+        );
+        let Some(Some(answer)) = hand.frame(workspace_id, from, window, message).await else {
+            return Err(ActionCallError::Unavailable {
+                reason: "this host reaches no Browser window".to_owned(),
+            });
+        };
+        // What the window answered is read as the host reads it — counted once it ran, and kept
+        // as the call's asked record where it waits for the person — and answered to the caller.
+        let answered = self.relayed(workspace_id, window, &answer).unwrap_or(answer);
+        receipt_answer(Some(answered))
+    }
+
+    /// The certificate this host holds for `device` in `workspace_id`, when it holds one: what a
+    /// caller's page actions are decided by beyond who it is.
+    async fn certificate(&self, workspace_id: WorkspaceId, device: [u8; 32]) -> Option<DeviceCert> {
+        self.workspaces()?
+            .state(&workspace_id.to_string())
+            .await?
+            .certificates()
+            .into_iter()
+            .find(|certificate| certificate.device_public_key == device)
+    }
+}
+
+/// The provider this host is on its device's dispatch: the open of Browser it places, and the page
+/// actions of the windows it placed.
+impl ActionProvider for HostedBrowsers {
+    /// The app this host places, and the provider each window it placed publishes under.
+    fn serves(&self, provider: &str) -> bool {
+        provider == PROVIDER
+            || self
+                .open
+                .lock_recover()
+                .values()
+                .any(|up| up.window.provider == provider)
+    }
+
+    fn published(&self) -> Vec<ResourceSpec> {
+        self.resources.clone()
+    }
+
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let Some(workspace_id) = caller.workspace().and_then(WorkspaceId::parse) else {
+            return Pending::ready(Ok(CataloguePage::default()));
+        };
+        if query.provider.as_deref() == Some(PROVIDER) {
+            return Pending::ready(Ok(CataloguePage::published(
+                PROVIDER,
+                &self.resources,
+                &query,
+            )));
+        }
+        if let Some(provider) = query.provider.as_deref() {
+            // What a window offers is read from the window: handed to the device holding it, and
+            // answered there as the caller's.
+            let Some(window) = self.window(workspace_id) else {
+                return Pending::ready(Err(ActionCallError::UnknownAction));
+            };
+            if window.provider != provider {
+                return Pending::ready(Err(ActionCallError::UnknownAction));
+            }
+            let Some(device) = caller.device_public_key().copied() else {
+                return Pending::ready(Err(ActionCallError::NotPermitted));
+            };
+            let (Some(hand), Some(runtime)) = (self.hand(), self.runtime()) else {
+                return Pending::ready(Err(still_starting()));
+            };
+            if let Some(up) = self.open.lock_recover().get_mut(&workspace_id) {
+                up.answers(device);
+            }
+            let from = (device, caller.user_public_key().copied().unwrap_or([0; 32]));
+            let message = RemoteActionMessage::CatalogueRequest {
+                correlation: 0,
+                query: query.clone(),
+            };
+            let (completer, answer) = pending();
+            runtime.spawn(async move {
+                completer.complete(match hand.frame(workspace_id, from, window.device, message).await
+                {
+                    Some(Some(RemoteActionMessage::CatalogueResponse { result, .. })) => result,
+                    _ => Err(ActionCallError::Unavailable {
+                        reason: "the Browser window did not answer its listing".to_owned(),
+                    }),
+                });
+            });
+            return answer;
+        }
+        // A listing naming no provider: the workspace's own open of Browser, which this host
+        // answers, and the window it placed while one is up, beside it.
+        let mut page = CataloguePage::default();
+        page.providers.push(CatalogueProvider {
+            provider: workspace_provider(&workspace_id.to_string()),
+            app_id: String::new(),
+            workspace: String::new(),
+            document_id: String::new(),
+            browsable: false,
+        });
+        if let Some(up) = self.open.lock_recover().get(&workspace_id) {
+            page.providers.push(CatalogueProvider {
+                provider: up.window.provider.clone(),
+                app_id: APP.to_owned(),
+                workspace: up.workspace.clone(),
+                document_id: up.record.clone(),
+                browsable: true,
+            });
+        }
+        Pending::ready(Ok(page))
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (Some(browsers), Some(runtime)) = (self.me(), self.runtime()) else {
+            return Pending::ready(Err(still_starting()));
+        };
+        let caller = caller.clone();
+        let (completer, answer) = pending();
+        runtime.spawn(async move {
+            completer.complete(browsers.carry_out(&caller, request).await);
+        });
+        answer
+    }
+
+    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        let device = *caller.device_public_key()?;
+        let handed = self.handed.lock_recover();
+        let entry = handed.get(id)?;
+        (entry.caller.device_public_key() == Some(&device))
+            .then(|| InvocationState::new(*id, entry.stage.state(*id)))
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        // The window runs it where it is: there is nothing here to stop.
+        Pending::ready(Err(ActionCallError::NotCancellable {
+            reason: "the Browser window holds it".to_owned(),
+        }))
     }
 }
 
@@ -1906,7 +2288,7 @@ pub fn no_payment_method(free: u64) -> Refusal {
 /// say why, since a Browser window cannot run here.
 #[must_use]
 pub fn unplaced() -> String {
-    "Browser doesn't open here. Open it on your own device instead.".to_owned()
+    tilo_workspace_service::agents::windows::UNPLACED.to_owned()
 }
 
 /// What a host that places no Linux apps refuses an open of one with.

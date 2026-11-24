@@ -865,7 +865,40 @@ impl ActionProvider for Answers {
                 .expect("a provider that serves the call answers its query");
         }
         if let Some(served) = self.apps() {
-            served.query(caller, query)
+            let answered = served.query(caller, query.clone());
+            // A listing naming no provider names what runs in the workspace beside what the apps
+            // do: the publishers this device's registered providers list, where they answer at
+            // once, join the answer. A provider asked here for its own rows answers those alone.
+            let publishers = if query.provider.is_none() {
+                self.work.providers.publishers(caller, &query)
+            } else {
+                Vec::new()
+            };
+            if publishers.is_empty() {
+                return answered;
+            }
+            let (completer, merged) = tilo_actions::remote::pending();
+            self.work.runtime.spawn(async move {
+                let result = match answered.await {
+                    Some(Ok(mut page)) => {
+                        for listed in publishers {
+                            if !page.providers.iter().any(|listed_in| {
+                                listed_in.provider == listed.provider
+                                    && listed_in.workspace == listed.workspace
+                            }) {
+                                page.providers.push(listed);
+                            }
+                        }
+                        Ok(page)
+                    }
+                    Some(Err(error)) => Err(error),
+                    None => Err(ActionCallError::Unavailable {
+                        reason: "the listing was not answered".to_owned(),
+                    }),
+                };
+                completer.complete(result);
+            });
+            merged
         } else {
             Pending::ready(Err(not_served()))
         }
@@ -905,6 +938,21 @@ impl ActionProvider for Answers {
                 .providers
                 .from_device(caller, request, &self.work.workspaces, &self.work.runtime)
                 .expect("a provider that serves the call takes it");
+        }
+        // An address a provider registered on this device publishes is that provider's, whichever
+        // provider token the call names: a workspace's own `app.<app>#open` is the open of an app
+        // this device places, and page actions of what it placed are its own.
+        if self
+            .work
+            .providers
+            .published_for_devices(&request.target)
+            .is_some()
+        {
+            return self
+                .work
+                .providers
+                .from_device(caller, request, &self.work.workspaces, &self.work.runtime)
+                .expect("a provider that publishes the call takes it");
         }
         if let Some(served) = self.apps() {
             served.invoke(caller, request)

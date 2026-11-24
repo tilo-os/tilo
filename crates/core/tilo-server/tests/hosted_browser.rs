@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 
 use tilo_actions::remote::server_account::{NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
-    Confirmation, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
+    CataloguePage, CatalogueQuery, Confirmation, InvocationReceipt,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget, workspace_provider,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::actions::testing::duplex;
@@ -25,7 +26,7 @@ use tilo_peer_state::direct::{Heard, Replica};
 use tilo_server::hosted_browser::{
     BrowserMeter, BrowserSessions, HostedBrowsers, Material, Window, no_payment_method,
 };
-use tilo_server::{AppActionServer, Server, WorkspaceId};
+use tilo_server::{Server, WorkspaceId};
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, HostApproval, RevocationList,
     prepare_stand_in_cert, sign_device_cert,
@@ -35,7 +36,7 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT};
 
 use crate::common::{
-    Linked, TestDevice, TestServer, TestUser, spawn_server_serving_apps,
+    Linked, TestDevice, TestServer, TestUser, spawn_server,
 };
 use tilo_server::hosted_browser::APP;
 use tilo_workspace_service::agents::windows::PAGE_RESOURCE;
@@ -113,82 +114,6 @@ impl BrowserMeter for Counting {
     fn record(&self, _: &str, _: &str) {
         let mut recorded = self.recorded.lock().unwrap();
         *recorded = recorded.saturating_add(1);
-    }
-}
-
-/// The app action server of a server that routes its workspaces' Browser page actions to
-/// the window holding them.
-struct Routing(Arc<HostedBrowsers>);
-
-impl AppActionServer for Routing {
-    /// A listing naming no provider is the host's own: it publishes the
-    /// workspace itself, and lists the Browser window its VM holds beside it.
-    /// The host names no workspace on its own rows, as the workspace host does.
-    fn serve(
-        &self,
-        workspace_id: WorkspaceId,
-        _caller: &Caller,
-        message: RemoteActionMessage,
-    ) -> Option<Pending<RemoteActionMessage>> {
-        let RemoteActionMessage::CatalogueRequest { correlation, query } = message else {
-            return None;
-        };
-        let own = CataloguePage {
-            revision: "host".into(),
-            providers: vec![CatalogueProvider {
-                provider: HOST_PROVIDER.into(),
-                app_id: String::new(),
-                workspace: String::new(),
-                document_id: String::new(),
-                browsable: false,
-            }],
-            ..CataloguePage::default()
-        };
-        Some(Pending::ready(self.0.listed(
-            workspace_id,
-            &query,
-            RemoteActionMessage::CatalogueResponse {
-                correlation,
-                result: Ok(own),
-            },
-        )))
-    }
-
-    fn route(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        message: &RemoteActionMessage,
-    ) -> Option<tilo_server::app_serving::Routing> {
-        self.0.route(workspace_id, caller, message)
-    }
-
-    fn route_certified(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        certificate: &DeviceCert,
-        message: &RemoteActionMessage,
-    ) -> Option<tilo_server::app_serving::Routing> {
-        self.0
-            .route_certified(workspace_id, caller, certificate, message)
-    }
-
-    fn relayed(
-        &self,
-        workspace_id: WorkspaceId,
-        from: [u8; 32],
-        message: &RemoteActionMessage,
-    ) -> Option<RemoteActionMessage> {
-        self.0.relayed(workspace_id, from, message)
-    }
-
-    fn tracks(&self, workspace_id: WorkspaceId) -> bool {
-        self.0.tracks(workspace_id)
-    }
-
-    fn answers_for_host(&self, workspace_id: WorkspaceId, from: [u8; 32], to: [u8; 32]) -> bool {
-        self.0.answers_for_host(workspace_id, from, to)
     }
 }
 
@@ -674,14 +599,7 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
         )
         .with_reconnect(reconnect),
     );
-    let server = Box::pin(spawn_server_serving_apps(
-        &user,
-        host,
-        &[],
-        &[],
-        Arc::new(Routing(Arc::clone(&browsers))),
-    ))
-    .await;
+    let server = Box::pin(spawn_server(&user, host, &[], &[])).await;
     // The person made both workspaces on their server, and their agent's
     // device entered each.
     let workspaces = server
@@ -703,6 +621,9 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
             .await
             .expect("the person's own device enters it");
     }
+    // The host answers the workspace's open of Browser and the page actions of the window it
+    // places through its one dispatch, as production registers it.
+    browsers.provide_in(&workspaces.providers());
     browsers.serve_from(tilo_server::hosted_browser::Authority {
         user_public_key: user.user_pk,
         cert: server_cert,
@@ -828,6 +749,49 @@ async fn opening_browser_places_an_environment_whose_session_holds_the_window() 
     let again = fixture.browsers.place(WS_NAME, WS, WINDOW_RECORD).unwrap();
     assert_eq!(again, window);
     assert_eq!(fixture.environments.starts(), 1, "no second environment");
+}
+
+/// A host that runs no Browser places no window, and registers no provider for one: an open of
+/// Browser is answered by the dispatch's own refusal, in words that say Browser does not run
+/// here.
+#[tokio::test]
+async fn an_open_of_browser_is_refused_in_words_where_the_host_runs_no_browser() {
+    let user = TestUser::fresh("Ada");
+    let host = user.enrol("home", DeviceCapabilities::member());
+    let agent = user.enrol("agent", DeviceCapabilities::member());
+    let server = Box::pin(spawn_server(&user, host, &[WS], &[&agent.cert])).await;
+    let linked = member_link(&server.server, &agent).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(user.user_pk);
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: workspace_provider(WS_NAME),
+            address: ActionAddress::new(
+                format!("{APPLICATION_RESOURCE_PREFIX}{APP}"),
+                APPLICATION_OPEN_ACTION,
+            ),
+        },
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let refused = ActionProvider::invoke(&remote, &caller, request)
+        .await
+        .expect("the host answers")
+        .expect_err("no Browser runs here");
+    let ActionCallError::Unavailable { reason } = refused else {
+        panic!("the dispatch refuses an open of a Browser it does not run: {refused:?}");
+    };
+    assert!(
+        reason.contains("Browser"),
+        "the refusal says what does not run here: {reason}"
+    );
 }
 
 impl Fixture {

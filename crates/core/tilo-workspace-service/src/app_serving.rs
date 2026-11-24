@@ -284,6 +284,20 @@ impl Hand {
         to: [u8; 32],
         message: tilo_actions::remote::RemoteActionMessage,
     ) {
+        drop(self.frame(workspace_id, from, to, message));
+    }
+
+    /// [`Self::hand`], answering what the device gave: for a host that follows the answer itself,
+    /// as a host placing a workspace's Browser does for the windows it places. `None` when no link
+    /// reaches the device.
+    #[must_use]
+    pub fn frame(
+        &self,
+        workspace_id: WorkspaceId,
+        from: ([u8; 32], [u8; 32]),
+        to: [u8; 32],
+        message: tilo_actions::remote::RemoteActionMessage,
+    ) -> tilo_actions::remote::Pending<Option<tilo_actions::remote::RemoteActionMessage>> {
         let Some(remote) = self
             .actions
             .as_ref()
@@ -294,7 +308,7 @@ impl Hand {
                 device = %hex::encode(to),
                 "a request was handed to a device this host holds no link to"
             );
-            return;
+            return tilo_actions::remote::Pending::ready(None);
         };
         // A message handed for a caller other than this host runs as the device that signed it,
         // which the message must carry; the receiver reads that signature, never this host's word.
@@ -309,16 +323,19 @@ impl Hand {
                 "a request handed on carries no signature of its caller and runs as this host"
             );
         }
+        let (completer, answered) = tilo_actions::remote::pending();
         let reporter = self.served.clone();
         remote.ask_message(message).then(move |answer| {
-            if let (Some(reporter), Some(Some(answer))) = (reporter, answer)
+            if let (Some(reporter), Some(Some(reply))) = (reporter.as_ref(), answer.as_ref())
                 && let Some(server) = reporter.upgrade()
             {
                 // What the device holding the window answered, as the app action server reads
                 // it: it counts the run, and answers the caller that follows it.
-                let _ = server.relayed(workspace_id, to, &answer);
+                let _ = server.relayed(workspace_id, to, reply);
             }
+            completer.complete(answer);
         });
+        answered
     }
 }
 
@@ -440,7 +457,17 @@ impl Served {
                     server.serve(workspace, caller, message.clone())
                 };
                 reply.unwrap_or_else(|| {
-                    Self::refused(message, "the host does not answer that request")
+                    // A host that places no Browser says so, rather than leaving an open of it
+                    // read as a request nothing answers.
+                    let reason = match &message {
+                        RemoteActionMessage::Invoke(request)
+                            if crate::agents::windows::opens_browser_at(&request.target) =>
+                        {
+                            crate::agents::windows::UNPLACED
+                        }
+                        _ => "the host does not answer that request",
+                    };
+                    Self::refused(message, reason)
                 })
             }
         }

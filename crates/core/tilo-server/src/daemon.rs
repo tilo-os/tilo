@@ -777,30 +777,44 @@ impl Server {
             Ok(None) => None,
             Ok(Some(browsers)) => {
                 let browsers = Arc::new(browsers);
-                if let Some((key, cert)) =
-                    crate::web::stand_in_for(&cfg.state_root, &identity.user_public_key)
-                {
-                    browsers.serve_from(crate::hosted_browser::Authority {
-                        user_public_key: identity.user_public_key,
-                        cert,
-                        key,
-                        server: endpoint.addr(),
-                        workspaces: Some(governed.clone()),
-                        environments: handler.environments.clone(),
-                        runtime: tokio::runtime::Handle::current(),
-                        hand: governed.hand(),
-                    });
+                // A session's device is certified by the person's stand-in: a host that holds
+                // none places no window, so it serves no Browser and registers no provider for
+                // one. An open is then answered by the dispatch's own refusal, which says
+                // Browser does not run here.
+                match crate::web::stand_in_for(&cfg.state_root, &identity.user_public_key) {
+                    Some((key, cert)) => {
+                        browsers.serve_from(crate::hosted_browser::Authority {
+                            user_public_key: identity.user_public_key,
+                            cert,
+                            key,
+                            server: endpoint.addr(),
+                            workspaces: Some(governed.clone()),
+                            environments: handler.environments.clone(),
+                            runtime: tokio::runtime::Handle::current(),
+                            hand: governed.hand(),
+                        });
+                        browsers.ask_from(
+                            governed.action_service(),
+                            endpoint.clone(),
+                            governed.clone(),
+                            tokio::runtime::Handle::current(),
+                        );
+                        if let Some(store) = governed.asked_store() {
+                            browsers.keep_asked_in(&store);
+                        }
+                        // The host's one dispatch answers the workspace's open of Browser and
+                        // the page actions of the window it places, as it answers every other
+                        // action.
+                        browsers.provide_in(&governed.providers());
+                        Some(browsers)
+                    }
+                    None => {
+                        tracing::warn!(
+                            "this host holds no stand-in for its person, so it places no Browser"
+                        );
+                        None
+                    }
                 }
-                browsers.ask_from(
-                    governed.action_service(),
-                    endpoint.clone(),
-                    governed.clone(),
-                    tokio::runtime::Handle::current(),
-                );
-                if let Some(store) = governed.asked_store() {
-                    browsers.keep_asked_in(&store);
-                }
-                Some(browsers)
             }
             Err(error) => {
                 return Err(ServerError::Identity(format!(

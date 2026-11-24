@@ -81,6 +81,10 @@ pub fn opens_browser_at(target: &RemoteActionTarget) -> bool {
         && target.address.action == APPLICATION_OPEN_ACTION
 }
 
+/// What a host that places no Browser answers an open of it with: words that say why, since its
+/// person cannot reach a window here.
+pub const UNPLACED: &str = "Browser doesn't open here. Open it on your own device instead.";
+
 /// The record an answered open of Browser made, when it made one: the
 /// record its answer names.
 #[must_use]

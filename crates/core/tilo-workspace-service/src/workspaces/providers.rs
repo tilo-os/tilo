@@ -26,9 +26,9 @@ use std::sync::Arc;
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending, ProvidedPackage, RemoteActionTarget,
-    application_provider,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending, PendingPoll, ProvidedPackage,
+    RemoteActionTarget, application_provider,
 };
 use tilo_actions::{ResourceSpec, api::locate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
@@ -95,6 +95,19 @@ const TAKEN_KEPT: usize = 4096;
 #[derive(Clone, Default)]
 pub struct Providers(Arc<Inner>);
 
+/// [`Providers`], by weak reference: what a provider registered on a device keeps to answer its
+/// calls, without keeping the registry alive.
+#[derive(Clone)]
+pub struct WeakProviders(std::sync::Weak<Inner>);
+
+impl WeakProviders {
+    /// The registry, while it is alive.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<Providers> {
+        Some(Providers(self.0.upgrade()?))
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     provided: std::sync::RwLock<BTreeMap<Arc<str>, Registered>>,
@@ -119,6 +132,13 @@ enum Taker {
 }
 
 impl Providers {
+    /// This registry, by weak reference ([`WeakProviders`]): what a provider it holds keeps to
+    /// answer its own calls without keeping the registry alive.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakProviders {
+        WeakProviders(Arc::downgrade(&self.0))
+    }
+
     /// Answer the calls that name `provider`, or an address it publishes, with `answers` from now
     /// on, decided by the grants of the application `app` and reaching as far as `reach`.
     pub fn provide(
@@ -148,12 +168,54 @@ impl Providers {
     #[must_use]
     pub fn publishing(&self, target: &RemoteActionTarget) -> Option<Registered> {
         application_provider(&target.provider)?;
+        self.published(target)
+    }
+
+    /// The registered provider that published the address `target` names, whichever provider
+    /// token the call carries: a workspace's own `app.<app>#open` is the open of the app a
+    /// provider places, and is answered by it. `None` when no registered provider publishes it.
+    #[must_use]
+    pub fn published(&self, target: &RemoteActionTarget) -> Option<Registered> {
         self.0
             .provided
             .read_recover()
             .values()
             .find(|registered| locate(&registered.published, &target.address).is_some())
             .cloned()
+    }
+
+    /// [`Self::published`], for a provider that reaches devices: what a call from another device
+    /// may reach.
+    #[must_use]
+    pub fn published_for_devices(&self, target: &RemoteActionTarget) -> Option<Registered> {
+        self.published(target)
+            .filter(|registered| registered.reach.devices())
+    }
+
+    /// The publishers the registered providers reaching devices list for `caller`: what joins a
+    /// listing naming no provider, read from the providers that answer at once. A provider whose
+    /// listing has to be asked elsewhere contributes nothing here; its own rows reach a caller
+    /// that names it.
+    #[must_use]
+    pub fn publishers(&self, caller: &Caller, query: &CatalogueQuery) -> Vec<CatalogueProvider> {
+        // Copied out before they are asked, so a provider's own listing may reach this registry
+        // without waiting on the read this takes.
+        let answers: Vec<Arc<dyn ActionProvider + Send + Sync>> = self
+            .0
+            .provided
+            .read_recover()
+            .values()
+            .filter(|registered| registered.reach.devices())
+            .map(|registered| Arc::clone(&registered.answers))
+            .collect();
+        let mut publishers = Vec::new();
+        for answers in answers {
+            let mut answer = answers.query(caller, query.clone());
+            if let PendingPoll::Ready(Ok(page)) = answer.poll_ready() {
+                publishers.extend(page.providers);
+            }
+        }
+        publishers
     }
 
     /// What each registered provider publishes at fixed addresses, as the package an app's code
@@ -284,7 +346,12 @@ impl Providers {
             self.take(request.invocation, Taker::Host(Arc::clone(&host)));
             return Some(host.invoke(caller, request));
         }
-        let registered = registered.or_else(|| self.get(provider))?;
+        // An address a registered provider published is that provider's, whichever provider token
+        // the call names: a workspace's own `app.<app>#open` is the open of an app this device
+        // places.
+        let registered = registered
+            .or_else(|| self.published(&request.target))
+            .or_else(|| self.get(provider))?;
         Some(registered.answers.invoke(caller, request))
     }
 
@@ -326,10 +393,10 @@ impl Providers {
         Some(registered.answers.query(caller, query))
     }
 
-    /// Hand `request`, another device's call, to the provider it names once the workspace `caller`
-    /// asks in admits that device to the action by its grants, read from this device's copy in
-    /// `workspaces`. `None` when no provider reaching devices is registered under the name the
-    /// request targets.
+    /// Hand `request`, another device's call, to the provider it names, or the one that published
+    /// the address it calls, once the workspace `caller` asks in admits that device to the action
+    /// by its grants, read from this device's copy in `workspaces`. `None` when no provider
+    /// reaching devices answers it.
     pub(super) fn from_device(
         &self,
         caller: &Caller,
@@ -337,7 +404,9 @@ impl Providers {
         workspaces: &Arc<super::device_actions::WorkspacesMap>,
         runtime: &tokio::runtime::Handle,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
-        let registered = self.for_devices(&request.target.provider)?;
+        let registered = self
+            .for_devices(&request.target.provider)
+            .or_else(|| self.published_for_devices(&request.target))?;
         let (Some(device), Some(workspace)) = (
             caller.device_public_key().copied(),
             caller.workspace().map(str::to_owned),

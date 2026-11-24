@@ -199,10 +199,13 @@ workspace's Linux turn
 ([`linux_devices.rs`](../crates/core/tilo-server/src/linux_devices.rs)):
 
 1. Someone opens Browser: a person in their window, or an agent with a scoped
-   key calling `app.so.tilo.browser#open`. The workspace lists Browser among
-   its apps like any other, and the host opens the workspace's Browser record
-   for it. The server asks the workspace's devices to take the turn; while
-   none that runs Linux takes it, the open waits and says so once.
+   key calling `app.so.tilo.browser#open`. The host answers the open as a
+   provider on its device's one dispatch, publishing
+   `app.so.tilo.browser#open`, and opens the workspace's Browser record for
+   it; a host that places no window registers no provider, and an open of
+   Browser is refused in words that say it does not open there. The server
+   asks the workspace's devices to take the turn; while none that runs Linux
+   takes it, the open waits and says so once.
 2. The device that takes it opens Browser with the material below, asking its
    hosted-VM service, which wakes the VM and starts the session.
 3. The session joins the workspace and opens the window; opening Browser
@@ -228,13 +231,14 @@ the page is used.
 
 An agent's calls go to the workspace host's device. So the server lists
 the hosted Browser window among what runs in the workspace, as it lists the
-records it serves itself, and forwards what is addressed to the window — a
-listing of what it offers, a page action — to the device holding it, as it
-already carries remote actions between a workspace's devices. The window's
-answers reach the caller as the host's, the device it asked. The action runs
-on the window, and History records it as the caller's: the agent's run, for
-the person it acts for. A device that addresses the window itself hears the
-window.
+records it serves itself, and answers the window's provider on the same
+dispatch — registered while the window is up and withdrawn when it stops —
+handing a listing of what it offers, or a page action, to the device holding
+it, as it already carries remote actions between a workspace's devices. The
+window's answers reach the caller as the host's, the device it asked. The
+action runs on the window, and History records it as the caller's: the agent's
+run, for the person it acts for. A device that addresses the window itself
+hears the window.
 
 The window opens for an agent rather than for the person: it browses as a
 visitor, on a fresh profile of the VM's own, so an agent reads and fills the

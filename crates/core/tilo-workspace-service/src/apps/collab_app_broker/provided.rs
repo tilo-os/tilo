@@ -113,7 +113,7 @@ pub(super) fn rows_of(
     };
     loop {
         let mut listed = registered.answers.query(caller, query.clone());
-        let tilo_actions::remote::PendingPoll::Ready(Some(Ok(page))) = listed.poll_ready() else {
+        let tilo_actions::remote::PendingPoll::Ready(Ok(page)) = listed.poll_ready() else {
             return rows;
         };
         rows.extend(page.rows);
