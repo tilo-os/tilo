@@ -329,7 +329,7 @@ fn card_view(ada: &Replica, task: &Value) -> tilolang_runtime::ViewInstance {
                 .find(|v| v.name == "task_card")
                 .unwrap()
                 .id,
-            vec![task.clone(), project_of(ada, task), Value::List(Vec::new())],
+            vec![task.clone(), project_of(ada, task)],
         )
         .unwrap()
 }
