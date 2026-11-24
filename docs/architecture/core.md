@@ -1160,7 +1160,13 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   its writes land at once, closing the window or the app's process ends nothing,
   no idle timeout applies while the job runs, and when the job ends its `done:`
   action runs as a child call under the caller's grants, starting the app without
-  a window if it isn't running. Cancelling the call cancels its jobs. A press in a
+  a window if it isn't running. Cancelling the call cancels its jobs. A project
+  check runs only where its project's host approved it: the daemon reads a private
+  startup configuration of approved projects, each an exact app, workspace, record
+  and resource identity with fixed commands, sources and bounds, takes the turn
+  with `work::takes_turn`, and keeps what it observed in the job's record under
+  `devices/<id>/jobs`. A check ID the configuration does not approve for exactly
+  that project is refused, and an app names a check's ID and never its commands. A press in a
   window is a call like any other, admitted as the person who pressed, with its
   own invocation record. The compositor, which saw the input, attests it: it
   issues the window a one-use input serial and tells the daemon, and only a call

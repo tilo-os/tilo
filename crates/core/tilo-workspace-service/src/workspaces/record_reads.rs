@@ -297,6 +297,12 @@ impl RecordReads {
         let workspaces = self.workspaces.as_ref()?.upgrade()?;
         let (readers, reads) = workspaces.own_reading(&address.app)?;
         let device = workspaces.device_cert();
+        // A device's own space (`devices/<device hex>`) is read by the store that publishes it,
+        // which decides at each of its records; no workspace's governance reaches it.
+        if address.workspace == tilo_actions::remote::device_record_space(&device.device_public_key)
+        {
+            return Some(Ok(reads));
+        }
         if address.workspace
             != tilo_server_protocol::servers::person_workspace_id(&device.user_public_key)
         {

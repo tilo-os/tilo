@@ -92,6 +92,8 @@ runtime-fs = { package = "tilo-runtime-fs", path = "../runtime-fs" }
 tilo-identity-client = { path = "../tilo-identity-client" }
 serde.workspace = true
 serde_json.workspace = true
+# The digests a check's receipt carries of what the host observed.
+sha2.workspace = true
 tilo-actions = { path = "../actions" }
 # The app id of the one app this device's server settings are read and changed for.
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
@@ -190,8 +192,9 @@ tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agen
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-# The log a daemon keeps trims, and the socket it stops taking connections at.
-rustix = { workspace = true, features = ["fs", "net", "std"] }
+# The log a daemon keeps trims, the socket it stops taking connections at, and the user it
+# checks a private project-check configuration is owned by.
+rustix = { workspace = true, features = ["fs", "net", "process", "std"] }
 
 # Every tilolang process a Windows device starts runs in an AppContainer of its app's own.
 [target.'cfg(windows)'.dependencies]

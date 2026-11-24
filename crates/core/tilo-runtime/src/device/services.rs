@@ -2543,7 +2543,34 @@ fn broker_services(
     let published: Arc<dyn PublishedResources> = Arc::new(kept_here().serving_the_rest(Arc::new(
         tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
     )));
+    // The checks a project's host approved: this device's work, kept as its jobs at
+    // `devices/<device>/jobs` and read through the one record API. Their definitions are a
+    // private startup configuration, so a check an app names never brings its own commands.
+    #[cfg(unix)]
+    let approved_checks = {
+        let jobs = Arc::new(super::approved_checks::CheckJobs::at(
+            parts.root,
+            parts.workspaces.copies().host_device(),
+        ));
+        parts.workspaces.copies().publish_own(
+            super::approved_checks::JOBS,
+            tilo_workspace_service::workspaces::OwnReaders::OwnRecords,
+            Arc::clone(&jobs) as Arc<dyn tilo_actions::remote::ResourceReads>,
+        );
+        Some(Arc::new(super::approved_checks::NativeChecks::new(
+            parts.workspaces,
+            jobs,
+        ))
+            as Arc<
+                dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices,
+            >)
+    };
+    #[cfg(not(unix))]
+    let approved_checks: Option<
+        Arc<dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices>,
+    > = None;
     Ok(ProcessServices {
+        approved_checks,
         audio_output: Some(forwarded.audio_output),
         // A page's view's call is the browser's that shows it; the seat carries every other.
         native_media: Some(match parts.key_sessions {

@@ -64,7 +64,16 @@ fn run() -> io::Result<()> {
     {
         return tilo_dialogs::confined::run_consent_helper();
     }
-    let args = daemon::parse_args(arguments)?;
+    let args = daemon::parse_args(arguments.clone())?;
+    #[cfg(unix)]
+    if args.mode == daemon::Mode::Daemon
+        && let Err(error) = crate::device::approved_checks::install_from_args(arguments)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("approved project check configuration refused: {error}"),
+        ));
+    }
     if args.mode == daemon::Mode::Daemon {
         if args.standalone {
             // A profile named apart keeps the daemon's environment inside it.

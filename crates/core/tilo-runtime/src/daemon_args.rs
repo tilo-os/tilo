@@ -86,9 +86,21 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     let mut standalone = false;
     let mut device = None;
     let mut workspace = None;
+    let mut approved_checks = false;
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
             Some("--dev") if !dev => dev = true,
+            // The private configuration the device reads before it admits anything, which
+            // `install_from_args` loads and validates: here it only names no app or workspace.
+            Some("--approved-checks") if !approved_checks => {
+                arguments
+                    .next()
+                    .ok_or_else(|| invalid("--approved-checks requires a path"))?;
+                approved_checks = true;
+            }
+            Some(argument) if !approved_checks && argument.starts_with("--approved-checks=") => {
+                approved_checks = true;
+            }
             Some("--device") if device.is_none() => device = Some(device_named(arguments.next())?),
             Some("--workspace") if workspace.is_none() => {
                 workspace = Some(workspace_named(arguments.next())?);
