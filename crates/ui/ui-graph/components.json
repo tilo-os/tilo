@@ -2144,6 +2144,27 @@
           "at": "float"
         },
         {
+          "name": "press_at",
+          "doc": "A pointer went down over the drawing, at (x, y) in fractions of its box: the point a person pressed, for a drawing they set things on.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "drag_at",
+          "doc": "The pointer moved over the drawing while pressed, to (x, y) in fractions of its box.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "release_at",
+          "doc": "The pointer came up over the drawing, at (x, y) in fractions of its box.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
           "name": "wheel",
           "doc": "The wheel turned over the drawing: across it and down it, in logical pixels, positive down and to the end.",
           "value": "float",
@@ -10118,6 +10139,107 @@
                 "bool": false
               },
               "doc": "Set heavier than its role."
+            }
+          ]
+        },
+        {
+          "name": "area",
+          "doc": "A box filled in a colour of its own (`#rrggbb` or `#rrggbbaa`), not the theme's.",
+          "fields": [
+            {
+              "name": "x",
+              "ty": "float"
+            },
+            {
+              "name": "y",
+              "ty": "float"
+            },
+            {
+              "name": "w",
+              "ty": "float"
+            },
+            {
+              "name": "h",
+              "ty": "float"
+            },
+            {
+              "name": "round",
+              "ty": "float",
+              "default": {
+                "float": 0.0
+              }
+            },
+            {
+              "name": "colour",
+              "ty": "text",
+              "doc": "Its fill, `#rrggbb` or `#rrggbbaa`."
+            }
+          ]
+        },
+        {
+          "name": "stroke",
+          "doc": "A line through `points` in a colour of its own, not the theme's.",
+          "fields": [
+            {
+              "name": "points",
+              "ty": {
+                "list": "float"
+              }
+            },
+            {
+              "name": "colour",
+              "ty": "text",
+              "doc": "Its line, `#rrggbb` or `#rrggbbaa`."
+            },
+            {
+              "name": "width",
+              "ty": "float",
+              "doc": "The line's width, a fraction of the box's shorter side."
+            }
+          ]
+        },
+        {
+          "name": "label",
+          "doc": "A text at (x, y) in a colour and size of its own, not the theme's.",
+          "fields": [
+            {
+              "name": "x",
+              "ty": "float"
+            },
+            {
+              "name": "y",
+              "ty": "float"
+            },
+            {
+              "name": "text",
+              "ty": "text"
+            },
+            {
+              "name": "colour",
+              "ty": "text",
+              "doc": "Its words, `#rrggbb` or `#rrggbbaa`."
+            },
+            {
+              "name": "size",
+              "ty": "float",
+              "doc": "Its height, a fraction of the box's height."
+            },
+            {
+              "name": "anchor",
+              "ty": {
+                "choice": {
+                  "name": "Anchor",
+                  "cases": [
+                    "start",
+                    "middle",
+                    "end"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "middle"
+              },
+              "doc": "Which side of it stands at (x, y)."
             }
           ]
         }
