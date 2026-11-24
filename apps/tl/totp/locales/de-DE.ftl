@@ -122,6 +122,8 @@ d-ec2dszgu-digits = Stellen
 
 d-ec2dszgu-period = Zeitraum
 
+d-ec2dszgu-color = Farbe
+
 d-ev44bsqe = Aus einem Einrichtungslink hinzufügen
     .doc = Fügt das Konto hinzu, das ein Einrichtungslink nennt: womit der QR-Scan und das Einfügefeld beide enden.
     .did = fügte ein Konto aus einem Einrichtungslink hinzu
@@ -153,6 +155,8 @@ d-uzlj3vkz-algorithm = Verfahren
 d-uzlj3vkz-digits = Stellen
 
 d-uzlj3vkz-period = Zeitraum
+
+d-uzlj3vkz-color = Farbe
 
 d-2jxhhwxw = Nach oben
     .doc = Verschiebt ein Konto eine Stelle nach oben.
