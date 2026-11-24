@@ -17,7 +17,7 @@ use tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_device_identity::login::{PROVIDER, RENAME, RESOURCE, REVOKE, UPDATE};
+use tilo_device_identity::login::{APPROVE, PENDING, PROVIDER, RENAME, RESOURCE, REVOKE, UPDATE};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
 
@@ -209,7 +209,9 @@ impl ActionProvider for OnThisDevice {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        Pending::ready(Ok(catalogue_of(&query, |action| action == UPDATE)))
+        Pending::ready(Ok(catalogue_of(&query, |action| {
+            matches!(action, UPDATE | PENDING | APPROVE)
+        })))
     }
 
     fn invoke(
@@ -222,13 +224,25 @@ impl ActionProvider for OnThisDevice {
             return Pending::ready(Ok(state.receipt()));
         }
         let address = &request.target.address;
+        let args = match &request.argument {
+            InvokeArgument::Json(argument) => Value::Object(argument.clone()),
+            _ => Value::Object(Map::new()),
+        };
+        // An agent's key this daemon serves a sign-in ticket for, shown to and approved by a
+        // device that holds the person's root.
+        if address.resource == RESOURCE
+            && matches!(address.action.as_str(), PENDING | APPROVE)
+            && self.0.asks_for_agent_key(&args)
+        {
+            let update = match self.0.agent_key(&address.action, &args) {
+                Ok(value) => succeeded(invocation, value),
+                Err(error) => failed(invocation, &format!("{error:#}")),
+            };
+            return Pending::ready(Ok(self.keep(invocation, update)));
+        }
         if address.resource != RESOURCE || address.action != UPDATE {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
-        let args = match request.argument {
-            InvokeArgument::Json(argument) => Value::Object(argument),
-            _ => Value::Object(Map::new()),
-        };
         let update = match device_in(&args) {
             Ok(Some(device)) if device != self.0.this() => {
                 return Pending::ready(Err(ActionCallError::refused(

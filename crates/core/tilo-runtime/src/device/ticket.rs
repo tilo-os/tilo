@@ -9,6 +9,7 @@
 //! service the daemon's one iroh router already serves (`tilo-actions/1`), as the one call it
 //! admits from a computer with no certificate yet, so no second endpoint or service is made.
 
+mod agent_key;
 mod manage;
 
 pub(crate) use manage::OnThisDevice;
@@ -510,6 +511,8 @@ struct Inner {
     update: std::sync::OnceLock<manage::UpdateStart>,
     /// Where the person's devices are reached that no lookup finds.
     reach: std::sync::Mutex<HashMap<[u8; 32], iroh::EndpointAddr>>,
+    /// The agents' keys this daemon serves a sign-in ticket for, one per agent.
+    agent_keys: std::sync::Mutex<Vec<agent_key::AgentKey>>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -553,6 +556,7 @@ impl Tickets {
             calls: std::sync::Mutex::new(HashMap::new()),
             update: std::sync::OnceLock::new(),
             reach: std::sync::Mutex::default(),
+            agent_keys: std::sync::Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
     }
