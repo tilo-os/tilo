@@ -32,21 +32,25 @@ pub mod canvas;
 pub mod connection;
 #[cfg(feature = "app-launch")]
 pub mod containers_engine;
+#[cfg(feature = "app-launch")]
+pub mod db_engine;
 #[cfg(all(
     feature = "app-launch",
     any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
 ))]
 pub mod feed_engine;
 pub mod files;
+#[cfg(feature = "app-launch")]
+pub mod git_engine;
 pub mod hosted;
 pub mod invocations;
 pub mod page_prompts;
 pub mod pdf;
-#[cfg(feature = "app-launch")]
-pub mod db_engine;
 pub mod personal;
 pub mod phrases;
 pub mod presence;
+#[cfg(feature = "app-launch")]
+pub mod print_centre_engine;
 pub mod shell_page;
 pub mod stop;
 pub mod task;
@@ -59,10 +63,6 @@ pub mod testing;
 pub mod video_engine;
 pub mod wait;
 pub mod web;
-#[cfg(feature = "app-launch")]
-pub mod print_centre_engine;
-#[cfg(feature = "app-launch")]
-pub mod git_engine;
 #[cfg(feature = "app-launch")]
 pub mod window;
 
@@ -289,7 +289,7 @@ pub(crate) fn patch_transport(
 fn store_of(fd: Option<Descriptor>) -> Option<tilo_content::ContentStore> {
     #[cfg(unix)]
     {
-        tilo_content_device::for_connection(fd?)
+        tilo_content_device::for_connection(fd?.into())
             .inspect_err(|error| tracing::warn!(%error, "the instance's content store is unusable"))
             .ok()
     }
@@ -1111,6 +1111,7 @@ impl TilolangProcess {
                 .find(|name| tilolang_tilo::origin::uses_origin(&hosted.bundle().meta, name));
             if let Some(name) = served {
                 let origin = stream_of(origin)
+                    .map_err(|error| error.to_string())
                     .and_then(|origin| {
                         tilolang_tilo::origin::remote(name, origin, Arc::clone(&self.wake))
                     })
