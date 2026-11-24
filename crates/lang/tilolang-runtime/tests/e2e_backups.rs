@@ -155,22 +155,22 @@ mod cases {
                 "id": "local-destination",
                 "name": "backup-drive",
                 "kind": "local_folder",
-                "used_bytes": 312000000000_i64,
-                "total_bytes": 500000000000_i64,
+                "used_bytes": 312_000_000_000_i64,
+                "total_bytes": 500_000_000_000_i64,
                 "encrypted": false,
                 "health": "unknown",
             }],
             "snapshots": [
                 {
-                    "id": "1_795_080_000",
+                    "id": "1795080000",
                     "source_id": "local-source",
                     "dest_id": "local-destination",
-                    "taken_unix_seconds": 1795080000_i64,
+                    "taken_unix_seconds": 1_795_080_000_i64,
                     "label": "",
                     "kind": "unknown",
                     "retention": "unknown",
-                    "size_bytes": 9700000000_i64,
-                    "delta_bytes": 9700000000_i64,
+                    "size_bytes": 9_700_000_000_i64,
+                    "delta_bytes": 9_700_000_000_i64,
                     "files_changed": 312,
                     "status": "complete",
                     "failure": "",
@@ -180,15 +180,15 @@ mod cases {
                     ],
                 },
                 {
-                    "id": "1_795_076_400",
+                    "id": "1795076400",
                     "source_id": "local-source",
                     "dest_id": "local-destination",
-                    "taken_unix_seconds": 1795076400_i64,
+                    "taken_unix_seconds": 1_795_076_400_i64,
                     "label": "Before the upgrade",
                     "kind": "manual",
                     "retention": "kept",
-                    "size_bytes": 9500000000_i64,
-                    "delta_bytes": 180000000_i64,
+                    "size_bytes": 9_500_000_000_i64,
+                    "delta_bytes": 180_000_000_i64,
                     "files_changed": 211,
                     "status": "complete",
                     "failure": "",
@@ -394,7 +394,7 @@ mod cases {
         assert_eq!(s.text(&s.root, "source_name"), "Documents");
         assert_eq!(
             s.number(&s.root, "subject"),
-            1_795_080_000,
+            1795080000,
             "the newest snapshot is the one the window shows"
         );
         assert_eq!(s.records(&snapshots[0], "files").len(), 2);
@@ -437,7 +437,7 @@ mod cases {
         );
         assert_eq!(s.text(&s.root, "working"), "verify");
         let ask = s.engine.last_input();
-        assert_eq!(ask["snapshot"], "1_795_076_400");
+        assert_eq!(ask["snapshot"], "1795076400");
         assert_eq!(ask["destination"], "/home/you/backup-drive");
         s.engine
             .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);
@@ -466,7 +466,7 @@ mod cases {
         assert_eq!(s.text(&s.root, "working"), "restore");
         let ask = s.engine.last_input();
         assert_eq!(ask["target"], "/home/you/restored");
-        assert_eq!(ask["snapshot"], "1_795_076_400");
+        assert_eq!(ask["snapshot"], "1795076400");
         assert_eq!(ask["overwrite"], false);
         s.engine
             .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);

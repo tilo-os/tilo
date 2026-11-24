@@ -712,7 +712,6 @@ mod cases {
 
     /// The article's page is set in the reader's size, face and paper.
     fn the_article_reads_in_the_chosen_size_face_and_paper(feeds: &Feeds) {
-        // The article's page is set in the reader's size, face and paper.
         let article = feeds.article("A quiet morning");
         let page = feeds.page(&article);
         let reading = of_kind(page.tree(), "ui.Reading")

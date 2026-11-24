@@ -213,6 +213,80 @@ mod cases {
             })
             .to_string()
         }
+
+        fn changed(&self, run: impl FnOnce(&mut Repo) -> &'static str) -> Result<String, String> {
+            {
+                let mut repo = self.repo.borrow_mut();
+                let answer = run(&mut repo);
+                repo.answer = answer;
+            }
+            Ok(self.loaded())
+        }
+
+        /// The files of the newest commit, each as the app shows it.
+        fn commit_detail(&self) -> Result<String, String> {
+            let repo = self.repo.borrow();
+            let files: Vec<String> = repo
+                .files
+                .iter()
+                .map(|path| {
+                    serde_json::json!({
+                        "path": path,
+                        "old_path": null,
+                        "kind": "modified",
+                        "additions": 2,
+                        "deletions": 1,
+                        "binary": false,
+                        "language": "rust",
+                        "unified": "   1    1  fn beds() {}\n   2      -one\n         2 +two\n",
+                        "left": "   1  fn beds() {}\n   2  -one\n",
+                        "right": "   1  fn beds() {}\n   2  +two\n",
+                    })
+                    .to_string()
+                })
+                .collect();
+            Ok(serde_json::to_string(&files).unwrap())
+        }
+
+        /// The files of the staged change, each as the app lists it.
+        fn commit_files(&self) -> Result<String, String> {
+            let repo = self.repo.borrow();
+            let files: Vec<String> = repo
+                .files
+                .iter()
+                .map(|path| {
+                    serde_json::json!({
+                        "path": path,
+                        "old_path": null,
+                        "area": "staged",
+                        "kind": "modified",
+                        "additions": 2,
+                        "deletions": 1,
+                    })
+                    .to_string()
+                })
+                .collect();
+            Ok(serde_json::to_string(&files).unwrap())
+        }
+
+        /// The difference the newest commit made to the file `input` names.
+        fn commit_diff(&self, input: &str) -> Result<String, String> {
+            let mut repo = self.repo.borrow_mut();
+            repo.diff_reads = repo.diff_reads.saturating_add(1);
+            Ok(serde_json::json!({
+                "path": field(input, "file"),
+                "old_path": null,
+                "kind": "modified",
+                "additions": 2,
+                "deletions": 1,
+                "binary": false,
+                "language": "rust",
+                "unified": "   1    1  fn beds() {}\n   2      -one\n         2 +two\n",
+                "left": "   1  fn beds() {}\n   2  -one\n",
+                "right": "   1  fn beds() {}\n   2  +two\n",
+            })
+            .to_string())
+        }
     }
 
     fn field(input: &str, name: &str) -> serde_json::Value {
@@ -315,80 +389,6 @@ mod cases {
         }
 
         /// Carries `run` out on the repository, which answers what `run` gives, and answers the
-        /// loaded repository.
-        fn changed(&self, run: impl FnOnce(&mut Repo) -> &'static str) -> Result<String, String> {
-            {
-                let mut repo = self.repo.borrow_mut();
-                let answer = run(&mut repo);
-                repo.answer = answer;
-            }
-            Ok(self.loaded())
-        }
-
-        /// The files of the newest commit, each as the app shows it.
-        fn commit_detail(&self) -> Result<String, String> {
-            let repo = self.repo.borrow();
-            let files: Vec<String> = repo
-                .files
-                .iter()
-                .map(|path| {
-                    serde_json::json!({
-                        "path": path,
-                        "old_path": null,
-                        "kind": "modified",
-                        "additions": 2,
-                        "deletions": 1,
-                        "binary": false,
-                        "language": "rust",
-                        "unified": "   1    1  fn beds() {}\n   2      -one\n         2 +two\n",
-                        "left": "   1  fn beds() {}\n   2  -one\n",
-                        "right": "   1  fn beds() {}\n   2  +two\n",
-                    })
-                    .to_string()
-                })
-                .collect();
-            Ok(serde_json::to_string(&files).unwrap())
-        }
-
-        /// The files of the staged change, each as the app lists it.
-        fn commit_files(&self) -> Result<String, String> {
-            let repo = self.repo.borrow();
-            let files: Vec<String> = repo
-                .files
-                .iter()
-                .map(|path| {
-                    serde_json::json!({
-                        "path": path,
-                        "old_path": null,
-                        "area": "staged",
-                        "kind": "modified",
-                        "additions": 2,
-                        "deletions": 1,
-                    })
-                    .to_string()
-                })
-                .collect();
-            Ok(serde_json::to_string(&files).unwrap())
-        }
-
-        /// The difference the newest commit made to the file `input` names.
-        fn commit_diff(&self, input: &str) -> Result<String, String> {
-            let mut repo = self.repo.borrow_mut();
-            repo.diff_reads = repo.diff_reads.saturating_add(1);
-            Ok(serde_json::json!({
-                "path": field(input, "file"),
-                "old_path": null,
-                "kind": "modified",
-                "additions": 2,
-                "deletions": 1,
-                "binary": false,
-                "language": "rust",
-                "unified": "   1    1  fn beds() {}\n   2      -one\n         2 +two\n",
-                "left": "   1  fn beds() {}\n   2  -one\n",
-                "right": "   1  fn beds() {}\n   2  +two\n",
-            })
-            .to_string())
-        }
 
         fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
             self.asked

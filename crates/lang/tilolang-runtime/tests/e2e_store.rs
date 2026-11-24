@@ -32,7 +32,7 @@ action open_app(app_name: Text) {
       "icon": "https://artwork.invalid/notes.png", "screenshots": [], "homepage": "https://tilo.sh",
       "source_code": "", "origin": "tilo", "registry": "Tilo main", "branch": "stable",
       "user_managed": true, "trust": "publisher_signed",
-      "versions": ["{\"version\":\"0.2.0\",\"released\":\"\",\"root\":\"aa\",\"surface\":\"bb\",\"size\":44_040_192,\"runtime\":\"\",\"download\":\"\"}"],
+      "versions": ["{\"version\":\"0.2.0\",\"released\":\"\",\"root\":\"aa\",\"surface\":\"bb\",\"size\":44040192,\"runtime\":\"\",\"download\":\"\"}"],
       "available": "0.2.0", "installed": "0.1.0", "pinned": false, "fetched": "0.1.0",
       "runnable": true, "processors": "", "awaiting_developer": false, "featured": 0,
       "updated": "", "publisher": "cc", "digest": "dd", "bot": false,
@@ -90,8 +90,8 @@ action open_app(app_name: Text) {
     }"#;
 
     /// What Flatpak says one of Flathub's apps asks for.
-    const SUMMARY: &str = r#"{"arches": ["x86_64", "aarch64"], "download_size": 4_194_304,
-        "installed_size": 12_582_912,
+    const SUMMARY: &str = r#"{"arches": ["x86_64", "aarch64"], "download_size": 4194304,
+        "installed_size": 12582912,
         "metadata": {"permissions": {"filesystems": ["home"], "shared": ["network", "ipc"],
                                      "sockets": ["x11"]}}}"#;
 

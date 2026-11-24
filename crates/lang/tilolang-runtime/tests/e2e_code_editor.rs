@@ -1242,7 +1242,7 @@ mod cases {
 
     /// The commands on the open file are the file menu's: each answers to its key while the
     /// window has the keyboard.
-    fn the_file_menu_answers_to_its_keys(window: &ViewInstance) {
+    fn the_file_menu_answers_to_its_keys(window: &tilolang_runtime::ViewInstance) {
         for (label, key) in [
             ("Save", "Ctrl+S"),
             ("Save as…", "Ctrl+Shift+S"),
@@ -1279,7 +1279,7 @@ mod cases {
     fn the_line_commands_work_on_the_caret_line(
         editor: &Editor,
         main: &ResourceRef,
-        window: &mut ViewInstance,
+        window: &mut tilolang_runtime::ViewInstance,
     ) {
         // The comment toggle the key runs comments the line the caret is on.
         let toggle = node_with(window.tree(), "ui.MenuItem", "label", "Toggle comment")
@@ -1293,7 +1293,7 @@ mod cases {
         // The line commands the keys run work on the line the caret is on.
         editor.call(
             "replace_text",
-            vec![Value::resource(&main), Value::text("one\ntwo\nthree\n")],
+            vec![Value::resource(main), Value::text("one\ntwo\nthree\n")],
         );
         let fire = |window: &tilolang_runtime::ViewInstance, label: &str| {
             let key = node_with(window.tree(), "ui.MenuItem", "label", label)
@@ -1308,7 +1308,7 @@ mod cases {
         // The caret is on the first line, so the other direction moves the second one up.
         editor.call(
             "move_line",
-            vec![Value::resource(&main), Value::Int(1), Value::Bool(true)],
+            vec![Value::resource(main), Value::Int(1), Value::Bool(true)],
         );
         assert_eq!(editor.text(main, "text"), "one\ntwo\nthree\n");
         fire(window, "Duplicate line");
@@ -1323,7 +1323,7 @@ mod cases {
     fn go_to_line_shows_the_line_the_field_holds(
         editor: &Editor,
         main: &ResourceRef,
-        window: &mut ViewInstance,
+        window: &mut tilolang_runtime::ViewInstance,
     ) {
         // Go to line shows the line the field holds.
         let goto = editor
@@ -1349,7 +1349,7 @@ mod cases {
     /// The window's keys switch the panel under the code, and Escape in the terminal returns.
     fn the_windows_keys_switch_the_panel_and_escape_returns(
         editor: &Editor,
-        window: &mut ViewInstance,
+        window: &mut tilolang_runtime::ViewInstance,
     ) {
         // The window's keys switch the panel under the code, through the buttons its actions
         // stand on.
