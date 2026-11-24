@@ -799,7 +799,7 @@ mod cases {
             ],
         );
         let view = b.page_view();
-        assert_eq!(row_secondary(&view, "Reader"), "On · 1.2.3");
+        assert_eq!(row_secondary(&view, "Reader"), "On (1.2.3)");
 
         b.page(
             "install_extension",
