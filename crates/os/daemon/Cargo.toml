@@ -112,6 +112,8 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # A server on this machine's loopback, which a test's device relays through.
 test-server = { path = "../../../tools/test-server" }
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
+# The collaboration wire the refusal is read on, as a program that attaches by hand speaks it.
+runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", default-features = false }
 
 [lints]
 workspace = true

@@ -16649,6 +16649,7 @@ dependencies = [
  "tilo-rt",
  "tilo-runtime",
  "tilo-runtime-bundle",
+ "tilo-runtime-collab",
  "tilo-runtime-portal",
  "tilo-server-protocol",
  "tilo-socket",
