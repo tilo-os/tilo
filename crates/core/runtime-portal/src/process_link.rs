@@ -776,7 +776,7 @@ pub fn close(link: &Descriptor) -> io::Result<()> {
 /// windows ([`close`]), or it is gone. Never waits.
 #[must_use]
 pub fn hung_up(link: &Descriptor) -> bool {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         use rustix::event::{PollFd, PollFlags, Timespec, poll};
         let mut polled = [PollFd::new(link, PollFlags::RDHUP)];
@@ -790,7 +790,7 @@ pub fn hung_up(link: &Descriptor) -> bool {
                 .intersects(PollFlags::RDHUP | PollFlags::HUP | PollFlags::ERR)
         })
     }
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
     {
         crate::packet::hung_up(link)
     }

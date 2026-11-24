@@ -27,7 +27,7 @@ use std::io;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 mod stream;
 #[cfg(windows)]
 mod windows;
@@ -189,7 +189,7 @@ fn send<T: Packet>(socket: &Descriptor, message: &T) -> io::Result<()> {
     )
 )]
 fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         use std::os::fd::AsFd as _;
         let mut buffer = vec![0_u8; MAX_PACKET];
@@ -200,7 +200,7 @@ fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> 
         };
         decode(buffer.get(..length).unwrap_or_default(), fds).map(Some)
     }
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
     {
         use std::os::fd::AsFd as _;
         let Some((bytes, fds)) = stream::receive(socket.as_fd(), wait)? else {
@@ -229,14 +229,14 @@ pub(crate) fn send_raw(
     packet: &[u8],
     fds: &[std::os::fd::BorrowedFd<'_>],
 ) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     return crate::message::send_bytes(socket, packet, fds);
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     stream::send(socket, packet, fds)
 }
 
 /// Whether the peer behind `socket` closed its end. Never waits.
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 pub(crate) fn hung_up(socket: &Descriptor) -> bool {
     use std::os::fd::AsFd as _;
     stream::hung_up(socket.as_fd())
@@ -396,7 +396,7 @@ pub mod optional_fd {
 /// # Errors
 /// The system's error, or [`io::ErrorKind::Unsupported`] off Unix and Windows.
 pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
         Ok(socketpair(
@@ -406,7 +406,7 @@ pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
             None,
         )?)
     }
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
     return stream::pair();
     #[cfg(windows)]
     return windows::pair();
