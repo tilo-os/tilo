@@ -3470,3 +3470,181 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     );
     host.shutdown().await;
 }
+
+/// The inputs a shortcut declares that its host binds are filled on every firing: the
+/// workspace it runs in with each member's role and the public address of their picture, the
+/// workspace's own emoji, and what fired it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares() {
+    struct ChatProfile {
+        root: [u8; 32],
+        photo: Vec<u8>,
+    }
+    impl crate::workspaces::PersonNames for ChatProfile {
+        fn name_of(&self, person: &[u8; 32]) -> Option<String> {
+            (person == &self.root).then(|| "Ada".to_owned())
+        }
+        fn keep_name(&self, _: &[u8; 32], _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn photo_of(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
+            (person == &self.root).then(|| self.photo.clone())
+        }
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n....";
+
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
+    let (key, cert) = governor();
+    let host = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = host.workspaces();
+    workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+    // This host serves its people's pictures at its site, and keeps one for the governor.
+    workspaces.advertises_at("https://eu1.tilo.sh");
+    workspaces.person_names(Arc::new(ChatProfile {
+        root: cert.user_public_key,
+        photo: PNG.to_vec(),
+    }));
+    // The workspace's own emoji, as Chat's record holds them: founded from the same genesis
+    // every reader of the workspace's records checks.
+    let record = collab_types::workspace_document_id(tilo_workspace_emoji::KIND);
+    let kind = tilo_resource::ResourceKind::of::<tilo_workspace_emoji::WorkspaceEmoji>();
+    let mut founded = automerge::AutoCommit::new();
+    collaboration::resource::genesis(
+        &mut founded,
+        &collaboration::resource::DocumentCheckout::new(
+            collaboration::resource::DocumentId::parse(&record).unwrap(),
+            collaboration::resource::ResourceType::new(kind.kind()),
+        ),
+        &workspace,
+        |doc| kind.initialize(doc).map_err(|error| error.to_string()),
+    )
+    .unwrap();
+    workspaces
+        .author_workspace_document_from(
+            (&workspace, &cert),
+            (tilo_workspace_emoji::OWNER, &record),
+            Some(Box::new(founded)),
+            |doc| {
+                let emoji = doc
+                    .put_object(automerge::ROOT, "emoji", automerge::ObjType::Map)
+                    .map_err(|error| error.to_string())?;
+                let party = doc
+                    .put_object(&emoji, "party", automerge::ObjType::Map)
+                    .map_err(|error| error.to_string())?;
+                doc.put(&party, "image", automerge::ScalarValue::Bytes(PNG.to_vec()))
+                    .map_err(|error| error.to_string())?;
+                let added_by = serde_json::to_string(&tilo_action_policy::MemberId::person(
+                    hex::encode(cert.user_public_key),
+                ))
+                .map_err(|error| error.to_string())?;
+                doc.put(&party, "added_by", added_by)
+                    .map_err(|error| error.to_string())?;
+                doc.put(&party, "added_at", 1_i64)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
+
+    let shortcut: Shortcut = serde_json::from_value(json!({
+        "id": "bridge",
+        "name": "Bridge",
+        "steps": [],
+        "inputs": [
+            {"name": "workspace", "ty": "object", "description": "The workspace"},
+            {"name": "emoji", "ty": "object", "description": "The workspace's emoji"},
+            {"name": "context", "ty": "object", "description": "What fired it"}
+        ],
+        "triggers": [{
+            "trigger": "resource_changed",
+            "kind": "tasks.task",
+            "actions": [],
+            "fields": [],
+        }],
+    }))
+    .unwrap();
+    save_signed(workspaces, &workspace, shortcut, (&key, &cert)).await;
+
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+
+    // What a change of one of the workspace's records fires: the dispatcher reads who made it
+    // and what they did into the firing's context.
+    let event = DocumentEvent {
+        workspace: workspace.clone(),
+        record: "record".into(),
+        app: "so.tilo.tasks".into(),
+        kind: "tasks.task".into(),
+        change: "c1".into(),
+        actor: tilo_actions::Acting::person(hex::encode(cert.user_public_key)),
+        did: tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("so.tilo.tasks", "tasks.task", "add"),
+            [],
+        ),
+        arguments: serde_json::Map::default(),
+        item: None,
+        before: None,
+        after: None,
+        caused_by: None,
+        origin: None,
+        incoming_message: false,
+        housekeeping: false,
+        shortcut: None,
+        invocation: None,
+    };
+    let waiting = dispatched(
+        &runner.armed,
+        Event::Record(&event),
+        tilo_clock::unix_now_ms_i64(),
+    );
+    assert_eq!(waiting.len(), 1, "the shortcut fires on the change");
+    let inputs = runner.host_inputs(&waiting[0].firing).await;
+
+    let me = inputs["workspace"]["members"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the workspace input: {inputs:?}"))
+        .iter()
+        .find(|row| row["member"]["person"] == json!(hex::encode(cert.user_public_key)))
+        .unwrap_or_else(|| panic!("the governor's row: {inputs:?}"));
+    assert_eq!(me["name"], "Ada");
+    assert_eq!(me["role"], "owner");
+    let avatar = me["avatar"].as_str().unwrap_or_default();
+    assert!(
+        avatar.starts_with("https://eu1.tilo.sh/peer/v1/avatars/"),
+        "the picture they set is served at a public address: {avatar}"
+    );
+
+    let emoji = inputs["emoji"]["emoji"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the emoji input: {inputs:?}"));
+    assert_eq!(emoji[0]["name"], "party");
+    assert_eq!(emoji[0]["picture"], blake3::hash(PNG).to_hex().to_string());
+
+    let context = &inputs["context"];
+    assert_eq!(context["trigger"], "resource_changed");
+    assert_eq!(context["workspace"], workspace);
+    assert!(
+        context["who"]
+            .to_string()
+            .contains(&hex::encode(cert.user_public_key)),
+        "who made the change: {}",
+        context["who"]
+    );
+    assert!(
+        context["what"].is_object(),
+        "what they did: {}",
+        context["what"]
+    );
+    host.shutdown().await;
+}

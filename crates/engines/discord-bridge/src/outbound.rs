@@ -6,7 +6,6 @@ use discord_wire::op::{DeleteOp, EditOp, OutAttachment, ReactOp, SendOp, StartTh
 
 use serde::{Deserialize, Serialize};
 
-
 use tilo_resource::MemberId;
 
 use crate::guild::{Guild, MAX_CONTENT_CHARS, MAX_UPLOAD_BYTES, MappedKind, Origin};
@@ -112,8 +111,9 @@ pub fn plan_post(
     let author = chat.person(&message.author);
     let name = author.as_ref().map(|a| a.name.clone()).unwrap_or_default();
     let automated = author.as_ref().is_some_and(|a| a.agent) || !message.author.is_person();
-    // Chat keeps no picture of a member: a linked account's Discord avatar stands for them.
-    let avatar_blob: Option<String> = None;
+    // The picture they set in Tilo, which their workspace's host serves at a public address: it
+    // stands for them here, whether or not they linked a Discord account.
+    let tilo_avatar = author.as_ref().and_then(|a| a.avatar_url.clone());
     let (text, attachments) = body(guild, &message, context);
     if text.is_empty() && attachments.is_empty() {
         return plan;
@@ -129,7 +129,7 @@ pub fn plan_post(
         Some(link) if !automated => slug::linked_webhook_username(&name, &link.user_name),
         _ => slug::webhook_username(&name, automated),
     };
-    let discord_avatar = link.filter(|_| avatar_blob.is_none()).and_then(|link| {
+    let discord_avatar = link.filter(|_| tilo_avatar.is_none()).and_then(|link| {
         Some(discord_avatar_url(
             &link.discord_user,
             link.avatar.as_deref()?,
@@ -141,11 +141,8 @@ pub fn plan_post(
             webhook: target.webhook,
             thread,
             username,
-            avatar_url: avatar_blob
-                .as_ref()
-                .map(|b| format!("{}{b}", context.avatars))
-                .or(discord_avatar),
-            avatar_blob,
+            avatar_url: tilo_avatar.or(discord_avatar),
+            avatar_blob: None,
             content: text,
             attachments,
             created_ms: 0,
@@ -388,11 +385,7 @@ pub fn plan_reaction(
     let tilo_people = row
         .reactions
         .iter()
-        .filter(|r| {
-            r.member
-                .as_ref()
-                .is_some_and(MemberId::is_person)
-        })
+        .filter(|r| r.member.as_ref().is_some_and(MemberId::is_person))
         .filter(|r| emoji::to_discord(guild, &r.emoji).is_some_and(|e| emoji::key(&e) == wanted))
         .count();
     let op = ReactOp {

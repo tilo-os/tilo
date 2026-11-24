@@ -1408,6 +1408,27 @@ impl Workspaces {
         self.inner.host.cert.device_public_key
     }
 
+    /// The `https://` origin this keeper's site answers at (`https://eu1.tilo.sh`), when it
+    /// serves one: where the public addresses it mints for its members' pictures point. `None`
+    /// on a device that serves no site, which serves no picture to the outside.
+    #[must_use]
+    pub fn public_origin(&self) -> Option<String> {
+        self.inner.host.holder().origin
+    }
+
+    /// Make this keeper advertise its site at `origin`, as a deployment's
+    /// [`crate::service::ServiceConfig::origin`] does, so the public addresses it mints for its
+    /// members' pictures point there.
+    #[cfg(test)]
+    pub fn advertises_at(&self, origin: &str) {
+        self.inner
+            .host
+            .holder
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .origin = Some(origin.to_owned());
+    }
+
     /// Read `workspace`'s replica as it stands now, without waiting for its lock: how it is held
     /// here, and what `read` makes of it. `None` for a workspace not held here. What reads on a
     /// thread of its own reads here, as the device's key service reads who takes part in a group.

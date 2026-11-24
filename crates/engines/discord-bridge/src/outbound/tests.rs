@@ -75,7 +75,11 @@ fn chat(messages: &[Value]) -> crate::tilo::ChatRead {
     .knowing(&json!({
         "members": [
             {"member": {"person": "u_ada"}, "name": "Ada"},
-            {"member": {"person": "u_bo"}, "name": "Bo"},
+            {
+                "member": {"person": "u_bo"},
+                "name": "Bo",
+                "avatar": "https://eu1.tilo.sh/peer/v1/avatars/bo",
+            },
             {"member": {"agent": "x"}, "name": "Discord Scribe"}
         ]
     }))
@@ -147,6 +151,19 @@ tilo_test_env::scenario! {
         assert_eq!(
             send.avatar_url.as_deref(),
             Some("https://cdn.discordapp.com/avatars/d_ada/aa.png?size=128")
+        );
+        assert!(send.avatar_blob.is_none());
+    }
+
+    phase a_tilo_only_person_shows_the_picture_they_set;
+    {
+        // Bo linked no Discord account: the picture they set in Tilo, which their workspace's
+        // host serves at a public address, is what Discord shows beside their name.
+        let chat = chat(&[msg("m1", "u_bo", "hello", &json!({}))]);
+        let send = &plan_post(&guild(), &chat, "m1", &context()).sends[0].op;
+        assert_eq!(
+            send.avatar_url.as_deref(),
+            Some("https://eu1.tilo.sh/peer/v1/avatars/bo")
         );
         assert!(send.avatar_blob.is_none());
     }

@@ -319,6 +319,33 @@ impl Profiles {
         photo
     }
 
+    /// The picture a public avatar's `token` names, when a profile this host
+    /// keeps carries it now: the image's own bytes. `None` for a token no kept
+    /// picture hashes to now — a picture its person replaced or removed, or one
+    /// this host never kept.
+    pub(super) fn photo_for_token(&self, token: &str) -> Option<Vec<u8>> {
+        if !tilo_server_protocol::public_avatars::is_avatar_name(token) {
+            return None;
+        }
+        let entries = std::fs::read_dir(&self.dir).ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(root) = name.strip_suffix(".json").and_then(root_of) else {
+                continue;
+            };
+            let Some(photo) = self.kept_photo(&root) else {
+                continue;
+            };
+            if tilo_server_protocol::public_avatars::token(&root, &photo) == token {
+                return Some(photo);
+            }
+        }
+        None
+    }
+
     /// Keep `name` as the one the person `root` goes by, as a device of theirs asked this
     /// server: the profile kept for them takes it, the rest of it as it was, dated `now_ms` (after
     /// the one kept, so their devices read it as the newest).

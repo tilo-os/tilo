@@ -1447,3 +1447,75 @@ fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one()
         "no second name without a first"
     );
 }
+
+/// A person's picture is served to the outside at an unguessable public address, and the
+/// address serves nothing from the moment they replace it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the server and its listener serve the picture until the server shuts down at the end"
+)]
+async fn a_persons_picture_is_served_at_a_public_address_until_they_replace_it() {
+    use tilo_user_identity::root_statement;
+
+    let signer = SigningKey::from_bytes(&[61; 32]);
+    let host = host(&signer, 62, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let web = Arc::new(web_of(&server, &host));
+    let root = signer.verifying_key().to_bytes();
+    let hex_root = hex::encode(root);
+    const PHOTO: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAAAXRSTlMAQObYZgAAAAxJREFUeNoBgAEAAP//AwABWgH+AAAAAElFTkSuQmCC";
+    let photo = collab_types::photo_bytes(PHOTO).expect("the picture's bytes");
+    let at = 1_000_u64;
+    let profile = serde_json::json!({
+        "version": 1,
+        "user_public_key": hex_root,
+        "display_name": "Ada",
+        "photo": PHOTO,
+    })
+    .to_string();
+    let signed = serde_json::to_vec(&serde_json::json!({
+        "profile": profile,
+        "issued_at_ms": at,
+        "signature": hex::encode(root_statement::sign(&signer, at, &profile).unwrap()),
+    }))
+    .unwrap();
+    web.profiles
+        .publish(&signed, at, |_| async { true })
+        .await
+        .unwrap();
+
+    let token = tilo_server_protocol::public_avatars::token(&root, &photo);
+    let head = format!(
+        "GET {API_PREFIX}/avatars/{token} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    );
+    let (addr, serving) = serve_web(Arc::clone(&web)).await;
+    let (status, headers, body) = exchange(addr, &head, b"").await;
+    assert_eq!(status, 200, "{headers}");
+    assert_eq!(header_value(&headers, "content-type"), Some("image/png"));
+    assert_eq!(body, photo);
+
+    // They replace their picture with none: the old address names a picture no profile keeps
+    // any more, and serves nothing.
+    let later = at + 1;
+    let replaced = serde_json::json!({
+        "version": 1,
+        "user_public_key": hex_root,
+        "display_name": "Ada",
+    })
+    .to_string();
+    let signed = serde_json::to_vec(&serde_json::json!({
+        "profile": replaced,
+        "issued_at_ms": later,
+        "signature": hex::encode(root_statement::sign(&signer, later, &replaced).unwrap()),
+    }))
+    .unwrap();
+    web.profiles
+        .publish(&signed, later, |_| async { true })
+        .await
+        .unwrap();
+    let (status, _, _) = exchange(addr, &head, b"").await;
+    assert_eq!(status, 404, "a picture they replaced serves nothing");
+    stop(server, serving).await;
+}

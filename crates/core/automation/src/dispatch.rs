@@ -19,7 +19,7 @@ mod tests;
 
 pub use event::{
     AppEvent, ConnectorEvent, DocumentEvent, Event, InvocationEvent, ItemRef, PresenceEvent,
-    ScheduleEvent, SourceEvent, TimeEvent, app_event_object, event_of,
+    ScheduleEvent, SourceEvent, TimeEvent, TriggerContext, app_event_object, event_of,
 };
 pub use matching::{
     Armed, Dispatched, Firer, Firing, Skipped, dispatch, edited_paths, field_matches,

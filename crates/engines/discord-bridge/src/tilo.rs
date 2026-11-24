@@ -90,6 +90,9 @@ pub struct Person {
     pub id: MemberId,
     pub name: String,
     pub agent: bool,
+    /// The public address of their Tilo picture, where their workspace's host serves one: what
+    /// a place outside Tilo fetches to show them as they are here.
+    pub avatar_url: Option<String>,
 }
 
 /// The workspace's chat: its categories and channels.
@@ -422,6 +425,7 @@ impl ChatRead {
                 id: id.clone(),
                 name: text(row, "name"),
                 agent: !id.is_person(),
+                avatar_url: Some(text(row, "avatar")).filter(|avatar| !avatar.is_empty()),
             })
         })
     }
@@ -510,9 +514,7 @@ fn reactions(row: &Value) -> Vec<Reaction> {
         {
             let member = actor
                 .get("actor")
-                .and_then(|actor| {
-                    serde_json::from_value::<tilo_actions::Actor>(actor.clone()).ok()
-                })
+                .and_then(|actor| serde_json::from_value::<tilo_actions::Actor>(actor.clone()).ok())
                 .and_then(|actor| actor.member_id().cloned());
             out.push(Reaction {
                 emoji: emoji.clone(),

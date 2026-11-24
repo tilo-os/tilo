@@ -41,7 +41,7 @@ use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_automation::dispatch::retry;
 use tilo_automation::dispatch::{
     self, AppEvent, ConnectorEvent, DocumentEvent, Event, Firer, InvocationEvent, PresenceEvent,
-    ScheduleEvent, event_of,
+    ScheduleEvent, TriggerContext, event_of,
 };
 use tilo_automation::schedule::{SchedulePlan, Timed, plan};
 #[cfg(feature = "agents")]
@@ -62,6 +62,19 @@ const RENEW: Duration = Duration::from_secs(20);
 /// The input a shortcut declares to be handed which firing started it: the same on every
 /// device and every attempt, so a step can name it.
 pub const FIRING_INPUT: &str = "firing";
+
+/// The input a shortcut declares to be handed the workspace it runs in: its members, each with
+/// the role they hold here and, where this host serves a site, the public address of their
+/// picture.
+pub const WORKSPACE_INPUT: &str = "workspace";
+
+/// The input a shortcut declares to be handed the workspace's own emoji: each name with the
+/// content address of its picture.
+pub const EMOJI_INPUT: &str = "emoji";
+
+/// The input a shortcut declares to be handed what fired it: the trigger's kind, and who made
+/// the change and what they did where the event names them.
+pub const CONTEXT_INPUT: &str = "context";
 
 /// Where a firing's run starts: the device's action broker, which checks again that the
 /// shortcut still exists and that its saver may still run it.
@@ -249,6 +262,9 @@ pub struct Firing {
     pub invocation: AutomationInvocationId,
     /// The trigger's payload, as values for the shortcut's inputs.
     pub inputs: Map<String, Value>,
+    /// What fired it, for a shortcut that declares the [`CONTEXT_INPUT`] input: the trigger's
+    /// kind, and who made the change and what they did where the event names them.
+    pub context: TriggerContext,
     pub saver: String,
     /// The agent of the saver's it acts as, by its id and its grant's key, where one saved it.
     pub agent: Option<(String, [u8; 32])>,
@@ -347,12 +363,14 @@ fn dispatched(armed: &[Armed], event: Event<'_>, came_up_ms: i64) -> Vec<Waiting
             event,
         );
         firings.extend(fired.firings.into_iter().map(|fired| {
+            let context = event.context(fired.trigger.kind());
             let firing = Firing {
                 workspace: armed.workspace.clone(),
                 shortcut: armed.shortcut.id.clone(),
                 trigger: fired.trigger,
                 invocation: fired.invocation,
                 inputs: fired.inputs,
+                context,
                 saver: armed.saver.clone(),
                 agent: armed.agent.clone(),
                 answers: None,
@@ -392,6 +410,15 @@ pub fn seen_here(armed: &Armed, trigger: &TriggerSpec, payload: &[(&str, Value)]
         trigger: trigger.clone(),
         invocation: AutomationInvocationId::new(),
         inputs,
+        // A look at a source outside names neither a person nor a change: the trigger's kind
+        // and the workspace are all it knows.
+        context: TriggerContext {
+            workspace: armed.workspace.clone(),
+            trigger: trigger.kind().to_owned(),
+            who: None,
+            what: None,
+            caused_by: None,
+        },
         saver: armed.saver.clone(),
         agent: armed.agent.clone(),
         answers: None,
@@ -1271,6 +1298,135 @@ impl Runner {
             .is_some_and(|answered| answered >= *came_up_ms)
     }
 
+    /// The declared inputs the host fills for a firing, by name: the workspace it runs in, the
+    /// workspace's emoji, and what fired it. A shortcut that declares none of them is handed
+    /// nothing extra, and each is read from what the workspace publishes, never a splat of
+    /// everything this host holds.
+    async fn host_inputs(&self, firing: &Firing) -> Map<String, Value> {
+        let declared: Option<Vec<String>> = self
+            .armed
+            .iter()
+            .find(|armed| {
+                armed.workspace == firing.workspace && armed.shortcut.id == firing.shortcut
+            })
+            .map(|armed| {
+                armed
+                    .shortcut
+                    .inputs
+                    .iter()
+                    .filter(|input| input.ty == tilo_actions::params::ParamType::Object)
+                    .map(|input| input.name.to_string())
+                    .collect()
+            });
+        let Some(declared) = declared else {
+            return Map::new();
+        };
+        let mut inputs = Map::new();
+        for name in declared {
+            match name.as_str() {
+                WORKSPACE_INPUT => {
+                    inputs.insert(name, self.workspace_input(&firing.workspace).await);
+                }
+                EMOJI_INPUT => {
+                    inputs.insert(name, self.emoji_input(&firing.workspace).await);
+                }
+                CONTEXT_INPUT => {
+                    inputs.insert(
+                        name,
+                        serde_json::to_value(&firing.context).unwrap_or(Value::Null),
+                    );
+                }
+                _ => {}
+            }
+        }
+        inputs
+    }
+
+    /// Who is in `workspace`, by name and role, as of now:
+    /// `{"members": [{"member", "name", "role", "avatar"?}]}`. `role` is `null` for someone the
+    /// workspace removed; a person this host serves a picture of carries its public address,
+    /// where the host serves a site.
+    async fn workspace_input(&self, workspace: &str) -> Value {
+        let summary = match self.workspaces.summary(workspace).await {
+            Ok(summary) => summary,
+            Err(error) => {
+                tracing::warn!(%error, %workspace, "a shortcut's workspace input was not read");
+                return serde_json::json!({ "members": [] });
+            }
+        };
+        let origin = self.workspaces.public_origin();
+        let members: Vec<Value> = summary
+            .members
+            .iter()
+            .map(|member| {
+                let role = if member.removed {
+                    None
+                } else if member.administrator {
+                    Some("owner")
+                } else {
+                    member.role.map(tilo_action_policy::Role::key)
+                };
+                let mut row = Map::from_iter([
+                    (
+                        "member".to_owned(),
+                        serde_json::to_value(&member.id).unwrap_or(Value::Null),
+                    ),
+                    ("name".to_owned(), Value::from(member.name.as_str())),
+                    ("role".to_owned(), role.map_or(Value::Null, Value::from)),
+                ]);
+                if let (Some(origin), Some(root)) = (origin.as_deref(), member.root())
+                    && let Some(photo) = self.workspaces.person_profile_photo(&root)
+                {
+                    row.insert(
+                        "avatar".to_owned(),
+                        Value::from(tilo_server_protocol::public_avatars::url(
+                            origin, &root, &photo,
+                        )),
+                    );
+                }
+                Value::Object(row)
+            })
+            .collect();
+        serde_json::json!({ "members": members })
+    }
+
+    /// `workspace`'s own emoji as it holds them now: `{"emoji": [{"name", "picture"}]}`, each
+    /// picture the content address of its bytes.
+    async fn emoji_input(&self, workspace: &str) -> Value {
+        use tilo_resource::Resource as _;
+        let record = collab_types::workspace_document_id(tilo_workspace_emoji::KIND);
+        let saved = match self
+            .workspaces
+            .resource_document(workspace, tilo_workspace_emoji::OWNER, &record)
+            .await
+        {
+            Ok(saved) => saved,
+            Err(error) => {
+                tracing::warn!(%error, %workspace, "a shortcut's emoji input was not read");
+                return serde_json::json!({ "emoji": [] });
+            }
+        };
+        let Some(saved) = saved else {
+            return serde_json::json!({ "emoji": [] });
+        };
+        let emoji = AutoCommit::load(&saved)
+            .ok()
+            .and_then(|doc| tilo_workspace_emoji::WorkspaceEmoji::read(&doc).ok());
+        let Some(emoji) = emoji else {
+            tracing::warn!(%workspace, "a shortcut's emoji record did not read");
+            return serde_json::json!({ "emoji": [] });
+        };
+        let listed: Vec<Value> = emoji
+            .emoji
+            .iter()
+            .map(|(name, emoji)| {
+                let picture = blake3::hash(emoji.image.bytes()).to_hex().to_string();
+                serde_json::json!({ "name": name, "picture": picture })
+            })
+            .collect();
+        serde_json::json!({ "emoji": listed })
+    }
+
     /// Start `going`'s next attempt: `None` while it runs or waits to go again, or how the
     /// firing ended when it did not start and will not.
     async fn begin(&self, going: &mut Going) -> Option<Ended> {
@@ -1282,6 +1438,7 @@ impl Runner {
             AutomationInvocationId::new()
         };
         let mut firing = going.firing.clone();
+        firing.inputs.extend(self.host_inputs(&firing).await);
         firing.inputs = completed(&self.armed, &firing, &going.turn.lease());
         let start = Arc::clone(&self.start);
         let started = tokio::task::spawn_blocking(move || start.start(&firing, run))

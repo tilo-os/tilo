@@ -953,6 +953,31 @@ fn status(status: StatusCode, message: &str) -> Response<Body> {
     reply(status, message.as_bytes().to_vec())
 }
 
+/// The picture a public avatar `token` names, as the image it is, or nothing
+/// once its person replaced or removed it.
+fn avatar(web: &Web, token: &str) -> Response<Body> {
+    let Some(bytes) = web.profiles.photo_for_token(token) else {
+        return status(StatusCode::NOT_FOUND, "no picture at this address");
+    };
+    let Some(kind) = tilo_server_protocol::public_avatars::sniff(&bytes) else {
+        return status(StatusCode::NOT_FOUND, "no picture at this address");
+    };
+    let mut response = reply(StatusCode::OK, bytes);
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static(kind));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    // An address names one picture for good: a replaced picture is another
+    // address, so nothing may keep this one past a change.
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
 /// Whether the request asks for a page a person reads, as a browser opening an
 /// address does, rather than for a body a caller takes as data.
 pub(super) fn wants_a_page(request: &Request<hyper::body::Incoming>) -> bool {
@@ -1223,6 +1248,17 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
             .as_ref()
             .and_then(|address| address.web.as_ref());
         return page::answer(&address, link, web.server_info.origin.as_deref());
+    }
+    // A person's picture, which a place outside Tilo fetches at the public
+    // address a bridged post names.
+    if request.method() == Method::GET
+        && let Some(token) = request
+            .uri()
+            .path()
+            .strip_prefix(API_PREFIX)
+            .and_then(|route| route.strip_prefix(tilo_server_protocol::public_avatars::ROUTE))
+    {
+        return avatar(web, token);
     }
     let origin = request.headers().get(header::ORIGIN).cloned();
     let public = public_directory_route(request.uri().path());

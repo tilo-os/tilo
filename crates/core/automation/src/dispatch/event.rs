@@ -452,4 +452,79 @@ impl Event<'_> {
             other => other.to_json(),
         }
     }
+
+    /// The workspace an event happened in; nothing for a connector event, which names its app
+    /// and source where a workspace's own event names the workspace.
+    #[must_use]
+    pub fn workspace(&self) -> Option<&str> {
+        match self {
+            Self::Record(event) => Some(&event.workspace),
+            Self::AppEvent(event) => Some(&event.workspace),
+            Self::Schedule(event) => Some(&event.workspace),
+            Self::Time(event) => Some(&event.workspace),
+            Self::Source(event) => Some(&event.workspace),
+            Self::Invocation(event) => Some(&event.workspace),
+            Self::Presence(event) => Some(&event.workspace),
+            Self::Connector(_) => None,
+        }
+    }
+
+    /// What a firing `trigger` caused is told: the workspace it runs in, the trigger's kind
+    /// (`resource_changed`) and, where the event names them, who made the change and what they
+    /// did.
+    #[must_use]
+    pub fn context(&self, trigger: &str) -> TriggerContext {
+        let mut context = TriggerContext {
+            workspace: self.workspace().unwrap_or_default().to_owned(),
+            trigger: trigger.to_owned(),
+            who: None,
+            what: None,
+            caused_by: None,
+        };
+        match self {
+            Self::Record(change) => {
+                context.who = Some(change.actor.clone());
+                context.what = Some(change.did.clone());
+                context.caused_by.clone_from(&change.caused_by);
+            }
+            Self::Connector(event) => {
+                context.what = Some(Did::verb(
+                    tilo_actions::ActionKey::new(&event.app_id, &event.source, ""),
+                    [],
+                ));
+            }
+            Self::AppEvent(event) => {
+                context.what = Some(Did::verb(
+                    tilo_actions::ActionKey::new(&event.app_id, &event.kind, ""),
+                    [],
+                ));
+            }
+            Self::Schedule(_)
+            | Self::Time(_)
+            | Self::Source(_)
+            | Self::Invocation(_)
+            | Self::Presence(_) => {}
+        }
+        context
+    }
+}
+
+/// What a firing's `context` input carries: the trigger that fired it and, where the event
+/// names them, who made the change and what they did. Nothing here is a copy of the record's
+/// state; a program reads that through its actions.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TriggerContext {
+    /// The workspace the shortcut runs in.
+    pub workspace: String,
+    /// What fired it: the trigger's kind (`resource_changed`, `schedule`, ...).
+    pub trigger: String,
+    /// Who made the change that fired it, where the event names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub who: Option<Acting>,
+    /// What they did, where the event names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub what: Option<Did>,
+    /// The run that caused the change, where one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caused_by: Option<Cause>,
 }
