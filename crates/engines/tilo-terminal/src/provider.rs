@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::commands::new_key;
-use crate::session::Session;
+use crate::session::{Backend, Session};
 use crate::target::SessionTarget;
 
 /// Who caused a session to open. The device's own shell is never opened for an agent.
@@ -420,19 +420,19 @@ fn open_supervisor_session(
     tilo_process::editor::validate_master(&master).map_err(|e| failed(&e))?;
     let reader = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Read + Send>;
     let writer = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Write + Send>;
-    Ok(Session::from_backend(
+    Ok(Session::from_backend(Backend {
         writer,
         reader,
-        Box::new(FdMaster {
+        master: Box::new(FdMaster {
             master: tilo_process::pty::Master::new(master),
         }),
-        if target.is_host() { "host" } else { "ush" }.into(),
-        response.host_session,
-        Some(response.session),
-        response.commands.then_some(key),
+        shell_name: if target.is_host() { "host" } else { "ush" }.into(),
+        relay_session: response.host_session,
+        supervisor_session: Some(response.session),
+        commands: response.commands.then_some(key),
         editor,
-        Some(lease),
-    ))
+        lease: Some(lease),
+    }))
 }
 
 /// The `open-session` line for the supervisor; `workspace` is left out when the terminal does not

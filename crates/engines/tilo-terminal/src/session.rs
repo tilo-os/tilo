@@ -137,6 +137,19 @@ pub fn classify_pty_read(
     }
 }
 
+/// The pty a supervisor opened and the facts of the session behind it.
+pub(crate) struct Backend {
+    pub(crate) writer: Box<dyn Write + Send>,
+    pub(crate) reader: Box<dyn Read + Send>,
+    pub(crate) master: Box<dyn MasterPty + Send>,
+    pub(crate) shell_name: String,
+    pub(crate) relay_session: Option<String>,
+    pub(crate) supervisor_session: Option<String>,
+    pub(crate) commands: Option<String>,
+    pub(crate) editor: Option<tilo_process::editor::Socket>,
+    pub(crate) lease: Option<runtime_portal::pending_connection::SessionLifetime>,
+}
+
 /// One open terminal session.
 pub struct Session {
     pub(crate) id: String,
@@ -223,21 +236,18 @@ impl Session {
     }
 
     /// A session over a pty someone else opened and handed over, as a supervisor does.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one field per pty handle and fact"
-    )]
-    pub(crate) fn from_backend(
-        writer: Box<dyn Write + Send>,
-        reader: Box<dyn Read + Send>,
-        master: Box<dyn MasterPty + Send>,
-        shell_name: String,
-        relay_session: Option<String>,
-        supervisor_session: Option<String>,
-        commands: Option<String>,
-        editor: Option<tilo_process::editor::Socket>,
-        lease: Option<runtime_portal::pending_connection::SessionLifetime>,
-    ) -> Self {
+    pub(crate) fn from_backend(backend: Backend) -> Self {
+        let Backend {
+            writer,
+            reader,
+            master,
+            shell_name,
+            relay_session,
+            supervisor_session,
+            commands,
+            editor,
+            lease,
+        } = backend;
         Self {
             id: crate::commands::new_key(),
             writer: Mutex::new(writer),

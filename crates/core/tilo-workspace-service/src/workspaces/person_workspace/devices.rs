@@ -442,16 +442,16 @@ impl Devices {
     /// The action that lets `hand.driver` drive `driven` as `hand` says.
     #[must_use]
     pub fn granting_input(driven: &[u8; 32], hand: &InputHand) -> tilo_resource::Invoke<Self> {
-        Self::GRANT_INPUT.with((
-            hex::encode(driven),
-            hand.driver.clone(),
-            hand.asked_ms,
-            hand.nonce.clone(),
-            hand.keyboard,
-            hand.pointer,
-            hand.granted_ms,
-            hand.until_ms,
-        ))
+        Self::GRANT_INPUT.with(HandOver {
+            driven: hex::encode(driven),
+            driver: hand.driver.clone(),
+            asked_ms: hand.asked_ms,
+            nonce: hand.nonce.clone(),
+            keyboard: hand.keyboard,
+            pointer: hand.pointer,
+            granted_ms: hand.granted_ms,
+            until_ms: hand.until_ms,
+        })
     }
 
     /// The action that ends the hand-over of `driven` to `driver` under `nonce`.
@@ -467,19 +467,19 @@ impl Devices {
     /// The action that shows `notice` on the person's other devices under `id`.
     #[must_use]
     pub fn showing_notice(id: &str, notice: &SharedNotice) -> tilo_resource::Invoke<Self> {
-        Self::SHOW_NOTICE.with((
-            id.to_owned(),
-            notice.from.clone(),
-            notice.app_id.clone(),
-            notice.app_name.clone(),
-            notice.title.clone(),
-            notice.body.clone(),
-            notice.redacted,
-            notice.actions.clone(),
-            notice.urgency,
-            notice.shown_ms,
-            notice.until_ms,
-        ))
+        Self::SHOW_NOTICE.with(NoticeShown {
+            id: id.to_owned(),
+            from: notice.from.clone(),
+            app_id: notice.app_id.clone(),
+            app_name: notice.app_name.clone(),
+            title: notice.title.clone(),
+            body: notice.body.clone(),
+            redacted: notice.redacted,
+            actions: notice.actions.clone(),
+            urgency: notice.urgency,
+            shown_ms: notice.shown_ms,
+            until_ms: notice.until_ms,
+        })
     }
 
     /// The action that says the person answered the notification `id` on `device`: `chosen` the
@@ -601,6 +601,54 @@ impl Devices {
 pub struct Network {
     /// The credential, postcard in hex.
     pub credential: String,
+}
+
+/// A notification one device of the person's shows on the others.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema)]
+pub struct NoticeShown {
+    /// The notification, which a later answer or retirement names.
+    pub id: String,
+    /// The device that showed it, by key (lowercase hex).
+    pub from: String,
+    /// The app that sent it, by id.
+    pub app_id: String,
+    /// The app's name, as the person reads it.
+    pub app_name: String,
+    /// What it says.
+    pub title: String,
+    /// Its text, empty when it is redacted.
+    pub body: String,
+    /// Whether the text stays on the device that sent it.
+    pub redacted: bool,
+    /// What a person may choose on it.
+    pub actions: Vec<NoticeAction>,
+    /// How it presents itself: 0 says something, 1 warns, 2 tells of an error.
+    pub urgency: i64,
+    /// When it started showing, ms since the epoch.
+    pub shown_ms: i64,
+    /// When it stops showing, ms since the epoch.
+    pub until_ms: i64,
+}
+
+/// The hand-over one device of the person's asks for another's keyboard and pointer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema)]
+pub struct HandOver {
+    /// The device whose keyboard and pointer are handed over, by key (lowercase hex).
+    pub driven: String,
+    /// The device that drives it, by key (lowercase hex).
+    pub driver: String,
+    /// When the driving device asked, ms since the epoch.
+    pub asked_ms: i64,
+    /// What the input under the hand-over is told by, 16 bytes in hex.
+    pub nonce: String,
+    /// Whether the keyboard is handed over.
+    pub keyboard: bool,
+    /// Whether the pointer is handed over.
+    pub pointer: bool,
+    /// When the hand-over was made, ms since the epoch.
+    pub granted_ms: i64,
+    /// When it ends, ms since the epoch.
+    pub until_ms: i64,
 }
 
 #[resource(kind = "tilo.devices", read_content = tilo_resource::read::fields)]
@@ -1138,39 +1186,29 @@ impl Devices {
         Ok(())
     }
 
-    /// Let `driver` drive `driven`'s keyboard, pointer or both under `nonce` from `granted_ms`
-    /// until `until_ms`, as `driven` decides for the ask `driver` made at `asked_ms`.
+    /// Let `input.driver` drive `input.driven`'s keyboard, pointer or both under `input.nonce`
+    /// from `input.granted_ms` until `input.until_ms`, as `input.driven` decides for the ask
+    /// `input.driver` made at `input.asked_ms`.
     #[action]
-    #[allow(clippy::too_many_arguments, reason = "each is one fact of the hand-over, by name")]
-    pub fn grant_input(
-        &mut self,
-        driven: String,
-        driver: String,
-        asked_ms: i64,
-        nonce: String,
-        keyboard: bool,
-        pointer: bool,
-        granted_ms: i64,
-        until_ms: i64,
-    ) -> Result<(), Refusal> {
-        validate_bytes(&nonce, 16)?;
-        if !(keyboard || pointer) {
+    pub fn grant_input(&mut self, #[param(flatten)] input: HandOver) -> Result<(), Refusal> {
+        validate_bytes(&input.nonce, 16)?;
+        if !(input.keyboard || input.pointer) {
             return Err(Refusal::new("a hand-over lets in the keyboard, the pointer or both"));
         }
-        if granted_ms <= 0 || until_ms <= granted_ms {
+        if input.granted_ms <= 0 || input.until_ms <= input.granted_ms {
             return Err(Refusal::new("a hand-over holds from when it was made until a later time"));
         }
-        let Some(kept) = self.inputs.get_mut(&Id::from_raw(driven)) else {
+        let Some(kept) = self.inputs.get_mut(&Id::from_raw(input.driven)) else {
             return Err(Refusal::new("nobody asked to drive that device"));
         };
-        if kept.driver != driver || kept.asked_ms != asked_ms {
+        if kept.driver != input.driver || kept.asked_ms != input.asked_ms {
             return Err(Refusal::new("another ask to drive that device came since"));
         }
-        kept.nonce = nonce;
-        kept.keyboard = keyboard;
-        kept.pointer = pointer;
-        kept.granted_ms = granted_ms;
-        kept.until_ms = until_ms;
+        kept.nonce = input.nonce;
+        kept.keyboard = input.keyboard;
+        kept.pointer = input.pointer;
+        kept.granted_ms = input.granted_ms;
+        kept.until_ms = input.until_ms;
         Ok(())
     }
 
@@ -1194,26 +1232,23 @@ impl Devices {
         Ok(())
     }
 
-    /// Show the notification the app `app_id` (`app_name`) sent on the device `from` on the
-    /// person's other devices under `id`, from `shown_ms` until `until_ms`: what it says, its text
-    /// only when `redacted` is false, the `actions` it offers and its `urgency`. Replaces what
-    /// was kept under `id`; what ran out by `shown_ms` leaves the record.
+    /// Show `notice` on the person's other devices. Replaces what was kept under its id; what
+    /// ran out by `notice.shown_ms` leaves the record.
     #[action(housekeeping)]
-    #[allow(clippy::too_many_arguments, reason = "each is one fact of the notification, by name")]
-    pub fn show_notice(
-        &mut self,
-        id: String,
-        from: String,
-        app_id: String,
-        app_name: String,
-        title: String,
-        body: String,
-        redacted: bool,
-        actions: Vec<NoticeAction>,
-        urgency: i64,
-        shown_ms: i64,
-        until_ms: i64,
-    ) -> Result<(), Refusal> {
+    pub fn show_notice(&mut self, #[param(flatten)] notice: NoticeShown) -> Result<(), Refusal> {
+        let NoticeShown {
+            id,
+            from,
+            app_id,
+            app_name,
+            title,
+            body,
+            redacted,
+            actions,
+            urgency,
+            shown_ms,
+            until_ms,
+        } = notice;
         validate_key(&id)?;
         validate_key(&from)?;
         if app_id.is_empty()
