@@ -96,8 +96,14 @@ pub(crate) struct DeviceWork {
 
 impl DeviceWork {
     /// Answer the workspaces' governance actions through `governance` from now on.
+    ///
+    /// # Panics
+    /// The workspaces answer through another dispatch already.
     pub(crate) fn govern_with(&self, governance: std::sync::Weak<super::actions::Shared>) {
-        let _ = self.governance.set(governance);
+        assert!(
+            self.governance.set(governance).is_ok(),
+            "a host's workspaces answer through one dispatch"
+        );
     }
 
     /// The workspaces' governance, while it serves: held weakly, as it holds the workspaces.

@@ -242,8 +242,7 @@ impl<'a> Team<'a> {
     /// the one before it kept: no workspace is made and nobody is admitted.
     fn back(workspaces: &'a Workspaces, members: Members) -> Self {
         workspaces.call_private_model_addresses(true);
-        let actions = Served::new();
-        actions.attach(workspaces.clone());
+        let actions = super::super::super::tests::host_dispatch(&workspaces);
         Self {
             as_ada: caller(&members.ada),
             ada_id: hex::encode(members.ada.user_public_key),

@@ -595,7 +595,7 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
 /// another app's record: the reader holds that route to read it live and
 /// changes nothing there, so it needs no worker descriptor of the route and
 /// becomes no worker of it. An app that declares no read is still refused.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
     static NOTES: &[u8] =
         b"[[resources]]\nkind = \"test.journal-notes.Note\"\nlabel = \"Note\"\nversion = 1\n";
@@ -608,7 +608,16 @@ async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
     tokio::task::LocalSet::new()
         .run_until(async {
             const READER_PEER: u64 = 941;
-            let env = Environment::new();
+            let mut env = Environment::new();
+            // The records are a workspace's that the environment's own device keeps, and the
+            // device's one reader decides a read of them, as a device serves its apps.
+            let kept_here = tempfile::tempdir().unwrap();
+            let host =
+                crate::workspaces::fixtures::test_host(kept_here.path(), &env.key, &env.cert).await;
+            let kept = host.workspaces().create("Journal").await.unwrap().workspace;
+            env.rehome(&kept);
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let notes = CrdtRoute::record(
                 "test.journal-notes",
                 env.route.cluster_id.clone(),
@@ -628,6 +637,11 @@ async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
                 };
                 let rig = Rig::with_own_journal(&env, services, &config).await;
                 assert!(rig.state.durable_owner_required);
+                rig.state.serve_records(crate::workspaces::RecordReads::with_apps(
+                    host.workspaces(),
+                    &rig.state,
+                    None,
+                ));
                 let (launched, _server, _client) = launched_app_connection(
                     &rig.state,
                     &rig.directories,
@@ -659,6 +673,7 @@ async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
                 drop(launched);
                 rig.stop().await;
             }
+            host.shutdown().await;
         })
         .await;
 }

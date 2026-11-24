@@ -143,11 +143,23 @@ mod workspace_document_ownership {
     async fn a_launch_reads_another_apps_record_it_joined_to_read() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let workspace = signed_worker::OriginalWorkspace::new(
-                    tilo_user_identity::DeviceCapabilities::primary(),
-                    None,
-                    None,
+                // The records are a workspace's that this device keeps, and the device's one
+                // reader decides a read of them, as a device serves its apps.
+                let capabilities = tilo_user_identity::DeviceCapabilities::primary();
+                let (key, cert) = signed_worker::OriginalWorkspace::device(capabilities.clone());
+                let kept_here = tempfile::tempdir().unwrap();
+                let host = crate::workspaces::fixtures::test_host(kept_here.path(), &key, &cert)
+                    .await;
+                let kept = host.workspaces().create("Planning").await.unwrap().workspace;
+                let workspace = signed_worker::OriginalWorkspace::in_workspace(
+                    capabilities,
+                    tilo_desktop_model::WorkspaceId::parse(&kept).unwrap(),
                 );
+                workspace.state.serve_records(crate::workspaces::RecordReads::with_apps(
+                    host.workspaces(),
+                    &workspace.state,
+                    None,
+                ));
                 let (identity, _connection) = admitted(&workspace).await;
                 let (socket, _peer) = tokio::net::UnixStream::pair().unwrap();
                 let cluster = workspace.route.cluster_id.clone();
@@ -190,6 +202,7 @@ mod workspace_document_ownership {
                     context.revalidate().is_err(),
                     "the read ends with the launch"
                 );
+                host.shutdown().await;
             })
             .await;
     }

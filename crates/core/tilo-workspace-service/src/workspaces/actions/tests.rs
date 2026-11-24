@@ -381,14 +381,18 @@ pub(crate) async fn governed(
     workspaces: &Workspaces,
 ) -> (String, WorkspaceId, ServiceWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
-    // The host's own dispatch where it has one: a person's answer to a call that waits for
-    // them comes back to that one, never to one made beside it.
-    let host = workspaces.inner.jobs.governance().unwrap_or_else(|| {
+    (summary.workspace, summary.workspace_id, host_dispatch(workspaces))
+}
+
+/// The one dispatch that governs `workspaces`: the host's own where it has one, else one
+/// attached now as the first. A person's answer to a call that waits for them comes back to
+/// that one, and a host is handed no second.
+pub(crate) fn host_dispatch(workspaces: &Workspaces) -> ServiceWorkspaceActions {
+    workspaces.inner.jobs.governance().unwrap_or_else(|| {
         let host = ServiceWorkspaceActions::new();
         host.attach(workspaces.clone());
         host
-    });
-    (summary.workspace, summary.workspace_id, host)
+    })
 }
 
 /// The verbs `caller` is offered on the workspace `workspace_id` carries.
