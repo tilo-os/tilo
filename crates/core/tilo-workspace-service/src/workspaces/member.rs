@@ -2364,7 +2364,7 @@ mod person_devices_tests;
 #[path = "served_notices_tests.rs"]
 mod served_notices_tests;
 
-#[cfg(all(test, feature = "apps"))]
+#[cfg(all(test, feature = "agents"))]
 #[path = "connection_turn_tests.rs"]
 mod connection_turn_tests;
 

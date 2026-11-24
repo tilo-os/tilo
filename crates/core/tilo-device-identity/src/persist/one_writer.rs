@@ -262,10 +262,10 @@ mod tests {
     const TEST: &str =
         "persist::one_writer::tests::a_second_process_taking_the_key_is_refused_naming_the_first";
 
-    fn device_key_under(root: &Path) -> IdentityPaths {
+    fn device_key_under(root: &Path) -> Result<IdentityPaths, PersistError> {
         let paths = IdentityPaths::under(root);
-        super::super::load_or_create_device_key(&paths).unwrap();
-        paths
+        super::super::load_or_create_device_key(&paths)?;
+        Ok(paths)
     }
 
     /// One process writes as the device: a second one that takes its key is refused and told
@@ -295,7 +295,7 @@ mod tests {
         }
 
         let root = tempfile::tempdir().unwrap();
-        let paths = device_key_under(root.path());
+        let paths = device_key_under(root.path()).unwrap();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
             .env(CHILD, root.path())

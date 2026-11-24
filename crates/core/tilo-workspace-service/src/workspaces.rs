@@ -106,7 +106,10 @@ mod own;
 mod ownership;
 #[cfg(not(target_arch = "wasm32"))]
 mod packaged_model;
-#[cfg(all(not(target_arch = "wasm32"), feature = "agents"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "agents", test, feature = "test-support")
+))]
 pub(crate) use packaged_model::keep_surface;
 #[cfg(not(target_arch = "wasm32"))]
 pub use packaged_model::{PackagedAction, package_surface};
