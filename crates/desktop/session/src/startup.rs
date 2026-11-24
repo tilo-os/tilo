@@ -400,6 +400,7 @@ pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
     let who = tilo_api::daemon::who::who()?;
     let person = who
         .certify_person
+        .or(who.person)
         .ok_or("this computer's daemon made this account no person")?;
     let taken = tilo_identity::provisioning::take_up_certified_person(
         identity_dir,
@@ -412,7 +413,21 @@ pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
     if !taken {
         return Err("this computer's daemon certified no person for this account".to_owned());
     }
-    tilo_api::daemon::who::certify_here()
+    // The account a person's own daemon runs as holds the root it just made, and certifies its
+    // key itself; another account's session holds the public record, and the daemon signs with
+    // the root it keeps for that account.
+    let held = tilo_identity::store::resolve_active_identity(identity_dir)
+        .and_then(|path| tilo_identity::store::load_from_path(path).ok())
+        .filter(|identity| identity.is_single_device());
+    match held {
+        Some(signer) => {
+            tilo_api::daemon::who::certify_my_key(&signer)?;
+        }
+        None => {
+            tilo_api::daemon::who::certify_here()?;
+        }
+    }
+    Ok(true)
 }
 
 /// Verify the identity `identity_dir` holds at the clock's reading now.

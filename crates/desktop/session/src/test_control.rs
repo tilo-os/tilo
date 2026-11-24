@@ -1758,10 +1758,10 @@ fn snapshot(compositor: &mut Compositor, path: &str) -> Result<(), (&'static str
 ///
 /// The account's person is made the one way a person is made, this computer's daemon founding
 /// them ([`crate::startup::found_and_certify`]), and its key certified with the root the daemon
-/// keeps for the account. A session with no daemon (a test fixture) mints a throwaway identity
-/// of its own instead. A real identity is never replaced; a release build mints none.
+/// keeps for the account. A real identity is never replaced; a release build mints none. A
+/// session is served by a daemon: one that no daemon answers is refused rather than given an
+/// identity of its own.
 fn provision_test_identity() -> Json {
-    use tilo_identity::provisioning::ProvisionOutcome;
     let identity_path = match tilo_identity::store::active_identity_path() {
         Ok(path) => path,
         Err(error) => return refusal("provision_failed", &format!("no identity store: {error}")),
@@ -1770,40 +1770,31 @@ fn provision_test_identity() -> Json {
         return refusal("provision_failed", "the identity store has no directory");
     };
     if !tilo_onboarding_session::identity_provisioning::needs_first_run_flow(&identity_path) {
-        return refusal("identity_exists", "this account has an identity already");
+        // This session made its identity as it started, the one way a person is made: there is
+        // none left to make here.
+        return json!({"answer": {
+            "created": false,
+            "display_name": tilo_identity::provisioning::login_account_display_name(),
+            "throwaway": true,
+        }});
     }
-    // This computer's daemon makes the account's person, as it makes every person.
-    if tilo_api::daemon::who::who().is_ok() {
-        return match crate::startup::found_and_certify(identity_dir) {
-            Ok(true) => json!({"answer": {
-                "created": true,
-                "display_name": tilo_identity::provisioning::login_account_display_name(),
-                "throwaway": true,
-            }}),
-            Ok(false) => refusal(
-                "not_signed_in",
-                "this account is not signed in on this computer, so no person can be made for it",
-            ),
-            Err(error) => refusal("provision_failed", &error),
-        };
+    if tilo_api::daemon::who::who().is_err() {
+        return refusal(
+            "no_daemon",
+            "this computer's daemon is not answering: an identity is made through it",
+        );
     }
-    use tilo_identity::provisioning::THROWAWAY_TEST_IDENTITY_NAME;
-    match tilo_onboarding_session::firstboot::ensure_throwaway_test_identity(
-        identity_dir,
-        &tilo_onboarding_session::firstboot::collaboration_identity_paths(),
-    ) {
-        Ok(outcome) => json!({"answer": {
-            "created": matches!(outcome, ProvisionOutcome::Created { .. }),
-            "display_name": THROWAWAY_TEST_IDENTITY_NAME,
+    match crate::startup::found_and_certify(identity_dir) {
+        Ok(true) => json!({"answer": {
+            "created": true,
+            "display_name": tilo_identity::provisioning::login_account_display_name(),
             "throwaway": true,
         }}),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            refusal("identity_exists", &error.to_string())
-        }
-        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-            refusal("dev_image_only", &error.to_string())
-        }
-        Err(error) => refusal("provision_failed", &error.to_string()),
+        Ok(false) => refusal(
+            "not_signed_in",
+            "this account is not signed in on this computer, so no person can be made for it",
+        ),
+        Err(error) => refusal("provision_failed", &error),
     }
 }
 

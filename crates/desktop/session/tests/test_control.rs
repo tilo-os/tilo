@@ -189,6 +189,9 @@ fn mounted(at: &Path) -> bool {
 /// runtime directory and a process group of its own.
 struct StartedSession {
     child: std::process::Child,
+    /// This account's daemon, which serves the session: a session is one of a computer's, and
+    /// its identity is made through that computer's daemon.
+    daemon: std::process::Child,
     /// The directory of its sockets and of the mount, kept until the test ends.
     runtime: tempfile::TempDir,
     /// The home it reads, kept until the test ends.
@@ -205,7 +208,45 @@ impl StartedSession {
         let runtime = private_home();
         let home = tempfile::tempdir().unwrap();
         let control = runtime.path().join("test-control.sock");
-        let mut child = std::process::Command::new(tilo_test_env::package_binary!("tilo-session"))
+        std::fs::create_dir_all(home.path().join("identity")).unwrap();
+        // The daemon and the session read one environment: the same home, identity store and
+        // runtime directory, so the daemon the test starts is the computer the session finds.
+        let configure = |command: &mut std::process::Command| {
+            command
+                .env("XDG_RUNTIME_DIR", runtime.path())
+                .env("TILO_IDENTITY_ROOT", home.path().join("identity"))
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path().join(".config"))
+                .env("XDG_DATA_HOME", home.path().join(".local/share"))
+                .env("XDG_STATE_HOME", home.path().join(".local/state"))
+                .env("XDG_CACHE_HOME", home.path().join(".cache"))
+                .env_remove("WAYLAND_DISPLAY")
+                .env_remove("DISPLAY");
+        };
+        // A session is one of a computer's: this account's daemon serves it, and makes the
+        // account's identity through `devices#found`.
+        let mut daemon = std::process::Command::new(tilo_test_env::package_binary!("tilo-runtime"));
+        configure(&mut daemon);
+        let daemon = daemon
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .dies_with_the_test()
+            .spawn_locked()
+            .expect("this account's daemon starts");
+        let socket = runtime.path().join(tilo_paths::machine::DAEMON_NATIVE);
+        let bound = std::time::Instant::now();
+        while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+            assert!(
+                bound.elapsed() < tilo_test_env::hang_bound(),
+                "this account's daemon does not answer at {}",
+                socket.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let mut session =
+            std::process::Command::new(tilo_test_env::package_binary!("tilo-session"));
+        configure(&mut session);
+        let mut child = session
             .args([
                 "--backend",
                 "headless",
@@ -217,15 +258,6 @@ impl StartedSession {
                 "--test-control",
                 control.to_str().unwrap(),
             ])
-            .env("XDG_RUNTIME_DIR", runtime.path())
-            .env("TILO_IDENTITY_ROOT", home.path().join("identity"))
-            .env("HOME", home.path())
-            .env("XDG_CONFIG_HOME", home.path().join(".config"))
-            .env("XDG_DATA_HOME", home.path().join(".local/share"))
-            .env("XDG_STATE_HOME", home.path().join(".local/state"))
-            .env("XDG_CACHE_HOME", home.path().join(".cache"))
-            .env_remove("WAYLAND_DISPLAY")
-            .env_remove("DISPLAY")
             .envs(env.iter().copied())
             // A stop of the whole group, as a session is stopped in a terminal or
             // by a script, reaches it through this group; and one of the test itself ends it
@@ -250,6 +282,7 @@ impl StartedSession {
             child,
             runtime,
             _home: home,
+            daemon,
             control,
         }
     }
@@ -270,7 +303,8 @@ impl StartedSession {
         None
     }
 
-    /// The throwaway identity, as `tilo-control raw` asks for it.
+    /// The account's identity, as `tilo-control raw` asks for it: the session made it as it
+    /// started, through this computer's daemon.
     fn mint_identity(&self) {
         let mut stream = UnixStream::connect(&self.control).expect("the test-control socket");
         stream
@@ -306,13 +340,18 @@ impl StartedSession {
 }
 
 impl Drop for StartedSession {
-    /// A test that failed before it ended the session still leaves none behind.
+    /// A test that failed before it ended the session still leaves none behind, nor the daemon
+    /// that served it.
     fn drop(&mut self) {
         if self.child.try_wait().is_ok_and(|ended| ended.is_none()) {
             let group = self.group();
             // SAFETY: a pid and a signal number are all kill(2) reads.
             let _ = unsafe { libc::kill(group, libc::SIGKILL) };
             let _ = self.child.wait();
+        }
+        if self.daemon.try_wait().is_ok_and(|ended| ended.is_none()) {
+            let _ = self.daemon.kill();
+            let _ = self.daemon.wait();
         }
     }
 }

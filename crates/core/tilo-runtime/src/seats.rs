@@ -746,6 +746,11 @@ impl Seats {
                     who.insert("key".into(), json!(hex::encode(key)));
                 }
             }
+            // The account a person's own daemon runs as, whose computer has no person yet: it
+            // may make one here.
+            Admitted::Device if !self.admission.system() && self.device.person().is_none() => {
+                who.insert("founding".into(), json!(true));
+            }
             Admitted::Device | Admitted::Person(_) => {}
         }
         // Where the device enters its person's workspaces, to the device's own person alone:
