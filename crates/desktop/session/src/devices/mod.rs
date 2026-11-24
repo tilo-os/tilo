@@ -385,7 +385,7 @@ fn found(
     crate::landing::off_loop(async move {
         answered(
             tilo_api::daemon::this_computer()
-                .and_then(|daemon| daemon.found(tilo_api::daemon::Founding::default()))
+                .and_then(|daemon| daemon.found(&tilo_api::daemon::Founding::default()))
                 .map(drop),
             &refused,
         )

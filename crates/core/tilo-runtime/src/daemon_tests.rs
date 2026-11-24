@@ -949,7 +949,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     // The laptop's first command: through the place every client finds the daemon at.
     FOUNDING_PEER.store(OWN, Ordering::SeqCst);
     daemon
-        .found(tilo_api::daemon::Founding {
+        .found(&tilo_api::daemon::Founding {
             name: Some("Ada".to_owned()),
             ..tilo_api::daemon::Founding::default()
         })
@@ -1000,7 +1000,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
         "{why}"
     );
     let again = daemon
-        .found(tilo_api::daemon::Founding {
+        .found(&tilo_api::daemon::Founding {
             name: Some("Someone else".to_owned()),
             tickets: vec![tilo_api::daemon::TicketKind::Server],
         })
@@ -2480,7 +2480,7 @@ fn a_client_in_the_persons_own_daemons_process_is_answered_at_once() {
     let running = super::Running::start(&profile).unwrap();
     tilo_api::daemon::this_computer()
         .unwrap()
-        .found(tilo_api::daemon::Founding::default())
+        .found(&tilo_api::daemon::Founding::default())
         .expect("the device starts its person");
     running.stop().unwrap();
     let running = super::Running::start(&profile).unwrap();
@@ -2499,8 +2499,7 @@ fn a_client_in_the_persons_own_daemons_process_is_answered_at_once() {
             .unwrap();
         runtime
             .block_on(async {
-                let calls =
-                    tilo_api::calls::Calls::open(tilo_api::calls::Reach::default()).await?;
+                let calls = tilo_api::calls::Calls::open(tilo_api::calls::Reach::default()).await?;
                 calls.workspaces().await
             })
             .expect("the person's account is answered")

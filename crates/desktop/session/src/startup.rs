@@ -390,7 +390,7 @@ pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
     if !tilo_api::daemon::who::founding()? {
         return Ok(false);
     }
-    tilo_api::daemon::this_computer()?.found(tilo_api::daemon::Founding::default())?;
+    tilo_api::daemon::this_computer()?.found(&tilo_api::daemon::Founding::default())?;
     let who = tilo_api::daemon::who::who()?;
     let person = who
         .certify_person

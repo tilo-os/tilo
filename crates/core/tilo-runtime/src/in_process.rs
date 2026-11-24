@@ -162,7 +162,7 @@ impl Device {
             return Ok(());
         }
         tilo_api::daemon::this_computer()
-            .and_then(|daemon| daemon.found(tilo_api::daemon::Founding::default()))
+            .and_then(|daemon| daemon.found(&tilo_api::daemon::Founding::default()))
             .map(drop)
             .map_err(anyhow::Error::msg)?;
         self.restart()

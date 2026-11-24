@@ -123,7 +123,7 @@ fn running(profile: &Path) -> io::Result<Status> {
             Ok(status) => {
                 if !tilo_api::daemon::system_daemon() {
                     tilo_api::daemon::this_computer()
-                        .and_then(|place| place.found(tilo_api::daemon::Founding::default()))
+                        .and_then(|place| place.found(&tilo_api::daemon::Founding::default()))
                         .map_err(io::Error::other)?;
                 }
                 return Ok(status);
