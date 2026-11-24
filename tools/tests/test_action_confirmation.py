@@ -175,11 +175,11 @@ class ActionConfirmationTests(unittest.TestCase):
     def test_an_action_id_named_by_a_constant_reads_the_constant(self):
         # An `Action` names its id with the constant the module that owns the
         # action declares, which is not the file that lists it.
-        self.assertEqual(check.string_constant("UNINSTALL_ACTION"), "app.uninstall")
+        self.assertEqual(check.string_constant("UNINSTALL"), "uninstall")
         source = """
         pub(crate) const ALL: &'static [Action] = &[
             Action {
-                id: UNINSTALL_ACTION,
+                id: UNINSTALL,
                 ..Action::NEW
             }
             .destructive(),
@@ -187,7 +187,7 @@ class ActionConfirmationTests(unittest.TestCase):
         """
         errors = check.check_source("crates/desktop/session/src/actions/all.rs", source)
         self.assertEqual(len(errors), 1, errors)
-        self.assertIn("`app.uninstall`, a deletion", errors[0])
+        self.assertIn("`uninstall`, a deletion", errors[0])
 
     def test_allows_a_deletion_marked_irreversible(self):
         source = """
