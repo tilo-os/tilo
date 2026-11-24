@@ -107,7 +107,7 @@ impl Library {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let module = crate::package::parse(&source.text).map_err(render)?;
+        crate::package::parse(&source.text).map_err(render)?;
         let ids = IdsLock::parse(&source.ids).map_err(|e| format!("{}: {e}", source.path))?;
         let compiled = crate::package::compile_package_source_with(
             &PackageSource::single(&source.text),
@@ -116,7 +116,10 @@ impl Library {
             &mut SeededEntropy(0),
         )
         .map_err(render)?;
-        let templates = module
+        // The templates a package expands, parsed again where their errors are placed in this file.
+        let (placed, _) =
+            crate::parser::parse_file_at(&source.text, crate::diag::TEMPLATE_SPACE, 0);
+        let templates = placed
             .items
             .iter()
             .filter_map(|item| match item {
@@ -159,6 +162,14 @@ pub fn meta() -> &'static PackageMeta {
 #[must_use]
 pub fn compiled() -> &'static Compiled {
     &library().compiled
+}
+
+/// The library's file, as its errors name it, and its text: where a template expanded from it
+/// was written.
+#[must_use]
+pub fn template_source() -> (&'static str, &'static str) {
+    let source = source();
+    (&source.path, &source.text)
 }
 
 /// The library's views, which packages expand where they call them.

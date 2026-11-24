@@ -142,3 +142,40 @@ fn a_begin_handler_binding_a_text_field_is_accepted() {
     let diags = diagnostics(body);
     assert!(diags.is_empty(), "{diags:#?}");
 }
+
+/// An error in the body of a library template, expanded where an app calls it, names the
+/// library's file and the line it is on there, never a line of the app that happens to have the
+/// same number.
+#[test]
+fn an_error_in_a_library_template_names_the_library_file_and_line() {
+    let src = "type Draft {\n    words: Text\n}\nroot Draft\ndefault view page for Draft\naction send(d: Draft) {\n    d.words = \"\"\n}\nview page(d: Draft) {\n    std.composer_draft(d, \"Say something\", send(d))\n}";
+    let source = crate::source::PackageSource::single(&format!("app t.x \"X\"\n{src}\n"));
+    let Err(diags) = crate::package::compile_package_source_with(
+        &source,
+        &IdsLock::new(),
+        &[],
+        &mut SeededEntropy(3),
+    ) else {
+        panic!("a draft with no `body` is no draft the composer can write into");
+    };
+    let (library, text) = crate::stdlib::template_source();
+    let line = text
+        .lines()
+        .position(|l| l.contains("let writing = not draft.body.is_empty()"))
+        .expect("the composer reads its draft's body")
+        + 1;
+    let placed: Vec<_> = diags.iter().map(|d| (d.file.as_deref(), d.line)).collect();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.file.as_deref() == Some(library) && d.line == line),
+        "the missing field is reported at {library}:{line}: {placed:?} {diags:#?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .filter(|d| d.file.as_deref() != Some(library))
+            .all(|d| d.line <= src.lines().count() + 1),
+        "nothing lands on a line the app does not have: {placed:?}"
+    );
+}

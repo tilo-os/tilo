@@ -28,6 +28,15 @@ pub struct Template {
     pub decl: ast::ViewDecl,
 }
 
+/// The source of templates another package declared, placed past [`crate::diag::TEMPLATE_SPACE`]:
+/// an error in a body expanded from it names `path` and its line there.
+#[derive(Clone, Debug)]
+pub struct TemplateSource {
+    pub path: String,
+    pub text: String,
+    pub base: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct Import {
     pub alias: String,
@@ -79,6 +88,8 @@ pub struct Env {
     /// The toolkit's components, the package `ui`.
     pub toolkit: Option<&'static crate::toolkit::Catalogue>,
     pub templates: Vec<Template>,
+    /// Where the templates of other packages were written, by their place in the span space.
+    pub template_sources: Vec<TemplateSource>,
     /// The toolkit component each of the module's views makes, by the view's name: views are
     /// components.
     pub view_makes: HashMap<String, String>,
@@ -202,6 +213,12 @@ impl Env {
             return;
         }
         self.add_import(crate::stdlib::NS, crate::stdlib::meta());
+        let (path, text) = crate::stdlib::template_source();
+        self.template_sources.push(TemplateSource {
+            path: path.to_owned(),
+            text: text.to_owned(),
+            base: crate::diag::TEMPLATE_SPACE,
+        });
         self.templates
             .extend(crate::stdlib::templates().iter().map(|decl| Template {
                 ns: Some(crate::stdlib::APP.to_string()),
@@ -351,11 +368,38 @@ impl Env {
         // package does not declare.
         let names = templates::PackageNames::of(meta);
         for template in &meta.templates {
-            let source = format!("app {} \"{}\"\n{}", meta.app, meta.title, template.source);
-            let Ok(module) = crate::package::parse(&source) else {
+            // The library's templates sit where they are in its source, which `add_std` placed;
+            // another package's past it and every template placed before.
+            let (_, library) = crate::stdlib::template_source();
+            let in_library = (meta.app == crate::stdlib::APP)
+                .then(|| library.find(&template.source))
+                .flatten();
+            let base = in_library.map_or_else(
+                || {
+                    self.template_sources
+                        .iter()
+                        .map(|s| s.base + s.text.len() + 1)
+                        .chain([crate::diag::TEMPLATE_SPACE + library.len() + 1])
+                        .max()
+                        .unwrap_or(crate::diag::TEMPLATE_SPACE)
+                },
+                |at| crate::diag::TEMPLATE_SPACE + at,
+            );
+            let (parsed, diags) = crate::parser::parse_file_at(&template.source, base, 0);
+            if !diags.is_empty() {
                 continue;
-            };
-            for item in module.items {
+            }
+            if in_library.is_none() {
+                self.template_sources.push(TemplateSource {
+                    path: format!(
+                        "{} of {}, template {}",
+                        template.file, meta.app, template.name
+                    ),
+                    text: template.source.clone(),
+                    base,
+                });
+            }
+            for item in parsed.items {
                 if let ast::Item::View(mut view) = item {
                     if !crate::checker::is_template(&view) {
                         continue;

@@ -85,13 +85,17 @@ fn edit_distance(a: &str, b: &str) -> usize {
 }
 
 pub(crate) fn finish(mut diags: Vec<Diagnostic>, src: &str) -> Vec<Diagnostic> {
-    for d in &mut diags {
+    for d in diags.iter_mut().filter(|d| d.file.is_none()) {
         d.locate(src);
     }
     diags.sort_by_key(|d| (d.span.start, d.code.clone()));
     diags.dedup();
     diags
 }
+
+/// Where the span space of the templates a package expands from other packages begins: past any
+/// package's own files, so an error in a template's body is placed in the file it was written in.
+pub(crate) const TEMPLATE_SPACE: usize = 1 << 31;
 
 /// One file of a package in the shared span space: it starts at `base`.
 pub(crate) struct Placed<'a> {
@@ -100,10 +104,35 @@ pub(crate) struct Placed<'a> {
     pub base: usize,
 }
 
-/// Moves every diagnostic into the file its span points into, locates it there, and orders them by file and
+/// Places the diagnostics whose span is in a template another package declared (past
+/// [`TEMPLATE_SPACE`]) in the source of that template, by `sources`.
+pub(crate) fn place_templates(
+    diags: &mut [Diagnostic],
+    sources: &[crate::resolve::TemplateSource],
+) {
+    for d in diags.iter_mut().filter(|d| d.span.start >= TEMPLATE_SPACE) {
+        let Some(source) = sources
+            .iter()
+            .find(|s| (s.base..=s.base + s.text.len()).contains(&d.span.start))
+        else {
+            continue;
+        };
+        let start = (d.span.start - source.base).min(source.text.len());
+        let end = d
+            .span
+            .end
+            .saturating_sub(source.base)
+            .clamp(start, source.text.len());
+        d.span = Span::new(start, end);
+        d.file = Some(source.path.clone());
+        d.locate(&source.text);
+    }
+}
+
+/// Moves every diagnostic not yet placed into the file its span points into, locates it there, and orders them by file and
 /// position.
 pub(crate) fn finish_files(mut diags: Vec<Diagnostic>, files: &[Placed<'_>]) -> Vec<Diagnostic> {
-    for d in &mut diags {
+    for d in diags.iter_mut().filter(|d| d.file.is_none()) {
         let Some(file) = files
             .iter()
             .rev()

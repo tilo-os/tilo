@@ -96,6 +96,7 @@ fn analyze_module(
             ids: lock,
         })
     } else {
+        crate::diag::place_templates(&mut diags, &env.template_sources);
         Err(diags)
     }
 }
