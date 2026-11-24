@@ -153,12 +153,19 @@ def window_documents(app_dir: pathlib.Path) -> bool:
 def asks(offer: dict) -> str:
     """The values an offer asks for, as one field of its line: name, type and words per value,
     values separated by the record separator and a value's fields by the group separator. A
-    manifest written before offers carried several keeps its one name, read as text."""
+    manifest written before offers carried several keeps its one name, read as text. A tilolang
+    app's offers name each value's type `ty`; a manifest's name it `type`."""
     asked = offer.get("asks", "")
     if isinstance(asked, str):
         return asked
     return "\x1e".join(
-        "\x1d".join([p["name"], p.get("type", "text"), p.get("description", "")])
+        "\x1d".join(
+            [
+                p["name"],
+                p.get("ty") or p.get("type") or "text",
+                p.get("description") or "",
+            ]
+        )
         for p in asked
         if isinstance(p, dict) and "name" in p
     )
@@ -386,7 +393,7 @@ def render(apps: list[dict], surfaced: list[dict]) -> str:
             "\t".join([
                 action["resource"], action["resource_kind"], action["action"], action["label"],
                 action["description"], action["kind"], action["operation"],
-                "1" if action["confirm"] else "0", action["asks"],
+                "1" if action["confirm"] else "0", asks(action),
                 "\x1f".join(action["keywords"]), action["icon"],
             ]) + "\n"
             for action in app["actions"]
