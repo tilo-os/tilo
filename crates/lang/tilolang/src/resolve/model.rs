@@ -183,6 +183,10 @@ impl CKind {
 }
 
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each says one independent thing about the callable: its package, a scenario's, private, capture-protected"
+)]
 pub struct Callable {
     pub kind: CKind,
     pub name: String,

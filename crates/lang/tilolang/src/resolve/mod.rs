@@ -2978,10 +2978,19 @@ impl Resolver<'_> {
                     .to_owned(),
             );
         }
-        let Some(ast::WindowDocument { root: document, items }) = &app.document else {
+        let Some(ast::WindowDocument {
+            root: document,
+            items,
+        }) = &app.document
+        else {
             return;
         };
-        if let Some((_, key)) = self.env.named_roots.iter().find(|(n, _)| *n == document.name) {
+        if let Some((_, key)) = self
+            .env
+            .named_roots
+            .iter()
+            .find(|(n, _)| *n == document.name)
+        {
             let Some(items) = items else {
                 return;
             };
