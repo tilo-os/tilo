@@ -17,7 +17,7 @@ SUPPORT = {
     "tilo-flight-log",
     "tilo-app-package-cli",
     "install",
-    "runtime-bundle",
+    "tilo-runtime-bundle",
     "cli-shim",
     "app-cli",
     "ush",
@@ -76,7 +76,6 @@ class RpmBuildGraphTest(unittest.TestCase):
         self.assertIn("tilo-model-gateway/local-models", selected_features)
         self.assertIn("tilo-model-gateway", bins)
         expected = {
-            "imager",
             "fs",
             "tilo-linux-vm",
         }
@@ -128,7 +127,7 @@ class RpmBuildGraphTest(unittest.TestCase):
                         ):
                             expected.add(source.parent.name)
         self.assertEqual(seen, SUPPORT)
-        self.assertEqual(packages, SUPPORT | {"imager", "tilo-server", "linux-vm"})
+        self.assertEqual(packages, SUPPORT | {"tilo-server", "linux-vm"})
         self.assertEqual(bins, expected)
         self.assertEqual(support[:4], ["build", "--release", "--locked", "--lib"])
         self.assertEqual(
