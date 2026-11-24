@@ -427,6 +427,10 @@ pub fn encode(result: &Result<PageReply, PageFailure>) -> String {
 
 /// What the page waits on and last reported, as an app's action reads it.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the asks are written field by field, in the order the app reads them"
+)]
 pub fn asks_json(asks: &Asks) -> String {
     let dialog = asks.dialog.as_ref().map(|dialog| {
         serde_json::json!({

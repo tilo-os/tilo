@@ -126,6 +126,7 @@ impl PageSession {
 
     /// Take what the engine reported: the answers to the actions asked, and the page's other
     /// events for the view. A window calls this once a frame, before it draws.
+    #[expect(clippy::too_many_lines, reason = "one arm per kind of page event")]
     pub fn poll(&mut self) {
         for event in self.engine.drain_events() {
             match &event {
