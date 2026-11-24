@@ -483,6 +483,11 @@ impl AttachedView {
             },
         )
         .map_err(|error| error.to_string())?;
+        // The view's opening frame queued whatever it does as it opens; the frame after it runs
+        // those controls, as the second frame of a window's opening does. A record a member
+        // joined is asked what its view wrote before that write could reach a host, and a write
+        // that is the creator's runs here, on the record as the app publishes it.
+        frame.relayout();
         let landed = Landed::default();
         frame.set_action_transport(Box::new(landed.clone()))?;
         if let Some(joined_at) = &joined_at {
