@@ -250,7 +250,7 @@ async fn a_moderation_turns_caller_carries_the_saver_and_the_author() {
 fn a_moderation_turn_removes_a_message_only_when_the_moderator_who_saved_it_may() {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     use tilo_action_policy::{
-        ActionKind, Answer, Context, Grant, Grantee, KindSet, MemberAccess, Role, Rule, TreePath,
+        ActionKind, Answer, Context, Grant, Grantee, KindSet, MemberAccess, Role, TreePath,
         WorkspacePolicy,
     };
 
@@ -388,15 +388,19 @@ fn a_moderation_turn_removes_a_message_only_when_the_moderator_who_saved_it_may(
     );
     assert_eq!(posted, ["m-1"], "the message stays");
 
-    // The agent's own bound refuses it too, even where the person who saved the watch may.
-    let bounded = vec![Rule::new(
-        AnswerScope::kind(CHAT, CHANNEL).node(&id),
-        KindSet::UNDOABLE,
+    // The agent's own grants refuse it too, even where the person who saved the watch may: the
+    // workspace's answer for `scout` on the channel's kind says no.
+    let mut refusing = with_agent();
+    refusing.grants.push(agent_answers::grant(
+        &id,
+        SCOUT,
+        (&AnswerScope::kind(CHAT, CHANNEL), ActionKind::Undoable),
         Answer::Deny,
-    )];
+        Grantee::person(owner.clone()),
+    ));
     let mut posted = vec!["m-1".to_owned()];
     assert_eq!(
-        removes(&moderator, &owner, &mut posted),
+        removes(&refusing, &owner, &mut posted),
         Answer::Deny,
         "the agent's own grants must allow it too"
     );
