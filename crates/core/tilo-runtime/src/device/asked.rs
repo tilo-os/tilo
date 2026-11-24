@@ -168,15 +168,14 @@ impl DeviceAsked {
         })
     }
 
-    /// Withdraw what waited before the device started again only while what asked ran: a
-    /// question the person's shell raised for a program outside Tilo, whose program waited on
-    /// a call that ended with the device. What an agent or an app's press asked waits on.
+    /// Withdraw what waited before the device started again on a provider that ended with it:
+    /// one the person's shell served over its link (a question a program outside Tilo asked
+    /// through it), which nothing serves until a shell links again, and whose program's call
+    /// ended with the device. A call to a provider the device serves itself (an app's, a
+    /// shortcut's, an agent's) waits on.
     pub(crate) fn withdraw_what_ended(&self) {
-        for (at, context) in self.store.asked_by(DISPATCH) {
-            if matches!(
-                serde_json::from_value::<Run>(context),
-                Ok(Run::Own { pressed: None, .. })
-            ) {
+        for (at, target) in self.store.asked_by(DISPATCH) {
+            if runtime_collab::wire::shell::serves(&target.provider) {
                 self.store.withdraw(&at, PROGRAM_GONE);
             }
         }

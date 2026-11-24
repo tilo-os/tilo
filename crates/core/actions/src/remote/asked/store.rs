@@ -516,17 +516,17 @@ impl AskedStore {
         }
     }
 
-    /// Every record the dispatch `name` keeps that is asked still, with what that dispatch
-    /// keeps beside it ([`AskedDispatch::context`]): what a dispatch reads once it started
-    /// again, to withdraw what asked only while it ran.
+    /// Every record the dispatch `name` keeps that is asked still, with the target its call
+    /// goes to: what a dispatch reads once it started again, to withdraw what asked of a
+    /// provider that ended with it.
     #[must_use]
-    pub fn asked_by(&self, name: &str) -> Vec<(RecordRef, serde_json::Value)> {
+    pub fn asked_by(&self, name: &str) -> Vec<(RecordRef, super::super::RemoteActionTarget)> {
         self.kept
             .lock_recover()
             .records
             .iter()
             .filter(|record| record.status == Status::Asked && record.dispatch == name)
-            .map(|record| (record.at.clone(), record.context.clone()))
+            .map(|record| (record.at.clone(), record.request.target.clone()))
             .collect()
     }
 

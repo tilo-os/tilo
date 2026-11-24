@@ -184,9 +184,17 @@ impl Device {
         let invocations: Arc<Invocations> = Arc::default();
         let again = Arc::clone(workspace);
         let admits: Admits = Box::new(move |run| {
-            assert_eq!(*run, self::run(), "the run is admitted again as it was");
             let provider: Arc<dyn ActionProvider + Send + Sync> = again.clone();
-            Ok((provider, scout()))
+            match run {
+                Run::Agent { .. } => {
+                    assert_eq!(*run, self::run(), "the run is admitted again as it was");
+                    Ok((provider, scout()))
+                }
+                Run::Own { workspace, .. } => {
+                    assert_eq!(workspace, WORKSPACE);
+                    Ok((provider, ada()))
+                }
+            }
         });
         let asked = DeviceAsked::new(Arc::clone(&store), Arc::clone(&invocations), admits);
         Self {
@@ -686,44 +694,48 @@ fn a_declined_pressed_shortcut_runs_nothing() {
     );
 }
 
-/// The device restarts while a question a program asked through Ada's shell waits: the program's
-/// call ended with the device, so the question is withdrawn, saying so, and answers nothing. What
-/// her agent asked before the restart still waits.
+/// The device restarts while a question a program asked through Ada's shell waits: the shell
+/// served that program's provider over its link, which ended with the device, so the question
+/// is withdrawn, saying so, and answers nothing. What her agent asked, and what her pressed
+/// shortcut asked of a provider the device serves itself, still wait, and her approve runs it.
 #[test]
 fn a_programs_question_is_withdrawn_when_the_device_restarts() {
     let (kept, workspace) = (Arc::<Kept>::default(), Arc::<Workspace>::default());
-    let (program, agents) = (send_mail(), send_mail());
+    let mut program = send_mail();
+    program.target = RemoteActionTarget {
+        provider: "session.asks".into(),
+        address: ActionAddress::new("asks:polkit-1", "answer"),
+    };
+    let (agents, shortcut) = (send_mail(), send_mail());
     {
         let before = Device::start(&kept, &workspace);
-        let route: Route = (workspace.clone(), ada());
-        before
-            .asked
-            .send(
-                Run::Own {
-                    workspace: WORKSPACE.into(),
-                    pressed: None,
-                },
-                &ada(),
-                route,
-                program.clone(),
-            )
-            .wait_timeout(WAIT)
-            .ok()
-            .flatten()
-            .unwrap()
-            .unwrap();
         before.send(&agents).unwrap();
-        assert_eq!(before.store.asked_of(&ADA).len(), 2);
+        press(&before, &program);
+        press(&before, &shortcut);
+        assert_eq!(before.store.asked_of(&ADA).len(), 3);
     }
     let after = Device::start(&kept, &workspace);
     after.asked.withdraw_what_ended();
-    let waiting = after.store.asked_of(&ADA);
-    assert_eq!(waiting.len(), 1, "only the agent's question waits");
-    assert_eq!(waiting[0].record.record, agents.invocation.0.to_string());
+    let mut waiting: Vec<String> = after
+        .store
+        .asked_of(&ADA)
+        .into_iter()
+        .map(|asked| asked.record.record)
+        .collect();
+    waiting.sort();
+    let mut expected = vec![
+        agents.invocation.0.to_string(),
+        shortcut.invocation.0.to_string(),
+    ];
+    expected.sort();
+    assert_eq!(waiting, expected, "the agent's and the shortcut's questions wait");
     assert_eq!(
         refusal(after.resolve(&program, &ada(), Offer::Approve)),
         asked::ANSWERED
     );
-    assert!(workspace.ran().is_empty(), "nothing ran");
-    assert_eq!(kept.0.lock().unwrap().len(), 1, "the withdrawn one is kept no more");
+    assert_eq!(kept.0.lock().unwrap().len(), 2, "the withdrawn one is kept no more");
+    after.resolve(&shortcut, &ada(), Offer::Approve).unwrap();
+    let ran = workspace.ran();
+    assert_eq!(ran.len(), 1, "the shortcut ran on her approve, after the restart");
+    assert_eq!(ran[0].invocation, shortcut.invocation);
 }
