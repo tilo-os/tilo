@@ -3,7 +3,6 @@
   "said": "Shortcuts: save one, see it, run it, reach it by its chord, remove it",
   "family": "capabilities-unused",
   "live": "tl",
-  "apps": "shortcuts",
   "tl": {
     "id": "so.tilo.shortcuts",
     "package": "shortcuts"
@@ -219,5 +218,8 @@
       ],
       "budget_ms": 8000
     }
+  ],
+  "packages": [
+    "shortcuts"
   ]
 }

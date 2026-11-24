@@ -1,8 +1,8 @@
 {
   "app": "capabilities",
   "said": "Every capability the shell and the apps publish",
-  "live": "rust",
-  "apps": "code-editor word-processor chat settings tasks browser terminal pdf-viewer activity photos calendar",
+  "live": "tl",
+  "apps": "terminal",
   "packages": [
     "notes",
     "sheets",
@@ -10,12 +10,18 @@
     "chat",
     "mail",
     "tube",
-    "agent",
     "today",
     "board",
-    "files"
+    "files",
+    "code-editor",
+    "word-processor",
+    "settings",
+    "browser",
+    "pdf",
+    "activity",
+    "photos",
+    "calendar"
   ],
-  "rust": {},
   "tl": {
     "session_args": []
   },

@@ -3,9 +3,11 @@
   "said": "Quick settings",
   "family": "shell",
   "live": "tl",
-  "apps": "chat settings terminal",
+  "apps": "terminal",
   "packages": [
-    "files"
+    "files",
+    "chat",
+    "settings"
   ],
   "tl": {
     "session_args": []

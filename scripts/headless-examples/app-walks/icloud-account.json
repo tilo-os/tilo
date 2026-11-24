@@ -1,0 +1,140 @@
+{
+  "app": "icloud-account",
+  "said": "An iCloud account brings its mail and its calendar",
+  "family": "settings",
+  "live": "tl",
+  "steps": [
+    {
+      "id": "provider",
+      "said": "Stage the tree's iCloud double as the Apple ID's provider and sign in again",
+      "ops": [
+        {
+          "local_icloud_server": {
+            "password": "walks-stand-in"
+          }
+        },
+        {
+          "restart": "session"
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        }
+      ],
+      "budget_ms": 180000
+    },
+    {
+      "id": "accounts-open",
+      "said": "Open Settings' Accounts page and choose iCloud",
+      "ops": [
+        {
+          "wait_for": "actions"
+        },
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "open-pane",
+            "args": {
+              "pane": "external_accounts"
+            }
+          }
+        },
+        {
+          "press": "iCloud"
+        },
+        {
+          "wait_for": {
+            "shown": "App-specific password"
+          }
+        }
+      ],
+      "dark": true,
+      "budget_ms": 60000
+    },
+    {
+      "id": "add-account",
+      "said": "Add the Apple ID with its app-specific password",
+      "ops": [
+        {
+          "click": "Apple ID email address"
+        },
+        {
+          "type": "lab@icloud.com"
+        },
+        {
+          "click": "App-specific password"
+        },
+        {
+          "type": "walks-stand-in"
+        },
+        {
+          "press": "Add account"
+        },
+        {
+          "must": {
+            "see": [
+              "lab@icloud.com"
+            ],
+            "within": 30
+          }
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "in-calendar",
+      "said": "Calendar shows the account's calendar",
+      "ops": [
+        {
+          "open": "calendar"
+        },
+        {
+          "window_of": "calendar"
+        },
+        {
+          "must": {
+            "see": [
+              "Personal"
+            ],
+            "within": 30
+          }
+        }
+      ],
+      "dark": true,
+      "budget_ms": 60000
+    },
+    {
+      "id": "calendar-again",
+      "said": "Quit Calendar and open it again; the calendar is still there",
+      "ops": [
+        {
+          "restart_app": "calendar"
+        },
+        {
+          "wait_window": {
+            "app": "so.tilo.calendar",
+            "within": 30
+          }
+        },
+        {
+          "must": {
+            "see": [
+              "Personal"
+            ],
+            "within": 30
+          }
+        }
+      ],
+      "budget_ms": 60000
+    }
+  ],
+  "packages": [
+    "calendar"
+  ],
+  "tl": {
+    "id": "so.tilo.settings",
+    "package": "settings"
+  }
+}

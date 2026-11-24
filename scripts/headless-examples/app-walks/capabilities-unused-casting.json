@@ -2,9 +2,8 @@
   "app": "capabilities-unused-casting",
   "said": "Casting: the display sheet finds a receiver, connects and stops",
   "family": "capabilities-unused",
-  "live": "rust",
+  "live": "tl",
   "apps": "",
-  "rust": {},
   "tl": {
     "session_args": []
   },
@@ -13,10 +12,26 @@
       "id": "open-the-sheet",
       "said": "Open the display sheet and look for wireless displays",
       "ops": [
-        {"theme": false},
-        {"serve": {"projector": true}},
-        {"act": ["session:displays", "open-sheet"]},
-        {"act": ["display-sheet.layouts", "search"]}
+        {
+          "theme": false
+        },
+        {
+          "serve": {
+            "projector": true
+          }
+        },
+        {
+          "act": [
+            "session:displays",
+            "open-sheet"
+          ]
+        },
+        {
+          "act": [
+            "display-sheet.layouts",
+            "search"
+          ]
+        }
       ],
       "dark": true,
       "budget_ms": 8000
@@ -25,7 +40,11 @@
       "id": "a-receiver-shows",
       "said": "The receiver the broker found is listed",
       "ops": [
-        {"must": ["Living room"]}
+        {
+          "must": [
+            "Living room"
+          ]
+        }
       ],
       "budget_ms": 8000
     },
@@ -33,8 +52,24 @@
       "id": "choose-and-connect",
       "said": "Choose it and connect: the desktop streams to it",
       "ops": [
-        {"act": ["display-sheet.layouts", "choose", {"receiver": "cast:stand-in:living-room"}]},
-        {"act": ["display-sheet.layouts", "connect", {"receiver": "cast:stand-in:living-room"}]}
+        {
+          "act": [
+            "display-sheet.layouts",
+            "choose",
+            {
+              "receiver": "cast:stand-in:living-room"
+            }
+          ]
+        },
+        {
+          "act": [
+            "display-sheet.layouts",
+            "connect",
+            {
+              "receiver": "cast:stand-in:living-room"
+            }
+          ]
+        }
       ],
       "budget_ms": 8000
     },
@@ -42,7 +77,12 @@
       "id": "stop",
       "said": "Stop: nothing streams",
       "ops": [
-        {"act": ["display-sheet.layouts", "stop"]}
+        {
+          "act": [
+            "display-sheet.layouts",
+            "stop"
+          ]
+        }
       ],
       "budget_ms": 8000
     }

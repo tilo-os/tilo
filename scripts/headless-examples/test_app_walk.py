@@ -156,6 +156,23 @@ class TheStepFiles(unittest.TestCase):
                     self.assert_named_both(path, step, op, inner, named)
 
 
+class ThePackagesAWalkInstalls(unittest.TestCase):
+    """Every tilolang package a walk installs is in the tree, and the walk looks for the file
+    `tilolang build` names it after: its app id's last part, not its directory."""
+
+    def test_every_package_a_walk_names_is_built_under_its_app_id(self):
+        for path, spec in steps():
+            packages = list(spec.get("packages") or [])
+            for variant in named_variants(spec):
+                v = spec[variant]
+                packages += v.get("packages") or ([v["package"]] if v.get("package") else [])
+            for package in packages:
+                with self.subTest(walk=path.stem, package=package):
+                    self.assertTrue((HERE.parents[1] / "apps/tl" / package / "app.tl").is_file())
+                    self.assertTrue(walk.tapp_name(package))
+        self.assertEqual(walk.tapp_name("files"), "file-explorer")
+
+
 class TheSessionAWalkStartsIn(unittest.TestCase):
     """Every walk's own session starts from the environment app-walk.py gives it, a walk of
     one device included: that one has no device environment, and its start crashed on it."""

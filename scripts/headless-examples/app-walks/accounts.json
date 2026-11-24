@@ -2,14 +2,10 @@
   "app": "accounts",
   "said": "Accounts",
   "family": "settings",
-  "live": "rust",
+  "live": "tl",
   "packages": [
     "mail"
   ],
-  "rust": {
-    "id": "so.tilo.settings",
-    "native": "settings"
-  },
   "steps": [
     {
       "id": "stand-in",
@@ -162,5 +158,9 @@
       ],
       "budget_ms": 150000
     }
-  ]
+  ],
+  "tl": {
+    "id": "so.tilo.settings",
+    "package": "settings"
+  }
 }

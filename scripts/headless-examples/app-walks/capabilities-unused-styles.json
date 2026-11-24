@@ -3,7 +3,6 @@
   "said": "Shell styles: a person makes a shipped style their own and shows it",
   "live": "tl",
   "apps": "",
-  "rust": {},
   "tl": {
     "session_args": []
   },
@@ -12,9 +11,17 @@
       "id": "signed-in",
       "said": "Sign in: the shell draws, and its switch names the style it shows",
       "ops": [
-        {"theme": false},
-        {"state": {"chrome.session_locked": false}},
-        {"targets": true}
+        {
+          "theme": false
+        },
+        {
+          "state": {
+            "chrome.session_locked": false
+          }
+        },
+        {
+          "targets": true
+        }
       ],
       "dark": true
     },
@@ -22,7 +29,15 @@
       "id": "make-it-mine",
       "said": "Make the shipped Strips style mine: it is copied into my own package",
       "ops": [
-        {"act": ["session-authoring", "make-it-mine", {"style": "so.tilo.shell:strips"}]}
+        {
+          "act": [
+            "session-authoring",
+            "make-it-mine",
+            {
+              "style": "so.tilo.shell:strips"
+            }
+          ]
+        }
       ],
       "budget_ms": 60000
     },
@@ -30,7 +45,15 @@
       "id": "check-it",
       "said": "Check the copy: it compiles with no diagnostics",
       "ops": [
-        {"act": ["session-authoring", "check", {"package": "mine.shell"}]}
+        {
+          "act": [
+            "session-authoring",
+            "check",
+            {
+              "package": "mine.shell"
+            }
+          ]
+        }
       ],
       "budget_ms": 60000
     },
@@ -38,8 +61,18 @@
       "id": "install-it",
       "said": "Install it: the style is offered without a restart",
       "ops": [
-        {"act": ["session-authoring", "install", {"package": "mine.shell"}]},
-        {"targets": true}
+        {
+          "act": [
+            "session-authoring",
+            "install",
+            {
+              "package": "mine.shell"
+            }
+          ]
+        },
+        {
+          "targets": true
+        }
       ],
       "budget_ms": 120000
     },
@@ -47,8 +80,15 @@
       "id": "the-switch-offers-it",
       "said": "The shell's switch lists my copy beside the shipped style it was made from",
       "ops": [
-        {"press": "Showing Strips"},
-        {"count": {"see": "Strips", "is": 2}}
+        {
+          "press": "Showing Strips"
+        },
+        {
+          "count": {
+            "see": "Strips",
+            "is": 2
+          }
+        }
       ],
       "dark": true,
       "budget_ms": 10000
@@ -61,11 +101,20 @@
           "act": [
             "tl.so.tilo.shell.Viewing",
             "show_style",
-            {"style": "mine.shell:strips"}
+            {
+              "style": "mine.shell:strips"
+            }
           ]
         },
-        {"key": "Escape"},
-        {"must": ["Showing Strips", "Strip 1"]}
+        {
+          "key": "Escape"
+        },
+        {
+          "must": [
+            "Showing Strips",
+            "Strip 1"
+          ]
+        }
       ],
       "dark": true,
       "budget_ms": 10000

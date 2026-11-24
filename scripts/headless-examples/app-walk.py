@@ -124,6 +124,12 @@ MAIL_NAMES = [MAIL_DOMAIN, f"imap.{MAIL_DOMAIN}", f"smtp.{MAIL_DOMAIN}"]
 MAIL_IMAP = f"127.0.0.1:993"
 MAIL_SMTP = f"127.0.0.1:465"
 MAIL_PASSWORD = "walks-stand-in"
+# The iCloud-shaped double: mail and calendars under one Apple ID and app password, at the
+# names Tilo reaches iCloud's own servers by
+# (crates/integrations/account-probe/examples/icloud_double.rs).
+ICLOUD_ADDRESS = "lab@icloud.com"
+ICLOUD_NAMES = ["imap.mail.me.com", "smtp.mail.me.com", "caldav.icloud.com"]
+ICLOUD_CALDAV = "127.0.0.1:443"
 MAIL_CA_BUNDLES = (
     "/etc/pki/tls/certs/ca-bundle.crt",
     "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
@@ -154,6 +160,12 @@ class LocalMailServer:
     it, as the lounge's stories stage a mail provider, and takes it out again
     when the walk ends."""
 
+    program = "mail-stand-in"
+    program_env = "TILO_MAIL_STAND_IN"
+    address = MAIL_ADDRESS
+    names = MAIL_NAMES
+    serving_says = "mail stand-in: IMAP at"
+
     def __init__(self, out: Path, password: str = MAIL_PASSWORD):
         self.dir = out
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -168,12 +180,16 @@ class LocalMailServer:
         self.trusted: list[tuple[Path, bytes]] = []
 
     def binary(self) -> Path:
-        for candidate in (os.environ.get("TILO_MAIL_STAND_IN"),
-                          str(BUILD / "bin/mail-stand-in")):
+        for candidate in (os.environ.get(self.program_env),
+                          str(BUILD / "bin" / self.program)):
             if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
                 return Path(candidate)
-        raise Failed("no stand-in mail server to run: the nested-session build stages it as "
-                     "bin/mail-stand-in, or name it with TILO_MAIL_STAND_IN")
+        raise Failed(f"no {self.program} to run: the nested-session build stages it as "
+                     f"bin/{self.program}, or name it with {self.program_env}")
+
+    def served(self) -> list[str]:
+        """The listeners beyond IMAP and SMTP this provider serves on."""
+        return []
 
     def stage(self) -> dict:
         if os.geteuid() != 0:
@@ -188,21 +204,21 @@ class LocalMailServer:
         except BaseException:
             self.stop()
             raise
-        return {"address": MAIL_ADDRESS, "password": self.password,
+        return {"address": self.address, "password": self.password,
                 "imap": MAIL_IMAP, "smtp": MAIL_SMTP, "log": str(self.log)}
 
     def name_itself(self) -> None:
         self.hosts_before = self.hosts.read_bytes()
         block = ["", "# a walk's mail provider, at this machine's own loopback"]
-        block += [f"127.0.0.1 {name}" for name in MAIL_NAMES]
+        block += [f"127.0.0.1 {name}" for name in self.names]
         self.hosts.write_bytes(self.hosts_before + ("\n".join(block) + "\n").encode())
 
     def start(self) -> None:
-        argv = [str(self.binary()), "--login", MAIL_ADDRESS,
+        argv = [str(self.binary()), "--login", self.address,
                 "--password-file", str(self.password_file),
                 "--write-certificate", str(self.certificate),
-                "--imap", MAIL_IMAP, "--smtp", MAIL_SMTP]
-        for name in MAIL_NAMES:
+                "--imap", MAIL_IMAP, "--smtp", MAIL_SMTP, *self.served()]
+        for name in self.names:
             argv += ["--name", name]
         with self.log.open("w") as said:
             self.proc = subprocess.Popen(argv, stdout=said, stderr=subprocess.STDOUT,
@@ -210,13 +226,13 @@ class LocalMailServer:
 
         def serving() -> str | None:
             text = self.log.read_text(errors="replace") if self.log.is_file() else ""
-            if "mail stand-in: IMAP at" in text:
+            if self.serving_says in text:
                 return text
             if self.proc is not None and self.proc.poll() is not None:
-                raise Failed(f"the stand-in mail server exited: {text[-1500:]}")
+                raise Failed(f"{self.program} exited: {text[-1500:]}")
             return None
 
-        until_value("the stand-in mail server to answer", serving, 60, 0.1)
+        until_value(f"{self.program} to answer", serving, 60, 0.1)
 
     def trust(self) -> None:
         certificate = self.certificate.read_bytes()
@@ -250,6 +266,21 @@ class LocalMailServer:
             with contextlib.suppress(OSError):
                 bundle.write_bytes(before)
         self.trusted.clear()
+
+
+class ICloudDouble(LocalMailServer):
+    """An iCloud account's provider, staged as the stand-in mail server is: its mail servers
+    and a calendar server holding one calendar, "Personal", under the same Apple ID and app
+    password, at the names Tilo reaches iCloud by."""
+
+    program = "icloud-double"
+    program_env = "TILO_ICLOUD_DOUBLE"
+    address = ICLOUD_ADDRESS
+    names = ICLOUD_NAMES
+    serving_says = "icloud double: IMAP at"
+
+    def served(self) -> list[str]:
+        return ["--caldav", ICLOUD_CALDAV]
 
 
 def until_value(what: str, check, deadline: float = 30.0, step: float = 0.1):
@@ -2464,6 +2495,16 @@ class Walk:
             self.mail = LocalMailServer(self.out / "mail-stand-in")
         return self.mail.stage()
 
+    def op_local_icloud_server(self, value) -> dict:
+        """`local_mail_server` for an iCloud account: the double serves `lab@icloud.com`'s
+        mail and its calendar "Personal" under one app password (`{"password": ...}`), at
+        iCloud's own server names on this machine. One provider is staged per walk."""
+        if self.mail is not None:
+            raise Failed("a walk stages one mail provider")
+        password = value.get("password", MAIL_PASSWORD) if isinstance(value, dict) else MAIL_PASSWORD
+        self.mail = ICloudDouble(self.out / "icloud-double", password)
+        return self.mail.stage()
+
     def op_read(self, value) -> dict:
         """Call a read action and hold what it answered to the choices a person
         made: `{"app": "so.tilo.settings", "operation": "inspect-appearance",
@@ -2985,6 +3026,15 @@ def tilolang_tool() -> Path:
                  "or name it with TILO_TILOLANG")
 
 
+def tapp_name(package: str) -> str:
+    """The file `tilolang build` names the package `apps/tl/<package>`'s app after: the last
+    part of its app id (`so.tilo.file-explorer` is `file-explorer.tapp`, though its package is
+    `files`)."""
+    declared = re.search(r"^app\s+(\S+)", (REPO / "apps/tl" / package / "app.tl").read_text(),
+                         re.M)
+    return declared.group(1).rsplit(".", 1)[-1] if declared else package
+
+
 def build_tapp(name: str, out: Path, state: Path) -> Path:
     """`tilolang build` the package `apps/tl/<name>` against the session's runtime:
     its signed package, which the session installs as an app."""
@@ -2996,7 +3046,7 @@ def build_tapp(name: str, out: Path, state: Path) -> Path:
     run([str(tool), "build", "--locked", str(REPO / "apps/tl" / name),
          "--search", str(REPO / "apps/tl"),
          "--out", str(out), "--tilo-runtime", f"tilo-runtime/{runtime}"])
-    tapp = out / f"{name}.tapp"
+    tapp = out / f"{tapp_name(name)}.tapp"
     if not tapp.is_file():
         raise Failed(f"tilolang build made no {tapp}")
     return tapp

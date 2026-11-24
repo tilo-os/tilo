@@ -2,15 +2,11 @@
   "app": "restore",
   "said": "Windows come back after signing in again",
   "family": "settings",
-  "live": "rust",
-  "apps": "calendar",
+  "live": "tl",
   "packages": [
-    "mail"
+    "mail",
+    "calendar"
   ],
-  "rust": {
-    "id": "so.tilo.calendar",
-    "native": "calendar"
-  },
   "steps": [
     {
       "id": "mail",
@@ -113,5 +109,9 @@
       ],
       "budget_ms": 420000
     }
-  ]
+  ],
+  "tl": {
+    "id": "so.tilo.calendar",
+    "package": "calendar"
+  }
 }

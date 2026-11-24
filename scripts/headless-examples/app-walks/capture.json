@@ -2,8 +2,7 @@
   "app": "capture",
   "said": "Take a screenshot and mark it up",
   "family": "capture",
-  "live": "rust",
-  "rust": {},
+  "live": "tl",
   "steps": [
     {
       "id": "screenshot",
@@ -80,5 +79,8 @@
         }
       ]
     }
-  ]
+  ],
+  "tl": {
+    "session_args": []
+  }
 }

@@ -1,405 +1,401 @@
 {
- "app": "photos",
- "said": "Photos",
- "native": "photos",
- "rust": {
-  "id": "so.tilo.photos"
- },
- "tl": {
-  "id": "so.tilo.photos",
-  "package": "photos"
- },
- "family": "apps",
- "live": "rust",
- "steps": [
-  {
-   "id": "open",
-   "said": "Open Photos on an empty library",
-   "ops": [
+  "app": "photos",
+  "said": "Photos",
+  "tl": {
+    "id": "so.tilo.photos",
+    "package": "photos"
+  },
+  "family": "apps",
+  "live": "tl",
+  "steps": [
     {
-     "theme": false
+      "id": "open",
+      "said": "Open Photos on an empty library",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": "Open"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "budget_ms": 30000
     },
     {
-     "launch": true
+      "id": "empty",
+      "said": "The empty library says what it holds and offers to open a photograph",
+      "ops": {
+        "rust": [
+          {
+            "must": [
+              "Open",
+              "Timeline",
+              "Albums",
+              "People"
+            ]
+          },
+          {
+            "read": {
+              "app": "so.tilo.photos",
+              "operation": "read",
+              "is": {
+                "photos": 0
+              }
+            }
+          }
+        ],
+        "tl": [
+          {
+            "must": [
+              "Open",
+              "Timeline",
+              "People",
+              "Tags"
+            ]
+          }
+        ]
+      }
     },
     {
-     "wait_for": "window"
+      "id": "import",
+      "said": "Open a few pictures from the person's folder",
+      "ops": {
+        "rust": [
+          {
+            "image": {
+              "name": "sunset.png"
+            }
+          },
+          {
+            "press_any": [
+              "Open"
+            ]
+          },
+          {
+            "choose": {
+              "name": "sunset.png"
+            }
+          },
+          {
+            "wait_for": "actions"
+          },
+          {
+            "image": {
+              "name": "dawn.png"
+            }
+          },
+          {
+            "press_any": [
+              "Open"
+            ]
+          },
+          {
+            "choose": {
+              "name": "dawn.png"
+            }
+          },
+          {
+            "wait_for": "actions"
+          },
+          {
+            "image": {
+              "name": "dunes.png"
+            }
+          },
+          {
+            "press_any": [
+              "Open"
+            ]
+          },
+          {
+            "choose": {
+              "name": "dunes.png"
+            }
+          },
+          {
+            "wait_for": "actions"
+          }
+        ],
+        "tl": [
+          {
+            "image": {
+              "name": "sunset.png"
+            }
+          },
+          {
+            "press_any": [
+              "Open"
+            ]
+          },
+          {
+            "choose": {
+              "name": "sunset.png"
+            }
+          },
+          {
+            "wait_for": "actions"
+          },
+          {
+            "image": {
+              "name": "dawn.png"
+            }
+          },
+          {
+            "press_any": [
+              "Open"
+            ]
+          },
+          {
+            "choose": {
+              "name": "dawn.png"
+            }
+          },
+          {
+            "wait_for": "actions"
+          },
+          {
+            "image": {
+              "name": "dunes.png"
+            }
+          },
+          {
+            "press_any": [
+              "Open"
+            ]
+          },
+          {
+            "choose": {
+              "name": "dunes.png"
+            }
+          },
+          {
+            "wait_for": "actions"
+          }
+        ]
+      }
     },
     {
-     "wait_for": "actions"
+      "id": "browse",
+      "said": "Browse the library as a grid of pictures",
+      "ops": [
+        {
+          "targets": true
+        }
+      ]
     },
     {
-     "wait_for": "Open"
+      "id": "view",
+      "said": "Open one picture large",
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              {
+                "prefix": "sunset"
+              }
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              {
+                "prefix": "sunset"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
-     "targets": true
+      "id": "next",
+      "said": "Go to the next picture",
+      "ops": {
+        "rust": [
+          {
+            "key": "ArrowRight"
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Next"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "previous",
+      "said": "Go back to the picture before it",
+      "ops": {
+        "rust": [
+          {
+            "key": "ArrowLeft"
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Previous"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "back",
+      "said": "Back in the library the photograph is a picture of the grid",
+      "ops": {
+        "rust": [
+          {
+            "press": "Library"
+          },
+          {
+            "must": [
+              "sunset.png"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press": "Library"
+          },
+          {
+            "must": [
+              "sunset.png"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "favorite",
+      "said": "Mark the picture a favorite",
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              "Favorite"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Favorite"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "share",
+      "said": "Share the picture",
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              "Share"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Share"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "remove",
+      "said": "Take the picture out of the library",
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              "Remove"
+            ]
+          },
+          {
+            "press_any": [
+              "Remove from library"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Remove"
+            ]
+          },
+          {
+            "press_any": [
+              "Remove from library"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "favorites",
+      "said": "See the favorites",
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              "Favorites",
+              "photos-favorites"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "Favorites"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "search",
+      "said": "Find a picture with the system's search",
+      "ops": [
+        {
+          "search": {
+            "rust": "dawn",
+            "tl": "dawn"
+          }
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The library in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        },
+        {
+          "key": "Escape"
+        }
+      ],
+      "dark": true
     }
-   ],
-   "budget_ms": 30000
-  },
-  {
-   "id": "empty",
-   "said": "The empty library says what it holds and offers to open a photograph",
-   "ops": {
-    "rust": [
-     {
-      "must": [
-       "Open",
-       "Timeline",
-       "Albums",
-       "People"
-      ]
-     },
-     {
-      "read": {
-       "app": "so.tilo.photos",
-       "operation": "read",
-       "is": {
-        "photos": 0
-       }
-      }
-     }
-    ],
-    "tl": [
-     {
-      "must": [
-       "Open",
-       "Timeline",
-       "People",
-       "Tags"
-      ]
-     }
-    ]
-   }
-  },
-  {
-   "id": "import",
-   "said": "Open a few pictures from the person's folder",
-   "ops": {
-    "rust": [
-     {
-      "image": {
-       "name": "sunset.png"
-      }
-     },
-     {
-      "press_any": [
-       "Open"
-      ]
-     },
-     {
-      "choose": {
-       "name": "sunset.png"
-      }
-     },
-     {
-      "wait_for": "actions"
-     },
-     {
-      "image": {
-       "name": "dawn.png"
-      }
-     },
-     {
-      "press_any": [
-       "Open"
-      ]
-     },
-     {
-      "choose": {
-       "name": "dawn.png"
-      }
-     },
-     {
-      "wait_for": "actions"
-     },
-     {
-      "image": {
-       "name": "dunes.png"
-      }
-     },
-     {
-      "press_any": [
-       "Open"
-      ]
-     },
-     {
-      "choose": {
-       "name": "dunes.png"
-      }
-     },
-     {
-      "wait_for": "actions"
-     }
-    ],
-    "tl": [
-     {
-      "image": {
-       "name": "sunset.png"
-      }
-     },
-     {
-      "press_any": [
-       "Open"
-      ]
-     },
-     {
-      "choose": {
-       "name": "sunset.png"
-      }
-     },
-     {
-      "wait_for": "actions"
-     },
-     {
-      "image": {
-       "name": "dawn.png"
-      }
-     },
-     {
-      "press_any": [
-       "Open"
-      ]
-     },
-     {
-      "choose": {
-       "name": "dawn.png"
-      }
-     },
-     {
-      "wait_for": "actions"
-     },
-     {
-      "image": {
-       "name": "dunes.png"
-      }
-     },
-     {
-      "press_any": [
-       "Open"
-      ]
-     },
-     {
-      "choose": {
-       "name": "dunes.png"
-      }
-     },
-     {
-      "wait_for": "actions"
-     }
-    ]
-   }
-  },
-  {
-   "id": "browse",
-   "said": "Browse the library as a grid of pictures",
-   "ops": [
-    {
-     "targets": true
-    }
-   ]
-  },
-  {
-   "id": "view",
-   "said": "Open one picture large",
-   "ops": {
-    "rust": [
-     {
-      "press_any": [
-       {
-        "prefix": "sunset"
-       }
-      ]
-     }
-    ],
-    "tl": [
-     {
-      "press_any": [
-       {
-        "prefix": "sunset"
-       }
-      ]
-     }
-    ]
-   }
-  },
-  {
-   "id": "next",
-   "said": "Go to the next picture",
-   "ops": {
-    "rust": [
-     {
-      "key": "ArrowRight"
-     }
-    ],
-    "tl": [
-     {
-      "press_any": [
-       "Next"
-      ]
-     }
-    ]
-   }
-  },
-  {
-   "id": "previous",
-   "said": "Go back to the picture before it",
-   "ops": {
-    "rust": [
-     {
-      "key": "ArrowLeft"
-     }
-    ],
-    "tl": [
-     {
-      "press_any": [
-       "Previous"
-      ]
-     }
-    ]
-   }
-  },
-  {
-   "id": "back",
-   "said": "Back in the library the photograph is a picture of the grid",
-   "ops": {
-    "rust": [
-     {
-      "press": "Library"
-     },
-     {
-      "must": [
-       "sunset.png"
-      ]
-     }
-    ],
-    "tl": [
-     {
-      "press": "Library"
-     },
-     {
-      "must": [
-       "sunset.png"
-      ]
-     }
-    ]
-   }
-  },
-  {
-   "id": "favorite",
-   "said": "Mark the picture a favorite",
-   "ops": {
-    "rust": [
-     {
-      "press_any": [
-       "Favorite"
-      ]
-     }
-    ],
-    "tl": [
-     {
-      "press_any": [
-       "Favorite"
-      ]
-     }
-    ]
-   }
-  },
-  {
-   "id": "share",
-   "said": "Share the picture",
-   "ops": {
-    "rust": [
-     {
-      "press_any": [
-       "Share"
-      ]
-     }
-    ],
-    "tl": [
-     {
-      "press_any": [
-       "Share"
-      ]
-     }
-    ]
-   }
-  },
-  {
-   "id": "remove",
-   "said": "Take the picture out of the library",
-   "ops": {
-    "rust": [
-     {
-      "press_any": [
-       "Remove"
-      ]
-     },
-     {
-      "press_any": [
-       "Remove from library"
-      ]
-     }
-    ],
-    "tl": [
-     {
-      "press_any": [
-       "Remove"
-      ]
-     },
-     {
-      "press_any": [
-       "Remove from library"
-      ]
-     }
-    ]
-   }
-  },
-  {
-   "id": "favorites",
-   "said": "See the favorites",
-   "ops": {
-    "rust": [
-     {
-      "press_any": [
-       "Favorites",
-       "photos-favorites"
-      ]
-     }
-    ],
-    "tl": [
-     {
-      "press_any": [
-       "Favorites"
-      ]
-     }
-    ]
-   }
-  },
-  {
-   "id": "search",
-   "said": "Find a picture with the system's search",
-   "ops": [
-    {
-     "search": {
-      "rust": "dawn",
-      "tl": "dawn"
-     }
-    }
-   ]
-  },
-  {
-   "id": "dark",
-   "said": "The library in the dark theme",
-   "ops": [
-    {
-     "theme": true
-    },
-    {
-     "key": "Escape"
-    }
-   ],
-   "dark": true
-  }
- ]
+  ]
 }

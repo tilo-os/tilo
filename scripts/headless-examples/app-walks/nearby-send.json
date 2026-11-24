@@ -1,153 +1,152 @@
 {
- "app": "nearby-send",
- "said": "Send a file from the laptop to the phone nearby",
- "family": "devices",
- "devices": [
-  "laptop",
-  "phone"
- ],
- "live": "rust",
- "packages": [
-   "settings",
-   "files",
-   "tasks"
- ],
- "rust": {},
- "tl": {
-  "session_args": []
- },
- "steps": [
-  {
-   "id": "files-on-laptop",
-   "said": "Open Files on the laptop, where the trip plan is",
-   "ops": [
+  "app": "nearby-send",
+  "said": "Send a file from the laptop to the phone nearby",
+  "family": "devices",
+  "devices": [
+    "laptop",
+    "phone"
+  ],
+  "live": "tl",
+  "packages": [
+    "settings",
+    "files",
+    "tasks"
+  ],
+  "tl": {
+    "session_args": []
+  },
+  "steps": [
     {
-     "file": {
-      "name": "trip-plan.txt",
-      "text": "Leave at 7. Bring the tent.\n"
-     }
+      "id": "files-on-laptop",
+      "said": "Open Files on the laptop, where the trip plan is",
+      "ops": [
+        {
+          "file": {
+            "name": "trip-plan.txt",
+            "text": "Leave at 7. Bring the tent.\n"
+          }
+        },
+        {
+          "open": "file-explorer"
+        }
+      ]
     },
     {
-     "open": "file-explorer"
-    }
-   ]
-  },
-  {
-   "id": "phone-is-near",
-   "said": "The trip plan's row offers to send it to the phone",
-   "ops": [
-    {
-     "published": {
-      "kind": "files.entry",
-      "action": "send-to",
-      "label": "trip-plan.txt",
-      "within": 30
-     }
-    }
-   ]
-  },
-  {
-   "id": "menu-offers-the-phone",
-   "said": "The trip plan's row offers the phone from its menu too",
-   "ops": [
-    {
-     "right_click": "trip-plan.txt"
+      "id": "phone-is-near",
+      "said": "The trip plan's row offers to send it to the phone",
+      "ops": [
+        {
+          "published": {
+            "kind": "files.entry",
+            "action": "send-to",
+            "label": "trip-plan.txt",
+            "within": 30
+          }
+        }
+      ]
     },
     {
-     "wait_for": {
-      "shown": {
-       "menuitem": "Send to nearby device…"
-      }
-     }
+      "id": "menu-offers-the-phone",
+      "said": "The trip plan's row offers the phone from its menu too",
+      "ops": [
+        {
+          "right_click": "trip-plan.txt"
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "menuitem": "Send to nearby device…"
+            }
+          }
+        },
+        {
+          "click": {
+            "menuitem": "Send to nearby device…"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Send to phone"
+          }
+        },
+        {
+          "key": "Escape"
+        }
+      ]
     },
     {
-     "click": {
-      "menuitem": "Send to nearby device…"
-     }
+      "id": "send-by-catalogue",
+      "said": "An agent picks the device the catalogue offers and sends the trip plan there",
+      "ops": [
+        {
+          "use": {
+            "kind": "files.entry",
+            "action": "send-to",
+            "label": "trip-plan.txt",
+            "args": {
+              "target": "{choice:target}"
+            }
+          }
+        }
+      ]
     },
     {
-     "wait_for": {
-      "shown": "Send to phone"
-     }
+      "id": "phone-is-offered",
+      "said": "The phone's Files offers to save the incoming file",
+      "on": "phone",
+      "ops": [
+        {
+          "open": "file-explorer"
+        },
+        {
+          "published": {
+            "kind": "files.nearby-transfer",
+            "action": "accept-nearby",
+            "within": 30
+          }
+        }
+      ]
     },
     {
-     "key": "Escape"
-    }
-   ]
-  },
-  {
-   "id": "send-by-catalogue",
-   "said": "An agent picks the device the catalogue offers and sends the trip plan there",
-   "ops": [
-    {
-     "use": {
-      "kind": "files.entry",
-      "action": "send-to",
-      "label": "trip-plan.txt",
-      "args": {
-       "target": "{choice:target}"
-      }
-     }
-    }
-   ]
-  },
-  {
-   "id": "phone-is-offered",
-   "said": "The phone's Files offers to save the incoming file",
-   "on": "phone",
-   "ops": [
-    {
-     "open": "file-explorer"
+      "id": "accept",
+      "said": "Save it on the phone, in the first folder offered",
+      "on": "phone",
+      "ops": [
+        {
+          "use": {
+            "kind": "files.nearby-transfer",
+            "action": "accept-nearby",
+            "args": {
+              "destination": "{choice:destination}"
+            }
+          }
+        }
+      ]
     },
     {
-     "published": {
-      "kind": "files.nearby-transfer",
-      "action": "accept-nearby",
-      "within": 30
-     }
-    }
-   ]
-  },
-  {
-   "id": "accept",
-   "said": "Save it on the phone, in the first folder offered",
-   "on": "phone",
-   "ops": [
+      "id": "on-the-phone",
+      "said": "The phone holds the trip plan, the same bytes",
+      "on": "phone",
+      "ops": [
+        {
+          "has_file": {
+            "name": "trip-plan.txt",
+            "text": "Leave at 7. Bring the tent.\n"
+          }
+        }
+      ]
+    },
     {
-     "use": {
-      "kind": "files.nearby-transfer",
-      "action": "accept-nearby",
-      "args": {
-       "destination": "{choice:destination}"
-      }
-     }
+      "id": "sent-on-laptop",
+      "said": "The laptop's Files says the transfer is done",
+      "ops": [
+        {
+          "use": {
+            "kind": "files.nearby-transfer",
+            "action": "status"
+          }
+        }
+      ]
     }
-   ]
-  },
-  {
-   "id": "on-the-phone",
-   "said": "The phone holds the trip plan, the same bytes",
-   "on": "phone",
-   "ops": [
-    {
-     "has_file": {
-      "name": "trip-plan.txt",
-      "text": "Leave at 7. Bring the tent.\n"
-     }
-    }
-   ]
-  },
-  {
-   "id": "sent-on-laptop",
-   "said": "The laptop's Files says the transfer is done",
-   "ops": [
-    {
-     "use": {
-      "kind": "files.nearby-transfer",
-      "action": "status"
-     }
-    }
-   ]
-  }
- ]
+  ]
 }

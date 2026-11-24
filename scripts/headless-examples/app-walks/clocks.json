@@ -1,11 +1,7 @@
 {
   "app": "clocks",
   "said": "Clocks",
-  "live": "rust",
-  "rust": {
-    "id": "so.tilo.clocks",
-    "native": "clocks"
-  },
+  "live": "tl",
   "tl": {
     "id": "so.tilo.clocks",
     "package": "clocks"

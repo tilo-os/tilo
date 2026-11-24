@@ -1,29 +1,78 @@
 {
- "app": "same-apps",
- "said": "The same apps on every device of the person's",
- "family": "devices",
- "devices": ["laptop", "phone"],
- "live": "rust",
- "packages": [
-   "settings",
-   "files",
-   "tasks"
- ],
- "rust": {},
- "tl": {"session_args": []},
- "steps": [
-  {"id": "tasks-on-laptop", "said": "Open Tasks on the laptop",
-   "ops": [{"open": "tasks"}, {"window_of": "tasks"}]},
-  {"id": "tasks-on-phone", "said": "The phone, in the same workspace, shows Tasks too",
-   "on": "phone",
-   "ops": [{"window_of": "tasks"}, {"targets": true}]},
-  {"id": "phone-runs-its-own", "said": "The phone's Tasks runs from its own store and answers there",
-   "on": "phone",
-   "ops": [{"published": {"app": "so.tilo.tasks", "action": "activate-window", "within": 30}}]},
-  {"id": "close-on-phone", "said": "Close Tasks on the phone",
-   "on": "phone",
-   "ops": [{"close_app": "tasks"}]},
-  {"id": "gone-on-laptop", "said": "Tasks is gone on the laptop too",
-   "ops": [{"windows": 0}]}
- ]
+  "app": "same-apps",
+  "said": "The same apps on every device of the person's",
+  "family": "devices",
+  "devices": [
+    "laptop",
+    "phone"
+  ],
+  "live": "tl",
+  "packages": [
+    "settings",
+    "files",
+    "tasks"
+  ],
+  "tl": {
+    "session_args": []
+  },
+  "steps": [
+    {
+      "id": "tasks-on-laptop",
+      "said": "Open Tasks on the laptop",
+      "ops": [
+        {
+          "open": "tasks"
+        },
+        {
+          "window_of": "tasks"
+        }
+      ]
+    },
+    {
+      "id": "tasks-on-phone",
+      "said": "The phone, in the same workspace, shows Tasks too",
+      "on": "phone",
+      "ops": [
+        {
+          "window_of": "tasks"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "phone-runs-its-own",
+      "said": "The phone's Tasks runs from its own store and answers there",
+      "on": "phone",
+      "ops": [
+        {
+          "published": {
+            "app": "so.tilo.tasks",
+            "action": "activate-window",
+            "within": 30
+          }
+        }
+      ]
+    },
+    {
+      "id": "close-on-phone",
+      "said": "Close Tasks on the phone",
+      "on": "phone",
+      "ops": [
+        {
+          "close_app": "tasks"
+        }
+      ]
+    },
+    {
+      "id": "gone-on-laptop",
+      "said": "Tasks is gone on the laptop too",
+      "ops": [
+        {
+          "windows": 0
+        }
+      ]
+    }
+  ]
 }

@@ -2,15 +2,11 @@
   "app": "app-restart",
   "said": "Files and Calendar keep what the person made",
   "family": "settings",
-  "live": "rust",
-  "apps": "calendar",
+  "live": "tl",
   "packages": [
-    "files"
+    "files",
+    "calendar"
   ],
-  "rust": {
-    "id": "so.tilo.calendar",
-    "native": "calendar"
-  },
   "steps": [
     {
       "id": "files-open",
@@ -172,5 +168,9 @@
       ],
       "budget_ms": 60000
     }
-  ]
+  ],
+  "tl": {
+    "id": "so.tilo.calendar",
+    "package": "calendar"
+  }
 }

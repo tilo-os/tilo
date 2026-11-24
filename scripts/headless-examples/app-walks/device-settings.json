@@ -2,11 +2,7 @@
   "app": "device-settings",
   "said": "Settings",
   "family": "settings",
-  "live": "rust",
-  "rust": {
-    "id": "so.tilo.settings",
-    "native": "settings"
-  },
+  "live": "tl",
   "steps": [
     {
       "id": "displays",
@@ -198,5 +194,9 @@
       ],
       "budget_ms": 20000
     }
-  ]
+  ],
+  "tl": {
+    "id": "so.tilo.settings",
+    "package": "settings"
+  }
 }
