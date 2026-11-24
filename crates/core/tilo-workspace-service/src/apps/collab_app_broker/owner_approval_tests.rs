@@ -7,6 +7,7 @@ use crate::apps::services::{
 };
 use crate::apps::test_support::{Grants as _, KindSet, Workspace, WorkspaceId, WorkspaceTree};
 use std::sync::Mutex;
+use tilo_actions::remote::asked::AskedFacts;
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
 const RESOURCE: &str = "workspace.legacy-media";
@@ -132,6 +133,20 @@ fn invoke(
         .map(|_| ())
 }
 
+/// What the person is shown of an import that waits for their approve: the action as the
+/// workspace offers it to them, what it is on, and what a grant given with their answer allows.
+fn waits_to_import() -> ActionCallError {
+    ActionCallError::asks(tilo_actions::remote::asked::AskedFacts {
+        on: Some("Legacy media".into()),
+        verb: "Import".into(),
+        destructive: true,
+        plural: Some("Legacy media".into()),
+        kind: RESOURCE.into(),
+        effect: Some(tilo_action_policy::ActionKind::Outside),
+        ..AskedFacts::default()
+    })
+}
+
 /// The person's approve of `request`, as the store that kept its asked record hands it back.
 fn approval(request: &InvokeRequest) -> Confirmation {
     crate::apps::collab_app_broker::person_approved(
@@ -148,7 +163,7 @@ tilo_test_env::scenario! {
         let (state, service, owner, mut request) = broker(true);
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionCallError::confirmation_required()),
+            Err(waits_to_import()),
             "nothing answered for them yet"
         );
         assert!(service.calls.lock().unwrap().is_empty());
@@ -177,7 +192,7 @@ tilo_test_env::scenario! {
         let (state, service, owner, mut request) = broker(true);
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionCallError::confirmation_required())
+            Err(waits_to_import())
         );
         request.confirmation = Some(approval(&request));
         invoke(&state, &owner, &request).unwrap();
@@ -249,7 +264,7 @@ tilo_test_env::scenario! {
             // Canonical governance checks confirmation before current policy.
             assert_eq!(
                 invoke(&state, &person, &request),
-                Err(ActionCallError::confirmation_required())
+                Err(waits_to_import())
             );
             assert!(service.calls.lock().unwrap().is_empty());
 

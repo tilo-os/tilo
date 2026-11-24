@@ -11,6 +11,9 @@ use tilo_actions::remote::asked::{AskedFacts, Take};
 #[derive(Debug)]
 pub(crate) enum Refusal {
     Reason(String),
+    /// Refused as the answer itself states it: a Store disclosure that does not read as it
+    /// would leave, which is no ask.
+    Error(tilo_actions::remote::ActionCallError),
     Asks(Box<AskedFacts>),
 }
 
@@ -30,6 +33,7 @@ impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Reason(reason) => f.write_str(reason),
+            Self::Error(error) => write!(f, "{error}"),
             Self::Asks(_) => f.write_str(tilo_actions::remote::CONFIRMATION_REQUIRED_CODE),
         }
     }
@@ -40,6 +44,7 @@ impl Refusal {
     pub(crate) fn into_call_error(self) -> tilo_actions::remote::ActionCallError {
         match self {
             Self::Reason(reason) => super::action_provider::refusal(reason),
+            Self::Error(error) => error,
             Self::Asks(facts) => tilo_actions::remote::ActionCallError::ConfirmationRequired(facts),
         }
     }
@@ -130,11 +135,15 @@ fn shown_facts(
         .collect()
 }
 
-/// What the ask of a call of `action` with `argument` shows and takes: the arguments its
-/// declaration shows, and what the person types where they answer it (a site's user name and
-/// password), which reaches the action with their approve and never as an argument.
+/// What the ask of a call of `action` with `argument` shows and takes: what its declaration
+/// names the person reads ([`tilo_actions::ActionContract::shows`]), where it names any, and
+/// what they type where they answer it (a site's user name and password), which reaches the
+/// action with their approve and never as an argument.
 fn shown_on_ask(action: &PublishedAction, argument: Option<&str>, facts: &mut AskedFacts) {
-    facts.facts = shown_facts(action, argument);
+    let declared = shown_facts(action, argument);
+    if !declared.is_empty() {
+        facts.facts = declared;
+    }
     facts.takes.extend(action.contract.takes.iter().cloned());
 }
 
@@ -146,18 +155,22 @@ pub(crate) fn asked_facts(
     policy: &tilo_actions::ConfirmationPolicy,
     argument: Option<&str>,
 ) -> AskedFacts {
-    let mut facts = AskedFacts::by(
+    let facts = AskedFacts::by(
         caller
             .map(crate::workspaces::asking::asked_by)
             .unwrap_or_default(),
     );
-    facts.on = Some(action.resource_label.clone()).filter(|label| !label.is_empty());
-    facts.verb.clone_from(&action.action_label);
-    facts.destructive = !action.contract.can_be_undone();
+    // The arguments the call would run with, as the action's declaration draws them: what the
+    // person reads of it, and the fields they may change before they answer.
+    let mut facts = super::super::approval::described(
+        facts,
+        action.descriptor(tilo_actions::ExecutionLocus::default()),
+        &tilo_actions::remote::InvokeArgument::from_slot(argument),
+    );
+    shown_on_ask(action, argument, &mut facts);
     if let tilo_actions::ConfirmationPolicy::Phrase { phrase } = policy {
         facts.takes.push(phrase_take(phrase));
     }
-    shown_on_ask(action, argument, &mut facts);
     facts
 }
 
@@ -207,7 +220,25 @@ impl AppBrokerState {
         let Some(request) = inputs.request else {
             return Err(Refusal::Asks(Box::new(facts())));
         };
-        match tilo_actions::remote::asked::approved_or_asks(request, facts) {
+        // A disclosure that does not read as it would leave is refused with why, rather than
+        // put to the person as a call nobody can show them.
+        let disclosure = if store && request.approval().is_none() {
+            let caller = inputs.caller.ok_or_else(|| {
+                Refusal::Reason("a Store disclosure is shown only to the person it asks".into())
+            })?;
+            Some(
+                super::super::approval::store_disclosure(caller, request).map_err(Refusal::Error)?,
+            )
+        } else {
+            None
+        };
+        match tilo_actions::remote::asked::approved_or_asks(request, || {
+            let mut facts = facts();
+            if let Some(disclosure) = &disclosure {
+                facts.facts.extend(disclosure.facts());
+            }
+            facts
+        }) {
             Ok(()) => {}
             Err(tilo_actions::remote::ActionCallError::ConfirmationRequired(facts)) => {
                 return Err(Refusal::Asks(facts));

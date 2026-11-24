@@ -27,7 +27,7 @@ pub(super) fn requires_store_approval(app: &str, action: &str) -> bool {
 /// # Errors
 /// No identity to sign with, or an `operation` that does not decode: the
 /// request is refused with why.
-fn store_disclosure(
+pub(super) fn store_disclosure(
     caller: &Caller,
     request: &InvokeRequest,
 ) -> Result<crate::apps::app_actions::ModerationConsentPreview, ActionCallError> {

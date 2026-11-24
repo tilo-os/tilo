@@ -554,8 +554,7 @@ fn run_asks(
     shortcut: &tilo_automation::Shortcut,
     asking: &[tilo_automation::AskingStep],
 ) -> tilo_actions::remote::asked::AskedFacts {
-    use std::fmt::Write as _;
-    use tilo_actions::remote::asked::{AskedBy, AskedFacts};
+    use tilo_actions::remote::asked::{AskedBy, AskedFacts, Fact};
     let by = match caller.acting().agent_id() {
         Some(_) => crate::workspaces::asking::asked_by(caller),
         None => AskedBy::App {
@@ -573,17 +572,20 @@ fn run_asks(
         ..AskedFacts::by(by)
     };
     for step in asking {
-        let mut said = step.resource.clone();
-        for (name, value) in &step.arguments {
-            if !said.is_empty() {
-                said.push_str(", ");
-            }
-            let value = value
-                .as_str()
-                .map_or_else(|| value.to_string(), str::to_owned);
-            let _ = write!(said, "{name}: {value}");
+        // The step as the call it is: what it acts on, then the arguments the shortcut gives
+        // it, drawn the way any waiting call's are.
+        let mut shown = super::super::approval::described(
+            AskedFacts::default(),
+            step.descriptor.clone(),
+            &tilo_actions::remote::InvokeArgument::Json(step.arguments.clone()),
+        );
+        if !step.resource.is_empty() {
+            shown.facts.insert(
+                0,
+                Fact::new(step.descriptor.action_label.clone(), step.resource.clone()),
+            );
         }
-        facts = facts.with_fact(step.descriptor.action_label.clone(), said);
+        facts.facts.extend(shown.facts);
     }
     facts
 }

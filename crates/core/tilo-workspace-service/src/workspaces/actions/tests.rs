@@ -88,8 +88,12 @@ impl Answering {
 
 /// `first`, the answer to `request` by `caller` on the connection `certificate` certified (to
 /// the workspace `workspace_id`, or to the host), as the person it waits for answers it, where
-/// it waits for one and a person answers ([`Answering`]): approved, what the same call answers
-/// as their approve admits it again; declined, it is admitted no more.
+/// it waits for one and a person answers ([`Answering`]): approved, what the call answers once
+/// their approve carried it out; declined, it is admitted no more.
+///
+/// A call this host governs runs as its job: `Accepted` while it runs, and `Completed` once it
+/// ends without asking. One that waits is kept as its asked record, which the person answers
+/// there, and ends after their approve.
 pub(crate) async fn answered(
     workspaces: &Workspaces,
     (workspace_id, certificate): (Option<WorkspaceId>, Option<&DeviceCert>),
@@ -97,33 +101,143 @@ pub(crate) async fn answered(
     request: &InvokeRequest,
     first: Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
-    let Err(ActionCallError::ConfirmationRequired(facts)) = &first else {
-        return first;
-    };
     let Some(answering) = ANSWERING.with_borrow(Clone::clone) else {
         return first;
     };
-    answering.asked.lock().unwrap().push((**facts).clone());
-    if !answering.approves {
-        return first;
-    }
-    let workspace = workspace_id.map(|id| id.to_string()).unwrap_or_default();
-    let value = workspaces
-        .invoke(
-            workspace_id,
-            caller,
-            certificate,
-            &approved(request, &workspace),
-        )
-        .await?;
-    Ok(tilo_actions::remote::InvocationReceipt {
-        invocation: request.invocation,
-        status: ReceiptStatus::Completed {
-            output: tilo_actions::ActionOutput {
-                value: Some(value),
-                ..tilo_actions::ActionOutput::default()
+    if let Err(ActionCallError::ConfirmationRequired(facts)) = &first {
+        answering.asked.lock().unwrap().push((**facts).clone());
+        if !answering.approves {
+            return first;
+        }
+        let workspace = workspace_id.map(|id| id.to_string()).unwrap_or_default();
+        let value = workspaces
+            .invoke(
+                workspace_id,
+                caller,
+                certificate,
+                &approved(request, &workspace),
+            )
+            .await?;
+        return Ok(tilo_actions::remote::InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Completed {
+                output: tilo_actions::ActionOutput {
+                    value: Some(value),
+                    ..tilo_actions::ActionOutput::default()
+                },
             },
+        });
+    }
+    let first = first?;
+    if !matches!(first.status, ReceiptStatus::Accepted) {
+        return Ok(first);
+    }
+    let Some(workspace_id) = workspace_id else {
+        return Ok(first);
+    };
+    let (Some(service), Some(store)) = (workspaces.governance(), workspaces.asked_store()) else {
+        return Ok(first);
+    };
+    let here = service.in_workspace(workspace_id);
+    let workspace = workspace_id.to_string();
+    // Whether it waits for its person, or ends first.
+    let kept = tilo_test_env::within("the call waits for its person or ends", async {
+        loop {
+            if let Some(waiting) = store
+                .waiting_in(&workspace)
+                .into_iter()
+                .find(|waiting| waiting.invocation == request.invocation)
+            {
+                return Some(waiting);
+            }
+            if here
+                .observe(caller, &request.invocation)
+                .is_some_and(|state| state.is_terminal())
+            {
+                return None;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let Some(waiting) = kept else {
+        return ended_as(&here, caller, request.invocation).await;
+    };
+    answering.asked.lock().unwrap().push(waiting.asked.facts.clone());
+    // Their answer, as the person it asks: an approve admits the same call again, which ends
+    // when it ran; a decline ends it with nothing done, and the caller's call was refused for
+    // want of their yes.
+    let person: [u8; 32] = hex::decode(&waiting.person)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| ActionCallError::Refused {
+            reason: "the ask names no person to answer it".into(),
+        })?;
+    let answering_as =
+        Caller::authenticated(person, caller.device_public_key().copied().unwrap_or(person));
+    let resolution = if answering.approves {
+        tilo_actions::remote::asked::Offer::Approve
+    } else {
+        tilo_actions::remote::asked::Offer::Decline
+    };
+    let Ok(serde_json::Value::Object(argument)) =
+        serde_json::to_value(tilo_actions::remote::asked::Resolve {
+            resolution,
+            ..tilo_actions::remote::asked::Resolve::default()
+        })
+    else {
+        return Err(ActionCallError::InvalidRequest {
+            reason: "the answer does not read".into(),
+        });
+    };
+    let resolve = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                &waiting.asked.record.record,
+                tilo_actions::remote::asked::RESOLVE,
+            ),
         },
+        argument: InvokeArgument::Json(argument),
+        on_behalf_of: None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    settled(workspaces.resolve_asked(&answering_as, &resolve)).await?;
+    if !answering.approves {
+        return Err(ActionCallError::ConfirmationRequired(Box::new(
+            waiting.asked.facts.clone(),
+        )));
+    }
+    ended_as(&here, caller, request.invocation).await
+}
+
+/// What invocation `invocation` ended as, followed on `here` until it is terminal.
+async fn ended_as(
+    here: &(impl ActionProvider + Clone + Send + 'static),
+    caller: &Caller,
+    invocation: InvocationId,
+) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
+    let now = tilo_clock::now();
+    let until = now
+        .checked_add(tilo_test_env::hang_bound())
+        .unwrap_or(now);
+    settled(tilo_actions::remote::settle_with(
+        here,
+        caller,
+        invocation,
+        None,
+        until,
+    ))
+    .await
+    .map(|state| state.receipt())
+    .ok_or(ActionCallError::Unavailable {
+        reason: "the call is not followed on this host".into(),
     })
 }
 
