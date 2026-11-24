@@ -7,7 +7,7 @@
 #
 #   OUT           the stack's own programs in bin/ (TILO_SH_PROGRAMS) and its
 #                 lounge/ (TILO_SH_LOUNGE)
-#   LOUNGE_BINARIES  lounge-check-binaries' output: tilo-server and
+#   LOUNGE_BINARIES  lounge-check-binaries' output: tilo-runtime and
 #                 discord-worker, built as the Lounge image ships them
 #   FONTS         lounge-fonts' output
 #
@@ -19,7 +19,7 @@ usage='usage: tilo-sh-binaries.sh OUT LOUNGE_BINARIES FONTS'
 out=${1:?$usage}
 binaries=${2:?$usage}
 fonts=${3:?$usage}
-[[ -x $binaries/tilo-server && -x $binaries/discord-worker ]] || die "no Lounge programs in $binaries"
+[[ -x $binaries/tilo-runtime && -x $binaries/discord-worker ]] || die "no Lounge programs in $binaries"
 [[ -f $fonts/manifest.toml ]] || die "no product font catalog in $fonts"
 cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
@@ -27,9 +27,9 @@ rm -rf "$out"
 mkdir -p "$out/bin"
 # The API server starts a task's tilolang programs in tilolang-process, which it finds beside
 # itself: one build, one directory. The VM host's start derives the server's endpoint id from the
-# server's device key with `tilo-server node-id` (vm-host.sh).
+# server's identity with `tilo-device-admin id` (vm-host.sh).
 cargo build --locked --profile lounge-check -p tilo-api -p fake-discord -p tilolang-process \
-  -p tilo-server -p tilo-account-probe --example mail_stand_in \
+  -p tilo-account-probe --example mail_stand_in \
   --bin tilo-api --bin fake-discord --bin tilolang-process
 for bin in tilo-api fake-discord tilolang-process; do
   cp "$target/lounge-check/$bin" "$out/bin/"
