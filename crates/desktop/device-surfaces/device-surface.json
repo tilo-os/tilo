@@ -10154,7 +10154,7 @@
         {
           "id": "forget-secrets",
           "label": "Forget an application's saved secrets",
-          "description": "Remove an application's saved secrets and its record",
+          "description": "Remove an application's saved secrets and its record.",
           "kind": "outside",
           "params": [
             {
