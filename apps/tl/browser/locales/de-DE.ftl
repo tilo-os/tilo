@@ -1,6 +1,3 @@
-# tilolang messages: generated from the package's source, commit it. Translate in
-# locales/<language>.ftl beside it; edit the words in the source, not here.
-
 d-so-tilo-browser = Browser
 
 d-lrkgwd2c = Lesezeichen
@@ -364,24 +361,47 @@ d-y7tjvycu = Besuch benennen
 
 d-r7exe3by = Seitenfenster
     .w-browser = Browser
-    .w-address-and-search = Adresse und Suche
-    .w-bookmark = Lesezeichen
-    .w-this-page-could-not-be-shown = Diese Seite konnte nicht gezeigt werden
-
-d-o5lcfrvr = Seitenmenü
-    .w-page = Seite
-    .w-history = Verlauf
-    .w-bookmarks = Lesezeichen
-    .w-browser-settings = Browsereinstellungen
-    .w-turn-tracker-protection-on-for-this = Trackingschutz für diese Seite einschalten
-    .w-turn-tracker-protection-off-for-this = Trackingschutz für diese Seite ausschalten
-    .w-forget-this-site-s-forms = Formulare dieser Seite vergessen
+    .w-no-page-is-open = Keine Seite offen
+    .w-open-a-page-to-browse-its = Öffne eine Seite zum Browsen: ihre Adresse oder wonach du suchst.
 
 d-vsaswu4a = Seitenansicht
     .w-pause-history = Verlauf pausieren
     .w-bookmark = Lesezeichen
     .w-this-page-could-not-be-shown = Diese Seite konnte nicht gezeigt werden
     .w-what-was-done = Was getan wurde
+    .w-back = Zurück
+    .w-forward = Vorwärts
+    .w-reload = Neu laden
+    .w-find-in-page = Auf der Seite suchen
+    .w-address-and-search = Adresse und Suche
+    .w-questions = Fragen
+    .w-page = Seite
+    .w-history = Verlauf
+    .w-bookmarks = Lesezeichen
+    .w-browser-settings = Browsereinstellungen
+    .w-reader-view = Leseansicht
+    .w-zoom-in = Vergrößern
+    .w-zoom-out = Verkleinern
+    .w-actual-size = Tatsächliche Größe
+    .w-turn-tracker-protection-on-for-this = Trackingschutz für diese Seite einschalten
+    .w-turn-tracker-protection-off-for-this = Trackingschutz für diese Seite ausschalten
+    .w-forget-this-site-s-forms = Formulare dieser Seite vergessen
+    .w-from-your-history = Aus deinem Verlauf
+    .w-of = von
+    .w-next = Weiter
+    .w-close = Schließen
+    .w-this-page-asks = Diese Seite fragt
+    .w-ok = In Ordnung
+    .w-cancel = Abbrechen
+    .w-sign-in-to = Anmelden bei
+    .w-the-last-sign-in-was-not = Die letzte Anmeldung wurde nicht angenommen
+    .w-sign-in = Anmelden
+    .w-user-name = Benutzername
+    .w-password = Passwort
+    .w-asks-to-use-your = möchte deine Geräte nutzen:
+    .w-allow = Erlauben
+    .w-deny = Ablehnen
+    .w-waiting-for-you = Wartet auf dich
 
 d-pu2zdrbu = Schrittzeile
 
@@ -415,6 +435,7 @@ d-b7sixoyk = Adresszeile
 d-sij6peeq = Formularzeile
     .w-read-times = { $origin } · { $seen } Mal gelesen
     .w-forget-this-form = Dieses Formular vergessen
+    .w-required = Erforderlich
 
 d-ok2yuain = Browsereinstellungen
     .w-browser-settings = Browsereinstellungen
@@ -434,7 +455,666 @@ d-ok2yuain = Browsereinstellungen
     .w-remembered-forms = Gemerkte Formulare
     .w-no-site-s-forms-were-read = Noch keine Formulare einer Seite gelesen.
     .w-forget-all-remembered-forms = Alle gemerkten Formulare vergessen
+    .w-protect-this-site-again = Diese Seite wieder schützen
 
 d-36vwukxk = Verlaufsliste
     .w-no-pages-visited-yet = Noch keine Seiten besucht
     .w-from-another-browser = Aus einem anderen Browser
+
+d-so-tilo-browser-keywords = web, internet, surfen, website, url, www, webbrowser, chrome, safari, edge, firefox, browser, browsen, webseite, internetseite
+
+d-mk755sf3 = Dialog
+    .doc = Worauf die Seite wartet, wie ihr Fenster es zuletzt gelesen hat: eine Frage, die jemand beantwortet, und das Menü, das sie zeigte.
+
+d-fkg36eze = Anmelden
+
+d-noux3jmj = Berechtigung
+
+d-kebkpaeq = Zurückgehalten
+
+d-tveuvbse = Menü
+
+d-eiqyiw53 = Lädt
+    .doc = Wie weit die Seite geladen ist, worauf sie gezoomt ist und wo die Suchleiste steht.
+
+d-xu2jvlwq = Fortschritt
+
+d-5gspmng7 = Zoomstufe
+
+d-j5emshom = Fundstelle
+
+d-n6y73q7c = Fundzahl
+
+d-o3koqzgj = Dialogfrage
+    .doc = Eine Frage, die das Skript der Seite selbst stellt: ein Hinweis, eine Bestätigung, eine Eingabe oder ein Seitenwechsel.
+    .noun = { $count ->
+        [one] Dialogfrage
+       *[other] Dialogfragen
+    }
+
+d-trchguwk = Anfrage
+    .doc = Die Kennung der Frage beim Engine, die die Antwort nennt.
+
+d-plkldhkl = Art
+    .doc = `alert`, `confirm`, `prompt` oder `leave`.
+
+d-ruephqmr = Herkunft
+
+d-asepg6kx = Meldung
+
+d-4v2f3ua3 = Vorgabetext
+
+d-o3koqzgj-filter-request = Anfrage
+
+d-p6pwa4v4 = Anmeldefrage
+    .doc = Ein Server oder ein Proxy, der nach Benutzername und Passwort fragt.
+    .noun = { $count ->
+        [one] Anmeldefrage
+       *[other] Anmeldefragen
+    }
+
+d-7ktwjqfg = Anfrage
+
+d-mlo3tjcu = Fragende Stelle
+    .doc = Wer fragt, und wohin die Zugangsdaten gehen.
+
+d-7infiywo = Seite
+    .doc = Die fragende Stelle, wie eine Person eine Seite liest.
+
+d-djj5lwiv = Proxy
+
+d-3qkj7lmg = Bereich
+
+d-tjzwabeg = Erneut versuchen
+
+d-p6pwa4v4-filter-request = Anfrage
+
+d-p6pwa4v4-filter-proxy = Proxy
+
+d-p6pwa4v4-filter-retry = Erneut versuchen
+
+d-rw2sdui6 = Berechtigungsfrage
+    .doc = Eine Seite, die das Gerät nutzen möchte: seine Kamera, sein Mikrofon, seinen Standort.
+    .noun = { $count ->
+        [one] Berechtigungsfrage
+       *[other] Berechtigungsfragen
+    }
+
+d-wzq3w73u = Anfrage
+
+d-a7uxwo36 = Herkunft
+
+d-ehb3lndh = Berechtigungen
+    .doc = Worum sie bittet, wie der Engine es nennt.
+
+d-rw2sdui6-filter-request = Anfrage
+
+d-e57ag7a5 = Zurückgehaltene Anfrage
+    .doc = Eine Anfrage, die die Seite zurückhält, bis eine Person sie gehen lässt.
+    .noun = { $count ->
+        [one] zurückgehaltene Anfrage
+       *[other] zurückgehaltene Anfragen
+    }
+
+d-js3kljh3 = Anfrage
+
+d-aokfp2qg = Art
+    .doc = `submit`, `navigate`, `request`, `download` oder `payment`.
+
+d-vqbr3tb7 = Methode
+
+d-45sdzq5i = Herkunft
+
+d-6luk533x = Mit Bild
+
+d-e57ag7a5-filter-request = Anfrage
+
+d-e57ag7a5-filter-has_picture = Mit Bild
+
+d-3hxkb5pc = Menüanfrage
+    .doc = Das Menü, das die Seite zeigte, mit seinen Zeilen.
+    .noun = { $count ->
+        [one] Menüanfrage
+       *[other] Menüanfragen
+    }
+
+d-hjqv4o64 = Anfrage
+
+d-f2gbwl6v = Link
+
+d-6b3vpys4 = Einträge
+
+d-3hxkb5pc-filter-request = Anfrage
+
+d-hmusuedw = Menüzeile
+    .doc = Eine Zeile des Seitenmenüs: ein Befehl oder eine Trennlinie.
+    .noun = { $count ->
+        [one] Menüzeile
+       *[other] Menüzeilen
+    }
+
+d-kybyncey = Befehl
+
+d-cgfpo6b7 = Bezeichnung
+
+d-hn5vxavq = Deaktiviert
+
+d-qmekhn2b = Angehakt
+
+d-67scpsna = Trennlinie
+
+d-hmusuedw-filter-command = Befehl
+
+d-hmusuedw-filter-disabled = Deaktiviert
+
+d-hmusuedw-filter-checked = Angehakt
+
+d-hmusuedw-filter-separator = Trennlinie
+
+d-e43kzg7c = Anfrage an die Seite
+    .doc = Was von einer Seite gefragt wird, wie das Fenster, das sie hält, es liest: ein Vorgang und seine Felder.
+    .noun = { $count ->
+        [one] Anfrage
+       *[other] Anfragen
+    }
+
+d-fqvhxdyr = Vorgang
+
+d-hfpnr6ua = Element
+
+d-tpz54oe5 = Text
+
+d-5vdpb6hg = Von
+
+d-wf32vfhg = Um
+
+d-q76mm3tr = Ziehen von
+
+d-byeflqne = Ziehschritte
+
+d-hxjdnlwy = Frame
+
+d-4udfayix = Frames
+
+d-txp5lrru = X
+
+d-bqydqtva = Y
+
+d-wbhz4hh6 = Von x
+
+d-iuschp5g = Von y
+
+d-6i5bwl43 = Nach x
+
+d-hrquaspl = Nach y
+
+d-5ka7kek5 = Rolle
+
+d-davmrr4h = Name
+
+d-dmxbh4fm = Nummer
+
+d-ao4elp2a = Taste
+
+d-jmhhkxjz = Adresse
+
+d-lqvkggvx = Stufe
+
+d-zroiv7hs = Werte
+
+d-ky26jv4a = Pfade
+
+d-iabkjt2r = Schritte
+
+d-zh65uqqk = Seit
+
+d-ersdn54t = Ruhe in ms
+
+d-bgflyuoe = Zeitlimit in ms
+
+d-hjfilxdg = Verschwunden
+
+d-btx3fn7s = Seitenübergreifend
+
+d-zf6y6r3k = Geheim
+
+d-arhpr4t7 = Absenden
+
+d-h6fxerpb = Formular
+
+d-cnvdpt2t = Absendeknopf
+
+d-asha7lz3 = Nach
+
+d-jcrv3nzs = Ins Bild
+
+d-qit2hijp = Taste
+
+d-2zpkv6jg = Aktiviert
+
+d-fggdqfhy = Befehl
+
+d-sizwtymn = Größte Breite
+
+d-htce2xyp = Kennung
+
+d-wbwndzhw = Fragende Stelle
+
+d-nqkenrjw = Benutzername
+
+d-ns2mfzwr = Passwort
+
+d-vwi6rjsr = Annehmen
+
+d-szlyr265 = Erlauben
+
+d-acxwp3qh = Vorwärts
+
+d-m6sqrzav = Weiter
+
+d-e43kzg7c-filter-from = Von
+
+d-e43kzg7c-filter-by = Um
+
+d-e43kzg7c-filter-drag_steps = Ziehschritte
+
+d-e43kzg7c-filter-frames = Frames
+
+d-e43kzg7c-filter-x = X
+
+d-e43kzg7c-filter-y = Y
+
+d-e43kzg7c-filter-from_x = Von x
+
+d-e43kzg7c-filter-from_y = Von y
+
+d-e43kzg7c-filter-to_x = Nach x
+
+d-e43kzg7c-filter-to_y = Nach y
+
+d-e43kzg7c-filter-nth = Nummer
+
+d-e43kzg7c-filter-level = Stufe
+
+d-e43kzg7c-filter-since = Seit
+
+d-e43kzg7c-filter-quiet_ms = Ruhe in ms
+
+d-e43kzg7c-filter-timeout_ms = Zeitlimit in ms
+
+d-e43kzg7c-filter-cross_origin = Seitenübergreifend
+
+d-e43kzg7c-filter-secret = Geheim
+
+d-e43kzg7c-filter-submit = Absenden
+
+d-e43kzg7c-filter-enabled = Aktiviert
+
+d-e43kzg7c-filter-command = Befehl
+
+d-e43kzg7c-filter-max_width = Größte Breite
+
+d-e43kzg7c-filter-id = Kennung
+
+d-e43kzg7c-filter-accept = Annehmen
+
+d-e43kzg7c-filter-allow = Erlauben
+
+d-e43kzg7c-filter-forward = Vorwärts
+
+d-e43kzg7c-filter-next = Weiter
+
+d-nalfirw6 = Antwort
+    .doc = Was eine Seite geantwortet hat: ob sie tat, was gefragt war, was sie sagte und was sie fand.
+    .noun = { $count ->
+        [one] Antwort
+       *[other] Antworten
+    }
+
+d-2ubdeo5l = In Ordnung
+
+d-pv4ylrjw = Code
+    .doc = Warum nicht: der Code des Engines und was er sagte.
+
+d-d7izzogo = Meldung
+
+d-ta6htvhh = Adresse
+    .doc = Wo die Seite ist, wie sie heißt, ob sie lädt und ob sie irgendwohinging.
+
+d-xzex263o = Titel
+
+d-htwzro7c = Navigation
+
+d-vptvuat4 = Lädt
+
+d-vvykamug = Abriss
+    .doc = Was die Seite sagt, Zeile für Zeile: der Abriss einer Lesung, die Zeilen einer Tabelle, der Wert eines Feldes.
+
+d-i2okiki6 = Element
+    .doc = Das Element, das eine Suche nennt, und die Abrisszeile, die die Worte sagt.
+
+d-mmtsrl7r = Zeile
+
+d-p6uplgxr = Rolle
+
+d-7zlc443q = Name
+
+d-2ibb6fxi = Frame
+
+d-cxsstht7 = Bild
+    .doc = Ein Bild der Seite als PNG des Engines, base64.
+
+d-2ihrsavk = Start
+    .doc = Der Browser öffnet auf einer Seite: ein Arbeitsbereich ohne eine bekommt seine Startseite als eine.
+
+d-eryy3sog = Seite lesen
+    .doc = Was die Seite von `p` sagt und tut, getragen zum Fenster, das sie hält.
+
+d-eryy3sog-from = Von
+
+d-eryy3sog-frame = Frame
+
+d-ahqulvrl = Änderungen lesen
+    .doc = Was sich seit der letzten Lesung geändert hat: die hinzugekommenen und entfernten Zeilen, oder der ganze Abriss, wenn das Dokument neu ist.
+
+d-ahqulvrl-frame = Frame
+
+d-pqjr74hw = Element an einem Punkt
+    .doc = Was ein Klick auf einen Punkt träfe, durch Überlagerungen und Banner, und das Element, das es hält.
+
+d-pqjr74hw-x = X
+
+d-pqjr74hw-y = Y
+
+d-pqjr74hw-frame = Frame
+
+d-43i6py3k = Auf die Seite warten
+    .doc = Warte, bis die Seite ruhig ist, oder bis die Worte, die sie sagen muss, da sind und die, die sie nicht sagen darf, weg sind.
+
+d-43i6py3k-quiet_ms = Ruhe in ms
+
+d-43i6py3k-timeout_ms = Zeitlimit in ms
+
+d-43i6py3k-text = Text
+
+d-43i6py3k-gone = Verschwunden
+
+d-43i6py3k-frame = Frame
+
+d-m4mydrip = Seitenkonsole lesen
+    .doc = Die Konsolenmeldungen und unbehandelten Fehler der Seite ab einer laufenden Nummer.
+
+d-m4mydrip-since = Seit
+
+d-j2jhcwgf = Seitennetz lesen
+    .doc = Die Netzwerkanfragen der Seite ab einer laufenden Nummer: Methode, Adresse, Art, Status und Fehler, nie Kopfzeilen, Inhalte oder Cookies.
+
+d-j2jhcwgf-since = Seit
+
+d-g723ncyu = Seitenprotokoll lesen
+    .doc = Das Protokoll, wer was in der Seite tat, ab der Stelle, die `since` nennt.
+
+d-g723ncyu-since = Seit
+
+d-bv6svg6f = Seitenfelder lesen
+    .doc = Jedes Feld des Dokuments mit dem, was es hält, und wer es setzte.
+
+d-bv6svg6f-frame = Frame
+
+d-cep6j5on = Seitenformulare lesen
+    .doc = Die Formulare des Dokuments als das, was sie fragen: ihre Fragen, die angebotenen Antworten, was Pflicht ist und die Knöpfe, die sie senden.
+
+d-cep6j5on-frame = Frame
+
+d-igfrldzj = Seitentabelle lesen
+    .doc = Die Tabellen der Seite als Zeilen, eine lange in Teilen gelesen.
+
+d-igfrldzj-element = Element
+
+d-igfrldzj-from = Von
+
+d-igfrldzj-frame = Frame
+
+d-lfdelqpf = Text auf der Seite finden
+    .doc = Die Abrisszeilen, die `text` enthalten, jede mit ihrer Zeilennummer.
+
+d-lfdelqpf-text = Text
+
+d-lfdelqpf-frame = Frame
+
+d-lfdelqpf-frames = Frames
+
+d-5qgw32u3 = Element auf der Seite finden
+    .doc = Das Element, das Rolle und Name nennen, und die Referenz, die dort wirkt.
+
+d-5qgw32u3-role = Rolle
+
+d-5qgw32u3-name = Name
+
+d-5qgw32u3-nth = Nummer
+
+d-5qgw32u3-frame = Frame
+
+d-5qgw32u3-frames = Frames
+
+d-jbqrqf3y = Seite anklicken
+    .doc = Drücke das Element, wie eine Hand es tut.
+
+d-jbqrqf3y-element = Element
+
+d-jbqrqf3y-frame = Frame
+
+d-d3vp3i7b = Über die Seite fahren
+    .doc = Bewege den Zeiger über ein Element oder zu einem Punkt der Seite.
+
+d-d3vp3i7b-element = Element
+
+d-d3vp3i7b-x = X
+
+d-d3vp3i7b-y = Y
+
+d-u6q76ca7 = Auf der Seite ziehen
+    .doc = Ziehe von einem Element oder Punkt zu einem anderen, in Schritten.
+
+d-u6q76ca7-from = Von
+
+d-u6q76ca7-from_x = Von x
+
+d-u6q76ca7-from_y = Von y
+
+d-u6q76ca7-to = Nach
+
+d-u6q76ca7-to_x = Nach x
+
+d-u6q76ca7-to_y = Nach y
+
+d-u6q76ca7-steps = Schritte
+
+d-v33dekps = Seite ausfüllen
+    .doc = Schreibe `text` in ein bearbeitbares Element.
+
+d-v33dekps-element = Element
+
+d-v33dekps-text = Text
+
+d-v33dekps-frame = Frame
+
+d-e73dpir4 = Ein Geheimnis eintragen
+    .doc = Schreibe ein Geheimnis in ein Passwort- oder Kartenfeld: es wird nie im Protokoll der Seite behalten.
+
+d-e73dpir4-element = Element
+
+d-e73dpir4-text = Text
+
+d-e73dpir4-frame = Frame
+
+d-mniscmpx = Auf der Seite auswählen
+    .doc = Wähle Optionen einer Auswahl.
+
+d-mniscmpx-element = Element
+
+d-mniscmpx-values = Werte
+
+d-mniscmpx-frame = Frame
+
+d-rb2fsv4n = Dateien auf der Seite wählen
+    .doc = Wähle die Dateien eines Dateifeldes, mit absolutem Pfad.
+
+d-rb2fsv4n-element = Element
+
+d-rb2fsv4n-paths = Pfade
+
+d-rb2fsv4n-frame = Frame
+
+d-ls3i6oxj = Taste auf der Seite drücken
+    .doc = Drücke eine Taste in der Seite, etwa `Control+a` oder `Enter`.
+
+d-ls3i6oxj-key = Taste
+
+d-ls3i6oxj-element = Element
+
+d-ls3i6oxj-frame = Frame
+
+d-arvpanvu = Seite absenden
+    .doc = Sende das Formular des Elements durch die eigene Prüfung der Seite.
+
+d-arvpanvu-element = Element
+
+d-arvpanvu-cross_origin = Seitenübergreifend
+
+d-arvpanvu-frame = Frame
+
+d-ag3d3seg = Zeiger auf der Seite
+    .doc = Eine vertraute Zeigerbewegung: drücken am ersten Punkt, durch die übrigen fahren, am letzten loslassen, für das Zeichnen auf Flächen.
+
+d-ag3d3seg-steps = Schritte
+
+d-ag3d3seg-button = Taste
+
+d-xtqaaha5 = Seite scrollen
+    .doc = Drehe das Rad der Seite an den Anfang oder das Ende, ins Bild oder um eine Strecke.
+
+d-xtqaaha5-element = Element
+
+d-xtqaaha5-to = Nach
+
+d-xtqaaha5-by = Um
+
+d-xtqaaha5-into_view = Ins Bild
+
+d-xtqaaha5-frame = Frame
+
+d-g7tvdtci = Seite aufnehmen
+    .doc = Ein Bild der Seite oder des Kastens eines Elements als PNG.
+
+d-g7tvdtci-element = Element
+
+d-g7tvdtci-max_width = Größte Breite
+
+d-g7tvdtci-frame = Frame
+
+d-ckclpobv = Zu einer Adresse gehen
+    .doc = Öffne eine Adresse im eigenen Fenster der Seite.
+
+d-ckclpobv-url = Adresse
+
+d-gencz4pa = Zurück
+    .doc = Gehe zurück zur Seite davor.
+
+d-nrcwafmk = Vorwärts
+    .doc = Gehe vorwärts zu der Seite, der diese folgte.
+
+d-fb4z5f2e = Neu laden
+    .doc = Lade die Seite neu.
+
+d-f4lsizjk = Anhalten
+    .doc = Halte das Laden der Seite an.
+
+d-daojkpqh = Leseansicht
+    .doc = Zeige den Artikel der Seite ohne ihr Beiwerk.
+
+d-daojkpqh-enabled = Aktiviert
+
+d-d3sudkbf = Zoom
+    .doc = Zeige die Seite mit dem Zoom `level`, wobei 1 die tatsächliche Größe ist.
+
+d-d3sudkbf-level = Stufe
+
+d-i6rhfim2 = Auf der Seite suchen
+    .doc = Finde Wörter in der Seite, wie es die Suchleiste tut.
+
+d-i6rhfim2-text = Text
+
+d-i6rhfim2-forward = Vorwärts
+
+d-i6rhfim2-next = Weiter
+
+d-67gj6gbh = Suche beenden
+    .doc = Beende die Suche der Suchleiste.
+
+d-hpktlikg = Dialog der Seite beantworten
+    .doc = Beantworte eine eigene Frage der Seite: einen Hinweis, eine Bestätigung oder eine Eingabe.
+
+d-hpktlikg-id = Kennung
+
+d-hpktlikg-accept = Annehmen
+
+d-hpktlikg-text = Text
+
+d-oi6ze4kg = Bei der Seite anmelden
+    .doc = Beantworte die Anmeldefrage eines Servers, oder brich sie ohne Benutzernamen ab.
+
+d-oi6ze4kg-id = Kennung
+
+d-oi6ze4kg-asker = Fragende Stelle
+
+d-oi6ze4kg-username = Benutzername
+
+d-oi6ze4kg-password = Passwort
+
+d-vey6ausp = Zurückgehaltene Anfrage beantworten
+    .doc = Lass eine zurückgehaltene Anfrage gehen, oder halte die Seite, wie sie ist.
+
+d-vey6ausp-id = Kennung
+
+d-vey6ausp-allow = Erlauben
+
+d-4djvsjzf = Fragen der Seite prüfen
+    .doc = Liest, worauf die Seite wartet, in das Protokoll ihres Fensters: die Frage, die sie stellt, das Menü, das sie zeigte, und wie weit sie geladen ist.
+
+d-u7fbemnk = Seite geöffnet
+    .doc = Das Fenster der Seite wurde geöffnet: es liest, was die Seite fragt und zeigt, bevor jemand hinsieht.
+
+d-plw5fzqs = Berechtigung beantworten
+    .doc = Beantwortet die Bitte einer Seite, das Gerät zu nutzen.
+
+d-plw5fzqs-id = Kennung
+
+d-plw5fzqs-allow = Erlauben
+
+d-v7gqhtah = Berechtigung ablehnen
+    .doc = Lehnt die Bitte einer Seite ab, ohne sie zu beantworten, sodass sie später erneut fragen darf.
+
+d-v7gqhtah-id = Kennung
+
+d-qbox6son = Befehl des Seitenmenüs
+    .doc = Nimmt eine Zeile des Seitenmenüs, über den Befehl, den der Engine ihr gab.
+
+d-qbox6son-id = Kennung
+
+d-qbox6son-command = Befehl
+
+d-s7qhc2c6 = Ging zu
+    .doc = Die Seite ging irgendwohin: wo sie jetzt ist, steht auf der Seite, und der Besuch kommt in den Verlauf, sofern das Fenster der Seite ihn nicht pausiert hat.
+
+d-s7qhc2c6-url = Adresse
+
+d-og3g2nds = Die Seite fragen
+    .doc = Die Seite `p` tut, was `request` (JSON, wie das Fenster der Seite es liest) sagt, und antwortet mit dem Bericht der Seite.
+
+d-og3g2nds-request = Anfrage
+
+d-dmgfdflc = Zurückgehaltene Anfrage
+    .w-to = an
+
+d-23a4az4u = Vorschlag

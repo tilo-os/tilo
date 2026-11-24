@@ -2,7 +2,6 @@ app so.tilo.browser "Browser" (
     icon: .globe,
     category: .network,
     tagline: "Web browser with ad blocking and Chrome extensions",
-    engine: "tilo-runtime/2026.10.23-chromium",
     keywords: ["web", "internet", "surf", "website", "url", "www", "web browser", "chrome", "safari", "edge", "firefox", "browser", "browsen", "webseite", "internetseite"],
 )
 
@@ -158,7 +157,8 @@ type PageStep {
 
 /// A question the page's own script asks: an alert, a confirmation, a prompt or a page leaving.
 type DialogAsk (title: message) {
-    id: Int
+    /// The engine's id for the question, which the answer names.
+    request: Int
     /// `alert`, `confirm`, `prompt` or `leave`.
     kind: Text
     origin: Text
@@ -168,7 +168,7 @@ type DialogAsk (title: message) {
 
 /// A server or a proxy asking for a user name and a password.
 type SignInAsk (title: site) {
-    id: Int
+    request: Int
     /// Who asks, and where the credentials go.
     asker: Text
     /// The asker as a person reads a site.
@@ -180,7 +180,7 @@ type SignInAsk (title: site) {
 
 /// A site asking to use the device: its camera, its microphone, its location.
 type PermissionAsk (title: origin) {
-    id: Int
+    request: Int
     origin: Text
     /// What it asks for, as the engine names them.
     permissions: Text
@@ -188,7 +188,7 @@ type PermissionAsk (title: origin) {
 
 /// A request the page holds until a person lets it leave.
 type HeldAsk (title: origin) {
-    id: Int
+    request: Int
     /// `submit`, `navigate`, `request`, `download` or `payment`.
     kind: Text
     method: Text = ""
@@ -198,7 +198,7 @@ type HeldAsk (title: origin) {
 
 /// The menu the page showed: its rows, and where it showed them.
 type MenuAsk (title: link) {
-    id: Int
+    request: Int
     link: Text = ""
     items: List<MenuRow>
 }
@@ -259,6 +259,7 @@ type Ask {
     username: Option<Text> = .none
     password: Option<Text> = .none
     accept: Bool = false
+    allow: Bool = false
     forward: Bool = false
     next: Bool = false
 }
@@ -333,9 +334,7 @@ default view visit_page for Visit
 /// Opens a page in a window of its own. Every window of the app is one page; what it shows, its
 /// address and its own back and forward are the system's.
 primary action new_page(b: Browser) -> Page (icon: .plus, label: "New page", key: "t") {
-    let made = b.pages.insert(Page(url: b.homepage, title: ""))
-    open(made)
-    made
+    b.pages.insert(Page(url: b.homepage, title: ""))
 }
 
 /// The browser opens on a page: a workspace with none gets its home page as one.
@@ -350,20 +349,19 @@ initial action start(b: Browser) {
 action go(b: Browser, typed: Text) -> Page (icon: .arrow_right, label: "Open address") {
     require typed.trim() != "" "Type an address or what to search for"
     let url = resolve(b, typed)
-    let made = b.pages.insert(Page(url: url, title: ""))
-    open(made)
-    made
+    b.pages.insert(Page(url: url, title: ""))
 }
 
 /// What the page of `p` says and does, carried to the window that holds it. Each action answers
 /// the page's own report as an [`Answer`], and what was done is written into the page's record.
-
+///
 /// Read the page: what it says, line by line, as an agent reads it. A long page is read in
 /// parts: a read that stops short names the line to read on from.
-action read_page(p: Page, from: Option<Int> = .none, frame: Option<Text> = .none) -> Answer uses page (
-    icon: .eye,
-    label: "Read the page",
-) {
+action read_page(
+    p: Page,
+    from: Option<Int> = .none,
+    frame: Option<Text> = .none,
+) -> Answer uses page (icon: .eye, label: "Read the page") {
     let request = json.encode(Ask(op: "outline", from: from, frame: frame))
     ask_page(p, request)
 }
@@ -379,10 +377,12 @@ action read_page_changes(p: Page, frame: Option<Text> = .none) -> Answer uses pa
 }
 
 /// What a click at a point would hit, through overlays and banners, and the element holding it.
-action read_page_element_at(p: Page, x: Float, y: Float, frame: Option<Text> = .none) -> Answer uses page (
-    icon: .mouse_pointer_2,
-    label: "Element at a point",
-) {
+action read_page_element_at(
+    p: Page,
+    x: Float,
+    y: Float,
+    frame: Option<Text> = .none,
+) -> Answer uses page (icon: .mouse_pointer_2, label: "Element at a point") {
     let request = json.encode(Ask(op: "at", x: .some(x), y: .some(y), frame: frame))
     ask_page(p, request)
 }
@@ -396,18 +396,17 @@ action wait_page_settled(
     text: Option<Text> = .none,
     gone: Option<Text> = .none,
     frame: Option<Text> = .none,
-) -> Answer uses page (
-    icon: .clock,
-    label: "Wait for the page",
-) {
-    let request = json.encode(Ask(
+) -> Answer uses page (icon: .clock, label: "Wait for the page") {
+    let request = json.encode(
+        Ask(
             op: "settle",
             quiet_ms: quiet_ms,
             timeout_ms: timeout_ms,
             text: text,
             gone: gone,
             frame: frame,
-        ))
+        ),
+    )
     ask_page(p, request)
 }
 
@@ -474,7 +473,9 @@ action find_page_element(
     frame: Option<Text> = .none,
     frames: Bool = false,
 ) -> Answer uses page {
-    let request = json.encode(Ask(op: "find", role: role, name: name, nth: nth, frame: frame, frames: frames))
+    let request = json.encode(
+        Ask(op: "find", role: role, name: name, nth: nth, frame: frame, frames: frames),
+    )
     ask_page(p, request)
 }
 
@@ -506,7 +507,8 @@ action drag_page(
     to_y: Option<Float> = .none,
     steps: Option<Int> = .none,
 ) -> Answer uses page {
-    let request = json.encode(Ask(
+    let request = json.encode(
+        Ask(
             op: "drag",
             drag_from: from,
             from_x: from_x,
@@ -515,13 +517,21 @@ action drag_page(
             to_x: to_x,
             to_y: to_y,
             drag_steps: steps,
-        ))
+        ),
+    )
     ask_page(p, request)
 }
 
 /// Write `text` into an editable element.
-action fill_page(p: Page, element: Text, text: Text, frame: Option<Text> = .none) -> Answer uses page {
-    let request = json.encode(Ask(op: "fill", element: .some(element), text: .some(text), frame: frame))
+action fill_page(
+    p: Page,
+    element: Text,
+    text: Text,
+    frame: Option<Text> = .none,
+) -> Answer uses page {
+    let request = json.encode(
+        Ask(op: "fill", element: .some(element), text: .some(text), frame: frame),
+    )
     ask_page(p, request)
 }
 
@@ -531,23 +541,23 @@ action fill_page_secret(
     element: Text,
     text: Text,
     frame: Option<Text> = .none,
-) -> Answer uses page (
-    icon: .key,
-    label: "Fill a secret",
-) {
-    let request = json.encode(Ask(
-            op: "fill",
-            element: .some(element),
-            text: .some(text),
-            secret: true,
-            frame: frame,
-        ))
+) -> Answer uses page (icon: .key, label: "Fill a secret") {
+    let request = json.encode(
+        Ask(op: "fill", element: .some(element), text: .some(text), secret: true, frame: frame),
+    )
     ask_page(p, request)
 }
 
 /// Choose options of a select.
-action select_page(p: Page, element: Text, values: List<Text>, frame: Option<Text> = .none) -> Answer uses page {
-    let request = json.encode(Ask(op: "select", element: .some(element), values: .some(values), frame: frame))
+action select_page(
+    p: Page,
+    element: Text,
+    values: List<Text>,
+    frame: Option<Text> = .none,
+) -> Answer uses page {
+    let request = json.encode(
+        Ask(op: "select", element: .some(element), values: .some(values), frame: frame),
+    )
     ask_page(p, request)
 }
 
@@ -558,12 +568,19 @@ action fill_page_files(
     paths: List<Text>,
     frame: Option<Text> = .none,
 ) -> Answer uses page {
-    let request = json.encode(Ask(op: "fill_files", element: .some(element), paths: .some(paths), frame: frame))
+    let request = json.encode(
+        Ask(op: "fill_files", element: .some(element), paths: .some(paths), frame: frame),
+    )
     ask_page(p, request)
 }
 
 /// Press a key in the page, as `Control+a` or `Enter`.
-action press_page(p: Page, key: Text, element: Option<Text> = .none, frame: Option<Text> = .none) -> Answer uses page {
+action press_page(
+    p: Page,
+    key: Text,
+    element: Option<Text> = .none,
+    frame: Option<Text> = .none,
+) -> Answer uses page {
     let request = json.encode(Ask(op: "press", key: .some(key), element: element, frame: frame))
     ask_page(p, request)
 }
@@ -575,7 +592,9 @@ action submit_page(
     cross_origin: Bool = false,
     frame: Option<Text> = .none,
 ) -> Answer uses page {
-    let request = json.encode(Ask(op: "submit", element: .some(element), cross_origin: cross_origin, frame: frame))
+    let request = json.encode(
+        Ask(op: "submit", element: .some(element), cross_origin: cross_origin, frame: frame),
+    )
     ask_page(p, request)
 }
 
@@ -595,14 +614,9 @@ action scroll_page(
     into_view: Option<Text> = .none,
     frame: Option<Text> = .none,
 ) -> Answer uses page {
-    let request = json.encode(Ask(
-            op: "scroll",
-            element: element,
-            to: to,
-            by: by,
-            into_view: into_view,
-            frame: frame,
-        ))
+    let request = json.encode(
+        Ask(op: "scroll", element: element, to: to, by: by, into_view: into_view, frame: frame),
+    )
     ask_page(p, request)
 }
 
@@ -612,11 +626,10 @@ action capture_page(
     element: Option<Text> = .none,
     max_width: Option<Int> = .none,
     frame: Option<Text> = .none,
-) -> Answer uses page (
-    icon: .camera,
-    label: "Capture the page",
-) {
-    let request = json.encode(Ask(op: "capture", element: element, max_width: max_width, frame: frame))
+) -> Answer uses page (icon: .camera, label: "Capture the page") {
+    let request = json.encode(
+        Ask(op: "capture", element: element, max_width: max_width, frame: frame),
+    )
     ask_page(p, request)
 }
 
@@ -674,7 +687,9 @@ action find_in_page(
     forward: Bool = true,
     next: Bool = false,
 ) -> Answer uses page {
-    let request = json.encode(Ask(op: "find_in_page", text: .some(text), forward: forward, next: next))
+    let request = json.encode(
+        Ask(op: "find_in_page", text: .some(text), forward: forward, next: next),
+    )
     ask_page(p, request)
 }
 
@@ -685,7 +700,12 @@ action stop_finding(p: Page) -> Answer uses page {
 }
 
 /// Answer a page's own question: an alert, a confirmation or a prompt.
-action answer_page_dialog(p: Page, id: Int, accept: Bool, text: Option<Text> = .none) -> Answer uses page {
+action answer_page_dialog(
+    p: Page,
+    id: Int,
+    accept: Bool,
+    text: Option<Text> = .none,
+) -> Answer uses page {
     let request = json.encode(Ask(op: "answer_dialog", id: .some(id), accept: accept, text: text))
     ask_page(p, request)
 }
@@ -697,17 +717,16 @@ action answer_page_sign_in(
     asker: Text,
     username: Option<Text> = .none,
     password: Option<Text> = .none,
-) -> Answer uses page (
-    icon: .key,
-    label: "Sign in to the page",
-) {
-    let request = json.encode(Ask(
+) -> Answer uses page (icon: .key, label: "Sign in to the page") {
+    let request = json.encode(
+        Ask(
             op: "answer_sign_in",
             id: .some(id),
             asker: .some(asker),
             username: username,
             password: password,
-        ))
+        ),
+    )
     ask_page(p, request)
 }
 
@@ -741,7 +760,7 @@ action refresh_page(p: Page) -> Answer uses page (
         for row in json_arrays(rows) {
             p.held.insert(
                 HeldAsk(
-                    id: json_number(row, "id").to_int(),
+                    request: json_number(row, "id").to_int(),
                     kind: json_text(row, "kind"),
                     method: json_text(row, "method"),
                     origin: json_text(row, "origin"),
@@ -963,9 +982,7 @@ action went_to(p: Page, url: Text) uses time {
         return
     }
     p.url = url
-    if not p.paused {
-        arrived_at(root Browser, url)
-    }
+    if not p.paused { arrived_at(root Browser, url) }
 }
 
 /// Pauses or resumes the person's history in a page's window.
@@ -1220,10 +1237,7 @@ fn json_number(value: json.Value, key: Text) -> Float {
 /// The page `p` does what `request` (JSON, as the window's page reads it) says, and answers the
 /// page's own report. What was done is written into the page's record; a call that could not be
 /// made answers with its words. Every named page action below is this one, written out.
-action ask_page(p: Page, request: Text) -> Answer uses page (
-    icon: .send,
-    label: "Ask the page",
-) {
+action ask_page(p: Page, request: Text) -> Answer uses page (icon: .send, label: "Ask the page") {
     let raw = page.call(request)
     let op = match json.parse(request) {
         .ok(value) => json_text(value, "op"),
@@ -1288,7 +1302,7 @@ fn dialog_of(value: json.Value) -> Option<DialogAsk> {
     match json_field(value, "dialog") {
         .some(held) => .some(
             DialogAsk(
-                id: json_number(held, "id").to_int(),
+                request: json_number(held, "id").to_int(),
                 kind: json_text(held, "kind"),
                 origin: json_text(held, "origin"),
                 message: json_text(held, "message"),
@@ -1304,7 +1318,7 @@ fn sign_in_of(value: json.Value) -> Option<SignInAsk> {
     match json_field(value, "sign_in") {
         .some(held) => .some(
             SignInAsk(
-                id: json_number(held, "id").to_int(),
+                request: json_number(held, "id").to_int(),
                 asker: json_text(held, "asker"),
                 site: json_text(held, "site"),
                 proxy: json_flag(held, "proxy"),
@@ -1321,7 +1335,7 @@ fn permission_of(value: json.Value) -> Option<PermissionAsk> {
     match json_field(value, "permission") {
         .some(held) => .some(
             PermissionAsk(
-                id: json_number(held, "id").to_int(),
+                request: json_number(held, "id").to_int(),
                 origin: json_text(held, "origin"),
                 permissions: json_text(held, "permissions"),
             ),
@@ -1338,12 +1352,11 @@ fn menu_of(value: json.Value) -> Option<MenuAsk> {
                 .some(items) => json_arrays(items),
                 .none => [],
             }
-            let items = menu_rows(rows, "")
-            .some(
+            return .some(
                 MenuAsk(
-                    id: json_number(held, "id").to_int(),
+                    request: json_number(held, "id").to_int(),
                     link: json_text(held, "link"),
-                    items: items,
+                    items: menu_rows(rows, ""),
                 ),
             )
         }
@@ -1407,7 +1420,7 @@ view page_window(b: Browser) {
 
 /// The page's menu: its library and settings, what this site's protection and forms are, and
 /// how the page is read.
-view page_menu(b: Browser, p: Page, zoom: State<Float>, reading: State<Bool>) {
+view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
     ui.MenuButton("Page", icon: .menu) {
         ui.MenuItem("History", icon: .clock) {
             on choose: open(b, view: library)
@@ -1422,13 +1435,13 @@ view page_menu(b: Browser, p: Page, zoom: State<Float>, reading: State<Bool>) {
             on choose: set(reading, not reading).then(reader(p, not reading))
         }
         ui.MenuItem("Zoom in", icon: .plus) {
-            on choose: zoom(p, zoom * 1.1).then(set(zoom, zoom * 1.1))
+            on choose: zoom(p, level * 1.1).then(set(level, level * 1.1))
         }
         ui.MenuItem("Zoom out", icon: .minus) {
-            on choose: zoom(p, zoom / 1.1).then(set(zoom, zoom / 1.1))
+            on choose: zoom(p, level / 1.1).then(set(level, level / 1.1))
         }
         ui.MenuItem("Actual size", icon: .zoom_in) {
-            on choose: zoom(p, 1.0).then(set(zoom, 1.0))
+            on choose: zoom(p, 1.0).then(set(level, 1.0))
         }
         if origin_of(p.url) != "" {
             let site = origin_of(p.url)
@@ -1550,15 +1563,22 @@ view page_view(p: Page) {
                                 items: {
                                     for row in menu.items {
                                         if row.separator {
-                                            ui.MenuSeparator {}
+                                            ui.MenuSeparator {
+                                            }
                                         } else {
                                             ui.MenuItem(
                                                 row.label,
                                                 checked: .some(row.checked),
                                                 disabled: row.disabled,
                                             ) {
-                                                on choose: context_menu_action(p, menu.id, row.command)
-                                                    .then(refresh_page(p))
+                                                on choose: context_menu_action(
+                                                        p,
+                                                        menu.request,
+                                                        row.command,
+                                                    )
+                                                    .then(
+                                                        refresh_page(p),
+                                                    )
                                             }
                                         }
                                     }
@@ -1569,7 +1589,7 @@ view page_view(p: Page) {
                 }
                 if let ask = p.dialog {
                     ui.ModalDialog(
-                        "This page asks",
+                        title: "This page asks",
                         description: .some(ask.origin),
                         open: true,
                         primary: "OK",
@@ -1578,23 +1598,26 @@ view page_view(p: Page) {
                         body: {
                             ui.Text(ask.message)
                             if ask.kind == "prompt" {
-                                ui.TextInput(bind: answer_text, autofocus: true) {}
+                                ui.TextInput(bind: answer_text, autofocus: true) {
+                                }
                             }
                         }
                         on act_primary: answer_page_dialog(
-                            p,
-                            ask.id,
-                            true,
-                            .some(if ask.kind == "prompt" { answer_text } else { "" }),
-                        )
+                                p,
+                                ask.request,
+                                true,
+                                .some(if ask.kind == "prompt" { answer_text } else { "" }),
+                            )
                             .then(refresh_page(p))
-                        on dismiss: answer_page_dialog(p, ask.id, false).then(refresh_page(p))
+                        on dismiss: answer_page_dialog(p, ask.request, false).then(refresh_page(p))
                     }
                 }
                 if let ask = p.sign_in {
                     ui.ModalDialog(
-                        "Sign in to {ask.site}",
-                        description: if ask.retry { .some("The last sign-in was not accepted") } else { .none },
+                        title: "Sign in to {ask.site}",
+                        description: if ask.retry {
+                            .some("The last sign-in was not accepted")
+                        } else { .none },
                         open: true,
                         primary: "Sign in",
                         secondary: "Cancel",
@@ -1607,30 +1630,33 @@ view page_view(p: Page) {
                                 bind: sign_user,
                                 placeholder: "User name",
                                 autofocus: true,
-                            ) {}
-                            ui.TextInput(bind: sign_password, placeholder: "Password") {}
+                            ) {
+                            }
+                            ui.TextInput(bind: sign_password, placeholder: "Password") {
+                            }
                         }
                         on act_primary: answer_page_sign_in(
-                            p,
-                            ask.id,
-                            ask.asker,
-                            .some(sign_user),
-                            .some(sign_password),
-                        )
+                                p,
+                                ask.request,
+                                ask.asker,
+                                .some(sign_user),
+                                .some(sign_password),
+                            )
                             .then(refresh_page(p))
-                        on dismiss: answer_page_sign_in(p, ask.id, ask.asker, .none, .none)
+                        on dismiss: answer_page_sign_in(p, ask.request, ask.asker, .none, .none)
                             .then(refresh_page(p))
                     }
                 }
                 if let ask = p.permission {
                     ui.ModalDialog(
-                        "{ask.origin} asks to use your {ask.permissions}",
+                        title: "{ask.origin} asks to use your {ask.permissions}",
                         open: true,
                         primary: "Allow",
                         secondary: "Deny",
                     ) {
-                        on act_primary: answer_permission(p, ask.id, true).then(refresh_page(p))
-                        on dismiss: answer_permission(p, ask.id, false).then(refresh_page(p))
+                        on act_primary: answer_permission(p, ask.request, true)
+                            .then(refresh_page(p))
+                        on dismiss: answer_permission(p, ask.request, false).then(refresh_page(p))
                     }
                 }
                 if not p.held.is_empty() {
@@ -1658,12 +1684,8 @@ view page_view(p: Page) {
 
 /// One request the page waits on: what it is, and whether it may leave.
 view held_row(p: Page, ask: HeldAsk) {
-    ui.ListRow(
-        title: "{ask.kind} to {ask.origin}",
-        secondary: ask.method,
-        icon: .clock,
-    ) {
-        on activate: answer_held_request(p, ask.id, true).then(refresh_page(p))
+    ui.ListRow(title: "{ask.kind} to {ask.origin}", secondary: ask.method, icon: .clock) {
+        on activate: answer_held_request(p, ask.request, true).then(refresh_page(p))
     }
 }
 
@@ -1680,9 +1702,7 @@ fn suggestions(b: Browser, typed: Text) -> List<Visit> {
     if q == "" {
         return []
     }
-    b.visits
-        .filter(v -> v.url.lower().contains(q) or v.title.lower().contains(q))
-        .take(6)
+    b.visits.filter(v -> v.url.lower().contains(q) or v.title.lower().contains(q)).take(6)
 }
 
 /// One step of what was done in a page: what it was, what it acted on and how it ended.
