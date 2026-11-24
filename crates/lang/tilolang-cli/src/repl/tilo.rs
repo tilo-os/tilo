@@ -40,18 +40,18 @@ pub struct Tilo {
     pub workspace: Option<String>,
 }
 
-/// The `tilo` command: the one on `PATH`, else the one beside this program (a release installs
-/// both commands together).
+/// The `tilo` command: the one beside this program, which a release installs with it, so the two
+/// speak the same lines; else the one on `PATH`.
 #[must_use]
 pub fn find() -> Option<PathBuf> {
-    let on_path = std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|program| Some(program.parent()?.join("tilo")))
+        .filter(|beside| runnable(beside));
+    beside.or_else(|| {
+        std::env::split_paths(&std::env::var_os("PATH")?)
             .map(|directory| directory.join("tilo"))
             .find(|candidate| runnable(candidate))
-    });
-    on_path.or_else(|| {
-        let beside = std::env::current_exe().ok()?.parent()?.join("tilo");
-        runnable(&beside).then_some(beside)
     })
 }
 
@@ -135,6 +135,14 @@ impl Tilo {
             Err(error) if error.reason.as_deref() == Some("not_signed_in") => {
                 return Err(Refused::NotSignedIn);
             }
+            // A `tilo` from before `--as-me` refuses the flag and ends.
+            Err(error) if error.ended && error.message.contains("--as-me") => {
+                return Err(Refused::Said(format!(
+                    "The `tilo` command at {} is older than this tilolang: update it with \
+                     `curl -fsSL https://tilo.sh | sh`.",
+                    program.display()
+                )));
+            }
             Err(error) => return Err(Refused::Said(error.message)),
         };
         tilo.notify("notifications/initialized")
@@ -213,6 +221,7 @@ impl Tilo {
             }
             if let Some(error) = answer.get("error") {
                 return Err(RpcError {
+                    ended: false,
                     message: error
                         .get("message")
                         .and_then(Json::as_str)
@@ -275,13 +284,17 @@ impl Drop for Tilo {
 struct RpcError {
     message: String,
     reason: Option<String>,
+    /// `tilo` ended rather than answer: `message` is what it said last.
+    ended: bool,
 }
 
 impl RpcError {
+    /// `tilo` ended, having said `message`.
     const fn said(message: String) -> Self {
         Self {
             message,
             reason: None,
+            ended: true,
         }
     }
 }

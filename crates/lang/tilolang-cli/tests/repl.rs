@@ -9,11 +9,16 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// A `tilo` answering MCP's JSON-RPC lines as `tilo mcp --as-me` does, its answers picked by
 /// `TILO_FAKE`: `signed-in` (the login's workspace, Home), `account` (no default workspace;
-/// the account lists one, Solo) or `nobody` (nobody signed in). It writes its arguments, then
+/// the account lists one, Solo), `nobody` (nobody signed in) or `old` (a `tilo` from before
+/// `--as-me`, which refuses it). It writes its arguments, then
 /// the desktop socket it was pointed at, then every line it reads, to `TILO_FAKE_LOG`.
 const FAKE_TILO: &str = r#"#!/bin/sh
 printf 'args: %s\n' "$*" >> "$TILO_FAKE_LOG"
 printf 'socket: %s\n' "$TILO_API_SOCKET" >> "$TILO_FAKE_LOG"
+if [ "$TILO_FAKE" = old ]; then
+  echo "error: unexpected argument '--as-me' found" >&2
+  exit 2
+fi
 answer() { printf '{"jsonrpc":"2.0","id":%s,%s}\n' "$id" "$1"; }
 typed() { answer "\"result\":{\"isError\":false,\"content\":[{\"type\":\"text\",\"text\":\"\"}],\"structuredContent\":$1}"; }
 while IFS= read -r line; do
@@ -201,6 +206,18 @@ tilo_test_env::scenario! {
         assert_eq!(err.trim().lines().count(), 1, "one line: {err}");
         assert!(err.contains(tilolang_cli::repl::tilo::TILO_MISSING), "{err}");
         plain(&err);
+    }
+
+    phase a_tilo_from_before_the_repl_s_server_is_named_to_update;
+    {
+        let installed = Installed::new();
+        installed.put_tilo("bin");
+        let runtime = tempfile::tempdir().unwrap();
+        let (ok, _, err) = installed.repl(&[], "", "old", SYSTEM_PATH, runtime.path());
+        assert!(!ok);
+        assert_eq!(err.trim().lines().count(), 1, "one line: {err}");
+        assert!(err.contains("is older than this tilolang"), "{err}");
+        assert!(err.contains("curl -fsSL https://tilo.sh | sh"), "{err}");
     }
 
     phase nobody_signed_in_reads_how_to_sign_in;
