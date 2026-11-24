@@ -197,7 +197,8 @@ mod tests {
     use super::*;
     use tilo_actions::remote::Admits as _;
     use tilo_actions::remote::task_programs as wire;
-    use tilo_actions::{ActionAddress, InvokeArgument, RemoteActionTarget};
+    use tilo_actions::ActionAddress;
+    use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
     const WORKSPACE: &str = "the-workspace";
 
@@ -658,7 +659,16 @@ mod tests {
             ),
             "it waits under way: {receipt:?}"
         );
-        let questions = store.asked_of(&ADA);
+        // What Ada is asked: the calls waiting in her workspace for her answer.
+        let asked_of_ada = || -> Vec<asked::Asked> {
+            store
+                .waiting_in(WORKSPACE)
+                .into_iter()
+                .filter(|waiting| waiting.person == hex::encode(ADA))
+                .map(|waiting| waiting.asked)
+                .collect()
+        };
+        let questions = asked_of_ada();
         assert_eq!(questions.len(), 1, "Ada is asked");
         let facts = &questions[0].facts;
         assert_eq!(
@@ -715,7 +725,7 @@ mod tests {
             !declined.contains("for x in notes"),
             "a declined program runs nothing: {declined}"
         );
-        assert!(store.asked_of(&ADA).is_empty(), "Ada is asked no more");
+        assert!(asked_of_ada().is_empty(), "Ada is asked no more");
         assert!(
             ran_for_real.try_recv().is_err(),
             "only her approved program ran for real"
