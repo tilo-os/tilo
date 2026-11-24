@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+use collab_types::signer::DeviceSigner;
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::{Map, Value};
 use tilo_actions::InvocationUpdate;
@@ -31,11 +32,13 @@ use tilo_peer_state::workspace_view::{
     BRANCH, CREATE, DELETE, ENTER, JOIN, LIST, Listed, MEMBERSHIP, Part, part as part_resource,
     resource,
 };
+use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::apps::services::{PublishedResources, Reading, ResourceWatch};
 use tilo_workspace_service::apps::shell::{
     ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
 };
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
+use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::standing;
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -66,7 +69,11 @@ pub(crate) fn services(
         live,
         speaking,
     } = serving;
-    let standing = Standing::new(Arc::clone(workspaces));
+    let standing = Standing::new(
+        workspaces.copies().clone(),
+        workspaces.device_cert().clone(),
+        workspaces.signer(),
+    );
     standing.follow();
     let copies = workspaces.copies().clone();
     ShellServices {
@@ -85,7 +92,7 @@ pub(crate) fn services(
         actions: Arc::new(Actions {
             kept: Arc::new(Kept {
                 workspaces: Arc::clone(workspaces),
-                changed: Arc::clone(&standing.changed),
+                changed: standing.changed(),
             }),
             dispatching,
             by_workspace: Mutex::default(),
@@ -611,8 +618,12 @@ fn settled(status: ReceiptStatus) -> Result<Value, String> {
 /// How the person's workspaces stand, as the shell watches them: [`LIST`], and each workspace's
 /// reading at [`resource`], read again whenever something changes there and published to every
 /// watch whose resource reads differently.
-pub(crate) struct Standing {
-    workspaces: Arc<ServiceWorkspaces>,
+pub struct Standing {
+    /// The workspaces this device holds, read as it holds them.
+    workspaces: Workspaces,
+    /// The device whose person the readings are made for, and which signs them.
+    cert: DeviceCert,
+    signer: Arc<dyn DeviceSigner>,
     /// Told whenever a workspace may read differently; many tellings before a read are one.
     changed: Arc<Notify>,
     state: Mutex<Published>,
@@ -628,9 +639,17 @@ struct Published {
 }
 
 impl Standing {
-    fn new(workspaces: Arc<ServiceWorkspaces>) -> Arc<Self> {
+    /// How the workspaces `workspaces` stand for the device `cert`, signing its readings with
+    /// `signer`.
+    pub fn new(
+        workspaces: Workspaces,
+        cert: DeviceCert,
+        signer: Arc<dyn DeviceSigner>,
+    ) -> Arc<Self> {
         let standing = Arc::new(Self {
             workspaces,
+            cert,
+            signer,
             changed: Arc::new(Notify::new()),
             state: Mutex::default(),
         });
@@ -638,10 +657,16 @@ impl Standing {
         standing
     }
 
+    /// Told whenever a workspace may read differently: what a change this device itself made
+    /// tells, and what its own workspaces' changes tell.
+    pub fn changed(&self) -> Arc<Notify> {
+        Arc::clone(&self.changed)
+    }
+
     /// Read again whenever a workspace changes here: its key access or membership changed, another
     /// device's write was taken in, this device took a workspace in, or a shell's ask settled.
-    fn follow(self: &Arc<Self>) {
-        let copies = self.workspaces.copies().clone();
+    pub fn follow(self: &Arc<Self>) {
+        let copies = self.workspaces.clone();
         let tell = |changed: &Arc<Notify>| {
             let changed = Arc::clone(changed);
             move || changed.notify_one()
@@ -664,7 +689,8 @@ impl Standing {
                 lagged,
             ),
         );
-        for taken in [copies.members_held(), self.workspaces.entered()] {
+        {
+            let taken = copies.members_held();
             let took = tell(&self.changed);
             tilo_rt::app().spawn(async move {
                 loop {
@@ -725,18 +751,20 @@ impl Standing {
     }
 
     fn read_all(&self) -> BTreeMap<String, Vec<u8>> {
-        let cert = self.workspaces.device_cert().clone();
-        let signer = self.workspaces.signer();
+        let cert = &self.cert;
         let reader = standing::Reader {
             person: cert.user_public_key,
             device: cert.device_public_key,
-            signer: signer.as_ref(),
+            signer: self.signer.as_ref(),
         };
         let mut readings = BTreeMap::new();
         let mut listed = Vec::new();
-        for (workspace, name, peer) in self.workspaces.held() {
+        let mut held = self.workspaces.copies_now();
+        held.sort_by_key(|(_, copy)| copy.member);
+        for (workspace, copy) in held {
             // The device that keeps it, which is this one unless another runs the workspace's work:
             // what a read of it and its changes are asked of.
+            let (name, peer) = (copy.name, copy.peer);
             let holder = standing::keeping_device_elsewhere(&peer, &cert.device_public_key)
                 .map_or(cert.device_public_key, |(device, _)| device);
             let reading = standing::reading(workspace, &peer, &reader, Some(holder), Vec::new());

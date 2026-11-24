@@ -16,9 +16,7 @@ use std::sync::Arc;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::apps::services::{
-    Caller, LauncherServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
-};
+use tilo_workspace_service::apps::services::{LauncherServices, ProcessServices};
 use tilo_workspace_service::apps::shell::{
     ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
 };
@@ -163,6 +161,15 @@ impl TestDaemon {
             .expect("the runtime runs");
         let launched = launcher.is_some();
         let links = Arc::new(ShellLinks::default());
+        // The person's workspaces as the daemon publishes them to the shell: the same reading the
+        // device's own daemon makes, following what changes here, so the session that links to
+        // this daemon holds what it holds.
+        let standing = tilo_runtime::device::Standing::new(
+            workspaces.clone(),
+            cert.clone(),
+            Arc::new(key.clone()),
+        );
+        standing.follow();
         let actions = Arc::new(Governance {
             workspaces: workspaces.clone(),
         });
@@ -178,7 +185,7 @@ impl TestDaemon {
                     move || workspaces.document_writes()
                 }),
                 actions,
-                standing: Arc::new(NoStanding),
+                standing,
                 published: None,
                 workspaces: workspaces.clone(),
                 identity: None,
@@ -608,41 +615,5 @@ impl tilo_actions::remote::ActionProvider for GovernanceCall {
         tilo_actions::remote::Pending::ready(Err(
             tilo_actions::remote::ActionCallError::UnknownInvocation,
         ))
-    }
-}
-
-/// The workspaces' standing, which no test of the documents follows.
-struct NoStanding;
-
-impl PublishedResources for NoStanding {
-    fn snapshot(
-        &self,
-        _caller: &Caller,
-        _resource: &str,
-    ) -> tokio::sync::oneshot::Receiver<Result<Reading, String>> {
-        let (reply, answered) = tokio::sync::oneshot::channel();
-        let _ = reply.send(Err("the test's daemon publishes no standing".to_owned()));
-        answered
-    }
-
-    fn watch(
-        &self,
-        _caller: &Caller,
-        _resource: &str,
-        _sink: tokio::sync::mpsc::UnboundedSender<runtime_collab::wire::Event>,
-    ) -> Result<ResourceWatch, String> {
-        Err("the test's daemon publishes no standing".to_owned())
-    }
-
-    fn unwatch(&self, _watch: ResourceWatch) {}
-
-    fn invoke(
-        &self,
-        _caller: &Caller,
-        _resource: &str,
-        _action: &str,
-        _arguments: Vec<u8>,
-    ) -> tokio::sync::oneshot::Receiver<runtime_collab::wire::Receipt> {
-        tokio::sync::oneshot::channel().1
     }
 }
