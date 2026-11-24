@@ -69,6 +69,7 @@ mod opened;
 mod opens_page;
 mod outbox;
 mod outcomes;
+mod passwords_vault;
 mod policy;
 mod print_centre;
 mod publication;

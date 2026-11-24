@@ -54,6 +54,12 @@ pub mod git_engine;
 pub mod hosted;
 pub mod invocations;
 pub mod page_prompts;
+/// Passwords' secrets, carried between the system's card, chosen files and the workspace's vault.
+#[cfg(all(
+    feature = "app-launch",
+    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+))]
+mod passwords_vault;
 pub mod pdf;
 pub mod personal;
 pub mod phrases;

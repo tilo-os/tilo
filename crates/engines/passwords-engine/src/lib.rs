@@ -11,12 +11,15 @@
 
 use std::collections::BTreeMap;
 
-use accounts::{SecretId, SecretItem, SecretItemKind, SecretStore};
+use accounts::{SecretItem, SecretItemKind, SecretStore};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use tilo_seal::envelope::{self, Envelope, KeySource};
 use tilo_seal::{Context, Label, PasswordParams};
 use zeroize::Zeroizing;
+
+/// How a vault entry is named, for the host that hands the vault what it reads here.
+pub use accounts::{SecretId, is_entry_id};
 
 /// The one app this device answers engine work for.
 pub const APP: &str = "so.tilo.passwords";

@@ -21,23 +21,16 @@ d-tpqopgvl = Benutzername
     .doc = Was die Person gegenüber dem Konto ausweist: ein Benutzername, ein Konto, ein Netzwerkname.
 
 d-txdg33mm = Passwort
-    .doc = Das Geheimnis selbst.
 
 d-fxvfkz3x = Notizen
-    .doc = Alles, was daneben zu behalten ist, in eigenen Worten.
 
 d-qgllbsrc = Adressen
-    .doc = Die Adressen, an denen es sich anmeldet, jede eine Webadresse.
 
 d-qoa35hei = Schlagwörter
 
 d-japk242o = Felder
-    .doc = Felder, die die Person hinzufügte, nach ihrer Bezeichnung: eine PIN, eine Kontonummer.
 
 d-tzeujwn7 = Favorit
-
-d-qzpekkx6 = Alt
-    .doc = Ob das Passwort zuletzt vor mehr als einem Jahr geändert wurde, wie die tägliche Prüfung es schreibt.
 
 d-oe75ekol-filter-favorite = Favoriten
 
@@ -57,10 +50,6 @@ d-l7jn4eol = Titel
 d-s6pvezan = Benutzername
 
 d-4jcknnmq = Ursprung
-
-d-jtrf57qd = Passwort
-
-d-sx76etl2 = Notizen
 
 d-23s6djq3 = Überspringen
     .doc = Ob der Tresor diese Anmeldung schon hält, sodass der Import sie überspringt.
@@ -107,60 +96,6 @@ d-mtdotryg = Eintrag
 
 d-yiseqxtu = Name
 
-d-e7tbzvws = Gesendeter Eintrag
-    .doc = Ein Eintrag, wie die Maschinen des Geräts ihn lesen und schreiben.
-    .noun = { $count ->
-        [one] gesendeter Eintrag
-       *[other] gesendete Einträge
-    }
-
-d-rzuvlal6 = Titel
-
-d-65lzjom4 = Art
-
-d-gtezt3ys = Benutzername
-
-d-nqzlkgho = Passwort
-
-d-nyoijvnx = Notizen
-
-d-pupxu7gb = Adressen
-
-d-zrtsugqu = Schlagwörter
-
-d-yczcbynv = Felder
-
-d-uynlhftv = Eintragsabfrage
-    .doc = Was die Exportmaschinen gefragt werden: die Einträge des Tresors.
-    .noun = { $count ->
-        [one] Eintragsabfrage
-       *[other] Eintragsabfragen
-    }
-
-d-6nicnbs2 = Einträge
-
-d-7vsmhup7 = Sicherungsabfrage
-    .doc = Was die Sicherungsmaschine gefragt wird: die Einträge des Tresors unter einem Passwort.
-    .noun = { $count ->
-        [one] Sicherungsabfrage
-       *[other] Sicherungsabfragen
-    }
-
-d-a45t5mnl = Einträge
-
-d-wmhsd5ch = Passphrase
-
-d-okwle4am = Wiederherstellungsabfrage
-    .doc = Was die Wiederherstellungsmaschine gefragt wird: wo die Sicherung liegt und welches Passwort sie braucht.
-    .noun = { $count ->
-        [one] Wiederherstellungsabfrage
-       *[other] Wiederherstellungsabfragen
-    }
-
-d-rnonlkte = Adresse
-
-d-cynjyelt = Passphrase
-
 d-w5ifp6gt = Gesendete Datei
     .doc = Was die CSV-Maschine gefragt wird: die Datei, die die Person wählte.
     .noun = { $count ->
@@ -169,51 +104,6 @@ d-w5ifp6gt = Gesendete Datei
     }
 
 d-roquvgtj = Adresse
-
-d-awblwezm = Entfernungsabfrage
-    .doc = Was der Tresor des Geräts vergessen soll: die IDs der Einträge, die der Tresor übernahm.
-    .noun = { $count ->
-        [one] Entfernungsabfrage
-       *[other] Entfernungsabfragen
-    }
-
-d-eevmellb = IDs
-
-d-nkhxa77u = Geräteeintrag
-    .doc = Ein Eintrag, wie ein Gerät oder eine Sicherung ihn übergibt.
-    .noun = { $count ->
-        [one] Geräteeintrag
-       *[other] Geräteeinträge
-    }
-
-d-wnjsdr3d = ID
-
-d-lwvhidtr = Titel
-
-d-vd3jnhgx = Art
-
-d-f7f2gp2a = Benutzername
-
-d-6okrlhly = Passwort
-
-d-p4viod5a = Notizen
-
-d-4ejpoi2g = Adressen
-
-d-wze5ieza = Schlagwörter
-
-d-gr5iqwm5 = Felder
-
-d-chdzlb3g = Geräteantwort
-    .doc = Was der Tresor des Geräts antwortet: seine teilbaren Einträge oder warum er nicht gelesen werden konnte.
-    .noun = { $count ->
-        [one] Geräteantwort
-       *[other] Geräteantworten
-    }
-
-d-vqmxqaz7 = Einträge
-
-d-is77ciid = Fehler
 
 d-mdx37iwu = CSV-Zeile
     .doc = Eine Zeile aus der CSV eines Browsers.
@@ -227,10 +117,6 @@ d-ufq2o5qa = Titel
 d-pjl3fx3t = Benutzername
 
 d-7ca4ejcb = Ursprung
-
-d-u3j7epmt = Passwort
-
-d-we5a77lw = Notizen
 
 d-cnaonhif = Zeilenantwort
     .doc = Die Zeilen einer CSV.
@@ -278,8 +164,8 @@ d-k6wf47xc = Eine Anmeldung speichern
     .doc = Fügt eine Anmeldung in einem Schritt hinzu: was ein Agent, ein Skript oder der Ende-zu-Ende-Test der VM vom Tresor verlangt.
     .did = saved a login
     .w-a-login-needs-a-name = Eine Anmeldung braucht einen Namen
-    .w-a-login-needs-its-password = Eine Anmeldung braucht ihr Passwort
     .w-is-not-a-web-address-such = { $trim } is not a web address, such as https://example.com
+    .take-1 = Passwort
 
 d-k6wf47xc-name = Name
 
@@ -287,28 +173,13 @@ d-k6wf47xc-origin = Ursprung
 
 d-k6wf47xc-username = Benutzername
 
-d-k6wf47xc-password = Passwort
-
 d-djkahzyt = Anmeldungen auflisten
     .doc = Die Anmeldungen des Tresors, nach Namen und nach dem Eintrag, der jede hält: was ein Skript, ein Agent oder das Fenster eines anderen Geräts auflistet.
-
-d-hk7yj34l = Eintrag speichern
-    .doc = Schreibt, was der Editor hält, auf einen Eintrag: das Passwort und die Notizen, die er bekam, und die eingegebenen eigenen Felder.
-    .did = saved an item
-    .w-write-a-custom-field-as-label = Schreiben Sie ein eigenes Feld als Bezeichnung = Wert
-    .w-add-a-name-so-you-can = Geben Sie einen Namen an, damit Sie den Eintrag finden
-    .w-add-something-to-the-note = Schreiben Sie etwas in die Notiz
-    .w-add-the = Add the { $lower }
-
-d-hk7yj34l-password = Passwort
-
-d-hk7yj34l-notes = Notizen
-
-d-hk7yj34l-fields = Felder
 
 d-hopdjwb6 = Starkes Passwort erzeugen
     .doc = Zieht ein starkes Passwort für den Eintrag: 20 Zeichen, mindestens ein Großbuchstabe, ein Kleinbuchstabe, eine Ziffer und ein Symbol.
     .did = generated a password
+    .w-a-password-is-12-to-128 = Ein Passwort ist 12 bis 128 Zeichen lang
 
 d-rb5tewbt = Aus Favoriten entfernen
     .doc = Setzt einen Eintrag in die Favoriten oder nimmt ihn heraus.
@@ -355,24 +226,6 @@ d-qoybllz7 = Löschen
 
 d-qoybllz7-item = Eintrag
 
-d-r7cooy7o = Das Alter des Passworts prüfen
-    .doc = Merkt einen Eintrag vor, dessen Passwort zuletzt vor mehr als einem Jahr geändert wurde.
-
-d-lxclcx4k = Adressen schreiben
-    .doc = Ersetzt die Adressen eines Eintrags durch `values` in einer Änderung.
-
-d-lxclcx4k-values = Values
-
-d-45ex6uaa = Schlagwörter schreiben
-    .doc = Ersetzt die Schlagwörter eines Eintrags durch `values` in einer Änderung.
-
-d-45ex6uaa-values = Values
-
-d-dnl6oesw = Eigene Felder schreiben
-    .doc = Ersetzt die eigenen Felder eines Eintrags durch `values` in einer Änderung.
-
-d-dnl6oesw-values = Values
-
 d-zzxcwuwh = Aus CSV importieren
     .doc = Liest die gewählte CSV des Browsers in die wartenden Zeilen des Tresors, jede markiert, wenn der Tresor die Anmeldung schon hält.
 
@@ -392,15 +245,12 @@ d-hnneai2d = Als CSV exportieren
 
 d-t2p5z5f6 = Tresor sichern
     .doc = Der Tresor als verschlüsselte Sicherung unter `password`: die Person wählt, wohin sie geht.
-    .w-use-at-least-12-characters-for = Verwenden Sie mindestens 12 Zeichen für das Sicherungspasswort
-
-d-t2p5z5f6-password = Passwort
+    .take-1 = Backup-Passwort
+    .take-2 = Das Backup-Passwort noch einmal
 
 d-wzx4ymwg = Aus einer Sicherung wiederherstellen
     .doc = Bringt die Einträge einer Sicherung in den Tresor und antwortet, wie viele kamen.
-    .w-use-at-least-12-characters-for = Verwenden Sie mindestens 12 Zeichen für das Sicherungspasswort
-
-d-wzx4ymwg-password = Passwort
+    .take-1 = Backup-Passwort
 
 d-wzx4ymwg-file = Datei
 
@@ -408,8 +258,6 @@ d-flkitlvk = Den Tresor dieses Geräts importieren
     .doc = Nimmt in den Tresor, was der Geheimdienst dieses Geräts hält und ein Arbeitsbereich teilen darf.
 
 d-ugwe3ulv = Anmeldung speichern
-
-d-d2bzao4x = Editor speichern
 
 d-z623qzrl = Favorit
 
@@ -440,66 +288,38 @@ d-bmtl4ylm = Tresorfenster
     .w-your-vault-is-empty = Ihr Tresor ist leer
     .w-no-favorites-yet = Noch keine Favoriten
     .w-nothing-of-this-kind-yet = Noch nichts dieser Art
-    .w-encrypted-backup = Verschlüsselte Sicherung
-    .w-a-backup-keeps-every-item-note = Eine Sicherung bewahrt jeden Eintrag, jede Notiz und jedes eigene Feld, verschlüsselt mit einem Passwort Ihrer Wahl.
-    .w-browser-passwords = Browser-Passwörter
-    .w-move-logins-between-passwords-and-a = Übertragen Sie Anmeldungen zwischen Passwörtern und einem Webbrowser mit einer CSV-Datei.
-    .w-this-device-s-vault = Der Tresor dieses Geräts
-    .w-logins-this-device-kept-before-the = Anmeldungen, die dieses Gerät vor dem gemeinsamen Tresor behielt, kommen einmal in den Arbeitsbereich. Das Anmeldematerial dieser Maschine und ihre WLANs bleiben auf ihr.
-    .w-edit-item = Eintrag bearbeiten
-    .w-save = Speichern
     .w-cancel = Abbrechen
     .w-kind = Art
-    .w-name = Name
     .w-what-it-is-called = Wie er heißt
     .w-who-it-signs-in-as = Wer sich damit anmeldet
-    .w-leave-it-empty-to-keep-the = Leer lassen, um das aktuelle zu behalten
-    .w-the = The { $lower }
     .w-generate-strong-password = Starkes Passwort erzeugen
     .w-notes = Notizen
-    .w-anything-worth-keeping = Alles, was es zu behalten gilt
-    .w-network = Netzwerk
     .w-tags = Schlagwörter
     .w-add-a-tag = Schlagwort hinzufügen
     .w-remove-the-address = Adresse entfernen
     .w-add-a-web-address = Webadresse hinzufügen
-    .w-custom-fields = Eigene Felder
-    .w-one-a-line-as-pin-1234 = Eines je Zeile, etwa PIN = 1234
-    .w-pin-1234 = PIN = 1234
     .w-remove-from-favorites = Aus Favoriten entfernen
     .w-add-to-favorites = Zu Favoriten hinzufügen
-    .w-edit-details = Details bearbeiten
-    .w-hidden-until-you-edit-the-item = Verborgen, bis Sie den Eintrag bearbeiten
-    .w-kept = { $len } kept
     .w-last-changed = Zuletzt geändert
     .w-copy = Copy { $lower }
     .w-copy-web-addresses = Webadressen kopieren
     .w-hide = Verbergen
-    .w-reveal-secret = Geheimnis zeigen
-    .w-change-the-password = Passwort ändern
-    .w-open-the-note = Notiz öffnen
     .w-no-tags-yet = Noch keine Schlagwörter.
     .w-delete-item = Eintrag löschen
     .w-nothing-saved-yet = Noch nichts gespeichert
     .w-no-item-selected = Kein Eintrag gewählt
     .w-logins-secure-notes-wi-fi-passwords = Anmeldungen, geheime Notizen, WLAN-Passwörter und API-Schlüssel, die Sie speichern, werden hier aufbewahrt.
-    .w-reveal-the-of = Reveal the { $lower } of “{ $title }”?
     .w-reveal = Zeigen
-    .w-it-shows-for-10-seconds-then = Es wird 10 Sekunden gezeigt und verborgen sich dann wieder.
     .w-delete = Delete “{ $title }”?
     .w-the-item-is-removed-from-the = Der Eintrag wird aus dem Tresor entfernt und kann nicht wiederhergestellt werden.
-    .w-change-the-of = Change the { $lower } of “{ $title }”
-    .w-keep = Behalten
-    .w-the-password = Das Passwort
-    .w-write-the-note-of = Write the note of “{ $title }”
-    .w-the-note = Die Notiz
-    .w-back-up-vault-2 = Tresor sichern
-    .w-choose-file = Datei wählen…
-    .w-backup-password = Sicherungspasswort
-    .w-use-at-least-12-characters = Mindestens 12 Zeichen verwenden
-    .w-confirm-backup-password = Sicherungspasswort bestätigen
-    .w-the-passwords-do-not-match = Die Passwörter stimmen nicht überein
-    .w-restore-from-backup-2 = Aus Sicherung wiederherstellen
+    .w-not-set = Nicht gesetzt
+    .w-hidden = Verborgen
+    .w-write-the-note = Notiz schreiben
+    .w-change-the = { $lower } ändern
+    .w-fields = Felder
+    .w-remove-the-field = Feld entfernen
+    .w-add-a-field-such-as-pin = Ein Feld hinzufügen, etwa eine PIN
+    .w-this-item-is-no-longer-in = Dieser Eintrag ist nicht mehr im Tresor
 
 d-p4ndizd3 = Prüfseite
     .w-password-review = Passwortprüfung
@@ -527,6 +347,151 @@ d-vskscvt7 = Importvorschau
     .w-logins-are-already-in-your-vault = { $len } logins are already in your vault and will be skipped.
     .w-and-more = And { $value } more
 
-d-qlke2mar = Sicherung exportieren
+d-vvthph26 = Tresoreintrag
+    .doc = Der Eintrag im Tresor des Arbeitsbereichs, für den dieser Eintrag steht: seine ID dort.
 
-d-wguekvub = Sicherung wiederherstellen
+d-fatb5kmf = Wird importiert
+    .doc = Die Datei, aus der diese Zeilen stammen, nach ihrer Adresse.
+
+d-ddfwhboz = Getipptes behalten
+    .doc = Gibt, was die Person auf der Karte des Systems getippt hat, als `part` des Eintrags `id` an den Tresor: der Host reicht es weiter, sodass es hier nie zu einem Wert wird.
+
+d-gwe6itjt = Eintrag in den Tresor schreiben
+    .doc = Schreibt, was sich gefahrlos über einen Eintrag sagen lässt, in seinen Tresoreintrag: wer sich damit anmeldet und wo, mit Name, Art und Schlagwörtern.
+
+d-3pnsqmdw = Benutzernamen ändern
+    .doc = Schreibt, wer sich mit dem Eintrag anmeldet.
+
+d-3pnsqmdw-username = Benutzername
+
+d-g7tb7qik = Geheimnis ändern
+    .doc = Ändert Passwort, Schlüssel oder Geheimnis des Eintrags: die Person tippt es auf der Karte des Systems, und der Tresor behält es.
+    .did = hat ein Passwort geändert
+    .take-1 = Passwort
+
+d-kkky4zbh = Notiz schreiben
+    .doc = Schreibt die Notiz des Eintrags: auf der Karte des Systems getippt, im Tresor behalten.
+    .did = hat eine Notiz geschrieben
+    .take-1 = Notiz
+
+d-7zxdhw2e = Feld hinzufügen
+    .doc = Fügt dem Eintrag ein Feld hinzu, etwa eine PIN: sein Wert wird auf der Karte des Systems getippt.
+    .take-1 = Wert
+    .w-a-field-needs-a-label = Ein Feld braucht eine Bezeichnung
+
+d-7zxdhw2e-label = Bezeichnung
+
+d-jnyeiiz4 = Feld entfernen
+    .doc = Nimmt ein Feld vom Eintrag.
+
+d-jnyeiiz4-label = Bezeichnung
+
+d-hopdjwb6-length = Länge
+
+d-hopdjwb6-capitals = Großbuchstaben
+
+d-hopdjwb6-digits = Ziffern
+
+d-hopdjwb6-symbols = Sonderzeichen
+
+d-v43yjfa6 = Umbenennen
+    .doc = Benennt einen Eintrag um, in seinem Datensatz und seinem Tresoreintrag.
+    .w-add-a-name-so-you-can = Gib einen Namen ein, damit du diesen Eintrag findest
+
+d-v43yjfa6-title = Titel
+
+d-ft26477c = Art ändern
+    .doc = Ändert, welche Art von Geheimnis ein Eintrag ist.
+
+d-ft26477c-kind = Art
+
+d-zrnetcoa = Tresor abgleichen
+    .doc = Bringt den Tresor und seine Einträge zusammen: ein anderswo behaltener Eintrag bekommt einen Eintrag hier, Name, Art und Schlagwörter erreichen den Tresor, und was ein älteres Passwörter in seinen eigenen Datensätzen hielt, zieht in den Tresor und verlässt den Datensatz.
+
+d-j7soj6d7 = Geheimnis in den Tresor verschieben
+    .doc = Verschiebt, was der Datensatz eines Eintrags hält, einmal in den Tresor und leert den Datensatz.
+
+d-5dzk2p5g = Import und Export
+    .w-import-and-export = Import und Export
+    .w-encrypted-backup = Verschlüsseltes Backup
+    .w-a-backup-keeps-every-item-note = Ein Backup behält jeden Eintrag, jede Notiz und jedes Feld, verschlüsselt mit einem Passwort, das du auf der Karte des Systems tippst: mindestens 12 Zeichen, zweimal getippt.
+    .w-back-up-vault = Tresor sichern…
+    .w-restore-from-backup = Aus Backup wiederherstellen…
+    .w-browser-passwords = Browser-Passwörter
+    .w-move-logins-between-passwords-and-a = Übertrage Anmeldungen mit einer CSV-Datei zwischen Passwörter und einem Webbrowser. Eine CSV-Datei hält jedes Passwort unverschlüsselt: behalte sie nur so lange, wie die Übertragung dauert.
+    .w-import-from-csv = Aus CSV importieren…
+    .w-export-to-csv = Als CSV exportieren…
+    .w-this-device-s-vault = Tresor dieses Geräts
+    .w-logins-this-device-kept-before-the = Anmeldungen, die dieses Gerät hielt, bevor der Tresor geteilt wurde, kommen einmal in den Arbeitsbereich. Die Anmeldedaten dieses Rechners und seine WLANs bleiben auf ihm.
+    .w-import-this-device-s-vault = Tresor dieses Geräts importieren
+
+d-mva5xt5r = Getippte Anfrage
+    .doc = Welches Geheimnis welches Eintrags der Host dem Tresor mit dem Getippten übergibt.
+    .noun = { $count ->
+        [one] getippte Anfrage
+       *[other] getippte Anfragen
+    }
+
+d-5se7svg2 = ID
+
+d-3f2i24zq = Teil
+
+d-r6o4ucrf = Importanfrage
+    .doc = Welche Zeilen der gewählten Datei in den Tresor kommen: alle außer den übersprungenen, nach ihrer Stelle.
+    .noun = { $count ->
+        [one] Importanfrage
+       *[other] Importanfragen
+    }
+
+d-trzw7c4z = URL
+
+d-xbct2xaa = Überspringen
+
+d-hf6vo7js = Importantwort
+    .doc = Wie viele Zeilen ein Import gebracht hat.
+    .noun = { $count ->
+        [one] Importantwort
+       *[other] Importantworten
+    }
+
+d-35klc2sc = Importiert
+
+d-hf6vo7js-filter-imported = Importiert
+
+d-547bkmv2 = Wiederherstellungsantwort
+    .doc = Wie viele Einträge eine Wiederherstellung gebracht hat.
+    .noun = { $count ->
+        [one] Wiederherstellungsantwort
+       *[other] Wiederherstellungsantworten
+    }
+
+d-ks2ix353 = Wiederhergestellt
+
+d-547bkmv2-filter-restored = Wiederhergestellt
+
+d-d7rgl7w3 = Übernahmeantwort
+    .doc = Wie viele Einträge der eigene Tresor des Geräts übernommen hat, oder warum er nicht gelesen werden konnte.
+    .noun = { $count ->
+        [one] Übernahmeantwort
+       *[other] Übernahmeantworten
+    }
+
+d-wd5mzler = Übernommen
+
+d-arw4q74m = Fehler
+
+d-d7rgl7w3-filter-carried = Übernommen
+
+d-ddfwhboz-id = ID
+
+d-ddfwhboz-part = Teil
+
+d-gwe6itjt-username = Benutzername
+
+d-gwe6itjt-origins = Adressen
+
+d-trai44d5 = Feld hinzufügen~present
+
+d-wxwfnc2g = Passwort erzeugen~present
+
+d-xfucni2x = Umbenennen~present

@@ -36,6 +36,21 @@ pub fn answering<R>(
     ran
 }
 
+/// Hand `take` what the person typed on the system's card for the call they approved and this
+/// thread runs, one entry per take in order: what a host passes straight to where it goes (a
+/// page's sign-in, the workspace's vault), so it never becomes a value of the run. Nothing
+/// outside such a call.
+pub fn with_typed<R>(take: impl FnOnce(&[&str]) -> R) -> R {
+    APPROVED.with(|slot| {
+        let held = slot.borrow();
+        let typed: Vec<&str> = held
+            .as_ref()
+            .map(|approval| approval.typed.iter().map(|typed| typed.as_str()).collect())
+            .unwrap_or_default();
+        take(&typed)
+    })
+}
+
 /// `request` with what the person typed filled in, where it asks for it (`"typed": true`): the
 /// first take is the user name, the second the password. Without an approve that typed both, it
 /// names no credentials, which turns the sign-in down.
@@ -186,7 +201,10 @@ mod tests {
             },
             None,
         );
-        approval.typed = typed.iter().map(|typed| (*typed).to_owned().into()).collect();
+        approval.typed = typed
+            .iter()
+            .map(|typed| (*typed).to_owned().into())
+            .collect();
         approval
     }
 

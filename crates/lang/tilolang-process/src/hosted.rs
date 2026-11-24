@@ -788,6 +788,9 @@ impl Platform for HostPlatform {
         {
             if app == passwords_engine::APP {
                 let device = EngineContent(self);
+                if let Some(answer) = crate::passwords_vault::call(&device, op, input) {
+                    return answer;
+                }
                 return passwords_engine::call(&device, app, op, input);
             }
             if app == crate::video_engine::APP {
