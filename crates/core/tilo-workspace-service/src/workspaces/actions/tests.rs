@@ -233,16 +233,16 @@ async fn ended_as(
     caller: &Caller,
     invocation: InvocationId,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
-    let now = tilo_clock::now();
-    let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
-    settled(tilo_actions::remote::settle_with(
-        here, caller, invocation, None, until,
-    ))
-    .await
-    .map(|state| state.receipt())
-    .ok_or(ActionCallError::Unavailable {
-        reason: "the call is not followed on this host".into(),
+    let state = tilo_test_env::within("the answered call's end", async {
+        loop {
+            match here.observe(caller, &invocation) {
+                Some(state) if state.is_terminal() => return state,
+                _ => tokio::task::yield_now().await,
+            }
+        }
     })
+    .await;
+    Ok(state.receipt())
 }
 
 /// What a pending answer comes to, on this runtime.
