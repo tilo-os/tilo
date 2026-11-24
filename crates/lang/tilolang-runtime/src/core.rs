@@ -67,7 +67,7 @@ use Imp::{
     UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild,
     UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
     VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost,
-    WebPostBytes, WebStatus, WebStatusText, WebText, Withdraw, Word, Zones,
+    WebPostBytes, WebStatus, WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -258,6 +258,9 @@ pub struct Core {
     pub program: RefCell<Option<crate::program::ProgramIo>>,
     /// What finds resources by text for programs' `find`.
     pub text_search: RefCell<Option<Box<crate::program::TextSearch>>>,
+    /// The window a run was invoked from, and the view it was showing, while a control of that
+    /// window runs an action: what `window_state` changes. None in a run nothing looked through.
+    pub invoking_window: RefCell<Option<crate::view_state::WindowContext>>,
     /// Where a task's programs send what they change, in a host that runs no app's code
     /// ([`crate::delegate`]); `None` where the runtime runs actions itself.
     pub invoker: RefCell<Option<Box<dyn crate::delegate::Invoker>>>,
@@ -438,6 +441,7 @@ impl Core {
             items_built: std::cell::Cell::new(0),
             program: RefCell::new(None),
             text_search: RefCell::new(None),
+            invoking_window: RefCell::new(None),
             invoker: RefCell::new(None),
             delegates_own: std::cell::Cell::new(false),
             published: RefCell::new(crate::published::Published::default()),
@@ -654,8 +658,8 @@ impl Core {
                 self.resource_import(imp, a)
             }
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
-            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | MadeFrom | ActorEq
-            | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
+            | OutsideAt | Withdraw | ModelCall | Notify | WindowState | Invoker | MadeFrom
+            | ActorEq | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
             | InvocationPush | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebPostBytes | WebOk | WebStatus | WebDurationMs | WebStatusText
             | WebHeaders | WebBody | WebText | BytesLength | Base64Decode => {

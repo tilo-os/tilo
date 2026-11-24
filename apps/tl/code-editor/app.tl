@@ -1705,6 +1705,8 @@ action open_hit(p: Project, path: Text, line: Int = 0) uses files (
     if let known = file_at(p, path) {
         p.trouble = ""
         reveal_line(known, line, 0)
+        let shown: Option<Entry> = .some(known)
+        window_state("opened", shown)
     } else {
         match engine.call("load", json.encode(DiskAsk(path: path))) {
             .ok(answer) => match json.decode<Loaded>(answer) {
@@ -1722,6 +1724,8 @@ action open_hit(p: Project, path: Text, line: Int = 0) uses files (
                         ),
                     )
                     reveal_line(made, line, 0)
+                    let shown: Option<Entry> = .some(made)
+                    window_state("opened", shown)
                     p.trouble = ""
                 }
                 .err(why) => {

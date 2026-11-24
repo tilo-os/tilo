@@ -65,6 +65,15 @@ impl StateKey {
     }
 }
 
+/// The window an action was invoked from, and the view it was showing: what an action changes
+/// with `window_state`, since the state it names is declared in that view.
+#[derive(Clone, Debug)]
+pub struct WindowContext {
+    pub window: String,
+    pub module: crate::ids::ModuleHash,
+    pub view: String,
+}
+
 /// The slot a stream's state is a reading of, in `window`: the runtime's own, never a view's
 /// declaration, filled from what the device's engine last pushed (`engine.state`).
 pub(crate) fn stream_key(window: &str, job: &str) -> StateKey {

@@ -962,7 +962,22 @@ impl ViewInstance {
                 }
                 Ok(InvokeOutcome::Done(Value::Unit))
             }
-            _ => self.core.invoke_direct_in(&self.live.viewer, aref, gesture),
+            _ => {
+                // What the action was invoked from, for `window_state`: the window and the view
+                // its control stands in. A nested action of the same run (a `then` step, a call)
+                // keeps it, and it is put back once the control's run is done.
+                let context = self.live.bound(crate::live::ROOT).map(|root| {
+                    crate::view_state::WindowContext {
+                        window: self.live.window.clone(),
+                        module: root.target.module.clone(),
+                        view: root.target.view.clone(),
+                    }
+                });
+                let held = self.core.invoking_window.replace(context);
+                let outcome = self.core.invoke_direct_in(&self.live.viewer, aref, gesture);
+                self.core.invoking_window.replace(held);
+                outcome
+            }
         }
     }
 

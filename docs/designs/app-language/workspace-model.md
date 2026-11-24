@@ -125,7 +125,9 @@ default view note_editor for Note
 
 - `state` declares what the person keeps in a view: how its window shows the resource, and where
   they are in it. Each declaration is personal, typed, kept per person and view on all their
-  devices, and visible to others as presence; `set(name, value)` changes one. State everyone
+  devices, and visible to others as presence; `set(name, value)` changes one. An action a
+  window's control invoked changes that window's state with `window_state(name, value)`: a search
+  result opens its file in the window it was pressed in. State everyone
   should share is a field of the resource. Scroll, focus, cursor and selection are kept by the
   platform without being declared.
 - An app whose data is each person's own (mail) says so in its header:

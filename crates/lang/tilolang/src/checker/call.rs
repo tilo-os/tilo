@@ -47,6 +47,13 @@ impl Checker<'_> {
         {
             return self.builtin_map(types, args, span);
         }
+        if let ExprKind::Ident(name) = &callee.kind
+            && name == "window_state"
+            && self.lookup(name).is_none()
+            && self.own_callable(name).is_none()
+        {
+            return self.builtin_window_state(args, span);
+        }
         if !types.is_empty() && !names_json(callee) {
             self.err(
                 "E022",
@@ -1551,6 +1558,51 @@ impl Checker<'_> {
         }
         self.st.facts.mutates = true;
         Ex::host(Imp::QueueBlock, vec![p, Ex::str(&f.id), src], Ty::Unit)
+    }
+
+    /// `window_state(name, value)`: changes the declared window state `name` of the window an
+    /// action was invoked from, when the value is what the view declares there. Actions and
+    /// programs only, and only while a window invoked them; a view sets its own state with
+    /// `set`, which an action cannot reach.
+    fn builtin_window_state(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if !matches!(self.st.ctx, Ctx::Action | Ctx::Program | Ctx::Block) {
+            let who = self.st.ctx.word();
+            self.err(
+                "E066",
+                span,
+                format!(
+                    "`window_state` changes the window an action was invoked from; {who} runs outside one, and a view sets its own state with `set`"
+                ),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        if args.len() != 2 {
+            self.err(
+                "E022",
+                span,
+                "`window_state` takes the state's name and its new value: `window_state(\"sort\", \"title\")`",
+            );
+        }
+        let Some(name_arg) = args.first() else {
+            return Ex::error();
+        };
+        let name = self.expr_as(&name_arg.value, &Ty::Text);
+        let Some(value_arg) = args.get(1) else {
+            return Ex::error();
+        };
+        let value = self.expr(&value_arg.value, None);
+        if value.ty.is_error() {
+            return Ex::error();
+        }
+        let ty = value.ty.meta_text(&self.env.app);
+        Ex::host(
+            Imp::WindowState,
+            vec![name, Ex::str(&ty), Self::handle_of(value)],
+            Ty::Unit,
+        )
     }
 
     /// `set(name, value)`: an action reference that changes the view state `name`. Views only.

@@ -109,7 +109,7 @@ mod cases {
                     r#"{"state":"done","hits":[{"path":"/p/src/main.rs","rel":"src/main.rs","line":0,"column":9,"len":4,"preview":"fn main() {}"}],"files":2,"truncated":false}"#
                         .to_owned(),
                 ),
-                "server-1" => Ok(r#"{"state":"ready","server":"rust-analyzer","failure":"","progress":null,"diagnostics":{"\/p\/src\/main.rs":[{"severity":"warning","line":0,"column":3,"message":"unused import"}]},"answer":""}"#.to_owned()),
+                "server-1" => Ok(r#"{"state":"ready","server":"rust-analyzer","failure":"","progress":[],"diagnostics":{"\/p\/src\/main.rs":[{"severity":"warning","line":0,"column":3,"message":"unused import"}]},"answer":""}"#.to_owned()),
                 other => Err(format!("no job `{other}` runs on this device")),
             }
         }
@@ -744,6 +744,7 @@ mod cases {
     #[test]
     fn a_project_search_runs_and_its_result_opens_the_file() {
         let editor = Editor::new();
+        let _notes = editor.file("notes.md", None);
         editor.call(
             "search_project",
             vec![
@@ -767,21 +768,61 @@ mod cases {
         assert_eq!(hits.len(), 1);
         assert_eq!(editor.rec(&hits[0], "Hit.rel"), Value::text("src/main.rs"));
 
-        editor.call(
-            "open_hit",
-            vec![
-                Value::resource(&editor.root),
-                Value::text("/p/src/main.rs"),
-                Value::Int(0),
-            ],
-        );
+        // The result's own control opens the place, as a person presses it: the action runs as
+        // the window, so it can set the window's state.
+        let mut window = editor.window();
+        let results = of_kind(window.tree(), "ui.MenuItem")
+            .into_iter()
+            .find(|item| item.props.get("label") == Some(&Value::text("Search results")))
+            .map(|item| item.key.clone())
+            .expect("the panel offers the search results");
+        window
+            .fire(&results, "choose")
+            .expect("the panel shows the results");
+        window.poll_patches().expect("the window draws the results");
+        let row = of_kind(window.tree(), "ui.ListRow")
+            .into_iter()
+            .find(|node| {
+                node.props
+                    .get("meta")
+                    .and_then(Value::as_text)
+                    .is_some_and(|meta| meta.contains("src/main.rs"))
+            })
+            .map(|node| node.key.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "the result's row is in the panel: {}",
+                    crate::common::dump(window.tree())
+                )
+            });
+        window.fire(&row, "activate").expect("the result opens");
+        window.poll_patches().expect("the window draws the file");
+        let opened = editor
+            .app
+            .meta()
+            .views
+            .iter()
+            .find(|view| view.name == "project")
+            .and_then(|view| view.state.iter().find(|state| state.name == "opened"))
+            .expect("the project declares `opened`");
+        let shown = window
+            .view_state(&opened.id)
+            .expect("the window shows a file");
+        let main_id = match shown {
+            Value::Opt(Some(held)) => match *held {
+                Value::Ref(found) => found.target.id_string(),
+                other => panic!("opened reads {other:?}"),
+            },
+            other => panic!("opened reads {other:?}"),
+        };
         let files = editor.records(&editor.root, "files");
         let main = files
             .iter()
             .find(|f| editor.text(f, "name") == "main.rs")
             .expect("the result opened its file");
         assert_eq!(editor.text(main, "text"), "fn main() {}\n");
-        assert_eq!(editor.number(&editor.root, "answer_line"), 0);
+        assert_eq!(main.id_string(), main_id, "the window shows the hit's file");
+        assert_eq!(editor.number(&main, "reveal_line"), 0);
     }
 
     #[test]

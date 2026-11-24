@@ -3032,6 +3032,44 @@ impl Core {
         }
     }
 
+    /// `window_state<T>(name, value)`: sets the declared window state `name` in the window the
+    /// running action was invoked from, when the value is what its view declares there.
+    fn window_state(&self, name_h: i32, ty_h: i32, value_h: i32) -> HResult<Option<Wasm>> {
+        let name = self.text(name_h)?;
+        let ty = self.text(ty_h)?;
+        let value = self.val_whole(value_h)?;
+        let Some(context) = self.invoking_window.borrow().clone() else {
+            return trap(
+                "`window_state` changes the state of the window an action was invoked from; this run has none",
+            );
+        };
+        let (state_id, declared) = {
+            let registry = self.registry.borrow();
+            let Some(pkg) = registry.package(&context.module) else {
+                return trap("`window_state` no longer knows the window's view");
+            };
+            let Some(view) = pkg.view(&context.view) else {
+                return trap(format!(
+                    "`window_state` no longer knows the view `{}`",
+                    context.view
+                ));
+            };
+            let Some(state) = view.state.iter().find(|state| state.name == name) else {
+                return trap(format!("the window's view declares no state `{name}`"));
+            };
+            (state.id.clone(), state.ty.clone())
+        };
+        if declared != ty {
+            return trap(format!(
+                "`window_state` writes `{name}` as {declared}, not {ty}"
+            ));
+        }
+        let who = self.looking()?;
+        let key = crate::view_state::StateKey::view(context.window.clone(), who, state_id);
+        self.view_states.borrow_mut().write(key, value);
+        Ok(None)
+    }
+
     /// `notify(to, title, body, opens)`: tell the person `to` something, once. The notice is a
     /// record written in this action's own change ([`crate::notify`]), so every device of theirs
     /// reads it. The run's journal answers a run that replays, so it tells them no more than the
@@ -3239,6 +3277,7 @@ impl Core {
             Imp::Withdraw => self.withdraw(a.h(0)?, a.h(1)?),
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
             Imp::Notify => self.notify_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?, a.h(4)?, a.h(5)?),
+            Imp::WindowState => self.window_state(a.h(0)?, a.h(1)?, a.h(2)?),
             // Who invokes the action running, or the person a view is shown to: who would
             // invoke its actions.
             Imp::Invoker => {

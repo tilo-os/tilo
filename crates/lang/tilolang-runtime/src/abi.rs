@@ -260,6 +260,7 @@ imports! {
     (UiBindStateAt, "ui_bind_state_at", "iil", ""),
     (StateGet, "state_get", "ii", "i"),
     (ActSet, "act_set", "ii", "i"),
+    (WindowState, "window_state", "iii", ""),
     (ActThen, "act_then", "ii", "i"),
     (ActMadeFrom, "act_made_from", "ii", "i"),
     (ActMany, "act_many", "i", "i"),
