@@ -1166,8 +1166,9 @@ impl JoinLog {
     }
 
     /// Record a membership challenge for `request` from the device at
-    /// `remote_endpoint`, unwritten. The same request asked again while its
-    /// challenge is open answers that challenge.
+    /// `remote_endpoint`, unwritten: the endpoint is the device's own key, or
+    /// one it signed a live delegation for ([`membership_endpoint`]). The same
+    /// request asked again while its challenge is open answers that challenge.
     pub fn membership_challenge(
         &mut self,
         workspace: &Governed<'_>,
@@ -1176,13 +1177,12 @@ impl JoinLog {
         nonce: [u8; 32],
         now: u64,
     ) -> Result<MembershipChallenge, JoinError> {
-        if remote_endpoint != request.device_cert.device_public_key
-            || request.workspace_id != workspace.workspace_id
-        {
+        if request.workspace_id != workspace.workspace_id {
             return Err(JoinError::new(
                 "membership request does not match authenticated workspace endpoint",
             ));
         }
+        membership_endpoint(&request, remote_endpoint, now)?;
         let digest = request_digest(&(remote_endpoint, &request))?;
         if let Some(prior) = self.membership_challenges.iter().find(|prior| {
             prior.challenge.request_id == request.request_id && prior.challenge.expires_at_ns > now
@@ -1256,9 +1256,10 @@ impl JoinLog {
             .iter()
             .find(|prior| prior.challenge == request.proof.challenge)
             .ok_or_else(|| JoinError::new("membership challenge was not issued by this host"))?;
-        if issued.remote_endpoint != remote_endpoint
-            || issued.device_cert.device_public_key != remote_endpoint
-        {
+        if issued.remote_endpoint != remote_endpoint {
+            // The challenge was issued to the endpoint that proved it spoke
+            // for the device when it asked ([`membership_endpoint`]); the
+            // proof must come back from that same endpoint.
             return Err(JoinError::new(
                 "membership proof does not match authenticated transport endpoint",
             ));
@@ -1331,6 +1332,28 @@ impl JoinLog {
             generation,
         });
     }
+}
+
+/// Whether the endpoint that sent a membership request may speak for the
+/// device the request certifies: its own key, or one that device signed a
+/// delegation for, in force at `now` and naming exactly this endpoint.
+fn membership_endpoint(
+    request: &MembershipChallengeRequest,
+    remote_endpoint: [u8; 32],
+    now: u64,
+) -> Result<(), JoinError> {
+    let device = request.device_cert.device_public_key;
+    if remote_endpoint == device {
+        return Ok(());
+    }
+    let refused =
+        || JoinError::new("membership request does not match authenticated workspace endpoint");
+    let delegation = request.delegation.as_ref().ok_or_else(refused)?;
+    if delegation.device_public_key != device {
+        return Err(refused());
+    }
+    tilo_user_identity::verify_endpoint_delegation(delegation, &remote_endpoint, now)
+        .map_err(|_| refused())
 }
 
 fn validate_issue_request(request: &IssueInvitationRequest, now: u64) -> Result<(), JoinError> {

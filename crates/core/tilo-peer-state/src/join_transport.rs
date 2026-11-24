@@ -214,6 +214,16 @@ impl WorkspaceJoinClient {
         }
     }
 
+    /// The key the host sees this client's requests from: the endpoint's own
+    /// key, or the caller's for a host in the same process.
+    #[must_use]
+    pub fn endpoint_public_key(&self) -> [u8; 32] {
+        match &self.carrier {
+            Carrier::Iroh(endpoint) => *endpoint.id().as_bytes(),
+            Carrier::Local { caller, .. } => *caller,
+        }
+    }
+
     /// Send one bounded typed request over a fresh bidirectional stream.
     ///
     /// # Errors

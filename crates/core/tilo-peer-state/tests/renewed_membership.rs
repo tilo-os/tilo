@@ -361,6 +361,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
                 workspace_id,
                 device_cert: device_cert.clone(),
                 request_id: [seed; 32],
+                delegation: None,
             }),
             later,
         )

@@ -1360,6 +1360,7 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
                 workspace_id: WorkspaceId::parse(&studio).expect("the studio's id"),
                 device_cert: laptop_cert.clone(),
                 request_id: fresh_id(),
+                delegation: None,
             }),
         )
         .await;

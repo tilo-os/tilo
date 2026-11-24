@@ -268,6 +268,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
                 workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
                 device_cert: renewed.clone(),
                 request_id: [60; 32],
+                delegation: None,
             },
             [61; 32],
             now_ns,

@@ -1,8 +1,13 @@
 use super::*;
 use crate::admission_tests::seeded;
-use crate::join::{JoinChallengeRequest, JoinCompleteRequest, sign_join_proof};
+use crate::join::{
+    JoinChallengeRequest, JoinCompleteRequest, MembershipCompleteRequest, sign_join_proof,
+    sign_membership_proof,
+};
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
+use tilo_user_identity::{
+    DeviceCapabilities, EndpointDelegation, RevocationList, sign_device_cert,
+};
 
 fn ns(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
@@ -642,4 +647,253 @@ fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unc
         ..workspace
     };
     assert!(receipt.replay(&moved).is_err());
+}
+
+/// How long a delegation in these tests lasts: ten seconds of the seeded
+/// workspace's own clock.
+const DELEGATION_LIFETIME_NS: u64 = 10_000_000_000;
+
+/// A workspace with an editor in it, and a page: a second device of that
+/// editor's person, certified by the editor's root, which the workspace admits
+/// as that member's device. The page's device key never leaves it, so it dials
+/// from a key of its own.
+struct Client {
+    peer: StatePeer,
+    workspace_id: WorkspaceId,
+    host: DeviceCert,
+    page_key: SigningKey,
+    page_cert: DeviceCert,
+    now_ns: u64,
+}
+
+impl Client {
+    fn seeded_page() -> Self {
+        let (mut peer, owner_key, _, _, now) = seeded();
+        let now_ns = ns(now);
+        let editor_root = SigningKey::from_bytes(&[5; 32]);
+        crate::admission_tests::add_member_with(&mut peer, &owner_key, now, 5, 6);
+        let page_key = SigningKey::from_bytes(&[9; 32]);
+        let mut page_cert = DeviceCert {
+            user_public_key: editor_root.verifying_key().to_bytes(),
+            device_public_key: page_key.verifying_key().to_bytes(),
+            device_label: "Page".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut page_cert, &editor_root).unwrap();
+        assert!(
+            peer.governance_mut()
+                .admit_member_device(&page_cert, &owner_key, now)
+                .unwrap(),
+            "the workspace admits a member's further device"
+        );
+        let host = peer.owner_certificates()[0].clone();
+        Self {
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
+            peer,
+            host,
+            page_key,
+            page_cert,
+            now_ns,
+        }
+    }
+
+    fn workspace(&self) -> Governed<'_> {
+        Governed {
+            peer: (&self.peer).into(),
+            host: &self.host,
+            workspace_id: self.workspace_id,
+            generation: 1,
+            governance_messages: None,
+        }
+    }
+
+    fn request(&self, delegation: Option<EndpointDelegation>) -> MembershipChallengeRequest {
+        MembershipChallengeRequest {
+            workspace_id: self.workspace_id,
+            device_cert: self.page_cert.clone(),
+            request_id: [17; 32],
+            delegation,
+        }
+    }
+
+    /// The delegation this page's device signs for the endpoint seeded `endpoint`,
+    /// issued `issued_at_ns` and lasting [`DELEGATION_LIFETIME_NS`].
+    fn delegation_for(&self, endpoint: u8, issued_at_ns: u64) -> EndpointDelegation {
+        tilo_user_identity::sign_endpoint_delegation(
+            &self.page_key,
+            [endpoint; 32],
+            issued_at_ns,
+            DELEGATION_LIFETIME_NS,
+        )
+        .unwrap()
+    }
+}
+
+/// A page joins over the endpoint its device delegated: the host challenges
+/// the certificate and answers the membership the proof carries.
+#[test]
+fn a_page_joins_over_the_endpoint_its_device_delegated() {
+    let client = Client::seeded_page();
+    let workspace = client.workspace();
+    let endpoint = [7; 32];
+    let mut log = JoinLog::default();
+    let challenge = log
+        .membership_challenge(
+            &workspace,
+            endpoint,
+            client.request(Some(client.delegation_for(7, client.now_ns))),
+            [21; 32],
+            client.now_ns,
+        )
+        .unwrap();
+    let proof = sign_membership_proof(challenge, &client.page_key).unwrap();
+    let bootstrap = log
+        .membership_complete(
+            &workspace,
+            endpoint,
+            &MembershipCompleteRequest { proof },
+            client.now_ns,
+        )
+        .unwrap();
+    assert_eq!(bootstrap.device_cert, client.page_cert);
+    assert_eq!(bootstrap.workspace_id, client.workspace_id);
+}
+
+/// A device that dials as its own key still joins with no delegation at all.
+#[test]
+fn a_device_joins_over_its_own_key() {
+    let client = Client::seeded_page();
+    let workspace = client.workspace();
+    let endpoint = client.page_cert.device_public_key;
+    let mut log = JoinLog::default();
+    let challenge = log
+        .membership_challenge(
+            &workspace,
+            endpoint,
+            client.request(None),
+            [22; 32],
+            client.now_ns,
+        )
+        .unwrap();
+    let proof = sign_membership_proof(challenge, &client.page_key).unwrap();
+    let bootstrap = log
+        .membership_complete(
+            &workspace,
+            endpoint,
+            &MembershipCompleteRequest { proof },
+            client.now_ns,
+        )
+        .unwrap();
+    assert_eq!(bootstrap.device_cert, client.page_cert);
+}
+
+/// A delegation another device signed speaks for that device, never for the
+/// page the request certifies.
+#[test]
+fn a_delegation_signed_by_another_device_is_refused() {
+    let client = Client::seeded_page();
+    let workspace = client.workspace();
+    let endpoint = [7; 32];
+    let stranger = SigningKey::from_bytes(&[3; 32]);
+    let forged = tilo_user_identity::sign_endpoint_delegation(
+        &stranger,
+        endpoint,
+        client.now_ns,
+        DELEGATION_LIFETIME_NS,
+    )
+    .unwrap();
+    let mut log = JoinLog::default();
+    let refused = log
+        .membership_challenge(
+            &workspace,
+            endpoint,
+            client.request(Some(forged)),
+            [23; 32],
+            client.now_ns,
+        )
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("does not match authenticated workspace endpoint"),
+        "{refused}"
+    );
+}
+
+/// A delegation that has run out admits nothing, though its signature is the
+/// device's own.
+#[test]
+fn an_expired_delegation_is_refused() {
+    let client = Client::seeded_page();
+    let workspace = client.workspace();
+    let endpoint = [7; 32];
+    let expired = client.delegation_for(7, client.now_ns.saturating_sub(2 * DELEGATION_LIFETIME_NS));
+    let mut log = JoinLog::default();
+    let refused = log
+        .membership_challenge(
+            &workspace,
+            endpoint,
+            client.request(Some(expired)),
+            [24; 32],
+            client.now_ns,
+        )
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("does not match authenticated workspace endpoint"),
+        "{refused}"
+    );
+}
+
+/// A delegation names exactly one transport key: one for another key does not
+/// let this endpoint in.
+#[test]
+fn a_delegation_naming_another_endpoint_is_refused() {
+    let client = Client::seeded_page();
+    let workspace = client.workspace();
+    let mut log = JoinLog::default();
+    let refused = log
+        .membership_challenge(
+            &workspace,
+            [7; 32],
+            client.request(Some(client.delegation_for(8, client.now_ns))),
+            [25; 32],
+            client.now_ns,
+        )
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("does not match authenticated workspace endpoint"),
+        "{refused}"
+    );
+}
+
+/// A page that dials from a key of its own without saying whose it is gets no
+/// challenge.
+#[test]
+fn a_derived_endpoint_without_a_delegation_is_refused() {
+    let client = Client::seeded_page();
+    let workspace = client.workspace();
+    let mut log = JoinLog::default();
+    let refused = log
+        .membership_challenge(
+            &workspace,
+            [7; 32],
+            client.request(None),
+            [26; 32],
+            client.now_ns,
+        )
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("does not match authenticated workspace endpoint"),
+        "{refused}"
+    );
 }

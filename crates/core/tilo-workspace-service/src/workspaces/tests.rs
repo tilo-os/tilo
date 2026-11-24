@@ -1911,6 +1911,7 @@ async fn a_join_the_host_completed_before_the_workspace_moved_on_is_finished_thr
                 workspace_id: created.workspace_id,
                 device_cert: laptop_cert.clone(),
                 request_id: [13; 32],
+                delegation: None,
             }),
         )
         .await
@@ -2096,6 +2097,7 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
                 workspace_id: created.workspace_id,
                 device_cert,
                 request_id: [seed; 32],
+                delegation: None,
             }),
         )
     };
