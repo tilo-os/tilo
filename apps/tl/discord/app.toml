@@ -25,6 +25,9 @@ required = ["network.http", "secrets", "calls"]
 # too. Voice's *.discord.media hosts come from the package grant's domain entries.
 [sandbox.net]
 mode = "allowlist"
+# The call's media is UDP, which the sandbox carries through the egress proxy only while one of
+# this app's calls is live: the voice socket asks the proxy for a UDP association (src/socks.js).
+calls = true
 hosts = [
   "discord.com",
   "gateway.discord.gg",

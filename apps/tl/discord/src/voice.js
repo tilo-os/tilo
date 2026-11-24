@@ -15,6 +15,7 @@
 import { createSocket } from "node:dgram";
 import { Cipher, Sender, chooseMode, open } from "./rtp.js";
 import { DAVE_VERSION, DaveSession } from "./dave.js";
+import { callProxy, proxyUdp } from "./socks.js";
 
 /// Opus silence, sent before a pause so receivers do not interpolate across it.
 export const SILENCE = Buffer.from([0xf8, 0xff, 0xfe]);
@@ -83,8 +84,12 @@ export function connect({
   log = () => {},
   allowLoopback = false,
   make = {},
+  proxy = make.proxy ?? callProxy(),
 }) {
-  const socketFactory = make.dgram ?? createSocket;
+  // A sandboxed app sends its UDP through the device's egress proxy, which nothing in Bun or
+  // Node speaks for; the bridge's own socket does. A test that injects `dgram` keeps it.
+  const socketFactory =
+    make.dgram ?? (proxy ? () => proxyUdp(proxy) : createSocket);
   const webSocket = make.WebSocket ?? WebSocket;
   const url = voiceUrl(endpoint, { allowLoopback });
   const voice = new Voice({
