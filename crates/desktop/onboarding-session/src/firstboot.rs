@@ -30,15 +30,24 @@ pub(crate) const IDENTITY_STORAGE: IdentityStorage = IdentityStorage::Platform;
 pub(crate) const IDENTITY_STORAGE: IdentityStorage = IdentityStorage::Files;
 
 /// [`tilo_identity::provisioning::ensure_collaboration_identity`] in this
-/// session's identity storage.
+/// session's identity storage, for the person this account already holds: a
+/// session never makes one. This computer's daemon makes and keeps the
+/// person's root ([`crate::identity::found_by_daemon`]).
 ///
 /// # Errors
 ///
-/// Returns any provisioning, verification, migration or registry error.
+/// The account holds no person yet, and any provisioning, verification,
+/// migration or registry error.
 pub fn ensure_collaboration_identity(
     identity_dir: &Path,
     paths: &IdentityPaths,
 ) -> Result<ProvisionOutcome, io::Error> {
+    if tilo_identity::store::resolve_active_identity(identity_dir).is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "this account holds no person yet: this computer's daemon makes them",
+        ));
+    }
     tilo_identity::provisioning::ensure_collaboration_identity(
         identity_dir,
         paths,

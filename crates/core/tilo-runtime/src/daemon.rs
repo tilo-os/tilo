@@ -203,9 +203,6 @@ impl Person {
     }
 }
 
-/// Where in the daemon's profile it keeps which account is the device's person.
-const PERSON_ACCOUNTS: &str = "accounts/person.json";
-
 impl Running {
     /// Start the daemon over `profile`, returning once its native endpoint is bound: it answers
     /// the device's own actions at once, and its person's once their services run, which they
@@ -230,7 +227,7 @@ impl Running {
                 rustix::process::geteuid().as_raw(),
                 tilo_api::daemon::system_daemon(),
             )
-            .keeping_accounts_in(profile.join(PERSON_ACCOUNTS))?,
+            .keeping_accounts_in(profile.join(tilo_api::daemon::admission::PERSON_ACCOUNTS))?,
         );
         // The native endpoint answers from boot, before anyone's certificate names this device
         // and while its person's services start: the device's own actions first, the person's

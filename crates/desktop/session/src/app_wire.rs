@@ -608,10 +608,6 @@ pub struct Hosted {
     /// what it dials the hosts of its workspaces from. `None` when the
     /// session runs none.
     pub endpoint: Option<std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>>,
-    /// This device's action service, once the network runs it: what a ticket for a new computer
-    /// is served through ([`crate::device_tickets`]).
-    pub device_actions:
-        Option<std::sync::Arc<std::sync::OnceLock<crate::device_actions::DeviceActions>>>,
     /// This device's own workspace service, where it holds the workspaces an app's window writes:
     /// the write is committed by the service, into the copy the session's own writes reach and its
     /// reads answer from, and the owner keeps only a workspace the service holds none of.
@@ -1325,9 +1321,8 @@ fn broker_services(
         own_device,
         engine,
         view,
-        endpoint: hosted_endpoint,
+        endpoint: _,
         service,
-        device_actions: hosted_device_actions,
         daemon,
         daemon_writes,
         document_content,
@@ -1346,19 +1341,11 @@ fn broker_services(
     // What each window this session runs shows, kept with its launches: read
     // by the service a window's app speaks on, and by the session's own passes.
     let window_notes = launches.notes();
-    // A ticket for a new computer: a planned machine's is served again once this device's
-    // workspace service opens, after a restart.
-    let device_tickets = crate::device_tickets::DeviceTickets::new(
-        hosted_endpoint,
-        hosted_device_actions,
-        service.clone(),
-    );
     let present_devices: std::sync::Arc<dyn tilo_workspace_service::workspaces::PresentDevices> =
         std::sync::Arc::new(SessionPresence {
             service: service.clone(),
             fabric: fabric.clone(),
         });
-    device_tickets.restore_once_open();
     // The session decides who may administer a workspace's identity.
     let layout_authority = std::sync::Arc::clone(&layout);
     let grants_layout = std::sync::Arc::clone(&layout);
@@ -1406,7 +1393,7 @@ fn broker_services(
     // registration names.
     let providers = Providers::default();
     activity.register(&providers);
-    std::sync::Arc::new(device_tickets).register(&providers);
+    std::sync::Arc::new(crate::device_tickets::DeviceTickets).register(&providers);
     crate::machine_steps::MachineSteps::session(view.clone()).register(&providers);
     crate::model_steps::ModelSteps::session(engine.clone()).register(&providers);
     std::sync::Arc::new(crate::identity_admin::BrokerApi {
@@ -2129,7 +2116,6 @@ mod tests {
             item_lending: std::sync::Arc::default(),
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
-            device_actions: None,
             service: tilo_workspace_service::service::ServiceSlot::default(),
             daemon: Err("a test's session has no daemon".to_owned()),
             daemon_writes: tilo_session_client::daemon_documents::DaemonWritesFeed::start(

@@ -218,6 +218,106 @@ pub fn found_a_person(keys: &tilo_device_identity::IdentityPaths, name: &str) ->
     Ok(())
 }
 
+/// Restore this computer's person from what `args` hold: their recovery words (`words`), or a
+/// backup Tilo wrote (`backup`, its bytes in hex) and the passphrase it was sealed with
+/// (`passphrase`). Their root is kept here, as a founded person's is, and certifies this device's
+/// key in `keys`.
+///
+/// # Errors
+/// Neither is given, they do not open, or the identity cannot be kept.
+pub fn restore_a_person(
+    keys: &tilo_device_identity::IdentityPaths,
+    args: &Value,
+) -> io::Result<()> {
+    let dir = tilo_identity::store::identity_dir_from_env()?;
+    let storage = tilo_identity::provisioning::IdentityStorage::for_session();
+    if let Some(words) = args.get("words").and_then(Value::as_str) {
+        tilo_identity::provisioning::restore_from_recovery_words(&dir, keys, words, None, storage)?;
+        return Ok(());
+    }
+    let invalid = |why: &str| io::Error::new(io::ErrorKind::InvalidInput, why.to_owned());
+    let backup = args
+        .get("backup")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("a restore brings the recovery words or a backup"))?;
+    let bytes =
+        hex::decode(backup.trim()).map_err(|_| invalid("this is not a backup Tilo wrote"))?;
+    let passphrase = args
+        .get("passphrase")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    tilo_identity::provisioning::prepare_identity_directory(&dir)?;
+    let file = passing_through(&dir, "restoring");
+    tilo_files::native::atomic::write_with_mode(&file, &bytes, 0o600)?;
+    let restored = tilo_identity::provisioning::restore_from_backup(
+        &dir,
+        keys,
+        &file,
+        passphrase.as_bytes(),
+        storage,
+    );
+    drop(std::fs::remove_file(&file));
+    restored.map(drop)
+}
+
+/// The record of the person's root this daemon keeps, when it keeps one.
+fn root_record() -> io::Result<std::path::PathBuf> {
+    let dir = tilo_identity::store::identity_dir_from_env()?;
+    tilo_identity::store::resolve_active_identity(&dir)
+        .filter(|record| {
+            tilo_identity::store::load_metadata_from_path(record)
+                .is_ok_and(|metadata| metadata.single_device)
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "this computer keeps no root of its person's: another of their devices does",
+            )
+        })
+}
+
+/// Whether this daemon keeps its person's root.
+#[must_use]
+pub fn holds_a_root() -> bool {
+    root_record().is_ok()
+}
+
+/// The 24 recovery words of the person's root this daemon keeps.
+///
+/// # Errors
+/// It keeps none, or the secret store does not hand it over.
+pub fn recovery_words() -> io::Result<String> {
+    Ok(tilo_identity::store::recovery_words(root_record()?)?
+        .as_str()
+        .to_owned())
+}
+
+/// A backup of the person's root this daemon keeps, sealed with `passphrase`: its bytes.
+///
+/// # Errors
+/// It keeps none, or the backup cannot be written.
+pub fn backup(passphrase: &str) -> io::Result<Vec<u8>> {
+    let record = root_record()?;
+    let dir = record
+        .parent()
+        .ok_or_else(|| io::Error::other("the root's record has no directory"))?;
+    let file = passing_through(dir, "backup");
+    drop(std::fs::remove_file(&file));
+    let written =
+        tilo_identity::store::export_portable_backup(&record, &file, passphrase.as_bytes())
+            .and_then(|_| std::fs::read(&file));
+    drop(std::fs::remove_file(&file));
+    written
+}
+
+/// A file in `dir`, private to this daemon, that a backup passes through on its way in or out.
+fn passing_through(dir: &std::path::Path, what: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    dir.join(format!(".{what}-{}-{nanos}", std::process::id()))
+}
+
 impl Daemon {
     /// A new shell link: a connection to this daemon's dispatch that it opens itself and admits as
     /// the shell of the person this device acts for, by a one-use secret no other process ever

@@ -295,98 +295,78 @@ impl fmt::Display for OnboardingError {
 
 impl Error for OnboardingError {}
 
-/// Mint the identity into `identity_dir` and describe what landed.
-///
-/// Delegates to [`crate::firstboot::ensure_collaboration_identity`] so the
-/// human root, certified device key, and Iroh endpoint identity are created
-/// as one idempotent ceremony.
-///
-/// # Errors
-///
-/// Returns an error if minting the collaboration identity fails, or if one
-/// already exists but its fingerprint can't be read back.
-pub fn mint_into(
-    identity_dir: &Path,
-    identity_paths: &tilo_device_identity::IdentityPaths,
-) -> Result<MintedIdentity, OnboardingError> {
-    mint_into_with_paths(identity_dir, identity_paths)
-}
-
 /// How long first use waits for this computer's daemon to answer before it says it did not.
 const DAEMON_ANSWERING: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Have this computer's daemon make the person (`devices#found`), the one way a person is made,
-/// for Tilo Desktop on an operating system Tilo does not control, and describe what landed in
-/// `identity_dir`, this account's own: the daemon runs as this account, with the class this
-/// computer is.
+/// and take them up as this account's identity in `identity_dir`: the daemon keeps their root,
+/// and the account holds their public record.
 ///
 /// # Errors
 ///
 /// The daemon does not answer or could not make the person, or what it made cannot be read.
 pub fn found_by_daemon(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
+    by_daemon(identity_dir, |daemon| daemon.found(None))
+}
+
+/// Have this computer's daemon bring the person back (`devices#restore`) from `args` (their
+/// recovery words, or a backup and its passphrase), and take them up as [`found_by_daemon`] does.
+///
+/// # Errors
+///
+/// The daemon does not answer or could not bring the person back, or what it restored cannot
+/// be read.
+pub fn restore_by_daemon(
+    identity_dir: &Path,
+    args: serde_json::Value,
+) -> Result<MintedIdentity, OnboardingError> {
+    by_daemon(identity_dir, |daemon| {
+        daemon
+            .act(tilo_device_identity::login::RESTORE, args)
+            .map(drop)
+    })
+}
+
+fn by_daemon(
+    identity_dir: &Path,
+    ask: impl FnOnce(&tilo_api::daemon::DaemonPlace) -> Result<(), String>,
+) -> Result<MintedIdentity, OnboardingError> {
     tilo_api::daemon::this_computer()
-        .and_then(|place| {
-            place.wait_for_native(DAEMON_ANSWERING)?;
-            place.found(None)
+        .and_then(|daemon| {
+            daemon.wait_for_native(DAEMON_ANSWERING)?;
+            ask(&daemon)
         })
         .map_err(OnboardingError::Mint)?;
-    existing_identity_in(identity_dir)
+    take_up(
+        identity_dir,
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+    )
 }
 
-fn mint_into_with_paths(
+/// Take up the person this computer's daemon keeps, as its certificate in `paths` names them, as
+/// this account's identity in `identity_dir`
+/// ([`tilo_identity::provisioning::take_up_device_person`]): the account's active record, with
+/// a typed reason when it cannot be read.
+fn take_up(
     identity_dir: &Path,
-    identity_paths: &tilo_device_identity::IdentityPaths,
+    paths: &tilo_device_identity::IdentityPaths,
 ) -> Result<MintedIdentity, OnboardingError> {
-    use crate::firstboot::{ProvisionOutcome, ensure_collaboration_identity};
-    let outcome = ensure_collaboration_identity(identity_dir, identity_paths)
-        .map_err(|e| OnboardingError::from_provisioning(&e))?;
-    match outcome {
-        ProvisionOutcome::Created { pubkey_hex } => Ok(MintedIdentity {
-            fingerprint: pubkey_hex,
-            path: identity_dir.join(crate::firstboot::PRIMARY_IDENTITY_FILE),
-        }),
-        // Already there — read its fingerprint back rather than reporting a
-        // key that wasn't the one minted. Resolve it exactly as provisioning
-        // and startup do: an identity restored from a backup or joined from
-        // another device is stored under its fingerprinted id and selected
-        // by the account's `active` file, so it is never at `primary.json`.
-        ProvisionOutcome::Existing => existing_identity_in(identity_dir),
-    }
-}
-
-/// The account's active identity in `identity_dir`, resolved as every other
-/// consumer resolves it, with a typed reason when it cannot be read.
-///
-/// Goes through the store's `IdentityRecord` — the same type that wrote the
-/// file — so a record this build can't parse is an error, not a fingerprint
-/// that belongs to nothing.
-fn existing_identity_in(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
+    let certified = tilo_identity::provisioning::take_up_device_person(
+        identity_dir,
+        paths,
+        tilo_clock::unix_now_ns(),
+        &crate::firstboot::login_account_display_name(),
+    )
+    .map_err(|error| OnboardingError::from_provisioning(&error))?;
     let path = tilo_identity::store::resolve_active_identity(identity_dir)
-        .unwrap_or_else(|| identity_dir.join(crate::firstboot::PRIMARY_IDENTITY_FILE));
-    let unreadable = |problem, error: &dyn fmt::Display| OnboardingError::Identity {
-        problem,
-        detail: format!("identity exists but is unreadable: {error}"),
-    };
-    let record = match tilo_identity::store::load_identity_file(&path) {
-        Ok(Some(record)) => record,
-        Ok(None) => {
-            return Err(unreadable(
-                IdentityProblem::RecordMissing,
-                &"the identity record is missing",
-            ));
-        }
-        Err(error) => {
-            return Err(match IdentityProblem::of(&error) {
-                Some(problem) => unreadable(problem, &error),
-                None => {
-                    OnboardingError::Mint(format!("identity exists but is unreadable: {error}"))
-                }
-            });
-        }
-    };
-    Ok(MintedIdentity {
-        fingerprint: hex::encode(record.threshold_identity.group_public_key),
-        path,
+        .filter(|_| certified)
+        .ok_or_else(|| OnboardingError::Identity {
+            problem: IdentityProblem::RecordMissing,
+            detail: "this computer's daemon certified no person for this device".to_owned(),
+        })?;
+    existing_identity_at(&path).map_err(|detail| OnboardingError::Identity {
+        problem: IdentityProblem::ChainInvalid,
+        detail,
     })
 }
 
@@ -510,25 +490,6 @@ mod tests {
             assert!(o.is_done());
         }
 
-        phase minting_writes_a_readable_record_and_reports_its_fingerprint;
-        {
-            let dir = std::env::temp_dir().join(format!(
-                "tilo-onboarding-{}-{}",
-                std::process::id(),
-                tilo_clock::unix_now_ns()
-            ));
-            let system = tilo_device_identity::IdentityPaths::under(dir.join("system"));
-            let minted = mint_into_with_paths(&dir, &system, false).expect("mint");
-            assert_eq!(minted.fingerprint.len(), 64, "hex of 32 bytes");
-            assert!(minted.path.exists());
-
-            // Minting again reports the same key rather than a fresh one.
-            let again =
-                mint_into_with_paths(&dir, &system, false).expect("second mint is idempotent");
-            assert_eq!(again.fingerprint, minted.fingerprint);
-
-            let _ = std::fs::remove_dir_all(&dir);
-        }
     }
 
     tilo_test_env::scenario! {
@@ -565,19 +526,10 @@ mod tests {
             };
             tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
             persist::install_device_cert(&system, &cert, 2_000).unwrap();
-            assert!(
-                tilo_identity::provisioning::complete_enrolled_device(
-                    &identity_dir,
-                    &system,
-                    tilo_clock::unix_now_ns(),
-                )
-                .unwrap()
-            );
+            let minted = take_up(&identity_dir, &system)
+                .expect("the device's person is taken up, not reported missing");
             let selected = tilo_identity::store::resolve_active_identity(&identity_dir).unwrap();
             assert!(!identity_dir.join("primary.json").exists());
-
-            let minted = mint_into_with_paths(&identity_dir, &system, false)
-                .expect("the joined identity is taken up, not reported missing");
             assert_eq!(minted.fingerprint, hex::encode(person));
             assert_eq!(minted.path, selected);
             assert!(holds_no_identity_secret(&minted.path));
@@ -585,7 +537,7 @@ mod tests {
             // The account's config is reset while the device's enrollment
             // survives: the same person is taken up again.
             std::fs::remove_dir_all(&identity_dir).unwrap();
-            let again = mint_into_with_paths(&identity_dir, &system, false)
+            let again = take_up(&identity_dir, &system)
                 .expect("the surviving enrollment brings its person back");
             assert_eq!(again.fingerprint, hex::encode(person));
             assert!(again.path.is_file());
@@ -650,9 +602,16 @@ mod tests {
             return;
         }
         let directory = tilo_identity::store::identity_dir_from_env().unwrap();
-        let minted = mint_into(
+        tilo_identity::provisioning::create_person(
             &directory,
             &crate::firstboot::collaboration_identity_paths(),
+            "",
+            "",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        let minted = existing_identity_at(
+            &tilo_identity::store::resolve_active_identity(&directory).unwrap(),
         )
         .unwrap();
         let mut flow = Onboarding::new();

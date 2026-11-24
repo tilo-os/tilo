@@ -513,11 +513,10 @@ pub fn revoke(which: &str, why: Why, yes: bool) -> Result<ExitCode> {
     })
 }
 
-/// `tilo device local-person`: the account on this device that proves it holds the identity
-/// the device is bound to, as `NAME UID:GID`. Exits 2 when several do, for a person to say
-/// which, and 1 when none does yet or the accounts cannot be read.
+/// `tilo device local-person`: the account on this device that is its person, as the daemon
+/// recorded when that account made or restored them, as `NAME UID:GID`. Exits 2 when several
+/// are, for a person to say which, and 1 when none is yet or the accounts cannot be read.
 pub fn local_person(identity_root: &std::path::Path, passwd: Option<&std::path::Path>) -> ExitCode {
-    use tilo_identity::local_person::{self, Person};
     let text = match passwd {
         Some(path) => {
             std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
@@ -531,27 +530,36 @@ pub fn local_person(identity_root: &std::path::Path, passwd: Option<&std::path::
                 Ok(String::from_utf8_lossy(&out.stdout).into_owned())
             }),
     };
+    // The system daemon's profile is `state` in the device's identity tree.
+    let record = identity_root
+        .join("state")
+        .join(tilo_api::daemon::admission::PERSON_ACCOUNTS);
     let found = text.and_then(|text| {
-        let accounts = local_person::regular_accounts(&text);
-        let paths = tilo_device_identity::IdentityPaths::under(identity_root);
-        Ok(local_person::find(&paths, &accounts)?)
+        let people = tilo_api::daemon::admission::person_accounts(&record)?;
+        Ok(regular_accounts(&text)
+            .into_iter()
+            .filter(|account| people.contains_key(&account.uid))
+            .collect::<Vec<_>>())
     });
-    match found {
-        Ok(Person::One(account)) => {
+    match found.as_deref() {
+        Ok([account]) => {
             println!("{} {}:{}", account.name, account.uid, account.gid);
             ExitCode::SUCCESS
         }
-        Ok(Person::Nobody) => {
+        Ok([]) => {
             eprintln!(
-                "no account here proves it holds this device's identity; the person's next \
-                 sign-in writes the proof"
+                "no account here is this device's person yet; the account that sets the computer \
+                 up becomes it"
             );
             ExitCode::FAILURE
         }
-        Ok(Person::Several(accounts)) => {
-            let names: Vec<_> = accounts.into_iter().map(|account| account.name).collect();
+        Ok(accounts) => {
+            let names: Vec<_> = accounts
+                .iter()
+                .map(|account| account.name.as_str())
+                .collect();
             eprintln!(
-                "several accounts hold this device's identity: {}",
+                "several accounts are this device's person: {}",
                 names.join(", ")
             );
             ExitCode::from(2)
@@ -561,4 +569,30 @@ pub fn local_person(identity_root: &std::path::Path, passwd: Option<&std::path::
             ExitCode::FAILURE
         }
     }
+}
+
+/// A login account, as the system's account database lists it.
+struct Account {
+    name: String,
+    uid: u32,
+    gid: u32,
+}
+
+/// The regular accounts (uid 1000 to 59999) in `passwd`-format `text`.
+fn regular_accounts(text: &str) -> Vec<Account> {
+    text.lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(':').collect();
+            let [name, _, uid, gid, ..] = fields.as_slice() else {
+                return None;
+            };
+            let uid: u32 = uid.parse().ok()?;
+            let gid: u32 = gid.parse().ok()?;
+            ((1000..60000).contains(&uid) && !name.is_empty()).then(|| Account {
+                name: (*name).to_owned(),
+                uid,
+                gid,
+            })
+        })
+        .collect()
 }

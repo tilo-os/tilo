@@ -37,6 +37,9 @@ pub struct Who {
     pub label: Option<String>,
     /// Whether a person's certificate names this device.
     pub claimed: bool,
+    /// Whether this computer keeps the person's root: what their backup and recovery words are
+    /// made from.
+    pub holds_root: bool,
     /// The device this computer is as it enters its person's workspaces, once the daemon knows
     /// their server.
     pub home: Option<Device>,
@@ -106,6 +109,7 @@ pub fn who() -> Result<Who, String> {
             .and_then(Value::as_str)
             .map(str::to_owned),
         claimed: answer.get("claimed").and_then(Value::as_bool) == Some(true),
+        holds_root: answer.get("holds_root").and_then(Value::as_bool) == Some(true),
         home: answer.get("home").and_then(home_of),
     })
 }

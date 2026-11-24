@@ -308,38 +308,71 @@ impl DaemonPlace {
     /// # Errors
     /// The daemon does not answer, or could not found the person.
     pub fn found(&self, name: Option<&str>) -> Result<(), String> {
+        let args = name.map_or_else(
+            || serde_json::json!({}),
+            |name| serde_json::json!({ "name": name }),
+        );
+        match self.act(tilo_device_identity::login::FOUND, args) {
+            Err(why) if !why.contains(tilo_device_identity::login::ALREADY_A_PERSONS) => Err(
+                format!("Tilo could not set up this computer's person: {why}"),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    /// Ask the daemon one of the device's actions (`devices#<action>`) with `args`, on its native
+    /// endpoint, as this account: its answer, or the refusal it gave, in its own words.
+    ///
+    /// # Errors
+    /// The daemon does not answer, or refused.
+    pub fn act(&self, action: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
         use std::io::{BufRead as _, Write as _};
         let mut native = tilo_files::native::socket::connect(&self.native())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("Tilo isn't answering on this computer: {error}"))?;
         let line = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
             "params": {"name": "tilo_do", "arguments": {
-                "path": format!(
-                    "{}#{}",
-                    tilo_device_identity::login::RESOURCE,
-                    tilo_device_identity::login::FOUND
-                ),
-                "args": name.map_or_else(
-                    || serde_json::json!({}),
-                    |name| serde_json::json!({ "name": name }),
-                ),
-            }},
+                "path": format!("{}#{action}", tilo_device_identity::login::RESOURCE),
+                "args": args,
+            }, "_meta": {"so.tilo.mcp": {"structured": true}}},
         });
         writeln!(native, "{line}").map_err(|error| error.to_string())?;
         let mut answer = String::new();
         std::io::BufReader::new(native)
             .read_line(&mut answer)
             .map_err(|error| error.to_string())?;
-        let refused = answer.contains(r#""error""#) || answer.contains(r#""isError":true"#);
-        if refused && !answer.contains(tilo_device_identity::login::ALREADY_A_PERSONS) {
-            return Err(format!(
-                "Tilo could not set up this computer's person: {}",
-                answer.trim()
-            ));
+        let answer: serde_json::Value = serde_json::from_str(answer.trim())
+            .map_err(|_| format!("Tilo answered something unreadable: {}", answer.trim()))?;
+        if let Some(error) = answer.get("error") {
+            return Err(error
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map_or_else(|| error.to_string(), str::to_owned));
         }
-        Ok(())
+        let text = answer
+            .pointer("/result/content/0/text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let typed = answer
+            .pointer("/result/structuredContent")
+            .cloned()
+            .unwrap_or_default();
+        match typed.get("status").and_then(serde_json::Value::as_str) {
+            Some("ok") => Ok(typed.get("result").cloned().unwrap_or_default()),
+            // An answer in words alone: what it said, read as the value it names.
+            None if answer.pointer("/result/isError") != Some(&serde_json::Value::Bool(true)) => {
+                Ok(serde_json::from_str(text)
+                    .unwrap_or_else(|_| serde_json::Value::String(text.to_owned())))
+            }
+            _ => Err(typed
+                .pointer("/error/message")
+                .and_then(serde_json::Value::as_str)
+                .filter(|message| !message.is_empty())
+                .unwrap_or(text)
+                .to_owned()),
+        }
     }
 }
 

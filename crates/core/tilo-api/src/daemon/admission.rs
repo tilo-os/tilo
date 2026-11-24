@@ -71,6 +71,42 @@ enum Seat {
     },
 }
 
+/// Where in its profile the daemon keeps which accounts are the device's person.
+pub const PERSON_ACCOUNTS: &str = "accounts/person.json";
+
+/// The accounts the record at `path` names as the device's person, by uid: none while there is
+/// no record.
+///
+/// # Errors
+/// The file is there and cannot be read, or is not such a record.
+pub fn person_accounts(path: &std::path::Path) -> io::Result<HashMap<u32, [u8; 32]>> {
+    let accounts: HashMap<u32, String> = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} names no accounts: {error}", path.display()),
+            )
+        })?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => HashMap::new(),
+        Err(error) => return Err(error),
+    };
+    accounts
+        .into_iter()
+        .map(|(uid, person)| {
+            hex::decode(&person)
+                .ok()
+                .and_then(|person| <[u8; 32]>::try_from(person).ok())
+                .map(|person| (uid, person))
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{} names account {uid} as no person", path.display()),
+                    )
+                })
+        })
+        .collect()
+}
+
 impl Admission {
     /// The admission of a daemon running as `own`; `system` when it is the system unit's.
     #[must_use]
@@ -90,32 +126,7 @@ impl Admission {
     /// # Errors
     /// The file is there and cannot be read, or is not such a record.
     pub fn keeping_accounts_in(mut self, path: PathBuf) -> io::Result<Self> {
-        let accounts: HashMap<u32, String> = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{} names no accounts: {error}", path.display()),
-                )
-            })?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => HashMap::new(),
-            Err(error) => return Err(error),
-        };
-        let accounts = accounts
-            .into_iter()
-            .map(|(uid, person)| {
-                hex::decode(&person)
-                    .ok()
-                    .and_then(|person| <[u8; 32]>::try_from(person).ok())
-                    .map(|person| (uid, person))
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("{} names account {uid} as no person", path.display()),
-                        )
-                    })
-            })
-            .collect::<io::Result<_>>()?;
-        self.accounts = Mutex::new(accounts);
+        self.accounts = Mutex::new(person_accounts(&path)?);
         self.kept = Some(path);
         Ok(self)
     }

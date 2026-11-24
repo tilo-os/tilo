@@ -1,37 +1,20 @@
 //! The person's devices on this desktop: a ticket for a new computer (Settings' "Add a device",
 //! `tilo machine add`), and the names and revocations Settings' devices page asks for, answered
-//! through the one ticket server every device of the person's runs
-//! ([`tilo_workspace_service::device_tickets`]).
-//!
-//! The desktop supplies what is its own: the endpoint and device action service its network
-//! binds, its identity, the person's root from its fleet store, and the workspace service that
-//! holds the person's Servers workspace, where their devices' record and a planned machine's plan
-//! and ticket are kept.
-//!
-//! The issue answers at once and the certification happens over the network, so a caller never
-//! waits on the new computer.
+//! by this computer's daemon, which holds the person's root and serves every device action
+//! (`devices#issue`, `devices#rename`, `devices#revoke`). The desktop only hands the call on.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
-use futures_util::future::BoxFuture;
 use tilo_actions::remote::Admits;
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
     Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending, device_tickets as wire,
 };
 use tilo_actions::{
-    ActionContract, ActionDescriptor, ActionKind, ActionOutput, ExecutionLocus, InvocationId,
-    OperationKind, ResultSpec,
+    ActionContract, ActionDescriptor, ActionKind, ActionOutput, ExecutionLocus, OperationKind,
+    ResultSpec,
 };
-use tilo_device_identity::login::{Entry, Reached};
-use tilo_peer_state::actions::ActionService;
-use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::device_tickets::{Issuer, Role, Root, TicketServer};
-use tilo_workspace_service::service::ServiceSlot;
-use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
-
-use crate::device_actions::DeviceActions;
 
 /// The application whose window adds a device here.
 const APP_ID: &str = "so.tilo.settings";
@@ -48,163 +31,9 @@ impl crate::Shared {
     }
 }
 
-/// This device's `tilo.device` provider: a ticket for a new computer, served on the endpoint and
-/// action service the session already runs.
-#[derive(Clone)]
-pub(crate) struct DeviceTickets {
-    tickets: TicketServer,
-    service: ServiceSlot,
-}
-
-impl DeviceTickets {
-    pub(crate) fn new(
-        endpoint: Option<Arc<OnceLock<iroh::Endpoint>>>,
-        actions: Option<Arc<OnceLock<DeviceActions>>>,
-        service: ServiceSlot,
-    ) -> Self {
-        Self {
-            tickets: TicketServer::new(Arc::new(Desktop {
-                endpoint,
-                actions,
-                service: service.clone(),
-            })),
-            service,
-        }
-    }
-
-    /// Serve a ticket for a computer to join this device's, as the one string the person hands
-    /// on: what Settings' "Add a device" shows.
-    pub(crate) async fn issue(&self) -> Result<String, String> {
-        self.tickets.issue(None).await.map(|ticket| ticket.encode())
-    }
-
-    /// Serve again the planned machines' tickets this device issued before it last stopped,
-    /// once its workspace service, and with it the person's Servers workspace, is open.
-    pub(crate) fn restore_once_open(&self) {
-        let tickets = self.tickets.clone();
-        let service = self.service.clone();
-        tilo_rt::app().handle().spawn(async move {
-            service.installed().await;
-            if let Err(error) = tickets.restore().await {
-                tracing::warn!(%error, "the planned machines' tickets were not served again");
-            }
-        });
-    }
-}
-
-/// What the desktop supplies its ticket server.
-struct Desktop {
-    /// Where this device answers, once the network bound it: where a new computer dials.
-    endpoint: Option<Arc<OnceLock<iroh::Endpoint>>>,
-    /// This device's action service, which answers the ticket's certify call: `None` on a session
-    /// that takes part as nobody.
-    actions: Option<Arc<OnceLock<DeviceActions>>>,
-    /// The workspace service this device holds its workspaces in.
-    service: ServiceSlot,
-}
-
-impl Desktop {
-    fn bound(&self) -> Result<iroh::Endpoint, String> {
-        self.endpoint
-            .as_ref()
-            .and_then(|endpoint| endpoint.get().cloned())
-            .ok_or_else(|| {
-                "This computer's network is not up yet: try again in a moment.".to_owned()
-            })
-    }
-
-    /// Where the certified computer enters: the workspace this computer was logged into, or the
-    /// one it founded itself, through this endpoint.
-    async fn entered(&self) -> Result<Entry, String> {
-        if let Some(device) = tilo_api::daemon::who::home().ok().flatten() {
-            return tilo_api::daemon::enter::login_entry(&device);
-        }
-        // No login: this computer founded its own workspace, and the computer it adds enters it
-        // through this endpoint and the certificate its workspace service proves.
-        let endpoint = self.bound()?;
-        let service = self.service.service().ok_or_else(|| {
-            "This computer holds no workspace another computer can enter.".to_owned()
-        })?;
-        let workspaces = service.workspaces();
-        let listed = workspaces.list().await;
-        let first = listed.first().ok_or_else(|| {
-            "This computer holds no workspace another computer can enter.".to_owned()
-        })?;
-        Ok(tilo_api::daemon::enter::founded_entry(
-            &endpoint,
-            (first.workspace.clone(), first.name.clone()),
-            workspaces.serving_certificate().clone(),
-        ))
-    }
-}
-
-impl Issuer for Desktop {
-    fn serving(&self) -> Result<(Reached, ActionService), String> {
-        let endpoint = self.bound()?;
-        let actions = self
-            .actions
-            .as_ref()
-            .and_then(|actions| actions.get())
-            .ok_or_else(|| {
-                "This computer is not taking part as anyone yet, so it cannot add a device."
-                    .to_owned()
-            })?;
-        Ok((
-            tilo_api::daemon::enter::reached_of(&endpoint.addr()),
-            actions.action_service(),
-        ))
-    }
-
-    fn device(&self) -> Result<(DeviceCert, Arc<dyn collab_types::signer::DeviceSigner>), String> {
-        let identity = crate::sync::device_identity().ok_or_else(|| {
-            "This computer has no identity yet, so it cannot add a device: set this computer up \
-             first."
-                .to_owned()
-        })?;
-        Ok((identity.device_cert, identity.signer))
-    }
-
-    fn root(&self) -> Result<Option<Root>, String> {
-        let (cert, _) = self.device()?;
-        let Ok(key) =
-            crate::identity_admin::fleet_store()?.identity_key(&hex::encode(cert.user_public_key))
-        else {
-            return Ok(None);
-        };
-        Ok(Some(Arc::new(key)))
-    }
-
-    fn entry(&self) -> BoxFuture<'_, Result<Entry, String>> {
-        Box::pin(self.entered())
-    }
-
-    fn servers(&self) -> Option<Workspaces> {
-        self.service
-            .service()
-            .map(|service| service.workspaces().clone())
-    }
-
-    /// The keys this desktop's root certified here, which the record of the person's devices
-    /// takes in as the desktop holds it.
-    fn known(&self) -> Vec<DeviceCert> {
-        self.device()
-            .map(|(cert, _)| crate::identity_admin::root_certificates(&cert.user_public_key))
-            .unwrap_or_default()
-    }
-
-    /// The fleet store keeps what this desktop's root revoked, which refuses the key here from
-    /// then on.
-    fn keep_revocation(&self, entry: &tilo_user_identity::RevocationEntry) {
-        let kept = crate::identity_admin::fleet_store().and_then(|fleets| {
-            fleets
-                .record_revocation(&hex::encode(entry.user_public_key), entry)
-                .map_err(|error| error.to_string())
-        });
-        if let Err(error) = kept {
-            tracing::warn!(%error, "this desktop does not keep the revocation it signed");
-        }
-    }
-}
+/// This device's `tilo.device` provider for Settings, handing each call to the daemon.
+#[derive(Clone, Default)]
+pub(crate) struct DeviceTickets;
 
 /// One of the device actions, as the catalogue lists it.
 fn descriptor(action: &str) -> ActionDescriptor {
@@ -347,31 +176,12 @@ impl Admits for DeviceTickets {
                 .direct_person()
                 .ok_or("only you name or revoke your devices")?;
         }
-        // A step asked from the session's own thread runs on the app's runtime, as the restore
-        // of tickets does; one asked from a runtime's task runs on that runtime.
-        let runtime = tokio::runtime::Handle::try_current()
-            .unwrap_or_else(|_| tilo_rt::app().handle().clone());
+        // The daemon answers over its socket, which blocks: the call waits on a thread of its
+        // own, not on the runtime that asked it.
         let (done, asked) = tilo_actions::remote::pending();
-        let tickets = self.tickets.clone();
-        runtime.spawn(async move {
-            let answer = match action {
-                wire::RENAME => tickets.rename(&args).await,
-                wire::REVOKE => tickets.revoke(&args).await,
-                // A planned machine's ticket lasts as long as its medium may sit on a shelf, and
-                // is served beside the ticket printed last; the machine takes the plan's entry.
-                _ => {
-                    let plan = args
-                        .get("plan")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::trim)
-                        .filter(|plan| !plan.is_empty())
-                        .map(|plan| Role::Plan(plan.to_owned()));
-                    tickets
-                        .issue(plan)
-                        .await
-                        .map(|ticket| serde_json::json!({ "ticket": ticket.encode() }))
-                }
-            };
+        std::thread::spawn(move || {
+            let answer =
+                tilo_api::daemon::this_computer().and_then(|daemon| daemon.act(action, args));
             done.complete(
                 answer
                     .map(|value| ActionOutput {
@@ -382,69 +192,5 @@ impl Admits for DeviceTickets {
             );
         });
         Ok(asked)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A computer with no identity cannot print a code, and says what to do about it.
-    #[test]
-    fn a_computer_with_no_identity_prints_no_code_and_says_why() {
-        let root = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_IDENTITY_ROOT", root.path());
-        let tickets = DeviceTickets::new(
-            None,
-            None,
-            tilo_workspace_service::service::ServiceSlot::default(),
-        );
-        // The ticket is issued on a worker, as the broker's own runtime does it: the test
-        // thread only waits for the answer.
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .unwrap();
-        let _entered = runtime.enter();
-        let caller = Caller::local_person(hex::encode([7; 32]))
-            .in_workspace("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0");
-        // The plan arrives as the dispatch hands a provider its arguments: typed.
-        let mut plan = serde_json::Map::new();
-        plan.insert("plan".to_owned(), "6498fd08fe34f46d4165a5d9f3fe251c".into());
-        let request = InvokeRequest {
-            invocation: InvocationId::new(),
-            on_behalf_of: None,
-            target: wire::target(wire::ISSUE),
-            argument: InvokeArgument::Json(plan),
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        };
-        let descriptors = DeviceTickets::descriptors();
-        assert_eq!(descriptors[0].address, wire::target(wire::ISSUE).address);
-        assert_eq!(descriptors.len(), ACTIONS.len());
-        let asked = tickets
-            .start(&caller, &request, &Admitted::default())
-            .unwrap();
-        // The issue runs on the runtime's worker, which holds what it needs.
-        drop(tickets);
-        let answer = asked
-            .wait_timeout(tilo_test_env::hang_bound())
-            .ok()
-            .flatten()
-            .expect("the issue answers at once");
-        let Err(failure) = answer else {
-            panic!("a computer with no identity printed a code");
-        };
-        assert!(
-            failure.message.contains("has no identity yet"),
-            "{}",
-            failure.message
-        );
     }
 }

@@ -430,17 +430,20 @@ fn identity_paths() -> IdentityPaths {
         .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
 }
 
+/// Where a login account keeps its identity records, relative to its home.
+const IDENTITY_DIR_IN_HOME: &str = ".config/tilo/identity";
+
 /// The identity directory whose device fleet names the person's devices: the
 /// named account's, or this process's own.
 fn identity_dir(session_uid: Option<u32>) -> Result<PathBuf> {
     if let Some(uid) = session_uid {
-        return Ok(home_of(uid)?.join(tilo_identity::local_person::IDENTITY_DIR_IN_HOME));
+        return Ok(home_of(uid)?.join(IDENTITY_DIR_IN_HOME));
     }
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(xdg).join("tilo/identity"));
     }
     let home = std::env::var_os("HOME").context("this account has no home directory")?;
-    Ok(PathBuf::from(home).join(tilo_identity::local_person::IDENTITY_DIR_IN_HOME))
+    Ok(PathBuf::from(home).join(IDENTITY_DIR_IN_HOME))
 }
 
 /// The home directory of account `uid`.

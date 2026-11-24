@@ -19,8 +19,6 @@ use iroh::{EndpointAddr, EndpointId};
 #[cfg(target_os = "linux")]
 use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
-use tilo_session_core::desktop::here::{Person, Here, LiveMember};
-#[cfg(target_os = "linux")]
 use tilo_desktop_model::Layout;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::Nearby;
@@ -38,6 +36,8 @@ use tilo_session_client::message_policy::WorkspaceAction;
 use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transport};
 #[cfg(target_os = "linux")]
 use tilo_session_client::{Cmd, Enrolled, Event, Outbox, SayPresence, Topic};
+#[cfg(target_os = "linux")]
+use tilo_session_core::desktop::here::{Here, LiveMember, Person};
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::state::DesktopHandle;
 
@@ -871,15 +871,6 @@ impl Local {
         self.device_actions.get().cloned()
     }
 
-    /// Where this device's action service lands once the endpoint binds it: what a ticket for a
-    /// new computer is served through when the session builds its app wire before the network
-    /// comes up.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn actions_handle(&self) -> Arc<std::sync::OnceLock<DeviceActions>> {
-        std::sync::Arc::clone(&self.device_actions)
-    }
-
     /// The actions one of the person's devices sent this one since the last call, for the session's
     /// pass to carry out. A Nearby Send is carried out here instead, by this client's own transfer
     /// engine: the offer, the checkpoint, the withdrawal and the ending of a transfer are the
@@ -1098,18 +1089,26 @@ impl Roster {
     /// look, among the people this surface lists ([`tilo_session_core::desktop::here::reveal_own_agent_work`]).
     /// Whether it asked the strip to move.
     pub(crate) fn reveal_own_agent_work(&self, people: &[Person], handle: &DesktopHandle) -> bool {
-        tilo_session_core::desktop::here::reveal_own_agent_work(&mut self.here.borrow_mut(), people, handle)
+        tilo_session_core::desktop::here::reveal_own_agent_work(
+            &mut self.here.borrow_mut(),
+            people,
+            handle,
+        )
     }
 
     /// The last wave at this person, for the bar to say.
     #[must_use]
-    pub(crate) fn wave_notice(&self) -> Option<tilo_session_core::desktop::host::chrome::WaveNotice> {
+    pub(crate) fn wave_notice(
+        &self,
+    ) -> Option<tilo_session_core::desktop::host::chrome::WaveNotice> {
         self.wave_notice.borrow().clone()
     }
 
     /// The arrival the bar shows, while its moment lasts.
     #[must_use]
-    pub(crate) fn arrival_notice(&self) -> Option<tilo_session_core::desktop::host::chrome::ArrivalNotice> {
+    pub(crate) fn arrival_notice(
+        &self,
+    ) -> Option<tilo_session_core::desktop::host::chrome::ArrivalNotice> {
         self.arrival.borrow().clone()
     }
 
@@ -1146,18 +1145,19 @@ impl Roster {
             return;
         }
         *self.arrived_in.borrow_mut() = Some(workspace.to_owned());
-        *self.arrival.borrow_mut() = Some(tilo_session_core::desktop::host::chrome::ArrivalNotice {
-            people: people
-                .iter()
-                .map(|member| member.publisher.clone())
-                .collect(),
-            names: people
-                .iter()
-                .map(|member| member.label.trim().to_owned())
-                .collect(),
-            seen: None,
-            at: ui::time::now(),
-        });
+        *self.arrival.borrow_mut() =
+            Some(tilo_session_core::desktop::host::chrome::ArrivalNotice {
+                people: people
+                    .iter()
+                    .map(|member| member.publisher.clone())
+                    .collect(),
+                names: people
+                    .iter()
+                    .map(|member| member.label.trim().to_owned())
+                    .collect(),
+                seen: None,
+                at: ui::time::now(),
+            });
     }
 
     /// This session's own person, as everyone here reads them.
@@ -1202,10 +1202,11 @@ impl Roster {
     fn show_waves(&self) {
         let heard = self.here.borrow_mut().take_waves();
         if let Some(last) = heard.last() {
-            *self.wave_notice.borrow_mut() = Some(tilo_session_core::desktop::host::chrome::WaveNotice {
-                from: last.name.clone(),
-                at: ui::time::now(),
-            });
+            *self.wave_notice.borrow_mut() =
+                Some(tilo_session_core::desktop::host::chrome::WaveNotice {
+                    from: last.name.clone(),
+                    at: ui::time::now(),
+                });
         }
     }
 }
@@ -1887,13 +1888,6 @@ impl Client {
         self.hosting.local.device_actions()
     }
 
-    /// Where this device's action service lands, for an app wire that is built before it does.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn actions_handle(&self) -> std::sync::Arc<std::sync::OnceLock<DeviceActions>> {
-        self.hosting.local.actions_handle()
-    }
-
     /// The member's devices the peer network heard at another peer protocol version.
     #[cfg(target_os = "linux")]
     pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
@@ -2058,7 +2052,9 @@ impl Client {
 
     /// The arrival the bar shows, while its moment lasts.
     #[must_use]
-    pub fn arrival_notice(&self) -> Option<tilo_session_core::desktop::host::chrome::ArrivalNotice> {
+    pub fn arrival_notice(
+        &self,
+    ) -> Option<tilo_session_core::desktop::host::chrome::ArrivalNotice> {
         self.hosting.roster.arrival_notice()
     }
 }

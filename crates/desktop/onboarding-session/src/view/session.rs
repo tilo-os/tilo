@@ -89,10 +89,6 @@ fn directory_has_subdirectory(path: &Path) -> bool {
     })
 }
 
-pub fn identity_root_unavailable() -> String {
-    "this login has no system identity root".to_string()
-}
-
 #[cfg(any(test, feature = "test-support"))]
 impl super::OnboardingView {
     /// The production view of a login with no home and no system identity

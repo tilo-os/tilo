@@ -206,17 +206,6 @@ fn protect(store: &Store, id: &str) -> Answer {
     Ok(serde_json::json!({ "id": id, "protection": protection }))
 }
 
-/// The keys `person`'s root certified that this device's identity store
-/// keeps: the fleet of that root, when this device holds it; none otherwise.
-/// A fleet is filed under its root's hex, as the identity is.
-pub(crate) fn root_certificates(person: &[u8; 32]) -> Vec<tilo_user_identity::DeviceCert> {
-    fleet_store()
-        .ok()
-        .and_then(|fleets| fleets.load_cached(&hex::encode(person)).ok())
-        .map(|fleet| fleet.certificates.clone())
-        .unwrap_or_default()
-}
-
 /// Refuse unless `person` administers `workspace`'s identity: they may grant
 /// in the workspace, and it has an identity selected, which is answered.
 ///

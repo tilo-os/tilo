@@ -1035,7 +1035,6 @@ fn test_peer(_: &std::os::unix::net::UnixStream) -> io::Result<u32> {
     reason = "one sign-in and sign-out, read top to bottom"
 )]
 fn the_system_daemon_answers_each_account_as_who_signed_in() {
-    use ed25519_dalek::Signer as _;
     use io::{BufRead as _, Write as _};
     use serde_json::{Value, json};
     use std::sync::atomic::Ordering;
@@ -1065,10 +1064,6 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     };
     tilo_user_identity::sign_device_cert(&mut cert, &ada).unwrap();
     tilo_device_identity::persist::write_device_cert(&keys.device_cert, &cert).unwrap();
-    let proof_of = |uid: u32| {
-        let digest = tilo_identity::local_person::proof_digest(&person, &device, uid).unwrap();
-        hex::encode(ada.sign(&digest).to_bytes())
-    };
 
     let answers = crate::device::unclaimed::DeviceOnly::new(
         key,
@@ -1173,24 +1168,23 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
         "a stranger is not served the person"
     );
 
+    // An account that only names the device's person is not them: the daemon has no record of
+    // it as theirs.
+    let signing_in = json!({"person": hex::encode(person), "uid": ADA});
+    let (failed, why) = act(ROOT, "seats#signed-in", signing_in.clone());
+    assert!(failed && why.contains("set up from"), "{why}");
+    // Ada's account set the person up.
+    admission.founded_by(ADA, person).unwrap();
     // Only root says who signed in: neither Ada herself nor the daemon's own account may.
-    let signing_in = json!({"person": hex::encode(person), "uid": ADA, "proof": proof_of(ADA)});
     for by in [ADA, DAEMON] {
         let (failed, why) = act(by, "seats#signed-in", signing_in.clone());
         assert!(failed, "{by} said who signed in: {why}");
     }
-    // A proof for another account says nothing about Bob's.
+    // Bob naming her says nothing about him.
     let (failed, why) = act(
         ROOT,
         "seats#signed-in",
-        json!({"person": hex::encode(person), "uid": BOB, "proof": proof_of(ADA)}),
-    );
-    assert!(failed, "{why}");
-    // Nor is a person this device does not serve taken on root's word.
-    let (failed, why) = act(
-        ROOT,
-        "seats#signed-in",
-        json!({"person": hex::encode([3; 32]), "uid": ADA, "proof": proof_of(ADA)}),
+        json!({"person": hex::encode(person), "uid": BOB}),
     );
     assert!(failed, "{why}");
     // A person who arrives has a workspace found for them, unless their session hands over the
@@ -1234,13 +1228,14 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     assert_eq!(status(BOB)["workspace"], "");
     assert_eq!(who(ROOT)["person"], Value::Null);
 
-    // She leaves: only root says so, and she is a stranger again.
+    // She leaves: only root says so. Her account stays the device's person, as the one that set
+    // them up.
     let leaving = json!({"uid": ADA});
     assert!(act(ADA, "seats#left", leaving.clone()).0);
     let (failed, left) = act(ROOT, "seats#left", leaving);
     assert!(!failed && left.contains("true"), "{left}");
-    assert_eq!(who(ADA)["person"], Value::Null);
-    assert_eq!(status(ADA)["workspace"], "");
+    assert_eq!(who(ADA)["person"], hex::encode(person));
+    assert_eq!(who(BOB)["person"], Value::Null);
 }
 
 /// Two people signed in on one computer each act as themselves: the device's own person as
@@ -1254,7 +1249,6 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     reason = "two sign-ins, a certificate and a sign-out, read top to bottom"
 )]
 fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
-    use ed25519_dalek::Signer as _;
     use io::{BufRead as _, Write as _};
     use serde_json::{Value, json};
     use std::sync::atomic::Ordering;
@@ -1295,23 +1289,16 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
     .unwrap();
     tilo_device_identity::persist::write_device_cert(&keys.device_cert, &certified(&ada, device))
         .unwrap();
-    // The local person proof each person's session keeps: their root's signature naming their
-    // account and this device's key.
-    let proof = |root: &ed25519_dalek::SigningKey, uid: u32| {
-        let digest = tilo_identity::local_person::proof_digest(
-            &root.verifying_key().to_bytes(),
-            &device,
-            uid,
-        )
-        .unwrap();
-        hex::encode(root.sign(&digest).to_bytes())
-    };
 
     let answers = crate::device::unclaimed::DeviceOnly::new(
         key,
         tilo_device_identity::login::Place::at(dir.path().join("login"), keys),
     );
     let admission: &'static Admission = Box::leak(Box::new(Admission::new(DAEMON, true)));
+    // Ada's account set the device's person up.
+    admission
+        .founded_by(ADA, ada.verifying_key().to_bytes())
+        .unwrap();
     let native = std::sync::Arc::new(super::Native::new(answers.clone(), test_peer, admission));
     // The device's person's services run, answering as the workspace `home`.
     let own = answers.clone();
@@ -1419,7 +1406,7 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
         let (failed, said) = act(
             ROOT,
             "seats#signed-in",
-            json!({"person": person(root), "uid": uid, "proof": proof(root, uid)}),
+            json!({"person": person(root), "uid": uid}),
         );
         assert!(!failed, "{said}");
         said
@@ -1449,12 +1436,12 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
     assert_eq!(who(ADA)["person"], person(&ada));
     assert_eq!(status(ADA)["workspace"], "home");
 
-    // Bo signs in too: not taken on root's word with Ada's proof, and with their own, they are
-    // to act as a key this daemon made them, which they have yet to certify.
+    // Bo signs in too: not taken as Ada when naming her, and naming themselves they are to act
+    // as a key this daemon made them, which they have yet to certify.
     let (failed, why) = act(
         ROOT,
         "seats#signed-in",
-        json!({"person": person(&bo), "uid": BO, "proof": proof(&ada, BO)}),
+        json!({"person": person(&ada), "uid": BO}),
     );
     assert!(failed, "{why}");
     let said = sign_in(&bo, BO);

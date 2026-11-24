@@ -61,13 +61,19 @@ fn a_person_made_from_the_command_line_is_the_sessions_and_restores_from_its_bac
     let backup = holder.path().join("ada.tilo-backup");
     tilo_identity::store::export_portable_backup(&active, &backup, PASSPHRASE).unwrap();
 
-    // A fresh device's setup restores it: "Use my existing identity", "Restore from a backup".
+    // A fresh device's daemon restores it (`devices#restore`), as "Restore from a backup" asks.
     let fresh = tempfile::tempdir().unwrap();
     let fresh_dir = fresh.path().join("config/tilo/identity");
     let fresh_paths = IdentityPaths::under(fresh.path().join("device"));
-    let restored =
-        super::super::import_identity(&fresh_dir, &fresh_paths, &backup, PASSPHRASE).unwrap();
-    assert_eq!(restored.fingerprint, hex::encode(user), "the same person");
+    let restored = tilo_identity::provisioning::restore_from_backup(
+        &fresh_dir,
+        &fresh_paths,
+        &backup,
+        PASSPHRASE,
+        IdentityStorage::for_session(),
+    )
+    .unwrap();
+    assert_eq!(restored.id, hex::encode(user), "the same person");
     let fresh_record = tilo_identity::store::resolve_active_identity(&fresh_dir).unwrap();
     assert!(store::load_identity_file(&fresh_record).unwrap().is_some());
     verify_existing_collaboration_identity(&fresh_dir, &fresh_paths).unwrap();

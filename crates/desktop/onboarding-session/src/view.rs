@@ -157,45 +157,49 @@ impl CodecSetup {
 }
 
 type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
-/// Restore an identity from the backup at `source` into `import_dir` and
-/// make it active, with the same root to device chain minting provisions.
+/// Have this computer's daemon restore the person from the backup at `source`, sealed with
+/// `passphrase`, and take them up as this account's identity in `import_dir`.
 fn import_identity(
     import_dir: &Path,
-    identity_paths: &tilo_device_identity::IdentityPaths,
     source: &Path,
     passphrase: &[u8],
 ) -> Result<MintedIdentity, String> {
-    let store = tilo_identity::store::IdentityRegistryStore::at(import_dir);
-    let profile = if passphrase.is_empty() {
-        // Explicit compatibility path for schema-1 exports from
-        // older Tilo builds. New backups always require a
-        // passphrase and never expose plaintext JSON.
-        store.import(source).map_err(|error| error.to_string())?
-    } else {
-        store
-            .import_portable(source, passphrase)
-            .map_err(|error| error.to_string())?
-    };
-    let runtime_id = profile
-        .record_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| "imported identity has no valid runtime id".to_string())?;
-    tilo_identity::store::set_active_identity(import_dir, runtime_id)
+    let backup = std::fs::read(source).map_err(|error| error.to_string())?;
+    let passphrase = std::str::from_utf8(passphrase).map_err(|error| error.to_string())?;
+    crate::identity::restore_by_daemon(
+        import_dir,
+        serde_json::json!({ "backup": hex::encode(backup), "passphrase": passphrase }),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Write a backup of the person's root, which this computer's daemon keeps, sealed with
+/// `passphrase`, to `destination`, a new file, and prove it opens.
+fn export_backup(destination: &Path, passphrase: &[u8]) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let passphrase_text = std::str::from_utf8(passphrase).map_err(|error| error.to_string())?;
+    let answer = tilo_api::daemon::this_computer()?.act(
+        tilo_device_identity::login::BACKUP,
+        serde_json::json!({ "passphrase": passphrase_text }),
+    )?;
+    let backup = answer
+        .get("backup")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|backup| hex::decode(backup).ok())
+        .ok_or("this computer's daemon answered no backup")?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(destination)
         .map_err(|error| error.to_string())?;
-    // Restoring on a fresh machine must provision the exact same
-    // complete root -> device chain as minting. The narrower
-    // identity-keyed certificate helper leaves the legacy system
-    // owner/certificate absent until a later login repair.
-    crate::firstboot::ensure_collaboration_identity(import_dir, identity_paths)
+    file.write_all(&backup)
+        .and_then(|()| file.sync_all())
         .map_err(|error| error.to_string())?;
-    tilo_identity::device_fleet::DeviceFleetStore::at(import_dir, identity_paths.clone())
-        .register_current_device(&profile.id)
-        .map_err(|error| error.to_string())?;
-    Ok(MintedIdentity {
-        fingerprint: profile.id,
-        path: profile.record_path,
-    })
+    tilo_identity::store::verify_portable_backup(destination, passphrase)
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 type Importer = Box<dyn Fn(&PathBuf, &[u8]) -> Result<MintedIdentity, String> + Send>;
@@ -203,10 +207,9 @@ type Importer = Box<dyn Fn(&PathBuf, &[u8]) -> Result<MintedIdentity, String> + 
 type WordsImporter = Box<dyn Fn(&str) -> Result<MintedIdentity, String> + Send>;
 
 type BackupCapability = Box<dyn Fn(&Path) -> Result<bool, String> + Send>;
-fn canonical_backup_capability(path: &Path) -> Result<bool, String> {
-    tilo_identity::store::load_from_path(path.to_owned())
-        .map(|identity| identity.is_single_device())
-        .map_err(|error| error.to_string())
+/// Whether this computer's daemon keeps the person's root, which a backup is made of.
+fn daemon_backup_capability(_: &Path) -> Result<bool, String> {
+    tilo_api::daemon::who::who().map(|who| who.holds_root)
 }
 type Exporter = Box<dyn Fn(&PathBuf, &PathBuf, &[u8]) -> Result<(), String> + Send>;
 
@@ -555,42 +558,20 @@ impl OnboardingView {
         let mint_dir = identity_dir.clone();
         let import_dir = identity_dir.clone();
         let words_dir = identity_dir.clone();
-        let mint_paths = session.identity_paths();
-        let import_paths = session.identity_paths();
-        let words_paths = session.identity_paths();
+        // This computer's daemon makes or restores the person and keeps their root; the account
+        // takes them up.
         let minter: Minter = Box::new(move || {
-            match context {
-                OnboardingContext::FullSystem => {
-                    let paths = mint_paths
-                        .as_ref()
-                        .ok_or_else(session::identity_root_unavailable)?;
-                    crate::identity::mint_into(&mint_dir, paths)
-                }
-                OnboardingContext::HostDesktop => crate::identity::found_by_daemon(&mint_dir),
-            }
-            .map_err(|e| e.to_string())
+            crate::identity::found_by_daemon(&mint_dir).map_err(|e| e.to_string())
         });
         let mut view = Self::with_all_handlers_in_context(
             minter,
-            Box::new(move |source, passphrase| {
-                let paths = import_paths
-                    .as_ref()
-                    .ok_or_else(session::identity_root_unavailable)?;
-                import_identity(&import_dir, paths, source, passphrase)
-            }),
-            Box::new(move |identity, destination, passphrase| {
-                tilo_identity::store::export_portable_backup(identity, destination, passphrase)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            }),
+            Box::new(move |source, passphrase| import_identity(&import_dir, source, passphrase)),
+            Box::new(|_identity, destination, passphrase| export_backup(destination, passphrase)),
             context,
         );
-        view.backup_capability = Box::new(canonical_backup_capability);
+        view.backup_capability = Box::new(daemon_backup_capability);
         view.words_importer = Arc::new(Mutex::new(Box::new(move |words: &str| {
-            let paths = words_paths
-                .as_ref()
-                .ok_or_else(session::identity_root_unavailable)?;
-            import_recovery_words(&words_dir, paths, words)
+            import_recovery_words(&words_dir, words)
         })));
         if recovery_only {
             view.recovery_problem = crate::identity::IdentityProblem::from_recovery_env();
@@ -3786,6 +3767,14 @@ mod tests {
         assert!(act(view, &OnboardingEffect::Continue));
     }
 
+    /// Whether the record at `path` holds a root: a fixture keeps it in the account's own record,
+    /// where a daemon keeps it on a computer.
+    fn fixture_backup_capability(path: &Path) -> Result<bool, String> {
+        tilo_identity::store::load_from_path(path.to_owned())
+            .map(|identity| identity.is_single_device())
+            .map_err(|error| error.to_string())
+    }
+
     fn real_backup_view(directory: &Path) -> OnboardingView {
         let identity =
             crate::identity::existing_identity_at(&directory.join("primary.json")).unwrap();
@@ -3799,7 +3788,7 @@ mod tests {
             }),
         );
         view.identity_dir = Some(directory.to_owned());
-        view.backup_capability = Box::new(canonical_backup_capability);
+        view.backup_capability = Box::new(fixture_backup_capability);
         if has_pending_progress(directory) {
             view.restore_pending_progress_from_disk();
             view.refresh_backup_capability().unwrap();
@@ -3892,7 +3881,18 @@ mod tests {
         }
         let directory = tilo_identity::store::identity_dir_from_env().unwrap();
         let paths = crate::firstboot::collaboration_identity_paths();
-        let minted = crate::identity::mint_into(&directory, &paths).unwrap();
+        tilo_identity::provisioning::create_person(
+            &directory,
+            &paths,
+            "",
+            "",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        let minted = crate::identity::existing_identity_at(
+            &tilo_identity::store::resolve_active_identity(&directory).unwrap(),
+        )
+        .unwrap();
         let original = std::fs::read(&minted.path).unwrap();
         let view = real_backup_view(&directory);
         assert!(
@@ -4225,7 +4225,7 @@ mod tests {
                 Box::new(|_, _, _| panic!("a public member must never export a personal backup")),
             );
             view.identity_dir = Some(directory.clone());
-            view.backup_capability = Box::new(canonical_backup_capability);
+            view.backup_capability = Box::new(fixture_backup_capability);
             view.recovery_only = true;
             view.flow.begin_existing();
             view.press(KEY_CONNECT_RETRY);

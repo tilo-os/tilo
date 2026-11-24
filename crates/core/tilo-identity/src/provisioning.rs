@@ -531,6 +531,35 @@ pub fn restore_from_recovery_words(
     Ok(profile)
 }
 
+/// Restore the person in the backup at `source`, sealed with `passphrase`, as this account's
+/// identity in `identity_dir`, and certify this device in `paths` with the same root to device
+/// chain founding makes.
+///
+/// # Errors
+/// The backup does not open with the passphrase, or the identity cannot be kept or certify the
+/// device.
+#[cfg(unix)]
+pub fn restore_from_backup(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    source: &Path,
+    passphrase: &[u8],
+    storage: IdentityStorage,
+) -> io::Result<crate::store::IdentityProfile> {
+    let profile = crate::store::IdentityRegistryStore::at(identity_dir)
+        .import_portable(source, passphrase)?;
+    let runtime_id = profile
+        .record_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid identity id"))?;
+    crate::store::set_active_identity(identity_dir, runtime_id)?;
+    ensure_collaboration_identity(identity_dir, paths, storage)?;
+    crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
+        .register_current_device(&profile.id)?;
+    Ok(profile)
+}
+
 /// Complete this device's own side of an enrollment made without the root: the
 /// certificate filed for its person, a public record naming that person as
 /// the account's active identity under `identity_dir`, and a fleet that knows
@@ -543,9 +572,37 @@ pub fn complete_enrolled_device(
     paths: &IdentityPaths,
     now_ns: u64,
 ) -> Result<bool, io::Error> {
-    complete_enrolled(identity_dir, paths, now_ns, |person| {
+    complete_enrolled(identity_dir, paths, now_ns, false, |person| {
         crate::store::public_member_record(
             crate::store::UNNAMED_DISPLAY_NAME,
+            [88, 101, 242],
+            person,
+        )
+    })
+}
+
+/// Take up the person this computer's daemon keeps (made by `devices#found`, brought back by
+/// `devices#restore`, or logged in with a ticket) as this account's identity in `identity_dir`:
+/// a public record of them named `display_name` (unnamed while it is empty) and the account's
+/// active identity, from the certificate the daemon filed in `paths`, whatever authority it
+/// grants. The root stays with the daemon: nothing here mints, writes or copies one. Answers
+/// whether `paths` holds a certified device; idempotent.
+///
+/// # Errors
+/// The certificate does not verify, or the record cannot be written.
+pub fn take_up_device_person(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    now_ns: u64,
+    display_name: &str,
+) -> Result<bool, io::Error> {
+    complete_enrolled(identity_dir, paths, now_ns, true, |person| {
+        crate::store::public_member_record(
+            if display_name.trim().is_empty() {
+                crate::store::UNNAMED_DISPLAY_NAME
+            } else {
+                display_name
+            },
             [88, 101, 242],
             person,
         )
@@ -566,7 +623,7 @@ pub fn complete_enrolled_device_named(
     avatar_color: [u8; 3],
     photo: Option<tilo_identity_client::ProfilePhoto>,
 ) -> Result<bool, io::Error> {
-    complete_enrolled(identity_dir, paths, now_ns, |person| {
+    complete_enrolled(identity_dir, paths, now_ns, false, |person| {
         crate::store::public_member_record_with_presentation(
             if display_name.trim().is_empty() {
                 crate::store::UNNAMED_DISPLAY_NAME
@@ -580,21 +637,38 @@ pub fn complete_enrolled_device_named(
     })
 }
 
+/// The account's side of the device `paths` holds: with `daemons`, of any class, its certificate
+/// filed by the daemon already; else only one enrolled without the root, whose certificate is
+/// filed here.
 fn complete_enrolled(
     identity_dir: &Path,
     paths: &IdentityPaths,
     now_ns: u64,
+    daemons: bool,
     record: impl FnOnce([u8; 32]) -> io::Result<Vec<u8>>,
 ) -> Result<bool, io::Error> {
-    if !persist::joined_device_is_ready(paths, now_ns)
+    if daemons {
+        if !paths.device_cert.is_file() {
+            return Ok(false);
+        }
+    } else if !persist::joined_device_is_ready(paths, now_ns)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
     {
         return Ok(false);
     }
     let cert = persist::read_device_cert(&paths.device_cert)
         .map_err(|error| io::Error::other(error.to_string()))?;
-    persist::install_device_cert(paths, &cert, now_ns)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    if daemons {
+        tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("this computer's device certificate did not verify: {error}"),
+            )
+        })?;
+    } else {
+        persist::install_device_cert(paths, &cert, now_ns)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+    }
     prepare_identity_directory(identity_dir)?;
     let identity_id = hex::encode(cert.user_public_key);
     // A computer that holds its person's root keeps the record it signs as them with: the public
@@ -889,15 +963,31 @@ fn ensure_collaboration_identity_in_context(
             if crate::store::resolve_active_identity(identity_dir).is_none() {
                 complete_enrolled_device(identity_dir, paths, now_ns)?;
             }
-            if let Some(record) = crate::store::resolve_active_identity(identity_dir)
-                && let Ok(signer) = crate::store::load_from_path(record)
-            {
-                prove_local_person(identity_dir, &signer, paths);
-            }
             return Ok(ProvisionOutcome::Existing);
         }
         Ok(false) => {}
         Err(error) => return Err(joined_device_unusable(paths, error)),
+    }
+    // The person whose root this computer's daemon keeps: the account holds their public record,
+    // and the daemon, not this account, certifies the device with it.
+    if let Some(active) = crate::store::resolve_active_identity(identity_dir)
+        && let Ok(metadata) = crate::store::load_metadata_from_path(&active)
+        && !metadata.single_device
+        && let Ok(cert) = persist::read_device_cert(&paths.device_cert)
+        && cert.user_public_key == metadata.group_public_key
+    {
+        tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(|error| {
+            tilo_user_identity::CertificateClockError::of(&cert, now_ns, &error).map_or_else(
+                || {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("this computer's device certificate did not verify: {error}"),
+                    )
+                },
+                tilo_user_identity::CertificateClockError::into_io,
+            )
+        })?;
+        return Ok(ProvisionOutcome::Existing);
     }
 
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
@@ -935,7 +1025,6 @@ fn ensure_collaboration_identity_in_context(
     // The device's certificate for this identity: the owner's is also the
     // device's system-facing certificate, one certificate in both places.
     ensure_device_certificate_for_identity(&signer, paths, device_label, class)?;
-    prove_local_person(identity_dir, &signer, paths);
 
     // Register the primary record in the multi-identity registry. A registry
     // write failure is a provisioning failure: silently creating a key that no
@@ -969,30 +1058,6 @@ fn drop_unreadable_certificates_of_held_root(identity_dir: &Path, paths: &Identi
             }
         }
     }
-}
-
-/// Keep this account's proof that it is the device's person
-/// ([`crate::local_person`]) when `signer` is the identity the device is
-/// bound to: written with the binding, and at the next sign-in on a device
-/// bound before proofs existed. One that cannot be signed here (the key is
-/// held on another device) is logged; the device's services then fall back
-/// to who is signed in.
-fn prove_local_person(
-    identity_dir: &Path,
-    signer: &crate::store::SigningIdentity,
-    paths: &IdentityPaths,
-) {
-    // Device services that run as root find the device's person by uid. On
-    // Windows no such service runs: the daemon runs as the person's account.
-    #[cfg(unix)]
-    {
-        let uid = rustix::process::geteuid().as_raw();
-        if let Err(error) = crate::local_person::ensure_proof(identity_dir, signer, paths, uid) {
-            tracing::warn!(%error, "could not prove this account is the device's person");
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = (identity_dir, signer, paths);
 }
 
 /// Atomically elect the legacy system-facing identity owner.

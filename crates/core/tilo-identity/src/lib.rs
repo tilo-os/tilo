@@ -33,8 +33,6 @@ pub mod device_fleet;
 pub mod identity_store;
 #[cfg(not(target_family = "wasm"))]
 pub mod join_proof;
-#[cfg(unix)]
-pub mod local_person;
 #[cfg(not(target_family = "wasm"))]
 pub mod person_files;
 pub mod policy_change;

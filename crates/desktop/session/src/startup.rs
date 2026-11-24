@@ -104,9 +104,8 @@ pub fn command(args: &[String]) -> Result<Option<Command>, String> {
 }
 
 /// Carry out `command` , which opens no display: what it prints and the code the process stops with
-/// are its whole answer. `host_desktop` is a session added to an operating system Tilo does not
-/// control, whose identity setup differs from the image's.
-pub fn run(command: Command, host_desktop: bool) -> std::process::ExitCode {
+/// are its whole answer.
+pub fn run(command: Command) -> std::process::ExitCode {
     use std::process::ExitCode;
     let identity_path = match tilo_identity::store::active_identity_path() {
         Ok(path) => path,
@@ -122,7 +121,7 @@ pub fn run(command: Command, host_desktop: bool) -> std::process::ExitCode {
     let paths = firstboot::collaboration_identity_paths();
     match command {
         Command::Verify => verify_only(identity_dir, &paths),
-        Command::Provision => provision(&identity_path, identity_dir, &paths, host_desktop),
+        Command::Provision => provision(&identity_path, identity_dir, &paths),
     }
 }
 
@@ -149,22 +148,11 @@ fn provision(
     identity_path: &Path,
     identity_dir: &Path,
     paths: &IdentityPaths,
-    host_desktop: bool,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     if needs_first_run_flow(identity_path) {
-        // Tilo Desktop on another operating system has its person made by this computer's
-        // daemon, as every person is.
-        let provisioned = if host_desktop {
-            tilo_onboarding_session::identity::found_by_daemon(identity_dir)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        } else {
-            firstboot::ensure_collaboration_identity(identity_dir, paths)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        };
-        return match provisioned {
+        // This computer's daemon makes the person, as every person is made, and keeps their root.
+        return match tilo_onboarding_session::identity::found_by_daemon(identity_dir) {
             Ok(_) => {
                 println!("Tilo collaboration identity is provisioned");
                 ExitCode::SUCCESS

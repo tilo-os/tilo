@@ -32,9 +32,9 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    APPROVE, Approval, Approved, Approver, Asked, Declined, Device, Direction, Entry, FOUND, ISSUE,
-    LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS, PROVIDER, Place, RENAME, REPORTED, RESOURCE,
-    REVOKE, Report, SCOPE, TICKET_LIFETIME_NS, Ticket, UPDATE,
+    APPROVE, Approval, Approved, Approver, Asked, BACKUP, Declined, Device, Direction, Entry,
+    FOUND, ISSUE, LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS, PROVIDER, Place, RECOVERY_WORDS,
+    RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report, SCOPE, TICKET_LIFETIME_NS, Ticket, UPDATE,
 };
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
@@ -74,14 +74,16 @@ pub(crate) fn provider(workspace: &str) -> CatalogueProvider {
 /// invoked the way an app's are.
 #[must_use]
 pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
-    catalogue_of(query, |action| action != FOUND)
+    catalogue_of(query, |action| !matches!(action, FOUND | RESTORE))
 }
 
 /// [`catalogue`] with only what a device answers before its person's services run: what it is,
-/// logging it in with a ticket, and making it a new person's first device.
+/// logging it in with a ticket, and making it a new or a restored person's first device.
 #[must_use]
 pub(crate) fn device_only_catalogue(query: &CatalogueQuery) -> CataloguePage {
-    catalogue_of(query, |action| matches!(action, INFO | LOG_IN | FOUND))
+    catalogue_of(query, |action| {
+        matches!(action, INFO | LOG_IN | FOUND | RESTORE)
+    })
 }
 
 /// The `devices` resource and those of its actions `keep` keeps.
@@ -225,6 +227,40 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
                 "name",
                 ParamType::Text,
                 "What the person is called: the computer account's name when left out.",
+            )],
+        ))),
+        row(Some(descriptor(
+            RESTORE,
+            "Restore a person",
+            "Bring a person back on this computer from their recovery words or a backup.",
+            &[
+                ActionParam::optional("words", ParamType::Text, "The 24 recovery words."),
+                ActionParam::optional(
+                    "backup",
+                    ParamType::Text,
+                    "A backup Tilo wrote, its bytes in hexadecimal.",
+                ),
+                ActionParam::optional(
+                    "passphrase",
+                    ParamType::Text,
+                    "The passphrase the backup was sealed with.",
+                ),
+            ],
+        ))),
+        row(Some(descriptor(
+            RECOVERY_WORDS,
+            "Show the recovery words",
+            "The 24 words that bring the person back on a new computer, from the root kept here.",
+            &[],
+        ))),
+        row(Some(descriptor(
+            BACKUP,
+            "Back up the person",
+            "A backup of the person's root kept here, sealed with a passphrase.",
+            &[ActionParam::required(
+                "passphrase",
+                ParamType::Text,
+                "What the backup is sealed with.",
             )],
         ))),
     ];
@@ -567,7 +603,16 @@ impl Tickets {
             && request.target.address.resource == RESOURCE
             && matches!(
                 request.target.address.action.as_str(),
-                INFO | ISSUE | LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE
+                INFO | ISSUE
+                    | LOG_IN
+                    | PENDING
+                    | APPROVE
+                    | REPORTED
+                    | RENAME
+                    | REVOKE
+                    | UPDATE
+                    | RECOVERY_WORDS
+                    | BACKUP
             )
     }
 
@@ -601,10 +646,19 @@ impl Tickets {
         ) || wait
             || unreached;
         if !waiting {
-            let answer = if action == INFO {
-                Ok(device_info(&self.0.place, &self.0.key))
-            } else {
-                self.issue(&args)
+            let answer = match action.as_str() {
+                INFO => Ok(device_info(&self.0.place, &self.0.key)),
+                RECOVERY_WORDS => super::services::recovery_words()
+                    .map(|words| json!({ "words": words }))
+                    .map_err(Into::into),
+                BACKUP => super::services::backup(
+                    args.get("passphrase")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+                .map(|backup| json!({ "backup": hex::encode(backup) }))
+                .map_err(Into::into),
+                _ => self.issue(&args),
             };
             let update = match answer {
                 Ok(value) => succeeded(invocation, value),

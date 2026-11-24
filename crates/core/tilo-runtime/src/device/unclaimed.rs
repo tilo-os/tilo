@@ -25,7 +25,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    ALREADY_A_PERSONS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE,
+    ALREADY_A_PERSONS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE, RESTORE,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -304,6 +304,33 @@ impl DeviceOnly {
     /// that account is. Their root is kept here and certifies this device's key, the daemon
     /// serves them from then on, and the account acts as them. Answers the person's id.
     fn found(&self, args: &Value) -> Result<String, String> {
+        self.take_a_person(|seated| {
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map_or_else(|| founder_name(seated.seat.uid), str::to_owned);
+            super::services::found_a_person(self.keys(), &name)
+                .map_err(|error| format!("this device could not make a new person: {error}"))
+        })
+    }
+
+    /// Bring a person back on this device ([`RESTORE`]) from the recovery words or the backup
+    /// `args` hold, as [`Self::found`] makes one: their root is kept here from then on.
+    fn restore(&self, args: &Value) -> Result<String, String> {
+        self.take_a_person(|_| {
+            super::services::restore_a_person(self.keys(), args)
+                .map_err(|error| format!("this device could not bring the person back: {error}"))
+        })
+    }
+
+    /// Make this device a person's with `make`, on a device nobody has yet, asked by the account
+    /// it is set up from, which acts as them from then on: the person's id.
+    fn take_a_person(
+        &self,
+        make: impl FnOnce(&crate::seats::Seated) -> Result<(), String>,
+    ) -> Result<String, String> {
         if self.claimed() {
             return Err(format!("{ALREADY_A_PERSONS}: it serves them"));
         }
@@ -316,17 +343,10 @@ impl DeviceOnly {
                 "only the account this computer is set up from starts a person on it".to_owned(),
             );
         };
-        let name = args
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map_or_else(|| founder_name(seated.seat.uid), str::to_owned);
-        super::services::found_a_person(self.keys(), &name)
-            .map_err(|error| format!("this device could not make a new person: {error}"))?;
+        make(seated)?;
         let person = self
             .person()
-            .ok_or_else(|| "the new person's certificate does not name this device".to_owned())?;
+            .ok_or_else(|| "the person's certificate does not name this device".to_owned())?;
         seated.seats.founded_by(seated.seat, person)?;
         Ok(hex::encode(person))
     }
@@ -457,11 +477,18 @@ impl ActionProvider for DeviceOnly {
                 });
                 Pending::ready(Ok(receipt))
             }
-            FOUND => Pending::ready(
-                self.found(&match &request.argument {
-                    InvokeArgument::Json(argument) => Value::Object(argument.clone()),
-                    _ => Value::Null,
-                })
+            FOUND | RESTORE => Pending::ready(
+                {
+                    let args = match &request.argument {
+                        InvokeArgument::Json(argument) => Value::Object(argument.clone()),
+                        _ => Value::Null,
+                    };
+                    if address.action == FOUND {
+                        self.found(&args)
+                    } else {
+                        self.restore(&args)
+                    }
+                }
                 .map(|person| {
                     self.keep(
                         invocation,

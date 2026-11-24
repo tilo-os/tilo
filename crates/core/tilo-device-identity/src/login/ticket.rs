@@ -40,6 +40,16 @@ pub const LOG_IN: &str = "logIn";
 /// person, whose root this device keeps and whose certificate names it. Asked by the device's own
 /// account alone: a laptop's first `tilo` command, a phone's "start new".
 pub const FOUND: &str = "found";
+/// The action a daemon answers while no person's certificate names its device: bring back a
+/// person from their recovery words (`words`) or a portable backup (`backup`, hex, with its
+/// `passphrase`), whose root this device keeps from then on, as [`FOUND`] keeps a new one's.
+pub const RESTORE: &str = "restore";
+/// The action a daemon that holds the person's root answers the person: the 24 words of their
+/// recovery key, to write down.
+pub const RECOVERY_WORDS: &str = "recoveryWords";
+/// The action a daemon that holds the person's root answers the person: their root sealed with
+/// `passphrase` into a portable backup, answered as `backup`, hex, for them to keep.
+pub const BACKUP: &str = "backup";
 /// What [`FOUND`] is refused with on a device a person's certificate names already.
 pub const ALREADY_A_PERSONS: &str = "this device is a person's already";
 /// The action a daemon answers on its own workspace: what one of the person's devices is called

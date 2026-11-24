@@ -13,10 +13,10 @@
 //! The account a connection comes from is the kernel's account of its peer ([`peer_uid`]), and
 //! the daemon's admission ([`tilo_api::daemon::admission`]) says what it acts as. Which person an
 //! account is, root says when the account signs in, and the daemon never guesses it from the uid:
-//! it keeps that person for the account until root says the account left. What root hands over
-//! is read from the account's identity directory, so it comes with the person's local person
-//! proof ([`tilo_identity::local_person`]), signed by that person for this device's key and this
-//! account: an account cannot name a person it is not.
+//! it keeps that person for the account until root says the account left. The account that set
+//! the computer up is the device's person, as the daemon recorded when it made or restored them
+//! ([`tilo_api::daemon::admission::Admission::founded_by`]): an account it has no such record of
+//! is never that person.
 //!
 //! The device serves one person, who is bound to it. Another person who signs in on the computer
 //! acts as a key of their own on this device: the daemon makes it when they sign in and answers
@@ -53,8 +53,8 @@ const SEATS: &str = "seats";
 pub(crate) const PROVIDER: &str = "tilo.seats";
 /// What the seats' catalogue is.
 const REVISION: &str = "tilo.seats/1";
-/// Say an account signed in: `{person, uid, proof, importing?}`, the person's key and its proof
-/// as hex, and whether the account's session hands over what its desktop kept.
+/// Say an account signed in: `{uid, person?, importing?}`, the person the account holds, as hex,
+/// when it holds one, and whether the account's session hands over what its desktop kept.
 const SIGNED_IN: &str = "signed-in";
 /// Say an account's session ended: `{uid}`.
 const LEFT: &str = "left";
@@ -118,12 +118,11 @@ fn rows() -> Vec<CatalogueRow> {
             "An account signed in",
             "Serve the account as its person until it leaves. Root's alone to say.",
             &[
-                ActionParam::required("person", ParamType::Text, "The person's key, as hex."),
                 uid(),
-                ActionParam::required(
-                    "proof",
+                ActionParam::optional(
+                    "person",
                     ParamType::Text,
-                    "The account's local person proof, as hex.",
+                    "The person the account holds, their key as hex.",
                 ),
                 ActionParam::optional(
                     "importing",
@@ -421,20 +420,30 @@ impl Seats {
         handed: &Mutex<Option<OwnedFd>>,
     ) -> Result<Value, String> {
         let uid = uid_in(request)?;
-        let hex_in = |field: &str| {
-            request
-                .get(field)
-                .and_then(Value::as_str)
-                .and_then(|value| hex::decode(value).ok())
+        let named = request
+            .get("person")
+            .and_then(Value::as_str)
+            .and_then(|person| hex::decode(person).ok())
+            .and_then(|person| <[u8; 32]>::try_from(person).ok());
+        let bound = self
+            .device
+            .person()
+            .ok_or("this computer has no person yet: they are set up at its first sign-in")?;
+        // The device's person is the account the daemon recorded as theirs, never one that only
+        // names them.
+        let person = match self.admission.admit(uid) {
+            Admitted::Person(person) if person == bound => person,
+            _ => match named {
+                Some(person) if person != bound => {
+                    return self.another_person(seat, uid, person);
+                }
+                _ => {
+                    return Err(format!(
+                        "account {uid} is not the account this computer's person was set up from"
+                    ));
+                }
+            },
         };
-        let person = hex_in("person")
-            .and_then(|person| <[u8; 32]>::try_from(person).ok())
-            .ok_or("a sign-in names the person's key, as hex")?;
-        let proof =
-            hex_in("proof").ok_or("a sign-in names the account's local person proof, as hex")?;
-        if !self.person_proven(person, uid, &proof)? {
-            return self.another_person(seat, uid, person);
-        }
         self.admission.signed_in(seat.uid, uid, person)?;
         self.keys.lock_recover().remove(&uid);
         let importing = request.get("importing").and_then(Value::as_bool) == Some(true);
@@ -468,22 +477,6 @@ impl Seats {
         }))
     }
 
-    /// Whether `person` is the one this device serves: `proof` must be theirs for the account
-    /// `uid` and this device's key, whoever they are.
-    fn person_proven(&self, person: [u8; 32], uid: u32, proof: &[u8]) -> Result<bool, String> {
-        let (bound, device) = tilo_identity::local_person::device_binding(self.device.keys())
-            .map_err(|error| format!("this device is bound to no person: {error}"))?;
-        if device != self.device.public_key() {
-            return Err("this device's certificate names another key than its own".to_owned());
-        }
-        if !tilo_identity::local_person::proves(&person, &device, uid, proof) {
-            return Err(format!(
-                "account {uid} holds no proof that it is this person"
-            ));
-        }
-        Ok(person == bound)
-    }
-
     fn who(&self, seat: Seat) -> Value {
         let person = match seat.admitted {
             Admitted::Person(person) | Admitted::Key { person, .. } => Some(person),
@@ -505,6 +498,14 @@ impl Seats {
             who.insert("label".into(), json!(label));
         }
         who.insert("claimed".into(), json!(self.device.claimed()));
+        // Whether the device keeps its person's root, to that person alone: what a backup and
+        // the recovery words are made from.
+        if person.is_some() && !matches!(seat.admitted, Admitted::Key { .. }) {
+            who.insert(
+                "holds_root".into(),
+                json!(crate::device::services::holds_a_root()),
+            );
+        }
         match seat.admitted {
             Admitted::Key { key, .. } => {
                 who.insert("key".into(), json!(hex::encode(key)));

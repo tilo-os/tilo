@@ -155,9 +155,8 @@ else
 fi
 
 # --- who the local person is ----------------------------------------------------
-# A device with several accounts: the person is the account that proves it
-# holds the key of the identity the device is bound to (`tilo device
-# local-person`, whose verification has its own tests), never the greeter's
+# A device with several accounts: the person is the account the daemon
+# recorded as theirs (`tilo device local-person`), never the greeter's
 # configuration, an account count, or an account merely naming the identity.
 ensure_env() {
   local root="$1"
@@ -344,14 +343,13 @@ else
   bad "the image does not ship the store helper and its units"
 fi
 
-# A boot starts the preparation before anyone can sign in, and the sign-in is
-# what proves who the person is. So the preparation must not fail for waiting,
-# and something must start it again the moment a proof appears — no timer, no
-# polling. The path unit watches the proof each account writes at sign-in and
-# starts the same preparation; enabled or it never fires.
+# A boot starts the preparation before anyone can sign in, and the first
+# sign-in is where the person is set up. So the preparation must not fail for
+# waiting, and something must start it again the moment the daemon records the
+# person's account — no timer, no polling. The path unit watches that record
+# and starts the same preparation; enabled or it never fires.
 if [ -r "$signin_path" ] \
-   && exactly_once "$signin_path" 'PathExistsGlob=/var/home/*/.config/tilo/identity/local-person.sig' \
-   && exactly_once "$signin_path" 'PathExistsGlob=/home/*/.config/tilo/identity/local-person.sig' \
+   && exactly_once "$signin_path" 'PathChanged=/var/lib/tilo/state/accounts/person.json' \
    && exactly_once "$signin_path" 'PathChanged=/run/systemd/seats' \
    && exactly_once "$signin_path" 'Unit=tilo-store-volume.service' \
    && exactly_once "$signin_path" 'ConditionKernelCommandLine=!tilo.install' \

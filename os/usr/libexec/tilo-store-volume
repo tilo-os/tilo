@@ -299,10 +299,8 @@ is_store_mounted() {
 #
 #   1. the account named by owner= in store-volume.conf (the installer writes
 #      it; it is also what a person sets by hand);
-#   2. the account that proves it holds the key of the identity this device
-#      is bound to: its proof, signed by that key, names its uid
-#      (`tilo device local-person`). A claim without such a proof is
-#      ignored;
+#   2. the account the daemon recorded as the device's person, the one that
+#      made or restored them (`tilo device local-person`);
 #   3. the person signed in at the login screen (seat0's active session).
 #
 # Prints "name uid:gid". Without one, says why on stderr and exits 1 when the
@@ -327,8 +325,8 @@ person_entry() {
   passwd_entries | awk -F: -v n="$1" '$1 == n && $3 >= 1000 {print $1 " " $3 ":" $4; found=1} END {exit !found}'
 }
 
-# The account proving it holds the device's identity: prints "name uid:gid"
-# (status 0), says that several do (status 2), or nothing proves it (1).
+# The account recorded as the device's person: prints "name uid:gid"
+# (status 0), says that several are (status 2), or none is (1).
 proven_person() {
   local out status
   [ -x "$IDENTITY_TOOL" ] || return 1
@@ -488,9 +486,9 @@ cmd_ensure() {
   person="$(local_person)" && status=0 || status=$?
   if [ "$status" -ne 0 ]; then
     if [ "$status" -eq 2 ]; then
-      # Nobody has signed in since this device was bound: the account proves
-      # it holds the device's identity by signing in (the proof
-      # `tilo device local-person` reads), and the store is prepared before
+      # Nobody has set the device's person up yet: the account that does is
+      # recorded as theirs (the record `tilo device local-person` reads), and
+      # the store is prepared before
       # anyone can on a first boot. That is a state, not a failure — the files
       # keep being served by FUSE, and the sign-in re-runs this preparation
       # (tilo-store-volume-after-signin.path) to set the store up then.

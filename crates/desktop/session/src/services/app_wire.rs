@@ -324,7 +324,6 @@ pub(crate) fn start_app_wire(
             daemon_writes,
             service: service.clone(),
             endpoint: sync.map(|sync| sync.endpoint_handle()),
-            device_actions: sync.map(crate::sync::Client::actions_handle),
             journal_root: match options.state.as_deref() {
                 Some(state) => {
                     std::fs::create_dir_all(state.join("tilo"))?;

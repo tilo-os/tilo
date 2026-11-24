@@ -1,9 +1,9 @@
 //! Telling this computer's daemon who signed in: when a session opens, the account's uid, the
-//! person it is and that person's local person proof (their signature naming the account and the
-//! device's key), both from the account's identity directory, and whether the session is to hand
+//! person its identity directory holds (when it holds one), and whether the session is to hand
 //! over the workspaces its desktop kept, which then are the person's here; when it closes, that
-//! the account left. The daemon checks the proof, so an account cannot name someone else's
-//! person, and acts for that account as that person until it left.
+//! the account left. The daemon serves the account as the device's person only when it recorded
+//! that account as theirs, so naming a person proves nothing, and acts for that account as that
+//! person until it left.
 //!
 //! Both are the daemon's actions `seats#signed-in` and `seats#left`, called on its native
 //! endpoint as any action is, and answered for root alone. A daemon that is not running, or that
@@ -22,8 +22,6 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Where an account keeps its local person proof, below its home.
-const PROOF: &str = ".config/tilo/identity/local-person.sig";
 /// Where an account keeps the public key of the person it is, below its home.
 const PERSON: &str = ".config/tilo/identity/user-identity/pubkey.bin";
 /// How long the daemon has to answer.
@@ -33,25 +31,24 @@ const ANSWER: Duration = Duration::from_secs(2);
 /// stack set it: the link the person's shell is admitted by, when the daemon made one.
 ///
 /// # Errors
-/// The account is unknown, has no proof, or the daemon refused.
+/// The account is unknown, or the daemon refused.
 pub fn signed_in(
     socket: &Path,
     user: &str,
     state_home: Option<&str>,
 ) -> Result<Option<OwnedFd>, String> {
     let (uid, home) = account(user)?;
-    let hex = |what: &str, path: &str| {
-        std::fs::read(home.join(path))
-            .map(|bytes| {
-                bytes.iter().fold(String::new(), |mut hex, byte| {
-                    let _ = write!(hex, "{byte:02x}");
-                    hex
-                })
-            })
-            .map_err(|error| format!("{user} has no {what}: {error}"))
-    };
-    let person = hex("person", PERSON)?;
-    let proof = hex("local person proof", PROOF)?;
+    // The person the account holds, which the daemon serves it as a key of when it is not the
+    // device's own.
+    let person = std::fs::read(home.join(PERSON))
+        .map(|bytes| {
+            let hex = bytes.iter().fold(String::new(), |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            });
+            format!(r#""person":"{hex}","#)
+        })
+        .unwrap_or_default();
     // A desktop that kept workspaces with a service of its own hands them over from its session.
     let importing = tilo_paths::xdg::Base::State
         .resolve_from(state_home.map(std::ffi::OsStr::new), Some(home.as_os_str()))
@@ -61,9 +58,7 @@ pub fn signed_in(
     act(
         socket,
         "seats#signed-in",
-        &format!(
-            r#"{{"person":"{person}","uid":{uid},"proof":"{proof}","importing":{importing}}}"#
-        ),
+        &format!(r#"{{{person}"uid":{uid},"importing":{importing}}}"#),
     )
 }
 

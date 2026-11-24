@@ -102,7 +102,7 @@ fn main() -> std::process::ExitCode {
             eprintln!("tilo-session: {said}");
             return ExitCode::from(2);
         }
-        Ok(Some(command)) => return tilo_session::startup::run(command, host_desktop),
+        Ok(Some(command)) => return tilo_session::startup::run(command),
         Ok(None) => {}
     }
     // A session on a computer whose Tilo service is the person's own (a display manager's on a

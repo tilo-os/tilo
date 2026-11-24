@@ -12,28 +12,27 @@ use super::{
 };
 use tilo_onboarding::t_args;
 
-/// Restore from a recovery key, then provision this device exactly as a
-/// restored backup file does.
+/// Have this computer's daemon restore the person from their recovery key, then take them up as
+/// a restored backup is.
 pub(super) fn import_recovery_words(
     import_dir: &Path,
-    identity_paths: &tilo_device_identity::IdentityPaths,
     words: &str,
 ) -> Result<MintedIdentity, String> {
-    let profile = tilo_identity::provisioning::restore_from_recovery_words(
-        import_dir,
-        identity_paths,
-        words,
-        None,
-        crate::firstboot::IDENTITY_STORAGE,
-    )
-    .map_err(|error| {
-        tilo_identity::store::recovery_words_error(&error)
-            .map_or_else(|| error.to_string(), words_problem)
-    })?;
-    Ok(MintedIdentity {
-        fingerprint: profile.id,
-        path: profile.record_path,
-    })
+    crate::identity::restore_by_daemon(import_dir, serde_json::json!({ "words": words }))
+        .map_err(|error| error.to_string())
+}
+
+/// The words of the recovery key of the person's root this computer's daemon keeps.
+fn recovery_words() -> Result<Zeroizing<String>, String> {
+    let answer = tilo_api::daemon::this_computer()?.act(
+        tilo_device_identity::login::RECOVERY_WORDS,
+        serde_json::json!({}),
+    )?;
+    answer
+        .get("words")
+        .and_then(serde_json::Value::as_str)
+        .map(|words| Zeroizing::new(words.to_owned()))
+        .ok_or_else(|| "this computer's daemon answered no recovery words".to_owned())
 }
 
 fn words_problem(problem: tilo_identity::store::RecoveryWordsError) -> String {
@@ -247,17 +246,10 @@ impl OnboardingView {
             && self.backup_export_available
             && self.recovery_key_copy.is_none()
             && self.identity_idle()
-            && let Some(identity) = self.flow.minted().map(|minted| minted.path.clone())
+            && self.flow.minted().is_some()
         {
             self.start_identity_work(
-                move || {
-                    IdentityDone::RecoveryWords(
-                        tilo_identity::store::recovery_words(&identity).map_err(|error| {
-                            tilo_identity::store::recovery_words_error(&error)
-                                .map_or_else(|| error.to_string(), words_problem)
-                        }),
-                    )
-                },
+                || IdentityDone::RecoveryWords(recovery_words()),
                 |error| IdentityDone::RecoveryWords(Err(error)),
             );
         }

@@ -519,9 +519,9 @@ enum DeviceCmd {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// Which account on this device is the person its identity belongs to: the one whose
-    /// proof, signed by the identity's key, names its uid. Prints `NAME UID:GID`; exits 2 when
-    /// several prove it. The system asks this as root when it prepares the store.
+    /// Which account on this device is its person: the one the daemon recorded as having set
+    /// them up. Prints `NAME UID:GID`; exits 2 when several are. The system asks this as root
+    /// when it prepares the store.
     #[command(hide = true)]
     LocalPerson {
         /// The device's identity tree.
