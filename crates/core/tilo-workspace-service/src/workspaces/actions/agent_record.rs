@@ -81,7 +81,7 @@ fn update_params() -> Vec<ActionParam> {
             "action",
             ParamType::Text,
             "The record's action that changes it, by its id (rename-agent, set-agent-model, \
-             set-agent-bound, set-agent-spend-limit, record-agent-spend and the rest).",
+             set-agent-spend-limit, record-agent-spend and the rest).",
         ),
         ActionParam::required(
             "arguments",
@@ -541,7 +541,9 @@ impl Workspaces {
         };
         let record = Replica::<WorkspaceAgents>::load(&bytes).map_err(unavailable)?;
         let state = record.state().map_err(unavailable)?;
-        Ok(Some(tilo_resource::read::reading::<WorkspaceAgents>(&state)))
+        Ok(Some(tilo_resource::read::reading::<WorkspaceAgents>(
+            &state,
+        )))
     }
 
     /// Change `workspace`'s record of its agents by its own action `action` (its typed id:

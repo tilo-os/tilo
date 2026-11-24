@@ -40,6 +40,27 @@ use crate::workspaces::hosted_use::HostedTurn;
 
 const SCOUT: &str = "scout";
 
+/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
+fn narrowing(
+    workspace: &str,
+    caller: &Caller,
+    rules: &[Rule],
+) -> tilo_action_policy::WorkspacePolicy {
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
+    let agent = caller.acting().agent_id().unwrap_or_default();
+    for (index, rule) in rules.iter().enumerate() {
+        policy.grants.push(Grant::new(
+            format!("test-narrowing:{index}"),
+            Grantee::agent(agent.to_owned()),
+            rule.node.clone(),
+            rule.kinds,
+            rule.answer,
+            Grantee::person("owner"),
+        ));
+    }
+    policy
+}
+
 fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
     let argument = match argument {
         Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
@@ -246,14 +267,18 @@ impl<'a> Team<'a> {
         HostedTurn {
             workspace: self.workspace_id,
             caller,
-            bound: None,
+            policy: None,
         }
     }
 
-    /// Scout's turn for Ada as an agent that `bound` narrows.
-    fn narrowed<'t>(&'t self, caller: &'t Caller, bound: &'t [Rule]) -> HostedTurn<'t> {
+    /// Scout's turn for Ada, with `policy` narrowing its agent.
+    fn narrowed<'t>(
+        &'t self,
+        caller: &'t Caller,
+        policy: &'t tilo_action_policy::WorkspacePolicy,
+    ) -> HostedTurn<'t> {
         HostedTurn {
-            bound: Some(bound),
+            policy: Some(policy),
             ..self.turn_of(caller)
         }
     }
@@ -866,7 +891,8 @@ async fn a_narrowed_agent_reaches_only_a_connection_a_rule_of_its_own_names() {
     let finding = calling(&id, "find_trees", json!({"orchard": "north"}));
 
     for (why, bound) in rules_that_do_not_reach(&team.workspace, &id, &other) {
-        let turn = team.narrowed(&sub, &bound);
+        let policy = narrowing(&team.workspace, &sub, &bound);
+        let turn = team.narrowed(&sub, &policy);
         let refused = team.takes(&turn, &finding).await;
         assert_eq!(refused, Err(Refused::NotPermitted), "{why}");
         let refreshing = of(REFRESH, json!({"connection": id}));
@@ -900,7 +926,8 @@ async fn with_a_rule_that_names_it_it_reads_and_still_asks(
     service: &StandIn,
 ) {
     let bound = vec![naming(&team.workspace, id, Answer::Allow)];
-    let turn = team.narrowed(sub, &bound);
+    let policy = narrowing(&team.workspace, sub, &bound);
+    let turn = team.narrowed(sub, &policy);
     let listed = done(team.takes(&turn, &of(LIST, json!({}))).await);
     let listed = listed["connections"].as_array().unwrap();
     assert_eq!(listed.len(), 1, "the one connection its rule names");

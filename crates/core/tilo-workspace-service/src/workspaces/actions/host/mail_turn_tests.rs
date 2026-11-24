@@ -79,13 +79,16 @@ impl Mail {
         hex::encode(self.ada.user_public_key)
     }
 
-    /// The turn `caller` acts on in her workspace, for an agent `bound`
-    /// narrows.
-    const fn turn<'a>(&self, caller: &'a Caller, bound: Option<&'a [Rule]>) -> HostedTurn<'a> {
+    /// The turn `caller` acts on in her workspace, with `policy` narrowing its agent.
+    const fn turn<'a>(
+        &self,
+        caller: &'a Caller,
+        policy: Option<&'a tilo_action_policy::WorkspacePolicy>,
+    ) -> HostedTurn<'a> {
         HostedTurn {
             workspace: self.workspace_id,
             caller,
-            bound,
+            policy,
         }
     }
 
@@ -310,7 +313,7 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     let there = HostedTurn {
         workspace: elsewhere_id,
         caller: &cys,
-        bound: None,
+        policy: None,
     };
     let reads = mail.asks(&there, person_accounts::READ, reading()).await;
     assert_eq!(reads, nobody, "a workspace that keeps no mail");
@@ -414,7 +417,8 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
         ("a rule for another action", vec![listing]),
         ("a rule that denies it", vec![whole_provider, denying]),
     ] {
-        let turn = mail.turn(&sub, Some(&bound));
+        let policy = narrowing(&mail.workspace_id.to_string(), &sub, &bound);
+        let turn = mail.turn(&sub, Some(&policy));
         let reads = mail.asks(&turn, person_accounts::READ, reading()).await;
         assert_eq!(reads, Err(ActionCallError::NotPermitted), "{why}");
         let offered = mail.offered(&turn).await;
@@ -429,7 +433,8 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
         named(person_accounts::READ, Answer::Allow),
         named(person_accounts::BEGIN_SEND, Answer::Allow),
     ];
-    let turn = mail.turn(&sub, Some(&bound));
+    let policy = narrowing(&mail.workspace_id.to_string(), &sub, &bound);
+    let turn = mail.turn(&sub, Some(&policy));
     assert_eq!(
         mail.offered(&turn).await,
         [person_accounts::READ, person_accounts::BEGIN_SEND]
@@ -449,7 +454,8 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
 
     let mut bound = bound;
     bound.push(named(person_accounts::SEND, Answer::Allow));
-    let turn = mail.turn(&sub, Some(&bound));
+    let policy = narrowing(&mail.workspace_id.to_string(), &sub, &bound);
+    let turn = mail.turn(&sub, Some(&policy));
     asks(mail.asks(&turn, person_accounts::SEND, sending).await);
     assert!(
         mail.left().is_empty(),
@@ -635,7 +641,7 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     let sent = approve_in(workspaces, &turn, &sending).await;
     assert!(sent.is_ok(), "{sent:?}");
@@ -645,4 +651,25 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     assert!(twice.is_err(), "{twice:?}");
     assert_eq!(servers.asked(), [LUNCH_LEFT], "nothing leaves twice");
     server.shutdown().await;
+}
+
+/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
+fn narrowing(
+    workspace: &str,
+    caller: &Caller,
+    rules: &[Rule],
+) -> tilo_action_policy::WorkspacePolicy {
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
+    let agent = caller.acting().agent_id().unwrap_or_default();
+    for (index, rule) in rules.iter().enumerate() {
+        policy.grants.push(tilo_action_policy::Grant::new(
+            format!("test-narrowing:{index}"),
+            tilo_action_policy::Grantee::agent(agent.to_owned()),
+            rule.node.clone(),
+            rule.kinds,
+            rule.answer,
+            tilo_action_policy::Grantee::person("owner"),
+        ));
+    }
+    policy
 }

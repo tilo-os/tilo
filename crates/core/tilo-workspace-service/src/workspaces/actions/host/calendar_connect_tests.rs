@@ -505,7 +505,8 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
             vec![whole_provider, named(held::CONNECT, Answer::Deny)],
         ),
     ] {
-        let turn = hers.turn(&sub, Some(&bound));
+        let policy = narrowing(&hers.workspace_id.to_string(), &sub, &bound);
+        let turn = hers.turn(&sub, Some(&policy));
         let told = hers.tells(&turn, hers.telling()).await;
         assert!(
             matches!(told, Err(ActionError::NotPermitted)),
@@ -514,11 +515,33 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
         assert!(hers.connecting_offered(&turn).await.is_empty(), "{why}");
     }
     let bound = vec![named(held::CONNECT, Answer::Allow)];
-    let turn = hers.turn(&sub, Some(&bound));
+    let policy = narrowing(&hers.workspace_id.to_string(), &sub, &bound);
+    let turn = hers.turn(&sub, Some(&policy));
     assert_eq!(hers.connecting_offered(&turn).await, [held::CONNECT]);
     hers.is_asked(&turn).await;
     assert!(
         hers.server.requests().is_empty(),
         "no calendar server was asked for any of them"
     );
+}
+
+/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
+fn narrowing(
+    workspace: &str,
+    caller: &Caller,
+    rules: &[Rule],
+) -> tilo_action_policy::WorkspacePolicy {
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
+    let agent = caller.acting().agent_id().unwrap_or_default();
+    for (index, rule) in rules.iter().enumerate() {
+        policy.grants.push(tilo_action_policy::Grant::new(
+            format!("test-narrowing:{index}"),
+            tilo_action_policy::Grantee::agent(agent.to_owned()),
+            rule.node.clone(),
+            rule.kinds,
+            rule.answer,
+            tilo_action_policy::Grantee::person("owner"),
+        ));
+    }
+    policy
 }

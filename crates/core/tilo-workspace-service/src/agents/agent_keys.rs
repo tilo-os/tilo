@@ -424,8 +424,7 @@ impl AgentSigner {
         let key = keys.grant(id, agent, name, root)?;
         let caller = Caller::delegated_agent(agent, root, key)
             .in_workspace(workspace)
-            .named(name)
-            .held_to(Vec::new());
+            .named(name);
         Ok((
             Self {
                 keys,

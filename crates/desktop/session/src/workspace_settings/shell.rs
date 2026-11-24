@@ -273,9 +273,13 @@ fn ask(
         sheet::WorkspaceSettingsEffect::AddAgent { .. }
         | sheet::WorkspaceSettingsEffect::RemoveAgent { .. }
         | sheet::WorkspaceSettingsEffect::SetAgentModel { .. }
-        | sheet::WorkspaceSettingsEffect::SetAgentSpendLimit { .. }
-        | sheet::WorkspaceSettingsEffect::SetAgentAnswer { .. }
-        | sheet::WorkspaceSettingsEffect::ResetAgentApp { .. } => agent_ask(state, fed, &effect),
+        | sheet::WorkspaceSettingsEffect::SetAgentSpendLimit { .. } => {
+            agent_ask(state, fed, &effect);
+        }
+        sheet::WorkspaceSettingsEffect::SetAgentAnswer { .. }
+        | sheet::WorkspaceSettingsEffect::ResetAgentApp { .. } => {
+            agent_answers(state, fed, &effect);
+        }
         sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
             toggle_workspace_device(state, fed, &device);
         }
@@ -684,6 +688,66 @@ fn agent_ask(
         agents::Answered::Done => {}
         agents::Answered::Refused(reason) => refuse(state, fed, &reason),
     }
+}
+
+/// Set what an agent may do, as the Agents tab asked: one answer for a kind of action at a
+/// scope, or every kind of an app back to what the agent's admission says there. The answers are
+/// grants of the workspace's on the agent
+/// ([`domain::agent_access::answers_set`]), written into its governance, which lets a person
+/// answer for their own agent and one who may grant for any.
+fn agent_answers(
+    state: &sheet::WorkspaceSettingsState,
+    fed: &Feeding<'_>,
+    effect: &sheet::WorkspaceSettingsEffect,
+) {
+    use sheet::WorkspaceSettingsEffect as Ask;
+    use tilo_action_policy::agent_answers::AnswerScope;
+    let (agent, answers) = match effect {
+        Ask::SetAgentAnswer {
+            agent,
+            scope,
+            kind,
+            answer,
+        } => {
+            let (Some(scope), Some(kind)) = (
+                AnswerScope::parse(scope),
+                domain::agent_access::kind_from_key(kind),
+            ) else {
+                tracing::debug!(%scope, %kind, "no such answer: nothing changed");
+                return;
+            };
+            let answer = if answer.is_empty() {
+                None
+            } else {
+                let Some(answer) = tilo_action_policy::Answer::parse(answer) else {
+                    tracing::debug!(%answer, "no such answer: nothing changed");
+                    return;
+                };
+                Some(answer)
+            };
+            (agent, vec![(scope, kind, answer)])
+        }
+        Ask::ResetAgentApp { agent, scope } => {
+            let Some(scope) = AnswerScope::parse(scope) else {
+                tracing::debug!(%scope, "no such app: nothing changed");
+                return;
+            };
+            let answers = domain::agent_access::KINDS
+                .into_iter()
+                .map(|kind| (scope.clone(), kind, None))
+                .collect();
+            (agent, answers)
+        }
+        _ => return,
+    };
+    let shown = agent.clone();
+    let agent = agent.clone();
+    govern(state, fed, move |workspace, person| {
+        Ok(domain::agent_access::answers_set(
+            workspace, &agent, person, &answers,
+        ))
+    });
+    show(state, fed, state.settings().tab, Some(&shown));
 }
 
 /// Put the workspace in front one place earlier or later among this device's workspaces.

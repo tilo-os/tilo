@@ -8,22 +8,17 @@ use tilo_server_protocol::WorkspaceId;
 
 /// The policy a workspace's records are read under, as its governance decides it at the
 /// moment of the read: the caller's member access and the workspace's sandbox, at `unix_time`
-/// (what an authority's expiry is read against), with the workspace's own list of its agents
-/// bounding an agent that asks for a person (`agent_bound`; empty follows the default).
+/// (what an authority's expiry is read against).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewReadPolicy {
     /// The governed workspace whose current policy authorized the exact source record.
     pub workspace: String,
-    /// The certified caller's current member access in the workspace, including the bound of
-    /// a device that is not theirs.
+    /// The certified caller's current member access in the workspace.
     pub access: MemberAccess,
     /// The workspace's current sandbox capabilities.
     pub sandbox: Vec<collab_types::caps::CapOverride>,
     /// Host time used to evaluate capability expiry.
     pub unix_time: u64,
-    /// What the workspace's list of its agents bounds the agent asking to, when an agent asks
-    /// for the person: empty follows the default.
-    pub agent_bound: Vec<tilo_action_policy::Rule>,
 }
 
 /// An existing verified source snapshot, for view discovery only.
@@ -89,7 +84,6 @@ impl Governance<'_> {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .ok()?
                 .as_secs(),
-            agent_bound: Vec::new(),
         })
     }
 

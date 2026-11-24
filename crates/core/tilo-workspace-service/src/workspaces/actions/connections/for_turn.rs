@@ -29,7 +29,7 @@ use std::path::Path;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use tilo_action_policy::{Answer, Level, Segment, TreePath};
+use tilo_action_policy::{Answer, Party, TreePath};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::person_connections::{self, AtAddress, Call, Leave, Named};
 #[cfg(feature = "agents")]
@@ -106,29 +106,33 @@ fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
     }
 }
 
-/// Whether the turn reaches the connection `id`: an agent nothing narrows
-/// reaches every connection of its person's, a narrowed one only a
-/// connection that a rule of its own names and lets it call.
+/// Whether the turn reaches the connection `id`: an agent nothing narrows reaches every
+/// connection of its person's, and a narrowed one only where the workspace's answers on it
+/// allow the connection's call.
 fn names(turn: &HostedTurn<'_>, workspace: &str, id: &str) -> bool {
-    let Some(bound) = turn.bound else {
+    let Some(policy) = turn.policy else {
         return true;
     };
+    let Some(agent) = turn.caller.acting().agent_id() else {
+        return false;
+    };
     let resource = person_connections::connection_resource(id);
-    let named = bound.iter().any(|rule| {
-        rule.answer == Answer::Allow
-            && rule.node.segments().iter().any(
-                |segment| matches!(segment, Segment::Name(Level::Resource, name) if *name == resource),
-            )
-    });
     let node = TreePath::workspace(workspace)
         .app(person_connections::PROVIDER)
         .kind(person_connections::CONNECTION_KIND)
         .resource(resource)
         .action(person_connections::CALL);
-    named
-        && tilo_automation::grant_answer(bound, &node, tilo_action_policy::ActionKind::Outside)
-            .answer
-            == Answer::Allow
+    Party::new(
+        vec![tilo_action_policy::Grantee::agent(agent.to_owned())],
+        &policy.grants,
+    )
+    .decide(
+        &node,
+        tilo_action_policy::ActionKind::Outside,
+        &tilo_action_policy::Context::at_time(tilo_clock::wall()),
+    )
+    .answer
+        == Answer::Allow
 }
 
 #[cfg(feature = "agents")]
@@ -534,7 +538,7 @@ impl Workspaces {
                 }
                 // What is done with a connection is offered where the
                 // turn reaches one.
-                _ => turn.bound.is_none() || !reached.is_empty(),
+                _ => turn.policy.is_none() || !reached.is_empty(),
             }
         };
         let mut rows: Vec<CatalogueRow> = AGENT_VERBS

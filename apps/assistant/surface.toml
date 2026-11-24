@@ -1,4 +1,4 @@
-# Written by `tilolang surface`; review changes like an API change.
+# Written by `tilo-app surface`; review changes like an API change.
 
 format = 2
 
@@ -19,7 +19,6 @@ fields = [
   { path = "agents.*.acts_for", type = "text" },
   { path = "agents.*.model", type = { option = "text" } },
   { path = "agents.*.mcp_client", type = { option = "text" } },
-  { path = "agents.*.bound", type = { list = { named = "Bound" } } },
   { path = "agents.*.spend_limit_micros", type = { option = "int" } },
   { path = "agents.*.spent", type = { option = { named = "Spent" } }, stored = "record" },
   { path = "agents.*.spent.day", type = "text" },
@@ -111,14 +110,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "set-agent-bound"
-kind = "undoable"
-params = [
-  { name = "agent", type = "text", required = true, schema = { type = "string" } },
-  { name = "bound", type = { list = { named = "Bound" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { answer = { type = "string" }, kinds = { type = "array", items = { type = "string" } }, node = { type = "string" } }, required = ["node", "kinds", "answer"] } } },
-]
-
-[[resources.verbs]]
 id = "retire-agent"
 kind = "undoable"
 params = [
@@ -203,7 +194,6 @@ fields = [
   { name = "acts_for", type = "text" },
   { name = "model", type = { option = "text" } },
   { name = "mcp_client", type = { option = "text" } },
-  { name = "bound", type = { list = { named = "Bound" } } },
   { name = "spend_limit_micros", type = { option = "int" } },
   { name = "spent", type = { option = { named = "Spent" } } },
   { name = "state", type = { named = "AgentState" } },
@@ -219,14 +209,6 @@ name = "AgentState"
 cases = [
   { name = "active" },
   { name = "retired" },
-]
-
-[[resources.types]]
-name = "Bound"
-fields = [
-  { name = "node", type = "text" },
-  { name = "kinds", type = { list = "text" } },
-  { name = "answer", type = "text" },
 ]
 
 [[resources.types]]

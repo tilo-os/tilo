@@ -264,46 +264,19 @@ async fn set_under_agents(
     app: &str,
     answer: &str,
 ) {
-    use tilo_resource::{Id, NonBlank, Replica};
-    use tilo_workspace_agent::{Bound, WorkspaceAgents, workspace_agents};
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
     let person = hex::encode(owner.user_public_key);
-    let bound = vec![Bound {
-        node: format!("workspace:{workspace}/app:{app}"),
-        kinds: vec!["outside".into()],
-        answer: answer.into(),
-    }];
-    workspaces
-        .author_agents(workspace, |doc| {
-            let mut agents = Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                .as_author(&person)
-                .in_app(tilo_workspace_agent::OWNER, "Chat");
-            let listed = agents.state().map_err(|error| error.to_string())?;
-            if listed.agents.find(&Id::from_raw("claude")).is_none() {
-                agents
-                    .apply(
-                        WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                            avatar: None,
-                            name: NonBlank::parse("Claude").unwrap(),
-                            id: Some("claude".into()),
-                            model: None,
-                            mcp_client: None,
-                        }),
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            agents
-                .apply(
-                    WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
-                        agent: Id::from_raw("claude"),
-                        bound,
-                    }),
-                )
-                .map_err(|error| error.to_string())?;
-            std::mem::swap(doc, agents.doc_mut());
-            Ok(())
-        })
-        .await
-        .unwrap();
+    let grant = agent_answers::grant(
+        workspace,
+        "claude",
+        (
+            &AnswerScope::app(app),
+            tilo_action_policy::ActionKind::Outside,
+        ),
+        tilo_action_policy::Answer::parse(answer).expect("an answer"),
+        tilo_action_policy::Grantee::person(person),
+    );
+    crate::workspaces::fixtures::record_grants(workspaces, workspace, &[grant]).await;
 }
 
 #[tokio::test]

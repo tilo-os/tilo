@@ -2,7 +2,7 @@
 //! An agent is a workspace resource of its own type ([`tilo_app::tilo_workspace_agent::KIND`]),
 //! kept by Assistant ([`tilo_app::tilo_workspace_agent::OWNER`]) and followed here through the
 //! device's one read, as every app of the workspace reads it ([`FollowedResource`]). Making,
-//! naming, bounding and retiring an agent are the workspace's own actions (`workspace/agents`),
+//! naming, dressing and retiring an agent are the workspace's own actions (`workspace/agents`),
 //! which only the workspace's service carries out ([`AgentsChange`]), decided there by the
 //! workspace's grants — so the tab, the CLI, agents and the person's other devices change the one
 //! list the same way, and the tab neither decides nor writes anything of its own.
@@ -18,14 +18,14 @@ use std::cell::RefCell;
 use tilo_action_policy::agent_answers::AnswerScope;
 use tilo_action_policy::{ActionKind, Answer, MemberId};
 use tilo_app::tilo_workspace_agent::{
-    Agent, Bound, KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
+    Agent, KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
-use tilo_session_core::desktop::people::PeopleNames;
-use tilo_session_core::desktop::workspace_settings::{self as domain, agent_access};
 use tilo_desktop_model::{Layout, Workspace};
 use tilo_resource::Id;
 use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_session_core::desktop::i18n::{t, t_args};
+use tilo_session_core::desktop::people::PeopleNames;
+use tilo_session_core::desktop::workspace_settings::{self as domain, agent_access};
 use tilo_sheets::workspace_settings as sheet;
 
 use crate::followed_resource::FollowedResource;
@@ -156,6 +156,7 @@ struct May {
 /// the tab lists, and this device's apps and Settings.
 #[derive(Clone, Copy)]
 struct Review<'a> {
+    person: &'a str,
     record: &'a FollowedResource<Record>,
     workspace: &'a Workspace,
     apps: &'a dyn domain::AppDirectory,
@@ -220,7 +221,14 @@ impl Agents {
             },
         };
         let config = self.models(workspace);
-        Self::pane_of(workspace, &record, (names, apps, &config), may, review)
+        Self::pane_of(
+            workspace,
+            &record,
+            person,
+            (names, apps, &config),
+            may,
+            review,
+        )
     }
 
     /// The tab with nothing to show here: no workspace in front, or the agents could not be opened
@@ -253,6 +261,7 @@ impl Agents {
     fn pane_of(
         workspace: &Workspace,
         record: &FollowedResource<Record>,
+        person: &str,
         (names, apps, config): (
             &PeopleNames,
             &dyn domain::AppDirectory,
@@ -277,6 +286,7 @@ impl Agents {
         let review = review.and_then(|agent| {
             Self::reviewed(
                 &Review {
+                    person,
                     record,
                     workspace,
                     apps,
@@ -380,6 +390,7 @@ impl Agents {
     /// may always take. `None` once the record no longer names it.
     fn reviewed(review: &Review<'_>, agent: &str, may: May) -> Option<sheet::AgentReview> {
         let Review {
+            person,
             record,
             workspace,
             apps,
@@ -392,22 +403,20 @@ impl Agents {
         MemberId::parsed_person(&kept.acts_for)?;
         let name = kept.name.clone();
         let status = added_by(names, workspace, record, &kept.acts_for);
-        // What the turn admits it to, before the answers the person set for its apps: the cap's
-        // grants, narrowed by the bound its record keeps.
-        let mut admission = tilo_action_policy::Acting::handed_agent(agent, kept.acts_for.as_str())
-            .handed_preset(&workspace.policy.workspace);
-        admission.extend(tilo_action_policy::roles::agent_bound(
+        // What the turn admits it to, before the answers the workspace keeps for it: what the
+        // approval of the person it acts for gives it.
+        let admission = tilo_action_policy::roles::certified_agent(
+            &workspace.policy.workspace,
             agent,
-            &kept.acts_for,
-            &kept.bound_rules().unwrap_or_default(),
-        ));
+            kept.acts_for.as_str(),
+        );
         let rows = agent_access::agent_access_rows(workspace, agent, &admission, apps);
-        let exceptions =
-            agent_access::agent_exceptions(&kept.bound_rules().unwrap_or_default(), apps);
+        let exceptions = agent_access::agent_exceptions(workspace, agent, apps);
         // What it plans with, what it may spend and what it may do are the record's: whoever the
         // workspace's grants let change the record changes them, and nobody else.
         let offered = agent_access::agent_models(config, agent);
-        let editable = record.may("set-agent-bound");
+        // The person it acts for answers for it; so does one who may grant here.
+        let editable = person == kept.acts_for.as_str() || workspace.may_administer(person);
         let limit = limit_of(kept, record.may("set-agent-spend-limit"));
         let can_choose = record.may("set-agent-model");
         let chosen = kept.model.as_deref();
@@ -615,14 +624,14 @@ impl Agents {
             self.daemon.runtime().spawn(async move {
                 let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
                 if let Err(refusal) = daemon.dispatch(None, &message).await {
-                    tracing::debug!(%refusal, "an admitted agent is not on the list yet");
+                    tracing::warn!(%refusal, "an admitted agent is not on the list yet");
                 }
             });
         }
     }
 
     /// Carry out an ask of the Agents tab for `person` in `workspace` (the one in front): making,
-    /// dressing, bounding and retiring an agent are the record's own actions. `None` for an ask
+    /// dressing and retiring an agent are the record's own actions. `None` for an ask
     /// that is no agent's.
     pub(crate) fn answer(
         &self,
@@ -662,46 +671,6 @@ impl Agents {
                     Some(micros)
                 };
                 shown(self.set_limit(workspace, agent, limit_micros), Some(agent))
-            }
-            Ask::SetAgentAnswer {
-                agent,
-                scope,
-                kind,
-                answer,
-            } => {
-                let (Some(scope), Some(kind)) =
-                    (AnswerScope::parse(scope), agent_access::kind_from_key(kind))
-                else {
-                    tracing::debug!(%scope, %kind, "no such answer: nothing changed");
-                    return Some(Answered::Done);
-                };
-                let answer = if answer.is_empty() {
-                    None
-                } else {
-                    let Some(answer) = tilo_action_policy::Answer::parse(answer) else {
-                        tracing::debug!(%answer, "no such answer: nothing changed");
-                        return Some(Answered::Done);
-                    };
-                    Some(answer)
-                };
-                shown(
-                    self.set_answers(workspace, person, agent, &[(scope, kind, answer)]),
-                    Some(agent),
-                )
-            }
-            Ask::ResetAgentApp { agent, scope } => {
-                let Some(scope) = AnswerScope::parse(scope) else {
-                    tracing::debug!(%scope, "no such app: nothing changed");
-                    return Some(Answered::Done);
-                };
-                let answers: Vec<_> = agent_access::KINDS
-                    .into_iter()
-                    .map(|kind| (scope.clone(), kind, None))
-                    .collect();
-                shown(
-                    self.set_answers(workspace, person, agent, &answers),
-                    Some(agent),
-                )
             }
             _ => return None,
         })
@@ -788,44 +757,6 @@ impl Agents {
     pub(crate) fn retire(&self, workspace: Option<&Workspace>, agent: &str) -> Result<(), String> {
         self.ask(workspace, AgentsChange::Retire(agent.to_owned()))
             .map(drop)
-    }
-
-    /// Set what the agent `agent` may do in `workspace`, each answer for a kind of action at a scope
-    /// (`None` follows its admission there again): the bound the workspace's list keeps for it, which every
-    /// device and the workspace's host hold its calls to.
-    ///
-    /// # Errors
-    /// The workspace's agents could not be opened here, or Chat's grants or the list refuse the
-    /// bound.
-    pub(crate) fn set_answers(
-        &self,
-        workspace: Option<&Workspace>,
-        person: &str,
-        agent: &str,
-        answers: &[(AnswerScope, ActionKind, Option<Answer>)],
-    ) -> Result<(), String> {
-        let agents = self
-            .record(workspace, person)
-            .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
-        let id = Id::from_raw(agent.to_owned());
-        let held = agents
-            .get()
-            .get(&id)
-            .and_then(Agent::bound_rules)
-            .unwrap_or_default();
-        let root =
-            workspace.map_or_else(String::new, |workspace| workspace.policy.workspace.clone());
-        let bound = agent_access::bound_with(&held, &root, answers)
-            .iter()
-            .map(Bound::of)
-            .collect();
-        self.ask(
-            workspace,
-            AgentsChange::Update(
-                Record::SET_AGENT_BOUND.with(actions::SetAgentBound { agent: id, bound }),
-            ),
-        )
-        .map(drop)
     }
 
     /// Choose the model the agent `agent` plans with.

@@ -15,6 +15,27 @@ use super::super::turn_use_tests::{
 use super::*;
 use crate::workspaces::hosted_use::HostedTurn;
 
+/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
+fn narrowing(
+    workspace: &str,
+    caller: &Caller,
+    rules: &[Rule],
+) -> tilo_action_policy::WorkspacePolicy {
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
+    let agent = caller.acting().agent_id().unwrap_or_default();
+    for (index, rule) in rules.iter().enumerate() {
+        policy.grants.push(tilo_action_policy::Grant::new(
+            format!("test-narrowing:{index}"),
+            tilo_action_policy::Grantee::agent(agent.to_owned()),
+            rule.node.clone(),
+            rule.kinds,
+            rule.answer,
+            tilo_action_policy::Grantee::person("owner"),
+        ));
+    }
+    policy
+}
+
 const SCOUT: &str = "scout";
 
 /// The week her review is in.
@@ -98,13 +119,16 @@ impl Hers {
         added["id"].as_str().expect("its id").to_owned()
     }
 
-    /// The turn `caller` acts on in her workspace, for an agent `bound`
-    /// narrows.
-    const fn turn<'a>(&self, caller: &'a Caller, bound: Option<&'a [Rule]>) -> HostedTurn<'a> {
+    /// The turn `caller` acts on in her workspace, with `policy` narrowing its agent.
+    const fn turn<'a>(
+        &self,
+        caller: &'a Caller,
+        policy: Option<&'a tilo_action_policy::WorkspacePolicy>,
+    ) -> HostedTurn<'a> {
         HostedTurn {
             workspace: self.workspace_id,
             caller,
-            bound,
+            policy,
         }
     }
 
@@ -326,7 +350,8 @@ async fn a_narrowed_agent_reads_them_only_where_a_rule_names_the_read() {
             vec![whole_provider, named(held::ENTRIES, Answer::Deny)],
         ),
     ] {
-        let turn = hers.turn(&sub, Some(&bound));
+        let policy = narrowing(&hers.workspace_id.to_string(), &sub, &bound);
+        let turn = hers.turn(&sub, Some(&policy));
         let reads = hers.asks(&turn, held::ENTRIES, week()).await;
         assert!(
             matches!(reads, Err(ActionError::NotPermitted)),
@@ -340,14 +365,16 @@ async fn a_narrowed_agent_reads_them_only_where_a_rule_names_the_read() {
     }
 
     let bound = vec![named(held::ENTRIES, Answer::Allow)];
-    let turn = hers.turn(&sub, Some(&bound));
+    let policy = narrowing(&hers.workspace_id.to_string(), &sub, &bound);
+    let turn = hers.turn(&sub, Some(&policy));
     assert_eq!(hers.offered(&turn).await, [held::ENTRIES]);
     hers.asks(&turn, held::ENTRIES, week())
         .await
         .expect("the read its rule names");
 
     let bound = vec![named(held::SET_CATEGORIES, Answer::Allow)];
-    let turn = hers.turn(&sub, Some(&bound));
+    let policy = narrowing(&hers.workspace_id.to_string(), &sub, &bound);
+    let turn = hers.turn(&sub, Some(&policy));
     nobody(
         "a change its rule names",
         hers.asks(

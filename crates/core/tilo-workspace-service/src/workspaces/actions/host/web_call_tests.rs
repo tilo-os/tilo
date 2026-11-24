@@ -18,10 +18,11 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use test_http::{Reply, Request, Responder};
+use tilo_action_policy::Rule;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::{self, NotPermitted, Refused, UnknownAction};
 use tilo_actions::remote::person_vault;
-use tilo_actions::remote::{InvokeArgument, InvokeRequest};
+use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 
 use super::super::tests::{admit, caller, governed};
 use super::turn_use_tests::{
@@ -246,7 +247,7 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     let offered = workspaces.calls_offered(&turn).await;
     assert_eq!(offered.len(), 1, "the turn is offered the call");
@@ -389,7 +390,7 @@ async fn a_key_is_sent_to_its_own_service_and_to_no_other() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     let elsewhere = format!("{}/v1/balance", other.url());
     assert_eq!(
@@ -483,7 +484,7 @@ async fn a_key_rides_where_its_item_says_and_nowhere_the_agent_says() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     let ways: [(&str, Shown, Value); 5] = [
         ("", as_bearer, json!({"Authorization": "Bearer mine"})),
@@ -627,7 +628,7 @@ async fn what_a_service_repeats_comes_back_without_the_key() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     let (lines, guard) = logged();
     tracing::info!("the line that shows the log is read");
@@ -771,7 +772,7 @@ async fn only_a_hosted_turn_makes_a_call() {
     let herself = HostedTurn {
         workspace: workspace_id,
         caller: &as_ada,
-        bound: None,
+        policy: None,
     };
     assert!(workspaces.calls_offered(&herself).await.is_empty());
     assert_eq!(
@@ -780,10 +781,11 @@ async fn only_a_hosted_turn_makes_a_call() {
     );
     // An agent that something narrows holds no rule that names the call.
     let elsewhere = narrowed_elsewhere(&workspace);
+    let policy = narrowing(&workspace, &scout, &elsewhere);
     let narrowed = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: Some(&elsewhere),
+        policy: Some(&policy),
     };
     assert!(workspaces.calls_offered(&narrowed).await.is_empty());
     assert_eq!(
@@ -798,7 +800,7 @@ async fn only_a_hosted_turn_makes_a_call() {
     let theirs = HostedTurn {
         workspace: workspace_id,
         caller: &his,
-        bound: None,
+        policy: None,
     };
     asks(dispatched(workspaces, &theirs, &own_with(&paying, &item)).await);
     assert_eq!(
@@ -834,4 +836,25 @@ async fn only_a_hosted_turn_makes_a_call() {
     );
     assert!(paying.drain_requests().is_empty(), "nothing was sent");
     assert!(files_holding(dir.path(), KEY.as_bytes()).is_empty());
+}
+
+/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
+fn narrowing(
+    workspace: &str,
+    caller: &Caller,
+    rules: &[Rule],
+) -> tilo_action_policy::WorkspacePolicy {
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
+    let agent = caller.acting().agent_id().unwrap_or_default();
+    for (index, rule) in rules.iter().enumerate() {
+        policy.grants.push(tilo_action_policy::Grant::new(
+            format!("test-narrowing:{index}"),
+            tilo_action_policy::Grantee::agent(agent.to_owned()),
+            rule.node.clone(),
+            rule.kinds,
+            rule.answer,
+            tilo_action_policy::Grantee::person("owner"),
+        ));
+    }
+    policy
 }

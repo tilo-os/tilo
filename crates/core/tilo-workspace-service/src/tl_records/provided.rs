@@ -571,18 +571,26 @@ mod tests {
         let records = records(&workspaces);
         let ada = Caller::authenticated(owner.user_public_key, owner.device_public_key)
             .in_workspace(workspace.clone());
-        let scout = |bound: Vec<Rule>| {
+        let scout = || {
             Caller::delegated_agent("scout", owner.user_public_key, [7; 32])
                 .in_workspace(workspace.clone())
-                .held_to(bound)
         };
 
-        // Outside its delegation: its bound denies it everything in the workspace.
-        let held = scout(vec![Rule::new(
-            TreePath::workspace(&workspace).rest(),
-            KindSet::ALL,
-            Answer::Deny,
-        )]);
+        // Outside its delegation: the workspace denies it everything.
+        crate::workspaces::fixtures::record_grants(
+            &workspaces,
+            &workspace,
+            &[tilo_action_policy::Grant::new(
+                "scout-denied",
+                tilo_action_policy::Grantee::agent("scout"),
+                TreePath::workspace(&workspace).rest(),
+                KindSet::ALL,
+                Answer::Deny,
+                tilo_action_policy::Grantee::person(person.clone()),
+            )],
+        )
+        .await;
+        let held = scout();
         let to = tilo_actions::MemberId::person(person.clone());
         let request = write_to(&records, &held, &to, "Sold the house").await;
         let refused = run(&workspaces, &held, request).await;
@@ -599,8 +607,14 @@ mod tests {
             "nobody reads what was refused"
         );
 
-        // Within it, the write lands as the agent's.
-        let delegated = scout(Vec::new());
+        // Within it, once the workspace's deny is taken back, the write lands as the agent's.
+        crate::workspaces::fixtures::revoke_grants(
+            &workspaces,
+            &workspace,
+            &[tilo_action_policy::GrantId::new("scout-denied")],
+        )
+        .await;
+        let delegated = scout();
         let request = write_to(&records, &delegated, &to, "The plan is ready").await;
         run(&workspaces, &delegated, request)
             .await

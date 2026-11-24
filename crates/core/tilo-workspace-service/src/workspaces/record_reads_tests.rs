@@ -297,7 +297,6 @@ impl Host {
         Caller::delegated_agent(agent, self.cert.user_public_key, [9; 32])
             .in_workspace(self.kitchen.clone())
             .named(agent)
-            .held_to(Vec::new())
             .in_new_execution()
     }
 

@@ -76,10 +76,6 @@ pub struct Caller {
     // What the person asked the agent to do, in a line (`Self::asked`): what
     // its session is labelled by, where it was asked.
     pub(super) asked: Option<String>,
-    // What the agent's own record bounds an agent acting with its own key to, read by the
-    // provider that runs it on its person's device (`Self::held_to`). `None` there holds it to
-    // nothing: it carries no delegation at all.
-    own_bound: Option<Vec<tilo_action_policy::Rule>>,
     // The device's operating system (`Self::local_system`), which acts for nobody.
     system: bool,
     // The invitation a visitor redeems (`Self::invited`): it acts by its issuer's authority,
@@ -119,7 +115,6 @@ impl Caller {
             turn_person: None,
             agent_name: None,
             asked: None,
-            own_bound: None,
             system: false,
             invited: None,
             carried_by: None,
@@ -598,23 +593,10 @@ impl Caller {
         &self.acting
     }
 
-    /// An agent acting with its own key on its person's device, held to `bound`, the rules its
-    /// own record narrows it to: it carries the delegation its person's grant gives an agent,
-    /// narrowed by them ([`Self::granted`]). The provider that runs the agent and read its record
-    /// sets it, never a payload. Changes nothing for any other caller.
-    #[must_use]
-    pub fn held_to(mut self, bound: Vec<tilo_action_policy::Rule>) -> Self {
-        if !self.session_delegated && self.acting.is_agent() && self.device_public_key.is_some() {
-            self.own_bound = Some(bound);
-        }
-        self
-    }
-
     /// The grants this caller's certificate names for the agent it is in `workspace`
     /// ([`tilo_action_policy::roles::certified_agent`]): its person's default delegation, which
-    /// the workspace's own grants naming the agent then narrow, and what its person's device
-    /// narrowed it to where that device read its record ([`Self::held_to`]). Nothing for a
-    /// caller no certificate names as an agent: it holds only what the workspace grants it.
+    /// the workspace's own grants naming the agent then narrow. Nothing for a caller no
+    /// certificate names as an agent: it holds only what the workspace grants it.
     #[must_use]
     pub fn certified(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
         let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
@@ -624,39 +606,16 @@ impl Caller {
         if self.device_public_key.is_none() {
             return Vec::new();
         }
-        let mut grants = tilo_action_policy::roles::certified_agent(workspace, agent, person);
-        grants.extend(self.narrowed());
-        grants
+        tilo_action_policy::roles::certified_agent(workspace, agent, person)
     }
 
-    /// What its person's device narrowed this agent to, as grants ([`Self::held_to`]).
+    /// The grants made for this caller's software: its certificate's ([`Self::certified`]),
+    /// the one place an agent's rights become grants, so every host and every receiver decides
+    /// an agent alike. Asked in no workspace (its person's list of them), the certificate gives
+    /// the delegation at the root.
     #[must_use]
-    pub fn narrowed(&self) -> Vec<tilo_action_policy::Grant> {
-        let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
-        else {
-            return Vec::new();
-        };
-        match &self.own_bound {
-            Some(bound) => tilo_action_policy::roles::agent_bound(agent, person, bound),
-            None => Vec::new(),
-        }
-    }
-
-    /// The grants made for this caller's software: its certificate's ([`Self::certified`]), and
-    /// the rules the workspace's list of its agents keeps for it (`kept`), which narrow it. The
-    /// one place an agent's rights become grants, so every host and every receiver decides an
-    /// agent alike. Asked in no workspace (its person's list of them), the certificate gives the
-    /// delegation at the root.
-    #[must_use]
-    pub fn granted(&self, kept: &[tilo_action_policy::Rule]) -> Vec<tilo_action_policy::Grant> {
-        let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
-        else {
-            return Vec::new();
-        };
-        let workspace = self.workspace.as_deref().unwrap_or_default();
-        let mut grants = self.certified(workspace);
-        grants.extend(tilo_action_policy::roles::agent_bound(agent, person, kept));
-        grants
+    pub fn granted(&self) -> Vec<tilo_action_policy::Grant> {
+        self.certified(self.workspace.as_deref().unwrap_or_default())
     }
 
     /// The group a session named `id` is, as this caller's provider admitted
@@ -760,7 +719,6 @@ impl Caller {
             turn_person: self.turn_person,
             agent_name: self.agent_name.clone(),
             asked: self.asked.clone(),
-            own_bound: self.own_bound.clone(),
             system: self.system,
         }
     }
@@ -786,7 +744,6 @@ pub struct KeptCaller {
     turn_person: Option<[u8; 32]>,
     agent_name: Option<String>,
     asked: Option<String>,
-    own_bound: Option<Vec<tilo_action_policy::Rule>>,
     system: bool,
 }
 
@@ -818,7 +775,6 @@ impl KeptCaller {
             turn_person: self.turn_person,
             agent_name: self.agent_name,
             asked: self.asked,
-            own_bound: self.own_bound,
             system: self.system,
             // A redemption never waits for a person's yes, so no kept call carries one.
             invited: None,
@@ -908,7 +864,7 @@ mod tests {
         let expected = tilo_action_policy::roles::certified_agent("w", "scout", &person);
         assert!(!expected.is_empty());
         assert_eq!(agent.certified("w"), expected, "the certificate's own");
-        assert_eq!(agent.granted(&[]), expected, "nothing else narrows it");
+        assert_eq!(agent.granted(), expected, "nothing else narrows it");
         assert!(
             expected
                 .iter()

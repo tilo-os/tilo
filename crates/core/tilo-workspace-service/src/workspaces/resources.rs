@@ -1695,7 +1695,7 @@ fn may_write_as_viewer(
     let policy = governed.peer().governance().governed_policy()?;
     let acting = viewer.acting();
     let mut granted = acting.handed_preset(workspace);
-    granted.extend(viewer.granted(&[]));
+    granted.extend(viewer.granted());
     let authority = tilo_action_policy::Authority::of_acting(acting, &policy, &granted);
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     for (kind, verb) in unserved {

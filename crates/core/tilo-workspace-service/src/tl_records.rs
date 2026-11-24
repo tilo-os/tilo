@@ -1229,16 +1229,9 @@ impl crate::workspaces::Workspaces {
         // The record's own authority decides the action as the caller: this device writes it,
         // so nothing else stops an agent from doing what its delegation does not give it.
         let acting = caller.acting();
-        let kept = match acting.agent_id() {
-            Some(agent) => self
-                .kept_bound(workspace, agent, caller.turn().is_some())
-                .await
-                .unwrap_or_default(),
-            None => Vec::new(),
-        };
         let access = Arc::new(
             tilo_action_policy::MemberAccess::new(Arc::clone(&policy), acting.clone())
-                .granted(caller.granted(&kept)),
+                .granted(caller.granted()),
         );
         let (invoker, context) = (invoker.clone(), context.clone());
         let (address, arguments) = (address.clone(), arguments.clone());

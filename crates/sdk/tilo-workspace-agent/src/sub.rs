@@ -582,7 +582,6 @@ impl WorkspaceAgents {
             acts_for: person,
             model,
             mcp_client: None,
-            bound: Vec::new(),
             spend_limit_micros: None,
             spent: None,
             state: AgentState::Active,

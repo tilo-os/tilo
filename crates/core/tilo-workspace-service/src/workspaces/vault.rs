@@ -840,7 +840,7 @@ pub(crate) fn may_read_vault(
 ) -> bool {
     let acting = by.acting();
     let mut granted = acting.handed_preset(workspace);
-    granted.extend(by.granted(&[]));
+    granted.extend(by.granted());
     let node = collab_types::document_node(workspace, APP, WORKSPACE_VAULT_DOCUMENT);
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     tilo_action_policy::Authority::of_acting(acting, policy, &granted)

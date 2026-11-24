@@ -93,7 +93,7 @@ impl BrokerActor {
         let mut actor = Self::actor_of(caller)
             .on_turn(caller.turn().cloned())
             .within(caller.ceiling());
-        actor.bound = caller.granted(&[]);
+        actor.bound = caller.granted();
         actor
     }
 

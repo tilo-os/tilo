@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tilo_action_policy::agent_answers::AnswerScope;
-use tilo_action_policy::roles::{GOVERNANCE_KIND, Rule, governance};
+use tilo_action_policy::roles::{GOVERNANCE_KIND, governance};
 use tilo_action_policy::{ActionKind, Answer, Context, Grant, Grantee, Party, WorkspacePolicy};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller};
@@ -130,7 +130,7 @@ impl Workspaces {
                 agent: Some(agent.to_owned()),
                 workspace: String::new(),
                 policy: None,
-                granted: [acting.handed_preset(""), caller.granted(&[])].concat(),
+                granted: [acting.handed_preset(""), caller.granted()].concat(),
             };
         };
         let now = tilo_clock::unix_now_ns();
@@ -144,10 +144,7 @@ impl Workspaces {
         };
         let workspace = member.policy.workspace.clone();
         let mut granted = acting.handed_preset(&workspace);
-        let kept = self
-            .kept_bound(&workspace, agent, caller.turn().is_some())
-            .await;
-        granted.extend(caller.granted(&kept.unwrap_or_default()));
+        granted.extend(caller.granted());
         AgentGrants {
             agent: Some(agent.to_owned()),
             workspace,
@@ -176,40 +173,6 @@ impl Workspaces {
         read_resource_bytes::<R>(&bytes).map(Some)
     }
 
-    /// What the agent `agent` is held to in `workspace`, as the workspace's
-    /// list of its agents keeps it: the bound kept for it there, and nothing
-    /// at all once it was retired. A sub-agent works only on a turn
-    /// (`on_turn`), as one more actor in its starter's chain, which the server
-    /// that works it carries: outside one its name may do nothing. A list this
-    /// server cannot read holds it to nothing: what it may do is never more
-    /// than the list says. `None` while the list does not name it.
-    pub async fn kept_bound(
-        &self,
-        workspace: &str,
-        agent: &str,
-        on_turn: bool,
-    ) -> Option<Vec<Rule>> {
-        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let kept = match self
-            .read_resource::<WorkspaceAgents>(workspace, (tilo_workspace_agent::OWNER, &list))
-            .await
-        {
-            Ok(agents) => agents?
-                .agents
-                .find(&tilo_resource::Id::from_raw(agent.to_owned()))
-                .cloned()?,
-            Err(error) => {
-                tracing::warn!(%workspace, %agent, %error, "the workspace's agents could not be read: the agent may do nothing");
-                return Some(nothing(workspace));
-            }
-        };
-        Some(if kept.is_active() && (on_turn || !kept.is_sub()) {
-            kept.turn_rules(workspace)
-        } else {
-            nothing(workspace)
-        })
-    }
-
     /// What `workspace`'s list of its agents calls the agent `agent`, when it names it: the name
     /// its person reads, which a question it asks is put under. `None` while the list does not
     /// name it, or cannot be read.
@@ -224,6 +187,24 @@ impl Workspaces {
             .find(&tilo_resource::Id::from_raw(agent.to_owned()))?;
         let name = named.name.trim();
         (!name.is_empty()).then(|| name.to_owned())
+    }
+
+    /// Whether the agent `agent` still works in `workspace`: the workspace's list of its
+    /// agents names it and it is not retired.
+    pub async fn agent_is_active(&self, workspace: &str, agent: &str) -> bool {
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        matches!(
+            self.read_resource::<WorkspaceAgents>(
+                workspace,
+                (tilo_workspace_agent::OWNER, &list)
+            )
+            .await,
+            Ok(Some(agents))
+                if agents
+                    .agents
+                    .find(&tilo_resource::Id::from_raw(agent.to_owned()))
+                    .is_some_and(|kept| kept.is_active())
+        )
     }
 
     /// Let `caller`, on the device `certificate` certifies, take `operation`
@@ -284,15 +265,6 @@ impl Workspaces {
             }
         }
     }
-}
-
-/// Every action anywhere in `workspace` refused: what a retired agent may do.
-fn nothing(workspace: &str) -> Vec<Rule> {
-    vec![Rule::new(
-        tilo_action_policy::TreePath::workspace(workspace).rest(),
-        tilo_action_policy::KindSet::ALL,
-        Answer::Deny,
-    )]
 }
 
 /// Each request a page asks ([`WorkspacesRequest`]), by its name, as the

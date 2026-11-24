@@ -191,7 +191,7 @@ impl Workspaces {
             access
                 .as_acting(acting.clone())
                 .ok_or(ActionCallError::UnknownAction)?
-                .granted(caller.granted(&[]))
+                .granted(caller.granted())
         } else {
             access
         };
@@ -350,10 +350,6 @@ impl Workspaces {
         if policy.active_role(&person).is_none() {
             return false;
         }
-        let bound = turn
-            .bound
-            .map(|bound| tilo_action_policy::roles::agent_bound(agent, &person, bound))
-            .unwrap_or_default();
         // The agent works on its asker's word: it reaches what they may, as its own member.
         let acting = tilo_action_policy::Acting::handed_agent(agent, person.as_str());
         let Some(access) =
@@ -361,7 +357,7 @@ impl Workspaces {
         else {
             return false;
         };
-        let access = access.granted(bound);
+        let access = access.granted(turn.caller.granted());
         let node = store.node(access.workspace(), action);
         access.answer(&node, effect, &Context::at_time(tilo_clock::wall())) != Answer::Deny
     }

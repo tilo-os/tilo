@@ -318,9 +318,8 @@ fn a_moderation_turn_removes_a_message_only_when_the_moderator_who_saved_it_may(
         )
     };
     // The caller the engine builds for a triggered turn of `scout` answering `author`, saved by
-    // `saver`: delegated by the agent's person, answering the author, bounded by the saver and
-    // by the bound the workspace's list of its agents keeps for it.
-    let caller = |saver: &str, bound: Vec<Rule>| {
+    // `saver`: delegated by the agent's person, answering the author, bounded by the saver.
+    let caller = |saver: &str| {
         tilo_actions::remote::Caller::delegated_agent(
             SCOUT,
             root.verifying_key().to_bytes(),
@@ -328,37 +327,34 @@ fn a_moderation_turn_removes_a_message_only_when_the_moderator_who_saved_it_may(
         )
         .in_workspace(id.clone())
         .on_roster(1, person_bytes(&author))
-        .held_to(bound)
         .agent_of(saver)
     };
-    let removes =
-        |policy: &WorkspacePolicy, saver: &str, bound: Vec<Rule>, messages: &mut Vec<String>| {
-            let caller = caller(saver, bound);
-            let access = MemberAccess::new(policy.clone(), caller.acting().clone())
-                .granted(caller.granted(&[]));
-            let now = tilo_clock::wall();
-            let answered =
-                access.answer(&delete_at(), ActionKind::Undoable, &Context::at_time(now));
-            if answered == Answer::Allow {
-                messages.retain(|message| message != "m-1");
-            }
-            answered
-        };
+    let removes = |policy: &WorkspacePolicy, saver: &str, messages: &mut Vec<String>| {
+        let caller = caller(saver);
+        let access =
+            MemberAccess::new(policy.clone(), caller.acting().clone()).granted(caller.granted());
+        let now = tilo_clock::wall();
+        let answered = access.answer(&delete_at(), ActionKind::Undoable, &Context::at_time(now));
+        if answered == Answer::Allow {
+            messages.retain(|message| message != "m-1");
+        }
+        answered
+    };
 
     let moderator = with_agent();
     let mut posted = vec!["m-1".to_owned()];
     assert_eq!(
-        removes(&moderator, &owner, Vec::new(), &mut posted),
+        removes(&moderator, &owner, &mut posted),
         Answer::Allow,
         "the Moderator who saved the watch may delete another's message, and so may the agent"
     );
     assert!(posted.is_empty(), "the message is removed from the channel");
 
     // The turn also records its decision on the moderation record, under the same line.
-    let decides = |policy: &WorkspacePolicy, saver: &str, bound| {
-        let caller = caller(saver, bound);
+    let decides = |policy: &WorkspacePolicy, saver: &str| {
+        let caller = caller(saver);
         let access =
-            MemberAccess::new(policy.clone(), caller.acting().clone()).granted(caller.granted(&[]));
+            MemberAccess::new(policy.clone(), caller.acting().clone()).granted(caller.granted());
         let node = tilo_actions::action_node(
             &TreePath::workspace(&id),
             CHAT,
@@ -374,19 +370,19 @@ fn a_moderation_turn_removes_a_message_only_when_the_moderator_who_saved_it_may(
         )
     };
     assert_eq!(
-        decides(&moderator, &owner, Vec::new()),
+        decides(&moderator, &owner),
         Answer::Allow,
         "the agent records its decision where it may and the Moderator allows"
     );
     assert_eq!(
-        decides(&denying(), &member, Vec::new()),
+        decides(&denying(), &member),
         Answer::Deny,
         "a member who may not decide reports bounds the decision too"
     );
 
     let mut posted = vec!["m-1".to_owned()];
     assert_eq!(
-        removes(&denying(), &member, Vec::new(), &mut posted),
+        removes(&denying(), &member, &mut posted),
         Answer::Deny,
         "a member who saved the watch may not delete another's message, so the turn may not"
     );
@@ -400,7 +396,7 @@ fn a_moderation_turn_removes_a_message_only_when_the_moderator_who_saved_it_may(
     )];
     let mut posted = vec!["m-1".to_owned()];
     assert_eq!(
-        removes(&moderator, &owner, bounded, &mut posted),
+        removes(&moderator, &owner, &mut posted),
         Answer::Deny,
         "the agent's own grants must allow it too"
     );

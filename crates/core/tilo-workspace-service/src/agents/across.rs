@@ -9,7 +9,7 @@
 //! Whom it answers, decided again at every call:
 //!
 //! - a turn this server carries out ([`Workspaces::asked_turn`]): never a sub-agent's,
-//!   and an agent its entry narrows only where a rule of its own names the action ([`bound_allows`]);
+//!   and an agent the workspace's answers name the action for ([`agent_policy_allows`]);
 //! - in a workspace that is its person's own: one this server keeps as theirs
 //!   ([`Workspaces::owns`]), or, on a server that keeps none for people, one they are the
 //!   owner of;
@@ -57,7 +57,7 @@ use super::turn_provider::{Ending, Rows};
 use super::{Turn, TurnProvider, TurnScope, WorkspaceId};
 use crate::environment::EnvironmentRegistry;
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::bound_allows;
+use crate::workspaces::hosted_use::agent_policy_allows;
 
 /// The provider a turn's tools find its person's other workspaces under.
 const PROVIDER: &str = "tilo.other-workspaces";
@@ -147,10 +147,7 @@ impl TurnElsewhere {
         if self.agent.is_sub() {
             return Err(Refusal::Unknown);
         }
-        let bound = self
-            .agent
-            .bound_rules()
-            .map(|_| self.agent.turn_rules(&self.workspace));
+        let policy = self.workspaces.policy_of(&self.workspace).await;
         let Ok(asked) = self
             .workspaces
             .asked_turn_of(self.workspace_id, caller)
@@ -163,7 +160,12 @@ impl TurnElsewhere {
             address: tilo_actions::ActionAddress::new(MINE, action),
         };
         if asked.agent != self.agent.id.0
-            || !bound_allows(bound.as_deref(), &self.workspace, &target)
+            || !agent_policy_allows(
+                policy.as_ref(),
+                Some(asked.agent.as_str()),
+                &self.workspace,
+                &target,
+            )
         {
             return Err(Refusal::Unknown);
         }

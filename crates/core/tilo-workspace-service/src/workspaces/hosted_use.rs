@@ -58,7 +58,7 @@ use std::path::Path;
 
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{ActionKind, Answer, Rule, TreePath};
+use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, TreePath, WorkspacePolicy};
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, UnknownAction};
 #[cfg(feature = "agents")]
 use tilo_actions::remote::CatalogueRow;
@@ -115,37 +115,61 @@ pub(crate) struct HostedTurn<'a> {
     /// The caller the turn's tools act as: the asking person's session,
     /// handed to the agent on this turn.
     pub(crate) caller: &'a Caller,
-    /// The rules the turn is decided by, where anything narrows its agent:
-    /// what its entry bounds it to and, for a sub-agent, what keeps it from
-    /// whoever started it. `None` for an agent nothing narrows.
-    pub(crate) bound: Option<&'a [Rule]>,
+    /// The workspace's policy, where the agent's own answers decide what it may take:
+    /// `None` for a turn nothing narrows ([`Workspaces::asked_turn_of`]).
+    pub(crate) policy: Option<&'a WorkspacePolicy>,
 }
 
 impl HostedTurn<'_> {
-    /// Whether the rules that narrow the turn's agent let it take `target`
-    /// in `workspace`: an agent nothing narrows may, a narrowed one only
-    /// where a rule names this very action and does not deny it.
+    /// Whether the workspace's answer for the turn's agent lets it take `target` in
+    /// `workspace`: one nothing narrows may, and a narrowed one only where the workspace's
+    /// grants on the agent allow this very action.
     #[must_use]
     pub(crate) fn may_take(&self, workspace: &str, target: &RemoteActionTarget) -> bool {
-        bound_allows(self.bound, workspace, target)
+        agent_may_take(self.policy, self.caller, workspace, target)
     }
 }
 
-/// Whether the rules `bound` narrow a turn to let it take `target` in `workspace`: an agent
-/// nothing narrows (`None`) may, a narrowed one only where a rule names this very action and
-/// does not deny it.
+/// Whether the workspace's policy lets the agent `caller` acts as take `target` in `workspace`:
+/// an Allow of the workspace's on that very action, and nothing where no policy narrows it.
 #[must_use]
-pub fn bound_allows(bound: Option<&[Rule]>, workspace: &str, target: &RemoteActionTarget) -> bool {
-    let Some(bound) = bound else {
+pub fn agent_may_take(
+    policy: Option<&WorkspacePolicy>,
+    caller: &Caller,
+    workspace: &str,
+    target: &RemoteActionTarget,
+) -> bool {
+    agent_policy_allows(policy, caller.acting().agent_id(), workspace, target)
+}
+
+/// Whether the workspace's policy lets `agent` take `target` in `workspace`: an Allow of the
+/// workspace's on that very action, and nothing where it keeps no policy.
+#[must_use]
+pub fn agent_policy_allows(
+    policy: Option<&WorkspacePolicy>,
+    agent: Option<&str>,
+    workspace: &str,
+    target: &RemoteActionTarget,
+) -> bool {
+    let Some(policy) = policy else {
         return true;
+    };
+    let Some(agent) = agent else {
+        return false;
     };
     let node = TreePath::workspace(workspace)
         .app(target.provider.clone())
         .kind(target.address.resource.clone())
         .resource(target.address.resource.clone())
         .action(target.address.action.clone());
-    let granted = tilo_automation::grant_answer(bound, &node, ActionKind::Outside);
-    granted.names_action && granted.answer != Answer::Deny
+    Party::new(vec![Grantee::agent(agent.to_owned())], &policy.grants)
+        .decide(
+            &node,
+            ActionKind::Outside,
+            &Context::at_time(tilo_clock::wall()),
+        )
+        .answer
+        == Answer::Allow
 }
 
 /// What an agent's turn asks of what its workspace keeps for the person who asked it, as the
@@ -241,10 +265,10 @@ fn on_turn(caller: &Caller) -> bool {
 }
 
 /// The turn an agent works as the workspace's list of its agents keeps it: the workspace and
-/// the rules that narrow the agent now, `None` for an agent nothing narrows.
+/// its policy, which the agent's own answers decide with.
 struct KeptTurn {
     workspace: WorkspaceId,
-    bound: Option<Vec<Rule>>,
+    policy: WorkspacePolicy,
 }
 
 impl KeptTurn {
@@ -253,7 +277,7 @@ impl KeptTurn {
         HostedTurn {
             workspace: self.workspace,
             caller,
-            bound: self.bound.as_deref(),
+            policy: Some(&self.policy),
         }
     }
 }
@@ -264,11 +288,12 @@ impl Workspaces {
     async fn kept_turn(&self, caller: &Caller) -> Option<KeptTurn> {
         let workspace = caller.workspace().and_then(WorkspaceId::parse)?;
         let agent = caller.acting().agent_id()?;
-        let bound = self.kept_bound(&workspace.to_string(), agent, true).await?;
-        Some(KeptTurn {
-            workspace,
-            bound: Some(bound).filter(|bound| !bound.is_empty()),
-        })
+        let named = workspace.to_string();
+        let policy = self.policy_of(&named).await?;
+        if !self.agent_is_active(&named, agent).await {
+            return None;
+        }
+        Some(KeptTurn { workspace, policy })
     }
 
     /// Answer `request`, what an agent's turn asks of what its workspace keeps for the person
@@ -804,7 +829,7 @@ impl Workspaces {
         self.asked_turn(&HostedTurn {
             workspace,
             caller,
-            bound: None,
+            policy: None,
         })
         .await
     }

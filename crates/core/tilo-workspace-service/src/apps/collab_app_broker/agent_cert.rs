@@ -80,7 +80,7 @@ impl AppBrokerState {
         .map_err(|error| refused(format!("{}: {error}", error.code())))?;
         // A key its person's device made acts only as far as the record it read bounds it: one
         // whose bound nobody read is refused, never left unbounded.
-        if cert.capabilities.agent.is_some() && caller.granted(&[]).is_empty() {
+        if cert.capabilities.agent.is_some() && caller.granted().is_empty() {
             return Err(refused(
                 "the agent's bound was not read, so it may act on nothing".into(),
             ));

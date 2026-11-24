@@ -273,15 +273,32 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
         let workspace = host.workspace().to_owned();
         let workspaces = host.daemon().workspaces().clone();
         let cert = workspaces.device_cert().clone();
-        let agent = |denied: &[&str]| {
-            let read = tilo_action_policy::KindSet::of(tilo_action_policy::ActionKind::Read);
-            let rules = denied.iter().map(|app| {
-                let node = tilo_action_policy::TreePath::workspace(&workspace).app(*app);
-                tilo_action_policy::Rule::new(node, read, tilo_action_policy::Answer::Deny)
-            });
+        let agent = async |denied: &[&str]| {
+            let grants: Vec<_> = denied
+                .iter()
+                .map(|app| {
+                    tilo_action_policy::agent_answers::grant(
+                        &workspace,
+                        "scout",
+                        (
+                            &tilo_action_policy::agent_answers::AnswerScope::app(*app),
+                            tilo_action_policy::ActionKind::Read,
+                        ),
+                        tilo_action_policy::Answer::Deny,
+                        tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
+                    )
+                })
+                .collect();
+            if !grants.is_empty() {
+                tilo_workspace_service::workspaces::fixtures::record_grants(
+                    workspaces.copies(),
+                    &workspace,
+                    &grants,
+                )
+                .await;
+            }
             Caller::delegated_agent("scout", cert.user_public_key, cert.device_public_key)
                 .in_workspace(workspace.clone())
-                .held_to(rules.collect())
         };
         // What a sign-in asked by Mail's connector, or else by the cloud service, is refused with
         // when the account sign-ins answer as `by`.
@@ -301,10 +318,13 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
                 other => panic!("a refusal, not {other:?}"),
             }
         };
-        assert_eq!(refused(agent(&[MAIL]), true).await, MAY_NOT_READ_APP);
+        assert_eq!(refused(agent(&[MAIL]).await, true).await, MAY_NOT_READ_APP);
         let files = tilo_app_id::apps::FILE_EXPLORER;
-        assert_eq!(refused(agent(&[files]), false).await, MAY_NOT_READ_APP);
-        let reading = refused(agent(&[]), true).await;
+        assert_eq!(
+            refused(agent(&[files]).await, false).await,
+            MAY_NOT_READ_APP
+        );
+        let reading = refused(agent(&[]).await, true).await;
         assert_ne!(
             reading, MAY_NOT_READ_APP,
             "reading Mail, the account decides: {reading}"

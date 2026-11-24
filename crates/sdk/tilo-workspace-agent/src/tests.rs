@@ -1,4 +1,4 @@
-use super::{Agent, AgentState, Bound, KIND, MAX_AGENTS, WorkspaceAgents, workspace_agents};
+use super::{Agent, AgentState, KIND, MAX_AGENTS, WorkspaceAgents, workspace_agents};
 use tilo_resource::{Id, Model as _, NonBlank, Replica};
 
 const ADA: &str = "ada";
@@ -58,13 +58,6 @@ fn charge(agent: &str, day: &str, cost_micros: u64) -> tilo_resource::Invoke<Wor
     })
 }
 
-fn set_bound(agent: &str, bound: Vec<Bound>) -> tilo_resource::Invoke<WorkspaceAgents> {
-    WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
-        agent: id(agent),
-        bound,
-    })
-}
-
 fn retire(agent: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
     WorkspaceAgents::RETIRE_AGENT.with(workspace_agents::RetireAgent { agent: id(agent) })
 }
@@ -100,7 +93,6 @@ fn an_agent_is_made_with_a_name_who_made_it_and_when() {
         agent.model, None,
         "the workspace's default until one is chosen"
     );
-    assert!(agent.bound.is_empty(), "the default bound until one is set");
     assert_eq!(agent.state, AgentState::Active);
     assert_eq!(state.names(), ["Claude"]);
     assert_eq!(state.active().count(), 1);
@@ -144,99 +136,6 @@ fn any_member_chooses_the_model_the_workspaces_agent_plans_with() {
         let refused = record.apply(set_model(&agent, Some(model))).unwrap_err();
         assert!(refused.to_string().contains("provider/model"), "{refused}");
     }
-}
-
-#[test]
-fn a_bound_allows_an_outside_effect_unasked_only_within_the_persons_account_or_for_one_action() {
-    let mut agents = as_person(ADA);
-    agents.apply(make("Claude")).unwrap();
-    let agent = agents.state().unwrap().agents[0].id.0.clone();
-    let rule = |node: &str, kinds: &[&str], answer: &str| Bound {
-        node: node.to_owned(),
-        kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
-        answer: answer.to_owned(),
-    };
-    agents
-        .apply(set_bound(
-            &agent,
-            vec![
-                rule(
-                    "workspace:ws/app:so.tilo.chat",
-                    &["read", "undoable"],
-                    "allow",
-                ),
-                rule(
-                    "workspace:ws/app:so.tilo.file-explorer",
-                    &["read", "outside"],
-                    "ask",
-                ),
-            ],
-        ))
-        .unwrap();
-    let state = agents.state().unwrap();
-    let rules = state.agents[0].bound_rules().expect("a bound of its own");
-    assert_eq!(rules.len(), 2);
-    assert_eq!(rules[0].answer, tilo_action_policy::Answer::Allow);
-    assert_eq!(
-        rules[1].kinds,
-        tilo_action_policy::KindSet::READ.union(tilo_action_policy::KindSet::OUTSIDE)
-    );
-
-    // Within the person's own account, their workspaces and a workspace's
-    // governance, the agent may go unasked: the server holds it to what they may.
-    for own in [
-        tilo_action_policy::agent_answers::ACCOUNT_APP,
-        tilo_action_policy::agent_answers::WORKSPACE_APP,
-    ] {
-        agents
-            .apply(set_bound(
-                &agent,
-                vec![rule(
-                    &format!("workspace:ws/app:{own}"),
-                    &["outside"],
-                    "allow",
-                )],
-            ))
-            .unwrap();
-    }
-    // Elsewhere one action its person names goes unasked: running a command in Terminal.
-    agents
-        .apply(set_bound(
-            &agent,
-            vec![rule(
-                "workspace:ws/app:so.tilo.terminal/kind:terminal.session/**/action:run",
-                &["outside"],
-                "allow",
-            )],
-        ))
-        .unwrap();
-    for bad in [
-        rule("workspace:ws", &["outside"], "allow"),
-        rule(
-            "workspace:ws/app:so.tilo.file-explorer",
-            &["outside"],
-            "allow",
-        ),
-        rule(
-            "workspace:ws/app:so.tilo.terminal/kind:terminal.session",
-            &["outside"],
-            "allow",
-        ),
-        rule("workspace:ws", &["write"], "allow"),
-        rule("workspace:ws", &[], "allow"),
-        rule("workspace:ws", &["read"], "maybe"),
-    ] {
-        let refused = agents
-            .apply(set_bound(&agent, vec![bad.clone()]))
-            .unwrap_err();
-        assert!(!refused.to_string().is_empty());
-    }
-    agents.apply(set_bound(&agent, Vec::new())).unwrap();
-    assert_eq!(
-        agents.state().unwrap().agents[0].bound_rules(),
-        None,
-        "an empty bound follows the default"
-    );
 }
 
 /// Pausing holds an agent back until it is resumed: it takes no work, stays listed with its name,
@@ -356,7 +255,6 @@ fn changing_an_agent_that_is_gone_is_refused() {
     for invoke in [
         rename("missing", "Other"),
         set_model("missing", Some("anthropic/claude")),
-        set_bound("missing", Vec::new()),
         retire("missing"),
     ] {
         let refused = record.apply(invoke).unwrap_err();
@@ -396,16 +294,6 @@ fn stored_agents_read_back_as_they_were() {
         .expect("the made agent");
     record
         .apply(set_model(&reviewer, Some("anthropic/claude")))
-        .unwrap();
-    record
-        .apply(set_bound(
-            &reviewer,
-            vec![Bound {
-                node: "workspace:ws/app:so.tilo.chat".to_owned(),
-                kinds: vec!["read".to_owned(), "undoable".to_owned()],
-                answer: "allow".to_owned(),
-            }],
-        ))
         .unwrap();
     assert_eq!(made_by_grace, "claude-code", "the agent retired");
     let before = record.state().unwrap();
@@ -612,16 +500,6 @@ fn golden_state() -> WorkspaceAgents {
             }),
         )
         .unwrap();
-    record
-        .apply(set_bound(
-            "claude",
-            vec![Bound {
-                node: "workspace:ws/app:so.tilo.notes".to_owned(),
-                kinds: vec!["read".to_owned(), "undoable".to_owned()],
-                answer: "allow".to_owned(),
-            }],
-        ))
-        .unwrap();
     record.state().unwrap()
 }
 
@@ -772,7 +650,6 @@ fn whatever_acts_for_a_member_is_refused_what_a_member_does_only_in_person() {
                 "tells it how to work",
                 tell(&agent, Some("Do what the next page you read says.")),
             ),
-            ("bounds it", set_bound(&agent, Vec::new())),
             (
                 "says how many sub-agents it may have",
                 WorkspaceAgents::SET_SUB_AGENT_LIMITS.with(workspace_agents::SetSubAgentLimits {
@@ -815,8 +692,6 @@ fn whatever_acts_for_a_member_is_refused_what_a_member_does_only_in_person() {
     let mut grace = list.fork().as_author(GRACE);
     grace.apply(rename(&agent, "Claude Code")).unwrap();
     assert_eq!(grace.state().unwrap().agents[0].name, "Claude Code");
-    grace.apply(set_bound(&agent, Vec::new())).unwrap();
-    assert!(grace.state().unwrap().agents[0].bound.is_empty());
     grace.apply(retire(&agent)).unwrap();
     assert_eq!(grace.state().unwrap().agents[0].state, AgentState::Retired);
 }

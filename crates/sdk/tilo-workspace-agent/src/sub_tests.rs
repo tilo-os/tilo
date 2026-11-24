@@ -563,10 +563,6 @@ fn only_its_own_runner_says_how_a_sub_agent_stands() {
 #[test]
 fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
     let mut record = team();
-    let unbound = WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
-        agent: id("lead"),
-        bound: Vec::new(),
-    });
     let attempts: Vec<(&str, Invoke<WorkspaceAgents>)> = vec![
         (
             "make an agent nothing binds",
@@ -578,7 +574,6 @@ fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
                 mcp_client: None,
             }),
         ),
-        ("take off its own bound", unbound.clone()),
         (
             "retire the agent that started it",
             WorkspaceAgents::RETIRE_AGENT.with(workspace_agents::RetireAgent { agent: id(MAIN) }),
@@ -623,13 +618,6 @@ fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
             "{what} changed nothing"
         );
     }
-    // Nor does the agent that started it take a bound off: what an agent may do is a member's
-    // to say, in person.
-    let mut main = record.fork().as_agent_for(MAIN, ADA);
-    let refused = main.apply(unbound.clone()).unwrap_err();
-    assert!(refused.to_string().contains("in person"), "{refused}");
-    let mut ada = main.fork().as_author(ADA);
-    ada.apply(unbound).unwrap();
 }
 
 /// Whoever started sub-agents reads its team: those it started and theirs, and nothing of

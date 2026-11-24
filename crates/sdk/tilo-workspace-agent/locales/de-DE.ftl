@@ -8,7 +8,6 @@ tilo-workspace-agent-rename-agent = Agent umbenennen
 tilo-workspace-agent-set-agent-avatar = Agentenbild festlegen
 tilo-workspace-agent-set-agent-model = Agentenmodell wählen
 tilo-workspace-agent-set-agent-instruction = Dem Agenten sagen, wie er arbeitet
-tilo-workspace-agent-set-agent-bound = Grenzen festlegen
 tilo-workspace-agent-pause-agent = Agent pausieren
 tilo-workspace-agent-resume-agent = Agent fortsetzen
 tilo-workspace-agent-retire-agent = Agent außer Dienst stellen

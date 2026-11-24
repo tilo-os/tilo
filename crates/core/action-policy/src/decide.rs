@@ -673,13 +673,10 @@ impl Authority<'_> {
     }
 }
 
-/// Whether `grant` is one an agent's person set for it: its bound, as the workspace's settings
-/// under Agents keep it ([`crate::roles::agent_bound`]), or an answer given to it
+/// Whether `grant` is an answer an agent's person gave it
 /// ([`crate::agent_answers`]).
 fn set_by_its_person(grant: &Grant) -> bool {
     crate::agent_answers::is_answer(grant)
-        || matches!(&grant.grantee, crate::Grantee::Member(crate::MemberId::Agent(agent))
-            if crate::roles::is_agent_bound(grant, agent))
 }
 
 /// What keeps the acting from an action it is refused ([`Verdict::refused_by`]).

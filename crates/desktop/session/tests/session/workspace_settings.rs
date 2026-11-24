@@ -133,7 +133,10 @@ fn search_open(session: &Session) -> Option<ResourceSpec> {
             }
         })
     }
-    find(&session.resources(), tilo_session_core::desktop::verbs::SEARCH_RESOURCE)
+    find(
+        &session.resources(),
+        tilo_session_core::desktop::verbs::SEARCH_RESOURCE,
+    )
 }
 
 /// The People tab gives each member another role, and the workspace holds both afterwards, with the
@@ -619,32 +622,21 @@ fn changes_answer(session: &Session, app: &str) -> (usize, bool) {
     (line.answer, row.customised)
 }
 
-/// The bound the workspace's list of its agents keeps for `agent`.
-fn bound_of(session: &Session, agent: &str) -> Vec<tilo_app::tilo_workspace_agent::Bound> {
-    let workspace = session.handle().read(|tree| {
-        tree.active_workspace()
-            .expect("a workspace")
-            .id()
-            .to_string()
-    });
-    let stored = session
-        .stored_record(
-            tilo_app::tilo_workspace_agent::OWNER,
-            &workspace,
-            &collab_types::workspace_document_id(tilo_app::tilo_workspace_agent::KIND),
-        )
-        .expect("the list is kept here");
-    let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
-    let doc = automerge::AutoCommit::load_with_options(&stored, options).expect("the list");
-    tilo_app::tilo_resource::Reader::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::read(&doc)
-        .expect("the list reads")
-        .state()
-        .agents
-        .iter()
-        .find(|held| held.id.0 == agent)
-        .expect("the list names the agent")
-        .bound
-        .clone()
+/// The answers the workspace's policy keeps for `agent`.
+fn answers_of(session: &Session, agent: &str) -> Vec<tilo_action_policy::Grant> {
+    session.handle().read(|tree| {
+        let workspace = tree.active_workspace().expect("a workspace");
+        workspace
+            .policy
+            .grants
+            .iter()
+            .filter(|grant| {
+                tilo_action_policy::agent_answers::is_answer(grant)
+                    && grant.grantee == tilo_action_policy::Grantee::agent(agent)
+            })
+            .cloned()
+            .collect()
+    })
 }
 
 /// Let the session answer an ask the sheet made, and the sheet settle.
@@ -816,15 +808,16 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         (1, true),
         "the review shows the person's answer, and that it was set here"
     );
-    let bound = bound_of(&session, "helper");
+    let answers = answers_of(&session, "helper");
     assert_eq!(
-        bound.len(),
+        answers.len(),
         1,
-        "the answer is a rule of the agent's bound: {bound:?}"
+        "the answer is a grant of the workspace's on the agent: {answers:?}"
     );
     assert!(
-        bound[0].node.ends_with("/app:so.tilo.notes") && bound[0].answer == "ask",
-        "{bound:?}"
+        answers[0].node.to_string().ends_with("/app:so.tilo.notes")
+            && answers[0].answer == tilo_action_policy::Answer::Ask,
+        "{answers:?}"
     );
 
     // change its agents, and the review says it chose.
@@ -852,8 +845,8 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "the app follows the admission again, whose cap admits changes in it"
     );
     assert!(
-        bound_of(&session, "helper").is_empty(),
-        "the bound is the default again"
+        answers_of(&session, "helper").is_empty(),
+        "the workspace keeps no answer for it again"
     );
 
     activate(&mut app, "Remove");

@@ -55,8 +55,6 @@ const MAX_KEEPER: usize = 4096;
 
 const MAX_MODEL: usize = 200;
 
-pub const MAX_BOUND: usize = 64;
-
 /// The most an agent's own instruction holds, in bytes.
 pub const MAX_INSTRUCTION: usize = 8 * 1024;
 
@@ -116,74 +114,6 @@ pub struct Spent {
     pub day: String,
     /// What it spent that day, in millionths of the currency.
     pub cost_micros: u64,
-}
-
-/// One rule of an agent's bound, as the record stores it: the node, the
-/// action kinds and the answer, each in the text form
-/// [`tilo_action_policy::Rule`] is stored and sent in.
-///
-/// The policy's own [`Rule`](tilo_action_policy::Rule) is serde only, which a
-/// record field and an action's argument cannot hold; this is the one place
-/// its three parts cross between the two.
-#[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Bound {
-    /// The node: `workspace:<id>/app:<app>/kind:<kind>/…`, `*` for an open
-    /// level and `**` for any depth.
-    pub node: String,
-    /// The action kinds: `read`, `undoable`, `outside`.
-    pub kinds: Vec<String>,
-    /// `allow`, `ask` or `deny`.
-    pub answer: String,
-}
-
-impl Bound {
-    #[must_use]
-    pub fn of(rule: &tilo_action_policy::Rule) -> Self {
-        Self {
-            node: rule.node.to_string(),
-            kinds: rule.kinds.iter().map(|kind| kind.to_string()).collect(),
-            answer: rule.answer.to_string(),
-        }
-    }
-
-    pub fn rule(&self) -> Result<tilo_action_policy::Rule, Refusal> {
-        use std::str::FromStr as _;
-        let node = tilo_action_policy::TreePath::from_str(&self.node)
-            .map_err(|error| Refusal::new(format!("{error}")))?;
-        let mut kinds = tilo_action_policy::KindSet::NONE;
-        for key in &self.kinds {
-            let kind = match key.as_str() {
-                "read" => tilo_action_policy::ActionKind::Read,
-                "undoable" => tilo_action_policy::ActionKind::Undoable,
-                "outside" => tilo_action_policy::ActionKind::Outside,
-                other => {
-                    return Err(Refusal::new(format!(
-                        "{other:?} is not an action kind: read, undoable or outside"
-                    )));
-                }
-            };
-            kinds = kinds.with(kind);
-        }
-        if kinds.is_empty() {
-            return Err(Refusal::new("a rule names at least one action kind"));
-        }
-        let answer = tilo_action_policy::Answer::parse(&self.answer)
-            .ok_or_else(|| Refusal::new("an answer is allow, ask or deny"))?;
-        Ok(tilo_action_policy::Rule::new(node, kinds, answer))
-    }
-
-    /// Whether its person may give it: an outside effect is carried out unasked only within their
-    /// own account, or for one action they named
-    /// ([`tilo_action_policy::agent_answers::may_give`]).
-    fn may_be_given(&self) -> Result<bool, Refusal> {
-        use tilo_action_policy::agent_answers::{AnswerScope, may_give};
-        let rule = self.rule()?;
-        let scope = AnswerScope::of_node(&rule.node);
-        Ok(rule
-            .kinds
-            .iter()
-            .all(|kind| may_give(scope.as_ref(), kind, rule.answer)))
-    }
 }
 
 /// The most devices besides its person's own that one agent may wait on or run on.
@@ -255,8 +185,6 @@ pub struct Agent {
     /// The MCP client it connects as (`Claude Code`); `None` for an agent a device of the
     /// workspace works.
     pub mcp_client: Option<String>,
-    /// What it may do, narrowed from the workspace's grants; empty follows the default.
-    pub bound: Vec<Bound>,
     /// The most the workspace lets it spend in a day, in millionths of the currency;
     /// `None` spends unmetered.
     pub spend_limit_micros: Option<u64>,
@@ -340,33 +268,10 @@ impl Agent {
             .is_none_or(|limit| self.spent_on(day) < limit)
     }
 
-    /// What it may do, as the policy reads it: the stored narrowing, or `None` for the
-    /// workspace's default. A rule the policy does not read cannot be here, since the
-    /// record's own check refuses one first.
-    #[must_use]
-    pub fn bound_rules(&self) -> Option<Vec<tilo_action_policy::Rule>> {
-        if self.bound.is_empty() {
-            return None;
-        }
-        Some(
-            self.bound
-                .iter()
-                .filter_map(|bound| bound.rule().ok())
-                .collect(),
-        )
-    }
-
     /// Whether an agent started it for the person it works for ([`sub`]).
     #[must_use]
     pub const fn is_sub(&self) -> bool {
         self.sub.is_some()
-    }
-
-    /// The rules every turn of it carries: what its record bounds it to
-    /// ([`Self::bound_rules`]), none where it bounds it to nothing.
-    #[must_use]
-    pub fn turn_rules(&self, _workspace: &str) -> Vec<tilo_action_policy::Rule> {
-        self.bound_rules().unwrap_or_default()
     }
 }
 
@@ -457,7 +362,6 @@ impl WorkspaceAgents {
             acts_for,
             model,
             mcp_client,
-            bound: Vec::new(),
             spend_limit_micros: None,
             spent: None,
             state: AgentState::Active,
@@ -644,40 +548,6 @@ impl WorkspaceAgents {
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
         found.instruction = told_instruction(instruction)?;
-        Ok(())
-    }
-
-    /// Bound what an agent may do: the rules narrow what the workspace's grants allow, and
-    /// none follows the default.
-    #[action(item = agents)]
-    pub fn set_agent_bound(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The agent")] agent: Id,
-        #[param("The rules: node, kinds and answer; none for the default")] bound: Vec<Bound>,
-    ) -> Result<(), Refusal> {
-        self.not_by_sub_agent(cx)?;
-        // A member's, in person: an agent bounds none, itself included, or it could take off
-        // what narrows it.
-        in_person(cx)?;
-        if bound.len() > MAX_BOUND {
-            return Err(Refusal::new(format!(
-                "a bound holds at most {MAX_BOUND} rules"
-            )));
-        }
-        for rule in &bound {
-            if !rule.may_be_given()? {
-                return Err(Refusal::new(
-                    "an agent acts unasked on an outside effect only within its person's own account, \
-                     or for one action they name",
-                ));
-            }
-        }
-        let found = self
-            .agents
-            .find_mut(&agent)
-            .ok_or_else(|| no_such(&agent))?;
-        found.bound = bound;
         Ok(())
     }
 
@@ -972,19 +842,6 @@ impl WorkspaceAgents {
                     .is_some_and(|certificate| certificate.len() > MAX_CERTIFICATE)
                 {
                     return Err(Refusal::new("a key's certificate is too long"));
-                }
-            }
-            if agent.bound.len() > MAX_BOUND {
-                return Err(Refusal::new(format!(
-                    "a bound holds at most {MAX_BOUND} rules"
-                )));
-            }
-            for rule in &agent.bound {
-                if !rule.may_be_given()? {
-                    return Err(Refusal::new(
-                        "an agent acts unasked on an outside effect only within its person's own account, \
-                     or for one action they name",
-                    ));
                 }
             }
         }

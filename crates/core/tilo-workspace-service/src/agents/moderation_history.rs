@@ -139,7 +139,7 @@ impl TurnHistory {
         };
         let now = tilo_clock::wall();
         let access =
-            MemberAccess::new(policy.clone(), caller.acting().clone()).granted(caller.granted(&[]));
+            MemberAccess::new(policy.clone(), caller.acting().clone()).granted(caller.granted());
         let node = tilo_actions::action_node(&policy.node(), app, NODE_KIND, app, None, action);
         match access.answer(&node, kind, &Context::at_time(now)) {
             Answer::Allow => Ok(()),

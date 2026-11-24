@@ -47,7 +47,8 @@ use super::turn_provider::{Ending, Rows};
 use super::windows::{PAGE_RESOURCE, Windows, page_action};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::bound_allows;
+use crate::workspaces::hosted_use::agent_policy_allows;
+use tilo_action_policy::WorkspacePolicy;
 use tilo_app_id::apps::BROWSER as APP;
 
 /// The Browser's page action that sends its page to an address.
@@ -152,9 +153,10 @@ pub(super) struct TurnPages {
     /// The workspace the turn works in: its window is reached, and no other.
     workspace: String,
     workspace_id: WorkspaceId,
-    /// What narrows the turn's agent, where anything does: the rules a page operation must name
-    /// to be granted.
-    bound: Option<Vec<tilo_action_policy::Rule>>,
+    /// The workspace's policy, whose answers on the turn's agent decide what it may take here.
+    policy: Option<WorkspacePolicy>,
+    /// The agent the turn works as.
+    agent: String,
     /// Whether this turn is offered the window's page at all: one this server carries out turn, of an
     /// agent its rules do not keep from Browser.
     offered: bool,
@@ -170,9 +172,15 @@ impl TurnPages {
         reply: &Reply,
     ) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
-        let narrowed = turn.agent.bound_rules();
+        let policy = workspaces.policy_of(&reply.workspace).await;
+        let agent = turn.agent.id.0.clone();
         let offered = browsers.is_some()
-            && bound_allows(narrowed.as_deref(), &reply.workspace, &on_browser(NAVIGATE))
+            && agent_policy_allows(
+                policy.as_ref(),
+                Some(&agent),
+                &reply.workspace,
+                &on_browser(NAVIGATE),
+            )
             && workspaces
                 .asked_turn_of(workspace_id, &reply.caller)
                 .await
@@ -182,18 +190,22 @@ impl TurnPages {
             workspaces: workspaces.clone(),
             workspace: reply.workspace.clone(),
             workspace_id,
-            bound: narrowed,
+            policy,
+            agent,
             offered,
         })
     }
 
-    /// Whether this turn's agent was granted the page operation `action`: a rule of its own
-    /// names that very action and does not deny it. Nothing narrows an agent nothing bounds, so
-    /// page operations, which change what a page said, take a rule that names them.
+    /// Whether the workspace allows this turn's agent the page operation `action`: an answer of
+    /// the workspace's names that very action. Page operations, which change what a page said,
+    /// take such an answer.
     fn granted(&self, action: &str) -> bool {
-        self.bound
-            .as_deref()
-            .is_some_and(|rules| bound_allows(Some(rules), &self.workspace, &on_browser(action)))
+        agent_policy_allows(
+            self.policy.as_ref(),
+            Some(&self.agent),
+            &self.workspace,
+            &on_browser(action),
+        )
     }
 
     /// The window up in the turn's workspace, where this turn is offered its page.
@@ -226,7 +238,7 @@ impl TurnPages {
         if !navigating && reading.is_none() && operating.is_none() {
             return Err(ActionCallError::UnknownAction);
         }
-        if !bound_allows(self.bound.as_deref(), &self.workspace, &on_browser(action)) {
+        if !self.granted(action) {
             return Err(ActionCallError::refused(NOT_YOURS));
         }
         let Some(browsers) = &self.browsers else {

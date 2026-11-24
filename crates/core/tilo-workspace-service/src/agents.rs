@@ -645,8 +645,7 @@ async fn agent_caller(
     Ok(Caller::delegated_agent(agent.id.0.clone(), root, key)
         .in_workspace(workspace.to_string())
         .named(&agent.name)
-        .on_roster(agent.created_at, person)
-        .held_to(agent.turn_rules(&workspace.to_string())))
+        .on_roster(agent.created_at, person))
 }
 
 /// Which agents an engine acts as: those whose key the device makes from a root it holds. The agent's own
@@ -2216,51 +2215,32 @@ fn made_resource(output: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// What the agent `caller` is held to in `workspace`, as the workspace's list of its agents
-/// keeps it: the bound kept for it there, and nothing at all for one that was retired, or for a
-/// sub-agent outside a turn of its starter's chain.
-/// Answered for an agent a person's own device handed its session to: one this server works for
-/// its keeper on a turn, or one a person's own computer works with under its name (`tilo
-/// login`, then `tilo mcp`, whose id is [`tilo_actions::remote::device_agent_id`]).
-///
-/// A computer's agent the list does not name yet is added as it first arrives or acts: kept by
-/// its person and marked as the client it connects as, so the workspace's Agents tab shows it
-/// and a bound set there narrows what it does. It is added once, under the name it came with; a
-/// name its keeper gives it later stays. The server writes it as the workspace's governor, for
-/// the person, as it counts what its own agents spend.
-///
-/// A list this server cannot read holds the agent to nothing: what it may do is never more than
-/// the list says.
-pub async fn workspace_agent(
-    workspaces: &Workspaces,
-    workspace: WorkspaceId,
-    caller: &Caller,
-) -> Vec<tilo_action_policy::Rule> {
+/// Keep the agent `caller` works in `workspace`'s list of its agents: a computer's agent the
+/// list does not name yet is added as it first arrives or acts, so the workspace's Agents tab
+/// shows it. It is added once, under the name it came with; a name its keeper gives it later
+/// stays.
+pub async fn workspace_agent(workspaces: &Workspaces, workspace: WorkspaceId, caller: &Caller) {
     let (Some(agent), Some(person)) = (
         caller.acting().agent_id(),
         caller.acting().acted_for_person(),
     ) else {
-        return Vec::new();
+        return;
     };
     if !caller.is_device_agent() {
-        return Vec::new();
+        return;
     }
     let workspace = workspace.to_string();
-    if let Some(bound) = workspaces
-        .kept_bound(&workspace, agent, caller.turn().is_some())
-        .await
-    {
-        return bound;
+    if workspaces.agent_name(&workspace, agent).await.is_some() {
+        return;
     }
     let (Some(user), Some(name)) = (caller.user_public_key(), caller.agent_name()) else {
-        return Vec::new();
+        return;
     };
     if tilo_actions::remote::device_agent_id(user, name) == agent
         && let Err(error) = list_agent(workspaces, &workspace, (agent, name), person).await
     {
         tracing::warn!(%workspace, %agent, %error, "a computer's agent is not listed in the workspace's agents");
     }
-    Vec::new()
 }
 
 /// Name the agent `agent` in `workspace`'s list as `name`, keeping its id: what the client the
@@ -2377,14 +2357,7 @@ async fn list_agent(
             // Another arrival listed it first: the workspace refused the second write, and the
             // list names the agent already, which is all this was for.
             match answer(receipt.status) {
-                Err(_)
-                    if workspaces
-                        .kept_bound(workspace, agent, caller.turn().is_some())
-                        .await
-                        .is_some() =>
-                {
-                    Ok(())
-                }
+                Err(_) if workspaces.agent_name(workspace, agent).await.is_some() => Ok(()),
                 other => other,
             }
         }

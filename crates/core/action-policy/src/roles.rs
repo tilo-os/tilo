@@ -1216,39 +1216,6 @@ pub fn certified_agent(workspace: &str, agent: &str, person: &str) -> Vec<Grant>
     agent_preset(workspace, agent, person)
 }
 
-/// The rules of `agent`'s bound (`bound`; empty follows the default, which is
-/// the cap's own) as grants, given by `person`: what narrows its preset
-/// ([`agent_preset`]) to what its resource or the workspace's list keeps.
-#[must_use]
-pub fn agent_bound(agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
-    let grantee = Grantee::agent(agent.to_owned());
-    let granted_by = Grantee::person(person.to_owned());
-    bound
-        .iter()
-        .enumerate()
-        .map(|(index, rule)| Grant {
-            id: GrantId(format!("{}{index}", bound_prefix(agent))),
-            grantee: grantee.clone(),
-            node: rule.node.clone(),
-            kinds: rule.kinds,
-            answer: rule.answer,
-            lifetime: Lifetime::UntilRevoked,
-            granted_by: granted_by.clone(),
-        })
-        .collect()
-}
-
-/// Where the ids of the grants [`agent_bound`] makes of `agent`'s bound begin.
-fn bound_prefix(agent: &str) -> String {
-    format!("turn:agent:{agent}:bound:")
-}
-
-/// Whether `grant` is one of the rules of `agent`'s bound, as [`agent_bound`] carries it.
-#[must_use]
-pub fn is_agent_bound(grant: &Grant, agent: &str) -> bool {
-    grant.id.0.starts_with(&bound_prefix(agent))
-}
-
 /// The app a person's desktop session publishes its own functions as (the
 /// shell's actions: windows, workspaces, its settings), on their device.
 pub const SESSION_APP: &str = "shell";

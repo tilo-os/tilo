@@ -69,14 +69,7 @@ pub(super) async fn dispatched(
         && caller.workspace() == Some(workspace.as_str())
         && let (Some(agent), Some(person)) = (caller.acting().agent_id(), caller.turn_person())
     {
-        listed(
-            workspaces,
-            &workspace,
-            &hex::encode(person),
-            agent,
-            turn.bound.unwrap_or_default(),
-        )
-        .await;
+        listed(workspaces, &workspace, &hex::encode(person), agent, &[]).await;
     }
     let receipt = workspaces
         .device_actions()
@@ -122,7 +115,8 @@ pub(super) fn narrowed_elsewhere(workspace: &str) -> Vec<Rule> {
     )]
 }
 
-/// `agent` in `workspace`'s list of its agents, narrowed to `bound`, as `person` keeps it.
+/// `agent` in `workspace`'s list of its agents, as `person` keeps it, with the rules `bound`
+/// narrow it to as the workspace's grants on it.
 pub(super) async fn listed(
     workspaces: &Workspaces,
     workspace: &str,
@@ -131,8 +125,7 @@ pub(super) async fn listed(
     bound: &[Rule],
 ) {
     use tilo_resource::{Id, NonBlank, Replica};
-    use tilo_workspace_agent::{Bound, WorkspaceAgents, workspace_agents};
-    let bound = bound.iter().map(Bound::of).collect();
+    use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
     workspaces
         .author_agents(workspace, |doc| {
             let mut agents = Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
@@ -152,19 +145,28 @@ pub(super) async fn listed(
                     )
                     .map_err(|error| error.to_string())?;
             }
-            agents
-                .apply(
-                    WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
-                        agent: Id::from_raw(agent),
-                        bound,
-                    }),
-                )
-                .map_err(|error| error.to_string())?;
             std::mem::swap(doc, agents.doc_mut());
             Ok(())
         })
         .await
         .unwrap();
+    let grants: Vec<_> = bound
+        .iter()
+        .enumerate()
+        .map(|(index, rule)| {
+            tilo_action_policy::Grant::new(
+                format!("test-narrowing:{index}"),
+                tilo_action_policy::Grantee::agent(agent.to_owned()),
+                rule.node.clone(),
+                rule.kinds,
+                rule.answer,
+                tilo_action_policy::Grantee::person(person.to_owned()),
+            )
+        })
+        .collect();
+    if !grants.is_empty() {
+        crate::workspaces::fixtures::record_grants(workspaces, workspace, &grants).await;
+    }
 }
 
 /// The refusal the device's dispatch answers `who`, one of [`not_hosted_turns`], with: none
@@ -346,7 +348,7 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     assert_eq!(workspaces.uses_offered(&turn).await.len(), 2);
 
@@ -413,7 +415,7 @@ async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     let add = |address: &str| add_mail(address, "imap.example.test", &login);
 
@@ -458,8 +460,7 @@ async fn she_alone_takes_the_leave_back(
 ) -> Value {
     let as_ada = caller(ada);
     let helper = Caller::delegated_agent("scout", ada.user_public_key, ada.device_public_key)
-        .in_workspace(workspace_id.to_string())
-        .held_to(Vec::new());
+        .in_workspace(workspace_id.to_string());
     ask(
         service,
         workspace_id,
@@ -509,7 +510,7 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     let add = |address: &str| add_mail(address, "imap.example.test", &login);
 
@@ -647,7 +648,7 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
         let turn = HostedTurn {
             workspace: workspace_id,
             caller: &asks,
-            bound: None,
+            policy: None,
         };
         not_a_turn(who, dispatched(workspaces, &turn, &adding).await);
         assert!(workspaces.uses_offered(&turn).await.is_empty(), "{who}");
@@ -665,12 +666,12 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
         HostedTurn {
             workspace: workspace_id,
             caller: &for_ada,
-            bound: None,
+            policy: None,
         },
         HostedTurn {
             workspace: workspace_id,
             caller: &for_bo,
-            bound: None,
+            policy: None,
         },
     );
     assert_eq!(
@@ -720,7 +721,7 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
     let turn = |caller| HostedTurn {
         workspace: workspace_id,
         caller,
-        bound: None,
+        policy: None,
     };
 
     let kept_from_vault = tilo_action_policy::Grant::new(
@@ -827,10 +828,11 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
             ],
         ),
     ] {
+        let policy = narrowing(&workspace_id.to_string(), &scout, &bound);
         let turn = HostedTurn {
             workspace: workspace_id,
             caller: &scout,
-            bound: Some(&bound),
+            policy: Some(&policy),
         };
         let refused = dispatched(workspaces, &turn, &adding).await;
         assert_eq!(refused, Err(NotPermitted), "{why}");
@@ -841,10 +843,11 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
     }
 
     let bound = vec![named(person_accounts::ADD_MAIL_WITH_ITEM, Answer::Allow)];
+    let policy = narrowing(&workspace_id.to_string(), &scout, &bound);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: Some(&bound),
+        policy: Some(&policy),
     };
     let offered = workspaces.uses_offered(&turn).await;
     assert_eq!(offered.len(), 1, "the one use its bound names");
@@ -884,7 +887,7 @@ async fn a_use_the_vault_refuses_asks_nobody() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     let unknown = json!("vault.item:0123456789abcdef0123456789abcdef");
 
@@ -959,7 +962,7 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     let keeping = || {
         request(
@@ -1007,4 +1010,25 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     );
     assert_eq!(kept["always"][0]["using"], "tilo.models/set-key-from-item");
     server.shutdown().await;
+}
+
+/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
+fn narrowing(
+    workspace: &str,
+    caller: &Caller,
+    rules: &[Rule],
+) -> tilo_action_policy::WorkspacePolicy {
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
+    let agent = caller.acting().agent_id().unwrap_or_default();
+    for (index, rule) in rules.iter().enumerate() {
+        policy.grants.push(tilo_action_policy::Grant::new(
+            format!("test-narrowing:{index}"),
+            tilo_action_policy::Grantee::agent(agent.to_owned()),
+            rule.node.clone(),
+            rule.kinds,
+            rule.answer,
+            tilo_action_policy::Grantee::person("owner"),
+        ));
+    }
+    policy
 }

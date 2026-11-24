@@ -149,6 +149,31 @@ fn refusal(released: Result<PageText, Refusal>) -> String {
 /// are shown names the site and withholds the item; the same fill asked again waits again; a
 /// decline never admits it. Approved, that fill is released once, written down, and the one
 /// after asks again; another agent of hers is still asked.
+/// The agent a caller acts as, by its id.
+fn narrowed_agent(caller: &Caller) -> String {
+    caller.acting().agent_id().unwrap_or_default().to_owned()
+}
+
+/// A workspace policy whose grants on `agent` are `rules`, by the person who set them.
+fn narrowing(
+    workspace: &str,
+    agent: &str,
+    rules: &[tilo_action_policy::Rule],
+) -> tilo_action_policy::WorkspacePolicy {
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
+    for (index, rule) in rules.iter().enumerate() {
+        policy.grants.push(tilo_action_policy::Grant::new(
+            format!("test-narrowing:{index}"),
+            tilo_action_policy::Grantee::agent(agent.to_owned()),
+            rule.node.clone(),
+            rule.kinds,
+            rule.answer,
+            tilo_action_policy::Grantee::person("owner"),
+        ));
+    }
+    policy
+}
+
 #[tokio::test]
 async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -164,7 +189,7 @@ async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     assert_eq!(
         workspaces.uses_offered(&turn).await.len(),
@@ -249,7 +274,7 @@ async fn after_always_the_agent_fills_there_alone_until_the_leave_is_taken_back(
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
     let wanted = fill(SITE, &login);
 
@@ -344,7 +369,7 @@ async fn a_code_and_a_value_are_released_and_what_the_vault_refuses_asks_nobody(
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: None,
+        policy: None,
     };
 
     for (item, kind) in [(&generator, "code-generator"), (&number, "value")] {
@@ -414,7 +439,7 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &herself,
-        bound: None,
+        policy: None,
     };
     assert!(matches!(
         release(workspaces, &turn, &wanted).await,
@@ -436,10 +461,11 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
         ("no rule at all", Vec::new()),
         ("a rule for another action", vec![named(person_vault::LIST)]),
     ] {
+        let policy = narrowing(&workspace_id.to_string(), &narrowed_agent(&scout), &bound);
         let turn = HostedTurn {
             workspace: workspace_id,
             caller: &scout,
-            bound: Some(&bound),
+            policy: Some(&policy),
         };
         assert!(
             matches!(
@@ -450,10 +476,11 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
         );
     }
     let bound = vec![named(person_vault::FILL_PAGE)];
+    let policy = narrowing(&workspace_id.to_string(), &narrowed_agent(&scout), &bound);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        bound: Some(&bound),
+        policy: Some(&policy),
     };
     asks(release(workspaces, &turn, &wanted).await);
 
@@ -462,7 +489,7 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
     let his = HostedTurn {
         workspace: workspace_id,
         caller: &bobs,
-        bound: None,
+        policy: None,
     };
     asks(release(workspaces, &his, &wanted).await);
     assert_eq!(

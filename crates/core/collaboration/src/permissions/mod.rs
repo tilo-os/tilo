@@ -1692,17 +1692,18 @@ mod refused_listing_tests {
                 policy::Grantee::person(person.id()),
             )]
             .into_iter()
-            // Its bound, as the workspace's settings under Agents keep it: Deny for changes in
-            // Notes.
-            .chain(policy::roles::agent_bound(
+            // Its person's answer, as the workspace's settings under Agents keep it: Deny for
+            // changes in Notes.
+            .chain([policy::agent_answers::grant(
+                LOCAL_WORKSPACE,
                 "scribe",
-                person.id(),
-                &[policy::Rule::new(
-                    TreePath::workspace(LOCAL_WORKSPACE).app("so.tilo.notes"),
-                    policy::KindSet::of(ActionKind::Undoable),
-                    Answer::Deny,
-                )],
-            ))
+                (
+                    &policy::agent_answers::AnswerScope::app("so.tilo.notes"),
+                    ActionKind::Undoable,
+                ),
+                Answer::Deny,
+                policy::Grantee::person(person.id()),
+            )])
             .collect(),
         );
         let note = tilo_actions::ResourceSpec::new("notes.page", "page:3", "Plan")

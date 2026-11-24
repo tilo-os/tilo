@@ -202,10 +202,8 @@ impl TurnTeam {
         };
         // Only a turn this server carries out reaches here ([`Self::asker`]): its agent works
         // for the turn's person as one handed to them, held to what the list keeps for it.
-        let kept = self.agent.turn_rules(&self.workspace);
-        let mut grants =
+        let grants =
             tilo_action_policy::Acting::handed_agent(agent, person).handed_preset(&self.workspace);
-        grants.extend(tilo_action_policy::roles::agent_bound(agent, person, &kept));
         // Its grants hold until they are taken back: no time decides them.
         let decided = Party::new(vec![Grantee::agent(agent.to_owned())], &grants).decide(
             &node,
