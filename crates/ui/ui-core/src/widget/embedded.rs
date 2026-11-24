@@ -208,8 +208,10 @@ impl<W: Widget + 'static> Embedded<W> {
         let theme = recoloured.as_ref().unwrap_or(theme);
         let owner = self.child_viewport(env.viewport);
         let mut child_env = env.clone();
-        child_env.viewport =
-            owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport));
+        if self.transform.determinant().abs() > f64::EPSILON {
+            child_env.viewport =
+                owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport));
+        }
         self.widget
             .draw_child(scene, transform * self.transform, text, theme, &child_env);
         self.widget.mark_drawn();
@@ -236,10 +238,17 @@ impl<W: Widget + 'static> Embedded<W> {
         // light slide must never become a dark menu's labels.
         let owner = self.child_viewport(env.viewport);
         let mut child_env = env.clone();
-        child_env.viewport =
-            owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport));
+        if self.transform.determinant().abs() > f64::EPSILON {
+            child_env.viewport =
+                owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport));
+        }
+        let placed = self.overlay_transform().unwrap_or(self.transform);
         self.widget.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene, transform, text, theme, child_env,
+            scene,
+            transform * placed,
+            text,
+            theme,
+            child_env,
         ));
     }
 

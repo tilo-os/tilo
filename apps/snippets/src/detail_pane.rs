@@ -438,7 +438,7 @@ impl Widget for BodyWell {
             scene,
             transform,
             text,
-            theme,
+            &theme.on_ground(ground),
             env.clone(),
         ));
     }

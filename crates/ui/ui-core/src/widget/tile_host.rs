@@ -1944,10 +1944,10 @@ impl Widget for TileHost {
                 transform,
                 &clip,
             );
-            let _anim_transform = pose.applied_to(transform);
+            let anim_transform = pose.applied_to(transform);
             self.draw_window(&mut crate::draw::DrawCtx::new(
                 scene,
-                transform,
+                anim_transform,
                 tr,
                 theme,
                 env.clone(),

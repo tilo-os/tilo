@@ -615,12 +615,12 @@ impl Widget for Card {
             self.activation.is_bound(),
             self.selected,
         );
-        let _inner = CardFace::content_theme(theme);
+        let inner = CardFace::content_theme(theme);
         self.parts.draw(&mut crate::draw::DrawCtx::new(
             scene,
             transform,
             text,
-            theme,
+            &inner,
             env.clone(),
         ));
     }

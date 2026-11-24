@@ -1530,7 +1530,7 @@ impl Panel {
             &slot.inflate(32.0, 32.0),
         );
         self.draw_one_roster(
-            &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut ui::DrawCtx::new(scene, placed, text, theme, env.clone()),
             shown,
             Some(slot),
         );
@@ -1891,9 +1891,7 @@ impl Widget for Panel {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ui::widget::ModelPath,
     ) -> bool {
-        if target == follow_banner::STOP_TARGET
-            && matches!(action, ui::a11y::Action::Activate)
-        {
+        if target == follow_banner::STOP_TARGET && matches!(action, ui::a11y::Action::Activate) {
             self.stop_following();
             return true;
         }
@@ -2119,8 +2117,9 @@ fn roster_place(area: Rect, theme: &Theme) -> Rect {
     let width = f64::from(metrics.panel_width_list)
         .min((area.width() - 2.0 * f64::from(spacing.s4)).max(240.0));
     let right = area.x1 - f64::from(spacing.s3);
-    let top =
-        area.y0 + f64::from(tilo_session_core::desktop::overlays::topbar_height(theme)) + f64::from(spacing.s2);
+    let top = area.y0
+        + f64::from(tilo_session_core::desktop::overlays::topbar_height(theme))
+        + f64::from(spacing.s2);
     Rect::new(right - width, top, right, top)
 }
 
