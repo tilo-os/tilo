@@ -809,7 +809,7 @@ mod session_tests {
         for (source, ids) in PACKAGES {
             host.load_builtin(source, ids).unwrap();
         }
-        let mut service = tilolang_tilo::resource_service::ResourceService::new(host, person);
+        let mut service = tilolang_service::ResourceService::new(host, person);
         let mut sent: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         let mut moved = || {
             let mut documents = Vec::new();
@@ -973,6 +973,13 @@ mod session_tests {
         fn sign(&self, _: WorkspaceId, _: &[u8; 32], _: &mut InvokeRequest) -> Result<(), String> {
             Ok(())
         }
+
+        fn made(
+            &self,
+            _key: &[u8; 32],
+        ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
+            None
+        }
     }
 
     /// A workspace of a test host, its person, and Tasks on the person's device.
@@ -1044,6 +1051,7 @@ mod session_tests {
             let (workspaces, workspace) = (self.workspaces.clone(), self.workspace.clone());
             let person = self.person.clone();
             let (resource, action) = (resource.to_owned(), action.to_owned());
+            let named = action.clone();
             tokio::task::spawn_blocking(move || {
                 on_device(
                     &Mutex::new(device),
@@ -1057,7 +1065,7 @@ mod session_tests {
             })
             .await
             .unwrap()
-            .unwrap_or_else(|refused| panic!("{action}: {refused}"))
+            .unwrap_or_else(|refused| panic!("{named}: {refused}"))
             .resources
         }
 
@@ -1120,7 +1128,7 @@ mod session_tests {
             let provider: Arc<dyn ActionProvider + Send + Sync> =
                 Arc::new(Provider(Arc::clone(broker)));
             super::super::WorkspaceActionProvider::new(
-                super::super::EngineActions::Device(provider, Arc::new(Keys)),
+                super::super::EngineActions::new(provider, Arc::new(Keys)),
                 WorkspaceId::parse(&self.workspace).unwrap(),
             )
         }

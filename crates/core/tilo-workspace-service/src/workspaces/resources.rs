@@ -627,46 +627,6 @@ impl GovernedWorkspace {
         self.resources.store_mut()
     }
 
-    /// Answer the read `command` from the store of `workspace`, with only what `person` (their
-    /// root, in hex) may read: what a test of the agents' work on an app's resources stands on.
-    ///
-    /// # Errors
-    /// The workspace is not held here, or `command` writes.
-    #[cfg(all(test, feature = "apps"))]
-    pub(crate) async fn read_store_as(
-        &self,
-        workspace: &str,
-        person: &str,
-        command: &tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
-        if command.writes() {
-            return Err("a read of the store writes nothing".to_owned());
-        }
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
-        let store = governed.store_with_surfaces(&self.inner.host.surfaces);
-        let answer = tilo_resource_store::wire::read(store, command, &may_read(person.to_owned()))
-            .unwrap_or(tilo_resource_store::wire::Reply::Written);
-        drop(governed);
-        Ok(answer)
-    }
-
-    /// Take `documents` (each whole, by its id) into the store of `workspace`, as a member's
-    /// device's writes reach it by sync: what the tests of the agents' work on an app's
-    /// resources stand on, the app running where it runs, on a device.
-    #[cfg(all(test, feature = "apps"))]
-    pub(crate) async fn take_documents(&self, workspace: &str, documents: Vec<(String, Vec<u8>)>) {
-        let state = self.workspace(workspace).await.unwrap();
-        let mut governed = state.lock().await;
-        let store = governed.store_with_surfaces(&self.inner.host.surfaces);
-        for (doc, bytes) in documents {
-            store.load(&doc, &bytes).unwrap();
-        }
-    }
-
     /// Takes `author`'s write `envelope` of the store document `doc` of `app` into the
     /// workspace's store, `named` the reader set the write names in the clear. A sealed write is
     /// read with its reader set's keys, under the scope the document's id derives; a device that
@@ -848,6 +808,50 @@ impl GovernedWorkspace {
         }
         collab_types::sign_op(&mut envelope, &*device.signer).map_err(|error| error.to_string())?;
         Ok(envelope)
+    }
+}
+
+/// The device's own reads and writes of a workspace's store, for the tests of the work
+/// its agents do on an app's resources.
+impl Workspaces {
+    /// Answer the read `command` from the store of `workspace`, with only what `person` (their
+    /// root, in hex) may read: what a test of the agents' work on an app's resources stands on.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or `command` writes.
+    #[cfg(all(test, feature = "apps"))]
+    pub(crate) async fn read_store_as(
+        &self,
+        workspace: &str,
+        person: &str,
+        command: &tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        if command.writes() {
+            return Err("a read of the store writes nothing".to_owned());
+        }
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        let store = governed.store_with_surfaces(&self.inner.host.surfaces);
+        let answer = tilo_resource_store::wire::read(store, command, &may_read(person.to_owned()))
+            .unwrap_or(tilo_resource_store::wire::Reply::Written);
+        drop(governed);
+        Ok(answer)
+    }
+
+    /// Take `documents` (each whole, by its id) into the store of `workspace`, as a member's
+    /// device's writes reach it by sync: what the tests of the agents' work on an app's
+    /// resources stand on, the app running where it runs, on a device.
+    #[cfg(all(test, feature = "apps"))]
+    pub(crate) async fn take_documents(&self, workspace: &str, documents: Vec<(String, Vec<u8>)>) {
+        let state = self.workspace(workspace).await.unwrap();
+        let mut governed = state.lock().await;
+        let store = governed.store_with_surfaces(&self.inner.host.surfaces);
+        for (doc, bytes) in documents {
+            store.load(&doc, &bytes).unwrap();
+        }
     }
 }
 
