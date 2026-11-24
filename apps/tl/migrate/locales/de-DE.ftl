@@ -2,6 +2,8 @@
 
 d-so-tilo-migrate = Umzüge
 
+d-so-tilo-migrate-keywords = umzug, umzüge, migrieren, importieren, übernehmen, thunderbird, browser, cloud-speicher, konten, ordner
+
 d-fosjwamu = Eintrag
     .doc = Etwas, das die Durchsicht in der Quelle gefunden hat: ein Konto, ein Ordner, ein Adressbuch, ein Kalender.
     .noun = { $count ->
@@ -98,6 +100,9 @@ d-c6gmooon = Titel des Laufs
 
 d-v6notall = Fehler
 
+d-6tvxvli7 = Abgelehnt
+    .doc = Warum das Gerät den letzten vom Umzug verlangten Schritt abgelehnt hat; leer, sobald ein Schritt durchgeht.
+
 d-wtqlrste = Übernommen
     .doc = Wie viele jeder Art der letzte Lauf übernommen hat.
 
@@ -184,6 +189,8 @@ d-54ygmmcv-what = Was
 d-vnfd46in = Übernehmen
     .doc = Wählt einen Eintrag zur Übernahme aus oder lässt ihn weg.
 
+d-vnfd46in-i = I
+
 d-vnfd46in-chosen = Ausgewählt
 
 d-453xvewh = Schlüssel auswählen
@@ -228,6 +235,29 @@ d-skk653vz = Lauf vergessen
 
 d-skk653vz-run = Lauf
 
+d-suc576de = Abgelehnt
+    .doc = Das Gerät hat einen Schritt von `g` abgelehnt, mit `why` als Grund: nichts zum Übernehmen ausgewählt, eine Quelle, die es nicht lesen kann, oder ein Lauf, den es nicht zurücknehmen kann.
+
+d-suc576de-why = Warum
+
+d-mc6o2yv4 = Erneut nachsehen
+    .doc = Liest die Quelle von `g` erneut: was sie jetzt enthält, steht zur Auswahl.
+    .did = hat eine Quelle erneut durchgesehen
+
+d-z7l36mcv = Starten
+    .doc = Übernimmt das Ausgewählte aus der Quelle von `g`: das Gerät mit den Daten führt es als einen Lauf aus, und der Umzug folgt ihm dort, mit `begun`, `landed` und `ended`. Die Aktion dauert so lange wie der Lauf, und sie anzuhalten hält den Lauf an.
+    .did = hat die Übernahme begonnen
+
+d-b6a4nblx = Anhalten
+    .doc = Hält den Lauf von `g` nach dem Eintrag an, an dem er gerade ist: was er übernommen hat, bleibt, und ein erneuter Start setzt ihn fort.
+    .did = hat die Übernahme angehalten
+
+d-x6sqvfbn = Rückgängig machen
+    .doc = Nimmt aus dem Arbeitsbereich wieder heraus, was der Lauf `r` übernommen hat.
+    .did = hat einen Lauf zurückgenommen
+
+d-x6sqvfbn-r = R
+
 d-rzpx6bzh = Beenden
 
 d-vzbtgrfk = Umzüge
@@ -244,10 +274,17 @@ d-m6xdvzmk = Umzugsseite
 
 d-zwcqzi7i = Stand des Laufs
     .w-bringing-in = Wird übernommen
+    .w-stop = Anhalten
+    .w-resume = Fortsetzen
+    .w-try-again = Erneut versuchen
+    .w-bring-in = Übernehmen
+    .w-look-again = Erneut nachsehen
     .w-the-run-stopped-on-an-error = Der Lauf ist mit einem Fehler stehen geblieben
+    .w-that-could-not-be-done = Das ließ sich nicht tun
     .w-already-here = { $already_there } schon hier
 
 d-toxseay6 = Eintragszeile
 
 d-htm3bmqz = Laufzeile
     .w-items = { $len } Einträge
+    .w-undo = Rückgängig
