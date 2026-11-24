@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use ui::live_activity::Published;
+use ui::live_activity::{Published, Summary};
 
 use crate::platform::notice::{Notice, Notices as Told};
 
@@ -25,6 +25,9 @@ pub(crate) struct Activities {
     shown: RefCell<Option<Parsed>>,
     /// The announcements posted, by `app:id` .
     announced: RefCell<std::collections::BTreeSet<String>>,
+    /// What the person put away that its app cannot end from outside, by `app:id`, with the id
+    /// and title it had then: it stays away until the app shows something else.
+    hidden: RefCell<std::collections::BTreeMap<String, (String, String)>>,
 }
 
 impl Activities {
@@ -33,6 +36,7 @@ impl Activities {
             board,
             shown: RefCell::default(),
             announced: RefCell::default(),
+            hidden: RefCell::default(),
         }
     }
 
@@ -70,6 +74,79 @@ impl Activities {
                 announcement.body.clone()
             };
             notices.show(&Notice::new(String::new(), 1, title, body));
+        }
+    }
+
+    /// Every activity the apps show now and the person did not put away, by app, with whether
+    /// its app asks for it to stand over the windows as a card.
+    pub(crate) fn summaries(&self) -> Vec<(String, Summary, bool)> {
+        self.read()
+            .iter()
+            .filter_map(|(app, published)| {
+                let summary = published.summary.as_ref()?;
+                self.shows(app, summary)
+                    .then(|| (app.clone(), summary.clone(), published.overlay))
+            })
+            .collect()
+    }
+
+    /// A control the person pressed on an activity reaches its app.
+    pub(crate) fn press(&self, app: &str, activity: &str, command: &str) {
+        self.board.press(
+            app,
+            serde_json::json!({
+                "command": command,
+                "activity_id": (!activity.is_empty()).then_some(activity),
+            }),
+        );
+    }
+
+    /// The person dragged an activity's progress bar to `fraction` of it, from 0 to 1: its app
+    /// goes there, through the same press a control makes.
+    pub(crate) fn seek(&self, app: &str, activity: &str, fraction: f64) {
+        self.board.press(
+            app,
+            serde_json::json!({
+                "command": "seek",
+                "activity_id": (!activity.is_empty()).then_some(activity),
+                "fraction": fraction.clamp(0.0, 1.0),
+            }),
+        );
+    }
+
+    /// The person ended or put away an activity: an app that offers a close is asked to end it,
+    /// and one that cannot be stopped from outside goes away until it shows something else.
+    pub(crate) fn close(&self, app: &str, activity: &str) {
+        let Some(summary) = self
+            .read()
+            .iter()
+            .find(|(shown, _)| shown == app)
+            .and_then(|(_, published)| published.summary.clone())
+            .filter(|summary| summary.id == activity)
+        else {
+            return;
+        };
+        if let Some(close) = summary.close_control() {
+            self.press(app, activity, &close.id);
+        } else {
+            self.hidden
+                .borrow_mut()
+                .insert(format!("{app}:{activity}"), (summary.id, summary.title));
+        }
+    }
+
+    /// Whether `summary` shows: an activity the person put away stays away until the app shows
+    /// another one.
+    fn shows(&self, app: &str, summary: &Summary) -> bool {
+        let key = format!("{app}:{}", summary.id);
+        let hidden = self.hidden.borrow().get(&key).cloned();
+        match hidden {
+            Some(put_away) if put_away == (summary.id.clone(), summary.title.clone()) => false,
+            Some(_) => {
+                self.hidden.borrow_mut().remove(&key);
+                true
+            }
+            None => true,
         }
     }
 

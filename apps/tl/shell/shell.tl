@@ -389,6 +389,8 @@ view top_bar(traditional: Bool) {
 template view over_band(body: View) {
     layers(fill) {
         body
+        // What is live and stands as a card, over the windows and under a banner rising.
+        live_cards()
         banners_over()
     }
 }

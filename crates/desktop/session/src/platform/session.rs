@@ -852,6 +852,7 @@ impl Session {
             activities: Rc::clone(&activities),
             readings: Rc::clone(&readings),
             pressed: RefCell::default(),
+            cards: RefCell::default(),
             collapsed: RefCell::default(),
             revision: std::cell::Cell::default(),
             services: Rc::clone(&origin_services),

@@ -365,6 +365,11 @@ session-tray-open = Öffnen
 session-live-press = Drücken
 session-live-close = Beenden
 session-live-collapse = Nicht in der Leiste zeigen
+session-live-expand = Als Karte zeigen
+session-live-fold = Zurück in die Leiste
+session-live-seek = Springen zu
+session-live-move = Karte verschieben
+session-live-dock = Karten andocken
 session-agents-stop = Stoppen
 session-people = Personen
 

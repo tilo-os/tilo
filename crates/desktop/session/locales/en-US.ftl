@@ -359,6 +359,11 @@ session-tray-open = Open
 session-live-press = Press
 session-live-close = End
 session-live-collapse = Keep off the bar
+session-live-expand = Show as a card
+session-live-fold = Back to the bar
+session-live-seek = Go to
+session-live-move = Move the card
+session-live-dock = Dock the cards
 session-agents-stop = Stop
 session-people = People
 

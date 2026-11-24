@@ -13,7 +13,22 @@ view live_pill() {
     // Only a wide bar has room for what is live itself, its name and its play button.
     let roomy = space.width_class == .wide
     if let newest = rows.last() {
-        if not roomy {
+        if space.compact {
+            // A phone's bar has room for one control: it pulls what went live last out as a
+            // card, dropped from under the bar, and folds it back.
+            ui.Button(
+                if newest.expanded { "Fold {live_name(newest)} back" } else { "{live_name(newest)}, live" },
+                icon: if newest.expanded { .minimize_2 } else { .play },
+                icon_only: true,
+                role: .bar,
+            ) {
+                on press: if newest.expanded {
+                    device.fold_live(device.live, key: newest.key)
+                } else {
+                    device.expand_live(device.live, key: newest.key)
+                }
+            }
+        } else if not roomy {
             // A bar narrower than a wide one has no room for the thing itself: one control
             // says something is live, and opens quick settings, where it stands with its controls.
             ui.Button("{live_name(newest)}, live", icon: .play, icon_only: true, role: .bar) {
@@ -22,6 +37,12 @@ view live_pill() {
         } else {
             row(gap: .related, align: .center) {
                 live_row(newest, compact: true)
+                if not newest.card {
+                    // Pulled out of the pill, it stands as a card over the windows.
+                    ui.Button("Show as a card", icon: .maximize_2, icon_only: true, role: .bar) {
+                        on press: device.expand_live(device.live, key: newest.key)
+                    }
+                }
                 if rows.len() > 1 {
                     ui.Button(
                         "{rows.len() - 1} more live",
@@ -91,7 +112,21 @@ view live_card_controls(r: device.LiveItem) {
         ) {
             on press: device.keep_off_bar(device.live, key: r.key, off: not r.collapsed)
         }
-        if r.resource == "" and r.key != "player" and not r.controls.any(c -> c.id == "close") {
+        if not space.compact {
+            ui.Button(
+                if r.card { "Back to the bar" } else { "Show as a card" },
+                icon: if r.card { .minimize_2 } else { .maximize_2 },
+                icon_only: true,
+                role: .plain,
+            ) {
+                on press: if r.card {
+                    device.fold_live(device.live, key: r.key)
+                } else {
+                    device.expand_live(device.live, key: r.key)
+                }
+            }
+        }
+        if r.resource == "" and r.key != "player" and not r.controls.any(c -> c.ends) {
             ui.Button("Put away", icon: .x, icon_only: true, role: .plain) {
                 on press: device.end_live(device.live, key: r.key)
             }
@@ -159,4 +194,175 @@ view live_control(r: device.LiveItem, c: device.LiveControl, on_bar: Bool) {
 /// Whether the bar shows something live now: a narrow bar then gives the room it takes.
 fn live_on_bar() -> Bool {
     not device.live.rows.filter(r -> not r.collapsed).is_empty()
+}
+
+/// The cards over the windows: what is live and stands as a card (`r.card`, which its app asks for
+/// or the person pulls out of the pill), docked in a column in the corner of the display this
+/// device's person chose (`device.live.corner`), the one touched last nearest the corner. A
+/// phone-width display has room for one card only, the one the person pulled out of the pill,
+/// dropped full width from under the bar. The column changes at the shared pace, so a card that
+/// comes slides in and one that goes slides out. A card stands on the display in use only.
+view live_cards() {
+    let cards = device.live.rows.filter(r -> r.card)
+    // They stand on the display the person works on, as the bar's pill does in full; another
+    // display's compact bar keeps to a glance.
+    if not cards.is_empty() and on_primary() {
+        if space.compact {
+            if let r = cards.find(r -> r.expanded) {
+                stack(at: .top, fill, padding: .group, motion: .standard) {
+                    live_card(r)
+                }
+            }
+        } else {
+            // One room, the band under the bar, holds every card: a docked card stands in the
+            // column at the chosen corner, and a card the person moved stands where they left
+            // it, in the same room it is dragged in.
+            let top = device.live.corner == "top_leading" or device.live.corner == "top_trailing"
+            stack(
+                fill,
+                padding: .group,
+                gap: .related,
+                align: if device.live.corner == "top_leading" or device.live.corner == "bottom_leading" {
+                    .start
+                } else { .end },
+                motion: .standard,
+            ) {
+                if not top {
+                    spacer()
+                }
+                for r in cards.sort_by(r -> if top { r.place } else { 0 - r.place }) {
+                    live_card(r)
+                }
+                if top {
+                    spacer()
+                }
+            }
+        }
+    }
+}
+
+/// One live thing as a card over the windows: its app's glyph and name, a way back into the bar's
+/// pill and its end; then what it is — its resource's own `view live`, or what the session reads of
+/// it, where it is along its length and its controls.
+view live_card(r: device.LiveItem) {
+    ui.FloatingPanel(
+        width: if not space.compact { 320.0 },
+        fill: space.compact,
+        label: "{live_name(r)} card",
+        x: if not space.compact { r.x?.to_float() },
+        y: if not space.compact { r.y?.to_float() },
+    ) {
+        on moved(at): device.move_live(device.live, key: r.key, x: at.first(), y: at.last())
+        header: {
+            row(gap: .related, align: .center) {
+                ui.Icon(
+                    if r.kind == "call" {
+                        .phone
+                    } else if r.kind == "navigation" {
+                        .navigation
+                    } else if r.kind == "timer" {
+                        .timer
+                    } else if r.kind == "stopwatch" {
+                        .clock
+                    } else if r.kind == "music" or r.resource != "" { .music } else { .layers },
+                    size: .small,
+                )
+                stack(fill) {
+                    ui.Text(
+                        if r.here or r.device == "" { r.source } else { "{r.source} on {r.device}" },
+                        role: .caption,
+                        secondary: true,
+                        lines: 1,
+                        truncate,
+                    )
+                }
+                if not space.compact {
+                    // Where this device's cards stand: a corner of each display, or back in it
+                    // for a card the person moved.
+                    ui.MenuButton("Card place", icon: .more_horizontal, icon_only: true, role: .plain) {
+                        if r.x != .none {
+                            ui.MenuItem("Back in the corner") {
+                                on choose: device.move_live(device.live, key: r.key)
+                            }
+                            ui.MenuSeparator()
+                        }
+                        ui.MenuItem("Cards at the top left", checked: device.live.corner == "top_leading") {
+                            on choose: device.dock_live(device.live, corner: "top_leading")
+                        }
+                        ui.MenuItem("Cards at the top right", checked: device.live.corner == "top_trailing") {
+                            on choose: device.dock_live(device.live, corner: "top_trailing")
+                        }
+                        ui.MenuItem("Cards at the bottom left", checked: device.live.corner == "bottom_leading") {
+                            on choose: device.dock_live(device.live, corner: "bottom_leading")
+                        }
+                        ui.MenuItem("Cards at the bottom right", checked: device.live.corner == "bottom_trailing") {
+                            on choose: device.dock_live(device.live, corner: "bottom_trailing")
+                        }
+                    }
+                }
+                ui.Button("Back to the bar", icon: .minimize_2, icon_only: true, role: .plain) {
+                    on press: device.fold_live(device.live, key: r.key)
+                }
+                if r.resource == "" and r.key != "player" {
+                    ui.Button(
+                        r.controls.find(c -> c.ends)?.label ?? "Put away",
+                        icon: .x,
+                        icon_only: true,
+                        role: .plain,
+                    ) {
+                        on press: device.end_live(device.live, key: r.key)
+                    }
+                }
+            }
+        }
+        body: {
+            if r.resource != "" {
+                if let shown = resource(r.resource) {
+                    show(shown, view: "live")
+                } else {
+                    ui.Text(live_name(r), role: .heading, lines: 1, truncate)
+                }
+            } else {
+                card_body(r)
+            }
+        }
+    }
+}
+
+/// What the session reads of something live no resource holds, as its card shows it: what it is
+/// and what it reads, where it is along its length (a bar the person drags to go there), and its
+/// controls — a transport as its glyphs, anything else in its app's words.
+view card_body(r: device.LiveItem) {
+    stack(gap: .related) {
+        stack(gap: .tight) {
+            ui.Text(live_name(r), role: .heading, lines: 1, truncate)
+            if r.subtitle != "" {
+                ui.Text(r.subtitle, role: .caption, secondary: true, lines: 1, truncate)
+            }
+            if r.value != "" and r.elapsed == "" {
+                ui.Text(r.value, role: .title, numeric: true, lines: 1)
+            }
+        }
+        if let along = r.progress {
+            if r.elapsed != "" {
+                row(gap: .related, align: .center) {
+                    ui.Text(r.elapsed, role: .caption, secondary: true, numeric: true)
+                    ui.Slider(value: along, label: "Position in {live_name(r)}", fill) {
+                        on change(v): device.seek_live(device.live, key: r.key, fraction: v)
+                    }
+                    ui.Text(r.remaining, role: .caption, secondary: true, numeric: true)
+                }
+            } else {
+                ui.ProgressBar(along, label: live_name(r))
+            }
+        }
+        let offered = r.controls.filter(c -> not c.ends)
+        if not offered.is_empty() {
+            row(gap: .related, align: .center, distribute: .center) {
+                for c in offered {
+                    live_control(r, c, on_bar: false)
+                }
+            }
+        }
+    }
 }

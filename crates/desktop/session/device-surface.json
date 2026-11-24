@@ -3345,7 +3345,7 @@
       "types": [
         {
           "name": "Style",
-          "doc": "A style: a view of the layout an installed package declares (shell.md \u00a76).",
+          "doc": "A style: a view of the layout an installed package declares (shell.md §6).",
           "fields": [
             {
               "name": "style",
@@ -5149,6 +5149,357 @@
             {
               "name": "free-memory-percent",
               "type": "int"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "live",
+      "label": "Live",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "press-live",
+          "label": "Press",
+          "description": "Press a control of something live here that no resource holds: a player's play or pause,",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "control",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "end-live",
+          "label": "End",
+          "description": "End something live here that no resource holds: an app that offers a close is asked to",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "keep-off-bar",
+          "label": "Keep off the bar",
+          "description": "Keep a row off this device's bar, or bring it back: quick settings shows it either way",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "off",
+              "required": false,
+              "schema": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "bool"
+              }
+            }
+          ]
+        },
+        {
+          "id": "expand-live",
+          "label": "Show as a card",
+          "description": "Pull a row out of the bar's pill as a card over the windows; on a phone-width display it",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "fold-live",
+          "label": "Back to the bar",
+          "description": "Fold a row's card back into the bar's pill",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "seek-live",
+          "label": "Go to",
+          "description": "Take something live here that no resource holds to a point along it: the song the player",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "fraction",
+              "required": true,
+              "schema": {
+                "type": "number",
+                "format": "double"
+              },
+              "type": "float"
+            }
+          ]
+        },
+        {
+          "id": "move-live",
+          "label": "Move the card",
+          "description": "Leave a row's card at a place of its own on its display, or dock it in the corner column",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "x",
+              "required": false,
+              "schema": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              },
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "y",
+              "required": false,
+              "schema": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              },
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "id": "dock-live",
+          "label": "Dock the cards",
+          "description": "Dock this device's cards in a corner of each display: `top_leading`, `top_trailing`,",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "corner",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "rows",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "LiveItem"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "corner",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "LiveItem",
+          "doc": "One live thing.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "resource",
+              "type": "text"
+            },
+            {
+              "name": "app",
+              "type": "text"
+            },
+            {
+              "name": "source",
+              "type": "text"
+            },
+            {
+              "name": "here",
+              "type": "bool"
+            },
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "since",
+              "type": "text"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "subtitle",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            },
+            {
+              "name": "value",
+              "type": "text"
+            },
+            {
+              "name": "playing",
+              "type": "bool"
+            },
+            {
+              "name": "controls",
+              "type": {
+                "list": {
+                  "named": "LiveControl"
+                }
+              }
+            },
+            {
+              "name": "collapsed",
+              "type": "bool"
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "progress",
+              "type": {
+                "option": "float"
+              }
+            },
+            {
+              "name": "elapsed",
+              "type": "text"
+            },
+            {
+              "name": "remaining",
+              "type": "text"
+            },
+            {
+              "name": "artwork",
+              "type": "text"
+            },
+            {
+              "name": "floats",
+              "type": "bool"
+            },
+            {
+              "name": "expanded",
+              "type": "bool"
+            },
+            {
+              "name": "card",
+              "type": "bool"
+            },
+            {
+              "name": "place",
+              "type": "int"
+            },
+            {
+              "name": "x",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "y",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "name": "LiveControl",
+          "doc": "A control of a row the shell draws itself.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            },
+            {
+              "name": "ends",
+              "type": "bool"
             }
           ]
         }
