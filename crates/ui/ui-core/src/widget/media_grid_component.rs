@@ -231,8 +231,8 @@ fn build_band(bands: &Bands, index: usize, gap: Rhythm, range: &GridRange) -> El
     Box::new(line)
 }
 
-/// One card of a grid: the art (a cover, a thumbnail, a photo) with its title and up to two
-/// meta lines under it.
+/// One card: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines
+/// under it. A view gives it as a grid's item or on its own.
 #[derive(Component, Default)]
 #[component(
     name = "MediaCard",
@@ -297,6 +297,16 @@ pub(crate) fn card(props: MediaCardProps) -> MediaCard {
         Event::None => card,
         Event::Action(binding) => card.on_action(binding),
         Event::View(intent) => card.on_open(intent.sender()),
+    }
+}
+
+impl Described for MediaCard {
+    type Props = MediaCardProps;
+
+    /// A card given on its own, not as a grid's item: the same card a grid draws, at a grid
+    /// column's width rather than the whole of the room the view puts it in.
+    fn from_props(_key: &str, props: MediaCardProps) -> Self {
+        card(props).standing_alone()
     }
 }
 

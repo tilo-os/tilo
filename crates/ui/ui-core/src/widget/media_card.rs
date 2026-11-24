@@ -893,10 +893,6 @@ impl HoverAction {
     }
 }
 
-#[crate::component::not_a_component(
-    part,
-    "the card of a `ui.MediaGrid`, whose props `ui.MediaCard` gives"
-)]
 pub struct MediaCard {
     source: MediaSource,
     loaded: Option<peniko::ImageData>,
@@ -912,6 +908,11 @@ pub struct MediaCard {
     hover_action: Option<HoverAction>,
     /// Where it stands in its grid, when its grid takes a range of them.
     slot: Option<CardSlot>,
+    /// It stands on its own, outside a grid: a card's width, wherever it is put.
+    alone: bool,
+    /// The width of a card on its own, as its grid lays a column: what the whole room it is put
+    /// in never widens it past.
+    bound: Option<f64>,
     pressed_action: crate::pointer_replay::HeldPress,
     selected: bool,
     activation: Activation,
@@ -947,6 +948,8 @@ impl MediaCard {
             badges: Vec::new(),
             hover_action: None,
             slot: None,
+            alone: false,
+            bound: None,
             pressed_action: crate::pointer_replay::HeldPress::default(),
             selected: false,
             activation: Activation::new(id),
@@ -1088,6 +1091,14 @@ impl MediaCard {
         self
     }
 
+    /// The card stands on its own, not in a grid: it takes a grid column's width, never the whole
+    /// of the room it is put in.
+    #[must_use]
+    pub(crate) fn standing_alone(mut self) -> Self {
+        self.alone = true;
+        self
+    }
+
     fn with_face<R>(&self, f: impl FnOnce(&MediaCardFace<'_>) -> R) -> R {
         let badges: Vec<MediaBadge<'_>> = self.badges.iter().map(OwnedBadge::borrowed).collect();
         let art = match (&self.loaded, &self.source) {
@@ -1170,6 +1181,8 @@ impl crate::widget::ReservedShape for MediaCard {
 }
 
 impl Widget for MediaCard {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::widget::ReservedShape
@@ -1202,6 +1215,7 @@ impl Widget for MediaCard {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(MediaMetrics::new(theme));
+        self.bound = self.alone.then(|| MediaSize::Regular.extent(theme));
         let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
@@ -1209,6 +1223,15 @@ impl Widget for MediaCard {
             },
             min_size: taffy::Size {
                 width: length(0.0_f32),
+                height: auto(),
+            },
+            // A card of its own is as wide as a grid's column at its smallest, so what it shows
+            // stands on a page as a card, never as the page's whole width.
+            max_size: taffy::Size {
+                width: match self.bound {
+                    Some(width) => length(crate::num::f32_of_f64(width)),
+                    None => auto(),
+                },
                 height: auto(),
             },
             flex_shrink: 0.0,
@@ -1225,8 +1248,11 @@ impl Widget for MediaCard {
     ) -> taffy::Size<f32> {
         let width = f64::from(known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w,
-            _ => 160.0,
+            _ => self.bound.map_or(160.0, crate::num::f32_of_f64),
         }));
+        // The card's height is the height at the width taffy gives it, which a card of its own
+        // is bounded at: measure is asked before the bound is applied.
+        let width = self.bound.map_or(width, |bound| width.min(bound));
         let text = self.shared_text_height.unwrap_or_else(|| {
             self.own_text_height(text_renderer, (!self.text_estimated).then_some(width))
         });
@@ -1369,10 +1395,6 @@ impl Widget for MediaCard {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

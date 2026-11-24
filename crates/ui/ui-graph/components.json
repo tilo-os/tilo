@@ -4322,6 +4322,83 @@
       }
     },
     {
+      "name": "MediaCard",
+      "doc": "One card: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines under it. A view gives it as a grid's item or on its own.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the card stands for: what a press opens.",
+          "type": {
+            "option": "resource"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What the card is called, under its art. Without one it is art only (a photo).",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "picture",
+          "doc": "Its art: a picture by its address, loaded as it arrives.",
+          "type": {
+            "option": "picture"
+          }
+        },
+        {
+          "name": "icon",
+          "doc": "The icon of a kind of thing, on the neutral tile: a podcast, a folder.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "meta",
+          "doc": "One line under the title (an artist, a channel, an author). Give two for two lines.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "aspect",
+          "doc": "The shape of its art, `square` unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "MediaAspect",
+                "cases": [
+                  "square",
+                  "wide",
+                  "portrait",
+                  "circle"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is the selected card.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "It was pressed: open what it stands for.",
+          "press": true
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "title",
+        "presents": "item"
+      }
+    },
+    {
       "name": "MediaGrid",
       "doc": "Cards in a grid: a library, an album's covers, a shelf of books, a set of channels.",
       "props": [
@@ -10578,83 +10655,6 @@
       "semantics": {
         "role": "Group",
         "label": "name"
-      }
-    },
-    {
-      "name": "MediaCard",
-      "doc": "One card of a grid: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines under it.",
-      "props": [
-        {
-          "name": "item",
-          "doc": "The resource the card stands for: what a press opens.",
-          "type": {
-            "option": "resource"
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What the card is called, under its art. Without one it is art only (a photo).",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "picture",
-          "doc": "Its art: a picture by its address, loaded as it arrives.",
-          "type": {
-            "option": "picture"
-          }
-        },
-        {
-          "name": "icon",
-          "doc": "The icon of a kind of thing, on the neutral tile: a podcast, a folder.",
-          "type": {
-            "option": "icon"
-          }
-        },
-        {
-          "name": "meta",
-          "doc": "One line under the title (an artist, a channel, an author). Give two for two lines.",
-          "type": {
-            "list": "text"
-          }
-        },
-        {
-          "name": "aspect",
-          "doc": "The shape of its art, `square` unless said.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "MediaAspect",
-                "cases": [
-                  "square",
-                  "wide",
-                  "portrait",
-                  "circle"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "selected",
-          "doc": "Whether it is the selected card.",
-          "type": "bool"
-        }
-      ],
-      "events": [
-        {
-          "name": "activate",
-          "doc": "It was pressed: open what it stands for.",
-          "press": true
-        }
-      ],
-      "semantics": {
-        "role": "ListItem",
-        "label": "title",
-        "presents": "item"
       }
     },
     {
