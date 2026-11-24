@@ -1466,10 +1466,10 @@ async function ensureOwnWorkspace(peer, store = globalThis.localStorage) {
   return {id: own.workspace, name, origin};
 }
 
-/** The routes a page reaches its host's tickets at, below the host's API prefix. */
-const TICKET_MINT = '/peer/v1/ticket';
-const TICKET_ASKED = '/peer/v1/ticket/asked';
-const TICKET_ANSWER = '/peer/v1/ticket/answer';
+/** The ticket actions `tilo.device` answers a page with on its host (`ticketAction`). */
+const TICKET_ISSUE = 'issue';
+const TICKET_FOLLOW = 'follow';
+const TICKET_ANSWER = 'answer';
 /** How long a ticket works, as the host serves it (`TICKET_LIFETIME_NS`). */
 const TICKET_LIFE_MS = 10 * 60_000;
 
@@ -1481,30 +1481,34 @@ const TICKET_LIFE_MS = 10 * 60_000;
  * again. A ticket is the longer text the prompt carries; the [id] under it is what this page asks
  * the host by.
  *
- * The host serves a setup's ticket on its iroh endpoint, and the tab approves the computer that
- * shows up with it by signing, with the root it holds, the certificate the host built and the
- * question with its own device key (`peer.approveAsked`). A sign-in's ticket is the person's
- * computer's to approve; the tab learns whom to pair with from the ticket's answer (`claimed`).
+ * The page asks for its tickets and follows them with the ticket actions its host answers
+ * (`ticketAction`: `issue`, `follow`, `answer`), the same `tilo.device` actions the computer
+ * calls there. The host serves a setup's ticket on its iroh endpoint, and the tab approves the
+ * computer that shows up with it by signing, with the root it holds, the certificate the host
+ * built and the question with its own device key (`peer.approveAsked`). A sign-in's ticket is the
+ * person's computer's to approve; the tab learns whom to pair with from the ticket's answer
+ * (`claimed`).
  */
 function ticketCodes({origin, identity}) {
   const post = httpsPost(origin);
-  const call = async (path, body) => {
-    const reply = await post(path, JSON.stringify(body)).catch(error => { throw hostNamed(error, origin); });
-    const text = new TextDecoder().decode(reply.body);
-    if (reply.status >= 400) {
-      let said = null;
-      try { said = JSON.parse(text)?.error ?? null; } catch { /* not JSON */ }
-      throw hostNamed(Object.assign(new Error(said ?? 'the host refused this ticket'),
-        {name: 'TicketError', code: 'refused', status: reply.status}), origin);
+  const call = async (action, body) => {
+    const runtime = await loadRuntime();
+    const reply = await runtime.ticketAction(post, action, JSON.stringify(body)).catch(error => {
+      throw hostNamed(Object.assign(new Error(String(error?.message ?? error)), {code: 'unreachable'}), origin);
+    });
+    const answer = JSON.parse(reply);
+    if (typeof answer?.refused === 'string') {
+      throw hostNamed(Object.assign(new Error(answer.refused || 'the host refused this ticket'),
+        {name: 'TicketError', code: 'refused'}), origin);
     }
-    return text ? JSON.parse(text) : null;
+    return answer?.value ?? null;
   };
   const kept = (ticket, id, direction) => ({code: ticket, expiresAt: Date.now() + TICKET_LIFE_MS, follow: id, id, direction});
   const answerer = saved => {
     let answering = false;
     return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
       follow: async () => {
-        const status = await call(TICKET_ASKED, {id: saved.follow}) ?? {};
+        const status = await call(TICKET_FOLLOW, {id: saved.follow}) ?? {};
         const agent = status.agent ?? null;
         const claimed = status.claimed ?? null;
         if (saved.direction === 'sign-in') {
@@ -1544,12 +1548,12 @@ function ticketCodes({origin, identity}) {
   };
   return {
     async create(workspace, name) {
-      const minted = await call(TICKET_MINT, {user: identity.userPublicKey, workspace, name: name ?? null,
+      const minted = await call(TICKET_ISSUE, {user: identity.userPublicKey, workspace, name: name ?? null,
         site: globalThis.location?.origin ?? null});
       return answerer(kept(minted.ticket, minted.id, 'login'));
     },
     async createSignIn() {
-      const minted = await call(TICKET_MINT, {direction: 'sign-in', site: globalThis.location?.origin ?? null});
+      const minted = await call(TICKET_ISSUE, {direction: 'sign-in', site: globalThis.location?.origin ?? null});
       return answerer(kept(minted.ticket, minted.id, 'sign-in'));
     },
     resume(saved) {

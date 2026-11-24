@@ -3985,8 +3985,14 @@ fn refusal_text(refusal: &tilo_server_protocol::refusal::Refusal) -> String {
 
 /// Ask `to`, a device of `workspace`, `message` through the host's action service, and answer the
 /// frame it replies with. An empty `workspace` asks the host itself: its own operations, which
-/// the host admits for a device of its person by the signed invocation the request carries.
-async fn ask_action(
+/// the host admits for a device of its person by the signed invocation the request carries. A
+/// scope a host admits a device with no certificate to (`tilo.device`'s tickets) is asked the same
+/// way, before the device holds any session there.
+///
+/// # Errors
+///
+/// The device could not sign or encode the request, or the link carried no answer.
+pub async fn ask_action(
     link: &tilo_server_client::link::Link,
     signer: Arc<dyn tilo_server_client::DeviceSigner>,
     device: [u8; 32],

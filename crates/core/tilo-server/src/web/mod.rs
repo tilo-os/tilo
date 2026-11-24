@@ -270,11 +270,7 @@ impl Web {
     /// reached only after the listener started (its first network report found none, as when
     /// the host's own relay is not routable yet) is named as soon as it is.
     fn current_host_info(&self) -> ServerInfo {
-        let mut info = self.server_info.clone();
-        if let (Some(endpoint), Some(address)) = (&self.endpoint, info.address.as_mut()) {
-            follow_endpoint(address, endpoint.addr());
-        }
-        info
+        host_info_now(&self.server_info, self.endpoint.as_ref())
     }
 
     /// Queue the certification requests this host's sign-in tickets expect: a tab that pairs
@@ -285,19 +281,32 @@ impl Web {
             .set_tab_requests(Arc::new(tickets::Expecting(self.tickets.clone())));
     }
 
-    /// Serve the tickets a page's host makes for its agent: the certify action a computer with
-    /// no certificate calls, routed to the ticket whose secret its call carries, and the device
-    /// actions a certified device calls beside its workspaces' own.
+    /// Serve the tickets a page's host makes for its agent: the page's calls for them and the
+    /// certify action a computer with no certificate calls, routed to the ticket whose secret its
+    /// call carries, and the device actions a certified device calls beside its workspaces' own.
     fn serve_tickets(&self) {
         if let Some(workspaces) = self.workspaces.as_ref() {
             let service = workspaces.action_service();
             service.admit_uncertified(
                 tilo_device_identity::login::SCOPE,
-                Arc::new(tickets::Router::new(self.tickets.clone())),
+                Arc::new(tickets::Router::new(self.tickets.clone(), {
+                    let server_info = self.server_info.clone();
+                    let endpoint = self.endpoint.clone();
+                    Arc::new(move || host_info_now(&server_info, endpoint.as_ref()))
+                })),
             );
             service.add_provider(Arc::new(tickets::Certified::new(self.tickets.clone())));
         }
     }
+}
+
+/// `info`, naming where `endpoint` is dialled now ([`Web::current_host_info`]).
+fn host_info_now(info: &ServerInfo, endpoint: Option<&iroh::Endpoint>) -> ServerInfo {
+    let mut info = info.clone();
+    if let (Some(endpoint), Some(address)) = (endpoint, info.address.as_mut()) {
+        follow_endpoint(address, endpoint.addr());
+    }
+    info
 }
 
 /// Move `address` to the endpoint's address `now`. An endpoint that has lost its relays keeps
@@ -1324,55 +1333,6 @@ fn refused(code: StatusCode, message: &str) -> Response<Body> {
 }
 
 #[allow(
-    clippy::result_large_err,
-    reason = "the error is the response the handler sends as it is"
-)]
-fn json_body<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response<Body>> {
-    serde_json::from_slice(bytes)
-        .map_err(|_| refused(StatusCode::BAD_REQUEST, "not a request this route takes"))
-}
-
-/// Why a ticket route was refused, as the page is told it.
-fn ticket_refused(refusal: &tickets::Refusal) -> Response<Body> {
-    let status = match refusal {
-        tickets::Refusal::Malformed => StatusCode::BAD_REQUEST,
-        tickets::Refusal::Unknown => StatusCode::NOT_FOUND,
-        tickets::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
-        tickets::Refusal::NotWaiting
-        | tickets::Refusal::NotThisPerson
-        | tickets::Refusal::NotSignedIn
-        | tickets::Refusal::Spent => StatusCode::CONFLICT,
-    };
-    refused(status, refusal.message())
-}
-
-/// The ticket routes ([`tickets`]), or `None` for any other route.
-fn ticket_route(web: &Web, route: &str, bytes: &[u8]) -> Option<Response<Body>> {
-    fn answered<T: serde::Serialize>(result: Result<T, tickets::Refusal>) -> Response<Body> {
-        result.map_or_else(|refusal| ticket_refused(&refusal), |value| json(&value))
-    }
-    let answer = match route {
-        tickets::MINT_ROUTE => match json_body::<tickets::Mint>(bytes) {
-            Ok(mint) => answered(web.tickets.mint(&mint, &web.current_host_info())),
-            Err(refusal) => refusal,
-        },
-        tickets::ASKED_ROUTE => match json_body::<tickets::Asking>(bytes) {
-            Ok(asking) => answered(web.tickets.asking(&asking.id)),
-            Err(refusal) => refusal,
-        },
-        tickets::ANSWER_ROUTE => match json_body::<tickets::Answering>(bytes) {
-            Ok(answering) => match web.tickets.answer(&answering) {
-                Ok(()) => reply(StatusCode::NO_CONTENT, Vec::new()),
-                Err(refusal) => ticket_refused(&refusal),
-            },
-            Err(refusal) => refusal,
-        },
-        _ => return None,
-    };
-    Some(answer)
-}
-
-#[allow(
     clippy::too_many_lines,
     reason = "one routing table: every browser route and its body type in one place"
 )]
@@ -1393,9 +1353,6 @@ async fn route(
     };
     let client = client_address(&request);
     let (_, bytes) = body(request, MAX_REQUEST_BYTES).await?;
-    if let Some(answer) = ticket_route(web, route, &bytes) {
-        return Ok(answer);
-    }
     match route {
         "/host" => Ok(encoded(&web.current_host_info())),
         tilo_server_protocol::web::WORKSPACE_DELETED_PATH => {

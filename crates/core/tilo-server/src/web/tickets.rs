@@ -19,6 +19,13 @@
 //!   of theirs. The host answers the certification request the tab pairs with. No device issues a
 //!   browser's certificate: the root does.
 //!
+//! The page asks for its tickets and follows them with `tilo.device`'s actions too, over the link
+//! it reaches its host's actions on, in the scope a device with no certificate calls
+//! ([`SCOPE`]): `devices#issue` for a ticket, `devices#follow` for what the computer did with it,
+//! and `devices#answer` for the page's yes or no. A tab that is signing in holds no certificate
+//! yet, so the ticket's id, which only the page that asked for it was told, is what each call
+//! stands on.
+//!
 //! Nothing is kept once a ticket is answered or runs out, and a ticket names no workspace of its
 //! own: the page says which workspace a computer enters, and the host fills in where that
 //! workspace is reached and through which device.
@@ -34,20 +41,14 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    APPROVE, Approval, Approved, Approver, Asked, Declined, Direction, Entry, PENDING, PROVIDER,
-    REPORTED, Reached, Report, ServerAddress, SigningIn, Step, TICKET_LIFETIME_NS, Tab, Ticket,
-    tab_capability,
+    ANSWER, APPROVE, Approval, Approved, Approver, Asked, Declined, Direction, Entry, FOLLOW,
+    ISSUE, PENDING, PROVIDER, REPORTED, Reached, Report, ServerAddress, SigningIn, Step,
+    TICKET_LIFETIME_NS, Tab, Ticket, tab_capability,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::new_device::ServedTicket;
 use tilo_server_protocol::web::ServerInfo;
 use tilo_user_identity::DeviceCert;
-
-/// Where a page asks its host for a ticket, and where it reads and answers what the computer
-/// asks in turn. Below the API prefix, beside the routes every page reaches its host at.
-pub(super) const MINT_ROUTE: &str = "/ticket";
-pub(super) const ASKED_ROUTE: &str = "/ticket/asked";
-pub(super) const ANSWER_ROUTE: &str = "/ticket/answer";
 
 /// Tickets one host keeps at once: a page makes one per setup it shows, and one left behind by a
 /// tab that closed runs out in ten minutes.
@@ -144,7 +145,7 @@ pub(super) struct Answering {
     pub declined: Option<String>,
 }
 
-/// Why a ticket route or a ticket's action was refused: the sentence it answers.
+/// Why a ticket's action was refused: the sentence it answers.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Refusal {
     Malformed,
@@ -159,7 +160,7 @@ pub(super) enum Refusal {
 impl Refusal {
     pub(super) const fn message(&self) -> &'static str {
         match self {
-            Self::Malformed => "not a request this route takes",
+            Self::Malformed => "not a request this action takes",
             Self::Unknown => "no such ticket, or it ran out; ask the page for a new one",
             Self::TooMany => "too many tickets are waiting here; try again in a minute",
             Self::NotWaiting => "no browser is waiting to be signed in with this ticket",
@@ -572,16 +573,52 @@ fn secret_of(request: &InvokeRequest) -> Option<String> {
     argument.get("secret")?.as_str().map(str::to_owned)
 }
 
-/// The one provider the host admits a computer with no certificate to
-/// ([`tilo_peer_state::actions::ActionService::admit_uncertified`]): it routes each call to the
-/// ticket whose secret it carries, so several pages' setups are served at once.
+/// Who this host is and where it is dialled now, read as a ticket is made.
+pub(super) type HostInfo = Arc<dyn Fn() -> ServerInfo + Send + Sync>;
+
+/// The one provider the host admits a device with no certificate to
+/// ([`tilo_peer_state::actions::ActionService::admit_uncertified`]): a computer's certify call,
+/// routed to the ticket whose secret it carries, so several pages' setups are served at once, and
+/// a page's calls for the tickets it shows ([`ISSUE`], [`FOLLOW`], [`ANSWER`]).
 pub(super) struct Router {
     tickets: Tickets,
+    host: HostInfo,
 }
 
 impl Router {
-    pub(super) fn new(tickets: Tickets) -> Self {
-        Self { tickets }
+    pub(super) fn new(tickets: Tickets, host: HostInfo) -> Self {
+        Self { tickets, host }
+    }
+
+    /// A page's call for a ticket it shows: one made, what its computer did, or the page's answer.
+    fn page(&self, caller: &Caller, request: &InvokeRequest) -> InvocationReceipt {
+        let invocation = request.invocation;
+        let argument = match &request.argument {
+            InvokeArgument::Json(argument) => serde_json::Value::Object(argument.clone()),
+            _ => serde_json::Value::Null,
+        };
+        let answer = match request.target.address.action.as_str() {
+            ISSUE => serde_json::from_value::<Mint>(argument)
+                .map_err(|_| Refusal::Malformed)
+                .and_then(|mint| self.tickets.mint(&mint, &(self.host)()))
+                .and_then(|minted| serde_json::to_value(minted).map_err(|_| Refusal::Malformed)),
+            FOLLOW => serde_json::from_value::<Asking>(argument)
+                .map_err(|_| Refusal::Malformed)
+                .and_then(|asking| self.tickets.asking(&asking.id))
+                .and_then(|asked| serde_json::to_value(asked).map_err(|_| Refusal::Malformed)),
+            _ => serde_json::from_value::<Answering>(argument)
+                .map_err(|_| Refusal::Malformed)
+                .and_then(|answering| self.tickets.answer(&answering))
+                .map(|()| serde_json::json!({})),
+        };
+        let device = caller.device_public_key().copied().unwrap_or_default();
+        let answer = answer.map_err(|refusal| ActionCallError::refused(refusal.message()));
+        let (receipt, state) = receipt_of(invocation, answer);
+        self.tickets
+            .calls
+            .lock_recover()
+            .insert(invocation, (device, state));
+        receipt
     }
 
     /// The ticket `request` names by its secret.
@@ -613,7 +650,7 @@ impl ActionProvider for Router {
         _query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Err(ActionCallError::Unavailable {
-            reason: "a computer with no certificate calls only the certify action".into(),
+            reason: "a device with no certificate calls only a ticket's actions".into(),
         }))
     }
 
@@ -622,6 +659,14 @@ impl ActionProvider for Router {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if request.target.provider == PROVIDER
+            && matches!(
+                request.target.address.action.as_str(),
+                ISSUE | FOLLOW | ANSWER
+            )
+        {
+            return Pending::ready(Ok(self.page(caller, &request)));
+        }
         let Some(served) = self.of(&request) else {
             return Pending::ready(Err(ActionCallError::Refused {
                 reason: "this ticket was used already: ask for a new one".into(),
@@ -631,9 +676,19 @@ impl ActionProvider for Router {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.slots()
-            .into_iter()
-            .find_map(|slot| slot.served()?.observe(caller, id))
+        let device = caller.device_public_key().copied().unwrap_or_default();
+        let paged = self
+            .tickets
+            .calls
+            .lock_recover()
+            .get(id)
+            .filter(|(from, _)| *from == device)
+            .map(|(_, state)| state.clone());
+        paged.or_else(|| {
+            self.slots()
+                .into_iter()
+                .find_map(|slot| slot.served()?.observe(caller, id))
+        })
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {

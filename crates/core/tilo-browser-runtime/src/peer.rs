@@ -544,6 +544,100 @@ pub async fn workspace_deleted(post: Function, workspace: String) -> Result<bool
         .map_err(js_error)
 }
 
+/// Call one of the ticket actions `tilo.device` answers a page with on the host `post` reaches
+/// (`issue`, `follow` or `answer`), with `argument` (JSON). Resolves to `{value}`, the action's
+/// answer, or `{refused}`, the host's refusal in its own words. The call goes over the link the
+/// page reaches its host's actions on, in the scope a device with no certificate is admitted to:
+/// a tab that is signing in holds none yet, so it signs with a key it makes for the call, and the
+/// ticket's id is what the call stands on.
+///
+/// # Errors
+///
+/// Throws for an action that is no ticket's, a malformed argument, and a host not reached or
+/// that answered nothing.
+#[wasm_bindgen(js_name = ticketAction)]
+pub async fn ticket_action(
+    post: Function,
+    action: String,
+    argument: String,
+) -> Result<String, JsError> {
+    use tilo_actions::remote::{
+        InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+        RemoteActionTarget,
+    };
+    use tilo_device_identity::login::{ANSWER, FOLLOW, ISSUE, PROVIDER, RESOURCE, SCOPE};
+    if !matches!(action.as_str(), ISSUE | FOLLOW | ANSWER) {
+        return Err(js_error(format!("{action} is no ticket's action")));
+    }
+    let argument: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&argument).map_err(js_error)?;
+    let info: tilo_server_protocol::web::ServerInfo =
+        post_decoded(&PageHttp(post), "/host", Vec::new()).await?;
+    let address = info
+        .address
+        .as_ref()
+        .ok_or_else(|| js_error("this host names no address to reach its actions at"))?;
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(js_error)?;
+    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let device = key.verifying_key().to_bytes();
+    let dialer = tilo_server_client::link::Dialer::new(ServerAddress::published(address), None);
+    let asked = async {
+        let link = dialer
+            .link(tilo_server_client::link::Purpose::Actions)
+            .await
+            .map_err(js_error)?;
+        let message = RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(RESOURCE, &action),
+            },
+            argument: InvokeArgument::Json(argument),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        });
+        let frame = tilo_session_client::session::ask_action(
+            &link,
+            std::sync::Arc::new(key),
+            device,
+            SCOPE,
+            info.server_cert.device_public_key,
+            message,
+        )
+        .await
+        .map_err(js_error);
+        link.close("");
+        frame
+    }
+    .await;
+    dialer.close().await;
+    let message = RemoteActionFrame::decode(&asked?)
+        .map_err(js_error)?
+        .message;
+    let RemoteActionMessage::Receipt(receipt) = message else {
+        return Err(js_error("the host answered no receipt"));
+    };
+    let answer = match receipt.status {
+        ReceiptStatus::Completed { output } => {
+            serde_json::json!({"value": output.value.unwrap_or(serde_json::Value::Null)})
+        }
+        ReceiptStatus::Failed { error } => serde_json::json!({"refused": error.message}),
+        ReceiptStatus::Rejected { error } => serde_json::json!({"refused": error.to_string()}),
+        status => {
+            return Err(js_error(format!(
+                "the host did not answer the ticket: {status:?}"
+            )));
+        }
+    };
+    Ok(answer.to_string())
+}
+
 /// Certify this page's device key with the host its address names, as the
 /// answer to the pairing invite `inviteHex` (16 bytes as hex) the person's
 /// link named, if any. Calls `onPairingCode(code)` once the host queued the

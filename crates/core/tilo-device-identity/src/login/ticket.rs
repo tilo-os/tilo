@@ -59,6 +59,12 @@ pub const APPROVE: &str = "approve";
 /// The action a certified computer calls on the host that served its ticket: what it did as it
 /// logged in, step by step.
 pub const REPORTED: &str = "reported";
+/// The action a page calls on its host, in [`SCOPE`], for a ticket the host issued it with
+/// [`ISSUE`]: what the computer did with it, and where its call stands.
+pub const FOLLOW: &str = "follow";
+/// The action a page calls on its host, in [`SCOPE`], for a ticket the host issued it with
+/// [`ISSUE`]: its yes or no to the computer that asked with it.
+pub const ANSWER: &str = "answer";
 /// The scope a request names when it is that one call: no workspace, since the computer is in
 /// none yet.
 pub const SCOPE: &str = "tilo.new-device";

@@ -1450,10 +1450,15 @@ fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one()
 }
 
 /// A page asks its host for the ticket its agent works with, follows it, and gets a ticket for
-/// each direction it asks in: what the ticket routes answer, and what they refuse.
+/// each direction it asks in: what the ticket actions a device with no certificate calls answer,
+/// and what they refuse.
 #[tokio::test]
 async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
-    use tilo_device_identity::login::Direction;
+    use tilo_actions::remote::{
+        ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+        RemoteActionTarget,
+    };
+    use tilo_device_identity::login::{ANSWER, Direction, FOLLOW, ISSUE, PROVIDER, RESOURCE};
 
     let root = SigningKey::from_bytes(&[151; 32]);
     let keeper = host(&root, 152, DeviceCapabilities::member());
@@ -1466,33 +1471,61 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
         relay_url: None,
         web: None,
     });
-    let (addr, serving) = serve_web(Arc::new(web)).await;
+    let info = web.server_info.clone();
+    let router = tickets::Router::new(web.tickets.clone(), Arc::new(move || info.clone()));
+    // A tab that holds no certificate yet: a key of its own, and nothing else.
+    let tab = Caller::visitor([153; 32]);
+    let call = |action: &str, argument: serde_json::Value| {
+        let serde_json::Value::Object(argument) = argument else {
+            unreachable!("a ticket action asks with an object")
+        };
+        router.invoke(
+            &tab,
+            InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: PROVIDER.to_owned(),
+                    address: tilo_actions::ActionAddress::new(RESOURCE, action),
+                },
+                argument: InvokeArgument::Json(argument),
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            },
+        )
+    };
+    let answered = |receipt: Result<tilo_actions::remote::InvocationReceipt, _>| match receipt
+        .expect("a ticket action is answered")
+        .status
+    {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+        ReceiptStatus::Failed { error } => Err(error.message),
+        status => unreachable!("a ticket action ends as it is called: {status:?}"),
+    };
 
     // Setting up: the ticket names the person and the workspace their computer enters.
-    let (code, _, minted) = call_json(
-        addr,
-        tickets::MINT_ROUTE,
-        &serde_json::json!({
-            "user": hex::encode(root.verifying_key().to_bytes()),
-            "workspace": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
-            "name": "Studio",
-        }),
-        None,
+    let minted = answered(
+        call(
+            ISSUE,
+            serde_json::json!({
+                "user": hex::encode(root.verifying_key().to_bytes()),
+                "workspace": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+                "name": "Studio",
+            }),
+        )
+        .await,
     )
-    .await;
-    assert_eq!(code, 200, "{minted}");
+    .expect("the page is given a ticket");
     let id = minted["id"].as_str().unwrap().to_owned();
     let ticket = tilo_device_identity::login::Ticket::parse(minted["ticket"].as_str().unwrap())
         .expect("the page is shown a ticket");
     assert_eq!(ticket.direction, Direction::Login);
-    let (code, _, asked) = call_json(
-        addr,
-        tickets::ASKED_ROUTE,
-        &serde_json::json!({"id": id}),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200, "{asked}");
+    let asked = answered(call(FOLLOW, serde_json::json!({"id": id})).await)
+        .expect("the page follows its ticket");
     assert!(
         asked["steps"].as_array().is_some_and(Vec::is_empty),
         "{asked}"
@@ -1501,37 +1534,32 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
         asked.get("asked").is_none() && asked.get("certified").is_none(),
         "{asked}"
     );
+    // The page says no before any computer asked: whoever asks with the ticket later is told so.
+    answered(call(ANSWER, serde_json::json!({"id": id, "declined": "not now"})).await)
+        .expect("the page answers its ticket");
+    let asked = answered(call(FOLLOW, serde_json::json!({"id": id})).await).unwrap();
+    assert_eq!(asked["declined"], "not now", "{asked}");
 
     // Signing a browser in: the ticket names no person, and no workspace.
-    let (code, _, minted) = call_json(
-        addr,
-        tickets::MINT_ROUTE,
-        &serde_json::json!({"direction": "sign-in"}),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200, "{minted}");
+    let minted = answered(call(ISSUE, serde_json::json!({"direction": "sign-in"})).await)
+        .expect("the page is given a ticket");
     let ticket = tilo_device_identity::login::Ticket::parse(minted["ticket"].as_str().unwrap())
         .expect("the page is shown a ticket");
     assert_eq!(ticket.direction, Direction::SignIn);
 
-    // A setup ticket without its person is no request this route takes, and a ticket no page
-    // made is none to answer.
-    let (code, _, refused) = call_json(
-        addr,
-        tickets::MINT_ROUTE,
-        &serde_json::json!({"workspace": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"}),
-        None,
+    // A setup ticket without its person is no request the action takes, and a ticket no page
+    // made is none to follow.
+    let refused = answered(
+        call(
+            ISSUE,
+            serde_json::json!({"workspace": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"}),
+        )
+        .await,
     )
-    .await;
-    assert_eq!(code, 400, "{refused}");
-    let (code, _, refused) = call_json(
-        addr,
-        tickets::ASKED_ROUTE,
-        &serde_json::json!({"id": hex::encode([9; 32])}),
-        None,
-    )
-    .await;
-    assert_eq!(code, 404, "{refused}");
-    stop(server, serving).await;
+    .expect_err("a setup names its person");
+    assert_eq!(refused, tickets::Refusal::Malformed.message());
+    let refused = answered(call(FOLLOW, serde_json::json!({"id": hex::encode([9; 32])})).await)
+        .expect_err("no page made this ticket");
+    assert_eq!(refused, tickets::Refusal::Unknown.message());
+    crate::daemon::Server::shutdown(server).await;
 }
