@@ -324,6 +324,7 @@ impl AppBrokerState {
             tilo_action_policy::Answer::Deny => return Err(ActionCallError::NotPermitted),
             tilo_action_policy::Answer::Ask
                 if !(approved
+                    || matches!(confirmation, Some(Confirmation::Asked(_)))
                     || (actor.direct() && confirmation == Some(&Confirmation::Confirmed))) =>
             {
                 return Err(ActionCallError::confirmation_required());

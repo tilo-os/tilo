@@ -2906,6 +2906,12 @@ impl AppBrokerState {
         if policy == tilo_actions::ConfirmationPolicy::None {
             return true;
         }
+        // The person's approve of the asked record this call was kept as is their answer
+        // whoever called: only the dispatch hands it back, and every frame entry refuses one it
+        // did not hand back.
+        if matches!(confirmation, Some(Confirmation::Asked(_))) {
+            return true;
+        }
         let own = actor.direct().then_some(confirmation).flatten();
         approved || confirmation_satisfied(&policy, own)
     }
