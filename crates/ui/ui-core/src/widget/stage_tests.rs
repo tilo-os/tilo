@@ -580,7 +580,7 @@ fn on_screen(at: (f64, f64)) -> (f64, f64) {
 /// stage last reported it: the page point it moved to.
 fn dragged(
     queue: &crate::Intents<crate::component::Fired>,
-    host: &mut FrameHarness,
+    host: &mut Driver,
     from: (f64, f64),
     to: (f64, f64),
 ) -> (i64, i64) {
@@ -613,7 +613,7 @@ fn dragged(
 #[test]
 fn a_dragged_place_snaps_to_the_page_and_the_places_beside_it() {
     let queue = crate::Intents::default();
-    let mut host = FrameHarness::new(
+    let mut host = Driver::new(
         crate::State::new(),
         Box::new(boxes_stage(&queue, 2)),
         (800, 600),
