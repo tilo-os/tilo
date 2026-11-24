@@ -1,8 +1,14 @@
 # tilolang
 
-The compiler of tilolang, the Tilo app language, and its command line. The design is in
-`docs/designs/app-language/`; the grammar is [grammar.md](grammar.md); the choices this crate
-made where the design is silent are in [DECISIONS.md](DECISIONS.md).
+tilolang is the language Tilo apps are written in. A package declares its types, the actions
+that change them and the views that show them; this compiler turns it into a small, sandboxed
+WebAssembly app whose records sync between devices and the people working on them. This page
+starts with how a package is laid out, gives the full syntax reference, and ends with the
+command line, what a package costs to run, and the development loop.
+
+[How tilolang works](../../../docs/designs/app-language/README.md) explains the design behind
+it, the [grammar](grammar.md) is the language's complete syntax, and
+[the compiler's decisions](DECISIONS.md) record the choices it made where the design is silent.
 
 ## A package
 

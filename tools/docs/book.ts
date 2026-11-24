@@ -224,9 +224,15 @@ export function renderMarkdown(markdown: string): Rendered {
       },
     },
   });
-  const html = (marked.parse(markdown) as string)
-    .replace(/<table>/g, '<div class="table-scroll"><table>')
-    .replace(/<\/table>/g, "</table></div>");
+  // A page quotes addresses in its examples (`mailto:jane@example.com`). A CDN that rewrites
+  // addresses into script-decoded placeholders would show them as "[email protected]" under the
+  // sites' CSP, so the markers ask it to leave the page's text as written.
+  const html =
+    "<!--email_off-->" +
+    (marked.parse(markdown) as string)
+      .replace(/<table>/g, '<div class="table-scroll"><table>')
+      .replace(/<\/table>/g, "</table></div>") +
+    "<!--/email_off-->";
   const text = markdown
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/[#*_`>\[\]()]/g, " ")
