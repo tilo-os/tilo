@@ -3489,6 +3489,7 @@ impl Widget for NavShell {
         self.animating
             || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
+            || self.content_fade.is_moving(crate::motion::frame_now())
             || self.painted_parts().any(Widget::needs_animation_frame)
     }
 
