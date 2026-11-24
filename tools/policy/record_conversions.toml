@@ -85,7 +85,7 @@ lost = "The folders each device analyzed lately, which the native app kept in it
 kind = "files.recent"
 app = "file-explorer"
 change = "removed"
-conversion = "apps/file-explorer/src/resource.rs:open"
+lost = "The files each device opened or changed through the Rust Files. The tilolang Files notes the files a person opens in its own record, and reads nothing of the old resource, so an earlier list is not carried."
 
 [[change]]
 kind = "firewall.config"

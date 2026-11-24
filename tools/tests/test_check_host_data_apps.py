@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "policy/check_host_data_apps.py"
@@ -90,13 +91,13 @@ class HostDataAppsTests(unittest.TestCase):
 
     def test_an_exception_that_is_no_app_any_more_is_named(self):
         root = self.fixture({})
-        (root / "apps" / "code-editor").rmdir()
-        self.assertEqual(
-            host_data.check(root),
-            [
-                "tools/policy/check_host_data_apps.py: EXCEPTIONS: code-editor is no app any more"
-            ],
-        )
+        with mock.patch.dict(host_data.EXCEPTIONS, {"gone-app": "shows nothing of the machine"}):
+            self.assertEqual(
+                host_data.check(root),
+                [
+                    "tools/policy/check_host_data_apps.py: EXCEPTIONS: gone-app is no app any more"
+                ],
+            )
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@
 
 [[deletion]]
 action = "format"
-file = "apps/disks/src/resource.rs"
+file = "crates/desktop/tilo-system-resources/src/disks.rs"
 effect = "Format"
 reason = """
 Formatting writes a new filesystem over what the drive or partition holds, and

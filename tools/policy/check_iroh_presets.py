@@ -17,8 +17,8 @@ a device's identity:
   used and dropped, and never outlives the test that binds it. Nothing to
   list: the test attribute is what exempts it.
 * A process that is not a desktop. ``EXEMPT`` names each file and why:
-  ``tilo-server``'s diagnostic subcommands and its daemon, the initrd's
-  sibling unlock. Each lives as
+  ``tilo-server``'s daemon, the initrd's sibling unlock and enrolment, and a
+  peer network that dials the peers its caller names. Each lives as
   long as the command that started it, dials an address it was handed, or is
   the server devices are meant to find. They are listed so that a device
   endpoint added beside one has to be argued for rather than absorbed.
@@ -44,9 +44,6 @@ DECISION = "crates/core/endpoint-reachability/src/directory.rs"
 # one-line process or a transport that only dials with the address it was
 # handed; the session's and the filesystem's endpoints are not here.
 EXEMPT = {
-    # The registry transport dials the registry with an address it was given.
-    # The server's admin client.
-    "crates/core/tilo-server/src/admin.rs": "server admin client",
     # A client of the device administrator, which chooses its own relays.
     # The initrd's sibling unlock: it asks the siblings named in a token that
     # a boot already holds, and the process ends with the unlock.

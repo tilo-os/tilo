@@ -30,9 +30,7 @@ PLANS = Path("tools/screenshots")
 
 # Apps whose manifest grants them the machine but that show only what the
 # person opens in them, never the machine by themselves.
-EXCEPTIONS = {
-    "code-editor": "shows the project the person opens, nothing until then",
-}
+EXCEPTIONS: dict[str, str] = {}
 
 
 def reads_machine(manifest: dict) -> bool:
