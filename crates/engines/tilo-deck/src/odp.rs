@@ -134,7 +134,7 @@ fn content_xml(
         push_attr(&mut body, "qslides:background", slide.background.as_str());
         push_attr(&mut body, "qslides:notes", &slide.notes);
         body.push('>');
-        for el in slide.z_sorted() {
+        for el in &slide.elements {
             let look = Look {
                 palette: &on,
                 slide,
@@ -262,7 +262,6 @@ fn push_model_attrs(s: &mut String, el: &Element, exported_src: Option<&str>) {
         if el.italic { "true" } else { "false" },
     );
     push_attr(s, "qslides:radius", &fmt_f64(el.radius));
-    push_attr(s, "qslides:z", &el.z.to_string());
     push_attr(s, "qslides:src", exported_src.unwrap_or(&el.src));
 }
 
@@ -679,13 +678,8 @@ fn parse_content(xml: &str) -> Option<Deck> {
                     b"style:style" => style_name = None,
                     b"draw:frame" => {
                         if let Some(mut el) = cur_text_el.take() {
-                            // Runs of their own weight or slant keep them; a box written
-                            // before runs keeps its own flags.
-                            if cur_blocks.iter().any(|block| {
-                                !block.marks.is_empty() || block.kind != "paragraph"
-                            }) {
-                                el.text = crate::model::markdown_of_blocks(&cur_blocks);
-                            }
+                            // The box's words, a paragraph each, with their marks.
+                            el.text = crate::model::markdown_of_blocks(&cur_blocks);
                             if let Some(slide) = slides.last_mut() {
                                 slide.elements.push(el);
                             }
@@ -880,7 +874,6 @@ fn element_from_attrs(e: &quick_xml::events::BytesStart, kind: &str) -> Element 
         w: num(b"qslides:w", 200.0),
         h: num(b"qslides:h", 80.0),
         text: String::new(),
-        blocks: Vec::new(),
         src: f(b"qslides:src").unwrap_or_default(),
         fill: f(b"qslides:fill").unwrap_or_else(|| "text".into()),
         stroke: f(b"qslides:stroke").unwrap_or_else(|| "none".into()),
@@ -890,9 +883,6 @@ fn element_from_attrs(e: &quick_xml::events::BytesStart, kind: &str) -> Element 
         bold: boolean(b"qslides:bold"),
         italic: boolean(b"qslides:italic"),
         radius: num(b"qslides:radius", 0.0),
-        z: f(b"qslides:z")
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0),
     }
 }
 

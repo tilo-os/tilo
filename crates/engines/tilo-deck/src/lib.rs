@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn a_deck_round_trips_through_both_formats_with_its_pictures() {
-        let mut pictures = Memory::default();
+        let pictures = Memory::default();
         let picture = pictures.keep(&tiny_png()).expect("kept");
         let deck = Deck {
             title: "Quarterly review".to_owned(),

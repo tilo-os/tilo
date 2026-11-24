@@ -24,7 +24,9 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
 
+use crate::colour::{Palette, Rgb as Color};
 use crate::odp::Package;
+use crate::model::Block;
 use crate::Pictures;
 
 use quick_xml::Reader;
@@ -46,7 +48,7 @@ pub fn write_pptx(deck: &Deck, content: &dyn Pictures) -> std::io::Result<Vec<u8
             if el.kind != ElementKind::Image || pictures.iter().any(|p| p.src == el.src) {
                 continue;
             }
-            if let Some(bytes) = crate::assets::read_asset(content, &el.src) {
+            if let Some(bytes) = content.read(&el.src) {
                 if let Some(ext) = image_ext(&bytes) {
                     pictures.push(Picture {
                         src: el.src.clone(),
@@ -117,7 +119,7 @@ pub fn write_pptx(deck: &Deck, content: &dyn Pictures) -> std::io::Result<Vec<u8
         }
     }
     drop(put);
-    for picture in &bundled {
+    for picture in &pictures {
         zip.start_file(format!("ppt/media/{}", picture.name), opt)?;
         zip.write_all(&picture.bytes)?;
     }
@@ -163,7 +165,10 @@ pub fn read_pptx(bytes: &[u8], content: &dyn Pictures) -> std::io::Result<Deck> 
         slides.push(slide);
     }
     if slides.is_empty() {
-        slides.push(Slide::new(Layout::Blank));
+        slides.push(Slide {
+            layout: Layout::Blank,
+            ..Slide::default()
+        });
     }
     let (palette, look) = read_zip_text(&mut zip, "ppt/theme/theme1.xml").map_or_else(
         || (PaletteKind::Indigo, DeckLook::default()),
@@ -341,7 +346,7 @@ fn slide_xml(
     s.push_str(&drawing_slide_background(slide.background, palette));
     let on = palette.on(slide.background);
     s.push_str(r#"<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>"#);
-    for (i, el) in slide.z_sorted().into_iter().enumerate() {
+    for (i, el) in slide.elements.iter().enumerate() {
         let id = i + 2;
         let (x, y, w, h) = (emu(el.x), emu(el.y), emu(el.w), emu(el.h));
         match el.kind {
@@ -465,7 +470,10 @@ fn parse_slide(
     zip: &mut Package<'_>,
     content: &dyn Pictures,
 ) -> Slide {
-    let mut slide = Slide::new(Layout::Blank);
+    let mut slide = Slide {
+        layout: Layout::Blank,
+        ..Slide::default()
+    };
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
     let mut cur: Option<Pending> = None;
@@ -720,7 +728,6 @@ fn push_pending(
     el.fill = c.fill;
     el.stroke = c.stroke;
     el.stroke_width = c.stroke_width;
-    el.z = slide.elements.len() as i64;
     slide.elements.push(el);
 }
 

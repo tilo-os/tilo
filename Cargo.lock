@@ -18019,6 +18019,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-content-types",
+ "tilo-doc-codecs",
  "tilo-test-env",
  "workspace-hack",
  "zip",

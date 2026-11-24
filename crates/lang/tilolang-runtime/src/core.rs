@@ -611,8 +611,8 @@ impl Core {
             | WebText | BytesLength | Base64Decode => self.web_import(imp, a),
             PageCall => self.page_import(a),
             FilePart | FileSize | FileText | FileFiles | FileBook | FileBookInfo
-            | FileBookCover | SheetFile | PresentationFile => self.file_import(imp, a),
-            FileOfText | FileOfBytes | FileAt | FileZip | SheetOfFile | PresentationOfFile => {
+            | FileBookCover | SheetFile | Imp::PresentationFile => self.file_import(imp, a),
+            FileOfText | FileOfBytes | FileAt | FileZip | SheetOfFile | Imp::PresentationOfFile => {
                 self.file_make(imp, a)
             }
             FileMarkdown | FileOfDocument => self.document_import(imp, a),

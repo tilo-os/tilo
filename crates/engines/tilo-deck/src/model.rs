@@ -742,7 +742,12 @@ mod tests {
         assert!(blocks[1].is_list() && blocks[1].ordered == Some(false));
         assert!(blocks[2].is_list() && blocks[2].ordered == Some(true));
         assert_eq!(blocks[0].text, "plain bold and italic");
-        assert!(blocks[0].covered_by("strong"));
+        assert!(
+            blocks[0]
+                .marks
+                .iter()
+                .any(|mark| mark.name == "strong" && mark.start == 6 && mark.end == 10)
+        );
         assert_eq!(markdown_of_blocks(&blocks), text);
     }
 }

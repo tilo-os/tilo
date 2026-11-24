@@ -231,12 +231,14 @@ fn luminance(c: Rgb) -> f32 {
 #[must_use]
 pub fn readable_on(ground: Rgb, preferred: Rgb, other: Rgb) -> Rgb {
     if contrast(preferred, ground) >= 4.5 {
-        preferred
-    } else if contrast(other, ground) >= contrast(preferred, ground) {
-        other
-    } else {
-        preferred
+        return preferred;
     }
+    // A slide stands on its own ground whatever the look: white or near-black is the ink a
+    // theme picks when neither of its own does.
+    [other, Rgb(255, 255, 255), Rgb(0, 0, 0)]
+        .into_iter()
+        .max_by(|a, b| contrast(*a, ground).total_cmp(&contrast(*b, ground)))
+        .unwrap_or(preferred)
 }
 
 #[cfg(test)]
@@ -257,12 +259,15 @@ mod tests {
                 for background in Background::order() {
                     let on = palette.on(background);
                     let ground = on.slide_bg(background);
-                    for ink in [on.text_ink("text", ground), on.text_ink("text-dim", ground)] {
-                        assert!(
-                            contrast(ink, ground) >= 3.0,
-                            "{ink:?} on {background:?} in {look:?} ({kind:?})"
-                        );
-                    }
+                    // The theme's own ink, resolved for this slide's ground, is what a box set
+                    // to `text` draws with: it clears AA, and the dim ink never reads worse.
+                    assert!(
+                        contrast(on.text, ground) >= 4.5,
+                        "{:?} on {background:?} in {look:?} ({kind:?})",
+                        on.text
+                    );
+                    assert!(contrast(on.text_dim, ground) >= 4.5);
+                    assert_eq!(on.text_ink("text", ground), on.text);
                 }
             }
         }
