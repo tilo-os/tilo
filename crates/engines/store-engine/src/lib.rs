@@ -201,6 +201,27 @@ fn read_catalogue() -> Result<CatalogueAnswer, String> {
         }
     };
     answer.flatpak = status.available;
+    // Flathub's own catalogue, as this device's Flatpak cache lists it: what a person installs
+    // from outside the Tilo registry, offered with the version the remote has now so an app the
+    // device runs says whether it may update.
+    if status.available
+        && status
+            .remotes
+            .iter()
+            .any(|remote| remote.name == FLATHUB_REMOTE && !remote.disabled)
+    {
+        match flatpak.catalogue(FLATHUB_REMOTE) {
+            Ok(rows) => {
+                for offer in flatpak_offers(&rows) {
+                    if blocks.is_blocked(&offer.app) || !seen.insert(offer.app.clone()) {
+                        continue;
+                    }
+                    items.push(record(&flathub_item(&offer, &installed))?);
+                }
+            }
+            Err(error) => answer.unanswered.push(format!("Flathub: {error}")),
+        }
+    }
     for remote in &status.remotes {
         answer.remotes.push(record(&remote_item(remote))?);
     }
@@ -222,12 +243,22 @@ struct Installed {
     pinned: BTreeMap<String, bool>,
 }
 
+/// The remote Flathub is configured as on a device: its own catalogue of apps.
+const FLATHUB_REMOTE: &str = "flathub";
+
 fn installed_rows() -> Installed {
     let mut rows = Installed::default();
     if let Ok(listed) = package_store::list_installed() {
         for entry in listed {
             rows.version.insert(entry.id.clone(), entry.version.clone());
             rows.pinned.insert(entry.id, entry.pinned);
+        }
+    }
+    // A Flatpak this computer runs is installed here too: what Flathub's catalogue offers reads
+    // beside the version the device has, so it says it is installed and whether it may update.
+    if let Ok(listed) = package_actions::flatpak::Flatpak::from_env().installed() {
+        for app in listed {
+            rows.version.entry(app.app).or_insert(app.version);
         }
     }
     rows
@@ -400,6 +431,78 @@ fn installed_flatpak_item(app: &package_actions::flatpak::Installed) -> Item {
         runnable: true,
         user_managed: true,
         updatable: false,
+        trouble: String::new(),
+        ..Item::default()
+    }
+}
+
+/// One app Flathub offers, as `flatpak remote-ls` lists it: the application, what it is called,
+/// what it does, the version offered and the branch.
+struct FlatpakOffer {
+    app: String,
+    name: String,
+    description: String,
+    version: String,
+    branch: String,
+}
+
+/// The rows `flatpak remote-ls` answers, one app each: tab-separated, one line an app.
+fn flatpak_offers(listing: &str) -> Vec<FlatpakOffer> {
+    listing
+        .lines()
+        .filter_map(|line| {
+            let mut columns = line.split('\t');
+            let app = columns.next()?.trim().to_owned();
+            let name = columns.next().unwrap_or_default().trim().to_owned();
+            let description = columns.next().unwrap_or_default().trim().to_owned();
+            let version = columns.next().unwrap_or_default().trim().to_owned();
+            let branch = columns.next().unwrap_or_default().trim().to_owned();
+            if app.is_empty() || branch.is_empty() {
+                return None;
+            }
+            Some(FlatpakOffer {
+                name: if name.is_empty() { app.clone() } else { name },
+                description,
+                version,
+                branch,
+                app,
+            })
+        })
+        .collect()
+}
+
+/// One app Flathub offers, as the Store reads it: the version it has now beside the one the
+/// device runs, and whether that one is older.
+fn flathub_item(offer: &FlatpakOffer, installed: &Installed) -> Item {
+    let installed_version = installed
+        .version
+        .get(&offer.app)
+        .cloned()
+        .unwrap_or_default();
+    let updatable =
+        !installed_version.is_empty() && version_greater(&offer.version, &installed_version);
+    Item {
+        identity: offer.app.clone(),
+        name: offer.name.clone(),
+        summary: offer.description.clone(),
+        description: offer.description.clone(),
+        origin: "flathub".to_owned(),
+        registry: "Flathub".to_owned(),
+        branch: offer.branch.clone(),
+        trust: "flathub".to_owned(),
+        versions: vec![
+            record(&Version {
+                version: offer.version.clone(),
+                ..Version::default()
+            })
+            .unwrap_or_default(),
+        ],
+        available: offer.version.clone(),
+        installed: installed_version.clone(),
+        fetched: installed_version,
+        runnable: true,
+        user_managed: true,
+        updatable,
         trouble: String::new(),
         ..Item::default()
     }
@@ -1690,5 +1793,36 @@ mod bot_tests {
             "nothing is fetched on this computer"
         );
         assert!(item.runnable, "a bot is always added, never built here");
+    }
+
+    #[test]
+    fn a_flathub_app_the_device_runs_says_so_and_offers_its_update() {
+        let listing = "org.gnome.Editor\tText Editor\tEdits text\t47.1\tstable\tflathub\n\
+                       org.gnome.Maps\tMaps\tFinds places\t46.0\tstable\tflathub\n";
+        let offers = flatpak_offers(listing);
+        assert_eq!(offers.len(), 2);
+        assert_eq!(offers[0].app, "org.gnome.Editor");
+        assert_eq!(offers[0].name, "Text Editor");
+        assert_eq!(offers[0].version, "47.1");
+
+        let mut installed = Installed::default();
+        installed
+            .version
+            .insert("org.gnome.Editor".to_owned(), "47.1".to_owned());
+        installed
+            .version
+            .insert("org.gnome.Maps".to_owned(), "45.2".to_owned());
+
+        let current = flathub_item(&offers[0], &installed);
+        assert_eq!(current.installed, "47.1", "the version this device runs");
+        assert!(!current.updatable, "it is the version Flathub offers");
+
+        let older = flathub_item(&offers[1], &installed);
+        assert_eq!(older.installed, "45.2");
+        assert!(older.updatable, "Flathub offers a newer one");
+
+        let nowhere = flathub_item(&offers[1], &Installed::default());
+        assert!(nowhere.installed.is_empty(), "a device that runs none");
+        assert!(!nowhere.updatable, "and one that runs none is not updated");
     }
 }
