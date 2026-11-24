@@ -624,15 +624,228 @@ fn quiet_days_index(days: Int) -> Int {
     if days == 31 { 1 } else if days == 96 { 2 } else { 0 }
 }
 
-/// This device's screens: the brightness of each, whether the picture turns with it, and the
-/// warmth of the night light.
+/// What the arrangement canvas leaves around the screens it draws, as a fraction of its box.
+fn canvas_margin() -> Float {
+    0.06
+}
+
+/// How much of the canvas box the screens take, as a fraction: what is left after the margin.
+fn canvas_span() -> Float {
+    1.0 - 2.0 * canvas_margin()
+}
+
+/// The left of the leftmost screen, in logical pixels.
+fn left_of(displays: List<device.Display>) -> Int {
+    displays.map(d -> d.x).sort_by(x -> x).first() ?? 0
+}
+
+/// The top of the highest screen, in logical pixels.
+fn top_of(displays: List<device.Display>) -> Int {
+    displays.map(d -> d.y).sort_by(y -> y).first() ?? 0
+}
+
+/// The right of the rightmost screen, in logical pixels.
+fn right_of(displays: List<device.Display>) -> Int {
+    displays.map(d -> d.x + d.width).sort_by(x -> x, desc).first() ?? 0
+}
+
+/// The bottom of the lowest screen, in logical pixels.
+fn bottom_of(displays: List<device.Display>) -> Int {
+    displays.map(d -> d.y + d.height).sort_by(y -> y, desc).first() ?? 0
+}
+
+/// The desktop the screens stand on, as the canvas draws it: its left and top, and how wide and
+/// tall it is — never nothing, so a single screen still fills the box.
+fn display_bounds(displays: List<device.Display>) -> List<Float> {
+    [
+        left_of(displays).to_float(),
+        top_of(displays).to_float(),
+        (right_of(displays) - left_of(displays)).max(1).to_float(),
+        (bottom_of(displays) - top_of(displays)).max(1).to_float(),
+    ]
+}
+
+/// The size a mode shows, as a person reads it: `1920 × 1080`.
+fn mode_size(mode: device.Mode) -> Text {
+    "{mode.width} × {mode.height}"
+}
+
+/// A number to at most two decimals, as a person reads it: `60`, `59.94`.
+fn short_number(value: Float) -> Text {
+    let hundredths = (value * 100.0).round()
+    let whole = hundredths / 100
+    let part = (hundredths - whole * 100).abs()
+    if part == 0 {
+        "{whole}"
+    } else if part % 10 == 0 {
+        "{whole}.{part / 10}"
+    } else if part < 10 { "{whole}.0{part}" } else { "{whole}.{part}" }
+}
+
+/// How fast a mode refreshes, as a person reads it: `60 Hz` or `59.94 Hz`.
+fn mode_rate(mode: device.Mode) -> Text {
+    "{short_number(mode.refresh_mhz.to_float() / 1000.0)} Hz"
+}
+
+/// The sizes a display offers, each once, in the order it offers them.
+fn mode_sizes(modes: List<device.Mode>) -> List<Text> {
+    modes.group(m -> mode_size(m)).map(g -> g.key)
+}
+
+/// The modes a display offers at `size`.
+fn modes_at_size(modes: List<device.Mode>, size: Text) -> List<device.Mode> {
+    modes.filter(m -> mode_size(m) == size)
+}
+
+/// The size a display shows now, empty while its mode is not known.
+fn shown_size(display: device.Display) -> Text {
+    if let mode = display.mode { mode_size(mode) } else { "" }
+}
+
+/// Which of a display's sizes it shows now, counted from zero.
+fn size_index(display: device.Display) -> Int {
+    mode_sizes(display.modes).index_of(shown_size(display)) ?? 0
+}
+
+/// Which of a display's rates at its size it shows now, counted from zero.
+fn rate_index(display: device.Display) -> Int {
+    modes_at_size(display.modes, shown_size(display))
+        .map(m -> m.refresh_mhz)
+        .index_of(display.mode?.refresh_mhz ?? 0)
+        ?? 0
+}
+
+/// How many physical pixels a display draws a logical pixel with, as a person reads it.
+fn scale_label(scale: Float) -> Text {
+    "{short_number(scale * 100.0)}%"
+}
+
+/// Which of the scales the pane offers `scale` is, counted from zero.
+fn scale_index(scale: Float) -> Int {
+    [1.0, 1.25, 1.5, 2.0].index_of(scale) ?? 0
+}
+
+/// Which way a display's picture is turned, counted from zero: upright, 90, 180 or 270.
+fn turn_index(transform: Text) -> Int {
+    ["normal", "rotate-90", "rotate-180", "rotate-270"].index_of(transform) ?? 0
+}
+
+/// What one screen says on the arrangement: its name, and the size it shows.
+fn screen_words(display: device.Display) -> Text {
+    let primary = if display.primary { ", the primary screen" } else { "" }
+    "{display.name}, {display.width} × {display.height}{primary}"
+}
+
+/// The arrangement as assistive technology hears it: every screen, and where it stands.
+fn arrangement_label(displays: List<device.Display>) -> Text {
+    let places = displays.map(d -> screen_words(d))
+    "The screens, left to right and top to bottom: {places.join("; ")}"
+}
+
+/// Where a screen stands on the canvas, as fractions of its box: `[x, y, w, h]`. While it is
+/// dragged from `start` to `drag`, the screen under the pointer moves by that much.
+fn screen_box(
+    display: device.Display,
+    index: Int,
+    picked: Int,
+    moved: List<Float>,
+    bounds: List<Float>,
+) -> List<Float> {
+    let move_x = if index == picked { moved.at(0) ?? 0.0 } else { 0.0 }
+    let move_y = if index == picked { moved.at(1) ?? 0.0 } else { 0.0 }
+    let x = (display.x.to_float() - (bounds.at(0) ?? 0.0)) / (bounds.at(2) ?? 1.0)
+    let y = (display.y.to_float() - (bounds.at(1) ?? 0.0)) / (bounds.at(3) ?? 1.0)
+    let w = display.width.to_float() / (bounds.at(2) ?? 1.0)
+    let h = display.height.to_float() / (bounds.at(3) ?? 1.0)
+    [
+        canvas_margin() + (x + move_x) * canvas_span(),
+        canvas_margin() + (y + move_y) * canvas_span(),
+        w * canvas_span(),
+        h * canvas_span(),
+    ]
+}
+
+/// One screen on the arrangement: its rectangle, and its name over it. The screen picked stands
+/// out from the others.
+fn screen_shapes(display: device.Display, box: List<Float>, picked: Bool) -> List<ui.Shape> {
+    let x = box.at(0) ?? canvas_margin()
+    let y = box.at(1) ?? canvas_margin()
+    let w = box.at(2) ?? canvas_span()
+    let h = box.at(3) ?? canvas_span()
+    [
+        ui.Shape.rect(
+            x: x,
+            y: y,
+            w: w,
+            h: h,
+            round: 0.02,
+            fill: .some(.track),
+            stroke: .some(if picked { .accent } else { .muted }),
+            weight: if picked { .strong } else { .hairline },
+        ),
+        ui.Shape.text(
+            x: x + w / 2.0,
+            y: y + h / 2.0,
+            text: display.name,
+            role: .caption,
+            ink: .ink,
+            anchor: .middle,
+        ),
+    ]
+}
+
+/// The arrangement's shapes: every screen where it stands, the dragged one where the pointer is.
+fn display_shapes(
+    displays: List<device.Display>,
+    picked: Int,
+    start: List<Float>,
+    drag: List<Float>,
+) -> List<ui.Shape> {
+    let bounds = display_bounds(displays)
+    let moved = [
+        (drag.at(0) ?? 0.0) - (start.at(0) ?? 0.0),
+        (drag.at(1) ?? 0.0) - (start.at(1) ?? 0.0),
+    ]
+    displays.flat_map(
+        (display, i) -> screen_shapes(
+            display,
+            screen_box(display, i, picked, moved, bounds),
+            i == picked,
+        ),
+    )
+}
+
+/// Move the screen picked to where the pointer was let go, in the desktop's own pixels, snapped
+/// to a small grid: a drag too small to mean anything is not a change.
+action move_screen(screens: device.Displays, picked: Int, start: List<Float>, let_go: List<Float>) {
+    let chosen = screens.displays.at(picked)
+    if let display = chosen {
+        let across = (let_go.at(0) ?? 0.0) - (start.at(0) ?? 0.0)
+        let down = (let_go.at(1) ?? 0.0) - (start.at(1) ?? 0.0)
+        if across.abs() + down.abs() > 0.004 {
+            let bounds = display_bounds(screens.displays)
+            let span_x = (bounds.at(2) ?? 1.0) / canvas_span()
+            let span_y = (bounds.at(3) ?? 1.0) / canvas_span()
+            let x = (display.x + (across * span_x).round()) / 8 * 8
+            let y = (display.y + (down * span_y).round()) / 8 * 8
+            device.arrange_displays(screens, display.connector, x, y)
+        }
+    }
+}
+
+/// This device's screens: how they are arranged, what each one shows, and the warmth of the
+/// night light.
 view displays_pane() {
     let d = settings.display
     let night = settings.display_person
     let screens = device.displays
+    let change = settings.display_change
+    state picked: Int = 0
+    state start: List<Float> = []
+    state drag: List<Float> = []
     ui.Section("Arrangement") {
         ui.Text(
-            "How this device shows what is on its screens. The desktop keeps where each display stands; choose the way it shows them here.",
+            "How this device shows what is on its screens. Drag a screen to where it stands; choose the way they show together here.",
             role: .caption,
             secondary: true,
         )
@@ -650,35 +863,138 @@ view displays_pane() {
                 on press: device.set_mode(device.displays, mode: "external")
             }
         }
-        ui.Button("Arrange screens…", icon: .layout_grid) {
-            on press: device.open_sheet(device.displays)
+        if screens.displays.len() > 1 {
+            ui.Drawing(
+                display_shapes(screens.displays, picked, start, drag),
+                meaning: .picture,
+                label: arrangement_label(screens.displays),
+                height: .some(240.0),
+            ) {
+                on press(at: Int): set(picked, (at / 2).min(screens.displays.len() - 1))
+                on drag_start(x: Float, y: Float): set(start, [x, y]).then(set(drag, [x, y]))
+                on drag_at(at: List<Float>): set(drag, at)
+                on release_at(at: List<Float>): move_screen(screens, picked, start, at)
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Number the screens", icon: .layout_grid) {
+                on press: device.identify_displays(device.displays)
+            }
+            ui.Button("The display sheet", icon: .sliders_horizontal) {
+                on press: device.open_sheet(device.displays)
+            }
         }
     }
-    let change = settings.display_change
     if let deadline = change.deadline_unix_ms {
         ui.Section("A change being tried") {
             ui.Text(
-                "The desktop is trying new display settings. Keep them, or let the previous ones come back, on the confirmation that appeared.",
+                "The desktop is trying new display settings. Keep them, or let the previous ones come back.",
                 role: .body,
             )
             if let said = change.message {
                 ui.StatusLine(said, status: .warning)
+            }
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Button("Keep these settings", role: .primary) {
+                    on press: device.keep_display_change(device.displays, screens.pending)
+                }
+                ui.Button("Put them back") {
+                    on press: device.revert_display_change(device.displays, screens.pending)
+                }
+            }
+        }
+    }
+    if let chosen = screens.displays.at(picked) {
+        ui.Section("The screen picked") {
+            ui.ListRow(chosen.name, secondary: screen_words(chosen), icon: .monitor)
+            if not chosen.modes.is_empty() {
+                setting("Resolution", "How many pixels it shows") {
+                    ui.ToggleGroup(selected: .some(size_index(chosen)), caption: "Resolution") {
+                        for size in mode_sizes(chosen.modes) {
+                            ui.Segment(size) {
+                                on press: device.set_display_mode(
+                                    device.displays,
+                                    chosen.connector,
+                                    modes_at_size(chosen.modes, size).first()?.width ?? 0,
+                                    modes_at_size(chosen.modes, size).first()?.height ?? 0,
+                                    refresh_mhz: .none,
+                                )
+                            }
+                        }
+                    }
+                }
+                setting("Refresh rate", "How often it draws a new picture") {
+                    ui.ToggleGroup(selected: .some(rate_index(chosen)), caption: "Refresh rate") {
+                        for mode in modes_at_size(chosen.modes, shown_size(chosen)) {
+                            ui.Segment(mode_rate(mode)) {
+                                on press: device.set_display_mode(
+                                    device.displays,
+                                    chosen.connector,
+                                    mode.width,
+                                    mode.height,
+                                    refresh_mhz: .some(mode.refresh_mhz),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            setting("Scale", "How large it draws what it shows") {
+                ui.ToggleGroup(selected: .some(scale_index(chosen.scale)), caption: "Scale") {
+                    ui.Segment("100%") {
+                        on press: device.set_display_scale(device.displays, chosen.connector, 1.0)
+                    }
+                    ui.Segment("125%") {
+                        on press: device.set_display_scale(device.displays, chosen.connector, 1.25)
+                    }
+                    ui.Segment("150%") {
+                        on press: device.set_display_scale(device.displays, chosen.connector, 1.5)
+                    }
+                    ui.Segment("200%") {
+                        on press: device.set_display_scale(device.displays, chosen.connector, 2.0)
+                    }
+                }
+            }
+            setting("Rotation", "Which way its picture is turned") {
+                ui.ToggleGroup(selected: .some(turn_index(chosen.transform)), caption: "Rotation") {
+                    ui.Segment("Upright") {
+                        on press: device.rotate_display(device.displays, chosen.connector, "normal")
+                    }
+                    ui.Segment("90°") {
+                        on press: device.rotate_display(
+                            device.displays,
+                            chosen.connector,
+                            "rotate-90",
+                        )
+                    }
+                    ui.Segment("180°") {
+                        on press: device.rotate_display(
+                            device.displays,
+                            chosen.connector,
+                            "rotate-180",
+                        )
+                    }
+                    ui.Segment("270°") {
+                        on press: device.rotate_display(
+                            device.displays,
+                            chosen.connector,
+                            "rotate-270",
+                        )
+                    }
+                }
+            }
+            if not chosen.primary {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Button("Make it the primary screen", icon: .monitor) {
+                        on press: device.make_display_primary(device.displays, chosen.connector)
+                    }
+                }
             }
         }
     }
     ui.Section("This device") {
         setting("Automatic brightness", "Follow the light in the room") {
             ui.Toggle(bind: d.auto_brightness)
-        }
-        setting("Scale", "How large this screen draws what it shows") {
-            ui.Slider(
-                bind: d.scale,
-                label: "Scale",
-                min: 0.5,
-                max: 3.0,
-                step: 0.25,
-                shows_value: true,
-            )
         }
         setting("Rotation lock", "Keep the picture as it is when the device turns") {
             ui.Toggle(bind: d.rotation_lock)

@@ -393,6 +393,10 @@ struct Inner {
     edges_moved: bool,
     /// How the outputs put the displays together on the last pass.
     arrangement: DisplayMode,
+    /// The change being tried, as its id and when it goes back, and the settings revision it was
+    /// read at.
+    pending: Option<(u64, Option<u64>)>,
+    pending_revision: u64,
     /// Where this person's display settings are kept, which a change tried from a view is
     /// written to; `None` in a session with no settings document.
     source: Option<Arc<dyn settings_store::SettingsSource>>,
@@ -451,6 +455,13 @@ impl Inner {
                 })
                 .collect(),
             mode: self.arrangement.name().to_owned(),
+            pending: self
+                .pending
+                .map_or(0, |(id, _)| i64::try_from(id).unwrap_or(0)),
+            pending_until_unix_ms: self
+                .pending
+                .and_then(|(_, deadline)| deadline)
+                .and_then(|deadline| i64::try_from(deadline).ok()),
             focused: self.focused.clone(),
             level: None,
             bar_reached: self.edges.bar_reached,
@@ -582,6 +593,22 @@ impl Displays {
         inner.shown = shown;
         inner.focused = focused;
         inner.arrangement = arrangement;
+        if let Some(source) = &inner.source {
+            let revision = settings_store::SettingsSource::revision(source.as_ref());
+            if inner.pending_revision != revision {
+                inner.pending = settings_store::hardware::DisplayTransaction::load()
+                    .filter(|transaction| {
+                        matches!(
+                            transaction.state,
+                            settings_store::hardware::DisplayTransactionState::Requested
+                                | settings_store::hardware::DisplayTransactionState::AwaitingConfirmation
+                                | settings_store::hardware::DisplayTransactionState::ConfirmRequested
+                        )
+                    })
+                    .map(|transaction| (transaction.id, transaction.deadline_unix_ms));
+                inner.pending_revision = revision;
+            }
+        }
     }
 
     /// Wake the session's loop whenever the brightness controls report a change, so a level set

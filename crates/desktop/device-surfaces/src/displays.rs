@@ -143,7 +143,7 @@ pub enum DisplaysAction {
     },
     /// Turn a display's picture
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "rotate")]
+    #[effect(own_device, idempotent, icon = "rotate-cw")]
     RotateDisplay {
         #[param("The display's connector")]
         display: String,
@@ -174,7 +174,7 @@ pub enum DisplaysAction {
     },
     /// Put the displays back as they were
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "undo")]
+    #[effect(own_device, icon = "rotate-ccw")]
     RevertDisplayChange {
         /// The change's id, as the reading of the change names it.
         #[param("The change's id")]
@@ -194,6 +194,13 @@ pub struct Reading {
     pub displays: Vec<Display>,
     /// How the displays are used together now: one of [`NAMES`].
     pub mode: String,
+    /// The id of a display change being tried, `0` while none is. `keep-display-change` and
+    /// `revert-display-change` answer for it.
+    #[serde(default)]
+    pub pending: i64,
+    /// When the change being tried goes back unless it is kept, in Unix milliseconds.
+    #[serde(default)]
+    pub pending_until_unix_ms: Option<i64>,
     /// The connector of the display the person works on, when the shell names one of the displays
     /// shown.
     pub focused: Option<String>,
