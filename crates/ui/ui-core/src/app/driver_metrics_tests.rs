@@ -722,6 +722,7 @@ fn every_mutable_entry_point_brings_its_change_to_a_frame() {
         "self.app.set_theme(",
         "self.app.present_history_in_header()",
         "self.refresh_model()",
+        "self.idle_pass(",
     ];
     let mut checked = 0;
     let mut impls = 0;

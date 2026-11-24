@@ -801,15 +801,18 @@ impl Driver {
     /// [`crate::background::Background`]'s clock, parking between them as an idle window does: a
     /// pumped executor runs its queue and advances its virtual clock instead of waiting in real
     /// time. Whether the condition held.
+    ///
+    /// Each pass is an idle window's ([`Self::idle_pass`]), not a plain frame: a caller waits for
+    /// what it changed outside the tree (a document written past it, a widget it visited), and
+    /// only a frame that refreshes the model whole takes that up. The first pass builds the views
+    /// again around the model it took up; the passes after it wait for the app's own work.
     pub fn wait_until(
         &mut self,
         timeout: crate::time::Duration,
         mut condition: impl FnMut(&Self) -> bool,
     ) -> bool {
         let background = crate::background::Background::current();
-        self.run_frame();
-        self.tick_writes();
-        self.run_frame();
+        self.idle_pass(true);
         if condition(self) {
             return true;
         }
@@ -825,13 +828,27 @@ impl Driver {
                 .checked_add(crate::time::Duration::from_millis(1))
                 .unwrap_or(deadline);
             background.park(slice.min(deadline));
-            self.run_frame();
-            self.tick_writes();
-            self.run_frame();
+            self.idle_pass(false);
             if condition(self) {
                 return true;
             }
         }
+    }
+
+    /// What an idle window does between frames: the frame the last input asked for is run, with
+    /// the model refreshed whole ([`Self::relayout`]); what the widgets queued and the jobs in
+    /// flight are taken up and the record's writes offered to its writer
+    /// ([`Self::take_up_acted`]); and the frame after shows all of it. With `rebuild`, that frame
+    /// builds the views again around the model the first one took up: a caller writes what an
+    /// app's views are built from (a document behind the tree), and only a composition built after
+    /// the frame read it shows the caller's change.
+    fn idle_pass(&mut self, rebuild: bool) {
+        self.relayout();
+        self.take_up_acted();
+        if rebuild {
+            self.app.layout.request_rebuild();
+        }
+        self.relayout();
     }
 
     /// Park until the app's background work wakes it or `deadline` passes. Whether it woke.
