@@ -85,6 +85,8 @@ mod narrow;
 mod personal;
 #[path = "hosted/presence.rs"]
 mod presence;
+#[path = "hosted/selection.rs"]
+mod selection;
 #[path = "hosted/tasks_board.rs"]
 mod tasks_board;
 #[path = "hosted/ticking.rs"]

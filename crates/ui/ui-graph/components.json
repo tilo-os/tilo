@@ -862,6 +862,23 @@
           "default": true
         }
       ],
+      "events": [
+        {
+          "name": "select",
+          "doc": "The keyboard moved the selection to a card: carries the item it stands for.",
+          "value": "resource"
+        },
+        {
+          "name": "edit",
+          "doc": "The edit key was pressed on the selected card: carries the item it stands for.",
+          "value": "resource"
+        },
+        {
+          "name": "delete",
+          "doc": "Delete was pressed on the selected card: carries the item it stands for, for the app's destructive action.",
+          "value": "resource"
+        }
+      ],
       "semantics": {
         "role": "List",
         "label": "name"
@@ -8439,6 +8456,16 @@
         {
           "name": "activate",
           "doc": "A row was activated (a click, Enter, an assistive technology): carries the item it shows.",
+          "value": "resource"
+        },
+        {
+          "name": "edit",
+          "doc": "The edit key was pressed on the focused row: carries the item it shows, for the app's own edit action.",
+          "value": "resource"
+        },
+        {
+          "name": "delete",
+          "doc": "Delete was pressed on the focused row: carries the item it shows, for the app's destructive action.",
           "value": "resource"
         },
         {

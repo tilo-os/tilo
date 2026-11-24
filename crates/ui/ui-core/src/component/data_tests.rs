@@ -150,7 +150,7 @@ tilo_test_env::scenario! {
         host.relayout();
         let root = host.root::<crate::widget::DescribedCardGrid>();
         assert_eq!(
-            root.shown(),
+            root.shown().as_slice(),
             ["doc/app:1".to_owned(), "doc/app:2".to_owned()]
         );
         let grid = root.grid();

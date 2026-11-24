@@ -210,6 +210,13 @@ The same bands serve mail and chat grouped by day. `ui.VirtualList` and `ui.List
 groups as `std.list` does: the app names its own grouping, nesting and fold, and `std` adds no
 parameters of its own for them.
 
+A list and a card grid hold a selection the keyboard moves: the arrows go a row or a card at a
+time, Home and End to the ends and the page keys screen by screen, and the selection stays where
+the person can see it. Enter runs the item's own `activate`; the edit key (`F2`) and Delete
+report the item through the list's or grid's `edit` and `delete` events, which the view binds to
+its own actions, so an app writes no key handler. A reader is told which item is selected while
+the control keeps the keyboard.
+
 A row that carries an item's own document says so with `detail:`, and opens where it stands: the
 press grows the row into the document under it, the list keeps the scroll and lays out around it,
 and the row stays a row of the list it is in. One row stands open at a time, Escape and a press

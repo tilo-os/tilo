@@ -5,6 +5,8 @@ use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, fr, length, max_content, min_content, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
 
@@ -747,6 +749,10 @@ impl Widget for Card {
         self.activation.is_bound().then(|| self.activation.id())
     }
 
+    fn kept_in_view(&self) -> Option<&str> {
+        self.activation.is_bound().then(|| self.activation.id())
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let name = self.accessible_name.clone().or_else(|| self.title.clone());
@@ -894,6 +900,28 @@ pub struct CardGrid {
     /// [`Self::remove_card`], [`Self::move_card`], [`Self::replace_card`]) since the last frame:
     /// a change the frame's damage describes, rather than a rebuild of the grid.
     structure: crate::widget::StructureChange,
+    /// The card the keyboard is on: arrows move it, Home and End and the page keys reach its
+    /// ends, Enter opens it, and edit and Delete act on it.
+    cursor: Option<usize>,
+    /// Whether the grid itself holds the keyboard.
+    focused: bool,
+    /// The box its last layout stood in, when a scroll view clipped it: how far a page key moves.
+    viewport: Option<Rect>,
+    /// What the grid reports when the keyboard moves the selection or acts on it, by the index
+    /// of the card it stands on.
+    on_select: Option<GridCallback>,
+    on_edit: Option<GridCallback>,
+    on_delete: Option<GridCallback>,
+}
+
+/// What a grid reports of the card at an index its keyboard acts on.
+type GridCallback = Box<dyn FnMut(usize)>;
+
+/// What a key asks of the card the keyboard is on, beside opening it.
+#[derive(Clone, Copy)]
+enum Report {
+    Edit,
+    Delete,
 }
 
 impl CardGrid {
@@ -907,7 +935,150 @@ impl CardGrid {
             child_nodes: Vec::new(),
             name: None,
             structure: crate::widget::StructureChange::None,
+            cursor: None,
+            focused: false,
+            viewport: None,
+            on_select: None,
+            on_edit: None,
+            on_delete: None,
         }
+    }
+
+    /// Report the card the keyboard moved the selection to.
+    pub(crate) fn set_on_select(&mut self, callback: impl FnMut(usize) + 'static) {
+        self.on_select = Some(Box::new(callback));
+    }
+
+    /// Report the card the edit key was pressed on.
+    pub(crate) fn set_on_edit(&mut self, callback: impl FnMut(usize) + 'static) {
+        self.on_edit = Some(Box::new(callback));
+    }
+
+    /// Report the card Delete was pressed on.
+    pub(crate) fn set_on_delete(&mut self, callback: impl FnMut(usize) + 'static) {
+        self.on_delete = Some(Box::new(callback));
+    }
+
+    /// The card the keyboard is on, if any.
+    #[must_use]
+    pub fn cursor(&self) -> Option<usize> {
+        self.cursor
+    }
+
+    /// Put the keyboard on the card at `index` and select it, reporting the move when it changed
+    /// and `report` says so.
+    pub(crate) fn select_card(&mut self, index: usize, report: bool) -> bool {
+        if index >= self.cards.len() {
+            return false;
+        }
+        let changed = self.cursor != Some(index);
+        self.cursor = Some(index);
+        self.show_selection();
+        if changed
+            && report
+            && let Some(callback) = &mut self.on_select
+        {
+            callback(index);
+        }
+        changed
+    }
+
+    /// Take the card the props call selected, when one is: the app's own selection, which the
+    /// keyboard then moves from.
+    pub(crate) fn adopt_selection(&mut self) {
+        if let Some(index) = self.cards.iter().position(|card| {
+            card.as_any()
+                .and_then(|any| any.downcast_ref::<Card>())
+                .is_some_and(Card::get_selected)
+        }) {
+            self.cursor = Some(index);
+        }
+        self.show_selection();
+    }
+
+    /// Lift the card the keyboard is on, and only it.
+    fn show_selection(&mut self) {
+        for (index, card) in self.cards.iter_mut().enumerate() {
+            if let Some(card) = card
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<Card>())
+            {
+                card.set_selected(self.cursor == Some(index));
+            }
+        }
+    }
+
+    /// How many columns the grid is laid out in at its last width.
+    fn columns(&self) -> usize {
+        self.columns_for_width(self.rect.width()).max(1)
+    }
+
+    /// How many rows of cards a page key moves over: the rows its viewport shows.
+    fn page_rows(&self) -> usize {
+        let row = self
+            .cards
+            .first()
+            .map_or(0.0, |card| card.get_rect().height() + self.gap);
+        match self.viewport {
+            Some(viewport) if row > 0.0 => {
+                (viewport.height() / row).floor().max(1.0) as usize
+            }
+            _ => 1,
+        }
+    }
+
+    /// Move the keyboard over the cards as `key` says, selecting the card it lands on.
+    fn step(&mut self, key: &Key) -> bool {
+        let last = match self.cards.len() {
+            0 => return false,
+            len => len - 1,
+        };
+        let columns = self.columns();
+        let current = self.cursor.unwrap_or(0).min(last);
+        let next = match key {
+            Key::Named(NamedKey::ArrowLeft) => current.saturating_sub(1),
+            Key::Named(NamedKey::ArrowRight) => (current + 1).min(last),
+            Key::Named(NamedKey::ArrowUp) => current.saturating_sub(columns),
+            Key::Named(NamedKey::ArrowDown) => (current + columns).min(last),
+            Key::Named(NamedKey::Home) => 0,
+            Key::Named(NamedKey::End) => last,
+            Key::Named(NamedKey::PageUp) => {
+                current.saturating_sub(columns.saturating_mul(self.page_rows()))
+            }
+            Key::Named(NamedKey::PageDown) => {
+                (current + columns.saturating_mul(self.page_rows())).min(last)
+            }
+            _ => return false,
+        };
+        self.select_card(next, true);
+        true
+    }
+
+    /// Run the card the keyboard is on, as pressing it does.
+    fn activate_cursor(&mut self) -> bool {
+        let Some(index) = self.cursor else {
+            return false;
+        };
+        self.cards
+            .get_mut(index)
+            .and_then(|card| card.as_any_mut())
+            .and_then(|any| any.downcast_mut::<Card>())
+            .is_some_and(|card| card.activation.activate())
+    }
+
+    fn report(&mut self, event: Report) -> bool {
+        let Some(index) = self.cursor else {
+            return false;
+        };
+        let callback = match event {
+            Report::Edit => &mut self.on_edit,
+            Report::Delete => &mut self.on_delete,
+        };
+        let Some(callback) = callback else {
+            return false;
+        };
+        callback(index);
+        true
     }
 
     #[must_use]
@@ -1077,6 +1248,9 @@ impl Widget for CardGrid {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        // The box a scroll view around it clips the grid to, when one does: a page key moves the
+        // keyboard over what a person can see.
+        self.viewport = crate::widget::layout_clip();
         let origin = Point::new(self.rect.x0, self.rect.y0);
         for (card, &child) in self.cards.iter_mut().zip(&self.child_nodes) {
             card.apply_layout(taffy, child, origin);
@@ -1096,6 +1270,21 @@ impl Widget for CardGrid {
             }
             card.draw_child(scene, transform, text_renderer, theme, &env);
         }
+        // The card the keyboard is on wears the focus ring, in the theme's own ink.
+        if self.focused
+            && let Some(rect) = self
+                .cursor
+                .and_then(|cursor| self.cards.get(cursor))
+                .map(|card| card.get_rect())
+        {
+            crate::widget::paint_focus_ring(
+                scene,
+                transform,
+                rect,
+                theme.radius_standard,
+                theme,
+            );
+        }
     }
 
     fn handle_event(
@@ -1107,6 +1296,37 @@ impl Widget for CardGrid {
             card.handle_event(event, &mut ctx.reborrow(ctx.path, node));
             if *ctx.handled {
                 break;
+            }
+        }
+        // A press on a card's own face puts the keyboard in the grid, not on the card's box: the
+        // card has no keyboard of its own, and the arrows are the grid's. A press on a control
+        // inside the card keeps its own focus, which is deeper than the card's box.
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && ctx
+            .focus_target
+            .is_some_and(|target| self.child_nodes.contains(&target))
+        {
+            *ctx.focus_target = Some(ctx.node_id);
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && self.focused
+            && event.state == ElementState::Pressed
+            && !*ctx.handled
+        {
+            *ctx.handled = match event.logical_key {
+                Key::Named(NamedKey::Enter) => self.activate_cursor(),
+                Key::Named(NamedKey::F2) => self.report(Report::Edit),
+                Key::Named(NamedKey::Delete) => self.report(Report::Delete),
+                ref key => self.step(key),
+            };
+            if *ctx.handled {
+                *ctx.focus_target = Some(ctx.node_id);
             }
         }
     }
@@ -1143,17 +1363,53 @@ impl Widget for CardGrid {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::Role;
+        use crate::a11y::{AccessState, Role};
         self.name.as_ref().map(|name| {
-            let children = self
+            let mut children: Vec<_> = self
                 .cards
                 .iter()
                 .filter_map(|card| card.accessibility())
                 .collect();
+            // The card the keyboard is on is the one a reader names, without the focus leaving
+            // the grid: the grid is one control, its cards the items it moves between.
+            if let Some(node) = self.cursor.and_then(|cursor| children.get_mut(cursor)) {
+                node.state.selected = true;
+                node.state.active_descendant = self.focused;
+            }
             crate::a11y::AccessNode::new(Role::List)
                 .with_name(name.clone())
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.focused),
+                )
                 .with_children(children)
         })
+    }
+
+    fn is_focusable(&self) -> bool {
+        !self.cards.is_empty()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if focused && self.cursor.is_none() && !self.cards.is_empty() {
+            self.cursor = Some(0);
+            self.show_selection();
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn kept_in_view(&self) -> Option<&str> {
+        self.cursor
+            .and_then(|cursor| self.cards.get(cursor))
+            .and_then(|card| card.as_any())
+            .and_then(|any| any.downcast_ref::<Card>())
+            .filter(|card| card.activation.is_bound())
+            .map(|card| card.activation.id())
     }
 
     fn take_structure_dirty(&mut self) -> bool {

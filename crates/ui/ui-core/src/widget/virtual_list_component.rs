@@ -301,6 +301,14 @@ pub struct VirtualListProps {
     /// shows.
     #[component(event(value = ResourceId))]
     pub activate: Event,
+    /// The edit key was pressed on the focused row: carries the item it shows, for the app's
+    /// own edit action.
+    #[component(event(value = ResourceId))]
+    pub edit: Event,
+    /// Delete was pressed on the focused row: carries the item it shows, for the app's
+    /// destructive action.
+    #[component(event(value = ResourceId))]
+    pub delete: Event,
     /// The selection changed: carries the items selected, in the order they stand, and none
     /// when the selection was put away.
     #[component(event)]
@@ -941,6 +949,32 @@ fn item_of(rows: &DescribedRows, key: &str) -> Option<Value> {
 /// The value the row `key` stands for, when it stands for one.
 fn value_of(rows: &DescribedRows, key: &str) -> Option<String> {
     rows.with_facts(key, |item| item.value).flatten()
+}
+
+/// Have `list` report its edit and Delete keys with the item of the row they were pressed on,
+/// for the app's own edit and destructive actions.
+fn wire_keys(
+    list: &mut VirtualList<DescribedRows>,
+    reading: &Rc<RefCell<DescribedRows>>,
+    edit: &Event,
+    delete: &Event,
+) {
+    if !edit.is_none() {
+        let (fired, rows) = (edit.clone(), Rc::clone(reading));
+        list.set_on_edit(move |key| {
+            if let Some(key) = key.get::<String>() {
+                fired.fire(item_of(&rows.borrow(), key));
+            }
+        });
+    }
+    if !delete.is_none() {
+        let (fired, rows) = (delete.clone(), Rc::clone(reading));
+        list.set_on_delete(move |key| {
+            if let Some(key) = key.get::<String>() {
+                fired.fire(item_of(&rows.borrow(), key));
+            }
+        });
+    }
 }
 
 /// What the list reports of the rows `keys` (a selection): the items they show, and the values
@@ -1621,6 +1655,8 @@ impl Described for DescribedList {
             motion,
             select,
             activate,
+            edit,
+            delete,
             selected: selected_changed,
             chosen_values,
             select_value,
@@ -1666,6 +1702,7 @@ impl Described for DescribedList {
                 list.set_on_revealed(move |key| told.fire(item_of(&reading.borrow(), &key)));
             }
             list.set_on_end_reached(end_reached.handler());
+            wire_keys(&mut list, &reading, &edit, &delete);
             let list = reorderable(list, &reorder);
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)
@@ -1764,6 +1801,7 @@ impl Described for DescribedList {
                     }
                 });
         }
+        wire_keys(&mut list, &reading, &edit, &delete);
         if !selected_changed.is_none() || !values.selected.is_none() {
             let fired = selected_changed.clone();
             let valued = values.selected.clone();
@@ -1834,6 +1872,8 @@ impl Described for DescribedList {
             motion,
             select,
             activate,
+            edit,
+            delete,
             selected: selected_changed,
             chosen_values,
             select_value,
@@ -1928,6 +1968,7 @@ impl Described for DescribedList {
                 valuing.activated(&rows, &key);
             }
         });
+        wire_keys(list, &reading, &edit, &delete);
         let fired = selected_changed;
         let opening = Rc::clone(&reading);
         let valued = values.selected;

@@ -1025,16 +1025,33 @@ impl Scrollable {
         fn identity(widget: &dyn Widget) -> usize {
             std::ptr::from_ref(widget) as *const () as usize
         }
-        fn kept(widget: &dyn Widget, name: &str) -> Option<(usize, Rect)> {
-            if widget.kept_in_view() == Some(name) {
-                return Some((identity(widget), widget.get_rect()));
+        // A control that holds the keyboard and names the part of itself to stay in view (a grid
+        // whose selection the arrows move) is kept there without the view naming it: what the
+        // person moves through stays where they can see it.
+        fn focused_keep(widget: &dyn Widget) -> Option<String> {
+            if widget.is_focusable()
+                && widget.is_focused()
+                && let Some(name) = widget.kept_in_view()
+            {
+                return Some(name.to_owned());
             }
-            widget
+            widget.children().into_iter().find_map(focused_keep)
+        }
+        fn kept(widget: &dyn Widget, name: &str) -> Option<(usize, Rect)> {
+            if let Some(found) = widget
                 .children()
                 .into_iter()
                 .find_map(|child| kept(child, name))
+            {
+                return Some(found);
+            }
+            (widget.kept_in_view() == Some(name)).then(|| (identity(widget), widget.get_rect()))
         }
-        let Some(name) = self.keep.clone() else {
+        let Some(name) = self
+            .keep
+            .clone()
+            .or_else(|| self.child.as_ref().and_then(|child| focused_keep(child.as_ref())))
+        else {
             return;
         };
         let Some((identity, rect)) = self

@@ -1,7 +1,10 @@
 //! [`CardGrid`] as a described component: cards as the parts a grid holds, each a card of a resource with what
 //! it shows, and pressing one reported with the resource it stands for.
 
-use crate::component::{Component, Described, Event, ResourceId};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::component::{Component, Described, Event, ResourceId, Value};
 use crate::widget::Widget;
 use crate::widget::{Card, CardGrid, CardWidth, Element};
 
@@ -47,6 +50,16 @@ pub struct CardGridProps {
     /// The cards, in order.
     #[component(part(default))]
     pub cards: Vec<CardGridCardProps>,
+    /// The keyboard moved the selection to a card: carries the item it stands for.
+    #[component(event(value = ResourceId))]
+    pub select: Event,
+    /// The edit key was pressed on the selected card: carries the item it stands for.
+    #[component(event(value = ResourceId))]
+    pub edit: Event,
+    /// Delete was pressed on the selected card: carries the item it stands for, for the app's
+    /// destructive action.
+    #[component(event(value = ResourceId))]
+    pub delete: Event,
 }
 
 crate::component::choice!(CardWidth, "CardWidth", {
@@ -110,8 +123,9 @@ fn say(props: CardGridCardProps, card: &mut crate::widget::Card) {
 /// A described card grid: its grid, and the keys of the cards it shows, in order.
 pub struct DescribedCardGrid {
     grid: CardGrid,
-    /// The key each card shown stands for, in order: the grid is changed by them.
-    shown: Vec<String>,
+    /// The key each card shown stands for, in order: the grid is changed by them, and reports
+    /// the one its keyboard acts on.
+    shown: Rc<RefCell<Vec<String>>>,
     face: Face,
 }
 
@@ -133,8 +147,42 @@ impl DescribedCardGrid {
 
     /// The keys of the cards it shows, in order.
     #[must_use]
-    pub fn shown(&self) -> &[String] {
-        &self.shown
+    pub fn shown(&self) -> std::cell::Ref<'_, Vec<String>> {
+        self.shown.borrow()
+    }
+}
+
+/// Have `grid` report what its keyboard did with the card at an index as the item it shows.
+fn wire(
+    grid: &mut CardGrid,
+    shown: &Rc<RefCell<Vec<String>>>,
+    select: Event,
+    edit: Event,
+    delete: Event,
+) {
+    if !select.is_none() {
+        let keys = Rc::clone(shown);
+        grid.set_on_select(move |index| {
+            if let Some(item) = keys.borrow().get(index) {
+                select.fire(Some(Value::Resource(item.clone())));
+            }
+        });
+    }
+    if !edit.is_none() {
+        let keys = Rc::clone(shown);
+        grid.set_on_edit(move |index| {
+            if let Some(item) = keys.borrow().get(index) {
+                edit.fire(Some(Value::Resource(item.clone())));
+            }
+        });
+    }
+    if !delete.is_none() {
+        let keys = Rc::clone(shown);
+        grid.set_on_delete(move |index| {
+            if let Some(item) = keys.borrow().get(index) {
+                delete.fire(Some(Value::Resource(item.clone())));
+            }
+        });
     }
 }
 
@@ -146,6 +194,9 @@ impl Described for DescribedCardGrid {
             name,
             card_width,
             cards,
+            select,
+            edit,
+            delete,
         } = props;
         let shown: Vec<String> = cards.iter().map(|card| card.item.0.clone()).collect();
         let widgets: Vec<Element> = cards.into_iter().map(|card| card_of(card).1).collect();
@@ -153,6 +204,9 @@ impl Described for DescribedCardGrid {
         if let Some(name) = &name {
             grid.set_accessible_name(name.clone());
         }
+        grid.adopt_selection();
+        let shown = Rc::new(RefCell::new(shown));
+        wire(&mut grid, &shown, select, edit, delete);
         Self {
             grid,
             shown,
@@ -165,28 +219,32 @@ impl Described for DescribedCardGrid {
             name,
             card_width,
             cards,
+            select,
+            edit,
+            delete,
         } = props;
         let face = Face { name, card_width };
         if face != self.face {
             return false;
         }
         let wanted: Vec<String> = cards.iter().map(|card| card.item.0.clone()).collect();
+        let mut shown = self.shown.borrow_mut();
         // Those gone, from the end so the indexes before them stay.
-        let mut index = self.shown.len();
+        let mut index = shown.len();
         while index > 0 {
             index -= 1;
-            if !wanted.iter().any(|key| key == &self.shown[index]) {
+            if !wanted.iter().any(|key| key == &shown[index]) {
                 self.grid.remove_card(index);
-                self.shown.remove(index);
+                shown.remove(index);
             }
         }
         for (at, card) in cards.into_iter().enumerate() {
             let key = card.item.0.clone();
-            if let Some(had) = self.shown.iter().position(|held| held == &key) {
+            if let Some(had) = shown.iter().position(|held| held == &key) {
                 if had != at {
                     self.grid.move_card(had, at);
-                    let key = self.shown.remove(had);
-                    self.shown.insert(at, key);
+                    let key = shown.remove(had);
+                    shown.insert(at, key);
                 }
                 if let Some(held) = self.grid.card_mut(at).and_then(|card| {
                     card.as_any_mut()
@@ -197,9 +255,15 @@ impl Described for DescribedCardGrid {
             } else {
                 let (_, widget) = card_of(card);
                 self.grid.insert_card(at, widget);
-                self.shown.insert(at, key);
+                shown.insert(at, key);
             }
         }
+        drop(shown);
+        // The card the props select is where the keyboard then stands; a grid with no selection
+        // of its own keeps the one the person moved to.
+        self.grid.adopt_selection();
+        let shown = Rc::clone(&self.shown);
+        wire(&mut self.grid, &shown, select, edit, delete);
         true
     }
 }

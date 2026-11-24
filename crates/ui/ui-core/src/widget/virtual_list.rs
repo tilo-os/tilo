@@ -470,6 +470,9 @@ pub struct VirtualRows {
     rename_on_double_click: bool,
     tab_indents: bool,
     on_delete: Option<KeyCallback<ListKey>>,
+    /// The edit key was pressed on the focused row. What editing means is the host's: it opens
+    /// what it edits, or renames the row where it stands ([`Self::on_rename`]).
+    on_edit: Option<KeyCallback<ListKey>>,
     /// The row a view asks the list to show, read at every sync: what a press in the view
     /// made of the rows.
     reveal_asked: Option<Box<dyn FnMut() -> Option<ListKey>>>,
@@ -652,6 +655,7 @@ impl VirtualRows {
             rename_on_double_click: false,
             tab_indents: false,
             on_delete: None,
+            on_edit: None,
         };
         list.refresh_anchor();
         list
@@ -966,6 +970,17 @@ impl VirtualRows {
 
     pub fn set_on_activate(&mut self, callback: impl FnMut(ListKey) + 'static) {
         self.on_activate = Some(Box::new(callback));
+    }
+
+    /// Receive the edit key on the focused row: the host decides what editing means, and the
+    /// list removes or changes nothing itself.
+    pub fn set_on_edit(&mut self, callback: impl FnMut(ListKey) + 'static) {
+        self.on_edit = Some(Box::new(callback));
+    }
+
+    /// Receive `Delete` on the focused row: the host decides what deleting means.
+    pub fn set_on_delete(&mut self, callback: impl FnMut(ListKey) + 'static) {
+        self.on_delete = Some(Box::new(callback));
     }
 
     pub fn set_on_opened(&mut self, callback: impl FnMut(ListKey) + 'static) {
@@ -1486,6 +1501,15 @@ impl VirtualRows {
             Key::Named(NamedKey::F2) if self.on_rename.is_some() => self
                 .focused_row_key()
                 .is_some_and(|key| self.begin_rename(&key)),
+            Key::Named(NamedKey::F2) if self.on_edit.is_some() => {
+                let Some(key) = self.focused_row_key() else {
+                    return false;
+                };
+                if let Some(callback) = &mut self.on_edit {
+                    callback(key);
+                }
+                true
+            }
             // The host decides what deleting a row means; the list removes nothing itself.
             Key::Named(NamedKey::Delete) if self.on_delete.is_some() => {
                 let Some(key) = self.focused_row_key() else {
