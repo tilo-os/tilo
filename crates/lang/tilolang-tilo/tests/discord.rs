@@ -1235,7 +1235,11 @@ fn a_linked_discord_account_speaks_as_its_member_and_an_unlinked_one_as_itself()
     ada.commit();
     let linked = records(&ada.host, &account, "links");
     let link = linked.first().expect("the account is linked");
-    assert_eq!(text(&ada.host, link, "person"), "ada", "the link's person");
+    assert_eq!(
+        text(&ada.host, link, "person"),
+        serde_json::to_string(&person("ada")).expect("an actor's JSON"),
+        "the link's person"
+    );
     assert_eq!(
         text(&ada.host, link, "discord_user"),
         "3001",

@@ -14,6 +14,9 @@ async function until(check, what, timeout = 3_000) {
   }
 }
 
+/// The person `ada`, as a record keeps an actor's id: the text of its JSON.
+const ADA = JSON.stringify({ member: { person: "ada" } });
+
 /// The bridge's record as the workspace holds it: one server, its one channel and webhook, and
 /// the account ada linked.
 function account() {
@@ -30,7 +33,7 @@ function account() {
     links: [
       {
         discord_user: "3001",
-        person: "ada",
+        person: ADA,
         user_name: "ada",
         display_name: "Ada",
         avatar: "abc",
@@ -106,23 +109,23 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
       {
         kind: "created",
         conversation: "tl:so.tilo.chat:design",
-        message: { id: "m1", text: "hello", author: "ada", attachments: [] },
+        message: { id: "m1", text: "hello", author: ADA, attachments: [] },
       },
       {
         kind: "updated",
         conversation: "tl:so.tilo.chat:design",
-        message: { id: "m1", text: "hello again", author: "ada", attachments: [] },
+        message: { id: "m1", text: "hello again", author: ADA, attachments: [] },
       },
       {
         kind: "reaction",
         conversation: "tl:so.tilo.chat:design",
         emoji: "🎉",
-        message: { id: "m1", text: "hello again", author: "ada", attachments: [] },
+        message: { id: "m1", text: "hello again", author: ADA, attachments: [] },
       },
       {
         kind: "deleted",
         conversation: "tl:so.tilo.chat:design",
-        message: { id: "m1", text: "", author: "ada", attachments: [] },
+        message: { id: "m1", text: "", author: ADA, attachments: [] },
       },
     ],
   });
@@ -332,7 +335,7 @@ test("a thread started here is started on Discord under the message it answers",
         conversation: "tl:so.tilo.chat:design",
         name: "topic",
         thread: "tl:so.tilo.chat:topic",
-        message: { id: "m1", text: "hello", author: "ada" },
+        message: { id: "m1", text: "hello", author: ADA },
       };
       await finished;
     },
@@ -398,7 +401,7 @@ test("a test's fake Discord is reached from the account's own record, both ways"
       yield {
         kind: "created",
         conversation: "tl:so.tilo.chat:design",
-        message: { id: "m1", text: "hello", author: "ada", attachments: [] },
+        message: { id: "m1", text: "hello", author: ADA, attachments: [] },
       };
       await finished;
     },

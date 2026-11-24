@@ -90,6 +90,20 @@ export function linkOfPerson(state, person) {
   return (state.links ?? []).find((link) => link.person === person) ?? null;
 }
 
+/// The person a link names, as an action takes one: the record keeps the person's own id, whose
+/// text is the actor's JSON (`{"member":{"person":"ada"}}`). A link that names a plain person, as
+/// an older record may, is taken as that person.
+export function actorOf(person) {
+  if (!person) return null;
+  try {
+    const actor = JSON.parse(person);
+    if (actor && typeof actor === "object") return actor;
+  } catch {
+    // Not an actor's JSON: a plain person's id, below.
+  }
+  return { member: { person } };
+}
+
 /// The linked account of the Discord account `user`.
 export function linkOfUser(state, user) {
   return (state.links ?? []).find((link) => link.discord_user === user) ?? null;
@@ -163,7 +177,7 @@ export function fromDiscord(state, event) {
       reply_to: payload.reference?.message_id
         ? byDiscord(state, "message", payload.reference.message_id)?.tilo ?? null
         : null,
-      member: linked?.person ? { person: linked.person } : null,
+      member: actorOf(linked?.person),
     });
     // The files it carries come over as the bytes Discord serves: the program fetches each and
     // keeps it in the workspace, then hands the message on with them.
