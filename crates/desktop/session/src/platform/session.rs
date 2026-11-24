@@ -1476,12 +1476,17 @@ impl Session {
                 }
             }
         }
-        // The device's settings are published where this device's are kept, under its key.
-        if let Some(engine) = &engine {
-            tilo_app::framework::read_settings_on(&hex::encode(
-                engine.identity().device_cert.device_public_key,
-            ));
-        }
+        // The device's settings are published where this device's are kept, under its key: the one
+        // the engine holds the workspace for, else this computer's own identity, else the device
+        // the profile's settings were last left on. Settled here, before the loop: an address that
+        // names one of the device's settings asks for it as the shell runs, and that ask must not
+        // go to the disk.
+        let settings_on = engine
+            .as_ref()
+            .map(|engine| hex::encode(engine.identity().device_cert.device_public_key))
+            .or_else(|| own.device.clone())
+            .or_else(settings_store::outside::device);
+        tilo_app::framework::read_settings_on(settings_on.as_deref().unwrap_or_default());
         // A service that records who changed what records the person's, not
         // the id its caller made it with: the session knows who sits here
         // before it starts them.
@@ -1928,9 +1933,10 @@ impl Session {
         shared
             .services
             .borrow_mut()
-            .add(Box::new(crate::time::Served::new(Rc::clone(
-                &shared.activities,
-            ))));
+            .add(Box::new(crate::time::Served::new(
+                Rc::clone(&shared.activities),
+                &shared.wake_handle,
+            )));
         // Whether the person is typing, read by what steps aside for their text.
         shared
             .services

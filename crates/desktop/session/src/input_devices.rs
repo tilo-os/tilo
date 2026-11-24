@@ -3,13 +3,12 @@
 //! the identity their settings are kept under, so a tablet's mapping, buttons and pad are read
 //! beside the device they belong to.
 
-use std::fs;
-use std::path::PathBuf;
-use std::time::SystemTime;
+use std::path::Path;
 
 use serde_json::{Map, Value};
 use settings_store::hardware::{InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
+use tilo_files::native::Watched;
 use tilo_resource::NoEffect;
 use tilo_service::{Service, Started, offer, reading};
 
@@ -23,39 +22,58 @@ pub(crate) struct InputDevicesRoot;
 
 pub(crate) use tilo_device_surfaces::inputs::{InputDevice, InputDevices, InputKind};
 
-/// The input devices as the session serves them, read from what the compositor writes.
+/// The input devices as the session serves them, read from what the compositor writes: on a
+/// worker, so no pass of the loop stats or opens the file. Until the first read lands the
+/// devices are empty, and a view that names one hears of it when it does.
 pub(crate) struct Served {
-    /// What it last read, and the file's stamp then, so an unchanged file is not read again.
+    /// What it last served.
     published: InputDevices,
-    stamp: Option<(SystemTime, u64)>,
+    /// The file as a worker reads it. `None` when the runtime directory cannot be watched: then
+    /// the devices were read once at startup, before the loop, and no pass touches the disk.
+    devices: Option<Watched<InputDevices>>,
 }
 
 impl Served {
     pub(crate) fn new() -> Self {
+        let snapshot = settings_store::hardware::input_snapshot_path();
+        let watched = snapshot
+            .as_deref()
+            .and_then(Path::parent)
+            .and_then(|directory| {
+                let read = snapshot.clone();
+                match Watched::start_unread(
+                    "tilo-input-devices",
+                    vec![directory.to_path_buf()],
+                    InputDevices::default(),
+                    move || read_now(read.as_deref()),
+                ) {
+                    Ok(watched) => Some(watched),
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "the input devices do not follow the runtime directory"
+                        );
+                        None
+                    }
+                }
+            });
+        let published = if watched.is_some() {
+            InputDevices::default()
+        } else {
+            read_now(snapshot.as_deref())
+        };
         Self {
-            published: InputDevices::default(),
-            stamp: None,
+            published,
+            devices: watched,
         }
-    }
-
-    /// What the compositor says now, and the file's stamp it was read at.
-    fn now(&self) -> (InputDevices, Option<(SystemTime, u64)>) {
-        let Some(path) = path() else {
-            return (InputDevices::default(), None);
-        };
-        let stamp = fs::metadata(&path)
-            .ok()
-            .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
-        let Some(snapshot) = InputHardwareSnapshot::load_at(&path) else {
-            return (InputDevices::default(), stamp);
-        };
-        (published(&snapshot), stamp)
     }
 }
 
-/// The path the compositor writes its input devices to.
-fn path() -> Option<PathBuf> {
-    settings_store::hardware::input_snapshot_path()
+/// The devices `path` names, as the compositor last wrote them.
+fn read_now(path: Option<&Path>) -> InputDevices {
+    path.and_then(InputHardwareSnapshot::load_at)
+        .as_ref()
+        .map_or_else(InputDevices::default, published)
 }
 
 /// One device as a view reads it.
@@ -130,17 +148,16 @@ impl Service for Served {
     }
 
     fn poll(&mut self) -> bool {
-        let (now, stamp) = self.now();
-        // The stamp moving is what a device being plugged in or out writes: an unchanged file is
-        // not read again, and a changed one is what a pane redraws for.
-        if stamp == self.stamp && stamp.is_some() {
+        let Some(devices) = &self.devices else {
+            return false;
+        };
+        let now = devices.get();
+        // The file's worker reads it again when the compositor replaces it; a value it kept that
+        // is the same as the served one changes nothing for a view.
+        if *now == self.published {
             return false;
         }
-        self.stamp = stamp;
-        if now == self.published {
-            return false;
-        }
-        self.published = now;
+        self.published = (*now).clone();
         true
     }
 }

@@ -10,8 +10,10 @@
 
 use std::cell::Cell;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use serde_json::{Map, Value};
 use settings_store::placement::Holder;
 use settings_store::workspace::{Stores, WorkspaceSettings};
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
@@ -35,6 +37,16 @@ pub(crate) struct SessionSettings {
     /// The revision of the settings, and the device they were read on, last left for the
     /// processes outside the session.
     published: std::cell::RefCell<Option<(u64, String)>>,
+    /// Where what is left is written: a worker, so no pass of the session's loop reads or writes
+    /// the file. `None` when the worker could not start, and the pass writes it itself.
+    publisher: Option<mpsc::Sender<Publication>>,
+}
+
+/// What the session leaves for the processes outside it, as the worker writes it.
+struct Publication {
+    /// The device the settings were read on, by its key in lowercase hex.
+    device: String,
+    settings: Map<String, Value>,
 }
 
 impl SessionSettings {
@@ -48,11 +60,19 @@ impl SessionSettings {
         settings_store::install_source(Some(
             Arc::clone(&settings) as Arc<dyn settings_store::SettingsSource>
         ));
+        let publisher = start_publisher();
+        if let Err(error) = &publisher {
+            tracing::warn!(
+                %error,
+                "the settings have no worker to leave them to: the loop writes them"
+            );
+        }
         Self {
             settings,
             attached: Cell::new(false),
             looked: Cell::new(None),
             published: std::cell::RefCell::new(None),
+            publisher: publisher.ok(),
         }
     }
 
@@ -112,24 +132,64 @@ impl SessionSettings {
 
     /// Leave the settings as they are now, read on `device`, for the processes outside the
     /// session (the lock screen, the panels, the device's daemons), which read them in processes
-    /// of their own ([`settings_store::outside`]).
+    /// of their own ([`settings_store::outside`]). The worker writes them, so the pass that
+    /// changed a setting never waits on the disk.
     fn publish(&self, device: String) {
         let revision = settings_store::SettingsSource::revision(self.settings.as_ref());
-        let now = Some((revision, device));
-        if *self.published.borrow() == now {
+        let unchanged = self
+            .published
+            .borrow()
+            .as_ref()
+            .is_some_and(|(left, on)| *left == revision && *on == device);
+        if unchanged {
             return;
         }
-        let document = settings_store::SettingsSource::load(self.settings.as_ref());
-        let device = now
-            .as_ref()
-            .map(|(_, device)| device.as_str())
-            .unwrap_or_default();
-        match settings_store::outside::publish(device, &document) {
-            Ok(()) => *self.published.borrow_mut() = now,
-            Err(error) => {
-                tracing::warn!(%error, "the settings were not left for the processes outside the session");
+        let publication = Publication {
+            device: device.clone(),
+            settings: settings_store::SettingsSource::load(self.settings.as_ref()),
+        };
+        // The revision is kept as asked for: were the worker slow and the settings change again,
+        // the next pass hands it the newer ones, and the worker writes only the latest.
+        *self.published.borrow_mut() = Some((revision, device));
+        leave(self.publisher.as_ref(), publication);
+    }
+}
+
+/// Hand `publication` to the worker, or, with none or one that stopped, leave it on this pass, as
+/// before.
+fn leave(publisher: Option<&mpsc::Sender<Publication>>, publication: Publication) {
+    let Some(jobs) = publisher else {
+        write(&publication);
+        return;
+    };
+    if let Err(error) = jobs.send(publication) {
+        // The worker stopped: nothing is left to write it, so this pass does.
+        write(&error.0);
+    }
+}
+
+/// The worker that leaves the settings for the processes outside the session, and the channel to
+/// it: a burst of changes is written once, the latest.
+fn start_publisher() -> std::io::Result<mpsc::Sender<Publication>> {
+    let (jobs, work) = mpsc::channel::<Publication>();
+    std::thread::Builder::new()
+        .name("tilo-settings-published".into())
+        .spawn(move || {
+            while let Ok(mut latest) = work.recv() {
+                while let Ok(newer) = work.try_recv() {
+                    latest = newer;
+                }
+                write(&latest);
             }
-        }
+        })?;
+    Ok(jobs)
+}
+
+/// Leave `publication` for the processes outside the session.
+fn write(publication: &Publication) {
+    if let Err(error) = settings_store::outside::publish(&publication.device, &publication.settings)
+    {
+        tracing::warn!(%error, "the settings were not left for the processes outside the session");
     }
 }
 
