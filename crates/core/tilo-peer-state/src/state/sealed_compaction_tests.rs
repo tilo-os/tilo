@@ -26,6 +26,9 @@ pub(super) struct Fixture {
     /// The record channel's group, whose content keys key holders use.
     group: KeyGroup,
     pub(super) now: SystemTime,
+    /// What the seeding device sent the replica: the workspace and the record as it was seeded,
+    /// which every device of the workspace starts from.
+    seed: Vec<NeighbourMsg>,
 }
 
 pub(super) fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
@@ -122,12 +125,14 @@ pub(super) fn fixture_holding(records: &[&str]) -> Fixture {
     )
     .unwrap();
     replica.select_exact_admissions().unwrap();
-    for message in native
+    let seed = native
         .publication_mut()
         .bootstrap_messages(&owner, now)
-        .unwrap()
-    {
-        replica.receive_from(origin(&owner), message, now).unwrap();
+        .unwrap();
+    for message in &seed {
+        replica
+            .receive_from(origin(&owner), message.clone(), now)
+            .unwrap();
     }
     let group = KeyGroup::create(group(), MemberKey::generate("owner").unwrap()).unwrap();
     Fixture {
@@ -138,6 +143,7 @@ pub(super) fn fixture_holding(records: &[&str]) -> Fixture {
         authority,
         group,
         now,
+        seed,
     }
 }
 
@@ -3750,21 +3756,32 @@ fn a_reader_without_a_checkpoints_writes_fetches_them_before_reading_it() {
     admit(&mut f.replica, &f.other, edit, f.now);
     let compaction = mint(&mut f.replica, &keys, &f.owner, f.now).unwrap();
 
-    let mut fresh = StatePeer::new(
-        WORKSPACE,
-        f.authority.clone(),
-        vec![],
-        RevocationList::new(),
-        f.now,
-    )
-    .unwrap();
-    fresh.select_exact_admissions().unwrap();
-    fresh
-        .receive_from(origin(&f.owner), f.replica.workspace_message(), f.now)
+    // A device that starts from the record as it was seeded, as every device does, then takes the
+    // workspace as it stands and the checkpoint; `seeded` says whether it took the seed.
+    let joins = |seeded: bool| {
+        let mut fresh = StatePeer::new(
+            WORKSPACE,
+            f.authority.clone(),
+            vec![],
+            RevocationList::new(),
+            f.now,
+        )
         .unwrap();
-    let report = fresh
-        .receive_from_report(origin(&f.owner), compaction, f.now)
-        .unwrap();
+        fresh.select_exact_admissions().unwrap();
+        for message in f.seed.iter().filter(|_| seeded) {
+            fresh
+                .receive_from(origin(&f.owner), message.clone(), f.now)
+                .unwrap();
+        }
+        fresh
+            .receive_from(origin(&f.owner), f.replica.workspace_message(), f.now)
+            .unwrap();
+        let report = fresh
+            .receive_from_report(origin(&f.owner), compaction.clone(), f.now)
+            .unwrap();
+        (fresh, report)
+    };
+    let (mut fresh, report) = joins(true);
     assert!(
         matches!(report.primary(), InputDisposition::Accepted(_)),
         "{:?}",
@@ -3784,15 +3801,33 @@ fn a_reader_without_a_checkpoints_writes_fetches_them_before_reading_it() {
 
     let writes = f.replica.publication().checkpoint_writes(APP, RECORD);
     assert!(!writes.is_empty());
-    for op in writes {
-        let key = [&f.owner, &f.other, &f.editor]
-            .into_iter()
-            .find(|key| op.author.as_bytes() == &key.verifying_key().to_bytes())
-            .unwrap();
-        admit(&mut fresh, key, message(op), f.now);
-    }
+    let fetch = |peer: &mut StatePeer| {
+        for op in &writes {
+            let key = [&f.owner, &f.other, &f.editor]
+                .into_iter()
+                .find(|key| op.author.as_bytes() == &key.verifying_key().to_bytes())
+                .unwrap();
+            admit(peer, key, message(op.clone()), f.now);
+        }
+    };
+    // A device that has the writes and not the record they were written on waits for it: the
+    // checkpoint is never read as what those writes merge to without their base. (Asked first:
+    // once a device here read the checkpoint against all its writes, this process keeps that
+    // verdict.)
+    let (mut unseeded, _) = joins(false);
+    fetch(&mut unseeded);
+    assert!(
+        matches!(
+            captured(&f, &unseeded, &keys),
+            Err(crate::PeerDocumentReadError::Incomplete)
+        ),
+        "a write whose base is not here is waited for, never refused"
+    );
+
+    fetch(&mut fresh);
     let read = captured(&f, &fresh, &keys).unwrap();
     assert_eq!(text(&read, "other").as_deref(), Some("kept"));
+    assert_eq!(text(&read, "value").as_deref(), Some("base"));
 }
 
 tilo_test_env::scenario! {

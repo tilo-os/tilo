@@ -406,8 +406,12 @@ fn merged_writes(
     )
     .map_err(cannot)?;
     for (index, reason, _) in left {
-        if matches!(reason, UnmergedReason::AlreadyHeld { .. }) {
-            continue;
+        match reason {
+            UnmergedReason::AlreadyHeld { .. } => continue,
+            // A write whose base is not here yet is no refusal: the checkpoint is read once the
+            // base arrives, never in place of what it holds.
+            UnmergedReason::MissingDependencies { .. } => return Err(CheckpointRefusal::Waits),
+            _ => {}
         }
         if let Some(op) = cached.get(index) {
             named.push(UnmergedWrite {
