@@ -182,9 +182,9 @@ pub fn verify_revocation_entry(entry: &RevocationEntry) -> Result<(), Revocation
 /// device, revokes nothing and a reader leaves it out.
 #[must_use]
 pub fn revokes(entry: &RevocationEntry, cert: &DeviceCert) -> bool {
-    entry.user_public_key == cert.user_public_key
-        && entry.revoked_device_public_key == cert.device_public_key
-        && verify_revocation_entry(entry).is_ok()
+    let (signed_by, certified_by) = (&entry.user_public_key, &cert.user_public_key);
+    let (revoked, device) = (&entry.revoked_device_public_key, &cert.device_public_key);
+    signed_by == certified_by && revoked == device && verify_revocation_entry(entry).is_ok()
 }
 
 /// The revocation `text` (postcard in hex) holds, when it is `cert`'s root's own revocation of it:

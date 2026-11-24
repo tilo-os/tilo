@@ -179,6 +179,8 @@ mod tests {
             assert_eq!(
                 crate::store::IdentityRegistryStore::from_env()
                     .expect("registry")
+                    .load_reconciled()
+                    .expect("registry")
                     .identity_of(&fixture.cert.user_public_key)
                     .map(|profile| profile.id),
                 Some(fixture.identity_id.clone()),
