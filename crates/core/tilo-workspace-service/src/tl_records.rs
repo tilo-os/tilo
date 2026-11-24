@@ -293,6 +293,10 @@ pub fn built_in(app: &str) -> Result<Option<Packages>, String> {
 /// # Panics
 /// A built-in package does not compile, which is a bug of this build.
 #[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "the packages built into this build compile when they are built into it"
+)]
 pub fn built_in_apps() -> Vec<String> {
     compiled()
         .as_ref()
@@ -325,6 +329,10 @@ pub(crate) fn built_in_surface(app: &str) -> Option<Vec<u8>> {
 ///
 /// # Panics
 /// A built-in package does not compile, which is a bug of this build.
+#[expect(
+    clippy::expect_used,
+    reason = "the packages built into this build compile when they are built into it"
+)]
 pub(crate) fn declare_built_in(surfaces: &collab_types::app_surface::Surfaces) {
     for packages in compiled()
         .as_ref()

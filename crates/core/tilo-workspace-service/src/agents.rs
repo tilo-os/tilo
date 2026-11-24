@@ -58,7 +58,7 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use tracing::Instrument as _;
 
 use crate::workspaces::Workspaces;
-use crate::workspaces::model_answers::{ModelRefusal, ModelAnswerer, Spender};
+use crate::workspaces::model_answers::{ModelAnswerer, ModelRefusal, Spender};
 use agent_keys::AgentKeys as _;
 use turn_provider::TurnProvider;
 
@@ -1178,7 +1178,7 @@ impl ServerAgents {
             Some(task) => task_work::asked(&event, task),
             None => triggered::said(&event),
         };
-        let asked = match &task {
+        let title = match &task {
             Some(task) => task.title.clone(),
             None => request.chars().take(120).collect(),
         };
@@ -1195,7 +1195,7 @@ impl ServerAgents {
             person: person.clone(),
             conversation: place.conversation(),
             cause: place.change.clone(),
-            asked,
+            asked: title,
             request,
             ask: Ask::Triggered(place.clone()),
             history: Vec::new(),

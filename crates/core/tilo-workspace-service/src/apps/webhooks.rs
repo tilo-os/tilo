@@ -336,10 +336,10 @@ impl ActionProvider for Poster {
                 *made
             };
             let answered = posting.post(url, webhook, &delivery, &body).await;
-            let (status, update) = match answered {
-                Ok(status) if (200..300).contains(&status) => {
+            let (code, update) = match answered {
+                Ok(code) if (200..300).contains(&code) => {
                     let output = ActionOutput {
-                        value: Some(json!({"status": status})),
+                        value: Some(json!({"status": code})),
                         ..ActionOutput::default()
                     };
                     (
@@ -355,8 +355,8 @@ impl ActionProvider for Poster {
                         },
                     )
                 }
-                Ok(status) => {
-                    let error = failure(format!("the webhook answered {status}"), attempt, budget);
+                Ok(code) => {
+                    let error = failure(format!("the webhook answered {code}"), attempt, budget);
                     (Err(error.clone()), failed_update(id, &error))
                 }
                 Err(why) => {

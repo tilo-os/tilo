@@ -54,6 +54,11 @@ impl WorkspaceVaultEntries {
 
     /// The semantic read exposes entries through the live vault, where each read can
     /// check the current keys.
+    #[expect(
+        clippy::unused_self,
+        clippy::unnecessary_wraps,
+        reason = "the resource macro names a read as `fn(&Self, Option<&Id>)`; the live document answers the read, so this one reads nothing of the state"
+    )]
     pub fn read_document(&self, _: Option<&Id>) -> Result<serde_json::Value, String> {
         Ok(serde_json::json!({}))
     }

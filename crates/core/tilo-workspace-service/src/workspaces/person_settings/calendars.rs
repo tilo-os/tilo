@@ -1782,9 +1782,9 @@ impl Workspaces {
         let asked = SpanAsked::between_ms(from_ms, to_ms)
             .ok_or_else(|| "a time no calendar reaches".to_owned())?;
         let workspace = workspace.to_string();
-        let asker = tilo_action_policy::Acting::person(hex::encode(person));
+        let acting = tilo_action_policy::Acting::person(hex::encode(person));
         let reach = Asking::of(
-            self.vault_for(&workspace, &asker),
+            self.vault_for(&workspace, &acting),
             "",
             self.inner.models.mail_reach(),
         );

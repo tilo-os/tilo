@@ -1295,6 +1295,10 @@ impl super::Workspaces {
 
 impl Answers {
     /// `request`, of a caller this device admitted, reaching what answers it.
+    #[expect(
+        clippy::expect_used,
+        reason = "a provider answers exactly the calls it serves or publishes"
+    )]
     fn admitted(
         &self,
         caller: &Caller,

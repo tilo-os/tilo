@@ -864,7 +864,7 @@ impl WorkspaceEvents {
         match action {
             workspace_events::LIST => said(&self.listed(workspace).await),
             workspace_events::SET_UP => {
-                let asked: SetUp = argument_of(
+                let setup: SetUp = argument_of(
                     argument,
                     "an event to set up names itself, what starts it and what to do then",
                 )?;
@@ -875,45 +875,45 @@ impl WorkspaceEvents {
                 }
                 let definition = Definition {
                     id: uuid::Uuid::new_v4().to_string(),
-                    name: asked.name,
-                    when: asked.when,
-                    only_if: asked.only_if,
-                    every: asked.every,
-                    instruction: asked.instruction,
-                    told_as: told_as_of(asked.told_as.as_deref().unwrap_or_default())
+                    name: setup.name,
+                    when: setup.when,
+                    only_if: setup.only_if,
+                    every: setup.every,
+                    instruction: setup.instruction,
+                    told_as: told_as_of(setup.told_as.as_deref().unwrap_or_default())
                         .map_err(refused)?,
                     set_up_at_ms: tilo_clock::unix_now_ms_i64(),
                     looks: false,
                 };
                 let note = Note {
-                    purpose: asked.purpose.unwrap_or_default().trim().to_owned(),
-                    guidance: asked.guidance.unwrap_or_default().trim().to_owned(),
-                    style: asked.style.unwrap_or_default().trim().to_owned(),
+                    purpose: setup.purpose.unwrap_or_default().trim().to_owned(),
+                    guidance: setup.guidance.unwrap_or_default().trim().to_owned(),
+                    style: setup.style.unwrap_or_default().trim().to_owned(),
                     ..Note::default()
                 };
                 let id = self.set_up(workspace, asker, definition, note).await?;
                 self.viewed(workspace, &id).await
             }
             workspace_events::CHANGE => {
-                let asked: Change = argument_of(argument, "a change names the event it changes")?;
-                let (kept, shortcut) = self.one(workspace, &asked.event).await?;
+                let change: Change = argument_of(argument, "a change names the event it changes")?;
+                let (kept, shortcut) = self.one(workspace, &change.event).await?;
                 let mut definition = kept.definition.clone();
-                if let Some(name) = &asked.name {
+                if let Some(name) = &change.name {
                     definition.name.clone_from(name);
                 }
-                if let Some(when) = &asked.when {
+                if let Some(when) = &change.when {
                     definition.when.clone_from(when);
                 }
-                if let Some(only_if) = &asked.only_if {
+                if let Some(only_if) = &change.only_if {
                     definition.only_if = Some(only_if.clone());
                 }
-                if let Some(every) = asked.every {
+                if let Some(every) = change.every {
                     definition.every = Some(every);
                 }
-                if let Some(instruction) = &asked.instruction {
+                if let Some(instruction) = &change.instruction {
                     definition.instruction.clone_from(instruction);
                 }
-                if let Some(said) = &asked.told_as {
+                if let Some(said) = &change.told_as {
                     definition.told_as = told_as_of(said).map_err(refused)?;
                 }
                 let definition = definition.checked().map_err(refused)?;
@@ -922,7 +922,7 @@ impl WorkspaceEvents {
                 // trigger starts its own times. Who set it up stays its author.
                 let changed = Kept {
                     definition,
-                    note: kept.note.clone().changed(&asked),
+                    note: kept.note.clone().changed(&change),
                     by: asker.by(),
                     ..kept
                 };
@@ -931,7 +931,7 @@ impl WorkspaceEvents {
                 self.save(workspace, asker, ShortcutChange::Save(Box::new(saving)))
                     .await
                     .map_err(unavailable)?;
-                self.viewed(workspace, &asked.event).await
+                self.viewed(workspace, &change.event).await
             }
             action @ (workspace_events::PAUSE | workspace_events::RESUME) => {
                 let named: Named = argument_of(argument, "an event is named by its id")?;
@@ -1056,7 +1056,7 @@ impl WorkspaceEvents {
     }
 
     /// The actions the events offer, as the catalogue lists them.
-    fn rows(&self) -> Vec<ActionDescriptor> {
+    fn rows() -> Vec<ActionDescriptor> {
         offered().into_iter().map(descriptor).collect()
     }
 }
@@ -1066,7 +1066,7 @@ impl tilo_actions::remote::Admits for WorkspaceEvents {
     const APP: &'static str = workspace_events::PROVIDER;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        tilo_actions::remote::admitted::top_level(self.rows())
+        tilo_actions::remote::admitted::top_level(Self::rows())
     }
 
     /// Start `action` `request` calls, in `caller`'s workspace, once admitted.

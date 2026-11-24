@@ -370,9 +370,9 @@ impl Workspaces {
             return Err("What waited is not what you were shown, so nothing was sent.".into());
         }
         // Their allowing it is their sending it.
-        let asker = tilo_action_policy::Acting::person(hex::encode(person));
+        let acting = tilo_action_policy::Acting::person(hex::encode(person));
         let signing = Signing {
-            vault: self.vault_for(&asked.workspace, &asker),
+            vault: self.vault_for(&asked.workspace, &acting),
             root,
             by: "",
         };

@@ -285,13 +285,13 @@ impl Providers {
         reach: Reach,
         answers: Arc<dyn ActionProvider + Send + Sync>,
     ) -> Result<(), String> {
-        let mut provided = self.0.provided.write_recover();
-        if let Some(registered) = provided.get(provider)
+        let mut served = self.0.provided.write_recover();
+        if let Some(registered) = served.get(provider)
             && !Arc::ptr_eq(&registered.answers, &answers)
         {
             return Err(format!("{provider} is served on this device already"));
         }
-        provided.insert(
+        served.insert(
             Arc::from(provider),
             Registered {
                 provider: Arc::from(provider),
@@ -307,12 +307,12 @@ impl Providers {
     /// Answer no more calls of `provider` with `answers`: a call that names it from now on finds
     /// no provider. A provider registered since under that name by another is left as it is.
     pub fn withdraw(&self, provider: &str, answers: &Arc<dyn ActionProvider + Send + Sync>) {
-        let mut provided = self.0.provided.write_recover();
-        if provided
+        let mut served = self.0.provided.write_recover();
+        if served
             .get(provider)
             .is_some_and(|registered| Arc::ptr_eq(&registered.answers, answers))
         {
-            provided.remove(provider);
+            served.remove(provider);
         }
     }
 
@@ -322,13 +322,13 @@ impl Providers {
     /// the device holding it.
     #[must_use]
     pub fn get(&self, provider: &str) -> Option<Registered> {
-        let provided = self.0.provided.read_recover();
-        provided
+        let served = self.0.provided.read_recover();
+        served
             .get(provider)
-            .or_else(|| resources(&provided, provider))
+            .or_else(|| resources(&served, provider))
             .or_else(|| {
                 let (app, _) = tilo_actions::remote::resource_parts(provider)?;
-                provided.get(app)
+                served.get(app)
             })
             .or_else(|| {
                 let (workspace, app) = tilo_actions::remote::application_provider(provider)?;
@@ -402,11 +402,11 @@ impl Providers {
 
     /// Remember that `taker` took invocation `id`.
     fn take(&self, id: InvocationId, taker: Taker) {
-        let mut taken = self.0.taken.lock_recover();
-        if taken.len() >= TAKEN_KEPT {
-            taken.clear();
+        let mut took = self.0.taken.lock_recover();
+        if took.len() >= TAKEN_KEPT {
+            took.clear();
         }
-        taken.insert(id, taker);
+        took.insert(id, taker);
     }
 
     /// Hand `request`, a call made on this device as `caller`, to the provider it names: the one
@@ -565,10 +565,10 @@ impl Providers {
 /// The provider applying the typed actions of the built-in record `provider` names, registered
 /// under the resource provider itself, when it applies that record's.
 fn resources<'a>(
-    provided: &'a BTreeMap<Arc<str>, Registered>,
+    served: &'a BTreeMap<Arc<str>, Registered>,
     provider: &str,
 ) -> Option<&'a Registered> {
-    provided
+    served
         .get(tilo_actions::remote::RESOURCE_PROVIDER)
         .filter(|resources| resources.answers.serves(provider))
 }

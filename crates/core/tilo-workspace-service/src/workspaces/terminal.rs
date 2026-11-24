@@ -127,7 +127,6 @@ impl TerminalService {
 
     /// The workspace and record a `request` of this provider names.
     fn resolved(
-        &self,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<(String, String), ActionCallError> {
@@ -617,7 +616,7 @@ impl ActionProvider for TerminalService {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
-        let (workspace, record) = match self.resolved(caller, &request) {
+        let (workspace, record) = match Self::resolved(caller, &request) {
             Ok(resolved) => resolved,
             Err(refused) => return Pending::ready(Err(refused)),
         };

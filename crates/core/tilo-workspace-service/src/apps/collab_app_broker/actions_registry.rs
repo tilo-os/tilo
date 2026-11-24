@@ -36,7 +36,7 @@ impl AppBrokerState {
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         match request.target.address.action.as_str() {
-            "catalogue" => self.actions_catalogue(caller, request),
+            "catalogue" => Ok(self.actions_catalogue(caller, request)),
             "call" => self.actions_call(caller, request),
             _ => Ok(Pending::ready(Err(ActionCallError::UnknownAction))),
         }
@@ -48,7 +48,7 @@ impl AppBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<Pending<Result<InvocationReceipt, ActionCallError>>, String> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let arguments = arguments(request);
         let query = arguments
             .get("query")
@@ -65,7 +65,7 @@ impl AppBrokerState {
             ..tilo_actions::remote::CatalogueQuery::default()
         };
         let invocation = request.invocation;
-        Ok(self.action_query(caller, &asked).map(move |page| {
+        self.action_query(caller, &asked).map(move |page| {
             let page = page?;
             let actions: Vec<serde_json::Value> = page
                 .rows
@@ -95,7 +95,7 @@ impl AppBrokerState {
                 })
                 .collect();
             Ok(completed(invocation, serde_json::json!(actions)))
-        }))
+        })
     }
 
     /// The action at the address the call names, invoked as this invocation's child.
@@ -120,7 +120,7 @@ impl AppBrokerState {
         let outer = request.invocation;
         let parent = request.on_behalf_of;
         let context = request.context.clone();
-        let started_ms = now_ms();
+        let started_ms = tilo_clock::unix_now_ms_i64();
         // The row whose target the address names: what the catalogue lists by the app, the
         // resource and the verb, and whose provider answers it.
         let asked = tilo_actions::remote::CatalogueQuery {
@@ -331,15 +331,6 @@ fn param_type_name(ty: ParamType) -> &'static str {
 /// An app's name as a person reads it: its last id segment, in sentence case.
 fn app_label(app: &str) -> String {
     tilo_actions::field_type::label_of(app.rsplit('.').next().unwrap_or(app))
-}
-
-/// Now, in milliseconds since the Unix epoch.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-        })
 }
 
 #[cfg(test)]

@@ -170,6 +170,10 @@ impl Work {
 
     /// The work a record held in its holder keeps, by the field names Tasks gives them: a field
     /// kept under its declaration's id is read by its name.
+    #[expect(
+        clippy::expect_used,
+        reason = "the packages built into this build compile when they are built into it"
+    )]
     fn held(fields: &Map<String, Value>) -> Self {
         let names = crate::tl_records::built_in(TASKS)
             .expect("the packages built into this build compile")

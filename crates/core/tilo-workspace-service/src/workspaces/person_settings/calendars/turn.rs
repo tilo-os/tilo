@@ -140,14 +140,14 @@ impl Workspaces {
                     .collect(),
             })),
             ENTRIES => {
-                let asked: SpanAsked = argument(request, "a span to read")?;
+                let span: SpanAsked = argument(request, "a span to read")?;
                 answer(
-                    &off_thread(move || entries(&root, &reach, &accounts, &asked, FRESH_MS)).await,
+                    &off_thread(move || entries(&root, &reach, &accounts, &span, FRESH_MS)).await,
                 )
             }
             FREE => {
-                let asked: FreeAsked = argument(request, "a span to find free time in")?;
-                answer(&off_thread(move || free(&root, &reach, &accounts, &asked)).await)
+                let wanted: FreeAsked = argument(request, "a span to find free time in")?;
+                answer(&off_thread(move || free(&root, &reach, &accounts, &wanted)).await)
             }
             _ => Err(ActionError::UnknownAction),
         }

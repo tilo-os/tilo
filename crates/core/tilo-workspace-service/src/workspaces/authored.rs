@@ -37,10 +37,6 @@ impl Workspaces {
     /// whose first change every device makes alike (a
     /// [`tilo_resource::genesis`]), so two devices that each write it before
     /// they see one another write one document and not two competing roots.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace record stays locked through durable signed publication"
-    )]
     pub async fn author_workspace_document_from<R>(
         &self,
         (workspace, holder): (&str, &DeviceCert),

@@ -51,10 +51,6 @@ impl Workspaces {
     /// of an app without one, missing records, sealed records whose channel
     /// this server does not take part in, failed changes or oversized
     /// publication.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the governor record stays locked through durable signed publication"
-    )]
     pub async fn author_application<R>(
         &self,
         workspace: &str,

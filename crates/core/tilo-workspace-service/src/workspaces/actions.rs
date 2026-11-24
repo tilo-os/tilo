@@ -2036,7 +2036,7 @@ impl Workspaces {
     /// the proxy, which admits the person and device it names. The workspace's
     /// roster is what let the device ask at all ([`Self::governance_invoke`]);
     /// the token names it. A host that serves no proxy grants none.
-    fn fetch_grant(&self, call: GovernanceCall<'_>) -> Result<Value, ActionCallError> {
+    fn fetch_grant(&self, call: GovernanceCall<'_>) -> Value {
         let device = call.device;
         let token = if self.inner.host.fetch_grants.served() {
             self.inner
@@ -2046,7 +2046,7 @@ impl Workspaces {
         } else {
             None
         };
-        Ok(tilo_server_protocol::workspaces::fetch_grant_answer(token))
+        tilo_server_protocol::workspaces::fetch_grant_answer(token)
     }
 
     #[allow(
@@ -2422,7 +2422,7 @@ impl Workspaces {
             REGISTRIES | ADD_REGISTRY | REMOVE_REGISTRY | ENABLE_REGISTRY | DISABLE_REGISTRY
             | REGISTRY_CHANNEL => self.package_registries_action(action, call).await,
             governance::CALL => self.call_action(call).await,
-            FETCH_GRANT => self.fetch_grant(call),
+            FETCH_GRANT => Ok(self.fetch_grant(call)),
             UPLOAD_APP_FILE => self.upload_app_piece(call.workspace, call.args),
             APP_OFFERS => self.apps_offers(call.workspace).await,
             EARLIER_APP_VERSIONS => self.earlier_app_versions(call).await,

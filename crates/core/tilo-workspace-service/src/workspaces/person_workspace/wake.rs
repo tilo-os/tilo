@@ -167,6 +167,10 @@ pub fn remember_subnets(mut current: Vec<WakeRoute>, previous: &[WakeRoute]) -> 
 
 /// `routes` as a device keeps them in its entry: postcard in hex.
 #[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "a wake route is plain data, which always encodes"
+)]
 pub fn encoded(routes: &[WakeRoute]) -> String {
     hex::encode(postcard::to_allocvec(routes).expect("wake routes encode"))
 }
@@ -394,11 +398,11 @@ pub fn answering(
             continue;
         };
         done.insert((target.to_owned(), ask.asked_ns));
-        let mut sent = false;
+        let mut delivered = false;
         for (mac, subnet) in packets {
-            sent |= send(mac, subnet);
+            delivered |= send(mac, subnet);
         }
-        if sent {
+        if delivered {
             writes.push(Devices::WAKE_SENT.with((
                 target.to_owned(),
                 ask.asked_ns,
