@@ -1195,14 +1195,14 @@ fn a_linked_discord_account_speaks_as_its_member_and_an_unlinked_one_as_itself()
         ],
         None,
     );
-    let _ = ada.root(CHAT);
+    let _ = ada.root(CHAT_APP);
     ada.commit();
     let design = did(
         &ada,
         CHAT_APP,
         &person("ada"),
         "new_channel",
-        vec![Value::resource(&ada.root(CHAT)), Value::text("design")],
+        vec![Value::resource(&ada.root(CHAT_APP)), Value::text("design")],
     );
     let all = Value::resource(&ada.root(APP));
     did(&ada, APP, &person("ada"), "begin_setup", vec![all]);

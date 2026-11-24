@@ -226,6 +226,7 @@ test("a file posted on Discord is kept here and the message carries it", async (
   const done = [];
   const kept = [];
   const fetched = [];
+  const released = [];
   let finish;
   const finished = new Promise((resolve) => (finish = resolve));
   const ws = {
@@ -246,7 +247,8 @@ test("a file posted on Discord is kept here and the message carries it", async (
       },
     },
     vault: {
-      async release() {
+      async release(item) {
+        released.push(item);
         return "MTIz.GxYz.abcdefghij0123456789AB";
       },
       async webCall() {
@@ -271,7 +273,7 @@ test("a file posted on Discord is kept here and the message carries it", async (
     fetch,
     log: () => {},
   });
-  await until(() => done.length > 0 || fetched.length > 0, "the bridge");
+  await until(() => released.length > 0 || done.length > 0, "the bridge");
   gateway.emit("messageCreate", {
     id: "779",
     channelId: "456",

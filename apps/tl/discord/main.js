@@ -3,7 +3,6 @@
 // is the device's held connection that carries the gateway and the call lane a voice channel's
 // call is bridged through.
 
-import { Tilo } from "tilo-sdk";
 import { startCalls } from "./src/call.js";
 import { connect as connectVoice } from "./src/voice.js";
 import {
@@ -592,6 +591,9 @@ const CHAT = "so.tilo.chat";
 if (import.meta.main) {
   const log = (line) => console.error(`discord: ${line}`);
   try {
+    // The client of this computer's daemon is the process's entry alone: the tests drive `run`
+    // with their own workspace, so they need nothing of the SDK's native part.
+    const { Tilo } = await import("tilo-sdk");
     await run({ tilo: new Tilo(), log });
   } catch (error) {
     log(`the bridge stopped: ${error?.message ?? error}`);
