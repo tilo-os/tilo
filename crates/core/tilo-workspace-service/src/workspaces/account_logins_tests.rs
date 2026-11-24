@@ -776,13 +776,9 @@ async fn an_editor_the_rules_ask_first_reads_mail_where_the_vault_is_and_holds_n
     let in_workspace = Some(workspace.parse::<collab_types::WorkspaceId>().unwrap());
     let certified = Some(&members.member_cert);
     let inbox = json!({"account": ADDRESS, "folder": "inbox"});
+    let fetch = members.signed(asking(person_accounts::FETCH, &inbox));
     let fetched = host
-        .person_accounts_invoke(
-            in_workspace,
-            &by,
-            certified,
-            &members.signed(asking(person_accounts::FETCH, &inbox)),
-        )
+        .person_accounts_invoke(in_workspace, &by, certified, &fetch)
         .await
         .expect("the editor reads the account's inbox");
     let fetched: person_accounts::FetchedMail = serde_json::from_value(fetched).unwrap();
@@ -795,6 +791,59 @@ async fn an_editor_the_rules_ask_first_reads_mail_where_the_vault_is_and_holds_n
         ["Lunch"]
     );
     assert_eq!(servers.asked(), [format!("fetch {ADDRESS} inbox")]);
+
+    // The fetch declares one step of the vault, the use it makes, and the owner's device takes
+    // no other for it: an edit of the entry carrying the editor's same call is refused, and the
+    // entry is as the owner kept it.
+    let opened = host.open_vault(&workspace).await.unwrap();
+    let mut edited = opened.entry(named.id()).unwrap().clone();
+    edited.password = "planted".to_owned();
+    let editor = by.acting().clone();
+    let planted = host
+        .write_vault(
+            &opened,
+            vec![accounts::vault_items::VaultChange::Keep(edited)],
+            Some(&editor),
+            Some(&fetch),
+        )
+        .await;
+    assert!(planted.is_err(), "a fetch keeps no entry: {planted:?}");
+    let opened = host.open_vault(&workspace).await.unwrap();
+    assert_eq!(opened.entry(named.id()).unwrap().password, PASSWORD);
+
+    // Passwords' own actions still ask the editor first, on the owner's device too: neither a
+    // read of the vault nor a login kept there is answered unasked, and nothing is kept.
+    let vault_asking = |action: &str, argument: &serde_json::Value| InvokeRequest {
+        target: tilo_actions::remote::person_vault::target(action),
+        ..asking(action, argument)
+    };
+    let kept_before = opened.entries().len();
+    for (action, argument) in [
+        (tilo_actions::remote::person_vault::LIST, json!({})),
+        (
+            tilo_actions::remote::person_vault::ADD,
+            json!({"kind": "login", "belongsTo": ["https://example.com"], "username": "ed", "secret": "planted"}),
+        ),
+    ] {
+        let unasked = host
+            .person_vault_invoke(
+                in_workspace,
+                &by,
+                certified,
+                &members.signed(vault_asking(action, &argument)),
+            )
+            .await;
+        assert!(
+            matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
+            "the editor's {action} of Passwords asks first: {unasked:?}"
+        );
+    }
+    let opened = host.open_vault(&workspace).await.unwrap();
+    assert_eq!(
+        opened.entries().len(),
+        kept_before,
+        "nothing is kept unasked"
+    );
 
     // Asked for the password itself, the owner's device answers nothing.
     let password = json!({"item": named.to_string(), "app": MAIL});
