@@ -1,4 +1,9 @@
 //! An agent's card: one client ("Claude Code") as a member, beside the person's work.
+//!
+//! A turn a trigger started is not a client session: its state is the
+//! `#answer` invocation record in `tilo.invocations` (status, steps, its output
+//! with cost and summary), and stopping it is that record's `cancel`. A view of
+//! an agent's work reads those records rather than keeping a second list.
 
 use ui::icons::Icon;
 use ui::prelude::*;
