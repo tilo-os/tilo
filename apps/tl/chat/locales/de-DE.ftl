@@ -243,6 +243,13 @@ d-ymtess4x = Kanal
     .w-edit-message = Nachricht bearbeiten
     .w-cancel = Abbrechen
     .w-save = Speichern
+    .w-the-host-didn-t-keep-it = Der Host behält { $name } nicht: Die Datei ist größer als die { $mib }, die er je Datei behält.
+    .w-the-host-didn-t-keep-this = Der Host behält { $name } nicht: Die Dateien dieser Person nehmen mehr als ihre { $mib } ein.
+    .w-the-host-didn-t-keep-this-2 = Der Host behält { $name } nicht: Diese Person hat in dieser Stunde mehr als { $mib } gepostet.
+    .w-the-host-didn-t-keep-the = Der Host behält { $name } nicht: Der Arbeitsbereich hält mehr als { $mib } auf ihm.
+    .w-the-host-didn-t-keep-it-2 = Der Host behält { $name } nicht: Sie ist mehr, als dieser Host behält ({ $mib }).
+    .w-the-host-s-person-can-raise = Die Person des Hosts kann sie in den Einstellungen des Servers erhöhen.
+    .w-the-workspace-s-owners-can-raise = Die Eigentümer des Arbeitsbereichs können sie in den Einstellungen unter Inhaltsgrenzen erhöhen.
     .w-reply = Antworten
     .w-edit = Bearbeiten
 
@@ -255,6 +262,13 @@ d-jbezqvlc = Direkt
     .w-edit-message = Nachricht bearbeiten
     .w-cancel = Abbrechen
     .w-save = Speichern
+    .w-the-host-didn-t-keep-it = Der Host behält { $name } nicht: Die Datei ist größer als die { $mib }, die er je Datei behält.
+    .w-the-host-didn-t-keep-this = Der Host behält { $name } nicht: Die Dateien dieser Person nehmen mehr als ihre { $mib } ein.
+    .w-the-host-didn-t-keep-this-2 = Der Host behält { $name } nicht: Diese Person hat in dieser Stunde mehr als { $mib } gepostet.
+    .w-the-host-didn-t-keep-the = Der Host behält { $name } nicht: Der Arbeitsbereich hält mehr als { $mib } auf ihm.
+    .w-the-host-didn-t-keep-it-2 = Der Host behält { $name } nicht: Sie ist mehr, als dieser Host behält ({ $mib }).
+    .w-the-host-s-person-can-raise = Die Person des Hosts kann sie in den Einstellungen des Servers erhöhen.
+    .w-the-workspace-s-owners-can-raise = Die Eigentümer des Arbeitsbereichs können sie in den Einstellungen unter Inhaltsgrenzen erhöhen.
     .w-reply = Antworten
     .w-edit = Bearbeiten
 

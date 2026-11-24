@@ -964,32 +964,6 @@ fn refusal_of(f: Attached) -> Option<workspace.Refusal> {
     workspace.content.refusals.find(r -> r.hash == attached_hash(f))
 }
 
-/// Why the host did not keep an attachment: the limit it went over, in the words of what it
-/// counts, and what that limit allowed.
-fn refused_why(f: Attached, r: workspace.Refusal) -> Text {
-    let allowed = std.mib(r.allowed)
-    if r.limit == "file" {
-        "The host didn't keep {f.name}: it is larger than the {allowed} it keeps of one file."
-    } else if r.limit == "member" {
-        "The host didn't keep {f.name}: this person's files take more than their {allowed}."
-    } else if r.limit == "hourly" {
-        "The host didn't keep {f.name}: this person posted more than {allowed} this hour."
-    } else if r.limit == "workspace" {
-        "The host didn't keep {f.name}: the workspace keeps more than {allowed} on it."
-    } else {
-        "The host didn't keep {f.name}: it is more than the {allowed} this host keeps."
-    }
-}
-
-/// Who can raise the limit a refusal names.
-fn refused_raise(r: workspace.Refusal) -> Text {
-    if r.raise == "host" {
-        "The host's person can raise it in the server's settings."
-    } else {
-        "The workspace's owners can raise it in Settings, under Content limits."
-    }
-}
-
 /// Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the
 /// one already open, else a new one in the sidebar. The message is sent as every message is.
 action write_to(all: Conversations, who: Actor, body: RichText) -> Message uses notify (
@@ -2096,8 +2070,29 @@ view message(
             }
             for f in m.attachments {
                 if let r = refusal_of(f) {
-                    ui.StatusLine(refused_why(f, r), status: .warning)
-                    ui.Text(refused_raise(r), role: .caption, secondary: true)
+                    ui.StatusLine(
+                        if r.limit == "file" {
+                            "The host didn't keep {f.name}: it is larger than the {std.mib(r.allowed)} it keeps of one file."
+                        } else if r.limit == "member" {
+                            "The host didn't keep {f.name}: this person's files take more than their {std.mib(r.allowed)}."
+                        } else if r.limit == "hourly" {
+                            "The host didn't keep {f.name}: this person posted more than {std.mib(r.allowed)} this hour."
+                        } else if r.limit == "workspace" {
+                            "The host didn't keep {f.name}: the workspace keeps more than {std.mib(r.allowed)} on it."
+                        } else {
+                            "The host didn't keep {f.name}: it is more than the {std.mib(r.allowed)} this host keeps."
+                        },
+                        status: .warning,
+                    )
+                    ui.Text(
+                        if r.raise == "host" {
+                            "The host's person can raise it in the server's settings."
+                        } else {
+                            "The workspace's owners can raise it in Settings, under Content limits."
+                        },
+                        role: .caption,
+                        secondary: true,
+                    )
                 }
             }
         }
