@@ -17,8 +17,10 @@
 /// A narrow display gets smaller cards and a shorter page, so the switcher stays whole over
 /// what it covers rather than running past it.
 ///
-/// Every choice it offers is the session's action: going to a window is `session.focus`, the
-/// same as a press on its strip.
+/// Every choice it offers is the session's action, the one the walk's keys ask too: a card under
+/// the pointer is chosen on sight (`select-switcher`), a press on one goes there and ends the
+/// walk (`commit-switcher`), and a press off the panel ends the walk where it stood
+/// (`close-surface`). The keyboard, the pointer and an agent reach the same window the same way.
 ///
 /// The panel holds the screen while it is up: the display behind it is dimmed, and assistive
 /// technology reads it as a dialog named for what the walk crosses, with the keys it answers to
@@ -67,7 +69,7 @@ view switcher() {
                         // A wall of windows: each card keeps the gap cards stand by.
                         row(gap: .sibling, align: .center, distribute: .center, wrap: true) {
                             for w in shown {
-                                window_card(w)
+                                window_card(w, walk_place(windows, w) - 1)
                             }
                         }
                         row(gap: .related, align: .center, distribute: .center, wrap: true) {
@@ -82,6 +84,7 @@ view switcher() {
                     }
                 }
             }
+            on dismiss: device.close_surface(device.overlays, part: "switcher")
         }
     }
 }
@@ -110,7 +113,9 @@ fn walk_place(windows: List<device.Window>, w: device.Window) -> Int {
 /// One window of the walk: its picture or its app's glyph, its title, and the app it shows.
 /// The card the walk has reached is the lifted one. A narrow display stands the picture beside
 /// the names rather than over them, so a phone shows a page of windows rather than one.
-view window_card(w: device.Window) {
+/// `at` is the window's place among the windows the walk crosses, counted from 0 (`-1` the last),
+/// as the session's actions choose and go to it.
+view window_card(w: device.Window, at: Int) {
     ui.Card(item: w, selected: w.focused, min: if space.compact { 5rem } else { 11rem }) {
         if space.compact {
             row(gap: .tight, align: .center) {
@@ -126,7 +131,12 @@ view window_card(w: device.Window) {
         if w.not_responding {
             hung_window(w)
         }
-        on activate: session.focus(window(w))
+        // The card under the pointer is chosen on sight, and a press on one goes there and ends
+        // the walk: the session's own verbs, as Home, End and letting the modifier go are.
+        on hover: device.select_switcher(device.overlays, at: at)
+        on activate: device
+            .select_switcher(device.overlays, at: at)
+            .then(device.commit_switcher(device.overlays))
     }
 }
 

@@ -233,6 +233,7 @@ fn card_body(
             selected,
             body,
             activate,
+            hover: Event::None,
         },
     ))
 }

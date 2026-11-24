@@ -693,6 +693,10 @@
           "name": "activate",
           "doc": "The card was pressed: open what it stands for.",
           "press": true
+        },
+        {
+          "name": "hover",
+          "doc": "The pointer came over the card: it is the one under it now."
         }
       ],
       "semantics": {
@@ -5256,6 +5260,10 @@
           "value": {
             "list": "int"
           }
+        },
+        {
+          "name": "dismiss",
+          "doc": "A press landed off the panel, on nothing of its own: a panel with this is dismissed by it."
         }
       ],
       "semantics": {
@@ -6257,7 +6265,8 @@
                   "row",
                   "media",
                   "chip",
-                  "page"
+                  "page",
+                  "block"
                 ]
               }
             }
@@ -6303,6 +6312,13 @@
                 ]
               }
             }
+          }
+        },
+        {
+          "name": "height",
+          "doc": "A block's height in logical pixels.",
+          "type": {
+            "option": "float"
           }
         }
       ],

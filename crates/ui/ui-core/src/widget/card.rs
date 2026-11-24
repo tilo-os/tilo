@@ -316,6 +316,11 @@ pub struct Card {
     has_footer: bool,
     stripe: Option<Tone>,
     activation: Activation,
+    /// What the pointer coming over the card does (`hover`): a view of what is under it, reported
+    /// once each time it arrives.
+    hover: crate::component::Event,
+    hovering: bool,
+    cursor: Point,
     dirty: bool,
     title: Option<String>,
     header_count: Option<usize>,
@@ -332,6 +337,9 @@ impl Card {
             has_footer: false,
             stripe: None,
             activation: Activation::new("card"),
+            hover: crate::component::Event::None,
+            hovering: false,
+            cursor: Point::ZERO,
             dirty: true,
             title: None,
             header_count: None,
@@ -630,6 +638,24 @@ impl Widget for Card {
         event: &winit::event::WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) {
+        // The pointer coming over the card is the card's own, whether or not something in it takes
+        // the same move: a view that shows what is under the pointer hears it once, on arrival.
+        if !self.hover.is_none() {
+            match event {
+                winit::event::WindowEvent::CursorMoved { position, .. } => {
+                    self.cursor = ctx.logical(position);
+                    let over = self.parts.rect.contains(self.cursor);
+                    if over && !self.hovering {
+                        self.hovering = true;
+                        self.hover.fire(None);
+                    } else if !over {
+                        self.hovering = false;
+                    }
+                }
+                winit::event::WindowEvent::CursorLeft { .. } => self.hovering = false,
+                _ => {}
+            }
+        }
         for (child, &node) in self.parts.children.iter_mut().zip(&self.parts.nodes) {
             let path = ctx.path;
             child.handle_event(event, &mut ctx.reborrow(path, node));

@@ -312,6 +312,9 @@ pub struct FloatingPanelProps {
     /// near and inside what holds it. A panel with this moves when its header is dragged.
     #[component(event(value = Vec<i64>))]
     pub moved: Event,
+    /// A press landed off the panel, on nothing of its own: a panel with this is dismissed by it.
+    #[component(event)]
+    pub dismiss: Event,
 }
 
 /// The place `x` and `y` say, when they both do.
@@ -322,6 +325,10 @@ fn place_of(x: Option<f64>, y: Option<f64>) -> Option<Point> {
 pub struct DeclaredPanel {
     panel: FloatingPanel,
     rect: Rect,
+    /// The pointer as the panel last heard it: a press off the panel is read against it.
+    cursor: Point,
+    /// What a press off the panel does (`dismiss`).
+    dismiss: Event,
     /// The one-view part being changed ([`Described::part_views`]): the header or the footer.
     editing: PanelPart,
 }
@@ -364,12 +371,17 @@ impl DeclaredPanel {
                     reason = "a rounded place on a display, far inside i64"
                 )]
                 let edge = |at: f64| crate::component::Value::Int(at.round() as i64);
-                moved.fire(Some(crate::component::Value::List(vec![edge(at.x), edge(at.y)])));
+                moved.fire(Some(crate::component::Value::List(vec![
+                    edge(at.x),
+                    edge(at.y),
+                ])));
             });
         }
         Self {
             panel,
             rect: Rect::ZERO,
+            cursor: Point::ZERO,
+            dismiss: props.dismiss,
             editing: PanelPart::Header,
         }
     }
@@ -440,7 +452,27 @@ impl Widget for DeclaredPanel {
         event: &winit::event::WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) {
+        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = ctx.logical(position);
+        }
         self.panel.handle_event(event, ctx);
+        // A press the panel and everything in it left alone is off it, on nothing of its own: a
+        // panel with a dismiss reports it, and the press reaches nothing behind it.
+        if !*ctx.handled
+            && !self.dismiss.is_none()
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && !self.rect.contains(self.cursor)
+        {
+            self.dismiss.fire(None);
+            *ctx.handled = true;
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -492,6 +524,7 @@ impl Described for DeclaredPanel {
             x,
             y,
             moved,
+            dismiss,
         } = props;
         // Whether it moves is how it was built: a panel that starts or stops moving is built again.
         if moved.is_none() == self.panel.is_movable() {
@@ -504,6 +537,7 @@ impl Described for DeclaredPanel {
         panel.set_modal(modal);
         panel.set_slide(slide);
         panel.set_place(place_of(x, y));
+        self.dismiss = dismiss;
         true
     }
 
@@ -957,6 +991,37 @@ impl Described for DeclaredPopoverButton {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A press off a panel that reports one is a dismissal; a press on the panel, even on its own
+    /// empty ground, is none.
+    #[test]
+    fn a_press_off_a_panel_with_a_dismiss_reports_it_and_one_on_it_does_not() {
+        use crate::component::Component;
+        use crate::component::testing::{Node, fired, harness};
+        let queue = crate::Intents::default();
+        let mut node = Node::new("FloatingPanel", "panel", &queue)
+            .prop("width", crate::component::Value::Float(200.0))
+            .on("dismiss");
+        let props = FloatingPanelProps::from_source(&mut node).expect("the panel reads");
+        let mut host = harness(DeclaredPanel::from_props("panel", props));
+        host.relayout();
+        let rect = host.root::<DeclaredPanel>().get_rect();
+
+        host.hover_at(rect.x1 + 60.0, rect.y1 + 60.0);
+        host.click_at(rect.x1 + 60.0, rect.y1 + 60.0);
+        assert_eq!(queue.take(), [fired("panel", "dismiss", None)]);
+
+        let (x, y) = (
+            f64::midpoint(rect.x0, rect.x1),
+            f64::midpoint(rect.y0, rect.y1),
+        );
+        host.hover_at(x, y);
+        host.click_at(x, y);
+        assert!(
+            queue.take().is_empty(),
+            "a press on the panel dismisses nothing"
+        );
+    }
 
     /// A popover the person opened stays open while its props are given to it again, and closes
     /// when the host says it is closed.

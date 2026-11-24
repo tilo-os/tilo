@@ -25,6 +25,9 @@ pub struct CardProps {
     /// The card was pressed: open what it stands for.
     #[component(event(press))]
     pub activate: Event,
+    /// The pointer came over the card: it is the one under it now.
+    #[component(event)]
+    pub hover: Event,
 }
 
 impl Described for Card {
@@ -53,6 +56,7 @@ impl Described for Card {
             selected,
             body,
             activate,
+            hover,
         } = props;
         let column = body.into_iter().fold(
             crate::widget::arrange::Stack::stack()
@@ -67,6 +71,7 @@ impl Described for Card {
             let _label = title.clone().unwrap_or_default();
             card.activation.set_event(activate);
         }
+        card.hover = hover;
         match title {
             Some(title) if !title.is_empty() => {
                 let header = SectionHeader::group(title);
@@ -88,7 +93,9 @@ impl Described for Card {
             selected,
             body: _,
             activate,
+            hover,
         } = props;
+        self.hover = hover;
         self.set_selected(selected);
         let title = title.filter(|title| !title.is_empty());
         let count = count.map(|count| usize::try_from(count.max(0)).unwrap_or(0));

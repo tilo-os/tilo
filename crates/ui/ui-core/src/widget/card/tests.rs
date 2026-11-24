@@ -619,3 +619,38 @@ tilo_test_env::scenario! {
         assert!(!scene.encoding().draw_tags.is_empty());
     }
 }
+
+/// The pointer coming over a card is reported once on arrival, as a view choosing the thing under
+/// it on sight hears it: leaving and coming back is another arrival, and moving inside it is none.
+#[test]
+fn the_pointer_coming_over_a_card_is_reported_once_on_arrival() {
+    use crate::component::testing::{Node, fired, harness};
+    use crate::component::{Component, Described};
+    let queue = crate::Intents::default();
+    let mut node = Node::new("Card", "card", &queue).on("hover");
+    let props = CardProps::from_source(&mut node).expect("the card reads");
+    let mut host = harness(Card::from_props("card", props));
+    host.relayout();
+    let rect = host.root::<Card>().get_rect();
+    host.hover_at(
+        f64::midpoint(rect.x0, rect.x1),
+        f64::midpoint(rect.y0, rect.y1),
+    );
+    assert_eq!(queue.take(), [fired("card", "hover", None)]);
+    host.hover_at(rect.x0 + 1.0, rect.y0 + 1.0);
+    assert!(queue.take().is_empty(), "the pointer stayed over the card");
+    host.hover_at(rect.x1 + 40.0, rect.y1 + 40.0);
+    assert!(
+        queue.take().is_empty(),
+        "leaving the card is no arrival on it"
+    );
+    host.hover_at(
+        f64::midpoint(rect.x0, rect.x1),
+        f64::midpoint(rect.y0, rect.y1),
+    );
+    assert_eq!(
+        queue.take(),
+        [fired("card", "hover", None)],
+        "coming back is another arrival"
+    );
+}
