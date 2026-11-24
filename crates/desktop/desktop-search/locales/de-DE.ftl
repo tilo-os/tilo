@@ -95,6 +95,7 @@ search-source-files = Dateien
 search-source-workspace-files = Dateien des Arbeitsbereichs
 search-source-records = Datensätze
 search-source-jobs = Laufende Aufgaben
+search-source-device-readings = Geräte dieses Rechners
 search-continue-in-workspace = in { $workspace }
 search-continue-in-another-workspace = in einem anderen Arbeitsbereich
 # What the person downloaded: the programs in their apps and the ones running

@@ -2798,6 +2798,9 @@ impl FlatAction<'_> {
 mod listed_row;
 pub use listed_row::{ListedRow, listed_row, listed_row_problems};
 
+mod reading_row;
+pub use reading_row::ReadingRow;
+
 /// Depth-first flatten of a resource forest into every exported action,
 /// parents before children — what the palette lists.
 pub fn flatten(resources: &[ResourceSpec]) -> Vec<FlatAction<'_>> {

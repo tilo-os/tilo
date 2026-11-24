@@ -410,7 +410,7 @@ pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionState, ActionType,
     ArgsBuilder, Collects, ContinuationArguments, ContinuationEvidence, ContinuationKey,
     ContinuationQuery, ControlInvocation, Exports, FlatAction, KEY_SEP, ListedRow,
-    NESTED_RESOURCE_FACET, Noun, PROMPTED_PARAM, ResourceId, ResourcePresentation,
+    NESTED_RESOURCE_FACET, Noun, PROMPTED_PARAM, ReadingRow, ResourceId, ResourcePresentation,
     ResourceSemanticIdentity, ResourceSpec, ResourceType, ResourceViewMountSpec,
     ResourceViewRangeSpec, ResourceViewSpec, RunBy, SEMANTIC_OPERATION_TYPE, Target, action_label,
     app_label, flatten, in_words, kind_is_a_drawn_control, kind_mirrors_a_control,

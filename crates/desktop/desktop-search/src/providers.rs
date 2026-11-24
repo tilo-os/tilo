@@ -7,6 +7,7 @@ mod app_actions;
 pub mod ask_agent;
 #[cfg(feature = "catalogue")]
 pub mod catalogue;
+pub mod device_rows;
 pub mod downloaded;
 #[cfg(feature = "indexes")]
 pub mod files;

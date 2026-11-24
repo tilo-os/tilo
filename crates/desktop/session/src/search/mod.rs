@@ -286,6 +286,9 @@ pub struct SessionSearch {
     /// The parts of the history changed since they were last kept: the choices, the places.
     unkept: Cell<(bool, bool)>,
     kept: RefCell<Kept>,
+    /// The items this device's readings list, each by the resource whose reading lists it: what
+    /// search finds whether or not the app showing them runs.
+    device_rows: RefCell<Vec<(String, tilo_actions::ReadingRow)>>,
     apps: Option<Rc<dyn AppActions>>,
     /// The records the workspaces on this device hold.
     records: Option<Records>,
@@ -475,6 +478,7 @@ impl SessionSearch {
             usage: RefCell::new(None),
             unkept: Cell::new((false, false)),
             kept: RefCell::new(kept),
+            device_rows: RefCell::default(),
             models,
             content,
             apps,
@@ -569,6 +573,36 @@ impl SessionSearch {
         }
         *self.here.borrow_mut() = workspaces;
         self.moved_recipients();
+    }
+
+    /// The items this device's readings list, each by the resource whose reading lists it: a
+    /// container, a drive, a printer, a process, a journal record. Search finds them whether or
+    /// not the app that shows them runs, and the source turns off with the others.
+    pub fn set_device_rows(&self, rows: Vec<(String, tilo_actions::ReadingRow)>) {
+        if *self.device_rows.borrow() == rows {
+            return;
+        }
+        *self.device_rows.borrow_mut() = rows;
+    }
+
+    /// This device's readings as a source of search: each item of each reading, opened the way
+    /// its reading offers. None where the person turned the source off.
+    fn device_source(
+        &self,
+        workspace: &str,
+        rows: Vec<(String, tilo_actions::ReadingRow)>,
+    ) -> Option<Held> {
+        if rows.is_empty()
+            || !self
+                .preferences
+                .borrow()
+                .enabled(tilo_desktop_search::providers::device_rows::DEVICE_ROWS_SOURCE)
+        {
+            return None;
+        }
+        Some(Held::new(
+            tilo_desktop_search::providers::device_rows::DeviceRows::new(workspace, rows),
+        ))
     }
 
     /// Say that who a message can go to moved, so the reading of it is taken again.
@@ -717,6 +751,7 @@ impl SessionSearch {
             )));
         }
         sources.extend(kept.content.clone());
+        sources.extend(self.device_source(workspace, self.device_rows.borrow().clone()));
         sources.extend(kept.files.clone());
         sources.extend(self.workspace_files.clone());
         sources.extend(self.host_search.clone());
@@ -784,6 +819,18 @@ impl SessionSearch {
             && let Some(content) = &self.content
         {
             sources.push(Held::new(content.for_app(name)));
+        }
+        // A window's own search finds the items of the readings its app shows, which its record
+        // publishes none of.
+        if let Some(name) = app.app.as_deref() {
+            let rows: Vec<(String, tilo_actions::ReadingRow)> = self
+                .device_rows
+                .borrow()
+                .iter()
+                .filter(|(_, row)| row.app.as_deref() == Some(name))
+                .cloned()
+                .collect();
+            sources.extend(self.device_source(workspace, rows));
         }
         let published = self
             .apps
@@ -2474,6 +2521,54 @@ mod tests {
                 .flat_map(|source| source.query("voice"))
                 .any(|hit| hit.title == "voice"),
             "the one index also answers the search over everything"
+        );
+    }
+
+    /// This computer's readings are a source of search: a container is found by its image and
+    /// opens the app that shows it at its page, and the window scoped to that app finds it too.
+    /// Turned off, the source is gone from both.
+    #[test]
+    fn a_reading_s_items_are_found_and_open_the_app_showing_them() {
+        use tilo_desktop_search::providers::device_rows::DEVICE_ROWS_SOURCE;
+
+        let search = SessionSearch::new(SearchOptions::default(), None, "ada", None, None, None);
+        search.set_device_rows(vec![(
+            "containers".to_owned(),
+            tilo_actions::ReadingRow::new("c1", "build-cache")
+                .subtitled("running")
+                .field("postgres:17")
+                .shown_by("so.tilo.containers"),
+        )]);
+
+        let source = |scope: &Scope| {
+            search
+                .sources("workspace", scope)
+                .0
+                .into_iter()
+                .find(|source| source.id() == DEVICE_ROWS_SOURCE)
+        };
+        let found = source(&Scope::Workspace)
+            .expect("the device's readings answer search")
+            .query("postgres");
+        assert_eq!(found.len(), 1, "a container is found by its image");
+        assert_eq!(found[0].title, "build-cache");
+        let Target::Invoke(target) = &found[0].target else {
+            panic!("a container opens the app showing it: {:?}", found[0].target);
+        };
+        assert_eq!(target.app, "so.tilo.containers");
+        assert_eq!(
+            target.arguments[tilo_desktop_search::OPEN_ANCHOR],
+            "containers/c1",
+            "the window opens at the container's page"
+        );
+
+        let window = source(&Scope::InApp(ui::search::AppScope::of("so.tilo.containers")))
+            .expect("the window of the app showing it finds it");
+        assert_eq!(window.query("postgres").len(), 1);
+        assert!(
+            source(&Scope::InApp(ui::search::AppScope::of("so.tilo.logs")))
+                .is_none(),
+            "another app's window finds nothing of this reading"
         );
     }
 

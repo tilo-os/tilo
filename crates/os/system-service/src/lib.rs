@@ -43,6 +43,7 @@ tilo_resource::declared_names!();
 pub mod model;
 pub mod printers;
 pub mod processes;
+mod rows;
 pub mod scanners;
 pub mod update;
 pub mod users;
@@ -2402,6 +2403,10 @@ impl Service for SystemService {
             JOURNAL => Some(reading(&self.readings.journal)),
             _ => None,
         }
+    }
+
+    fn search_rows(&self) -> Vec<(String, tilo_actions::ReadingRow)> {
+        rows::rows(&self.readings)
     }
 
     /// This computer's Windows programs answered for the workspace reading them: a program the
