@@ -313,13 +313,30 @@ mod cases {
     struct Bridge {
         engine: tilolang_grayjay::Engine,
         handlers: Rc<RefCell<HashMap<String, JobHandlers>>>,
+        /// The record of each job the bridge told ended, as the device keeps it.
+        ended: Arc<(std::sync::Mutex<HashMap<String, serde_json::Value>>, std::sync::Condvar)>,
     }
 
     impl Bridge {
         /// The job's record as the device reads it, while it runs or once it ended.
         fn record(&self, job: &str) -> Option<serde_json::Value> {
+            if let Some(ended) = self.ended.0.lock().unwrap().get(job) {
+                return Some(ended.clone());
+            }
             let said = self.engine.status(job).ok()?;
             tilolang_tilo::engine::record_of(job, &said)
+        }
+
+        /// The record of `job` once the bridge tells it ended.
+        fn ended(&self, job: &str) -> serde_json::Value {
+            let (held, told) = &*self.ended;
+            let (held, waited) = told
+                .wait_timeout_while(held.lock().unwrap(), std::time::Duration::from_secs(6), |held| {
+                    !held.contains_key(job)
+                })
+                .unwrap();
+            assert!(!waited.timed_out(), "the Grayjay job {job} did not end");
+            held[job].clone()
         }
     }
 
@@ -339,7 +356,18 @@ mod cases {
             assert_eq!(app, "so.tilo.tube", "only YouTube asks this bridge");
             // The host names each job, as the device does.
             let job = format!("grayjay-{}", self.handlers.borrow().len() + 1);
-            self.engine.start(&job, op, input)?;
+            let (named, ended) = (job.clone(), Arc::clone(&self.ended));
+            self.engine.start(
+                &job,
+                op,
+                input,
+                Arc::new(move |_, detail| {
+                    let record = tilolang_tilo::engine::record_of(&named, &detail.to_string())
+                        .expect("the bridge tells a job's end as an object");
+                    ended.0.lock().unwrap().insert(named.clone(), record);
+                    ended.1.notify_all();
+                }),
+            )?;
             self.handlers
                 .borrow_mut()
                 .insert(job.clone(), handlers.clone());
@@ -374,6 +402,7 @@ mod cases {
             let bridge = Bridge {
                 engine,
                 handlers: Rc::new(RefCell::new(HashMap::new())),
+                ended: Arc::default(),
             };
             rt.set_engine(bridge.clone());
             let playback = App::compile(PLAYBACK, &[]);
@@ -405,33 +434,25 @@ mod cases {
         /// Waits for the job under way to end, then runs the action its start named for the
         /// end with the job's record, as the device does once the bridge's work is over.
         fn settle(&self) {
-            for _ in 0..300 {
+            loop {
                 let job = self.text("sync_job");
                 if job.is_empty() {
                     return;
                 }
-                let record = self.bridge.record(&job).expect("the bridge keeps the job");
-                if record["state"] != "running" {
-                    self.rt.set_job(&job, &record);
-                    let done = self.bridge.handlers.borrow()[&job]
-                        .done
-                        .clone()
-                        .expect("the Grayjay job names what runs when it ends");
-                    let call = self.rt.job_call(&done, &record).unwrap();
-                    let outcome = self.rt.invoke_action(&me(), call).unwrap();
-                    assert!(
-                        matches!(outcome, InvokeOutcome::Done(_)),
-                        "the Grayjay job's end came to {outcome:?}"
-                    );
-                    assert_ne!(self.text("sync_job"), job, "the job's end lets it go");
-                    continue;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                let record = self.bridge.ended(&job);
+                self.rt.set_job(&job, &record);
+                let done = self.bridge.handlers.borrow()[&job]
+                    .done
+                    .clone()
+                    .expect("the Grayjay job names what runs when it ends");
+                let call = self.rt.job_call(&done, &record).unwrap();
+                let outcome = self.rt.invoke_action(&me(), call).unwrap();
+                assert!(
+                    matches!(outcome, InvokeOutcome::Done(_)),
+                    "the Grayjay job's end came to {outcome:?}"
+                );
+                assert_ne!(self.text("sync_job"), job, "the job's end lets it go");
             }
-            panic!(
-                "the Grayjay job did not end: {:?}",
-                self.rt.read(&self.yt, "sync_job")
-            );
         }
 
         fn text(&self, field: &str) -> String {

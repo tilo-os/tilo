@@ -82,11 +82,15 @@ fn start(
     job: &str,
     op: &str,
     input: &str,
-    _moved: &JobSink,
+    moved: &JobSink,
 ) -> Result<(), String> {
+    let told = Told {
+        device: *device,
+        moved: *moved,
+    };
     match op {
-        "scan" => scan(device, job, input),
-        "record" => record(job, input),
+        "scan" => scan(told, job, input),
+        "record" => record(told, job, input),
         other => Err(format!("`{other}` is no op this device runs for {APP}")),
     }
 }
@@ -108,7 +112,7 @@ fn stream(device: &Device, op: &str, input: &str, frames: &Frames) -> Result<Str
 fn preview(input: &str, frames: &Frames) -> Result<String, String> {
     let ask: PictureAsk = reads(input)?;
     let id = next_job_id();
-    let state = Arc::new(Job::new(false));
+    let state = Arc::new(Job::new(false, None));
     jobs()
         .lock()
         .map_err(|_| "the job table is unreadable".to_owned())?
@@ -145,7 +149,7 @@ fn preview(input: &str, frames: &Frames) -> Result<String, String> {
 /// # Errors
 ///
 /// No such job on this device.
-fn status(device: &Device, job: &str) -> Result<String, String> {
+fn status(_device: &Device, job: &str) -> Result<String, String> {
     let state = jobs()
         .lock()
         .map_err(|_| "the job table is unreadable".to_owned())?
@@ -154,7 +158,6 @@ fn status(device: &Device, job: &str) -> Result<String, String> {
     let Some(state) = state else {
         return Err(format!("no job `{job}` runs on this device"));
     };
-    state.settle(device);
     if state.stopped.load(Ordering::Relaxed) {
         return Ok(serde_json::json!({ "state": "cancelled", "url": "", "error": "" }).to_string());
     }
@@ -181,6 +184,7 @@ fn cancel(_device: &Device, job: &str) -> bool {
         return false;
     }
     state.stopped.store(true, Ordering::Relaxed);
+    state.end("cancelled", &serde_json::json!({}));
     if state.recording.load(Ordering::Relaxed)
         && let Some(handle) = keeper()
         && let Ok(handle) = handle.lock()
@@ -191,9 +195,6 @@ fn cancel(_device: &Device, job: &str) -> bool {
     true
 }
 
-/// A page the scanner answered: its name, and the bytes its receiver keeps.
-type Scan = (String, Receiver<Result<Vec<u8>, String>>);
-
 /// One job in flight, and what it made.
 struct Job {
     finished: AtomicBool,
@@ -202,84 +203,68 @@ struct Job {
     recording: AtomicBool,
     error: Mutex<Option<String>>,
     url: Mutex<Option<String>>,
-    /// A page the scanner answered, kept as the job's file on the next ask.
-    scan: Mutex<Option<Scan>>,
-    /// A clip the camera thread answered: what it is called, and its bytes with its duration.
-    clip: Mutex<Option<Clip>>,
+    /// Where a started job keeps what it made and tells that it ended; a viewfinder has none.
+    told: Option<Told>,
+    /// Whether the job told its last move: once, whoever tells it first.
+    ended: AtomicBool,
 }
 
-struct Clip {
-    name: String,
-    bytes: Vec<u8>,
+/// The device a started job keeps what it made through, and the sink it tells its moves to:
+/// both last until the job tells that it ended.
+#[derive(Clone, Copy)]
+struct Told {
+    device: Device,
+    moved: JobSink,
 }
 
 impl Job {
-    /// Keep what a scanner or a recording answered, once: the file the app shows.
-    fn settle(&self, device: &Device) {
-        self.take_scan(device);
-        self.take_clip(device);
-    }
-
-    fn take_scan(&self, device: &Device) {
-        let Ok(mut slot) = self.scan.lock() else {
-            return;
-        };
-        let Some((name, rx)) = slot.as_ref() else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(Ok(png)) => {
-                match device.keep_content(name, "image/png", &png) {
-                    Ok(kept) => {
-                        if let Ok(mut url) = self.url.lock() {
-                            *url = Some(format!("tilo-blob://{}", kept.hash));
-                        }
-                    }
-                    Err(error) => {
-                        if let Ok(mut error_slot) = self.error.lock() {
-                            *error_slot = Some(error);
-                        }
-                    }
-                }
-                *slot = None;
-            }
-            Ok(Err(error)) => {
-                if let Ok(mut error_slot) = self.error.lock() {
-                    *error_slot = Some(error);
-                }
-                *slot = None;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                if let Ok(mut error_slot) = self.error.lock() {
-                    *error_slot = Some("the scanner did not answer".to_owned());
-                }
-                *slot = None;
-            }
+    fn new(recording: bool, told: Option<Told>) -> Self {
+        Self {
+            finished: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            recording: AtomicBool::new(recording),
+            error: Mutex::new(None),
+            url: Mutex::new(None),
+            told,
+            ended: AtomicBool::new(false),
         }
     }
 
-    fn take_clip(&self, device: &Device) {
-        let Ok(mut slot) = self.clip.lock() else {
+    /// Keep `bytes` the job made as its file, and tell that it is done with it; or that it
+    /// failed, when the store refused it.
+    fn keep(&self, name: &str, media: &str, bytes: &[u8]) {
+        // A job that told it ended has no device left to keep through.
+        let Some(told) = self.told.filter(|_| !self.ended.load(Ordering::Relaxed)) else {
             return;
         };
-        let Some(clip) = slot.as_ref() else {
-            return;
-        };
-        match device.keep_content(&clip.name, "video/x-msvideo", &clip.bytes) {
+        match told.device.keep_content(name, media, bytes) {
             Ok(kept) => {
-                if let Ok(mut url) = self.url.lock() {
-                    *url = Some(format!("tilo-blob://{}", kept.hash));
+                let url = format!("tilo-blob://{}", kept.hash);
+                if let Ok(mut slot) = self.url.lock() {
+                    *slot = Some(url.clone());
                 }
+                self.finished.store(true, Ordering::Relaxed);
+                self.end("done", &serde_json::json!({ "url": url }));
             }
-            Err(error) => {
-                if let Ok(mut error_slot) = self.error.lock() {
-                    *error_slot = Some(error);
-                }
-            }
+            Err(error) => self.fail(error),
         }
-        *slot = None;
+    }
+
+    fn fail(&self, error: String) {
+        if let Ok(mut slot) = self.error.lock() {
+            *slot = Some(error.clone());
+        }
         self.finished.store(true, Ordering::Relaxed);
+        self.end("failed", &serde_json::json!({ "error": error }));
+    }
+
+    /// Tell the job's last move, unless one was told already.
+    fn end(&self, state: &str, detail: &serde_json::Value) {
+        if let Some(told) = self.told
+            && !self.ended.swap(true, Ordering::Relaxed)
+        {
+            told.moved.moved(state, &detail.to_string());
+        }
     }
 }
 
@@ -611,7 +596,7 @@ fn default_pdf_name() -> String {
     "scanned document.pdf".to_owned()
 }
 
-fn scan(_device: &Device, job: &str, input: &str) -> Result<(), String> {
+fn scan(told: Told, job: &str, input: &str) -> Result<(), String> {
     #[derive(Deserialize)]
     struct Ask {
         scanner: String,
@@ -642,7 +627,7 @@ fn scan(_device: &Device, job: &str, input: &str) -> Result<(), String> {
         return Err("no document scanner is chosen".to_owned());
     }
     let id = job.to_owned();
-    let state = Arc::new(Job::new(false));
+    let state = Arc::new(Job::new(false, Some(told)));
     jobs()
         .lock()
         .map_err(|_| "the job table is unreadable".to_owned())?
@@ -654,37 +639,20 @@ fn scan(_device: &Device, job: &str, input: &str) -> Result<(), String> {
         ask.name
     };
     let scanner = ask.scanner;
-    let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u8>, String>>();
     std::thread::Builder::new()
         .name("camera-scan".to_owned())
-        .spawn(move || {
-            let result = tilo_capture::scanner::scan_page(&scanner, settings);
-            let _ = tx.send(result);
-            worker.finished.store(true, Ordering::Relaxed);
+        .spawn(move || match tilo_capture::scanner::scan_page(&scanner, settings) {
+            // A scan stopped part way keeps nothing: the job told it ended when it was stopped.
+            Ok(_) if worker.stopped.load(Ordering::Relaxed) => {}
+            Ok(png) => worker.keep(&name, "image/png", &png),
+            Err(error) => worker.fail(error),
         })
         .map_err(|error| format!("could not start the scan: {error}"))?;
-    if let Ok(mut slot) = state.scan.lock() {
-        *slot = Some((name, rx));
-    }
     Ok(())
 }
 
 fn default_dpi() -> u16 {
     300
-}
-
-impl Job {
-    fn new(recording: bool) -> Self {
-        Self {
-            finished: AtomicBool::new(false),
-            stopped: AtomicBool::new(false),
-            recording: AtomicBool::new(recording),
-            error: Mutex::new(None),
-            url: Mutex::new(None),
-            scan: Mutex::new(None),
-            clip: Mutex::new(None),
-        }
-    }
 }
 
 /// What a stopped recording answers: its bytes, its duration, and its frame size.
@@ -842,7 +810,7 @@ fn ask_frame(ask: &PictureAsk) -> Result<tilo_capture::Frame, String> {
         .map_err(|_| "the camera did not answer".to_owned())?
 }
 
-fn record(job: &str, input: &str) -> Result<(), String> {
+fn record(told: Told, job: &str, input: &str) -> Result<(), String> {
     let ask: PictureAsk = reads(input)?;
     let handle = keeper().ok_or_else(|| "the camera thread could not start".to_owned())?;
     let (reply, answered) = std::sync::mpsc::channel();
@@ -860,7 +828,7 @@ fn record(job: &str, input: &str) -> Result<(), String> {
     jobs()
         .lock()
         .map_err(|_| "the job table is unreadable".to_owned())?
-        .insert(job.to_owned(), Arc::new(Job::new(true)));
+        .insert(job.to_owned(), Arc::new(Job::new(true, Some(told))));
     Ok(())
 }
 
@@ -887,12 +855,7 @@ fn stop_record(input: &str) -> Result<String, String> {
         .recv_timeout(std::time::Duration::from_secs(60))
         .map_err(|_| "the clip was not finished".to_owned())??;
     let name = format!("VID_{}.avi", now_name());
-    if let Ok(mut slot) = state.clip.lock() {
-        *slot = Some(Clip {
-            name: name.clone(),
-            bytes: bytes.clone(),
-        });
-    }
+    state.keep(&name, "video/x-msvideo", &bytes);
     Ok(serde_json::json!({
         "video": {
             "name": name,

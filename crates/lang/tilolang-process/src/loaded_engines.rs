@@ -16,7 +16,8 @@
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use tilo_engine_loader::{Device, EngineApi, File};
 use tilolang_tilo::engine::{JobSink, State};
@@ -57,7 +58,34 @@ fn library_of(app: &str) -> Option<&'static str> {
 /// into this process.
 #[must_use]
 pub fn answers(app: &str) -> bool {
-    library_of(app).is_some()
+    library_of(app).is_some() || given(app).is_some()
+}
+
+/// The engines a test hands this process in place of a library, by the app each answers.
+#[cfg(any(test, feature = "test-support"))]
+fn given_engines() -> MutexGuard<'static, BTreeMap<String, EngineApi>> {
+    static GIVEN: OnceLock<Mutex<BTreeMap<String, EngineApi>>> = OnceLock::new();
+    GIVEN
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn given(app: &str) -> Option<EngineApi> {
+    given_engines().get(app).copied()
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn given(_app: &str) -> Option<EngineApi> {
+    None
+}
+
+/// Answer `engine.app`'s engine with `engine`, as though this device loaded it from a library:
+/// what a test reaches the loader's own path with, with no library built.
+#[cfg(any(test, feature = "test-support"))]
+pub fn give(engine: EngineApi) {
+    given_engines().insert(engine.app.to_owned(), engine);
 }
 
 /// The engines opened so far, by the library's file name: an engine that could not be opened is
@@ -76,6 +104,9 @@ fn held() -> MutexGuard<'static, BTreeMap<&'static str, Result<EngineApi, String
 
 /// The engine answering `app`, opening its library the first time and never closing it.
 fn engine_of(app: &str) -> Result<EngineApi, String> {
+    if let Some(engine) = given(app) {
+        return Ok(engine);
+    }
     let library =
         library_of(app).ok_or_else(|| format!("no engine of this device's runs for {app}"))?;
     let mut opened = held();
@@ -103,13 +134,14 @@ pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result
 }
 
 /// One `engine.start` for `app`: the job `op` started as `job`, each of its moves told to
-/// `moved`.
+/// `moved`. The job keeps what it makes in `store`, the app's content store, for as long as it
+/// runs.
 ///
 /// # Errors
 ///
 /// The engine's refusal, or that this device loads none for `app`.
 pub fn start(
-    platform: &dyn Platform,
+    store: &tilo_content::ContentStore,
     app: &str,
     job: &str,
     op: &str,
@@ -117,20 +149,28 @@ pub fn start(
     moved: JobSink,
 ) -> Result<(), String> {
     let engine = engine_of(app)?;
-    let context = Context(platform);
-    let device = device(&context);
-    // The engine tells moves from its own thread for as long as the job runs, and may tell one
-    // after it says the job ended, so what its sink names is kept as long as this process runs.
-    let moved: &'static JobSink = Box::leak(Box::new(moved));
-    let sink = tilo_engine_loader::JobSink::new(
-        std::ptr::from_ref(moved).cast_mut().cast::<c_void>(),
-        tell,
+    let held = {
+        static NEXT: AtomicUsize = AtomicUsize::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    };
+    running().insert(
+        held,
+        Arc::new(Running {
+            store: store.clone(),
+            moved,
+        }),
     );
     jobs()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(job.to_owned(), app.to_owned());
+    // The context is the job's number, not a pointer: a callback after the job ended finds no
+    // job rather than freed memory.
+    let context = std::ptr::without_provenance_mut::<c_void>(held);
+    let device = Device::new(context, job_moment, job_keep_content, job_read);
+    let sink = tilo_engine_loader::JobSink::new(context, tell);
     (engine.start)(&device, job, op, input, &sink).inspect_err(|_| {
+        running().remove(&held);
         jobs()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -138,15 +178,72 @@ pub fn start(
     })
 }
 
-/// A move a loaded engine told: its state's word and its fields, onto the job's sink.
+/// A job a loaded engine runs, as its device and sink answer it until it ends.
+struct Running {
+    store: tilo_content::ContentStore,
+    moved: JobSink,
+}
+
+/// The jobs loaded engines run, by the number their callbacks name them with.
+fn running() -> MutexGuard<'static, BTreeMap<usize, Arc<Running>>> {
+    static RUNNING: OnceLock<Mutex<BTreeMap<usize, Arc<Running>>>> = OnceLock::new();
+    RUNNING
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The job a callback names, while it runs. A job's thread may still be finishing when the
+/// person stops it: what it then keeps is refused, and what it tells is past the move that ended
+/// it.
+fn running_job(context: *mut c_void) -> Result<Arc<Running>, String> {
+    running()
+        .get(&context.addr())
+        .cloned()
+        .ok_or_else(|| "the job ended".to_owned())
+}
+
+/// A move a loaded engine told: its state's word and its fields, onto the job's sink. Its last
+/// move lets go of the job.
 fn tell(context: *mut c_void, state: &str, detail: &str) {
-    // SAFETY: `start` hands the engine a context naming a sink it leaked, so it is never freed.
-    let moved = unsafe { &*context.cast_const().cast::<JobSink>() };
+    let Ok(job) = running_job(context) else {
+        return;
+    };
     let state = State::from_word(state)
         .unwrap_or_else(|| panic!("a loaded engine told a job's move as {state:?}, no state"));
     let detail = serde_json::from_str(detail)
         .unwrap_or_else(|error| panic!("a loaded engine told a job's fields not as JSON: {error}"));
-    moved.moved(state, detail);
+    if state.ended() {
+        running().remove(&context.addr());
+    }
+    job.moved.moved(state, detail);
+}
+
+fn job_moment(_context: *mut c_void) -> Result<(String, i64), String> {
+    Ok(said_moment(&tilolang_tilo::instance::wall_moment()))
+}
+
+fn job_keep_content(
+    context: *mut c_void,
+    name: &str,
+    media: &str,
+    bytes: &[u8],
+) -> Result<File, String> {
+    let file = crate::files::keep(&running_job(context)?.store, name, media, bytes)?;
+    Ok(File {
+        hash: file.hash,
+        name: file.name,
+        media: file.media,
+        size: file.size,
+    })
+}
+
+fn job_read(context: *mut c_void, url: &str) -> Result<Vec<u8>, String> {
+    let hash = url
+        .strip_prefix("tilo-blob://")
+        .ok_or_else(|| format!("`{url}` is no content address"))?;
+    crate::files::read(&running_job(context)?.store, hash)
+        .ok_or_else(|| format!("the content store does not hold `{hash}`"))
 }
 
 /// One `engine.stream` for `app`: the stream `op` started, answered with its job's id, whose
@@ -249,9 +346,13 @@ fn behind<'a>(context: *mut c_void) -> &'a Context<'a> {
 }
 
 fn moment(context: *mut c_void) -> Result<(String, i64), String> {
-    let moment = behind(context).0.moment();
+    Ok(said_moment(&behind(context).0.moment()))
+}
+
+/// A moment as the engine reads it: the date, `YYYY-MM-DD`, and seconds since the epoch.
+fn said_moment(moment: &tilolang_tilo::instance::Zoned) -> (String, i64) {
     let date = moment.date();
-    Ok((
+    (
         format!(
             "{}-{:02}-{:02}",
             date.year(),
@@ -259,7 +360,7 @@ fn moment(context: *mut c_void) -> Result<(String, i64), String> {
             i32::from(date.day())
         ),
         moment.timestamp().as_second(),
-    ))
+    )
 }
 
 fn keep_content(

@@ -460,3 +460,170 @@ fn a_window_that_did_not_start_a_job_follows_it_from_the_devices_records() {
     settle(&mut first, &mut a);
     assert!(shown(&a).contains("painted 4 of 4"), "{}", shown(&a));
 }
+
+const CLIPPER: &str = "so.tilo.clipper";
+
+/// A clip an engine opened from a library makes, and what the app keeps once it is made.
+const CLIPPER_SOURCE: &str = r#"app so.tilo.clipper "Clipper" (icon: .hash, category: .utility)
+
+type Clips {
+    job: Text = ""
+    words: Text = ""
+    kept: Text = ""
+}
+
+type Made {
+    url: Text
+}
+
+root Clips
+
+default view bar for Clips
+
+/// What runs once the clip is made: the file it made.
+action made(c: Clips, j: host.Job) {
+    if j.state == .done {
+        match json.decode<Made>(j.detail) {
+            .ok(made) => {
+                c.kept = made.url
+            }
+            .err(why) => {
+                c.words = why
+            }
+        }
+    }
+}
+
+/// Make a clip: the app's engine makes it in the app's own process.
+action clip(c: Clips) {
+    match engine.start("clip", "{}", done: j -> made(c, j)) {
+        .ok(job) => {
+            c.job = job
+        }
+        .err(why) => {
+            c.words = why
+        }
+    }
+}
+
+view bar(c: Clips) {
+    std.page(c) {
+        section("Clips") {
+            ui.Text(c.kept)
+        }
+    }
+}
+"#;
+
+/// The clipper's engine, as a library exports it: each clip is made on a thread of its own after
+/// `start` returned, kept through the device the job was handed, and told done with its file.
+mod clipper {
+    use tilo_engine_loader::{Device, EngineApi, Frames, JobOp, JobSink, Needs};
+
+    fn jobs() -> &'static [JobOp] {
+        const JOBS: &[JobOp] = &[JobOp::new("clip", Needs::APP_STATE)];
+        JOBS
+    }
+
+    fn call(_device: &Device, op: &str, _input: &str) -> Result<String, String> {
+        Err(format!("no call `{op}`"))
+    }
+
+    fn start(
+        device: &Device,
+        _job: &str,
+        _op: &str,
+        _input: &str,
+        moved: &JobSink,
+    ) -> Result<(), String> {
+        let (device, moved) = (*device, *moved);
+        std::thread::spawn(move || {
+            moved.moved("running", r#"{"done":1,"total":2}"#);
+            match device.keep_content("clip.avi", "video/x-msvideo", b"a moving picture") {
+                Ok(kept) => moved.moved(
+                    "done",
+                    &serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) })
+                        .to_string(),
+                ),
+                Err(why) => moved.moved("failed", &serde_json::json!({ "error": why }).to_string()),
+            }
+        });
+        Ok(())
+    }
+
+    fn status(_device: &Device, job: &str) -> Result<String, String> {
+        Err(format!("the device records `{job}`"))
+    }
+
+    fn stream(
+        _device: &Device,
+        _op: &str,
+        _input: &str,
+        _frames: &Frames,
+    ) -> Result<String, String> {
+        Err("no streams".to_owned())
+    }
+
+    fn cancel(_device: &Device, _job: &str) -> bool {
+        false
+    }
+
+    pub const API: EngineApi = EngineApi {
+        app: super::CLIPPER,
+        jobs,
+        call,
+        start,
+        status,
+        stream,
+        cancel,
+    };
+}
+
+#[test]
+fn a_loaded_engines_job_reaches_its_done_after_its_window_closed() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let device = device();
+    tilolang_process::loaded_engines::give(clipper::API);
+    let compiled = tilolang::compile_package(CLIPPER_SOURCE, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|diagnostics| panic!("the clipper compiles: {diagnostics:?}"));
+    let bundle = Bundle::new(&compiled, []);
+    let bus = Rc::<Bus>::default();
+    let route = RouteSpec::app(CLIPPER, uuid::Uuid::new_v4());
+    let content = tilolang_process::hosted::memory_content();
+
+    // The person starts a clip in the app's window.
+    let mut process = TilolangProcess::new(wake());
+    let (window, _) = opened(&mut process, bundle, &route, &bus, content.clone(), true);
+    let mut window = window.expect("a window");
+    settle(&mut process, &mut window);
+    invoke(&process, "clip", vec![]);
+    settle(&mut process, &mut window);
+
+    // The device is told of it first, and the engine runs it in the app's own process.
+    let FromProcess::EngineStart(job) = said(&device) else {
+        panic!("the device is told of the clip: {}", root_text(&process, "words"));
+    };
+    assert!(job.job.starts_with(UNDER), "{}", job.job);
+    assert!(job.here, "a loaded engine's job runs in the app's own process");
+    assert!(
+        job.handlers.get("done").is_some_and(|done| !done.is_null()),
+        "the start named its end: {}",
+        job.handlers
+    );
+    assert_eq!(root_text(&process, "job"), job.job);
+
+    // The window closes; the engine's moves still reach the device's record, the last with the
+    // file the clip made, kept in the app's store.
+    drop(window);
+    settle_with_no_view(&mut process);
+    let ended = ended(&device);
+    assert_eq!(ended["id"], job.job, "{ended}");
+    assert_eq!(ended["state"], "done", "the clip was made: {ended}");
+    let url = ended["detail"]["url"].as_str().expect("the clip's file");
+    let hash = url.strip_prefix("tilo-blob://").expect("a content address");
+    assert_eq!(
+        tilolang_process::files::read(&content, hash).as_deref(),
+        Some(&b"a moving picture"[..]),
+        "the clip is kept in the app's own store"
+    );
+}

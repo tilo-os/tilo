@@ -944,7 +944,7 @@ impl Platform for HostPlatform {
         };
         if loaded {
             return crate::engines::start_loaded(&caller, op, input, |job, moved| {
-                crate::loaded_engines::start(self, app, job, op, input, moved)
+                crate::loaded_engines::start(self.store(), app, job, op, input, moved)
             });
         }
         crate::engines::start(&caller, op, input)

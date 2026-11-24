@@ -51,9 +51,15 @@ mod engine {
         job: &str,
         op: &str,
         input: &str,
-        _moved: &JobSink,
+        moved: &JobSink,
     ) -> Result<(), String> {
-        shared().start(job, op, input)
+        let moved = *moved;
+        shared().start(
+            job,
+            op,
+            input,
+            std::sync::Arc::new(move |state, detail| moved.moved(state, &detail.to_string())),
+        )
     }
 
     /// One job's progress, as JSON.

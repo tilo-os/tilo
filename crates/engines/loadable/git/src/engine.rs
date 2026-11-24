@@ -34,12 +34,12 @@ fn start(
     job: &str,
     op: &str,
     input: &str,
-    _moved: &JobSink,
+    moved: &JobSink,
 ) -> Result<(), String> {
     let transfer: TransferAsk =
         serde_json::from_str(input).map_err(|error| format!("the ask does not read: {error}"))?;
     match op {
-        "fetch" | "pull" | "push" => begin(job, op, transfer),
+        "fetch" | "pull" | "push" => begin(job, op, transfer, *moved),
         other => Err(format!("`{other}` is no op this device runs for {APP}")),
     }
 }
@@ -104,7 +104,7 @@ fn jobs() -> &'static Mutex<BTreeMap<String, Arc<Running>>> {
     JOBS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn begin(job: &str, op: &str, ask: TransferAsk) -> Result<(), String> {
+fn begin(job: &str, op: &str, ask: TransferAsk, moved: JobSink) -> Result<(), String> {
     if !std::path::Path::new(&ask.path).is_absolute() {
         return Err("the path must be absolute".to_owned());
     }
@@ -130,12 +130,21 @@ fn begin(job: &str, op: &str, ask: TransferAsk) -> Result<(), String> {
                 "push" => tilo_git::push(path, &ask.remote),
                 _ => Err(format!("`{op}` is no transfer")),
             };
-            if let Err(why) = result
+            if let Err(why) = &result
                 && let Ok(mut error) = worker.error.lock()
             {
-                *error = Some(why);
+                *error = Some(why.clone());
             }
             worker.finished.store(true, Ordering::Relaxed);
+            // A transfer stopped part way ends cancelled, whatever the remote answered.
+            match result {
+                _ if worker.cancel.load(Ordering::Relaxed) => moved.moved("cancelled", "{}"),
+                Ok(()) => moved.moved("done", "{}"),
+                Err(why) => moved.moved(
+                    "failed",
+                    &serde_json::json!({ "error": why }).to_string(),
+                ),
+            }
         })
         .map_err(|error| error.to_string())?;
     Ok(())

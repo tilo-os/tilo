@@ -249,6 +249,13 @@ pub struct Device {
     read: fn(*mut c_void, &str) -> Result<Vec<u8>, String>,
 }
 
+// SAFETY: a call's device is used by the call it was handed to, and a job's device lasts until
+// the job ends (see `EngineApi::start`): the host keeps what its context names for that long,
+// and answers each callback from any thread.
+unsafe impl Send for Device {}
+// SAFETY: as [`Send`].
+unsafe impl Sync for Device {}
+
 /// A clock a device with nothing to give has.
 fn no_moment(_context: *mut c_void) -> Result<(String, i64), String> {
     Err("this device has no clock".to_owned())
@@ -336,7 +343,10 @@ pub struct EngineApi {
     pub jobs: fn() -> &'static [JobOp],
     /// One request answered now: JSON, or the words of a refusal.
     pub call: fn(&Device, &str, &str) -> Result<String, String>,
-    /// One request started as the job `job`, which tells each move to `moved`.
+    /// One request started as the job `job`, which tells each move to `moved`. The device and
+    /// the sink it is handed last until the job tells a move that ends it (done, failed or
+    /// cancelled), so the job's own thread keeps what it made and tells that it ended through
+    /// them; neither is used after.
     pub start: fn(&Device, &str, &str, &str, &JobSink) -> Result<(), String>,
     /// How far the job `job` has got, as JSON: a job the device records needs
     /// nothing here, so a host that keeps its jobs' records may leave this be.
