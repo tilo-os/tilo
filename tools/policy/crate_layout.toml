@@ -18,6 +18,7 @@ platform = [
 
 core = [
     "app-catalogue -> tilo-app-fleet",
+    "app-catalogue -> tilo-default-apps",
     "install -> tilo-control",
     "launcher -> tilo-control",
     "launcher -> tilo-desktop-entry",
