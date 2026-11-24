@@ -39,7 +39,7 @@ impl EmailQuestion {
     /// The message `options` describe; `None` when one of them is no list
     /// of plain, bounded strings.
     fn from_options(
-        documents: &tilo_documents::Documents,
+        documents: &std::sync::Arc<tilo_dialogs::chosen::ChosenTable>,
         caller: &crate::PortalCaller,
         options: &HashMap<String, OwnedValue>,
     ) -> Option<Self> {
@@ -150,9 +150,8 @@ impl Email {
             if lockdown::current_policy().disable_application_handlers {
                 return Err(Ended::Cancelled);
             }
-            let message =
-                EmailQuestion::from_options(self.portal.documents(), &auth.caller, &options)
-                    .ok_or(Ended::Failed)?;
+            let message = EmailQuestion::from_options(self.portal.chosen(), &auth.caller, &options)
+                .ok_or(Ended::Failed)?;
             let asked = self
                 .portal
                 .ask(&auth.caller, path, EMAIL_QUESTION, &message);
@@ -193,9 +192,12 @@ mod tests {
     }
 
     /// A caller running in the session's sandbox, and the store it reads.
-    fn sandboxed() -> (tilo_documents::Documents, crate::PortalCaller) {
+    fn sandboxed() -> (
+        std::sync::Arc<tilo_dialogs::chosen::ChosenTable>,
+        crate::PortalCaller,
+    ) {
         (
-            tilo_documents::Documents::new(),
+            std::sync::Arc::new(tilo_dialogs::chosen::ChosenTable::new()),
             crate::PortalCaller {
                 sandboxed: true,
                 workspace: Some("studio".into()),
@@ -227,13 +229,13 @@ mod tests {
             )
             .unwrap();
             let message = EmailQuestion {
-                attachments: vec!["file:///run/tilo/documents/ab12/notes.txt".into()],
+                attachments: vec!["file:///run/tilo/chosen/records/ab12/notes.txt".into()],
                 ..message
             };
             assert_eq!(
                 message.mailto(),
                 "mailto:ada@example.org?cc=bob@example.org&subject=Hi%20%26%20bye\
-             &attachment=file%3A%2F%2F%2Frun%2Ftilo%2Fdocuments%2Fab12%2Fnotes.txt"
+             &attachment=file%3A%2F%2F%2Frun%2Ftilo%2Fchosen%2Frecords%2Fab12%2Fnotes.txt"
             );
         }
 
@@ -251,7 +253,7 @@ mod tests {
             for attachment in [
                 "/etc/passwd",
                 "file:///etc/passwd",
-                "file:///run/tilo/documents/ffff/notes.txt",
+                "file:///run/tilo/chosen/records/ffff/notes.txt",
             ] {
                 assert!(
                     EmailQuestion::from_options(
@@ -275,7 +277,7 @@ mod tests {
                 &documents,
                 &caller,
                 &[chosen],
-                tilo_documents::Kind::Read,
+                tilo_dialogs::chosen::Kind::Read,
             )
             .expect("the person's choice is given")
             .pop()

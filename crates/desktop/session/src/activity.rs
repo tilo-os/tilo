@@ -1263,7 +1263,7 @@ mod tests {
         let kept = InStore::over(crate::platform::records::Changes::default());
         let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd4";
         let app = "so.tilo.word-processor";
-        let id = DocumentId::for_file("/run/tilo/documents/Budget for Friday.txt");
+        let id = DocumentId::for_file("/run/tilo/chosen/records/0/Budget for Friday.txt");
         let kind = ResourceType::new("word-processor.document");
         let mut document = ui::automerge::AutoCommit::new();
         ui::resource::init(&mut document, &id, &kind, workspace);

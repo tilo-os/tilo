@@ -745,11 +745,9 @@ impl SharedInput {
                         if state.entered.insert(nonce) {
                             state.arrived = true;
                         }
-                        state.incoming.push_back((
-                            source,
-                            Arrived::Input(event),
-                            driven.issued_ms,
-                        ));
+                        state
+                            .incoming
+                            .push_back((source, Arrived::Input(event), driven.issued_ms));
                     }
                 }
                 // A drag carried here by the pointer of a device driving this one.
@@ -1435,9 +1433,7 @@ fn lease_of(hand: &InputHand, local: &DeviceId, driven: &DeviceId) -> Option<Inp
         allow_keyboard: hand.keyboard,
         allow_pointer: hand.pointer,
     };
-    lease
-        .holds_at(tilo_clock::unix_now_ms())
-        .then_some(lease)
+    lease.holds_at(tilo_clock::unix_now_ms()).then_some(lease)
 }
 
 /// The release of `button` .

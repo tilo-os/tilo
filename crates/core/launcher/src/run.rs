@@ -249,6 +249,22 @@ pub struct LaunchOptions {
     /// The app's connector for one outside origin (`imap`), not a window: the session's instances of
     /// the app reach it over the socket the launcher hands it.
     pub tilolang_connector: Option<String>,
+    /// What the person gave this app a choice on, bound into its sandbox at the reference each was
+    /// answered with: exactly these, read and written as each choice allows, and nothing else.
+    pub granted: Vec<GrantedPath>,
+}
+
+/// One path the person chose for an app: the host file or folder behind it, the reference the app
+/// reaches it by, and whether the choice lets the app change it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct GrantedPath {
+    /// The host file or folder the person chose.
+    pub source: PathBuf,
+    /// The path it is bound at inside the sandbox: the reference the chooser answered.
+    pub target: PathBuf,
+    /// Whether a save or a writable folder lets the app change it.
+    #[serde(default)]
+    pub write: bool,
 }
 
 impl Default for LaunchOptions {
@@ -282,6 +298,7 @@ impl Default for LaunchOptions {
             headless_console: None,
             tilolang_process: false,
             tilolang_connector: None,
+            granted: Vec::new(),
         }
     }
 }
@@ -1754,39 +1771,48 @@ fn splice_trusted_identities(
     Ok(())
 }
 
-/// The files the person chose for the app, at [`tilo_documents::SANDBOX_DIR`].
-fn splice_documents(
-    argv: &mut Vec<String>,
-    manifest: &ManifestView,
-    opts: &LaunchOptions,
-) -> Result<bool, LaunchError> {
-    let Some(view) = documents_view(
-        tilo_documents::mountpoint().as_deref(),
-        &manifest.package_id,
-        opts.workspace_id.as_deref(),
-    ) else {
-        return Ok(false);
-    };
+/// What the person gave this app a choice on, bound into its sandbox at each reference: exactly
+/// this app's choices, and nothing another app was given.
+///
+/// # Errors
+/// A target outside the references a choice answers with, or a source that is not there.
+fn splice_granted(argv: &mut Vec<String>, opts: &LaunchOptions) -> Result<(), LaunchError> {
+    if opts.granted.is_empty() {
+        return Ok(());
+    }
     let entry = pop_entry(argv)?;
-    argv.extend([
-        "--bind-try".to_owned(),
-        view.display().to_string(),
-        tilo_documents::SANDBOX_DIR.to_owned(),
-    ]);
+    for granted in &opts.granted {
+        let reference = granted.target.to_str().ok_or_else(|| {
+            LaunchError::InvalidServiceLaunch("a granted reference is not a path".into())
+        })?;
+        if !reference.starts_with(GRANTED_ROOT)
+            || granted.target.components().any(|part| {
+                !matches!(
+                    part,
+                    std::path::Component::Normal(_) | std::path::Component::RootDir
+                )
+            })
+            || !granted.source.is_absolute()
+            || !granted.source.exists()
+        {
+            return Err(LaunchError::InvalidServiceLaunch(
+                "a granted path is not a choice the person made".into(),
+            ));
+        }
+        argv.push(if granted.write {
+            "--bind".to_owned()
+        } else {
+            "--ro-bind".to_owned()
+        });
+        argv.push(granted.source.display().to_string());
+        argv.push(reference.to_owned());
+    }
     argv.push(entry);
-    Ok(true)
+    Ok(())
 }
 
-/// The host folder that is the app's view in `workspace`, when it is being served.
-fn documents_view(
-    mountpoint: Option<&Path>,
-    package_id: &str,
-    workspace: Option<&str>,
-) -> Option<PathBuf> {
-    let key = tilo_documents::AppKey::new(workspace?, package_id)?;
-    let view = tilo_documents::app_view(mountpoint?, &key);
-    view.is_dir().then_some(view)
-}
+/// Where a choice's reference is bound: the root every answer names, never a host path.
+const GRANTED_ROOT: &str = "/run/tilo/chosen/";
 
 /// One app/person projection directory, so atomic replacement and revocation stay visible.
 fn splice_action_authority(
@@ -1977,8 +2003,6 @@ struct ShimSpliceCtx<'a> {
     gpu_devices: bool,
     pipeline_seed: &'a Option<PathBuf>,
     keep_fds: &'a [RawFd],
-    /// The app's view of the documents chosen for it is bound ([`splice_documents`]).
-    documents: bool,
 }
 
 /// Bind this launcher in and rewrite the entrypoint token into `<shim> __sandbox-exec [rules] --
@@ -2066,10 +2090,10 @@ fn splice_sandbox_shim(
     argv.push(crate::appdir::SANDBOX_PERSON_DIR.to_string());
     // The shared font index is read and written inside the sandbox.
     crate::appdir::push_font_index_landlock(argv);
-    // The documents chosen for it, read and written as each choice allows and never executed.
-    if ctx.documents {
-        argv.push("--rw-noexec".to_string());
-        argv.push(tilo_documents::SANDBOX_DIR.to_string());
+    // Each choice bound for it, read or written as its own grant allows and never executed.
+    for granted in &opts.granted {
+        argv.push(if granted.write { "--rw-noexec" } else { "--ro" }.to_string());
+        argv.push(granted.target.display().to_string());
     }
     // The GPU device nodes, on the same read-write terms.
     if ctx.gpu_devices {
@@ -3118,7 +3142,7 @@ pub(crate) fn launch_with_context(
     splice_session_settings(&mut argv, &manifest.package_id)?;
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
-    let documents = splice_documents(&mut argv, manifest, opts)?;
+    splice_granted(&mut argv, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_egress_proxy_bind(&mut argv, egress_proxy.as_ref())?;
@@ -3141,7 +3165,6 @@ pub(crate) fn launch_with_context(
             gpu_devices: gpu_granted,
             pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
-            documents,
         },
     )?;
 
@@ -3713,7 +3736,7 @@ fn launch_with_capture_spawn<T>(
     splice_session_settings(&mut argv, &manifest.package_id)?;
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
-    let documents = splice_documents(&mut argv, manifest, opts)?;
+    splice_granted(&mut argv, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, gpu_granted)?;
@@ -3734,7 +3757,6 @@ fn launch_with_capture_spawn<T>(
             gpu_devices: gpu_granted,
             pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
-            documents,
         },
     )?;
 

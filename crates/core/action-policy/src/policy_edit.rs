@@ -357,8 +357,11 @@ impl WorkspacePolicy {
         agents
     }
 
-    /// The grants naming a person on one node below the workspace at `now`:
-    /// the share list of a resource, apart from the workspace's members.
+    /// The grants on one node below the workspace at `now`: the share list of a
+    /// resource, apart from the workspace's members. A person's grant names them;
+    /// an app's names the app and stands while the person who gave it still
+    /// reaches the node ([`Grant::stands_in`]), so the file's sharing shows what
+    /// each person opened in an app and whose it is to take back.
     #[must_use]
     pub fn shares_at(&self, node: &TreePath, now: u64) -> Vec<&Grant> {
         let cx = Context::at_secs(now);
@@ -366,12 +369,13 @@ impl WorkspacePolicy {
         self.grants
             .iter()
             .filter(|grant| {
-                grant.grantee.person_id().is_some()
+                (grant.grantee.person_id().is_some() || grant.grantee.app_id().is_some())
                     && grant.node != workspace_node
                     && grant.answer != Answer::Deny
                     && grant.is_live(&cx)
                     && grant.node.covers(node)
             })
+            .filter(|grant| grant.grantee.app_id().is_none() || grant.stands_in(self, &cx))
             .collect()
     }
 
@@ -749,5 +753,46 @@ mod tests {
                 0,
             )
             .expect("whoever manages the file's sharing takes it back");
+    }
+
+    #[test]
+    fn a_files_sharing_names_the_app_it_was_opened_in_and_who_gave_it() {
+        let mut policy = workspace_with(Role::Editor);
+        policy
+            .change_as_at("ada", Change::Grant(app_grant("ada", false)), 0)
+            .expect("the grant stands");
+        let shares = policy.shares_at(&file_node(), 0);
+        assert_eq!(shares.len(), 1, "the app is listed beside the people");
+        assert_eq!(
+            shares[0].grantee,
+            Grantee::app("so.tilo.settings"),
+            "the app the file was opened in"
+        );
+        assert_eq!(
+            shares[0].granted_by,
+            Grantee::person("ada"),
+            "the person whose it is to take back"
+        );
+    }
+
+    #[test]
+    fn a_files_sharing_leaves_out_an_app_grant_whose_person_lost_the_file() {
+        let mut policy = workspace_with(Role::Editor);
+        policy
+            .change_as_at("ada", Change::Grant(app_grant("ada", false)), 0)
+            .expect("the grant stands");
+        policy
+            .change_as_at(
+                "owner",
+                Change::RemoveMember {
+                    person: "ada".to_owned(),
+                },
+                0,
+            )
+            .expect("the owner removes them");
+        assert!(
+            policy.shares_at(&file_node(), 0).is_empty(),
+            "what ended is not listed for anyone to take back"
+        );
     }
 }

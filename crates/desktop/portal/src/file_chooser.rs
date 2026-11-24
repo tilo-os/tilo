@@ -11,7 +11,7 @@
 //! files?" question in front of it, since choosing a file is the act of
 //! authorising exactly that file, nothing wider and nothing the app
 //! chose. What each answer names comes from [`crate::doc_store`]: a
-//! sandboxed app is given its own path in the session's documents store,
+//! sandboxed app is given its own reference in the session's chosen files,
 //! which its launcher bound into it, and a host app the path itself, so
 //! nothing is exported by the frontend and nothing is recorded in any
 //! workspace.
@@ -190,11 +190,10 @@ pub async fn pick(
     let writable_directory = question.directory && question.writable_directory;
     let kind = kind_of(&question);
     let paths = choose(&portal.questions, caller, question_handle(path), &question).await?;
-    let exports =
-        doc_store::exports(portal.documents(), caller, &paths, kind).map_err(|reason| {
-            tracing::warn!(%reason, app = %caller.app_id, "a chosen file is not given to the app");
-            Ended::Failed
-        })?;
+    let exports = doc_store::exports(portal.chosen(), caller, &paths, kind).map_err(|reason| {
+        tracing::warn!(%reason, app = %caller.app_id, "a chosen file is not given to the app");
+        Ended::Failed
+    })?;
     let mut results = paths_to_open_response(Some(exports), kind.writes())?;
     if writable_directory {
         let choices = vec![(
@@ -208,19 +207,19 @@ pub async fn pick(
     Ok(results)
 }
 
-/// What a choice answering `question` gives the app: what the documents store is told, and how
+/// What a choice answering `question` gives the app: what the chosen table is told, and how
 /// the frontend words the answer, from one source, so an answer can never widen what the store
 /// was told.
 #[must_use]
-pub const fn kind_of(question: &FileChooserQuestion) -> tilo_documents::Kind {
+pub const fn kind_of(question: &FileChooserQuestion) -> tilo_dialogs::chosen::Kind {
     if question.save {
-        tilo_documents::Kind::Save
+        tilo_dialogs::chosen::Kind::Save
     } else if question.directory {
-        tilo_documents::Kind::Folder {
+        tilo_dialogs::chosen::Kind::Folder {
             write: question.writable_directory,
         }
     } else {
-        tilo_documents::Kind::Read
+        tilo_dialogs::chosen::Kind::Read
     }
 }
 

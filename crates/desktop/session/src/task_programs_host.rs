@@ -65,10 +65,7 @@ impl TaskProgramHost {
     }
 
     /// The state the person's own line's calls are decided by, once the app wire serves one.
-    pub(crate) fn keep_state(
-        &self,
-        state: Arc<crate::mcp_server::Dispatch>,
-    ) {
+    pub(crate) fn keep_state(&self, state: Arc<crate::mcp_server::Dispatch>) {
         let _ = self.state.set(state);
     }
 
@@ -235,7 +232,6 @@ impl ActionProvider for Stopped {
     ) -> Pending<Result<(), tilo_actions::remote::ActionCallError>> {
         self.api.cancel(caller, id)
     }
-
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.api.content_puts()
@@ -487,7 +483,6 @@ impl ActionProvider for Current {
         self.provider().cancel(caller, id)
     }
 
-
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.provider().content_puts()
     }
@@ -563,12 +558,6 @@ impl ActionProvider for Current {
 impl Programs for TaskProgramHost {
     fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<Outcome>, String> {
         let api = self.session_of(&request)?;
-        tilo_mcp::task_runs::run(
-            api,
-            request.program,
-            request.go,
-            request.this,
-            request.stop,
-        )
+        tilo_mcp::task_runs::run(api, request.program, request.go, request.this, request.stop)
     }
 }

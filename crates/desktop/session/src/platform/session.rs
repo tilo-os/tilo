@@ -1337,6 +1337,19 @@ impl Session {
         if let Some(questions) = &questions {
             nearby.air_drop().ask_with(questions.clone());
         }
+        // What each app holds a grant on among the person's files is bound into its launch: whose
+        // grant it is read through the workspaces this device publishes.
+        if let (Some(launch), Some(view)) = (&options.launch, &view) {
+            launch.hand_view(std::sync::Arc::clone(view));
+        }
+        // The files people chose for apps outside any workspace are kept in the device's records:
+        // where the person's choices outlive the session and reach their other devices.
+        if let (Some(desktop), Some(records)) = (options.desktop.as_ref(), options.records.as_ref())
+        {
+            desktop.chosen().bind(std::sync::Arc::new(
+                crate::chosen_records::DeviceStore::new(records.clone()),
+            ));
+        }
         // Every service this session serves, from the one table that says who serves each: the
         // identity an app signs in through, the machine's readings, the data this device used and
         // Windows programs. They start here, before any app does.
@@ -1360,11 +1373,10 @@ impl Session {
             tools: Some(tools),
             wake: options.wake.handle(),
             windows: crate::windows_compat::serving(&mut options),
-            documents: options
+            chosen: options
                 .desktop
                 .as_ref()
-                .and_then(|desktop| desktop.documents())
-                .cloned(),
+                .map(|desktop| std::sync::Arc::clone(desktop.chosen())),
             view: view.clone(),
             daemon: daemon_link.clone().ok(),
         });

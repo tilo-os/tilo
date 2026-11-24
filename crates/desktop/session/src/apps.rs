@@ -224,7 +224,10 @@ struct State {
     tools: Option<crate::tools::Handle>,
     /// The files apps are handed, while the session serves them where a launcher binds each app's
     /// view of them: what a document a package opens reaches its sandbox through.
-    documents: Option<tilo_documents::Documents>,
+    chosen: Option<Arc<tilo_dialogs::chosen::ChosenTable>>,
+    /// The person's workspaces as the device's daemon publishes them: where a workspace file the
+    /// person chose for an app is, and what its grant says of it.
+    view: Option<Arc<crate::workspace_view::WorkspaceView>>,
     /// The device's content store, once the session lent it: a file the person opens is kept here
     /// for a tilolang app, which reads its files by content and has no path of its own.
     #[cfg(target_os = "linux")]
@@ -430,7 +433,8 @@ impl Apps {
                 processes: None,
                 handed_over: false,
                 tools: None,
-                documents: None,
+                chosen: None,
+                view: None,
                 #[cfg(target_os = "linux")]
                 content: None,
                 #[cfg(target_os = "linux")]
@@ -895,10 +899,51 @@ impl Apps {
         }
     }
 
-    /// The files apps are handed, as the session serves them: a package opening one of the
-    /// person's files is granted it there and opens it at the path its sandbox holds it at.
-    pub fn hand_documents(&self, documents: tilo_documents::Documents) {
-        self.state.borrow_mut().documents = Some(documents);
+    /// The files apps are handed outside any workspace: a package opening one of the person's
+    /// files is granted it there, and opens it at the reference the answer names.
+    pub fn hand_chosen(&self, chosen: Arc<tilo_dialogs::chosen::ChosenTable>) {
+        self.state.borrow_mut().chosen = Some(chosen);
+    }
+
+    /// The person's workspaces, as the device's daemon publishes them: what an app holds a grant
+    /// on among their files, which its launch binds for it.
+    pub fn hand_view(&self, view: Arc<crate::workspace_view::WorkspaceView>) {
+        self.state.borrow_mut().view = Some(view);
+    }
+
+    /// What the person gave `app` a choice on in `workspace`: the workspace file nodes its grants
+    /// reach, and the files it chose outside one, each at the reference the app was answered with.
+    fn granted_for(
+        state: &State,
+        app: &str,
+        workspace: &Workspace,
+    ) -> Vec<launcher::run::GrantedPath> {
+        let mut granted = Vec::new();
+        if let Some(view) = state.view.as_ref() {
+            granted.extend(crate::services::chooser::launch_binds(
+                view,
+                &workspace.id,
+                app,
+            ));
+        }
+        if let Some(chosen) = state.chosen.as_ref()
+            && let Some(key) = tilo_dialogs::chosen::AppKey::new(&workspace.id, app)
+        {
+            granted.extend(
+                chosen
+                    .entries(&key)
+                    .into_iter()
+                    // A save the app never made yet names a file that is not there: nothing to
+                    // bind, and the app makes it through the descriptor it was handed.
+                    .filter(|entry| entry.host.exists())
+                    .map(|entry| launcher::run::GrantedPath {
+                        source: entry.host,
+                        target: entry.reference,
+                        write: entry.kind.writes(),
+                    }),
+            );
+        }
+        granted
     }
 
     /// The desktop the person works on, which the launches come from.
@@ -2018,8 +2063,8 @@ impl Apps {
                 return Ok(true);
             }
         }
-        let documents = self.state.borrow().documents.clone();
-        let launch = handed(launch, workspace, documents.as_ref())
+        let chosen = self.state.borrow().chosen.clone();
+        let launch = handed(launch, workspace, chosen.as_ref())
             .map_err(|error| failed(error.to_string()))?;
         let launch = launch.as_ref();
         // The window opens on its item, at the place inside it a search hit named.
@@ -2199,6 +2244,8 @@ impl Apps {
             .filter(|_| workspace.is_workspace())
             .and_then(|x11| x11.display_for(&workspace.id))
             .map(|number| format!(":{number}"));
+        let app = launch.id();
+        let granted = Self::granted_for(&state, &app, workspace);
         let context = PlanContext {
             environment: &environment,
             workspace,
@@ -2206,6 +2253,7 @@ impl Apps {
             identity: state.identity.clone(),
             authority: Some(&state.authority),
             render_node: state.render_node.clone(),
+            granted: &granted,
             new_window,
             continuity_instance: instance,
             connector: None,
@@ -2803,13 +2851,13 @@ fn runtime_dir() -> PathBuf {
 }
 
 /// `launch` as its package can open it: a file of the person's is granted to the app in
-/// `workspace`, and the app opens it at the path its own sandbox holds it at, which the session's
-/// documents filesystem serves. A package cannot reach the device's own paths, so a launch naming
-/// one would start an app that fails on its first read. A folder is Files' to show where it is.
+/// `workspace` as one of its choices, and the app opens the reference that answer names. A package
+/// cannot reach the device's own paths, so a launch naming one would start an app that fails on its
+/// first read. A folder is Files' to show where it is.
 fn handed<'a>(
     launch: &'a Launch,
     workspace: &Workspace,
-    documents: Option<&tilo_documents::Documents>,
+    chosen: Option<&Arc<tilo_dialogs::chosen::ChosenTable>>,
 ) -> Result<std::borrow::Cow<'a, Launch>, tilo_app_launch::PlanError> {
     let Launch::Package {
         app,
@@ -2825,20 +2873,20 @@ fn handed<'a>(
         app: app.clone(),
         source: std::io::Error::other(reason),
     };
-    let documents = documents
-        .ok_or_else(|| refused("this device does not serve the files its apps open".into()))?;
-    let key = tilo_documents::AppKey::new(&workspace.id, app)
+    let chosen = chosen
+        .ok_or_else(|| refused("this device does not keep the files its apps open".into()))?;
+    let key = tilo_dialogs::chosen::AppKey::new(&workspace.id, app)
         .ok_or_else(|| refused("a file is opened in a workspace's app".into()))?;
-    if tilo_documents::host::resolve(documents, &key, path).is_some() {
-        // Already one of the app's documents: what its record or history names it by.
+    if chosen.looked_up(&key, path).is_some() {
+        // Already one of the app's choices: what its record or history names it by.
         return Ok(std::borrow::Cow::Borrowed(launch));
     }
-    let opened = documents
-        .grant(&key, path, tilo_documents::Kind::Save)
+    let opened = chosen
+        .grant(&key, path, tilo_dialogs::chosen::Kind::Save)
         .map_err(|error| refused(error.to_string()))?;
     Ok(std::borrow::Cow::Owned(Launch::Package {
         app: app.clone(),
-        open: Some(tilo_app_launch::Open::File(opened)),
+        open: Some(tilo_app_launch::Open::File(opened.reference)),
     }))
 }
 

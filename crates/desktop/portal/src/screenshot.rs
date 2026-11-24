@@ -162,10 +162,10 @@ async fn take(
     // opens is its own path in the store its launcher bound, never a file
     // in the person's folders.
     let export = doc_store::exports(
-        portal.documents(),
+        portal.chosen(),
         caller,
         &[picture],
-        tilo_documents::Kind::Read,
+        tilo_dialogs::chosen::Kind::Read,
     )
     .map_err(|reason| {
         tracing::warn!(%reason, app = %caller.app_id, "a screenshot is not given to the app");
@@ -284,7 +284,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use tilo_documents::Documents;
+    use tilo_dialogs::chosen::ChosenTable;
 
     use super::*;
     use crate::reply::reply;
@@ -391,7 +391,7 @@ mod tests {
     /// What a pick for `answer` is answered with.
     async fn picked(answer: Result<(f64, f64, f64), CaptureError>) -> Reply {
         let (asks, _questions) = tilo_service::asks::channel();
-        let portal = crate::tests::portal_with(&asks, Documents::new())
+        let portal = crate::tests::portal_with(&asks, Arc::new(ChosenTable::new()))
             .with_capture(Arc::new(Palette(answer)));
         reply(pick(&*portal.capture).await)
     }
@@ -411,11 +411,11 @@ mod tests {
     #[tokio::test]
     async fn a_pick_with_nothing_under_the_pointer_fails_rather_than_cancels() {
         let (asks, questions) = tilo_service::asks::channel();
-        let portal = crate::tests::portal_with(&asks, Documents::new()).with_capture(Arc::new(
-            Palette(Err(CaptureError::Failed(
+        let portal = crate::tests::portal_with(&asks, Arc::new(ChosenTable::new())).with_capture(
+            Arc::new(Palette(Err(CaptureError::Failed(
                 crate::NO_COLOUR_UNDER_POINTER.to_owned(),
-            ))),
-        ));
+            )))),
+        );
         let (code, results) = reply(pick(&*portal.capture).await);
         assert_eq!(code, 2, "the request fails");
         assert!(results.is_empty());
@@ -448,7 +448,7 @@ mod tests {
     async fn taken(
         caller: &PortalCaller,
         capture: Result<PathBuf, CaptureError>,
-        documents: &Documents,
+        documents: &Arc<ChosenTable>,
     ) -> Reply {
         let (asks, _questions) = tilo_service::asks::channel();
         let portal = crate::tests::portal_with(&asks, documents.clone())
@@ -486,14 +486,14 @@ mod tests {
     async fn a_sandboxed_app_asks_for_the_drawn_area_and_is_handed_its_own_path_to_it() {
         let folder = tempfile::tempdir().unwrap();
         let kept = picture(folder.path());
-        let documents = Documents::new();
+        let documents = Arc::new(ChosenTable::new());
         let caller = caller(Some("studio"), true);
 
         let (code, results) = taken(&caller, Ok(kept.clone()), &documents).await;
         assert_eq!(code, 0);
         let answered = picture_of(&results);
         assert!(
-            answered.starts_with(tilo_documents::SANDBOX_DIR),
+            answered.starts_with(tilo_dialogs::chosen::CHOSEN_ROOT),
             "the app is handed a path in the store it has bound, not {}",
             answered.display()
         );
@@ -506,18 +506,18 @@ mod tests {
         // What the app opens is the picture: the store keeps it for that
         // app, to read.
         let key = crate::doc_store::key_of(&caller).expect("a sandboxed caller in a room");
-        let target = tilo_documents::host::resolve(&documents, &key, &answered)
+        let target = crate::documents::resolve(&documents, &key, &answered)
             .expect("the answer names a document of the app");
         assert_eq!(
             std::fs::read(target.host_path()).unwrap(),
             b"what the app asked for"
         );
-        let (token, _) = tilo_documents::split_sandbox_path(&answered).unwrap();
+        let (token, _) = tilo_dialogs::chosen::split_reference(&answered).unwrap();
         assert_eq!(
             documents
                 .document(&key, &token)
                 .map(|document| document.kind),
-            Some(tilo_documents::Kind::Read),
+            Some(tilo_dialogs::chosen::Kind::Read),
             "the app may read it, not write it"
         );
     }
@@ -526,18 +526,18 @@ mod tests {
     async fn a_host_app_is_answered_its_reference_to_the_picture() {
         let folder = tempfile::tempdir().unwrap();
         let kept = picture(folder.path());
-        let documents = Documents::new();
+        let documents = Arc::new(ChosenTable::new());
         let caller = caller(Some("studio"), false);
         let (code, results) = taken(&caller, Ok(kept.clone()), &documents).await;
         assert_eq!(code, 0);
         let answered = picture_of(&results);
         assert!(
-            answered.starts_with(tilo_documents::SANDBOX_DIR),
+            answered.starts_with(tilo_dialogs::chosen::CHOSEN_ROOT),
             "a host app in a room is handed the store's path too, not {}",
             answered.display()
         );
         let key = crate::doc_store::key_of(&caller).expect("a caller in a room has a key");
-        let target = tilo_documents::host::resolve(&documents, &key, &answered)
+        let target = crate::documents::resolve(&documents, &key, &answered)
             .expect("the answer names a document of the app");
         assert_eq!(
             std::fs::read(target.host_path()).unwrap(),
@@ -553,7 +553,7 @@ mod tests {
         let (code, results) = taken(
             &crate::PortalCaller::new("org.example"),
             Ok(kept),
-            &Documents::new(),
+            &Arc::new(ChosenTable::new()),
         )
         .await;
         assert_eq!(code, 2, "a caller without a workspace is refused, legibly");
@@ -562,7 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_selection_the_person_closed_is_a_cancel_and_a_capture_that_failed_is_a_failure() {
-        let documents = Documents::new();
+        let documents = Arc::new(ChosenTable::new());
         let caller = caller(Some("studio"), true);
         assert_eq!(
             taken(&caller, Err(CaptureError::Cancelled), &documents)

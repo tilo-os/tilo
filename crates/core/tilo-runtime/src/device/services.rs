@@ -1521,6 +1521,10 @@ impl Daemon {
         ));
         records.bind(&workspaces);
         records.carry_into(&identity.cert.user_public_key);
+        // The files people choose for hosted apps are kept in the same records: one table for a
+        // window and a hosted instance alike.
+        #[cfg(target_os = "macos")]
+        apps.keep_chosen_records(Arc::clone(&records));
         workspaces.hold_device_records(Arc::clone(&records));
         workspaces.copies().publish_own(
             tilo_actions::remote::DEVICE_SETTINGS,

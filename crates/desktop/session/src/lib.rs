@@ -152,6 +152,8 @@ mod carets;
 #[cfg(target_os = "linux")]
 mod change_feed;
 #[cfg(target_os = "linux")]
+mod chosen_records;
+#[cfg(target_os = "linux")]
 mod clipboard;
 #[cfg(target_os = "linux")]
 mod clock_wait;

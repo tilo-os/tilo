@@ -71,11 +71,7 @@ impl tilo_api::session::Here for Desktop {
 /// Serve the API at `path`, over `dispatch`, the device's own as the person, as this device's key
 /// with its certificate. Nothing is served, saying why, when the session reaches no daemon or this
 /// device holds no key of its own.
-pub(crate) fn serve(
-    path: &Path,
-    dispatch: Option<Arc<Dispatch>>,
-    services: Arc<SessionServices>,
-) {
+pub(crate) fn serve(path: &Path, dispatch: Option<Arc<Dispatch>>, services: Arc<SessionServices>) {
     let Some(dispatch) = dispatch else {
         tracing::warn!("no API for this computer's programs: the session reaches no daemon");
         return;

@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use tilo_actions::offload::{OffloadFuture, OffloadRequest, Offloaded};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest,
-    Outcome, Pending, ReceiptStatus, offload_place, own_device,
+    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
+    ReceiptStatus, offload_place, own_device,
 };
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
 use tilo_broker_core::services::{OwnDeviceActions, OwnDeviceOutcome};
@@ -165,7 +165,6 @@ impl OwnDeviceActions for AnotherDevice {
         });
         Ok(outcome)
     }
-
 }
 
 /// An app's offloadable invocation, placed by the device's daemon: the daemon holds the endpoint

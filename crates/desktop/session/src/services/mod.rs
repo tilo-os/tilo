@@ -268,8 +268,9 @@ pub(crate) struct Serving {
     pub wake: tilo_service::Wake,
     /// What the Windows compatibility service is served with, for a session that starts apps.
     pub windows: Option<crate::windows_compat::Serving>,
-    /// The files people choose for apps, while the session serves them to its sandboxes.
-    pub documents: Option<tilo_documents::Documents>,
+    /// The files people choose for apps outside any workspace: the one table the portal grants
+    /// through and the chooser answers from.
+    pub chosen: Option<Arc<tilo_dialogs::chosen::ChosenTable>>,
     /// The person's workspaces as the device's daemon publishes them: where a chosen file of a
     /// workspace's tree is granted to the app on its node. `None` when this session reaches no
     /// daemon.
@@ -360,7 +361,10 @@ pub(crate) fn start(mut serving: Serving) -> Served {
             Service::Chooser => {
                 served.chooser = chooser::serve(chooser::Serving {
                     questions: serving.questions.clone(),
-                    documents: serving.documents.take().unwrap_or_default(),
+                    chosen: serving
+                        .chosen
+                        .take()
+                        .unwrap_or_else(tilo_dialogs::chosen::chosen_table),
                     files: serving.view.as_ref().map(|view| {
                         Arc::new(chooser::PolicyFiles::new(
                             Arc::clone(view),

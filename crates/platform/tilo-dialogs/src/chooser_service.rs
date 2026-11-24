@@ -746,7 +746,9 @@ mod tests {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .ok_or_else(|| "the choice names no file".to_owned())?;
-            let reference = Path::new("/run/tilo/documents").join("test").join(&name);
+            let reference = Path::new("/run/tilo/chosen/records")
+                .join("test")
+                .join(&name);
             let save_sibling = (choice == Choice::Save).then(|| {
                 let mut sibling = std::ffi::OsString::from(".");
                 sibling.push(&name);

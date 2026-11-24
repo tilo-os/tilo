@@ -215,10 +215,7 @@ impl crate::Session {
                 &self.shared.services.borrow(),
             )
             .or_else(|| {
-                lock_service::media(
-                    &self.shared.readings,
-                    self.shared.handoff.borrow().as_ref(),
-                )
+                lock_service::media(&self.shared.readings, self.shared.handoff.borrow().as_ref())
             }),
             ..lock.shown()
         });

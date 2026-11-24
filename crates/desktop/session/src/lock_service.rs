@@ -284,8 +284,7 @@ pub fn transport(
         LockEffect::PreviousTrack => "previous",
         _ => return false,
     };
-    if let Some(outcome) =
-        crate::live_list::invoke_media(live, action, &mut services.borrow_mut())
+    if let Some(outcome) = crate::live_list::invoke_media(live, action, &mut services.borrow_mut())
     {
         if let Err(error) = outcome {
             tracing::warn!(%error, "the lock screen's transport on what is live");

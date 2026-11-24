@@ -61,9 +61,8 @@ impl Apps {
             .then(|| timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app)));
         let started = start(&mut state.spawner, &|pid| {
             if let Some(launches) = &launches {
-                // The launcher binds the session's documents store into a package's sandbox and
-                // into nothing else, so a package is the launch whose files are answered with paths
-                // in the store.
+                // The launcher starts a package in its sandbox and nothing else there, so a
+                // package is the launch whose files are answered with references.
                 if windowless {
                     launches.started_windowless(pid, &planned.app, workspace);
                 } else {

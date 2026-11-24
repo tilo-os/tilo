@@ -43,9 +43,10 @@ pub(crate) fn govern(
     edit: impl Fn(
         &mut Workspace,
         &str,
-    )
-        -> Result<tilo_session_core::desktop::workspace_settings::PolicyEdit, tilo_action_policy::Refusal>
-    + 'static,
+    ) -> Result<
+        tilo_session_core::desktop::workspace_settings::PolicyEdit,
+        tilo_action_policy::Refusal,
+    > + 'static,
     landed: impl FnOnce(Result<(), String>) + 'static,
 ) -> Result<bool, tilo_action_policy::Refusal> {
     let mut tree = at.handle.read(Clone::clone);

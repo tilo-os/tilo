@@ -698,8 +698,8 @@ fn start(
         tilo_app_launch::SessionEnvironment::from_process(),
         Some(wake.handle()),
     ));
-    if let Some(documents) = desktop.as_ref().and_then(|desktop| desktop.documents()) {
-        launch.hand_documents(documents.clone());
+    if let Some(desktop) = desktop.as_ref() {
+        launch.hand_chosen(std::sync::Arc::clone(desktop.chosen()));
     }
     // A drive the person plugs in is announced like any other news, and the eject the notice offers
     // goes over the system bus the desktop services already hold.

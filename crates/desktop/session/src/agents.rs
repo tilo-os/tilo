@@ -561,7 +561,6 @@ impl Service for Served {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use tilo_broker_core::services::AgentRoster as _;

@@ -484,7 +484,6 @@ members = [
     "crates/os/deployment-status",
     "crates/desktop/desktop-entry",
     "crates/desktop/default-apps",
-    "crates/core/documents",
     "crates/core/content",
     "crates/core/content-device",
     "crates/core/content-types",
@@ -702,7 +701,6 @@ tilo-wake = { version = "0.1.0", path = "crates/platform/tilo-wake" }
 tilo-paths = { version = "0.1.0", path = "crates/platform/tilo-paths" }
 tilo-clipboard = { version = "0.1.0", path = "crates/platform/tilo-clipboard" }
 tilo-dialogs = { version = "0.1.0", path = "crates/platform/tilo-dialogs" }
-tilo-documents = { version = "0.1.0", path = "crates/core/documents" }
 tilo-notify = { version = "0.1.0", path = "crates/platform/tilo-notify" }
 tilo-location = { version = "0.1.0", path = "crates/platform/tilo-location" }
 tilo-secrets = { version = "0.1.0", path = "crates/platform/tilo-secrets" }

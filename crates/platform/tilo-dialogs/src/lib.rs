@@ -24,6 +24,8 @@ use std::sync::{Arc, OnceLock};
 mod caps;
 #[cfg(unix)]
 pub mod chooser_service;
+#[cfg(unix)]
+pub mod chosen;
 #[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
 pub mod portal;

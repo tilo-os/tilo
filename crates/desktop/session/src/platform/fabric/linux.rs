@@ -22,7 +22,7 @@ pub use tilo_network_actor::fabric::unlock::{
 };
 pub use tilo_network_actor::fabric::{
     ClipboardEntry, ClipboardPayload, DeviceAbout, DeviceKind, FabricCapabilities, FabricError,
-    MAX_CLIPBOARD_ITEMS, MAX_FABRIC_ACTION_AGE_MS, MediaSourceLocator, PersonDevice,
-    PersonDevices, PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
+    MAX_CLIPBOARD_ITEMS, MAX_FABRIC_ACTION_AGE_MS, MediaSourceLocator, PersonDevice, PersonDevices,
+    PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
     REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
 };

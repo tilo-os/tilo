@@ -177,8 +177,8 @@ mod tests {
     use tilo_audio_service::media::Media;
     use tilo_audio_service::sound::{Sound, Use, UseKind};
     use tilo_connectivity_service::model::{Link, LinkKind, Network};
-    use tilo_session_core::desktop::host::chrome::{LinkKind as BarLinkKind, MediaKind};
     use tilo_power_mgmt::BatteryState;
+    use tilo_session_core::desktop::host::chrome::{LinkKind as BarLinkKind, MediaKind};
     use tilo_session_power::Battery;
 
     /// What the services published, as a test sets it.

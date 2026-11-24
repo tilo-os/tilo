@@ -77,7 +77,7 @@ impl Wallpaper {
                 .authenticate(&header, path, &app_id, Some(&parent_window))
                 .await?;
             let picture = documents::read_exported(
-                self.portal.documents(),
+                self.portal.chosen(),
                 &auth.caller,
                 &uri,
                 MAX_PICTURE_BYTES,

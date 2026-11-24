@@ -7361,7 +7361,6 @@ dependencies = [
  "tilo-collab-types",
  "tilo-control",
  "tilo-desktop-entry",
- "tilo-documents",
  "tilo-files",
  "tilo-identity-client",
  "tilo-lock",
@@ -16981,6 +16980,7 @@ name = "tilo-dialogs"
 version = "0.1.0"
 dependencies = [
  "ashpd",
+ "blake3",
  "block2 0.6.2",
  "dispatch2",
  "js-sys",
@@ -17132,21 +17132,6 @@ dependencies = [
  "tilo-doc-codecs",
  "tilo-resource",
  "tilo-wake",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-documents"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "fuser",
- "rustix 1.1.6",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-files",
- "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -19149,7 +19134,6 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-device-surfaces",
  "tilo-dialogs",
- "tilo-documents",
  "tilo-files",
  "tilo-lock",
  "tilo-notifications-service",
@@ -19638,7 +19622,6 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-device-identity",
  "tilo-dialogs",
- "tilo-documents",
  "tilo-endpoint-reachability",
  "tilo-failure",
  "tilo-files",
@@ -20302,7 +20285,6 @@ dependencies = [
  "tilo-dialogs",
  "tilo-dictation",
  "tilo-disk-usage",
- "tilo-documents",
  "tilo-endpoint-reachability",
  "tilo-failure",
  "tilo-files",
@@ -27512,7 +27494,6 @@ dependencies = [
  "tilo-doc-pdf",
  "tilo-docs",
  "tilo-document",
- "tilo-documents",
  "tilo-egress",
  "tilo-emoji",
  "tilo-endpoint-reachability",

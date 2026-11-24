@@ -292,6 +292,12 @@ impl Apps {
         self.instances.keep_person(person.to_owned());
     }
 
+    /// Keep the files people choose for hosted apps in the device's records from now on.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn keep_chosen_records(&self, records: Arc<crate::device::records::DeviceRecords>) {
+        self.instances.keep_chosen_records(records);
+    }
+
     /// This daemon's tilolang processes, which start every tilolang process it runs.
     ///
     /// # Errors
