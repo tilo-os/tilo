@@ -17,7 +17,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 fn runtime_binary() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-runtime")
 }
-/// How long a daemon this test started has to serve its person.
+/// How long a daemon this test started has to answer on its native endpoint.
 const LAUNCHER_START_CAP: Duration = Duration::from_secs(120);
 
 fn host(profile: &Path) -> Command {
@@ -30,7 +30,8 @@ fn host(profile: &Path) -> Command {
     command
 }
 /// A profile named apart, and the daemon serving it: started by the test that owns the profile,
-/// as only the service starts this computer's own. A launcher never starts one.
+/// as only the service starts this computer's own. A launcher never starts one. Its person's
+/// workspace is the first call of theirs in it to found, not the start.
 struct DaemonProfile {
     root: tempfile::TempDir,
     daemon: Option<Child>,
@@ -39,9 +40,12 @@ impl DaemonProfile {
     fn new() -> Result<Self> {
         let mut profile = Self::unstarted()?;
         profile.start()?;
+        profile.found()?;
         Ok(profile)
     }
-    /// Start the profile's daemon, and wait until it serves its person.
+    /// Start the profile's daemon, and wait until it answers: its native endpoint, its status,
+    /// and the device it is. Its person's workspace is not founded yet: nothing founds one at
+    /// the daemon's start, since their desktop may still hand over the one it kept.
     fn start(&mut self) -> Result<()> {
         let log = std::fs::File::create(self.path().join("daemon.log"))?;
         self.daemon = Some(
@@ -57,9 +61,9 @@ impl DaemonProfile {
         loop {
             if status(self.path()).is_ok_and(|status| {
                 status
-                    .get("workspace")
-                    .and_then(Value::as_str)
-                    .is_some_and(|workspace| !workspace.is_empty())
+                    .get("pid")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|pid| pid != 0)
             }) {
                 return Ok(());
             }
@@ -69,6 +73,49 @@ impl DaemonProfile {
             );
             std::thread::sleep(Duration::from_millis(25));
         }
+    }
+    /// Found the person's workspace here, as the first call of theirs in it does: this device's
+    /// own client of the daemon asking in the workspace their key names. A key's run and a
+    /// desktop's first call found it the same way.
+    fn found(&self) -> Result<()> {
+        let mut client = host(self.path())
+            .arg("--connect")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn_locked()?;
+        writeln!(
+            client
+                .stdin
+                .take()
+                .context("the client has no standard input")?,
+            "{}",
+            json!({"jsonrpc":"2.0","id":1,"method":"ping"})
+        )?;
+        let output = client.wait_with_output()?;
+        ensure!(
+            output.status.success(),
+            "the person's first call failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reply: Value = serde_json::from_slice(&output.stdout).with_context(|| {
+            format!(
+                "the first call's answer: {:?}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        })?;
+        ensure!(
+            reply.get("id") == Some(&json!(1)),
+            "the first call's answer: {reply}"
+        );
+        ensure!(
+            status(self.path())?
+                .get("workspace")
+                .and_then(Value::as_str)
+                .is_some_and(|workspace| !workspace.is_empty()),
+            "the person's first call founded no workspace"
+        );
+        Ok(())
     }
     fn unstarted() -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
@@ -267,6 +314,7 @@ fn launches_reuse_the_one_daemon_which_recovers_a_stale_socket() -> Result<()> {
     let stale = std::os::unix::net::UnixListener::bind(profile.path().join("native.sock"))?;
     drop(stale);
     profile.start()?;
+    profile.found()?;
     app_starts(profile.path(), "dev.tilo.first")?;
     let before = daemon(profile.path())?;
     app_starts(profile.path(), "dev.tilo.second")?;

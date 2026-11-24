@@ -64,9 +64,10 @@ fn native_socket(profile: &Path) -> io::Result<PathBuf> {
 struct Status {
     version: u32,
     pid: u32,
-    /// The workspace the daemon serves. The probe answers it as `workspace`, the
-    /// name launchers and scripts outside this crate read; `workspace` is
-    /// read as the same.
+    /// The workspace the daemon serves now: empty until the person's workspace is founded, or
+    /// comes in from their desktop. Asking founds none, so a desktop about to hand its
+    /// workspaces over may ask. The probe answers it as `workspace`, the name launchers and
+    /// scripts outside this crate read.
     #[serde(rename = "workspace", alias = "workspace")]
     workspace: String,
 }
@@ -84,11 +85,9 @@ fn probe(socket: &Path) -> io::Result<Status> {
         return Err(invalid("invalid native runtime status frame"));
     }
     let status: Status = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-    if status.version != 1
-        || status.pid == 0
-        || status.workspace.is_empty()
-        || status.workspace.len() > 4096
-    {
+    // The endpoint answers from boot, before the person's workspace is founded, so a status
+    // naming none is the daemon's own answer, not another's.
+    if status.version != 1 || status.pid == 0 || status.workspace.len() > 4096 {
         return Err(invalid("invalid native runtime status"));
     }
     Ok(status)
@@ -97,10 +96,11 @@ fn probe(socket: &Path) -> io::Result<Status> {
 /// How long a client waits for the daemon the service started to serve its person.
 const ANSWERING: Duration = Duration::from_secs(120);
 
-/// The daemon serving `profile`, once it serves its person: asked at once, and, when it does
-/// not answer, after the one start ([`tilo_api::daemon::service::start`]) for a profile that is
-/// this computer's. A profile named apart (a test's, a VM host's) is served by whoever started
-/// its daemon, and is only asked.
+/// The daemon serving `profile`, once its native endpoint answers: asked at once, and, when it
+/// does not answer, after the one start ([`tilo_api::daemon::service::start`]) for a profile that
+/// is this computer's. A profile named apart (a test's, a VM host's) is served by whoever started
+/// its daemon, and is only asked. Its status names the person's workspace once there is one: at
+/// boot, before anything founded it or their desktop handed it over, it names none.
 fn running(profile: &Path) -> io::Result<Status> {
     validate_profile(profile)?;
     let socket = native_socket(profile)?;
