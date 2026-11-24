@@ -1266,6 +1266,7 @@ tilo_test_env::scenario! {
             "workspace r: reading and undoable changes allowed, outside effects ask first. \
          workspace r › so.tilo.browser-desktop › desktop.person-view: undoable changes not allowed. \
          workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not allowed. \
+         workspace r › so.tilo.ownership: everything not allowed. \
          workspace r › tilo.workspace: undoable changes and outside effects not allowed. \
          workspace r › anywhere › moderation: undoable changes and outside effects not allowed."
         );
@@ -1322,7 +1323,9 @@ tilo_test_env::scenario! {
         assert_eq!(
             sentences(&viewer, &Ids),
             "workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not \
-         allowed. workspace r: reading allowed."
+         allowed. workspace r › so.tilo.ownership: everything not allowed. Tilo keeps it from them, \
+         but it is not encrypted apart: their devices hold the workspace's keys, so only the \
+         workspace itself keeps content from someone. workspace r: reading allowed."
         );
         let owner = roles::role_preset(Role::Owner, "r").assign(
             "o",
