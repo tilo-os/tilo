@@ -1640,7 +1640,11 @@ impl SlidesApp {
     }
 
     fn draw_inspector_widgets(&mut self, ctx: &mut ui::DrawCtx<'_>, chrome: &Chrome) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, t, tr, theme, mut env) = ctx.parts();
         self.position_inspector_widgets(chrome);
         if chrome.font_input_rect.is_some() {
@@ -1652,7 +1656,7 @@ impl SlidesApp {
                 t,
                 &chrome.inspector_body,
             );
-            self.font_input.draw_child(scene, t, tr, &local,&env);
+            self.font_input.draw_child(scene, t, tr, &local, &env);
             scene.pop_layer();
         }
         if chrome.layout_picker_rect().is_some() {
@@ -1664,8 +1668,7 @@ impl SlidesApp {
                 t,
                 &chrome.inspector_body,
             );
-            self.layout_picker
-                .draw_child(scene, t, tr, &local,&env);
+            self.layout_picker.draw_child(scene, t, tr, &local, &env);
             scene.pop_layer();
         }
         if let Some(rect) = chrome.fill_picker_rect {
@@ -1692,7 +1695,7 @@ impl SlidesApp {
                 Point::new(rect.x0, panel.y0 + m.s4),
                 None,
             );
-            self.fill_picker.draw_child(scene, t, tr, &local,&env);
+            self.fill_picker.draw_child(scene, t, tr, &local, &env);
         }
     }
 
@@ -1706,9 +1709,13 @@ impl SlidesApp {
     ) {
         if self.editing_notes {
             self.notes.control_mut().apply_layout_external(nb);
-            self.notes
-                .control_mut()
-                .draw_child(scene, t, tr, theme,&PresenceCtx::empty().draw_env());
+            self.notes.control_mut().draw_child(
+                scene,
+                t,
+                tr,
+                theme,
+                &PresenceCtx::empty().draw_env(),
+            );
             return;
         }
         let notes = self
@@ -1720,7 +1727,7 @@ impl SlidesApp {
         }
         self.notes_preview.apply_layout_external(nb);
         self.notes_preview
-            .draw_child(scene, t, tr, theme,&PresenceCtx::empty().draw_env());
+            .draw_child(scene, t, tr, theme, &PresenceCtx::empty().draw_env());
     }
 
     fn draw_present(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -2153,9 +2160,13 @@ impl Widget for SlidesApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        let fallback_presence = Default::default();
+        let fallback_presence = PresenceCtx::default();
         let presence = env.presence.unwrap_or(&fallback_presence);
         if self.rect.width() < 2.0 {
             return;
@@ -2183,18 +2194,28 @@ impl Widget for SlidesApp {
                 );
                 self.draw_editor(
                     &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    &chrome, presence,
+                    &chrome,
+                    presence,
                 );
-                self.draw_inspector_widgets(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()), &chrome);
+                self.draw_inspector_widgets(
+                    &mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                    &chrome,
+                );
             }
             Mode::Overview => self.draw_overview(scene, transform, text_renderer, theme),
             Mode::Present => self.draw_present(scene, transform, text_renderer, theme),
         }
         self.help_overlay
             .draw(scene, transform, text_renderer, theme, self.rect);
-        self.draw_words_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.draw_words_overlay(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         self.ctx_menu
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
         self.note_selection();
     }
 
