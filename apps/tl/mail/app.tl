@@ -272,6 +272,67 @@ fn picture_name(source: Text) -> Text {
     if bare.trim().is_empty() { "picture" } else { bare.trim() }
 }
 
+/// Whether `url` is a link a mail client opens: a web or mail address, and no longer than one a
+/// person writes by hand.
+fn openable_link(url: Text) -> Bool {
+    let said = url.trim().lower()
+    (said.starts_with("https://") or said.starts_with("http://") or said.starts_with("mailto:"))
+        and said.len() <= 8192
+}
+
+/// What one word of a message says as a link: the address it is, with the punctuation a sentence
+/// puts after one taken off, `www.…` read as the web address it means, and nothing for a word
+/// that says no address.
+fn said_link(word: Text) -> Text {
+    let said = link_tail(link_tail(link_tail(word.trim())))
+    let lower = said.lower()
+    if lower.starts_with("https://") or lower.starts_with("http://") {
+        said
+    } else if lower.starts_with("www.") and said.len() > 4 { "https://{said}" } else { "" }
+}
+
+/// `said` without one punctuation mark a sentence ends it with, and as it was when it ends with
+/// none.
+fn link_tail(said: Text) -> Text {
+    if said == "" {
+        return said
+    }
+    let last = said.slice(said.len() - 1, said.len())
+    if ".,;:!?)]\}>\"'".contains(last) { said.slice(0, said.len() - 1) } else { said }
+}
+
+/// The web and mail addresses a message's words say, in the order they stand: what a message of
+/// plain text carries as its links.
+fn said_links(body: Text) -> List<Text> {
+    body
+        .split("\n")
+        .flat_map(line -> line.split(" "))
+        .flat_map(word -> word.split("\t"))
+        .map(word -> said_link(word))
+        .filter(link -> link != "")
+}
+
+/// `items` in their order, each once: the first time it stands.
+fn links_once(items: List<Text>) -> List<Text> {
+    let seen: Map<Text> = Map<Text>()
+    let out: List<Text> = []
+    for item in items {
+        if seen.get(item) == .none {
+            seen.put(item, "")
+            out = [out, [item]].flat_map(one -> one)
+        }
+    }
+    out
+}
+
+/// The links a message says: what its formatted part links to, or what its words say when it is
+/// plain text. Each once, in the order the message says them, and only addresses a mail client
+/// opens, at most the 512 one reading lists.
+fn message_links(m: Message) -> List<Text> {
+    let said = if m.html == "" { said_links(m.body) } else { RichText.from_html(m.html).links }
+    links_once(said.filter(link -> openable_link(link))).take(512)
+}
+
 /// Brings in the pictures the sender's page names: each read from where it stands and kept in the
 /// workspace's content, so the message shows them as it was written. What a workspace's rules or
 /// its network refuse is left out, and the message reads without it.
@@ -312,6 +373,29 @@ action trust_sender(m: Mail, address: Text) uses web (
 /// Asks again before showing what `address` sends.
 action distrust_sender(m: Mail, address: Text) (icon: .image, label: "Ask again") {
     m.trusted.remove_where(s -> s.address == address.trim().lower())
+}
+
+/// The links a message says, each once, in the order it says them: what its formatted part links
+/// to, or the web and mail addresses its words carry. A person reads them, copies one, or an
+/// agent asks what a message would have one open.
+action links(m: Message) -> List<Text> (icon: .link, label: "Links in this message") {
+    message_links(m)
+}
+
+/// Opens one of a message's links in the app that opens links of its scheme, as pressing a link
+/// does: the Browser for a web address. A message opens only a link it says.
+action open_link(m: Message, url: Text) (icon: .external_link, label: "Open link") {
+    require message_links(m).any(link -> link == url) "The message has no such link"
+    match tool.open_link(url) {
+        .ok => {}
+        .err(_) => {}
+    }
+}
+
+/// Copies one of a message's links, the address alone, as a person hands it to someone.
+action copy_link(m: Message, url: Text) uses clipboard (icon: .copy, label: "Copy link") {
+    require message_links(m).any(link -> link == url) "The message has no such link"
+    clipboard.copy(url)
 }
 
 /// The signature the account `key` signs its messages with: its own, and empty when it has
@@ -2489,6 +2573,27 @@ view message(m: Message) {
                 if m.html != "" {
                     ui.Button("Show formatted", icon: .file_text, size: .small) {
                         on press: set(formatted, true)
+                    }
+                }
+            }
+            // Every link the message says, each one pressed to open it in the Browser and copied
+            // on its own: what a person does with a link a message holds, without hunting for it
+            // in the words.
+            let links = message_links(m)
+            if not links.is_empty() {
+                ui.DisclosureRow(
+                    if links.len() == 1 {
+                        "One link in this message"
+                    } else { "{links.len()} links in this message" },
+                    icon: .link,
+                ) {
+                    for link in links {
+                        row(gap: .tight, align: .center) {
+                            ui.Link(link)
+                            ui.Button("Copy link", icon: .copy, icon_only: true) {
+                                on press: copy_link(m, link)
+                            }
+                        }
                     }
                 }
             }

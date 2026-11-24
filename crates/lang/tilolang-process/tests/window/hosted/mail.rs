@@ -117,6 +117,18 @@ JVBERi0xLjQKJSBsZWFzZSAyMDI2Cg==\n--lease--\n"
     )
 }
 
+/// A message its sender formatted: the words as text, and the same as the HTML part a mail
+/// program shows when it renders formatted mail.
+fn mail_formatted(id: &str, from: &str, subject: &str, text: &str, html: &str) -> String {
+    format!(
+        "From: {from}\nTo: {ME}\nSubject: {subject}\nMessage-ID: <{id}>\n\
+Date: Tue, 30 Jun 2026 09:00:00 +0000\nMIME-Version: 1.0\n\
+Content-Type: multipart/alternative; boundary=\"formed\"\n\n\
+--formed\nContent-Type: text/plain; charset=utf-8\n\n{text}\n\
+--formed\nContent-Type: text/html; charset=utf-8\n\n{html}\n--formed--\n"
+    )
+}
+
 /// The two servers with nothing in the inbox yet: what a test puts there once the window stands,
 /// as mail arrives at an open window.
 fn empty_servers() -> Servers {
@@ -3420,5 +3432,152 @@ fn a_message_previews_without_being_read() {
             .count(),
         1,
         "nothing told the server it was read"
+    );
+}
+
+/// The session's tools, as a test serves them: it answers every request as accepted and keeps
+/// what it was asked, so a test reads the opens an action asked for.
+struct Tools {
+    asked: std::sync::Arc<std::sync::Mutex<Vec<runtime_portal::tools::ToolIntent>>>,
+}
+
+impl Tools {
+    /// The session's end of a tools connection, and the stub answering the other end.
+    fn serving() -> (std::sync::Arc<runtime_portal::tools::Service>, Self) {
+        let stub = Self {
+            asked: std::sync::Arc::default(),
+        };
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("the tools connection");
+        stub.serve(ours);
+        let service =
+            runtime_portal::tools::Service::connect(theirs, "the window's workspace".to_owned());
+        (std::sync::Arc::new(service), stub)
+    }
+
+    fn serve(&self, stream: std::os::unix::net::UnixStream) {
+        let asked = std::sync::Arc::clone(&self.asked);
+        std::thread::spawn(move || {
+            use std::io::{BufRead as _, BufReader, Write as _};
+            let Ok(mut writing) = stream.try_clone() else {
+                return;
+            };
+            for line in BufReader::new(stream).lines() {
+                let Ok(line) = line else { return };
+                let Ok(request) = serde_json::from_str::<runtime_portal::tools::ToolRequest>(&line)
+                else {
+                    return;
+                };
+                asked
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(request.intent);
+                let reply = runtime_portal::tools::ToolReply {
+                    accepted: true,
+                    message: "opened".to_owned(),
+                    ..runtime_portal::tools::ToolReply::default()
+                };
+                let Ok(mut encoded) = serde_json::to_vec(&reply) else {
+                    return;
+                };
+                encoded.push(b'\n');
+                if writing.write_all(&encoded).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// What it was asked, oldest first.
+    fn asked(&self) -> Vec<runtime_portal::tools::ToolIntent> {
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+// USER REQUIREMENT: a message's links are its own: a person reads every link it holds once, in
+// order, opens one in the app that opens links of its scheme, and copies one; an agent asks the
+// message what it links to.
+#[test]
+fn a_messages_links_are_listed_and_open_through_the_shell() {
+    let servers = empty_servers();
+    servers.imap.append(
+        "INBOX",
+        &mail_formatted(
+            "plan@letter.example",
+            "Ada Lovelace <ada@analytical.example>",
+            "The launch plan",
+            "The plan is at https://tilo.sh/plan, and the notes at https://tilo.sh/notes.",
+            "<p>The <a href=\"https://tilo.sh/plan\">plan</a> is ready, and the \
+             <a href=\"https://tilo.sh/plan\">plan</a> again.</p>\
+             <p>Write to <a href=\"mailto:ada@analytical.example\">Ada</a>.</p>\
+             <p>Nothing from <a href=\"javascript:alert(1)\">this</a>.</p>",
+        ),
+        &["\\Seen"],
+    );
+    let (tools, stub) = Tools::serving();
+    Session::opening_files_through(&tools);
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the message to arrive", |session| {
+        session.threads().len() == 1
+            && matches!(session.value_of(&session.threads()[0], "boxes"), RtValue::List(boxes)
+                if boxes.contains(&RtValue::text("inbox")))
+    });
+    let plan = session.thread("The launch plan");
+    let message = session.refs(&plan, "messages")[0].clone();
+
+    // What the message links to: each address once, in the order it says them, and only those a
+    // mail client opens.
+    let answered = session.call("links", &message, &json!({}));
+    assert_eq!(
+        answered.value,
+        Some(json!([
+            "https://tilo.sh/plan",
+            "mailto:ada@analytical.example",
+        ])),
+        "the message says its links"
+    );
+
+    // The conversation shows them, each a link to press and a press that copies it.
+    let texts = session.conversation(&plan);
+    assert!(
+        texts.iter().any(|text| text == "2 links in this message"),
+        "the message counts its links: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "https://tilo.sh/plan"),
+        "the address it names stands as a link: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "Copy link"),
+        "and is copied on its own: {texts:?}"
+    );
+
+    // Opening one asks the shell for the app that opens links of its scheme.
+    session.call(
+        "open_link",
+        &message,
+        &json!({ "url": "https://tilo.sh/plan" }),
+    );
+    assert_eq!(
+        stub.asked(),
+        [runtime_portal::tools::ToolIntent::OpenLink {
+            url: "https://tilo.sh/plan".to_owned(),
+        }],
+        "the shell opens the address"
+    );
+
+    // A link the message does not say is not one it opens.
+    let refused = session.try_call(
+        "open_link",
+        &message,
+        &json!({ "url": "https://evil.example/" }),
+    );
+    assert!(
+        refused
+            .err()
+            .is_some_and(|why| why.contains("no such link")),
+        "a message opens only a link it says"
     );
 }

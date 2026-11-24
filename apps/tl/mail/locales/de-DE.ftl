@@ -663,6 +663,9 @@ d-n2xgxnbw = Nachricht
     .w-always-show-s = Immer die von { $sender_address } anzeigen
     .w-show-plain-text = Nur Text anzeigen
     .w-show-formatted = Formatiert anzeigen
+    .w-one-link-in-this-message = Ein Link dieser Nachricht
+    .w-links-in-this-message = { $len } Links dieser Nachricht
+    .w-copy-link = Link kopieren
 
 d-llqqdcy5 = Anhang-Chip
     .w-not-downloaded = { $name }, nicht heruntergeladen
@@ -859,3 +862,22 @@ d-dsurl5gh = Link öffnen
     .doc = Öffnet einen `mailto:`-Link: eine Nachricht an den, den er nennt, in den Entwürfen, damit die Person sie liest und sendet. Ein Link, der keine Adresse nennt, öffnet nichts, da er niemanden zum Schreiben nennt. Der Host veröffentlicht dies als `open-link` des Systems am Postfach, wohin eine Shell einen Link gibt.
 
 d-dsurl5gh-link = Link
+
+d-b7h5czv4 = Links dieser Nachricht
+    .doc = Die Links, die eine Nachricht nennt, jeden einmal, in der Reihenfolge, in der sie stehen: wohin ihr formatierter Teil verlinkt, oder die Web- und Mail-Adressen, die ihre Worte tragen.
+
+d-syjlwh4r = Link öffnen
+    .doc = Öffnet einen der Links einer Nachricht in der App, die Links ihres Schemas öffnet, wie ein Druck auf einen Link: den Browser für eine Web-Adresse. Eine Nachricht öffnet nur einen Link, den sie nennt.
+    .w-the-message-has-no-such-link = Die Nachricht hat keinen solchen Link
+
+d-syjlwh4r-url = Adresse
+
+d-bs2m6ms4 = Link öffnen~present
+
+d-unyf7jiq = Link kopieren
+    .doc = Kopiert einen der Links einer Nachricht, die Adresse allein, wie eine Person sie weitergibt.
+    .w-the-message-has-no-such-link = Die Nachricht hat keinen solchen Link
+
+d-unyf7jiq-url = Adresse
+
+d-cj2mz2rq = Link kopieren~present
