@@ -41,6 +41,14 @@ pub(super) fn waits_asked(state: &InvocationState) -> bool {
     )
 }
 
+/// Whether an answer finds `state` a call that waits: recorded as waiting, or still under way
+/// because its asked record was written before the call was recorded as waiting ([`ended`]).
+/// The call's entry among the host's asked calls is what says it waits; this is what the log
+/// says while that entry is being taken.
+pub(super) fn waits_an_answer(state: &InvocationState) -> bool {
+    waits_asked(state) || !state.is_terminal()
+}
+
 /// The call whose work ended, as [`ended`] keeps it.
 pub(super) struct Call {
     pub(super) workspaces: crate::workspaces::Workspaces,
@@ -91,10 +99,26 @@ pub(super) async fn ended(
             }
             match kept {
                 Some(Ok(record)) => {
-                    let state = InvocationState::new(invocation, record.waiting(invocation));
-                    let receipt = state.receipt();
-                    actions.log().complete(&invocation, state);
-                    Ok(receipt)
+                    // The record is readable by whoever answers it before the call is recorded
+                    // as waiting, so an answer can come first: its entry among the asked calls
+                    // says the call waits, and one that took it keeps the ending it wrote.
+                    let asking = actions.shared.asked_calls.lock_recover();
+                    if asking.contains_key(&invocation) {
+                        let state = InvocationState::new(invocation, record.waiting(invocation));
+                        let receipt = state.receipt();
+                        actions.log().complete(&invocation, state);
+                        Ok(receipt)
+                    } else {
+                        let receipt = actions
+                            .log()
+                            .get(&call.caller, &invocation)
+                            .map(InvocationState::receipt);
+                        // Answered already: what it was admitted again as, until it says more.
+                        Ok(receipt.unwrap_or(InvocationReceipt {
+                            invocation,
+                            status: tilo_actions::remote::ReceiptStatus::Accepted,
+                        }))
+                    }
                 }
                 Some(Err(why)) => {
                     actions.log().abandon(&invocation);

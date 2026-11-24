@@ -142,22 +142,22 @@ pub(crate) async fn answered(
     };
     let here = service.in_workspace(workspace_id);
     let workspace = workspace_id.to_string();
-    // Whether it waits for its person, or ends first. Its record is written before the call
-    // is recorded as waiting there, so only once it says so is the record one to answer.
+    // Whether it waits for its person, or ends first. It is answered the moment its record
+    // shows, which the host may record as waiting a moment later: the answer stands either way.
     let kept = tilo_test_env::within("the call waits for its person or ends", async {
         loop {
-            match here.observe(caller, &request.invocation) {
-                Some(state) if state.is_terminal() => return None,
-                Some(state) if super::invocation_states::waits_asked(&state) => {
-                    if let Some(waiting) = store
-                        .waiting_in(&workspace)
-                        .into_iter()
-                        .find(|waiting| waiting.invocation == request.invocation)
-                    {
-                        return Some(waiting);
-                    }
-                }
-                _ => {}
+            if let Some(waiting) = store
+                .waiting_in(&workspace)
+                .into_iter()
+                .find(|waiting| waiting.invocation == request.invocation)
+            {
+                return Some(waiting);
+            }
+            if here
+                .observe(caller, &request.invocation)
+                .is_some_and(|state| state.is_terminal())
+            {
+                return None;
             }
             tokio::task::yield_now().await;
         }
@@ -226,22 +226,24 @@ pub(crate) async fn answered(
     ended_as(&here, caller, request.invocation).await
 }
 
-/// What invocation `invocation` ended as, followed on `here` until it is terminal.
+/// What invocation `invocation` ended as, followed on `here` until it is terminal. Its record
+/// is read again as it goes, a call its person's approve admitted again having none for the
+/// moment it takes to start.
 async fn ended_as(
     here: &(impl ActionProvider + Clone + Send + 'static),
     caller: &Caller,
     invocation: InvocationId,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
-    let now = tilo_clock::now();
-    let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
-    settled(tilo_actions::remote::settle_with(
-        here, caller, invocation, None, until,
-    ))
-    .await
-    .map(|state| state.receipt())
-    .ok_or(ActionCallError::Unavailable {
-        reason: "the call is not followed on this host".into(),
+    let state = tilo_test_env::within("the answered call's end", async {
+        loop {
+            match here.observe(caller, &invocation) {
+                Some(state) if state.is_terminal() => return state,
+                _ => tokio::task::yield_now().await,
+            }
+        }
     })
+    .await;
+    Ok(state.receipt())
 }
 
 /// What a pending answer comes to, on this runtime.

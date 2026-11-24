@@ -4685,12 +4685,10 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
             .get()
             .cloned()
             .ok_or_else(not_waiting)?;
-        let remembered = server
-            .shared
-            .asked_calls
-            .lock_recover()
-            .remove(&request.invocation);
+        let mut asking = server.shared.asked_calls.lock_recover();
+        let remembered = asking.remove(&request.invocation);
         let Some((workspace_id, certificate)) = remembered else {
+            drop(asking);
             // Kept from before this host started again: admitted as a call of its own under
             // its id, which the record's approve admits once.
             let kept = serde_json::from_value::<AskedContext>(context.clone())
@@ -4709,10 +4707,11 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
         };
         if !server
             .log()
-            .readmit(caller, &request, invocation_states::waits_asked)
+            .readmit(caller, &request, invocation_states::waits_an_answer)
         {
             return Err(not_waiting());
         }
+        drop(asking);
         let here = InWorkspace {
             server,
             workspace_id,
@@ -4733,11 +4732,12 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
         let Ok(server) = self.server() else {
             return;
         };
-        server.shared.asked_calls.lock_recover().remove(&invocation);
+        let mut asking = server.shared.asked_calls.lock_recover();
+        asking.remove(&invocation);
         let mut log = server.log();
         if log
             .get(caller, &invocation)
-            .is_some_and(invocation_states::waits_asked)
+            .is_some_and(invocation_states::waits_an_answer)
         {
             log.complete(
                 &invocation,
@@ -4754,20 +4754,15 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
 
     fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
         let server = self.server()?;
-        if server
-            .shared
-            .asked_calls
-            .lock_recover()
-            .remove(&invocation)
-            .is_none()
-        {
+        let mut asking = server.shared.asked_calls.lock_recover();
+        if asking.remove(&invocation).is_none() {
             // Kept from before this host started again: it ended with it.
             return Ok(());
         }
         let mut log = server.log();
         if !log
             .get(caller, &invocation)
-            .is_some_and(invocation_states::waits_asked)
+            .is_some_and(invocation_states::waits_an_answer)
         {
             return Err(not_waiting());
         }
