@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use test_http::{Reply, Request, Responder};
-use tilo_action_policy::Rule;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::{self, NotPermitted, Refused, UnknownAction};
 use tilo_actions::remote::person_vault;
@@ -26,7 +25,7 @@ use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 
 use super::super::tests::{admit, caller, governed};
 use super::turn_use_tests::{
-    approved, asked_by, asks, dispatched, fact, narrowed_elsewhere, on_turn,
+    approved, asked_by, asks, dispatched, fact, narrowed_elsewhere, narrowing, on_turn,
 };
 use super::vault_tests::{ask, files_holding};
 use crate::workspaces::WorkspaceContent;
@@ -837,27 +836,6 @@ async fn only_a_hosted_turn_makes_a_call() {
     );
     assert!(paying.drain_requests().is_empty(), "nothing was sent");
     assert!(files_holding(dir.path(), KEY.as_bytes()).is_empty());
-}
-
-/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
-fn narrowing(
-    workspace: &str,
-    caller: &Caller,
-    rules: &[Rule],
-) -> tilo_action_policy::WorkspacePolicy {
-    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
-    let agent = caller.acting().agent_id().unwrap_or_default();
-    for (index, rule) in rules.iter().enumerate() {
-        policy.grants.push(tilo_action_policy::Grant::new(
-            format!("test-narrowing:{index}"),
-            tilo_action_policy::Grantee::agent(agent.to_owned()),
-            rule.node.clone(),
-            rule.kinds,
-            rule.answer,
-            tilo_action_policy::Grantee::person("owner"),
-        ));
-    }
-    policy
 }
 
 /// The content a stand-in workspace keeps: one file, for one app's records.
