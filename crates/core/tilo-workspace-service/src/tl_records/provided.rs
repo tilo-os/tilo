@@ -649,7 +649,21 @@ mod tests {
             .await
             .expect("an agent within its delegation writes");
         let versions = written(&workspaces, &workspace, &person);
-        assert!(!versions.is_empty(), "the write reaches the store");
+        let route = DocumentRoute {
+            app_id: CHAT.to_owned(),
+            cluster_id: workspace.clone(),
+            document: String::new(),
+        };
+        assert!(
+            !versions.is_empty(),
+            "the write reaches the store; its history is {:?}",
+            workspaces
+                .record_changes(&workspace, &route, &person)
+                .unwrap_or_default()
+                .iter()
+                .map(|version| (version["action"].clone(), version["who"].clone()))
+                .collect::<Vec<_>>()
+        );
         let agent = serde_json::to_value(crate::tl_records::member(tilo_actions::MemberId::agent(
             "scout",
         )))

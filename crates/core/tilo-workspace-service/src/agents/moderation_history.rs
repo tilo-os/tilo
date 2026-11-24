@@ -256,23 +256,32 @@ impl TurnHistory {
         let reader = crate::workspaces::person_reading(caller);
         let undone = self
             .workspaces
-            .with_tl_record(&self.workspace, &packages, (actor.clone(), &reader), move |opened| {
-                let store = opened.host().store();
-                store.set_run(Some(run.clone()));
-                let mut undone = 0_u32;
-                let mut failure = None;
-                for invocation in &invocations {
-                    match store.undo(invocation, Some(&actor)) {
-                        Ok(_) => undone = undone.saturating_add(1),
-                        Err(error) => {
-                            failure = Some(error.to_string());
-                            break;
+            .with_tl_record(
+                &self.workspace,
+                &packages,
+                (actor.clone(), &reader),
+                move |opened| {
+                    let store = opened.host().store();
+                    store.set_run(Some(run.clone()));
+                    let mut undone = 0_u32;
+                    let mut failure = None;
+                    for invocation in &invocations {
+                        match store.undo(invocation, Some(&actor)) {
+                            Ok(_) => undone = undone.saturating_add(1),
+                            Err(error) => {
+                                failure = Some(error.to_string());
+                                break;
+                            }
                         }
                     }
-                }
-                store.set_run(None);
-                failure.map_or(Ok(undone), Err)
-            })
+                    store.set_run(None);
+                    // What the workspace refused of the undo is the undo's answer, never a count.
+                    if let Some(refused) = store.take_refusal() {
+                        return Err(refused);
+                    }
+                    failure.map_or(Ok(undone), Err)
+                },
+            )
             .await
             .map_err(unavailable)?;
         Ok(json!({"undone": undone}))
