@@ -1,0 +1,491 @@
+//! Maps' device work: the areas a person keeps for offline use, on this device.
+//!
+//! A tilolang app runs sandboxed and keeps no files of its own, so this crate is what
+//! `so.tilo.maps` reaches through `engine.call`, `engine.start`, `engine.state` and
+//! `engine.cancel`. It answers no other app's asks, and every answer is JSON the package reads
+//! into its own records.
+//!
+//! | op | kind | asks | answers |
+//! |---|---|---|---|
+//! | `save-area` | job | `{id, name, north, south, east, west, least_zoom, most_zoom, basemap}` | `{job}`; its record `{state, saved, total, error}` |
+//! | `kept-areas` | call | — | `[{id, name, north, south, east, west, least_zoom, most_zoom, tiles}]` |
+//! | `forget-area` | call | `{id}` | `{freed}` |
+//! | `clear-saved` | call | — | `{freed}` |
+//! | `saved-bytes` | call | — | `{bytes}` |
+//! | `locate` | call | — | `{lat, lon, accuracy_m}`, or `{why}` when the device cannot say |
+//!
+//! The pictures are kept where the app's window keeps the ones it looked at
+//! ([`Tiles::of_app`]), so a window that already drew an area saves it without asking the
+//! network again, and a picture the person saved is read before the cache and the network.
+
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+
+use serde::Deserialize;
+use serde_json::json;
+use tilo_tiles::{Area, Tiles};
+use tilolang_runtime::host_work::Push;
+use tilolang_tilo::engine::Provider;
+
+/// The app whose engine this is: the one that asks these ops, and no other.
+pub const APP: &str = "so.tilo.maps";
+
+/// The name the app's cache directory is under, as its window keeps its pictures
+/// (`tilo_paths::AppDirs::new("maps")`).
+const CACHE_APP: &str = "maps";
+
+/// How long a location request may take before the device is said not to answer: the platform
+/// asks the person first, and its own fix can take seconds.
+const LOCATE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Register this crate as Maps' engine: what a session or an app process calls once at its
+/// start, before the app asks.
+pub fn register() {
+    if let Some(tiles) = Tiles::of_app(CACHE_APP) {
+        tilolang_tilo::engine::register(APP, Arc::new(Maps::with(Arc::new(tiles))));
+    }
+}
+
+/// An area asked for, as `save-area` names it.
+#[derive(Deserialize)]
+struct AreaAsk {
+    id: String,
+    name: String,
+    north: f64,
+    south: f64,
+    east: f64,
+    west: f64,
+    least_zoom: i64,
+    most_zoom: i64,
+    basemap: String,
+}
+
+#[derive(Deserialize)]
+struct AreaId {
+    id: String,
+}
+
+/// Where the device is, as the platform's own location service says: its latitude, longitude and
+/// how many metres the fix is good to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Fix {
+    /// The latitude of the device, in degrees.
+    pub latitude: f64,
+    /// The longitude of the device, in degrees.
+    pub longitude: f64,
+    /// How many metres the fix is good to; `0` when the platform does not say.
+    pub accuracy_m: f64,
+}
+
+/// The device's own location, as an engine asks it. The platform asks the person first — the
+/// location portal on Linux, Core Location on macOS, the browser's permission — and answers
+/// with a fix or why it cannot.
+pub trait Locates: Send + Sync {
+    /// Where the device is, waiting for the platform's answer.
+    ///
+    /// # Errors
+    ///
+    /// Why the device cannot say where it is.
+    fn fix(&self) -> Result<Fix, String>;
+}
+
+/// The platform's location service.
+struct SystemLocation;
+
+impl Locates for SystemLocation {
+    fn fix(&self) -> Result<Fix, String> {
+        match tilo_location::system()
+            .locate()
+            .recv()
+            .map_err(|_| "the location service went away".to_owned())?
+        {
+            tilo_location::LocationOutcome::Located {
+                lat,
+                lon,
+                accuracy_m,
+            } => Ok(Fix {
+                latitude: lat,
+                longitude: lon,
+                accuracy_m,
+            }),
+            tilo_location::LocationOutcome::Unavailable(reason) => Err(reason),
+        }
+    }
+}
+
+/// One `save-area` under way, as `state` reads it.
+struct Job {
+    area: Area,
+    saved: u64,
+    total: u64,
+    stopped: Arc<AtomicBool>,
+    finished: bool,
+}
+
+/// Maps' engine: the pictures on this device, and the areas being kept.
+pub struct Maps {
+    tiles: Arc<Tiles>,
+    locator: Arc<dyn Locates>,
+    jobs: Mutex<Jobs>,
+}
+
+#[derive(Default)]
+struct Jobs {
+    next: u64,
+    running: BTreeMap<String, Arc<Mutex<Job>>>,
+}
+
+fn held<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What a job started without a record reports to: nothing reads it, and the work still runs.
+struct Unheard;
+
+impl Push for Unheard {
+    fn frame(&self, _frame: tilolang_runtime::host_work::Frame) {}
+}
+
+impl Maps {
+    /// The engine over `tiles`: what a test hands a directory of its own.
+    #[must_use]
+    pub fn with(tiles: Arc<Tiles>) -> Self {
+        Self::with_locator(tiles, Arc::new(SystemLocation))
+    }
+
+    /// The engine over `tiles`, asking `locator` where the device is: what a test hands a source
+    /// of its own.
+    #[must_use]
+    pub fn with_locator(tiles: Arc<Tiles>, locator: Arc<dyn Locates>) -> Self {
+        Self {
+            tiles,
+            locator,
+            jobs: Mutex::new(Jobs::default()),
+        }
+    }
+
+    /// Where the device is, asking the platform on a thread of its own so the caller is not
+    /// blocked on the person's answer or on the fix.
+    fn locate(&self) -> Result<String, String> {
+        let locator = Arc::clone(&self.locator);
+        let (tx, rx) = std::sync::mpsc::channel();
+        tilo_rt::spawn_thread("maps-locate", move || {
+            let _ = tx.send(locator.fix());
+        })
+        .map_err(|error| format!("the location request starts no thread: {error}"))?;
+        let answer = rx.recv_timeout(LOCATE_TIMEOUT).map_err(|_| {
+            "The device did not answer where it is. Check that location is allowed for Tilo."
+                .to_owned()
+        })?;
+        match answer {
+            Ok(fix) => Ok(json!({
+                "lat": fix.latitude,
+                "lon": fix.longitude,
+                "accuracy_m": fix.accuracy_m,
+            })
+            .to_string()),
+            Err(why) => Ok(json!({ "why": why }).to_string()),
+        }
+    }
+
+    /// Start the work for `area`, answer its job's id, and save it on a thread of its own.
+    fn begin(&self, area: Area, push: Arc<dyn Push>) -> Result<String, String> {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let job = Arc::new(Mutex::new(Job {
+            total: area.tile_count(),
+            area,
+            saved: 0,
+            stopped: Arc::clone(&stopped),
+            finished: false,
+        }));
+        let id = {
+            let mut jobs = held(&self.jobs);
+            jobs.next = jobs.next.saturating_add(1);
+            let id = format!("save-area-{}", jobs.next);
+            jobs.running.insert(id.clone(), Arc::clone(&job));
+            id
+        };
+        let tiles = Arc::clone(&self.tiles);
+        let said = Arc::clone(&job);
+        let speaking = Arc::clone(&push);
+        let slot = id.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("maps-{id}"))
+            .spawn(move || {
+                let area = held(&said).area.clone();
+                let kept = tiles.keep_area(
+                    &area,
+                    &|| held(&said).stopped.load(Ordering::Relaxed),
+                    |kept| {
+                        let mut now = held(&said);
+                        now.saved = kept.saved;
+                        now.total = kept.total;
+                        drop(now);
+                        speaking.state(
+                            &slot,
+                            &json!({"state": "running", "saved": kept.saved, "total": kept.total})
+                                .to_string(),
+                        );
+                    },
+                );
+                let stopped = {
+                    let mut now = held(&said);
+                    now.saved = kept.saved;
+                    now.finished = true;
+                    now.stopped.load(Ordering::Relaxed)
+                };
+                push.ended(
+                    &slot,
+                    &json!({
+                        "state": if stopped { "cancelled" } else { "done" },
+                        "saved": kept.saved,
+                        "total": kept.total,
+                        "error": "",
+                    })
+                    .to_string(),
+                );
+            });
+        if let Err(error) = spawned {
+            held(&self.jobs).running.remove(&id);
+            return Err(format!("the download starts no thread: {error}"));
+        }
+        Ok(json!({ "job": id }).to_string())
+    }
+}
+
+impl Provider for Maps {
+    fn call(&self, op: &str, input: &str) -> Result<String, String> {
+        match op {
+            "kept-areas" => {
+                let areas: Vec<serde_json::Value> = self
+                    .tiles
+                    .kept_areas()
+                    .iter()
+                    .map(|area| {
+                        json!({
+                            "id": area.id,
+                            "name": area.name,
+                            "north": area.north,
+                            "south": area.south,
+                            "east": area.east,
+                            "west": area.west,
+                            "least_zoom": area.least_zoom,
+                            "most_zoom": area.most_zoom,
+                            "tiles": area.tile_count(),
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::Value::Array(areas).to_string())
+            }
+            "forget-area" => {
+                let ask: AreaId = serde_json::from_str(input)
+                    .map_err(|error| format!("the ask does not read: {error}"))?;
+                Ok(json!({ "freed": self.tiles.forget_area(&ask.id) }).to_string())
+            }
+            "clear-saved" => Ok(json!({ "freed": self.tiles.clear_saved() }).to_string()),
+            "saved-bytes" => Ok(json!({ "bytes": self.tiles.saved_bytes() }).to_string()),
+            "locate" => self.locate(),
+            _ => Err(format!("`{op}` is no op this device runs")),
+        }
+    }
+
+    fn start(&self, op: &str, input: &str) -> Result<String, String> {
+        self.start_held(op, input, Arc::new(Unheard))
+    }
+
+    fn start_held(&self, op: &str, input: &str, push: Arc<dyn Push>) -> Result<String, String> {
+        if op != "save-area" {
+            return Err(format!("`{op}` is no op this device runs"));
+        }
+        let ask: AreaAsk = serde_json::from_str(input)
+            .map_err(|error| format!("the ask does not read: {error}"))?;
+        if !(ask.north.is_finite()
+            && ask.south.is_finite()
+            && ask.east.is_finite()
+            && ask.west.is_finite())
+        {
+            return Err(
+                "an area's edges are places on Earth, not numbers without an end".to_owned(),
+            );
+        }
+        let area = Area::new(
+            ask.id,
+            ask.name,
+            ask.north,
+            ask.south,
+            ask.east,
+            ask.west,
+            ask.least_zoom,
+            ask.most_zoom,
+            ask.basemap,
+        );
+        self.begin(area, push)
+    }
+
+    fn status(&self, job: &str) -> Result<String, String> {
+        let held_job = held(&self.jobs)
+            .running
+            .get(job)
+            .cloned()
+            .ok_or_else(|| format!("no job `{job}` runs on this device"))?;
+        let now = held(&held_job);
+        let state = if !now.finished {
+            "running"
+        } else if now.stopped.load(Ordering::Relaxed) {
+            "cancelled"
+        } else {
+            "done"
+        };
+        Ok(json!({
+            "state": state,
+            "saved": now.saved,
+            "total": now.total,
+            "error": "",
+        })
+        .to_string())
+    }
+
+    fn cancel(&self, job: &str) -> bool {
+        let Some(held_job) = held(&self.jobs).running.get(job).cloned() else {
+            return false;
+        };
+        if held(&held_job).finished {
+            return false;
+        }
+        held(&held_job).stopped.store(true, Ordering::Relaxed);
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Standing(f64, f64);
+
+    impl Locates for Standing {
+        fn fix(&self) -> Result<Fix, String> {
+            Ok(Fix {
+                latitude: self.0,
+                longitude: self.1,
+                accuracy_m: 12.0,
+            })
+        }
+    }
+
+    struct Refusing(String);
+
+    impl Locates for Refusing {
+        fn fix(&self) -> Result<Fix, String> {
+            Err(self.0.clone())
+        }
+    }
+
+    fn engine(name: &str) -> Maps {
+        let dir =
+            std::env::temp_dir().join(format!("tilo-maps-engine-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Maps::with_locator(
+            Arc::new(Tiles::open(dir)),
+            Arc::new(Standing(48.1374, 11.5755)),
+        )
+    }
+
+    fn ask(name: &str) -> String {
+        json!({
+            "id": format!("region:{name}"),
+            "name": name,
+            "north": 48.18,
+            "south": 48.10,
+            "east": 11.62,
+            "west": 11.55,
+            "least_zoom": 14,
+            "most_zoom": 14,
+            "basemap": "http://127.0.0.1:1/%z/%x/%y.png",
+        })
+        .to_string()
+    }
+
+    /// An area the engine keeps is listed with its bounds and levels, and removing it gives up
+    /// its place in the list; clearing takes every area away.
+    #[test]
+    fn an_area_is_kept_listed_and_removed() {
+        let engine = engine("listed");
+        let started: serde_json::Value = serde_json::from_str(
+            &engine
+                .start("save-area", &ask("Munich"))
+                .expect("it starts"),
+        )
+        .expect("a job");
+        let job = started["job"].as_str().expect("a job id");
+        // The tile host is not reachable: the job still ends, saying it kept none, and the
+        // area is listed because the person asked for it.
+        for _ in 0..400 {
+            let said: serde_json::Value =
+                serde_json::from_str(&engine.status(job).expect("the job answers"))
+                    .expect("a state");
+            if said["state"] != "running" {
+                assert_eq!(said["state"], "done");
+                assert!(said["total"].as_u64().is_some_and(|total| total > 0));
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let listed: serde_json::Value =
+            serde_json::from_str(&engine.call("kept-areas", "").expect("it lists"))
+                .expect("a list");
+        let areas = listed.as_array().expect("a list of areas");
+        assert_eq!(areas.len(), 1);
+        assert_eq!(areas[0]["name"], "Munich");
+        assert_eq!(areas[0]["least_zoom"], 14);
+        let freed: serde_json::Value = serde_json::from_str(
+            &engine
+                .call("forget-area", &json!({"id": "region:Munich"}).to_string())
+                .expect("it forgets"),
+        )
+        .expect("an answer");
+        assert!(freed["freed"].as_u64().is_some());
+        let listed: serde_json::Value =
+            serde_json::from_str(&engine.call("kept-areas", "").expect("it lists"))
+                .expect("a list");
+        assert!(listed.as_array().is_some_and(Vec::is_empty));
+        assert!(engine.call("clear-saved", "").is_ok());
+    }
+
+    /// Where the device is comes from the source the engine asks, and a device that cannot say
+    /// answers with why, never with a place it invented.
+    #[test]
+    fn the_device_says_where_it_is_or_why_it_cannot() {
+        let engine = engine("located");
+        let said: serde_json::Value =
+            serde_json::from_str(&engine.call("locate", "").expect("it answers")).expect("JSON");
+        assert_eq!(said["lat"], 48.1374);
+        assert_eq!(said["lon"], 11.5755);
+        assert_eq!(said["accuracy_m"], 12.0);
+
+        let dir =
+            std::env::temp_dir().join(format!("tilo-maps-engine-{}-nowhere", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let nowhere = Maps::with_locator(
+            Arc::new(Tiles::open(dir)),
+            Arc::new(Refusing("Location is not available here".to_owned())),
+        );
+        let said: serde_json::Value =
+            serde_json::from_str(&nowhere.call("locate", "").expect("it answers")).expect("JSON");
+        assert_eq!(said["why"], "Location is not available here");
+        assert!(said.get("lat").is_none(), "no place is invented: {said}");
+    }
+
+    /// An ask whose edges are not places on Earth is refused before any job exists.
+    #[test]
+    fn an_area_without_real_edges_is_refused() {
+        let engine = engine("refused");
+        let mut ask: serde_json::Value = serde_json::from_str(&ask("Nowhere")).unwrap();
+        ask["north"] = json!(f64::INFINITY);
+        let refused = engine.start("save-area", &ask.to_string());
+        assert!(refused.is_err(), "an area needs real edges: {refused:?}");
+    }
+}

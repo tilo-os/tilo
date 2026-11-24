@@ -116,7 +116,11 @@ impl Tiles {
         let client = self.client.as_ref().map_err(Clone::clone).ok()?;
         let answer = client.get(url).send().ok()?;
         if !answer.status().is_success() {
-            tracing::debug!(url, status = answer.status().as_u16(), "a picture did not come");
+            tracing::debug!(
+                url,
+                status = answer.status().as_u16(),
+                "a picture did not come"
+            );
             return None;
         }
         let bytes = answer.bytes().ok()?.to_vec();
@@ -126,17 +130,17 @@ impl Tiles {
         Some(bytes)
     }
 
-    fn cache_dir(&self) -> PathBuf {
+    pub(crate) fn cache_dir(&self) -> PathBuf {
         self.root.join("cache")
     }
 
-    fn saved_dir(&self) -> PathBuf {
+    pub(crate) fn saved_dir(&self) -> PathBuf {
         self.root.join("offline")
     }
 
     /// Where a picture's bytes are kept: named by what the address is, never by it as a path,
     /// since an address holds characters and lengths a file name may not.
-    fn path_in(dir: &Path, url: &str) -> PathBuf {
+    pub(crate) fn path_in(dir: &Path, url: &str) -> PathBuf {
         dir.join(format!("{}.img", blake3::hash(url.as_bytes()).to_hex()))
     }
 
@@ -175,7 +179,11 @@ impl Tiles {
                 continue;
             }
             total = total.saturating_add(meta.len());
-            kept.push((meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len(), path));
+            kept.push((
+                meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                meta.len(),
+                path,
+            ));
         }
         if total <= CACHE_BYTES {
             return;
@@ -204,14 +212,16 @@ fn touch(path: &Path) {
     }
 }
 
-/// How many bytes every kept picture under `dir` takes.
+/// How many bytes every kept picture under `dir` takes. The list of the areas they belong to is
+/// not a picture and is not counted.
 fn directory_bytes(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };
     let mut total = 0_u64;
     for entry in entries.flatten() {
-        if let Ok(meta) = entry.metadata()
+        if entry.path().extension().is_some_and(|kind| kind == "img")
+            && let Ok(meta) = entry.metadata()
             && meta.is_file()
         {
             total = total.saturating_add(meta.len());

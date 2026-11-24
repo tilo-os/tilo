@@ -199,6 +199,8 @@ collaboration = { package = "tilo-collaboration", path = "../../core/collaborati
 code-engine = { path = "../../engines/code-engine" }
 # The disk usage analyzer's device work, for the hosts this process runs itself.
 tilo-disk-usage = { path = "../../engines/disk-usage" }
+# Maps' device work: the areas it keeps for offline use, answered for `so.tilo.maps`.
+tilo-maps-engine = { path = "../../engines/maps-engine" }
 # The hex editor's device work: a file's bytes and the edits typed into them.
 hex-engine = { path = "../../engines/hex-engine" }
 # The apps the session runs itself keep their resources in the workspace's store, whose

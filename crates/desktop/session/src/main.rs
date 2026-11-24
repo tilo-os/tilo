@@ -1277,6 +1277,8 @@ fn services(
     // The App Store's device work, which it asks the session for by name (`engine.call`): what
     // its sources offer and the changes a person asks for.
     tilo_store_engine::register();
+    // Maps' device work: the areas a person keeps for offline use, listed and removed here.
+    tilo_maps_engine::register();
     // The database engine the Database Client asks by name: its drivers stay off the app's side,
     // and the app reads the JSON answers into its own records.
     tilolang_tilo::engine::register(

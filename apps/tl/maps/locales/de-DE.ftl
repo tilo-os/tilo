@@ -225,35 +225,8 @@ d-eyiulpwh = Zeitpunkt
 
 d-hyiwxese-filter-at = Zeitpunkt
 
-d-gijd5vfp = Offline-Karte
-    .doc = Ein Bereich der Karte, den dieses Gerät für die Offline-Nutzung behält: seine Grenzen, die Stufen, deren Kacheln es behält, und wie weit das Speichern gekommen ist.
-    .noun = { $count ->
-        [one] Offline-Karte
-       *[other] Offline-Karten
-    }
-
-d-q2xakaa7 = Name
-
-d-4ntlybip = Nord
-
-d-2oacylth = Süd
-
-d-mvzekw5x = Ost
-
-d-j2r3s5ch = West
-
-d-mmthjc2s = Kleinste Stufe
-
-d-cmuxwz44 = Größte Stufe
-
-d-3mucu3ea = Kacheln
-    .doc = Die Kacheln, die der Bereich hält, wie die Karte sie zählt.
-
-d-ueltqy2u = Fertig
-    .doc = Wie viele davon auf dem Gerät liegen.
-
 d-xlmztacf = Atlas
-    .doc = Die Karte des Arbeitsbereichs: die Orte, die sie kennt, die Suchen, die sie gemacht hat, die Wegbeschreibungen, die sie fand, und die Bereiche, die dieses Gerät offline behält.
+    .doc = Die Karte des Arbeitsbereichs: die Orte, die sie kennt, die Suchen, die sie machte und die Wegbeschreibungen, die sie fand. Menschen, Agenten und andere Apps lesen und ändern sie über die Aktionen dieses Pakets. Die Bereiche, die ein Gerät offline behält, sind die des Geräts (die `kept`-Wurzel).
     .noun = { $count ->
         [one] Atlas
        *[other] Atlanten
@@ -293,21 +266,18 @@ d-onljlflv = Meldung
     .doc = Was die Karte gerade tut oder warum das Gefragte nicht geschah.
 
 d-woyw2cxx = Mittelpunkt-Breitengrad
-    .doc = Der Ort, auf dem die Karte aufgeht, und zu dem sie zurückkehrt.
+    .doc = Der Ort, auf dem die Karte aufgeht, und zu dem sie zurückkehrt. Eine neue Karte geht auf München auf, einer Stadt mit Straßen zum Ansehen, statt auf einem leeren Ozean.
 
 d-zwui54r7 = Mittelpunkt-Längengrad
 
 d-4azkiaic = Mittelpunkt-Stufe
-    .doc = Wie nah die Karte aufgeht: die Stufen des Kacheldienstes selbst.
+    .doc = Wie nah die Karte aufgeht: die Stufe der Kamera, wobei 1 ein Weltpixel als ein Bildschirmpixel zeichnet. `tile_zoom` liest sie als die Stufe der Bilder, die sie zeigt.
 
 d-qobzxkm4 = Verkehrslage
     .doc = Ob die Verkehrslage an ist.
 
 d-d54rah5t = Navigation läuft
     .doc = Ob die Person einer Route folgt: die laufende Karte sagt den nächsten Richtungswechsel.
-
-d-c6himdmu = Offline
-    .doc = Die Bereiche, die dieses Gerät für die Offline-Nutzung behält.
 
 d-xlmztacf-filter-traffic = Verkehrslage
 
@@ -504,11 +474,9 @@ d-bhrsd7yu = Meinen Standort verwenden
     .did = fand, wo das Gerät ist
 
 d-odj57cur = Karte zoomen
-    .doc = Zoomt die Karte eine Stufe hinein oder hinaus.
+    .doc = Zoomt die Karte eine Stufe hinein oder hinaus: eine Stufe Bild ist die Kamera-Stufe, verdoppelt oder halbiert.
 
 d-odj57cur-direction = Richtung
-
-d-odj57cur-zoom = Stufe
 
 d-p4xlaipo = Verkehrsmittel wählen
     .doc = Wie die Wegbeschreibung der Karte reist.
@@ -598,7 +566,7 @@ d-wkm57ksg = Verkehrslage zeigen
 d-wkm57ksg-traffic = Verkehrslage
 
 d-b7ntcygp = Diese Ansicht herunterladen
-    .doc = Speichert, was die Karte zeigt, für die Offline-Nutzung: ihren Ausschnitt und die Stufen, deren Kacheln er behält.
+    .doc = Speichert, was die Karte zeigt, für die Offline-Nutzung: den Ausschnitt auf dem Bildschirm und die Stufen, deren Kacheln er behält. Ein Aufrufer nennt den Ausschnitt selbst, wo er einen hat (ein Druck, ein Agent): ohne einen ist es der Ort, auf dem die Karte zentriert ist.
     .did = speicherte, was die Karte zeigt, für offline
 
 d-b7ntcygp-least_zoom = Kleinste Stufe
@@ -614,14 +582,6 @@ d-et5jbxih-query = Suchbegriff
 d-et5jbxih-least_zoom = Kleinste Stufe
 
 d-et5jbxih-most_zoom = Größte Stufe
-
-d-qdxj6r5d = Gespeicherten Stand vermerken
-    .doc = Sagt, wie weit das Speichern eines Bereichs gekommen ist, wie die Karte es meldet.
-    .did = änderte die Karte
-
-d-qdxj6r5d-area = Bereich
-
-d-qdxj6r5d-at = Zeitpunkt
 
 d-o4gfgw3d = Offline-Karte löschen
     .doc = Nimmt einen Bereich weg, den dieses Gerät gespeichert hat.
@@ -642,6 +602,254 @@ d-m7wrwwy3 = Ort gespeichert
 
 d-zbzi5trm = Verkehrslage eingeschaltet
 
+d-sb4mqylm = Aktionen am Ort
+    .w-saved = Gespeichert
+    .w-save = Speichern
+    .w-directions-to-this-place = Wegbeschreibung zu diesem Ort
+    .w-rename-this-place = Diesen Ort umbenennen
+
+d-rfg2gu4h = Zeile eines nahen Ortes
+    .w-directions-to-this-place = Directions to this place
+
+d-dnrz2rhj = Fußzeile
+    .w-openstreetmap-contributors = © OpenStreetMap contributors
+    .w-no-traffic-data = No traffic data
+    .w-zoom = Zoom { $tile_zoom }
+
+d-zrj5mbzs = Wegbeschreibung
+    .w-directions = Directions
+    .w-from = Von
+    .w-to-2 = Nach
+    .w-swap-from-and-to = Von und nach tauschen
+    .w-get-directions = Route berechnen
+    .w-fit-the-map = Karte einpassen
+    .w-to = to { $to_name }
+    .w-another-route = Another route
+    .w-route-of = Route { $value } of { $len }
+    .w-end-navigation = End navigation
+    .w-start-navigation = Start navigation
+    .w-clear-route = Clear route
+    .w-turns = Turns
+    .w-open-a-place-and-ask-for = Open a place and ask for directions to it.
+
+d-fxxzz6k4 = Fahrplan
+    .w-leave-at = Leave at
+    .w-arrive-by = Ankommen bis
+    .w-earlier = Earlier
+    .w-min = { $abs } min
+    .w-later = Later
+    .w-direct = Direct
+    .w-changes = { $transfers } changes
+    .w-another-journey = Another journey
+    .w-clear-transit = Clear transit
+    .w-choose-a-place-to-travel-to = Choose a place to travel to
+
+d-tqnx77nc = Abschnitt einer Fahrt
+    .w-walk-to = Walk to { $to_name }
+    .w-towards = { $line } towards { $headsign }
+
+d-3p2cxc7k = Zeile eines behaltenen Bereichs
+    .w-of-tiles = { $done } von { $total } Kacheln
+    .w-delete-downloaded-area = Heruntergeladenes Gebiet löschen
+    .w-stop-downloading = Download stoppen
+    .w-download-it-again = Erneut herunterladen
+    .w-stopped-what-it-kept-stays-available = Angehalten; was es behalten hat, bleibt offline verfügbar.
+
+d-up2iielj = Hinweiskarte zur Route
+    .w-to-go = { $distance_text } to go
+    .w-continue-on-the-route = Continue on the route
+    .w-end = End
+
+d-ex73ittg = Laufende Navigation
+    .w-continue-on-the-route = Continue on the route
+    .w-end = End
+
+d-wjvabv4j = Ort
+    .w-saved = Gespeichert
+    .w-save = Speichern
+    .w-directions = Wegbeschreibung
+    .w-open-on-the-map = Auf der Karte öffnen
+    .w-rename = Umbenennen
+
+d-fvuozxco = Umbenennen
+    .doc = Benennt einen gespeicherten Ort um; der Name, den eine Suche brachte, bleibt der des Ortes, bis die Person ihm einen anderen gibt.
+    .did = benannte einen Ort um
+    .w-a-place-needs-a-name = Ein Ort braucht einen Namen
+
+d-fvuozxco-name = Name
+
+d-4yfv2cmr = Download stoppen
+    .doc = Stoppt den Download eines Gebiets: die bisher behaltenen Kacheln bleiben offline verfügbar.
+
+d-4yfv2cmr-area = Gebiet
+
+d-xnob7shn = Erneut herunterladen
+    .doc = Startet den Download eines angehaltenen Gebiets erneut und behält, was es schon hat.
+
+d-xnob7shn-area = Gebiet
+
+d-tgiiomgy = Ort umbenennen
+
+d-aokkfyej = Behaltener Bereich
+    .doc = Ein Bereich der Karte, den dieses Gerät für die Offline-Nutzung behält: seine Grenzen, die Stufen, deren Kacheln es behält, und wie weit das Speichern gekommen ist.
+    .noun = { $count ->
+        [one] behaltener Bereich
+       *[other] behaltene Bereiche
+    }
+
+d-ibpdrk45 = Name
+
+d-ukxlhhqi = Schlüssel
+    .doc = Woran die Kachel-Engine ihn kennt: sein Umriss und seine Stufen, damit dasselbe Feld zweimal zu speichern es auffrischt, statt es doppelt zu listen.
+
+d-mxxu653h = Nord
+
+d-qniubcbe = Süd
+
+d-yaeyddn2 = Ost
+
+d-z3kr346y = West
+
+d-wygwldfb = Kleinste Stufe
+
+d-3fo6bsu2 = Größte Stufe
+
+d-2gfef4uc = Kacheln
+    .doc = Die Kacheln, die der Bereich hält.
+
+d-ukhwybsm = Fertig
+    .doc = Wie viele davon auf dem Gerät liegen.
+
+d-x6eit2xc = Angehalten
+    .doc = Ob die Person den Download gestoppt hat; die bisher behaltenen Kacheln bleiben auf dem Gerät.
+
+d-7s2dgers = Auftrag
+    .doc = Der Auftrag, der ihn behält, solange einer läuft.
+
+d-ac74uw22 = Behaltene Bereiche
+    .doc = Die Bereiche, die dieses Gerät offline behält. Sie sind die des Geräts, nicht des Arbeitsbereichs: die Bilder liegen auf diesem Rechner, also ist gelistet, was er hält.
+    .noun = { $count ->
+        [one] behaltener Bereich
+       *[other] behaltene Bereiche
+    }
+
+d-id2odelq = Bereiche
+
+d-2uitcgow = Speicheranfrage
+    .doc = Was die Kachel-Engine behalten soll: ein Feld der Karte auf den Stufen, deren Kacheln es behält, von der Adresse, von der die Bilder der Karte kommen.
+    .noun = { $count ->
+        [one] Speicheranfrage
+       *[other] Speicheranfragen
+    }
+
+d-uebjyxpv = Kennung
+
+d-bomeo3ju = Name
+
+d-3p6krsqd = Nord
+
+d-qa5rfbrz = Süd
+
+d-kn7knr7e = Ost
+
+d-tgv5i2z6 = West
+
+d-u4sjgx7w = Kleinste Stufe
+
+d-xqoyoobw = Größte Stufe
+
+d-z3a4l3gz = Kartenadresse
+
+d-2uitcgow-filter-north = Nord
+
+d-2uitcgow-filter-south = Süd
+
+d-2uitcgow-filter-east = Ost
+
+d-2uitcgow-filter-west = West
+
+d-2uitcgow-filter-least_zoom = Kleinste Stufe
+
+d-2uitcgow-filter-most_zoom = Größte Stufe
+
+d-dpkpvjwm = Löschanfrage
+    .doc = Was die Kachel-Engine aufgeben soll.
+    .noun = { $count ->
+        [one] Löschanfrage
+       *[other] Löschanfragen
+    }
+
+d-atq5mwsp = Kennung
+
+d-uhzshugn = Speicherstart
+    .doc = Was die Kachel-Engine antwortet, wenn der Download eines Bereichs beginnt.
+    .noun = { $count ->
+        [one] Speicherstart
+       *[other] Speicherstarts
+    }
+
+d-kix2eeda = Auftrag
+
+d-j7jfssav = Speicherstand
+    .doc = Wie weit das Behalten eines Bereichs gekommen ist oder warum es endete, wie sein Auftrag sagt.
+    .noun = { $count ->
+        [one] Speicherstand
+       *[other] Speicherstände
+    }
+
+d-sbuvlugc = Zustand
+
+d-krb5phdh = Behalten
+
+d-j6wtgiqo = Gesamt
+
+d-nsfzbnns = Fehler
+
+d-j7jfssav-filter-saved = Behalten
+
+d-j7jfssav-filter-total = Gesamt
+
+d-dwnai5f7 = Maßstab
+    .doc = Die Anzeige eines Entfernungsbalkens: wie weit er steht und wie viele logische Pixel er breit ist.
+    .noun = { $count ->
+        [one] Maßstab
+       *[other] Maßstäbe
+    }
+
+d-izgrst56 = Beschriftung
+
+d-o2aq6igf = Pixel
+
+d-dwnai5f7-filter-pixels = Pixel
+
+d-57k4wlhv = Karte einpassen
+    .doc = Zeigt alles, was die Karte hält: die Route, die sie zeichnet, oder jeden Ort, den sie kennt.
+
+d-b7ntcygp-north = Nord
+
+d-b7ntcygp-south = Süd
+
+d-b7ntcygp-east = Ost
+
+d-b7ntcygp-west = West
+
+d-bexeq5im = Bereich behalten
+    .doc = Behält „area“ auf diesem Gerät und ersetzt einen Bereich mit demselben Umriss oder Namen; beginnt seinen Download.
+
+d-bexeq5im-area = Bereich
+
+d-mrlsjclt = Bereich speichern
+    .doc = Beginnt, die Kacheln von „area“ zu behalten, als Auftrag, dessen Stand sagt, wie weit es gekommen ist.
+
+d-mrlsjclt-area = Bereich
+
+d-l4j52bmq = Bereich gespeichert
+    .doc = Womit der Download eines Bereichs endete: was er behalten hat oder dass die Person ihn gestoppt hat.
+
+d-l4j52bmq-area = Bereich
+
+d-l4j52bmq-outcome = Ergebnis
+
 d-oeeojlox = Karte
     .w-search-places = Search places
     .w-results = Results
@@ -658,7 +866,6 @@ d-oeeojlox = Karte
     .w-recent-searches = Recent searches
     .w-clear = Clear
     .w-map = Map
-    .w-https-tile-openstreetmap-org-z-x = https://tile.openstreetmap.org/%z/%x/%y.png
     .w-search-for-a-place-to-see = Search for a place to see it on the map
     .w-zoom-in = Zoom in
     .w-zoom-out = Zoom out
@@ -686,88 +893,3 @@ d-oeeojlox = Karte
     .w-map-data-and-map-tiles-openstreetmap = Map data and map tiles © OpenStreetMap contributors.
     .w-the-map-data-is-openstreetmap-contributors = The map data is © OpenStreetMap contributors, available under the Open Database License (ODbL). The map tiles are OpenStreetMap Standard tiles, used under the OpenStreetMap Foundation's tile usage policy.
 
-d-sb4mqylm = Aktionen am Ort
-    .w-saved = Gespeichert
-    .w-save = Speichern
-    .w-directions-to-this-place = Wegbeschreibung zu diesem Ort
-    .w-rename-this-place = Diesen Ort umbenennen
-
-d-rfg2gu4h = Zeile eines nahen Ortes
-    .w-directions-to-this-place = Directions to this place
-
-d-dnrz2rhj = Fußzeile
-    .w-openstreetmap-contributors = © OpenStreetMap contributors
-    .w-no-traffic-data = No traffic data
-    .w-zoom = Zoom { $round }
-
-d-zrj5mbzs = Wegbeschreibung
-    .w-directions = Directions
-    .w-to = to { $to_name }
-    .w-another-route = Another route
-    .w-route-of = Route { $value } of { $len }
-    .w-end-navigation = End navigation
-    .w-start-navigation = Start navigation
-    .w-clear-route = Clear route
-    .w-turns = Turns
-    .w-open-a-place-and-ask-for = Open a place and ask for directions to it.
-
-d-fxxzz6k4 = Fahrplan
-    .w-leave-at = Leave at
-    .w-arrive-by = Ankommen bis
-    .w-earlier = Earlier
-    .w-min = { $abs } min
-    .w-later = Later
-    .w-direct = Direct
-    .w-changes = { $transfers } changes
-    .w-another-journey = Another journey
-    .w-clear-transit = Clear transit
-    .w-choose-a-place-to-travel-to = Choose a place to travel to
-
-d-tqnx77nc = Abschnitt einer Fahrt
-    .w-walk-to = Walk to { $to_name }
-    .w-towards = { $line } towards { $headsign }
-
-d-3p2cxc7k = Zeile einer Offline-Karte
-    .w-of-tiles = { $done } von { $tiles } Kacheln
-    .w-delete-downloaded-area = Heruntergeladenes Gebiet löschen
-    .w-stop-downloading = Download stoppen
-    .w-download-it-again = Erneut herunterladen
-    .w-stopped-what-it-kept-stays-available = Angehalten; was es behalten hat, bleibt offline verfügbar.
-
-d-up2iielj = Hinweiskarte zur Route
-    .w-to-go = { $distance_text } to go
-    .w-continue-on-the-route = Continue on the route
-    .w-end = End
-
-d-ex73ittg = Laufende Navigation
-    .w-continue-on-the-route = Continue on the route
-    .w-end = End
-
-d-wjvabv4j = Ort
-    .w-saved = Gespeichert
-    .w-save = Speichern
-    .w-directions = Wegbeschreibung
-    .w-open-on-the-map = Auf der Karte öffnen
-    .w-rename = Umbenennen
-
-d-2as5emqc = Angehalten
-    .doc = Ob die Person den Download gestoppt hat; die bisher behaltenen Kacheln bleiben auf dem Gerät.
-
-d-fvuozxco = Umbenennen
-    .doc = Benennt einen gespeicherten Ort um; der Name, den eine Suche brachte, bleibt der des Ortes, bis die Person ihm einen anderen gibt.
-    .did = benannte einen Ort um
-    .w-a-place-needs-a-name = Ein Ort braucht einen Namen
-
-d-fvuozxco-name = Name
-
-d-4yfv2cmr = Download stoppen
-    .doc = Stoppt den Download eines Gebiets: die bisher behaltenen Kacheln bleiben offline verfügbar.
-
-d-4yfv2cmr-area = Gebiet
-
-d-xnob7shn = Erneut herunterladen
-    .doc = Startet den Download eines angehaltenen Gebiets erneut und behält, was es schon hat.
-
-d-xnob7shn-area = Gebiet
-
-d-tgiiomgy = Ort umbenennen

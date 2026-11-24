@@ -54,8 +54,16 @@ pub const MAP_ZOOM_MAX: f64 = 2.5;
 /// so a map of every place stands in view at once.
 pub const MAP_ZOOM_WORLD_MIN: f64 = 1_600.0 / MERCATOR_WORLD;
 
+/// The closest a map of the world draws in: the tile servers' closest level (19), where a screen
+/// shows a street. A canvas keeps [`MAP_ZOOM_MAX`], which is far enough to read a note.
+pub const MAP_ZOOM_WORLD_MAX: f64 = 128.0;
+
 /// How much one wheel notch zooms, when a gesture zooms over the map.
 const ZOOM_PER_DETENT: f64 = 1.1;
+
+/// How long the camera must stand still before a move of the person's is over: the notches of one
+/// wheel turn, a zoom's last frame and a drag's last pixels arrive together.
+const REST_AFTER: crate::time::Duration = crate::time::Duration::from_millis(150);
 
 /// A basemap tile's side, in pixels of the tile server's own imagery: the size a tile is at when
 /// the camera takes a tile's pixel for a screen pixel.
@@ -67,10 +75,6 @@ const TILE_ZOOM_MOST: i64 = 19;
 /// How many levels up a map looks for a loaded tile to stand under one still on its way: at a
 /// fresh zoom a coarser tile covers the screen while the sharp ones load.
 const TILE_FALLBACK_LEVELS: i64 = 4;
-
-/// How many tiles of the areas it keeps offline a map asks for in one frame, while nothing it
-/// shows is loading: enough to save an area steadily without starving the imagery on screen.
-const AREA_TILES_A_FRAME: usize = 2;
 
 /// A marker's dot, and the ring it stands in, in logical pixels on screen: a place a person
 /// points at, the same size at every zoom.
@@ -250,11 +254,6 @@ pub struct MapProps {
     /// it (`marker`); the view opens what it is.
     #[component(part)]
     pub markers: Vec<MapMarkerProps>,
-    /// The areas of the map this device keeps for offline use: every tile of them at its zoom
-    /// levels loads and stays on the device, so what a person saved shows when nothing reaches
-    /// the network. The map asks for them a few at a time, behind what it shows.
-    #[component(part)]
-    pub areas: Vec<MapAreaProps>,
     /// A resource was dragged onto the map and let go: carries the resource the drag carried,
     /// as its address, and where it was let go — its canvas x, then its canvas y. The view
     /// decides what to do with it; the shell's canvas places it there.
@@ -313,6 +312,13 @@ pub struct MapProps {
     pub longitude: Option<f64>,
     /// The zoom the map opens at, about its centre (`latitude`, `longitude`).
     pub zoom: Option<f64>,
+    /// The camera came to rest where the person left it: carries the place at its middle as its
+    /// latitude then its longitude, the zoom it shows, and what it shows at its edges as its
+    /// northern, southern, eastern and western degrees, in that order. Reported once each time a
+    /// pan, pinch, wheel or key move ends, and never for a move the view itself set, so a view
+    /// that saves what the person sees knows where they are looking.
+    #[component(event(value = Vec<f64>))]
+    pub rest: Event,
     /// The pointer pressed the map's empty surface and let go there, a click: carries the place
     /// under it, its latitude then its longitude, for a map centred on a place.
     #[component(event(value = Vec<f64>))]
@@ -322,11 +328,6 @@ pub struct MapProps {
     /// is; the map reports nothing of its own for that press.
     #[component(event(value = String))]
     pub marker: Event,
-    /// How far an area it keeps offline has come: carries the area's name (its key where it has
-    /// none), and how many of its tiles are done of how many. Reported as the tiles are asked for, a few frames apart, and
-    /// once more when every one is done.
-    #[component(event(value = String, at = Vec<i64>))]
-    pub saved: Event,
     /// Whether a press on its empty surface runs now.
     pub enabled: bool,
     /// Why it cannot be pressed now, where the name does not say (an action whose requirement
@@ -345,7 +346,6 @@ impl Default for MapProps {
             pins: Vec::new(),
             tracks: Vec::new(),
             markers: Vec::new(),
-            areas: Vec::new(),
             drop: Event::None,
             press: Event::None,
             frame: Event::None,
@@ -358,9 +358,9 @@ impl Default for MapProps {
             latitude: None,
             longitude: None,
             zoom: None,
+            rest: Event::None,
             at: Event::None,
             marker: Event::None,
-            saved: Event::None,
             enabled: true,
             description: None,
         }
@@ -553,182 +553,6 @@ pub struct MapMarkerProps {
 
 crate::component::part_type!(MapMarkerProps);
 
-/// An area of the map this device keeps for offline use: its bounds in degrees, and the zoom
-/// levels whose tiles it keeps.
-#[derive(Component, Default)]
-#[component(name = "MapArea", role = "Group", label = "name")]
-pub struct MapAreaProps {
-    /// The area's stable key.
-    #[component(key)]
-    pub key: String,
-    /// What it is called, for assistive technology.
-    pub name: Option<String>,
-    /// The latitude of the area's northern edge, in degrees.
-    #[component(required)]
-    pub north: f64,
-    /// The latitude of the area's southern edge, in degrees.
-    #[component(required)]
-    pub south: f64,
-    /// The longitude of the area's eastern edge, in degrees.
-    #[component(required)]
-    pub east: f64,
-    /// The longitude of the area's western edge, in degrees.
-    #[component(required)]
-    pub west: f64,
-    /// The furthest zoom level out whose tiles it keeps, as the basemap's own `%z`.
-    pub least_zoom: Option<i64>,
-    /// The closest zoom level in whose tiles it keeps, as the basemap's own `%z`.
-    pub most_zoom: Option<i64>,
-}
-
-crate::component::part_type!(MapAreaProps);
-
-/// An area of the map a view keeps offline, as the map holds it.
-#[derive(Clone, Debug, PartialEq)]
-struct MapArea {
-    key: String,
-    /// What the view calls it, which reporting it names; its key where it has no name.
-    name: Option<String>,
-    north: f64,
-    south: f64,
-    east: f64,
-    west: f64,
-    least: i64,
-    most: i64,
-}
-
-impl MapArea {
-    fn of(area: MapAreaProps) -> Self {
-        Self {
-            key: area.key,
-            name: area.name.filter(|name| !name.is_empty()),
-            north: area.north,
-            south: area.south,
-            east: area.east,
-            west: area.west,
-            least: area.least_zoom.unwrap_or(2).clamp(0, TILE_ZOOM_MOST),
-            most: area.most_zoom.unwrap_or(16).clamp(0, TILE_ZOOM_MOST),
-        }
-    }
-
-    /// The tiles of level `z` the area covers, as its first and last column and row: the columns
-    /// wrapped, and the rows the projection's own edge.
-    fn tiles_at(&self, z: i64) -> (i64, i64, i64, i64) {
-        let columns = 1_i64 << z.clamp(0, TILE_ZOOM_MOST);
-        let column = |longitude: f64| ((longitude + 180.0) / 360.0).rem_euclid(1.0);
-        let row = |latitude: f64| {
-            let lat = latitude
-                .clamp(-MERCATOR_MAX_LAT, MERCATOR_MAX_LAT)
-                .to_radians();
-            let sine = lat.sin();
-            0.5 - ((1.0 + sine) / (1.0 - sine)).ln() / (4.0 * std::f64::consts::PI)
-        };
-        let west = column(self.west.min(self.east));
-        let east = column(self.west.max(self.east));
-        let first_x = (west * columns as f64).floor() as i64;
-        let last_x = (east * columns as f64).ceil() as i64;
-        let first_y = (row(self.north.max(self.south)) * columns as f64)
-            .floor()
-            .clamp(0.0, (columns - 1) as f64) as i64;
-        let last_y = (row(self.north.min(self.south)) * columns as f64)
-            .ceil()
-            .clamp((first_y + 1) as f64, columns as f64) as i64;
-        (first_x, last_x.max(first_x + 1), first_y, last_y)
-    }
-}
-
-/// How far asking for one area's tiles has come: the area's places, the level it is on, and the
-/// column and row of the next tile of it.
-#[derive(Clone, Debug)]
-struct Prefetch {
-    key: String,
-    area: MapArea,
-    z: i64,
-    x: i64,
-    y: i64,
-    first_x: i64,
-    last_x: i64,
-    first_y: i64,
-    last_y: i64,
-    done: i64,
-    total: i64,
-    report_at: i64,
-    report_every: i64,
-}
-
-impl Prefetch {
-    fn of(area: &MapArea) -> Self {
-        let mut total = 0;
-        for z in area.least..=area.most {
-            let (first_x, last_x, first_y, last_y) = area.tiles_at(z);
-            total += (last_x - first_x).max(1) * (last_y - first_y).max(1);
-        }
-        let mut prefetch = Self {
-            key: area.key.clone(),
-            area: area.clone(),
-            z: area.least,
-            x: 0,
-            y: 0,
-            first_x: 0,
-            last_x: 0,
-            first_y: 0,
-            last_y: 0,
-            done: 0,
-            total,
-            report_at: (total / 20).max(1),
-            report_every: (total / 20).max(1),
-        };
-        prefetch.start_level();
-        prefetch
-    }
-
-    /// The bounds of the level it is on, and its first tile.
-    fn start_level(&mut self) {
-        let (first_x, last_x, first_y, last_y) = self.area.tiles_at(self.z);
-        self.first_x = first_x;
-        self.last_x = last_x;
-        self.first_y = first_y;
-        self.last_y = last_y;
-        self.x = first_x;
-        self.y = first_y;
-    }
-
-    /// The next tile to ask for, as its level, column and row, or none once they are all asked
-    /// for.
-    fn next(&mut self) -> Option<(i64, i64, i64)> {
-        if self.z > self.area.most {
-            return None;
-        }
-        let columns = 1_i64 << self.z.clamp(0, TILE_ZOOM_MOST);
-        let asked = (self.z, self.x.rem_euclid(columns), self.y);
-        self.x += 1;
-        if self.x >= self.last_x {
-            self.x = self.first_x;
-            self.y += 1;
-            if self.y >= self.last_y {
-                self.z += 1;
-                if self.z <= self.area.most {
-                    self.start_level();
-                }
-            }
-        }
-        Some(asked)
-    }
-
-    fn seen(&mut self) {
-        self.done += 1;
-    }
-
-    fn should_report(&mut self) -> bool {
-        if self.done >= self.report_at {
-            self.report_at = self.done + self.report_every;
-            true
-        } else {
-            false
-        }
-    }
-}
-
 /// A press that may become a pan.
 #[derive(Clone, Copy, Debug)]
 struct Pan {
@@ -920,16 +744,12 @@ pub struct Map {
         Option<String>,
         Option<crate::component::Person>,
     )>,
-    /// The areas kept for offline use.
-    areas: Vec<MapArea>,
-    /// The areas whose tiles the map has asked for, so an area is saved once and reported once.
-    saved_areas: Vec<String>,
+    /// What the camera reports when the person's own move ends.
+    rest: Event,
+    /// When the camera is to be called at rest, once it has stood still that long.
+    rest_due: Option<crate::time::Instant>,
     /// What a click on a marker reports.
     marker_event: Event,
-    /// What an area kept offline reports as it is saved.
-    saved: Event,
-    /// How far the map has come asking for the tiles of the area it keeps offline now.
-    prefetch: Option<Prefetch>,
     /// The view set a new centre since the map was last laid out: centre it once, next layout.
     recentre: bool,
     /// The edge or corner being dragged, until it is let go.
@@ -1080,11 +900,9 @@ impl Map {
             basemap: None,
             tracks: Vec::new(),
             markers: Vec::new(),
-            areas: Vec::new(),
-            saved_areas: Vec::new(),
+            rest: Event::None,
+            rest_due: None,
             marker_event: Event::None,
-            saved: Event::None,
-            prefetch: None,
             recentre: false,
             edge_drag: None,
             outline: None,
@@ -1133,15 +951,42 @@ impl Map {
         }
     }
 
+    /// The person moved the camera: the lens is theirs now, and it comes to rest once it has
+    /// stood still for [`REST_AFTER`], which the map then reports (`rest`).
+    fn camera_moved(&mut self, camera: MapCamera) {
+        self.pan_by_hand(camera);
+        self.rest_due = Some(crate::motion::frame_now() + REST_AFTER);
+    }
+
+    /// Report where the camera came to rest: the place at its middle, its zoom, and the degrees
+    /// at what it shows are its northern, southern, eastern and western edges.
+    fn report_rest(&mut self) {
+        let corner = self.rect.origin();
+        let camera = self.camera;
+        let (latitude, longitude) =
+            mercator_unproject(camera.to_canvas(corner, self.rect.center()));
+        let (north, west) = mercator_unproject(camera.to_canvas(corner, corner));
+        let (south, east) =
+            mercator_unproject(camera.to_canvas(corner, Point::new(self.rect.x1, self.rect.y1)));
+        self.rest.fire(Some(crate::component::Value::List(vec![
+            crate::component::Value::Float(latitude),
+            crate::component::Value::Float(longitude),
+            crate::component::Value::Float(camera.zoom),
+            crate::component::Value::Float(north),
+            crate::component::Value::Float(south),
+            crate::component::Value::Float(east),
+            crate::component::Value::Float(west),
+        ])));
+    }
+
     /// The closest and furthest the camera draws this map back and in: a canvas keeps
     /// [`MAP_ZOOM_MIN`], a map of the world draws back to the whole world.
     fn zoom_limits(&self) -> (f64, f64) {
-        let least = if self.world {
-            MAP_ZOOM_WORLD_MIN
+        if self.world {
+            (MAP_ZOOM_WORLD_MIN, MAP_ZOOM_WORLD_MAX)
         } else {
-            MAP_ZOOM_MIN
-        };
-        (least, MAP_ZOOM_MAX)
+            (MAP_ZOOM_MIN, MAP_ZOOM_MAX)
+        }
     }
 
     /// Zoom `camera` by `factor` about the screen point `about`, within this map's own limits.
@@ -1777,7 +1622,6 @@ impl Described for Map {
             pins,
             tracks,
             markers,
-            areas,
             drop,
             press,
             frame,
@@ -1790,9 +1634,9 @@ impl Described for Map {
             latitude,
             longitude,
             zoom,
+            rest,
             at,
             marker,
-            saved,
             enabled,
             description,
         } = props;
@@ -1811,8 +1655,8 @@ impl Described for Map {
         map.frame = frame;
         map.context = context;
         map.at = at;
+        map.rest = rest;
         map.marker_event = marker;
-        map.saved = saved;
         map.enabled = enabled;
         map.description = description;
         map.basemap = basemap.filter(|template| template.contains("%z"));
@@ -1846,7 +1690,6 @@ impl Described for Map {
                 )
             })
             .collect();
-        map.areas = areas.into_iter().map(MapArea::of).collect();
         map.focus = latitude.zip(longitude);
         // A map of the world opens showing the world; a canvas keeps the camera's own zoom.
         map.focus_zoom = if world {
@@ -1900,7 +1743,6 @@ impl Described for Map {
             pins,
             tracks,
             markers,
-            areas,
             drop,
             press,
             frame,
@@ -1913,9 +1755,9 @@ impl Described for Map {
             latitude,
             longitude,
             zoom,
+            rest,
             at,
             marker,
-            saved,
             enabled,
             description,
         } = props;
@@ -1966,14 +1808,8 @@ impl Described for Map {
             self.markers = markers;
             self.dirty = true;
         }
-        let areas: Vec<MapArea> = areas.into_iter().map(MapArea::of).collect();
-        if areas != self.areas {
-            self.areas = areas;
-            self.saved_areas.clear();
-            self.prefetch = None;
-        }
+        self.rest = rest;
         self.marker_event = marker;
-        self.saved = saved;
         self.resize = resize;
         self.seen = seen;
         self.drawn = drawn;
@@ -2455,82 +2291,6 @@ impl Map {
         }
     }
 
-    /// Ask for the tiles of the areas the map keeps offline, a couple at a time while nothing
-    /// the map shows is still loading, and say how far each area has come (`saved`). The host's
-    /// picture fetcher keeps them on the device (`crate::pictures::set_remote_fetcher`), so what
-    /// a person saved shows when nothing reaches the network.
-    fn ask_for_areas(&mut self, pictures: &crate::pictures::Pictures) {
-        let Some(basemap) = self.basemap.clone() else {
-            return;
-        };
-        if self.areas.is_empty() {
-            self.prefetch = None;
-            self.saved_areas.clear();
-            return;
-        }
-        // An area the map no longer holds is not saved: it is asked for again when it comes back.
-        let keys: Vec<String> = self.areas.iter().map(|area| area.key.clone()).collect();
-        self.saved_areas.retain(|key| keys.contains(key));
-        // One area at a time, the first that still wants tiles, so each finishes and says so.
-        let wanted = self
-            .areas
-            .iter()
-            .find(|area| !self.saved_areas.contains(&area.key))
-            .cloned();
-        if let Some(area) = &wanted {
-            if self.prefetch.as_ref().is_none_or(|p| p.key != area.key) {
-                self.prefetch = Some(Prefetch::of(area));
-            }
-        } else {
-            self.prefetch = None;
-        }
-        // Nothing the person looks at waits behind a download: only an idle store takes more.
-        if pictures.store().pending() > 0 {
-            return;
-        }
-        let mut asked = 0;
-        while asked < AREA_TILES_A_FRAME {
-            let Some(prefetch) = self.prefetch.as_mut() else {
-                return;
-            };
-            let Some((z, x, y)) = prefetch.next() else {
-                let key = prefetch.key.clone();
-                let named = prefetch.area.name.clone().unwrap_or_else(|| key.clone());
-                let total = prefetch.total;
-                self.saved_areas.push(key);
-                self.prefetch = None;
-                self.saved.fire(Some(crate::component::Value::List(vec![
-                    crate::component::Value::Text(named),
-                    crate::component::Value::List(vec![
-                        crate::component::Value::Int(total),
-                        crate::component::Value::Int(total),
-                    ]),
-                ])));
-                return;
-            };
-            let source = crate::widget::PictureSource {
-                src: Self::tile_address(&basemap, z, x, y),
-            };
-            if !pictures.store().is_known(&source.src) {
-                // The store admits it, and its worker fetches and keeps it off the drawing
-                // thread.
-                let _ = pictures.get(&source);
-                asked += 1;
-            }
-            prefetch.seen();
-            if prefetch.should_report() {
-                let (key, done, total) = (prefetch.key.clone(), prefetch.done, prefetch.total);
-                self.saved.fire(Some(crate::component::Value::List(vec![
-                    crate::component::Value::Text(key),
-                    crate::component::Value::List(vec![
-                        crate::component::Value::Int(done),
-                        crate::component::Value::Int(total),
-                    ]),
-                ])));
-            }
-        }
-    }
-
     /// The lines across the map, under its markers and pins: each through the places it names,
     /// in its tone's ink. A line is drawn in canvas pixels, so it keeps its width on the ground
     /// and grows on screen as the person zooms in.
@@ -2773,7 +2533,7 @@ impl Map {
                 }
                 let mut camera = self.camera;
                 camera.pan_by(by);
-                self.pan_by_hand(camera);
+                self.camera_moved(camera);
                 *ctx.handled = true;
             }
             // A pinch, on a touchscreen or a touchpad, zooms about the fingers, as Ctrl and a
@@ -2786,7 +2546,7 @@ impl Map {
                 let about = self.cursor;
                 let mut camera = self.camera;
                 self.zoom_camera(&mut camera, corner, about, 1.0 + *delta);
-                self.set_camera(camera);
+                self.camera_moved(camera);
                 *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -2801,7 +2561,7 @@ impl Map {
                 let about = self.cursor;
                 let mut camera = self.camera;
                 self.zoom_camera(&mut camera, corner, about, ZOOM_PER_DETENT.powf(notches));
-                self.set_camera(camera);
+                self.camera_moved(camera);
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -2848,7 +2608,7 @@ impl Map {
                 self.pan = Some(pan);
                 let mut camera = pan.camera;
                 camera.pan_by(travelled);
-                self.pan_by_hand(camera);
+                self.camera_moved(camera);
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -2876,7 +2636,7 @@ impl Map {
                 if let Some(delta) = delta {
                     let mut camera = self.camera;
                     camera.pan_by(delta);
-                    self.pan_by_hand(camera);
+                    self.camera_moved(camera);
                     *ctx.handled = true;
                 }
             }
@@ -3052,14 +2812,14 @@ impl Map {
                         TouchGestureEvent::Pan { fingers, delta } if fingers >= 2 => {
                             let mut camera = self.camera;
                             camera.pan_by(Vec2::new(delta.0, delta.1));
-                            self.pan_by_hand(camera);
+                            self.camera_moved(camera);
                             *ctx.handled = true;
                         }
                         TouchGestureEvent::Pinch { center, scale, .. } => {
                             let corner = self.rect.origin();
                             let mut camera = self.camera;
                             self.zoom_camera(&mut camera, corner, center, scale);
-                            self.set_camera(camera);
+                            self.camera_moved(camera);
                             *ctx.handled = true;
                         }
                         _ => {}
@@ -3128,6 +2888,7 @@ impl Widget for Map {
     fn needs_animation_frame(&self) -> bool {
         let now = crate::motion::frame_now();
         self.moved
+            || self.rest_due.is_some()
             || self.glide.is_some_and(|glide| glide.is_gliding(now))
             || self.pins_moving(now)
             || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
@@ -3247,7 +3008,6 @@ impl Widget for Map {
         }
         let pictures = crate::pictures::Pictures::window();
         self.draw_basemap(scene, transform, &pictures);
-        self.ask_for_areas(&pictures);
         self.draw_tracks(scene, transform, theme);
         self.draw_markers(scene, transform, text, theme, &env);
         self.draw_hint(scene, transform, text, theme);
@@ -3394,6 +3154,13 @@ impl Widget for Map {
         }
         self.moved = moving;
         let mut changed = false;
+        if let Some(due) = self.rest_due
+            && now >= due
+        {
+            self.rest_due = None;
+            self.report_rest();
+            changed = true;
+        }
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
         }

@@ -8,9 +8,10 @@ mod cases {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::rc::Rc;
+    use std::sync::Arc;
 
     use crate::common::*;
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, Push};
     use tilolang_runtime::ids::MemberId;
     use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
@@ -108,37 +109,104 @@ mod cases {
         }
     }
 
-    /// The device's location service, as `engine.call("maps.locate")` reaches it.
+    /// The device's location and tiles work, as the maps engine answers it: what was asked, what
+    /// the area downloads were given, and the record each job pushes.
     #[derive(Clone, Default)]
     struct Engine {
         asked: Rc<RefCell<Vec<String>>>,
         /// Whether the device can say where it is.
         found: Rc<RefCell<bool>>,
+        /// The jobs started, each its id and the ask it was given.
+        started: Rc<RefCell<Vec<(String, String)>>>,
+        /// The record each job was handed, by its id.
+        pushes: Rc<RefCell<Vec<(String, Arc<dyn Push>)>>>,
+        /// The jobs the app stopped.
+        cancelled: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Engine {
+        /// The area download started last: its job and the ask it was given.
+        fn last(&self) -> (String, String) {
+            self.started
+                .borrow()
+                .last()
+                .cloned()
+                .expect("an area download started")
+        }
+
+        /// How far the job `job` says it has come.
+        fn says(&self, job: &str, record: &serde_json::Value) {
+            let push = self
+                .pushes
+                .borrow()
+                .iter()
+                .find(|(held, _)| held.as_str() == job)
+                .map(|(_, push)| Arc::clone(push))
+                .expect("the job was handed its record");
+            push.state(job, &record.to_string());
+        }
+
+        /// The job ends, saying what it kept last.
+        fn ends(&self, job: &str, record: &serde_json::Value) {
+            let push = self
+                .pushes
+                .borrow()
+                .iter()
+                .find(|(held, _)| held.as_str() == job)
+                .map(|(_, push)| Arc::clone(push))
+                .expect("the job was handed its record");
+            push.ended(job, &record.to_string());
+        }
     }
 
     impl EngineHost for Engine {
         fn call(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
             self.asked.borrow_mut().push(op.to_owned());
-            if op != "maps.locate" {
-                return Err(format!("`{op}` is no op this device runs"));
-            }
-            if *self.found.borrow() {
-                Ok(r#"{"lat":48.1374,"lon":11.5755}"#.to_owned())
-            } else {
-                Ok(r#"{"why":"Location is unavailable right now"}"#.to_owned())
+            match op {
+                "maps.locate" => {
+                    if *self.found.borrow() {
+                        Ok(r#"{"lat":48.1374,"lon":11.5755}"#.to_owned())
+                    } else {
+                        Ok(r#"{"why":"Location is unavailable right now"}"#.to_owned())
+                    }
+                }
+                "forget-area" => Ok(r#"{"freed":1024}"#.to_owned()),
+                "clear-saved" => Ok(r#"{"freed":4096}"#.to_owned()),
+                "kept-areas" => Ok("[]".to_owned()),
+                _ => Err(format!("`{op}` is no op this device runs")),
             }
         }
 
         fn start(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
-            Err(format!("`{op}` starts no job"))
+            Err(format!("`{op}` starts no job without its record"))
+        }
+
+        fn start_held(
+            &self,
+            app: &str,
+            op: &str,
+            input: &str,
+            push: Arc<dyn Push>,
+        ) -> Result<String, String> {
+            assert_eq!(app, "so.tilo.maps");
+            assert_eq!(op, "save-area");
+            let job = format!("save-area-{}", self.started.borrow().len() + 1);
+            self.started
+                .borrow_mut()
+                .push((job.clone(), input.to_owned()));
+            self.pushes.borrow_mut().push((job.clone(), push));
+            Ok(serde_json::json!({ "job": job }).to_string())
         }
 
         fn status(&self, job: &str) -> Result<String, String> {
-            Err(format!("no job `{job}`"))
+            Err(format!(
+                "the window reads job `{job}` from its record, never by asking"
+            ))
         }
 
-        fn cancel(&self, _job: &str) -> bool {
-            false
+        fn cancel(&self, job: &str) -> bool {
+            self.cancelled.borrow_mut().push(job.to_owned());
+            true
         }
     }
 
@@ -161,6 +229,20 @@ mod cases {
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);
             let root = rt.create_root("Atlas").unwrap();
+            // What this device keeps offline, as opening the app makes it.
+            let kept_ty = app
+                .meta()
+                .types
+                .iter()
+                .find(|declared| declared.name == "KeptAreas")
+                .expect("the kept areas type")
+                .id
+                .clone();
+            rt.create_root_at(
+                &format!("devices/local/{}/root-{kept_ty}", app.meta().app),
+                &kept_ty,
+            )
+            .expect("the device's kept areas");
             Self {
                 rt,
                 app,
@@ -299,8 +381,18 @@ mod cases {
             self.records(&self.root, "journeys")
         }
 
+        /// The areas this device keeps offline, as its own root lists them.
         fn offline(&self) -> Vec<ResourceRef> {
-            self.records(&self.root, "offline")
+            let meta = self.app.meta();
+            let ty = meta
+                .types
+                .iter()
+                .find(|declared| declared.name == "KeptAreas")
+                .expect("the kept areas type")
+                .id
+                .clone();
+            let root = ResourceRef::root(format!("devices/local/{}/root-{ty}", meta.app), ty);
+            self.records(&root, "kept")
         }
 
         fn pois(&self) -> Vec<ResourceRef> {
@@ -535,10 +627,18 @@ mod cases {
                 Value::Text("Café Glockenspiel".to_owned()),
             ],
         );
+        let asked = m.web.asked();
+        let transit = asked
+            .iter()
+            .find(|url| url.contains("transitous"))
+            .unwrap_or_else(|| panic!("the transit service was asked: {asked:?}"));
         assert!(
-            m.web.asked().iter().any(|url| url.contains("arriveBy=true")),
-            "the service is asked for a time to arrive by: {:?}",
-            m.web.asked()
+            transit.contains("arriveBy=true"),
+            "the service is asked for a time to arrive by: {transit}"
+        );
+        assert!(
+            transit.contains("time=2026-11-24T09:30:00Z"),
+            "the moment the person chose reaches the service: {transit}"
         );
     }
 
@@ -606,46 +706,131 @@ mod cases {
         );
     }
 
-    phase an_offline_area_counts_its_tiles_and_says_how_far_it_got;
+    phase an_area_is_kept_on_the_device_listed_and_removed;
     {
         let m = Maps::new();
         m.call(
             "download_view",
-            vec![Value::resource(&m.root), Value::Int(10), Value::Int(12)],
-        );
-        let areas = m.offline();
-        assert_eq!(areas.len(), 1);
-        let area = areas[0].clone();
-        let tiles = m.float(&area, "tiles");
-        assert!(tiles > 0.0, "the area holds tiles: {tiles}");
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the area's tiles are far inside i64"
-        )]
-        let tile_count = tiles as i64;
-        // The map says how far saving it has come; the last report says it is ready.
-        m.call(
-            "note_saved",
             vec![
                 Value::resource(&m.root),
-                Value::Text("This view".to_owned()),
-                Value::List(vec![Value::Int(tile_count), Value::Int(tile_count)]),
+                Value::Float(48.18),
+                Value::Float(48.10),
+                Value::Float(11.62),
+                Value::Float(11.55),
+                Value::Int(10),
+                Value::Int(12),
             ],
         );
-        assert!((m.float(&area, "done") - tiles).abs() < f64::EPSILON);
+        // The device's tiles engine is asked for the box on screen, its levels and the address
+        // its imagery comes from.
+        let (job, ask) = m.engine.last();
+        let ask: serde_json::Value = serde_json::from_str(&ask).expect("the ask reads");
+        assert_eq!(ask["north"], 48.18);
+        assert_eq!(ask["south"], 48.10);
+        assert_eq!(ask["east"], 11.62);
+        assert_eq!(ask["west"], 11.55);
+        assert_eq!(ask["least_zoom"], 10);
+        assert_eq!(ask["most_zoom"], 12);
+        assert!(
+            ask["basemap"]
+                .as_str()
+                .is_some_and(|address| address.contains("tile.openstreetmap.org")),
+            "the area keeps the map's own imagery: {ask}"
+        );
+        // It is listed as this device's while it downloads, and the row stops it.
+        let areas = m.offline();
+        assert_eq!(areas.len(), 1, "the area is listed while it downloads");
+        let area = areas[0].clone();
+        assert_eq!(m.text(&area, "name"), "This view");
+        assert_eq!(
+            m.text(&area, "job"),
+            job,
+            "the area knows the job keeping it"
+        );
+        // What the job says of itself is what the row shows.
+        m.engine.says(
+            &job,
+            &serde_json::json!({"state": "running", "saved": 5, "total": 100}),
+        );
+        let mut running = m
+            .rt
+            .open_view(
+                &me(),
+                &m.app.view("area_row"),
+                vec![Value::resource(&m.root), Value::resource(&area)],
+            )
+            .unwrap();
+        running.poll_patches().unwrap();
+        let said: Vec<String> = of_kind(running.tree(), "ui.Text")
+            .iter()
+            .filter_map(|node| match node.props.get("value") {
+                Some(Value::Text(text)) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            said.iter().any(|text| text == "5 of 100 tiles"),
+            "the row reads the job's record: {said:?}"
+        );
+        let offered: Vec<String> = of_kind(running.tree(), "ui.Button")
+            .iter()
+            .filter_map(|node| match node.props.get("label") {
+                Some(Value::Text(label)) => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            offered.iter().any(|label| label == "Stop downloading"),
+            "the row stops a running download: {offered:?}"
+        );
+        // A download the person stops ends, and what it got stays listed and kept.
+        m.call(
+            "stop_offline_area",
+            vec![Value::resource(&m.root), Value::Text("This view".to_owned())],
+        );
+        assert_eq!(m.engine.cancelled.borrow().as_slice(), [job.clone()]);
+        assert!(m.flag(&area, "stopped"));
+        m.engine.ends(
+            &job,
+            &serde_json::json!({"state": "cancelled", "saved": 5, "total": 100}),
+        );
+        assert_eq!(m.rt.finish_jobs().len(), 1, "the job's `done:` ran");
+        assert_eq!(m.float(&area, "done"), 5.0, "what it got before the stop stays");
+        assert_eq!(m.float(&area, "tiles"), 100.0);
+        assert!(m.text(&m.root, "status").contains("stay available offline"));
+        // A stopped area's row offers the download again, which starts a new job for the rest.
+        m.call(
+            "continue_offline_area",
+            vec![Value::resource(&m.root), Value::Text("This view".to_owned())],
+        );
+        let (again, again_ask) = m.engine.last();
+        assert_ne!(again, job, "continuing starts a job of its own");
+        let again_ask: serde_json::Value = serde_json::from_str(&again_ask).unwrap();
+        assert_eq!(again_ask["id"], ask["id"], "the same footprint, so its tiles are reused");
+        m.engine.ends(
+            &again,
+            &serde_json::json!({"state": "done", "saved": 100, "total": 100}),
+        );
+        assert_eq!(m.rt.finish_jobs().len(), 1);
+        assert_eq!(m.float(&area, "done"), 100.0);
         assert_eq!(
             m.text(&m.root, "status"),
-            format!("Offline area ready ({tile_count} tiles)")
+            "Offline area ready (100 tiles)"
         );
+        assert!(!m.flag(&area, "stopped"));
+        // Deleting the area asks the device to give up its tiles and takes it off the list.
+        m.engine.asked.borrow_mut().clear();
         m.call(
             "delete_offline_area",
-            vec![
-                Value::resource(&m.root),
-                Value::Text("This view".to_owned()),
-            ],
+            vec![Value::resource(&m.root), Value::Text("This view".to_owned())],
         );
-        assert!(m.offline().is_empty());
-        // Downloading a place asks the geocoder for the area it names.
+        assert!(
+            m.engine.asked.borrow().iter().any(|op| op.as_str() == "forget-area"),
+            "the device gives up the area's tiles: {:?}",
+            m.engine.asked.borrow()
+        );
+        assert!(m.offline().is_empty(), "the device lists it no more");
+        // Downloading a place asks the geocoder where it is and keeps that box.
         m.call(
             "download_place",
             vec![
@@ -657,103 +842,107 @@ mod cases {
         );
         assert_eq!(m.offline().len(), 1);
         assert_eq!(m.text(&m.offline()[0], "name"), "Marienplatz");
-        m.call(
-            "note_saved",
-            vec![
-                Value::resource(&m.root),
-                Value::Text("Marienplatz".to_owned()),
-                Value::List(vec![Value::Int(5), Value::Int(100)]),
-            ],
-        );
-        // The area's row carries the control while the download runs.
-        let mut running = m
-            .rt
-            .open_view(
-                &me(),
-                &m.app.view("area_row"),
-                vec![Value::resource(&m.root), Value::resource(&m.offline()[0])],
-            )
-            .unwrap();
-        running.poll_patches().unwrap();
-        let offered: Vec<String> = of_kind(running.tree(), "ui.Button")
-            .iter()
-            .filter_map(|node| match node.props.get("label") {
-                Some(Value::Text(label)) => Some(label.clone()),
-                _ => None,
-            })
-            .collect();
+        let (place_job, place_ask) = m.engine.last();
+        let place_ask: serde_json::Value = serde_json::from_str(&place_ask).unwrap();
         assert!(
-            offered.iter().any(|label| label == "Stop downloading"),
-            "the area's row stops a running download: {offered:?}"
+            (place_ask["north"].as_f64().unwrap_or_default() - 48.1874).abs() < 1e-6,
+            "the place's box is around where it is: {place_ask}"
         );
-        // A download the person stops keeps what it already has and takes no more reports.
-        m.call(
-            "stop_offline_area",
-            vec![
-                Value::resource(&m.root),
-                Value::Text("Marienplatz".to_owned()),
-            ],
+        m.engine.ends(
+            &place_job,
+            &serde_json::json!({"state": "done", "saved": 60, "total": 60}),
         );
-        let kept = m.float(&m.offline()[0], "done");
-        assert!((kept - 5.0).abs() < f64::EPSILON, "the tiles it got before the stop stay");
-        assert_eq!(
-            m.rt.read(&m.offline()[0], "stopped").unwrap(),
-            Value::Bool(true)
-        );
-        m.call(
-            "note_saved",
-            vec![
-                Value::resource(&m.root),
-                Value::Text("Marienplatz".to_owned()),
-                Value::List(vec![Value::Int(99), Value::Int(100)]),
-            ],
-        );
-        assert!((m.float(&m.offline()[0], "done") - kept).abs() < f64::EPSILON, "a stopped area is not filled further");
-        assert!(
-            m.text(&m.root, "status").contains("stay available offline"),
-            "it says what it keeps: {}",
-            m.text(&m.root, "status")
-        );
-        // A stopped area's row offers the download again.
-        let mut stopped = m
-            .rt
-            .open_view(
-                &me(),
-                &m.app.view("area_row"),
-                vec![Value::resource(&m.root), Value::resource(&m.offline()[0])],
-            )
-            .unwrap();
-        stopped.poll_patches().unwrap();
-        let offered: Vec<String> = of_kind(stopped.tree(), "ui.Button")
-            .iter()
-            .filter_map(|node| match node.props.get("label") {
-                Some(Value::Text(label)) => Some(label.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            offered.iter().any(|label| label == "Download it again"),
-            "a stopped area is downloaded again: {offered:?}"
-        );
-        // Starting it again lets its reports through.
-        m.call(
-            "continue_offline_area",
-            vec![
-                Value::resource(&m.root),
-                Value::Text("Marienplatz".to_owned()),
-            ],
-        );
-        m.call(
-            "note_saved",
-            vec![
-                Value::resource(&m.root),
-                Value::Text("Marienplatz".to_owned()),
-                Value::List(vec![Value::Int(99), Value::Int(100)]),
-            ],
-        );
-        assert!((m.float(&m.offline()[0], "done") - 99.0).abs() < f64::EPSILON);
+        assert_eq!(m.rt.finish_jobs().len(), 1);
+        assert_eq!(m.text(&m.root, "status"), "Offline area ready (60 tiles)");
+        // Clearing asks the device to give up every saved picture and lists none.
+        m.engine.asked.borrow_mut().clear();
         m.call("clear_offline_areas", vec![Value::resource(&m.root)]);
+        assert!(
+            m.engine.asked.borrow().iter().any(|op| op.as_str() == "clear-saved"),
+            "the device gives up every saved picture: {:?}",
+            m.engine.asked.borrow()
+        );
         assert!(m.offline().is_empty());
+    }
+
+    phase the_map_fits_what_it_shows_and_the_directions_name_both_ends;
+    {
+        let m = Maps::new();
+        m.search("Marienplatz");
+        m.call(
+            "directions",
+            vec![
+                Value::resource(&m.root),
+                Value::Text("Marienplatz".to_owned()),
+                Value::Text("Café Glockenspiel".to_owned()),
+            ],
+        );
+        // Fitting the map centres it on the route and draws in to the route's own size.
+        m.call("fit_map", vec![Value::resource(&m.root)]);
+        let latitude = m.float(&m.root, "centre_latitude");
+        let longitude = m.float(&m.root, "centre_longitude");
+        assert!(
+            (latitude - 48.13625).abs() < 0.01,
+            "the centre is the route's own: {latitude}"
+        );
+        assert!(
+            (longitude - 11.57875).abs() < 0.01,
+            "the centre is the route's own: {longitude}"
+        );
+        let zoom = m.float(&m.root, "centre_zoom");
+        assert!(
+            (40075016.686 * (latitude * 3.14159265 / 180.0).cos() / (1048576.0 * zoom) - 0.8).abs()
+                < 0.4,
+            "about 0.8 metres of the route stand for a screen pixel: {zoom}"
+        );
+        // The directions name both ends, offer a swap, and carry the map's keys.
+        let mut panel = m
+            .rt
+            .open_view(
+                &me(),
+                &m.app.view("directions_panel"),
+                vec![Value::resource(&m.root)],
+            )
+            .unwrap();
+        panel.poll_patches().unwrap();
+        let placeholders: Vec<String> = of_kind(panel.tree(), "ui.TextInput")
+            .iter()
+            .filter_map(|node| match node.props.get("placeholder") {
+                Some(Value::Text(text)) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            placeholders.iter().any(|text| text == "From")
+                && placeholders.iter().any(|text| text == "To"),
+            "directions name where they start and where they end: {placeholders:?}"
+        );
+        let offered: Vec<&UiNode> = of_kind(panel.tree(), "ui.Button");
+        for wanted in ["Swap from and to", "Get directions", "Fit the map"] {
+            assert!(
+                offered
+                    .iter()
+                    .any(|node| props_text(node, "label") == wanted),
+                "the panel offers `{wanted}`"
+            );
+        }
+        let keys: Vec<String> = offered
+            .iter()
+            .flat_map(|node| match node.props.get("keys") {
+                Some(Value::List(keys)) => keys
+                    .iter()
+                    .filter_map(|key| match key {
+                        Value::Text(text) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert!(
+            keys.iter().any(|key| key == "d") && keys.iter().any(|key| key == "f"),
+            "the window's keys reach directions and the fit: {keys:?}"
+        );
     }
 
     phase a_saved_place_is_renamed_and_keeps_its_name;
@@ -972,6 +1161,61 @@ mod cases {
                 .any(|node| props_text(node, "value").contains("OpenStreetMap contributors")),
             "the map credits its data"
         );
+    }
+
+    phase the_window_saves_what_the_camera_came_to_rest_on;
+    {
+        let m = Maps::new();
+        let mut window = m.window();
+        window.poll_patches().unwrap();
+        let map = of_kind(window.tree(), "ui.Map")[0].clone();
+        // The map reports where the camera rests: its middle, its zoom, and its four edges.
+        window
+            .fire_with(
+                map.key.as_str(),
+                "rest",
+                Some(&Value::List(vec![
+                    Value::Float(50.0),
+                    Value::Float(8.0),
+                    Value::Float(4.0),
+                    Value::Float(50.2),
+                    Value::Float(49.8),
+                    Value::Float(8.3),
+                    Value::Float(7.7),
+                ])),
+            )
+            .expect("the camera at rest runs");
+        window.poll_patches().unwrap();
+        assert!(
+            of_kind(window.tree(), "ui.Text")
+                .iter()
+                .any(|node| props_text(node, "value") == "500 m"),
+            "the footer reads the scale where the camera rests"
+        );
+        // Opening the offline maps and saving the view asks for exactly that box.
+        let offline = of_kind(window.tree(), "ui.Button")
+            .into_iter()
+            .find(|node| props_text(node, "label") == "Offline maps")
+            .expect("the window offers the offline maps")
+            .key
+            .clone();
+        window.fire(&offline, "press").expect("the sheet opens");
+        window.poll_patches().unwrap();
+        let save = of_kind(window.tree(), "ui.Button")
+            .into_iter()
+            .find(|node| props_text(node, "label") == "Download this view")
+            .expect("the sheet offers to save what the map shows")
+            .key
+            .clone();
+        window.fire(&save, "press").expect("the view is saved");
+        let (_job, ask) = m.engine.last();
+        let ask: serde_json::Value = serde_json::from_str(&ask).expect("the ask reads");
+        assert_eq!(ask["north"], 50.2);
+        assert_eq!(ask["south"], 49.8);
+        assert_eq!(ask["east"], 8.3);
+        assert_eq!(ask["west"], 7.7);
+        assert_eq!(ask["least_zoom"], 10);
+        assert_eq!(ask["most_zoom"], 15);
     }
 
     phase the_window_shows_who_is_at_a_place;

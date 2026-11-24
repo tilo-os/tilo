@@ -18031,6 +18031,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-maps-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-location",
+ "tilo-rt",
+ "tilo-tiles",
+ "tilolang-runtime",
+ "tilolang-tilo",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-mcp"
 version = "0.1.0"
 dependencies = [
@@ -20274,6 +20288,7 @@ dependencies = [
  "tilo-liveness",
  "tilo-location",
  "tilo-lock",
+ "tilo-maps-engine",
  "tilo-mcp",
  "tilo-media",
  "tilo-media-controls",
@@ -20986,6 +21001,8 @@ name = "tilo-tiles"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "serde",
+ "serde_json",
  "tilo-net",
  "tilo-paths",
  "tracing",
@@ -22230,6 +22247,7 @@ dependencies = [
  "tilo-formats",
  "tilo-history",
  "tilo-image-codec",
+ "tilo-maps-engine",
  "tilo-media",
  "tilo-net",
  "tilo-network-client",

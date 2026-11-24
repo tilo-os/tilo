@@ -2817,8 +2817,8 @@ pub mod docked;
 pub use docked::{Docked, DockedProps};
 pub mod map;
 pub use map::{
-    MAP_ZOOM_MAX, MAP_ZOOM_MIN, Map, MapAreaProps, MapCamera, MapMarkerKind, MapMarkerProps,
-    MapPinProps, MapProps, MapTrackProps, MapTrackTone, PinPlace,
+    MAP_ZOOM_MAX, MAP_ZOOM_MIN, Map, MapCamera, MapMarkerKind, MapMarkerProps, MapPinProps,
+    MapProps, MapTrackProps, MapTrackTone, PinPlace,
 };
 pub mod window_well;
 pub use window_well::{Wells, WindowWell, WindowWellProps};

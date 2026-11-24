@@ -148,6 +148,7 @@ members = [
     "crates/engines/discord-worker",
     "crates/engines/tilo-page-raster",
     "crates/engines/tilo-tiles",
+    "crates/engines/maps-engine",
     "crates/ui/ui-paint",
     "crates/ui/theme-sdk",
     "crates/ui/theme-painter-wasm",
