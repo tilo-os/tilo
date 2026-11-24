@@ -1027,7 +1027,9 @@ impl Checker<'_> {
         }
         let sig = callee.signature(&self.env.app);
         let bound =
-            self.bind_args_or_default(&callee.name, &callee.params, args, call.span, &sig, false);
+            // What the button shows of it, not the application itself: that is checked where the
+            // control runs it.
+            self.bind_args_or_default(&callee.name, &callee.params, args, call.span, &sig, false, false);
         let node = Ex::local(n, Ty::View);
         self.push_sink();
         // Each parameter as the application gives it, or as its default computes it from those before

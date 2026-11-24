@@ -179,6 +179,13 @@ struct FnState {
     /// What the action call just checked answers, when it is an action a view applies: the type a
     /// handler's binding takes ([`Checker::handler_block`]).
     last_action: Option<Ty>,
+    /// The locals holding a record value — one built with its fields, read from text, or taken from
+    /// a list of them — rather than a resource the store keeps. An action's record parameter is a
+    /// resource, so passing one of these there is refused.
+    values: std::collections::HashSet<LocalId>,
+    /// The locals holding a `List` whose items are such record values: what `first` and a loop read
+    /// out of it is a value too.
+    value_lists: std::collections::HashSet<LocalId>,
 }
 
 /// The name a call names its action by, as source wrote it (`add_box`, or `notes.add`), for the
@@ -1070,6 +1077,56 @@ impl Checker<'_> {
         Some((id, ty))
     }
 
+    /// Whether `ty` is a record type the store keeps: an action's parameter of it is a resource.
+    fn resource_ty(ty: &Ty) -> bool {
+        matches!(ty, Ty::Record(key) if !crate::host::is_value(key)) || matches!(ty, Ty::Union(_))
+    }
+
+    /// Whether `ex` is a record value rather than a resource: one built with its fields
+    /// (`Note(title: "x")`), read from text (`json.decode<Note>(text)`) or taken from a list of
+    /// such values. The checker learns this where a value is made and where it is bound, so a local
+    /// it tied to one of those holds one.
+    fn ex_is_record_value(&self, ex: &Ex) -> bool {
+        match &ex.kind {
+            Ek::Host(Imp::JsonDecode, _) => true,
+            Ek::Local(id) => self.st.values.contains(id),
+            // `xs.first()` of a list of values: the option of a value, which an arm binds.
+            Ek::Host(Imp::ListEnd, args) => {
+                args.first().is_some_and(|list| self.ex_is_value_list(list))
+            }
+            Ek::Seq(_, v) => self.ex_is_record_value(v),
+            _ => false,
+        }
+    }
+
+    /// Whether `ex` is a `List` whose items are record values, its item taken, not a resource.
+    fn ex_is_value_list(&self, ex: &Ex) -> bool {
+        match &ex.kind {
+            Ek::Host(Imp::JsonDecode, _) => matches!(ex.ty, Ty::List(_)),
+            Ek::Local(id) => self.st.value_lists.contains(id),
+            Ek::Seq(_, v) => self.ex_is_value_list(v),
+            _ => false,
+        }
+    }
+
+    /// Records whether the local `id`, now holding `ex`, holds a record value or a list of them.
+    fn learn_value(&mut self, id: LocalId, ex: &Ex) {
+        if Self::resource_ty(&ex.ty) && self.ex_is_record_value(ex) {
+            self.st.values.insert(id);
+        } else {
+            self.st.values.remove(&id);
+        }
+        let items_are_values = match &ex.ty {
+            Ty::List(item) => Self::resource_ty(item) && self.ex_is_value_list(ex),
+            _ => false,
+        };
+        if items_are_values {
+            self.st.value_lists.insert(id);
+        } else {
+            self.st.value_lists.remove(&id);
+        }
+    }
+
     fn locals_in_scope(&self) -> String {
         let mut names: Vec<&str> = self
             .st
@@ -1565,6 +1622,7 @@ impl Checker<'_> {
     fn bind_let(&mut self, name: &str, ty: Ty, ex: Ex, written: &ast::Expr) -> LocalId {
         let id = self.declare(name, ty);
         self.st.lets.insert(id, written.clone());
+        self.learn_value(id, &ex);
         self.emit(Stmt::Set(id, ex));
         id
     }
@@ -1622,7 +1680,10 @@ impl Checker<'_> {
 
     fn new_for(&mut self, list: Ex, elem: &Ty) -> ForList {
         let (get, get_conv) = load_op(elem, Imp::ListGetI, Imp::ListGetF, Imp::ListGetH);
-        ForList {
+        // A loop over a list of record values binds the item as a value; a loop over a collection
+        // binds the resource it holds.
+        let item_is_value = Self::resource_ty(elem) && self.ex_is_value_list(&list);
+        let fl = ForList {
             list,
             list_local: self.fresh(Ty::Text),
             len_local: self.fresh(Ty::Int),
@@ -1631,7 +1692,11 @@ impl Checker<'_> {
             get,
             get_conv,
             body: Vec::new(),
+        };
+        if item_is_value {
+            self.st.values.insert(fl.item_local);
         }
+        fl
     }
 
     fn assign(&mut self, place: &ast::Place, op: ast::AssignOp, value: &ast::Expr, span: Span) {
@@ -1731,6 +1796,9 @@ impl Checker<'_> {
                 }
             }
         };
+        if op == ast::AssignOp::Set {
+            self.learn_value(id, &new);
+        }
         self.emit(Stmt::Set(id, new));
     }
 

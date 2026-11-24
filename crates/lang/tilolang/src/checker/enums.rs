@@ -538,6 +538,15 @@ impl Checker<'_> {
             }
             let read = Self::variant_field(shape, tmp, ty, field);
             let id = self.declare(&b.name, field.2.clone());
+            // The payload of a value the arm matched is the value it held, not a resource.
+            if self.st.values.contains(&tmp) && Self::resource_ty(&field.2) {
+                self.st.values.insert(id);
+            } else if self.st.value_lists.contains(&tmp)
+                && let Ty::List(item) = &field.2
+                && Self::resource_ty(item)
+            {
+                self.st.value_lists.insert(id);
+            }
             self.emit(Stmt::Set(id, read));
         }
     }
@@ -546,6 +555,12 @@ impl Checker<'_> {
         let ex = self.expr(e, None);
         let ty = ex.ty.clone();
         let tmp = self.fresh(ty.clone());
+        // What the arm reads of it is a record value when what the match reads is one.
+        if self.ex_is_record_value(&ex) {
+            self.st.values.insert(tmp);
+        } else if self.ex_is_value_list(&ex) {
+            self.st.value_lists.insert(tmp);
+        }
         (tmp, ty, Stmt::Set(tmp, ex))
     }
 

@@ -110,9 +110,20 @@ impl Checker<'_> {
                 }
             };
             let opt = v.ty.clone();
+            let is_value = self.ex_is_record_value(&v);
+            let is_value_list = self.ex_is_value_list(&v);
             let tmp = self.fresh(opt.clone());
             self.emit(Stmt::Set(tmp, v));
             let bound = self.fresh(inner.clone());
+            // An option of a record value gives the value its arm binds, not a resource.
+            if is_value && Self::resource_ty(&inner) {
+                self.st.values.insert(bound);
+            } else if is_value_list
+                && let Ty::List(item) = &inner
+                && Self::resource_ty(item)
+            {
+                self.st.value_lists.insert(bound);
+            }
             if let Some(s) = self.st.scopes.get_mut(scope) {
                 s.insert(b.name.name.clone(), bound);
             }

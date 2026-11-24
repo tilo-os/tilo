@@ -789,8 +789,14 @@ impl Checker<'_> {
             self.err("E025", span, "cannot tell what an empty list holds; annotate the variable (`let xs: List<Int> = []`)");
             return Ex::error();
         };
+        // A list built from record values holds values: what it gives back is one too.
+        let items_are_values =
+            Self::resource_ty(&elem) && values.iter().all(|v| self.ex_is_record_value(v));
         let ty = Ty::List(Box::new(elem));
         let tmp = self.fresh(ty.clone());
+        if items_are_values {
+            self.st.value_lists.insert(tmp);
+        }
         let mut stmts = vec![ir::Stmt::Set(
             tmp,
             Ex::host(Imp::ListNew, Vec::new(), ty.clone()),

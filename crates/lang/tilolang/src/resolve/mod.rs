@@ -100,6 +100,10 @@ pub struct Env {
     /// `use`, as `std` is in every package.
     pub session: bool,
     pub triggers: Vec<TriggerInfo>,
+    /// The packages written outside tilolang, by their app: a native app's published metadata, or
+    /// the host's own. Their actions run in the host with the values they are given, where a
+    /// tilolang action takes only resources for its record parameters ([`Self::is_native`]).
+    pub native: BTreeSet<String>,
 }
 
 /// A trigger resolved: what runs, for which resources, and when.
@@ -334,6 +338,13 @@ impl Env {
         self.enums.extend(crate::toolkit::enums());
     }
 
+    /// Whether `app` is written outside tilolang: its actions run in the host, which takes the
+    /// argument values it is given, a record value among them.
+    #[must_use]
+    pub fn is_native(&self, app: &str) -> bool {
+        self.native.contains(app)
+    }
+
     /// The component `name` of the toolkit, when `path` names the toolkit's package.
     pub fn component(
         &self,
@@ -348,6 +359,10 @@ impl Env {
     }
 
     pub fn add_import(&mut self, alias: &str, meta: &PackageMeta) {
+        // A package written outside tilolang carries no module: nothing was compiled for it.
+        if meta.module_hash.is_empty() {
+            self.native.insert(meta.app.clone());
+        }
         self.imports.push(Import {
             alias: alias.to_string(),
             app: meta.app.clone(),
