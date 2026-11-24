@@ -80,6 +80,14 @@ impl FrameHarness {
     #[cfg(feature = "native")]
     pub(crate) fn write_shot(&mut self, out: &std::path::Path, window_bar: bool) {
         self.settle_for_capture(crate::launch::CAPTURE_SETTLE_BOUND);
+        // What the window shows under `protect capture`, or a secret field holding a value, is
+        // left out of a capture: it is the ground the capture stands on, as a capture of a
+        // protected window shows a placeholder where it is.
+        if self.capture_protected() {
+            let ground = self.theme.tokens.colors.surfaces.content;
+            self.write_scene_png(&Scene::new(), 0, ground, out);
+            return;
+        }
         if window_bar {
             self.present_in_window_bar();
         }

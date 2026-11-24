@@ -1014,8 +1014,9 @@ mod tests {
                 },
                 tree: text("t", "Notes"),
                 front: None,
-            
-                capture_protected: false,},
+
+                capture_protected: false,
+            },
             ToUi::Patch {
                 level: Level::Root,
                 patches: vec![Patch::SetProp {
@@ -1166,8 +1167,9 @@ mod tests {
                 },
                 tree: node.clone(),
                 front: None,
-            
-                capture_protected: false,},
+
+                capture_protected: false,
+            },
             ToUi::Patch {
                 level: Level::Root,
                 patches: vec![splice.clone()],

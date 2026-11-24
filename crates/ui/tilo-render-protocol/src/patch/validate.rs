@@ -941,8 +941,9 @@ mod tests {
             },
             tree,
             front: None,
-        
-            capture_protected: false,}]
+
+            capture_protected: false,
+        }]
     }
 
     /// A text an edit keeps is one the window can carry: the bytes of one string here are the

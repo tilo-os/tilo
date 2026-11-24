@@ -363,3 +363,59 @@ fn a_capture_settles_animations_and_lands_on_the_window_ground() {
         }
     }
 }
+
+/// A widget that paints a mark a capture may not keep, as a view that declared `protect capture`
+/// or a secret field holding a value does.
+struct SecretMark;
+
+impl Widget for SecretMark {
+    crate::testing::inert_widget_methods!(leaf_layout, name = "secret-mark");
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
+        let (scene, transform, _, theme, mut env) = ctx.parts();
+        crate::secret_paint::note_secret_painted();
+        let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &rect,
+        );
+    }
+    fn needs_redraw(&self) -> bool {
+        false
+    }
+}
+
+/// A capture an agent takes leaves out what a view showed under `protect capture`: the shot is the
+/// window's ground, with nothing of the view on it.
+#[cfg(feature = "native")]
+#[test]
+fn a_written_capture_leaves_out_a_secret() {
+    let mut harness = FrameHarness::new(State::new(), Box::new(SecretMark), (200, 100));
+    assert!(
+        harness.capture_protected(),
+        "what it shows is withheld from captures"
+    );
+    let temp = tempfile::tempdir().expect("temporary output root");
+    let shot = temp.path().join("shot.png");
+    harness.write_shot(&shot, false);
+
+    let blank = FrameHarness::new(
+        State::new(),
+        Box::new(crate::widget::Spacer::new()),
+        (200, 100),
+    );
+    let ground = temp.path().join("ground.png");
+    blank.render_png(&ground);
+    assert_eq!(
+        std::fs::read(&shot).expect("the shot was written"),
+        std::fs::read(&ground).expect("the ground was written"),
+        "the capture is the window's ground, with nothing of the view on it"
+    );
+}

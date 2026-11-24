@@ -3081,9 +3081,7 @@ impl<'a> Parser<'a> {
                 let value = self.expr()?;
                 UiKind::Fact { node, label, value }
             }
-            Tok::Ident(word)
-                if word == "protect" && matches!(self.peek_at(1), Tok::Ident(_)) =>
-            {
+            Tok::Ident(word) if word == "protect" && matches!(self.peek_at(1), Tok::Ident(_)) => {
                 // `protect capture` is a declaration heading a view's body, never a statement
                 // among what it shows.
                 return self.unexpected("a view to declare `protect capture` before what it shows");

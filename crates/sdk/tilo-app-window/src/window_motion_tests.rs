@@ -32,8 +32,9 @@ fn page(keys: &[&str], motion: Option<&str>) -> Vec<ToUi> {
         },
         tree: page,
         front: None,
-    
-        capture_protected: false,}]
+
+        capture_protected: false,
+    }]
 }
 
 fn send(app: &mut local::End, batch: &[ToUi]) {

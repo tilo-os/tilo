@@ -461,25 +461,32 @@ impl Env {
                 capture_protected: v.capture_protected,
             });
         }
-        let mut add =
-            |kind, name: &str, id: &str, params, result, class, uses, present, capture_protected| {
-                self.callables.push(Callable {
-                    kind,
-                    name: name.to_string(),
-                    id: id.to_string(),
-                    app: app.clone(),
-                    own: false,
-                    func: None,
-                    params,
-                    result,
-                    class,
-                    uses,
-                    present,
-                    scenario: false,
-                    private: false,
-                    capture_protected,
-                });
-            };
+        let mut add = |kind,
+                       name: &str,
+                       id: &str,
+                       params,
+                       result,
+                       class,
+                       uses,
+                       present,
+                       capture_protected| {
+            self.callables.push(Callable {
+                kind,
+                name: name.to_string(),
+                id: id.to_string(),
+                app: app.clone(),
+                own: false,
+                func: None,
+                params,
+                result,
+                class,
+                uses,
+                present,
+                scenario: false,
+                private: false,
+                capture_protected,
+            });
+        };
         for a in meta.callable_actions() {
             let present = Presentation {
                 label: if a.label.is_empty() {

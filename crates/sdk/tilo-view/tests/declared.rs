@@ -176,8 +176,9 @@ fn passes(tree: &Node) {
         },
         tree: tree.clone(),
         front: None,
-    
-        capture_protected: false,}];
+
+        capture_protected: false,
+    }];
     validator
         .to_ui(&batch)
         .expect("the view is one the host builds");
