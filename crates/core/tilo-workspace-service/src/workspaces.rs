@@ -1867,6 +1867,31 @@ impl Workspaces {
         self.administers(&governed)
     }
 
+    /// Whether this device's own person writes in `workspace` by its signed member list: their
+    /// row there is a role that writes records (an owner's, a moderator's or an editor's).
+    pub async fn own_person_writes(&self, workspace: &str) -> bool {
+        let Ok(governed) = self.workspace(workspace).await else {
+            return false;
+        };
+        let person = hex::encode(self.inner.host.cert.user_public_key);
+        governed
+            .lock()
+            .await
+            .peer()
+            .governance()
+            .governed_policy()
+            .is_ok_and(|policy| {
+                matches!(
+                    policy.active_role(&person),
+                    Some(
+                        tilo_action_policy::Role::Owner
+                            | tilo_action_policy::Role::Moderator
+                            | tilo_action_policy::Role::Editor
+                    )
+                )
+            })
+    }
+
     /// What answers the workspace-join exchange for these workspaces.
     #[must_use]
     pub fn join_service(&self) -> tilo_peer_state::join_answer::JoinAnswer<Self> {

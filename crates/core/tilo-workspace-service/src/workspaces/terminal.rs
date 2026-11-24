@@ -421,9 +421,17 @@ impl TerminalService {
         if !declared && !is_window_default(record) {
             return Err(ActionCallError::UnknownAction);
         }
-        if !self.copies.governs_workspace(workspace).await {
+        // The record is founded under this device's own place on the workspace's signed member
+        // list: the machine's secrets by an administrator's row, a window's default session by
+        // a member who writes, as a member's own device does for its window.
+        let founds = if declared {
+            self.copies.administers_workspace(workspace).await
+        } else {
+            self.copies.own_person_writes(workspace).await
+        };
+        if !founds {
             return Err(ActionCallError::Refused {
-                reason: "the workspace's host founds its sessions' records".into(),
+                reason: "only a member who may write here starts a session's record".into(),
             });
         }
         let created = self
