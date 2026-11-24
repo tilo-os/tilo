@@ -424,6 +424,12 @@ view results_column(st: SpeedTest, run: Option<Run>, phase: Text) {
         }
         if not st.results.is_empty() {
             section("Recent tests") {
+                row {
+                    spacer()
+                    ui.Button("Clear results", icon: .trash, role: .plain) {
+                        on press: clear(st)
+                    }
+                }
                 for m in st.results {
                     if phase != "complete" or newest != .some(m) {
                         recent_row(m)

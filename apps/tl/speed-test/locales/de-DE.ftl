@@ -154,6 +154,7 @@ d-qy655f3m = Ergebnisspalte
     .w-4k-streaming = 4K-Streaming
     .w-cloud-gaming = Cloud-Gaming
     .w-recent-tests = Letzte Tests
+    .w-clear-results = Ergebnisse löschen
 
 d-ergxoae7 = Qualitätszeile
     .w-excellent = Sehr gut

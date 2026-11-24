@@ -603,6 +603,13 @@ mod cases {
         {
             let s = Speed::new();
             s.record(12.0, 1.5, 640.0, 118.0, "Cloudflare");
+            // Recent tests carries the control that clears them.
+            let window = s.window();
+            assert!(
+                buttons(window.tree()).iter().any(|b| b == "Clear results"),
+                "the history offers Clear results: {:?}",
+                buttons(window.tree())
+            );
             s.call("clear", vec![Value::resource(&s.root)]);
             assert!(s.results().is_empty());
             let window = s.window();
