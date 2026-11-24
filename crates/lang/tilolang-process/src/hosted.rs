@@ -685,6 +685,7 @@ impl Platform for HostPlatform {
         if app == crate::video_engine::APP {
             return crate::video_engine::call(self, app, op, input);
         }
+        crate::feed_engine::register();
         tilolang_tilo::engine::answer(app, op, input)
     }
 
@@ -693,18 +694,21 @@ impl Platform for HostPlatform {
         if app == crate::video_engine::APP {
             return crate::video_engine::start(self, app, op, input);
         }
+        crate::feed_engine::register();
         tilolang_tilo::engine::begin(app, op, input)
     }
 
     #[cfg(feature = "app-launch")]
     fn engine_status(&self, job: &str) -> Result<String, String> {
         crate::video_engine::status(self, job).or_else(|unknown| {
+            crate::feed_engine::register();
             tilolang_tilo::engine::progress(job).map_err(|_| unknown)
         })
     }
 
     #[cfg(feature = "app-launch")]
     fn engine_cancel(&self, job: &str) -> bool {
+        crate::feed_engine::register();
         crate::video_engine::cancel(job) || tilolang_tilo::engine::stop(job)
     }
 

@@ -131,10 +131,10 @@ pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
 /// actions reads them (`uses files`). An app that reads a folder also opens the files it lists in
 /// the app that opens their kind, which is `files.open`; it is a `required` capability since the
 /// app's own page offers the open, and the person saw it declared when they installed the app.
-fn capabilities(origins: &[&str], uses_files: bool, engine: bool) -> String {
+fn capabilities(origins: &[&str], uses_files: bool, engine: bool, web: &[String]) -> String {
     let mut required: Vec<&str> = Vec::new();
     let mut optional: Vec<&str> = Vec::new();
-    if !origins.is_empty() || engine {
+    if !origins.is_empty() || engine || !web.is_empty() {
         required.push("network.http");
         // The mail origin signs in to the workspace's accounts (`ACCOUNT_SIGN_INS`); the others
         // don't.
@@ -170,8 +170,9 @@ fn sandbox(
     origins: &[&str],
     uses_files: bool,
     engine: Option<&str>,
-) -> (String, &'static str, &'static str, &'static str) {
-    let capabilities = capabilities(origins, uses_files, engine.is_some());
+    web: &[String],
+) -> (String, &'static str, String, &'static str) {
+    let capabilities = capabilities(origins, uses_files, engine.is_some(), web);
     if engine.is_some() {
         // A page runs in this device's engine, which keeps its own processes and speaks to the
         // web: the launcher grants it the web engine's confinement, which is the JIT a renderer
@@ -180,23 +181,47 @@ fn sandbox(
             capabilities,
             "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
             "# The engine reaches the web itself, in the sandbox the launcher runs the app in.\n\
-             mode = \"host\"",
+             mode = \"host\""
+                .to_owned(),
             "tilo-web-engine",
         );
     }
-    if origins.is_empty() {
+    if !origins.is_empty() {
         return (
             capabilities,
-            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]",
-            "mode = \"off\"",
+            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
+            "# Each origin's connector speaks to the hosts its service names, in the sandbox\n\
+             # the launcher runs it in.\nmode = \"host\""
+                .to_owned(),
+            "tilo-default",
+        );
+    }
+    if !web.is_empty() {
+        // The hosts the app's own requests reach, as its declaration names them: `*` asks for
+        // any host a person subscribes to, and a list is the only hosts it may ask.
+        let net = if web.iter().any(|host| host == "*") {
+            "# The app reaches any host it is asked to, in the sandbox the launcher runs it\n\
+             # in.\nmode = \"host\""
+                .to_owned()
+        } else {
+            let hosts: Vec<String> = web.iter().map(|host| toml_string(host)).collect();
+            format!(
+                "# The hosts the app's own requests reach, in the sandbox the launcher runs it\n\
+                 # in.\nmode = \"allowlist\"\nhosts = [{}]",
+                hosts.join(", ")
+            )
+        };
+        return (
+            capabilities,
+            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
+            net,
             "tilo-default",
         );
     }
     (
         capabilities,
-        "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
-        "# Each origin's connector speaks to the hosts its service names, in the sandbox\n\
-         # the launcher runs it in.\nmode = \"host\"",
+        "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]",
+        "mode = \"off\"".to_owned(),
         "tilo-default",
     )
 }
@@ -260,7 +285,7 @@ pub fn manifest_text(
     let providers_ext: Vec<String> = providers_ext.iter().map(|ext| toml_string(ext)).collect();
     let origins = origins_of(meta);
     let (capabilities, namespaces, net, seccomp) =
-        sandbox(&origins, uses_files(meta), meta.engine.as_deref());
+        sandbox(&origins, uses_files(meta), meta.engine.as_deref(), &meta.web);
     // The runtimes the package needs beside the language's own: the app's page engine, which
     // installing the app installs in the same step or not at all.
     let mut runtimes = vec![toml_string(&options.tilolang_runtime)];
@@ -924,29 +949,45 @@ mod tests {
     #[test]
     fn an_app_that_reads_the_devices_files_declares_that_it_opens_them() {
         assert_eq!(
-            capabilities(&[], true, false),
+            capabilities(&[], true, false, &[]),
             "required = [\"files.open\"]\noptional = []",
             "an app reading folders opens the files it lists"
         );
         assert_eq!(
-            capabilities(&[], false, false),
+            capabilities(&[], false, false, &[]),
             "required = []\noptional = []"
         );
         assert_eq!(
-            capabilities(&["youtube"], false, false),
+            capabilities(&["youtube"], false, false, &[]),
             "required = [\"network.http\"]\noptional = []"
         );
         assert_eq!(
-            capabilities(&["imap"], true, false),
+            capabilities(&["imap"], true, false, &[]),
             "required = [\"network.http\", \"files.open\"]\noptional = [\"account-sign-ins\"]"
         );
-        assert!(sandbox(&[], true, None).0.contains("\"files.open\""));
+        assert!(sandbox(&[], true, None, &[]).0.contains("\"files.open\""));
         // A package showing a page names its engine and the confinement the launcher runs it in.
         let (capabilities, namespaces, _, seccomp) =
-            sandbox(&[], false, Some("tilo-runtime/2026.10.23-chromium"));
+            sandbox(&[], false, Some("tilo-runtime/2026.10.23-chromium"), &[]);
         assert!(capabilities.contains("\"webview\""), "{capabilities}");
         assert!(namespaces.contains("\"net\""), "{namespaces}");
         assert_eq!(seccomp, "tilo-web-engine");
+    }
+
+    #[test]
+    fn an_app_that_reaches_the_web_says_which_hosts() {
+        let listed = sandbox(&[], false, None, &["example.org".to_owned()]);
+        assert!(listed.0.contains("\"network.http\""), "{}", listed.0);
+        assert!(listed.1.contains("\"net\""), "{}", listed.1);
+        assert!(listed.2.contains("mode = \"allowlist\""), "{}", listed.2);
+        assert!(listed.2.contains("\"example.org\""), "{}", listed.2);
+        // `*` is any host a person points the app at: what a reader of feeds and a browser ask.
+        let any = sandbox(&[], false, None, &["*".to_owned()]);
+        assert!(any.2.contains("mode = \"host\""), "{}", any.2);
+        // An app reaching nothing declares no network at all.
+        let none = sandbox(&[], false, None, &[]);
+        assert!(!none.0.contains("network.http"), "{}", none.0);
+        assert_eq!(none.2, "mode = \"off\"");
     }
 
     #[test]

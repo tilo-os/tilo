@@ -603,7 +603,6 @@ pub fn starting_point_rank(package_id: &str) -> i32 {
         apps::CAMERA => 45,
         apps::WEATHER => 44,
         apps::MAPS => 43,
-        apps::FEEDS => 42,
         apps::EBOOK => 41,
         apps::TOTP => 40,
 

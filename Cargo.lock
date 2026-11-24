@@ -4750,29 +4750,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "feeds"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "feed-rs",
- "feeds",
- "fnv",
- "quick-xml 0.41.0",
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings-model",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-history",
- "tilo-net",
- "tilo-taffy",
- "tilo-vello",
- "tilo-winit",
- "workspace-hack",
-]
-
-[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16517,7 +16494,6 @@ dependencies = [
  "collab-types",
  "diffmerge",
  "discord",
- "feeds",
  "fs-content",
  "fs-protocol",
  "hex-editor",
@@ -18383,6 +18359,20 @@ version = "0.1.0"
 [[package]]
 name = "tilo-failure"
 version = "0.1.0"
+
+[[package]]
+name = "tilo-feeds"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "feed-rs",
+ "quick-xml 0.41.0",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tilo-net",
+ "workspace-hack",
+]
 
 [[package]]
 name = "tilo-file-provider"
@@ -22849,6 +22839,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-dialogs",
  "tilo-failure",
+ "tilo-feeds",
  "tilo-files",
  "tilo-formats",
  "tilo-history",
@@ -27212,7 +27203,6 @@ dependencies = [
  "fearless_simd 0.4.1",
  "fearless_simd 0.7.0",
  "feed-rs",
- "feeds",
  "ff 0.13.1",
  "ff 0.14.0",
  "ffi-opaque",

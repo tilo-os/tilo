@@ -92,11 +92,6 @@ text = "Ag"
 reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
 
 [[allow]]
-file = "apps/feeds/src/list_pane.rs"
-text = "Ag"
-reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
-
-[[allow]]
 file = "apps/settings/src/panes/network/vpn.rs"
 text = "WireGuard"
 reason = "A protocol's name, spelled the same in every language."

@@ -1465,7 +1465,6 @@ package = "tilo-agent-session"
 # surface of an app read from that app's own committed file. One flow starts
 # the calendar server the holder's own tests start, from its source.
 inputs = [
-  "apps/feeds/surface.toml",
   "crates/core/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
   "crates/ui/ui-core/assets/fonts/",
   "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
@@ -1597,7 +1596,7 @@ package = "tilo-session-client"
 # script the CI setup uses, so that script and the build it runs are read too.
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
-inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "apps/feeds/surface.toml", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh"]
+inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh"]
 readers = ["crates/core/session-client/tests/voice_browsers.rs", "crates/core/session-client/tests/headless_audio_lifetime.rs", "crates/core/session-client/tests/surface_by_hash.rs", "crates/core/session-client/src/device.rs", "crates/core/session-client/tests/support/mod.rs"]
 scope = { inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 

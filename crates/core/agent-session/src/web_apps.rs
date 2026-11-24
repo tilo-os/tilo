@@ -25,7 +25,6 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         chip_design::definition(),
         tilo_console::definition(),
         diffmerge::definition(),
-        feeds::definition(),
         hex_editor::definition(),
         maps::definition(),
         messages::definition(),

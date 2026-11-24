@@ -22,7 +22,6 @@ pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.disk-usage",
     "so.tilo.disks",
     "so.tilo.ebook",
-    "so.tilo.feeds",
     "so.tilo.file-explorer",
     "so.tilo.firewall",
     "so.tilo.git-client",

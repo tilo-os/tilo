@@ -24,7 +24,6 @@ exclude = [
     "db-client",
     "diffmerge",
     "discord",
-    "feeds",
     "file-explorer",
     "firewall",
     "git-client",

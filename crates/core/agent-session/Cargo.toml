@@ -45,7 +45,6 @@ camera = { path = "../../../apps/camera", default-features = false, features = [
 chip-design = { path = "../../../apps/chip-design" }
 tilo-console = { path = "../../../apps/console" }
 diffmerge = { path = "../../../apps/diffmerge" }
-feeds = { path = "../../../apps/feeds" }
 hex-editor = { path = "../../../apps/hex-editor" }
 maps = { path = "../../../apps/maps" }
 messages = { path = "../../../apps/messages" }

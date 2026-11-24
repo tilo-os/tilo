@@ -1,0 +1,31 @@
+[package]
+name = "tilo-feeds"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The Feeds app's engine: fetching and reading RSS, Atom, JSON feeds and Gemtext capsules, and OPML, with no UI."
+
+[lib]
+name = "tilo_feeds"
+path = "src/lib.rs"
+
+[dependencies]
+# RSS, Atom and JSON feeds, read from the bytes a site answers with.
+feed-rs = "2.4"
+# OPML is a tiny XML dialect, read and escaped with the same reader the rest of the tree uses.
+quick-xml.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+# A Gemini server's certificate, pinned as the hash of its DER.
+blake3.workspace = true
+rustls.workspace = true
+# The device's network: the one HTTP client, and the trust-on-first-use TLS config Gemini needs.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false, features = ["blocking"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

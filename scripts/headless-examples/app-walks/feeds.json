@@ -1,0 +1,149 @@
+{
+  "app": "feeds",
+  "said": "Feeds",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.feeds",
+    "package": "feeds"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Feeds first, on a workspace that reads nothing yet",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "empty",
+      "said": "Meet the one empty state, and the way to make the first subscription",
+      "ops": [
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "No feeds yet"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Add feed"
+          }
+        }
+      ]
+    },
+    {
+      "id": "subscribe",
+      "said": "Subscribe to a feed's address, as an agent or the form does",
+      "ops": [
+        {
+          "use": {
+            "kind": "Library",
+            "action": "add-subscription",
+            "args": {
+              "url": "https://www.theguardian.com/world/rss"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "theguardian.com"
+          }
+        }
+      ]
+    },
+    {
+      "id": "places",
+      "said": "Read the unread place, which holds nothing yet, from the sidebar",
+      "ops": [
+        {
+          "press_any": [
+            "Unread"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "No unread articles"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "all",
+      "said": "Back to every article, and the subscription listed under Feeds",
+      "ops": [
+        {
+          "press_any": [
+            "All articles"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "theguardian.com"
+          }
+        }
+      ]
+    },
+    {
+      "id": "reading",
+      "said": "Set the reading larger, which follows the person to their other devices",
+      "ops": [
+        {
+          "use": {
+            "kind": "Reader",
+            "action": "larger-text"
+          }
+        },
+        {
+          "use": {
+            "kind": "Reader",
+            "action": "set-paper",
+            "args": {
+              "paper": "sepia"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "mark",
+      "said": "Mark the place read, which says nothing because it holds nothing",
+      "ops": [
+        {
+          "use": {
+            "kind": "Library",
+            "action": "mark-read"
+          }
+        }
+      ]
+    },
+    {
+      "id": "export",
+      "said": "Write the subscriptions out as an OPML file",
+      "ops": [
+        {
+          "use": {
+            "kind": "Library",
+            "action": "export-opml"
+          }
+        }
+      ]
+    }
+  ]
+}

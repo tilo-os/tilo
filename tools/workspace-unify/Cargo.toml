@@ -341,7 +341,6 @@ doc = false
 "fearless_simd-0_4_1" = { package = "fearless_simd", version = "^0.4.1", default-features = false, features = ["default", "std"] }
 "fearless_simd-0_7_0" = { package = "fearless_simd", version = "^0.7.0", default-features = false, features = ["std"] }
 "feed-rs-2_4_0" = { package = "feed-rs", version = "^2.4.0", default-features = false, features = [] }
-"feeds" = { path = "../../apps/feeds", default-features = false, features = ["samples"] }
 "ff-0_13_1" = { package = "ff", version = "^0.13.1", default-features = false, features = ["alloc"] }
 "ff-0_14_0" = { package = "ff", version = "^0.14.0", default-features = false, features = ["alloc"] }
 "filedescriptor-0_8_3" = { package = "filedescriptor", version = "^0.8.3", default-features = false, features = [] }
@@ -2954,7 +2953,6 @@ doc = false
 "fearless_simd-0_4_1" = { package = "fearless_simd", version = "^0.4.1", default-features = false, features = ["default", "std"] }
 "fearless_simd-0_7_0" = { package = "fearless_simd", version = "^0.7.0", default-features = false, features = ["std"] }
 "feed-rs-2_4_0" = { package = "feed-rs", version = "^2.4.0", default-features = false, features = [] }
-"feeds" = { path = "../../apps/feeds", default-features = false, features = ["samples"] }
 "ff-0_13_1" = { package = "ff", version = "^0.13.1", default-features = false, features = ["alloc"] }
 "ff-0_14_0" = { package = "ff", version = "^0.14.0", default-features = false, features = ["alloc"] }
 "ffi-opaque-2_0_1" = { package = "ffi-opaque", version = "^2.0.1", default-features = false, features = [] }

@@ -28,6 +28,7 @@ app-launch = [
     "dep:tilolang-music",
     "dep:tilolang-youtube",
     "tilolang-mail/engine",
+    "dep:tilo-feeds",
     "dep:video-edit",
     "dep:video-picture",
     "dep:passwords-engine",
@@ -173,6 +174,8 @@ workspace-hack = { version = "0.1" }
 [target.'cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
 # The Video Editor's editing and picture engines (`app-launch`): what it asks for a probe, a
 # still, a waveform, a colour and a render, through `video_engine`.
+# The Feeds app's engine: its feeds read away from the frame, and OPML read and written.
+tilo-feeds = { path = "../../engines/feeds", optional = true }
 video-edit = { package = "tilo-video-edit", path = "../../engines/video-edit", default-features = false, optional = true }
 video-picture = { package = "tilo-video-picture", path = "../../engines/video-picture", default-features = false, features = ["decode", "gst"], optional = true }
 # The Passwords app's own engine: this device's secret vault, its app permissions, browser CSV
