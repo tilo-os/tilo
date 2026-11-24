@@ -570,9 +570,15 @@ git = true
 when = { test = "suites" }
 git = true
 
+# The environments it sets up prepare the pinned font catalog. They read the fonts from the
+# font-seed check's output, every pin of this tree laid out by its digest, where they would read
+# the builder image's seed: one taken before a pin changed would send them to the release store,
+# which this check has no network to reach.
 [[check.matrix.set]]
 when = { test = "test_environment" }
 git = true
+needs = ["font-seed"]
+env = { TILO_FONT_IMAGE_SEED = "/target/font-seed" }
 
 [[check.matrix.set]]
 when = { test = "workflow_package_paths" }

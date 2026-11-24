@@ -20,6 +20,9 @@ HELPER = ROOT / "tools/desktop-isolation.sh"
 SETUP = ROOT / "tools/test-env-setup.sh"
 TEST_ENV = ROOT / "tools/test-env.sh"
 DUMP = "import json, os; print(json.dumps(dict(os.environ)))"
+# Where this machine keeps the pinned fonts, which a run that prepares the font catalog reads
+# instead of fetching them: a fact of the machine, carried into each environment as PATH is.
+SEED = {name: os.environ[name] for name in ("TILO_FONT_IMAGE_SEED",) if name in os.environ}
 # Programs a wrapper could start to decide or to prepare something.
 RECORDED = ("bash", "sh", "env", "dirname", "basename", "id", "uname", "awk", "sed", "sort",
             "cut", "getent", "stat", "find", "mktemp", "mkdir", "chmod", "chown", "rm",
@@ -50,7 +53,7 @@ def old_bash() -> bool:
 class TestEnvironmentTests(unittest.TestCase):
     def run_wrapped(self, *command: str, **extra: str) -> subprocess.CompletedProcess[str]:
         env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            **SEED, "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": "/nonexistent-developer-home",
             "LANG": "de_DE.UTF-8",
             "LC_ALL": "de_DE.UTF-8",
@@ -157,7 +160,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
     def setup(self, *steps: str, **extra: str) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
         with tempfile.TemporaryDirectory() as directory:
             env_file = Path(directory) / "env"
-            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": directory,
+            env = {**SEED, "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": directory,
                    "NEXTEST_ENV": str(env_file), **extra}
             result = subprocess.run(["bash", str(SETUP), *steps], env=env,
                                     capture_output=True, text=True, check=False)
@@ -397,7 +400,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             programs, log = recorders(work, "python3")
-            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+            env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "HOME": str(work / "home"), "NEXTEST_ENV": str(work / "env"),
                    "TILO_REQUIRE_GPU": "1" if driver.exists() else "0"}
             for expected in (Counter(uname=1, mkdir=1), Counter(uname=1)):
@@ -423,7 +426,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 shutil.copy(ROOT / "tools" / name, tree / "tools" / name)
             (tree / ".config/nextest-capabilities.toml").write_text(manifest)
             env_file = Path(tmp) / "env"
-            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp,
+            env = {**SEED, "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp,
                    "NEXTEST_ENV": str(env_file), "TILO_REQUIRE_GPU": "1" if driver.exists() else "0"}
             result = subprocess.run(["bash", str(tree / "tools/test-env-setup.sh"), "runtime"],
                                     env=env, capture_output=True, text=True, check=False)
@@ -487,7 +490,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             provided = {}
             for step in ("runtime", "fonts"):
                 env_file = Path(directory) / f"env-{step}"
-                env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": directory,
+                env = {**SEED, "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": directory,
                        "NEXTEST_ENV": str(env_file),
                        "TILO_REQUIRE_GPU": "1" if driver.exists() else "0"}
                 result = subprocess.run(["bash", str(SETUP), step], env=env,
@@ -539,7 +542,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         (programs / "cargo").write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >>"{ran}"\n')
         (programs / "cargo").chmod(0o755)
         env_file = work / "env"
-        env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+        env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                "HOME": str(work), "NEXTEST_ENV": str(env_file),
                "CARGO_TARGET_DIR": str(work / "target"), **extra}
         result = subprocess.run(["bash", str(SETUP), step], env=env,
@@ -577,7 +580,7 @@ class SiblingBinaryTests(unittest.TestCase):
         fake = work / "cargo"
         fake.write_text(f"#!/bin/sh\necho \"$*\" >>{work}/cargo-ran\n{cargo}\n")
         fake.chmod(0o755)
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CARGO": str(fake),
+        env = {**SEED, "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CARGO": str(fake),
                "NEXTEST_ENV": str(work / "env"), **handed}
         result = subprocess.run(["bash", str(ROOT / "tools/build-sibling-binaries.sh"), *binaries],
                                 env=env, capture_output=True, text=True, check=False)
@@ -666,7 +669,7 @@ class CargoRunnerTests(unittest.TestCase):
             binary.write_text(f"#!/bin/sh\nexec python3 -c '{DUMP}'\n")
             binary.chmod(0o755)
             env = {
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                **SEED, "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "HOME": "/nonexistent-developer-home",
                 "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
                 "XDG_RUNTIME_DIR": "/run/user/1000",
@@ -738,7 +741,7 @@ class CargoRunnerTests(unittest.TestCase):
             example.chmod(0o755)
             environment = work / "test-env-vars"
             environment.write_text(f"pid={os.getpid()}\nTILO_PROBE=handed\nTILO_REQUIRE_MEDIA=1\n")
-            base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            base = {**SEED, "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                     "HOME": "/nonexistent-developer-home",
                     "VK_DRIVER_FILES": "/nonexistent-driver.json"}
             result = subprocess.run([str(RUNNER), str(example)], env=base,
@@ -766,7 +769,7 @@ class CargoRunnerTests(unittest.TestCase):
                 f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n'
                 f'cp -- "$CARGO_TARGET_DIR/test-env-vars" "{stage}"\n')
             (programs / "cargo").chmod(0o755)
-            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+            env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
                    "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
                    "TILO_TEST_NTFS_FIXTURES": "0"}
@@ -798,7 +801,7 @@ class CargoRunnerTests(unittest.TestCase):
                 f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n'
                 f'cp -- "$CARGO_TARGET_DIR/test-env-vars" "{stage}"\n')
             (programs / "cargo").chmod(0o755)
-            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+            env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
                    "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
                    "TILO_TEST_NTFS_FIXTURES": "0"}
@@ -828,7 +831,7 @@ class CargoRunnerTests(unittest.TestCase):
             (programs / "cargo").write_text(
                 f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n')
             (programs / "cargo").chmod(0o755)
-            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+            env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
                    "TILO_TEST_NTFS_FIXTURES": "0"}
             result = subprocess.run(
@@ -858,7 +861,7 @@ class CargoRunnerTests(unittest.TestCase):
                 f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n'
                 f'cp -- "$TILO_TEST_ENVIRONMENT/build-environment" "{work}/environment"\n')
             (programs / "probe").chmod(0o755)
-            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+            env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
                    "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
                    "TILO_TEST_NTFS_FIXTURES": "0"}
@@ -890,7 +893,7 @@ class CargoRunnerTests(unittest.TestCase):
             (programs / "cargo").write_text(
                 f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n')
             (programs / "cargo").chmod(0o755)
-            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+            env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target")}
             result = subprocess.run(
                 ["bash", str(TEST_ENV), "cargo", "nextest", "run", "--profile", "ci"],
@@ -917,7 +920,7 @@ class CargoRunnerTests(unittest.TestCase):
 
     def start(self, binary: Path, *arguments: str, **extra: str) -> subprocess.CompletedProcess[str]:
         """Start BINARY as cargo does, in a run that named its Vulkan driver as CI's profile does."""
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent-developer-home",
+        env = {**SEED, "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent-developer-home",
                "VK_DRIVER_FILES": "/nonexistent-driver.json", **extra}
         # The shell is named, so the recorders see only what the runner itself starts.
         return subprocess.run([shutil.which("bash"), str(RUNNER), str(binary), *arguments], env=env,
@@ -971,7 +974,7 @@ class CargoRunnerTests(unittest.TestCase):
             result = subprocess.run(
                 [str(RUNNER), "debug/deps/" + binary.name], cwd=target, capture_output=True,
                 text=True, check=False,
-                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent"})
+                env={**SEED, "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent"})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(result.stdout.startswith("/tmp/tilo-test-env."), result.stdout)
             # Test binaries run away from their build directory (an archive of them) too.
@@ -1004,7 +1007,7 @@ class CapabilitySkipTests(unittest.TestCase):
         report = work / "probe"
         report.write_text(f"#!/bin/sh\n{probe}\n")
         report.chmod(0o755)
-        env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+        env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
                "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
                "TILO_TEST_NTFS_FIXTURES": "0",
@@ -1139,7 +1142,7 @@ class TestEnvironmentHelperTests(unittest.TestCase):
                   'declare -F tilo_test_environment_enter')
         result = subprocess.run(["bash", "-c", script, str(ROOT), "--check"], capture_output=True,
                                 text=True, check=False,
-                                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/"})
+                                env={**SEED, "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["1 --check none", "tilo_test_environment_enter"])
 
