@@ -50,12 +50,6 @@ pub const ACCOUNTS_APP: &str = "tilo.accounts";
 /// file, what its machines used, the invoices and the page where they are managed. Only
 /// Settings reads it.
 pub const HOST_ACCOUNT_APP: &str = "tilo.host-account";
-/// The app the host account is published as: `use tilo.host-account as billing`. The
-/// desktop session on the host this person's workspaces run on publishes it as
-/// `billing.account`: the plan their account is on, the payment method on file, what its
-/// Linux machines used, the invoices the provider issued and the page where they
-/// manage all of it. Only Settings reads it.
-pub const HOST_ACCOUNT_APP: &str = "tilo.host-account";
 /// The app this computer's crash reports are published as: `use tilo.crash-reports as crashes`.
 /// The reports are files the host keeps in the person's private crash directory; a window reads
 /// them as `crashes.reports`, each with what happened and when, and one report's text as
