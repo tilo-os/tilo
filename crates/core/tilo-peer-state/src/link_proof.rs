@@ -77,24 +77,32 @@ where
 {
     let read =
         |error: std::io::Error| format!("the dialling device's proof did not arrive: {error}");
-    let hello: Hello =
-        match auth::decode_handshake(&read_frame(recv, MAX_PROOF_BYTES).await.map_err(read)?) {
-            Ok(hello) => hello,
-            Err(HandshakeFrameError::Version { theirs }) => {
-                // The device learns this one's version; there is nothing more to tell it.
-                if let Ok(answer) = auth::version_answer() {
-                    let _ = write_frame(send, &answer).await;
-                }
-                return Err(format!(
-                    "the dialling device speaks protocol {theirs}, this one {PEER_PROTOCOL_VERSION}"
-                ));
-            }
-            Err(HandshakeFrameError::Codec(error)) => {
-                return Err(format!(
-                    "the dialling device's hello does not read: {error}"
-                ));
-            }
-        };
+    let hello: Hello = match auth::decode_handshake(
+        &read_frame(recv, MAX_PROOF_BYTES).await.map_err(read)?,
+    ) {
+        Ok(hello) => hello,
+        Err(HandshakeFrameError::Version { theirs }) => {
+            // The device learns this one's version; there is nothing more to tell it.
+            let told = match auth::version_answer() {
+                Ok(answer) => write_frame(send, &answer)
+                    .await
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            let untold = match told {
+                Ok(()) => String::new(),
+                Err(error) => format!(", and it could not be told so: {error}"),
+            };
+            return Err(format!(
+                "the dialling device speaks protocol {theirs}, this one {PEER_PROTOCOL_VERSION}{untold}"
+            ));
+        }
+        Err(HandshakeFrameError::Codec(error)) => {
+            return Err(format!(
+                "the dialling device's hello does not read: {error}"
+            ));
+        }
+    };
     let now = tilo_clock::unix_now_ns();
     tilo_user_identity::verify_device_cert_at(&hello.cert, now)
         .map_err(|error| format!("the dialling device's certificate: {error}"))?;

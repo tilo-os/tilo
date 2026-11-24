@@ -193,7 +193,13 @@ impl StatePeer {
             ));
         };
         let refuse = |why: String| AdmissionError::malformed(format!("{}: {why}", named(commit)));
-        if uuid::Uuid::parse_str(&self.core.workspace).ok() != Some(commit.workspace) {
+        let here = uuid::Uuid::parse_str(&self.core.workspace).map_err(|error| {
+            AdmissionError::Device(format!(
+                "this device's workspace {} is no workspace id: {error}",
+                self.core.workspace
+            ))
+        })?;
+        if here != commit.workspace {
             return Err(refuse(format!(
                 "it was written to workspace {}",
                 self.core.workspace
@@ -213,9 +219,23 @@ impl StatePeer {
         }
         // The commit names the changes the action made in each record: the write to this one
         // carries the ones it names here, or another write could finish the action in its place.
-        if let Ok(collab_types::DocumentMutation::Incremental(bytes)) =
-            collab_types::DocumentMutation::decode(&envelope.payload)
-        {
+        // A sealed write is read only by a device holding its keys, and a segment only once
+        // its mutation is whole: neither names its changes here.
+        let incremental = if envelope.encryption.is_some() {
+            None
+        } else {
+            match collab_types::DocumentMutation::decode(&envelope.payload) {
+                Ok(collab_types::DocumentMutation::Incremental(bytes)) => Some(bytes),
+                Ok(collab_types::DocumentMutation::Snapshot(_))
+                | Err(collab_types::DocumentMutationError::Segmented) => None,
+                Err(error) => {
+                    return Err(refuse(format!(
+                        "its write to {app_id}/{document_id} does not read: {error}"
+                    )));
+                }
+            }
+        };
+        if let Some(bytes) = incremental {
             let changes = collab_types::parse_changes(&bytes).map_err(AdmissionError::malformed)?;
             if !part
                 .heads

@@ -186,20 +186,18 @@ pub(super) async fn gather(
         next.documents.insert(key, heads);
     }
     // The workspace's tasks, as its store holds them.
-    if let Ok(tasks) = crate::agents::task_work::tasks(workspaces, workspace, Vec::new()).await {
-        tasks_in(&tasks, &against, &mut found, &mut due, &mut next);
-    }
+    let tasks = crate::agents::task_work::tasks(workspaces, workspace, Vec::new())
+        .await
+        .map_err(|error| format!("the workspace's tasks do not read: {error}"))?;
+    tasks_in(&tasks, &against, &mut found, &mut due, &mut next);
     // The first look starts at the newest arrival: mail from before it is
     // where the inbox stands.
-    let arrivals = match collab_types::WorkspaceId::parse(workspace) {
-        Some(id) => {
-            workspaces
-                .mail_arrivals_for(id, person, seen.mail_seq)
-                .await
-                .arrivals
-        }
-        None => Vec::new(),
-    };
+    let id = collab_types::WorkspaceId::parse(workspace)
+        .ok_or_else(|| format!("{workspace} is no workspace id"))?;
+    let arrivals = workspaces
+        .mail_arrivals_for(id, person, seen.mail_seq)
+        .await
+        .arrivals;
     next.mail_seq = arrivals
         .iter()
         .map(|arrival| arrival.seq)
