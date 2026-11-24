@@ -20,6 +20,12 @@ type Roll {
 
 root Roll
 
+default view roll for Roll
+
+view roll(r: Roll) {
+    text(r.called)
+}
+
 /// Calls everyone in the workspace, by their id, and answers how many it called.
 action call_roll(r: Roll) -> Int {
     r.called = workspace.members.people.map(p -> p.id()).join(", ")
@@ -55,5 +61,9 @@ fn an_action_the_service_runs_reads_the_members_through_the_workspaces_root() {
         .runtime()
         .read(&roll, "called")
         .expect("what the roll called reads back");
-    assert_eq!(names, Value::text("ada, bo"));
+    // An actor's id is what names it on every device: the member it is, as text.
+    assert_eq!(
+        names,
+        Value::text(r#"{"member":{"person":"ada"}}, {"member":{"person":"bo"}}"#)
+    );
 }
