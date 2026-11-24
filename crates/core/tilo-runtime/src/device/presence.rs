@@ -8,7 +8,6 @@
 //! anything, staying while its session lasts however long it goes quiet, and gone as soon as the
 //! session ends or the person stops it.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,9 +51,6 @@ impl Drop for Session {
     }
 }
 
-/// One agent connection, numbered in the order they opened.
-pub(crate) struct Visit(u64);
-
 /// The device's session, entered when something needs it, and the agent connections it shows.
 pub(crate) struct Presence {
     key: SigningKey,
@@ -68,8 +64,6 @@ pub(crate) struct Presence {
     entering: tokio::sync::Mutex<()>,
     /// Where entries started from a connection run.
     runtime: tokio::runtime::Handle,
-    /// How many agent connections opened.
-    opened: AtomicU64,
 }
 
 impl Presence {
@@ -86,7 +80,6 @@ impl Presence {
             current: Mutex::new(None),
             entering: tokio::sync::Mutex::new(()),
             runtime: tokio::runtime::Handle::current(),
-            opened: AtomicU64::new(0),
         }))
     }
 
@@ -154,25 +147,19 @@ impl Presence {
 
     /// An agent connection opens: the device enters for it when it is not in the workspace, and
     /// enters anew in place of a session whose agent the person stopped.
-    pub(crate) fn visit(self: &Arc<Self>) -> Visit {
-        let visit = Visit(self.opened.fetch_add(1, Ordering::SeqCst).saturating_add(1));
+    pub(crate) fn visit(self: &Arc<Self>) {
         let presence = Arc::clone(self);
         self.runtime.spawn(async move {
             if let Err(why) = presence.session().await {
                 tracing::debug!(%why, "this computer is not in its workspace for an agent");
             }
         });
-        visit
     }
 
-    /// The answer to `request` on `visit` when it is not the workspace's: the person's account
+    /// The answer to `request` when it is not the workspace's: the person's account
     /// (`account/…`: their workspaces and keys), which Tilo's API answers as for any key of
     /// theirs. Any other request back, for the connection's own session.
-    pub(crate) fn answer_first(
-        &self,
-        _visit: &Visit,
-        request: Value,
-    ) -> Result<Answer<'static>, Value> {
+    pub(crate) fn answer_first(&self, request: Value) -> Result<Answer<'static>, Value> {
         if !account_call(&request) {
             return Err(request);
         }

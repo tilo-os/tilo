@@ -1,5 +1,5 @@
 //! Persistent native session shared by independently launched GUI apps and MCP.
-use crate::device::presence::{Presence, Visit};
+use crate::device::presence::Presence;
 use crate::device::{local::Frames, services::Daemon};
 use crate::seats::{AppAt, Seated, Seats};
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
@@ -1242,8 +1242,10 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
                 return;
             }
         };
-        let visit = self.agents.as_ref().map(Presence::visit);
-        let agent = self.agents.as_deref().zip(visit.as_ref());
+        if let Some(agents) = &self.agents {
+            agents.visit();
+        }
+        let agent = self.agents.as_deref();
         if let Err(error) = serve_connection(
             &stream,
             input,
@@ -1332,7 +1334,7 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     status: &Status,
     search: &OnceLock<Arc<tilo_os_search::OsSearch>>,
     seated: Option<&Seated>,
-    agent: Option<(&Presence, &Visit)>,
+    agent: Option<&Presence>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -1377,8 +1379,8 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
                     return refused;
                 }
                 return match &agent {
-                    Some((agents, visit)) => agents
-                        .answer_first(visit, value)
+                    Some(agents) => agents
+                        .answer_first(value)
                         .unwrap_or_else(|value| mcp_answer(server, value)),
                     None => mcp_answer(server, value),
                 };

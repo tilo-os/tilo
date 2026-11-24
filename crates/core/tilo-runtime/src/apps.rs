@@ -1119,12 +1119,6 @@ struct LaunchRecord {
 }
 
 impl Launched {
-    /// Record `pid` as `app` in `workspace`, showing a window; `false` when its start time cannot
-    /// be read.
-    fn record(&self, pid: u32, app: &str, workspace: &str) -> bool {
-        self.record_showing(pid, app, workspace, Shows::Window, None)
-    }
-
     /// Record `pid` as `app` in `workspace` showing `shows` on `record`; `false` when its start
     /// time cannot be read.
     fn record_showing(

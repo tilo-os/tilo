@@ -16,8 +16,8 @@ use tilo_actions::remote::{
 use tilo_peer_state::actions::RemoteDevice;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
-    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, IDENTITY_LIST, MEMBERSHIP_APP, OWNER_ROLE,
-    OWNERSHIP, PersonWorkspaces, WorkspaceLabels, member_record,
+    IDENTITY_LIST, MEMBERSHIP_APP, OWNER_ROLE, OWNERSHIP, PersonWorkspaces, WorkspaceLabels,
+    member_record,
 };
 
 use super::workspaces::ServiceWorkspaces;
@@ -51,22 +51,6 @@ impl Account {
         Self {
             server: Arc::new(actions.remote(&own.endpoint(), server, workspace)),
         }
-    }
-
-    /// Call the server's operation `action` with `arguments`: what it answered, or why not.
-    ///
-    /// # Errors
-    /// The server refused, failed, or was not reached.
-    pub(crate) async fn call(
-        &self,
-        action: &str,
-        arguments: Map<String, Value>,
-    ) -> Result<Value, String> {
-        let target = RemoteActionTarget {
-            provider: HOST_ACTIONS_PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, action),
-        };
-        self.ask(target, arguments).await
     }
 
     /// Invoke `target` at the server with `arguments`: what it answered, or why not.
