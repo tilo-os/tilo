@@ -958,6 +958,7 @@ readers = [
   "crates/lang/tilolang-tilo/tests/settings_input_tablets.rs",
   "crates/lang/tilolang-tilo/tests/settings_panes.rs",
   "crates/lang/tilolang-tilo/tests/settings_permissions.rs",
+  "crates/lang/tilolang-tilo/tests/settings_network.rs",
   "crates/lang/tilolang-tilo/tests/settings_shell.rs",
   "crates/lang/tilolang-tilo/tests/settings_sound.rs",
   "crates/lang/tilolang-tilo/tests/settings_windows.rs",
