@@ -460,14 +460,16 @@ d-pvl6wwx6 = Leistenteil
     .w-redo-layout-change = Layoutänderung wiederholen
     .w-settings = Einstellungen
     .w-about-this-computer = Über diesen Computer
-    .w-you-your-profile = { $person } (du): dein Profil
-    .w-you-your-profile-2 = (du): dein Profil
+    .w-open-your-card = { $ask }: deine Karte öffnen
+    .w-open-your-card-2 = { $person }: deine Karte öffnen
+    .w-you-open-your-card = Du: deine Karte öffnen
 
 d-vidcax4k = Arbeitsbereichsmenü
     .w-workspaces = Arbeitsbereiche
     .w-workspace-name = Name des Arbeitsbereichs
     .w-new-workspace = Neuer Arbeitsbereich
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
+    .w-invite-someone = Jemanden einladen
     .w-rename = { $name } umbenennen
     .w-delete = { $name } löschen
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
@@ -1127,6 +1129,9 @@ d-dgtjjxex = Menü der Person
     .w-history = Verlauf
     .w-about-tilo = Über Tilo
     .w-tilo = Tilo
+    .w-who-is-here = Wer hier ist
+    .w-people = Personen
+    .w-your-card = Deine Karte
 
 d-zlo3t3an = Aufnahmestatus
     .w-watching = { $label } sieht zu
@@ -1136,6 +1141,7 @@ d-zlo3t3an = Aufnahmestatus
 d-fcxy4mu5 = Shell-Ansicht
     .w-new-workspace = Neuer Arbeitsbereich
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
+    .w-invite-someone = Jemanden einladen
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
 
@@ -1875,3 +1881,76 @@ d-jdungghl = Darstellungseinstellungen
 d-65ugxki4 = Fenstermenü-Karte
 
 d-vhbxgivv = Fenstermenü-Zeile
+
+d-mxfb2qdk = Wo-Zeile
+    .w-working-in = Arbeitet in { $title }
+    .w-viewing = Sieht { $title }
+    .w-in = In { $in_app }
+    .w-in-2 = In { $call }
+
+d-xgvy7oje = Personen
+    .w-who-is-here = Wer hier ist
+    .w-people = Personen
+    .w-close = Schließen
+
+d-vb456dpi = Liste
+    .w-you = Du
+    .w-nobody-else-is-here = Niemand sonst ist hier
+    .w-invite-someone-to-this-workspace-or = Lade jemanden in diesen Arbeitsbereich ein oder öffne denselben auf einem anderen Gerät
+    .w-invite-someone = Jemanden einladen
+
+d-vyjuo52r = Zeile einer Person
+    .w-someone = Jemand
+    .w-follows-you = Folgt dir
+    .w-in-a-call = In einem Anruf
+
+d-lkpaptdc = Karte einer Person
+    .w-stop-following = Nicht mehr folgen
+    .w-follow = Folgen
+    .w-message = Nachricht
+    .w-wave = Winken
+    .w-go-there = Dorthin gehen
+    .w-in-a-call = In einem Anruf: { $call }
+
+d-nw3m2rzj = Kopf der Karte
+    .w-someone = Jemand
+    .w-follows-you = Folgt dir
+
+d-sfputxmu = Eigene Karte
+    .w-you = Du
+    .w-your-name = Dein Name
+    .w-what-you-are-doing = Was du machst
+    .w-add-a-device = Ein Gerät hinzufügen
+    .w-your-devices = Deine Geräte
+
+d-rjk6bai6 = Zurück zu allen
+    .w-back-to-everyone = Zurück zu allen
+
+d-lmr4ktas = Folgen-Chip
+    .w-following = Du folgst { $name }
+    .w-stop = Stopp
+
+d-hkigcrhq = Teilen-Anzeige
+    .w-sharing-1-window = 1 Fenster geteilt
+    .w-sharing-windows = { $windows } Fenster geteilt
+    .w-stop-sharing = Teilen von { $shown } beenden
+    .w-stop-sharing-2 = Teilen beenden
+
+d-5mioahup = Wink-Hinweis
+    .w-waved-at-you = { $name } hat dir gewunken
+
+d-6g5ux35b = Ankunfts-Hinweis
+    .w-is-here = { $short } ist hier
+    .w-and-1-other-are-here = { $short } und 1 weitere Person sind hier
+    .w-and-others-are-here = { $short } und { $others } weitere sind hier
+
+d-5xj23ufk = Frage-Karte
+    .w-not-now = Jetzt nicht
+
+d-ktt65xag = Teilen-Steuerung
+    .w-shared-with-the-workspace = Mit dem Arbeitsbereich geteilt
+    .w-shared-watching = Geteilt, { $watching } sehen zu
+    .w-stop-sharing = Teilen beenden
+    .w-stop-letting-them-control-it = Steuerung nicht mehr erlauben
+    .w-let-them-control-it = Steuerung erlauben
+    .w-share-this-window = Dieses Fenster teilen

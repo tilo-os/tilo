@@ -35,6 +35,10 @@ pub struct People {
 }
 
 /// Someone here in the workspace in front, a person or a piece of software.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one fact presence says of someone, read apart by a view"
+)]
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]

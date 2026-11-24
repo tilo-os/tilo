@@ -1045,9 +1045,16 @@ d-qxbh2c44 = Part name
 d-y45hdphl = Dock item name
     .w-launcher = Launcher
 
+d-mxfb2qdk = Where line
+    .w-working-in = Working in { $title }
+    .w-viewing = Viewing { $title }
+    .w-in = In { $in_app }
+    .w-in-2 = In { $call }
+
 d-fcxy4mu5 = Shell view
     .w-new-workspace = New workspace
     .w-join-a-workspace = Join a workspace
+    .w-invite-someone = Invite someone
     .w-workspace-settings = Workspace settings
     .w-overview = Overview
 
@@ -1064,14 +1071,16 @@ d-pvl6wwx6 = Bar part
     .w-redo-layout-change = Redo layout change
     .w-settings = Settings
     .w-about-this-computer = About this computer
-    .w-you-your-profile = { $person } (you): your profile
-    .w-you-your-profile-2 = (you): your profile
+    .w-open-your-card = { $ask }: open your card
+    .w-open-your-card-2 = { $person }: open your card
+    .w-you-open-your-card = You: open your card
 
 d-vidcax4k = Workspace menu
     .w-workspaces = Workspaces
     .w-workspace-name = Workspace name
     .w-new-workspace = New workspace
     .w-join-a-workspace = Join a workspace
+    .w-invite-someone = Invite someone
     .w-rename = Rename { $name }
     .w-delete = Delete { $name }
     .w-workspace-settings = Workspace settings
@@ -1103,6 +1112,9 @@ d-dgtjjxex = Person menu
     .w-history = History
     .w-about-tilo = About Tilo
     .w-tilo = Tilo
+    .w-who-is-here = Who is here
+    .w-people = People
+    .w-your-card = Your card
 
 d-zlo3t3an = Capture status
     .w-watching = Watching { $label }
@@ -1451,6 +1463,65 @@ d-uvwnwa4d = Agent chip
     .w-show-who-is-here = Show who is here
     .w-stop = Stop
 
+d-xgvy7oje = People
+    .w-who-is-here = Who is here
+    .w-people = People
+    .w-close = Close
+
+d-vb456dpi = Roster
+    .w-you = You
+    .w-nobody-else-is-here = Nobody else is here
+    .w-invite-someone-to-this-workspace-or = Invite someone to this workspace, or open the same one on another device
+    .w-invite-someone = Invite someone
+
+d-vyjuo52r = Person row
+    .w-someone = Someone
+    .w-follows-you = Follows you
+    .w-in-a-call = In a call
+
+d-lkpaptdc = Person card
+    .w-stop-following = Stop following
+    .w-follow = Follow
+    .w-message = Message
+    .w-wave = Wave
+    .w-go-there = Go there
+    .w-in-a-call = In a call: { $call }
+
+d-nw3m2rzj = Card head
+    .w-someone = Someone
+    .w-follows-you = Follows you
+
+d-sfputxmu = Own card
+    .w-you = You
+    .w-your-name = Your name
+    .w-what-you-are-doing = What you are doing
+    .w-add-a-device = Add a device
+    .w-your-devices = Your devices
+
+d-rjk6bai6 = Back to everyone
+    .w-back-to-everyone = Back to everyone
+
+d-lmr4ktas = Follow chip
+    .w-following = Following { $name }
+    .w-stop = Stop
+
+d-hkigcrhq = Sharing indicator
+    .w-sharing-1-window = Sharing 1 window
+    .w-sharing-windows = Sharing { $windows } windows
+    .w-stop-sharing = Stop sharing { $shown }
+    .w-stop-sharing-2 = Stop sharing
+
+d-5mioahup = Wave notice
+    .w-waved-at-you = { $name } waved at you
+
+d-6g5ux35b = Arrival notice
+    .w-is-here = { $short } is here
+    .w-and-1-other-are-here = { $short } and 1 other are here
+    .w-and-others-are-here = { $short } and { $others } others are here
+
+d-5xj23ufk = Ask card
+    .w-not-now = Not now
+
 d-agpwsfhm = Phone
     .w-sign-in-to-tilo = Sign in to Tilo
     .w-on-a-device-that-has-your = On a device that has your identity, run tilo device add and type the code it prints here. If this is your first device, start new.
@@ -1729,6 +1800,14 @@ d-xfexkr2v = Bar search
     .w-previous-match = Previous match
     .w-next-match = Next match
     .w-close-the-search = Close the search
+
+d-ktt65xag = Share control
+    .w-shared-with-the-workspace = Shared with the workspace
+    .w-shared-watching = Shared, { $watching } watching
+    .w-stop-sharing = Stop sharing
+    .w-stop-letting-them-control-it = Stop letting them control it
+    .w-let-them-control-it = Let them control it
+    .w-share-this-window = Share this window
 
 d-6zyejo5v = Window bar actions
     .w-new-tab-of-this-window = New tab of this window

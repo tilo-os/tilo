@@ -47,8 +47,9 @@ pub(crate) const NOTICE_RESOURCE: &str = "session:notice";
 pub(crate) const WALLPAPER_RESOURCE: &str = "session:wallpaper";
 
 pub(crate) use tilo_device_surfaces::lists::{
-    AgentsEffect, Folder, Folders, Invite, InviteEffect, Launchpad, LaunchpadCard, Said, SaidAction,
-    SaidEffect, Search, SearchGroup, SearchResult, Tray, TrayEffect, TrayItem, Wallpaper,
+    AgentsEffect, Folder, Folders, Invite, InviteEffect, Launchpad, LaunchpadCard, Said,
+    SaidAction, SaidEffect, Search, SearchGroup, SearchResult, Tray, TrayEffect, TrayItem,
+    Wallpaper,
 };
 
 /// The glyph a welcome card shows: the app's own glyph where it opens one, and the shell's own for

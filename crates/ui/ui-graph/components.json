@@ -189,6 +189,20 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "colour",
+          "doc": "The presence colour it wears, `rrggbb`, where the workspace assigned one: the colour the member row carries, which is not always the one its identity derives.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "status",
+          "doc": "How they are: `online`, `away`, `busy` or `offline`, drawn as the dot on their face.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "semantics": {

@@ -46,6 +46,7 @@ use tilo_desktop_model::window_share::{
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, peer_salt_of,
 };
+use tilo_device_surfaces::shares::ShareEffect;
 use tilo_live::live::Track;
 use tilo_live::live_session::LiveSession;
 use tilo_live::share::{
@@ -54,7 +55,6 @@ use tilo_live::share::{
 use tilo_live::video::{Layer, VideoObject};
 use tilo_service::{Service, Started, Wake};
 use tilo_session_core::desktop::i18n::t;
-use tilo_device_surfaces::shares::ShareEffect;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_window_share::config::FlatpakShareConfig;
 use tilo_window_share::flatpak_share::{EncodedFrame, SharedFlatpakSession};
@@ -2685,7 +2685,6 @@ impl Service for WindowShareService {
 #[derive(tilo_resource::Row)]
 #[row(kind = "session", label = "Shared windows")]
 pub struct WindowSharesRoot;
-
 
 /// The command a share effect queues.
 fn command(effect: &ShareEffect) -> ShareCommand {
