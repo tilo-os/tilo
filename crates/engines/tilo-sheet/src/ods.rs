@@ -99,6 +99,7 @@ fn rewrite_refs_to_ods(body: &str) -> String {
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "test fixtures")]
 mod tests {
     use super::*;
     use crate::model::CellValue;

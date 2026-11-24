@@ -658,6 +658,7 @@ impl RefToken {
 }
 
 #[cfg(test)]
+#[allow(clippy::string_slice, reason = "test fixtures")]
 mod tests {
     use super::*;
 

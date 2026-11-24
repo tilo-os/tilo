@@ -383,6 +383,7 @@ fn shift_reference(reference: &str, edit: GridEdit) -> Option<String> {
 }
 
 /// Sort the rows of `(start, end)` by the shown values of column `by`.
+#[allow(clippy::arithmetic_side_effects, reason = "row numbers stay inside the sheet's u32 range")]
 fn sort(
     sheets: &mut [Sheet],
     name: &str,
@@ -401,7 +402,9 @@ fn sort(
         .iter()
         .position(|shown| fold_sheet(&shown.name) == fold_sheet(&sheet.name))
         .ok_or_else(|| format!("`{name}` is not a sheet of this workbook"))?;
-    let shown = &shown[index];
+    let shown = shown
+        .get(index)
+        .ok_or_else(|| "the sheet is not in the values".to_string())?;
     // The values the rows are ordered by, as a number sorts before text, and an empty row last.
     let key = |row: u32| -> (u8, f64, String) {
         let reference = addr_to_a1(by, row);
@@ -454,6 +457,7 @@ fn sort(
 }
 
 /// Extend the cells of `source` over `target`, as the fill handle does.
+#[allow(clippy::arithmetic_side_effects, reason = "column and row deltas stay inside the sheet's u32 range")]
 fn fill_range(sheets: &mut [Sheet], name: &str, source: &str, target: &str) -> Result<(), String> {
     let (from, to) = range_of(source)?;
     let (_, end) = range_of(target)?;
@@ -483,7 +487,7 @@ fn fill_range(sheets: &mut [Sheet], name: &str, source: &str, target: &str) -> R
             .cells
             .get(&reference)
             .cloned()
-            .unwrap_or(CellShown {
+            .unwrap_or_else(|| CellShown {
                 kind: "empty".into(),
                 ..CellShown::default()
             });

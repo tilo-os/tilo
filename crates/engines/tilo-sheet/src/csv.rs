@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use crate::model::Addr;
 
 /// A table's cells as typed, its fields parted by `separator` (`','` for CSV, `'\t'` for TSV).
+#[allow(clippy::arithmetic_side_effects, reason = "the counters walk a char vector no longer than memory")]
 pub fn parse_separated(text: &str, separator: char) -> HashMap<Addr, String> {
     let mut out = HashMap::new();
     let mut row = 0u32;

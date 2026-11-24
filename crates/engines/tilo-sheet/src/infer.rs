@@ -108,6 +108,7 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
 }
 
 /// A number with surrounding space, thousands separators or a parenthesised negative.
+#[allow(clippy::arithmetic_side_effects, reason = "digit and dot positions index a slice already bounds-checked")]
 fn parse_number_loose(s: &str) -> Option<f64> {
     let s = s.trim();
     if s.is_empty() {
@@ -125,6 +126,7 @@ fn parse_number_loose(s: &str) -> Option<f64> {
 }
 
 /// Whether the string groups thousands, so the Number format keeps the look.
+#[allow(clippy::arithmetic_side_effects, reason = "neighbour indexes are checked against the vector's length")]
 fn has_grouping(s: &str) -> bool {
     // A comma between digits.
     let bytes: Vec<char> = s.chars().collect();
@@ -179,6 +181,7 @@ fn resolve_symbol(sym: &str, default_currency: Currency) -> Currency {
 }
 
 /// An ISO, US or EU date literal as an Excel serial.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a parsed day, month and year are bounded by their digits")]
 fn parse_date(s: &str) -> Option<f64> {
     if let Some((y, rest)) = split_int(s, '-')
         && let Some((m, d)) = split_two(rest, '-')
@@ -203,6 +206,7 @@ fn parse_date(s: &str) -> Option<f64> {
 }
 
 /// A `HH:MM` or `HH:MM:SS` literal as the fraction of a day.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_precision_loss, reason = "a parsed clock stays within one day")]
 fn parse_time(s: &str) -> Option<f64> {
     let (clock, pm) = if let Some(rest) = s.strip_suffix("PM").or_else(|| s.strip_suffix("pm")) {
         (rest.trim(), Some(true))
@@ -268,6 +272,7 @@ fn valid_ymd(y: i64, m: i64, d: i64) -> bool {
 
 /// An f64 as the shortest exact-looking decimal: up to ten significant digits, trailing zeros
 /// trimmed.
+#[allow(clippy::cast_possible_truncation, reason = "a whole f64 below 1e15 fits in i64")]
 fn trim_float(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
         return format!("{}", n as i64);

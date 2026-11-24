@@ -141,6 +141,7 @@ fn style_formats(styles: &[u8]) -> BTreeMap<String, CellFormat> {
 /// The Sheets format an Excel number-format code shows: a percentage, money
 /// by its symbol, a number with digit grouping or decimals; `None` for the
 /// general format and codes Sheets has no form for.
+#[allow(clippy::arithmetic_side_effects, reason = "row and column numbers stay inside the sheet's limits")]
 fn format_of_code(code: &str) -> Option<CellFormat> {
     use tilo_formats::Currency;
     let first = code.split(';').next().unwrap_or(code);
@@ -168,6 +169,7 @@ fn format_of_code(code: &str) -> Option<CellFormat> {
 /// stores: numbers in canonical form, in the format their cell style shows
 /// (`style_formats`), text, `TRUE`/`FALSE` booleans, and formulas normalised
 /// to `=`-prefixed A1 form.
+#[allow(clippy::arithmetic_side_effects, reason = "row and column numbers stay inside the sheet's limits")]
 pub(crate) fn tables_from_parsed(
     sheets: Vec<ParsedSheet>,
     style_formats: &BTreeMap<String, CellFormat>,
@@ -295,6 +297,7 @@ fn normalize_read_formula(reported: &str) -> String {
 /// Rewrite ODF bracketed cell references — `[.A1]`, `[.A1:.B3]`, or a
 /// cross-table `[Sheet2.A1]` — into bare A1 notation (`A1`, `A1:B3`, `A1`).
 /// Input without brackets (an Excel formula) passes through unchanged.
+#[allow(clippy::arithmetic_side_effects, reason = "row and column numbers stay inside the sheet's limits")]
 fn strip_ods_bracket_refs(body: &str) -> String {
     let chars: Vec<char> = body.chars().collect();
     let mut out = String::new();
@@ -435,6 +438,7 @@ pub(crate) fn snapshot_of(
 /// numbers (with a number-format code for currency/percent/date/time) so the
 /// file opens cleanly in Excel/Sheets. Tab names Excel would refuse are made
 /// valid and unique.
+#[allow(clippy::arithmetic_side_effects, reason = "row and column numbers stay inside the sheet's limits")]
 pub fn xlsx_bytes(tables: &[SheetTable]) -> anyhow::Result<Vec<u8>> {
     let mut styles: Vec<CellStyle<'static>> = Vec::new();
     let snap = snapshot_of(
@@ -485,6 +489,7 @@ fn excel_number_format(fmt: CellFormat) -> Option<&'static str> {
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "test fixtures")]
 mod tests {
     use super::*;
     use tilo_formats::Currency;

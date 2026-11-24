@@ -43,9 +43,8 @@ impl Format {
         Some(match ending {
             "xlsx" => Self::Xlsx,
             "ods" => Self::Ods,
-            "csv" => Self::Csv,
+            "csv" | "zip" | "notion" => Self::Csv,
             "tsv" | "tab" => Self::Tsv,
-            "zip" | "notion" => Self::Csv,
             _ => {
                 let media = lower
                     .split(';')
