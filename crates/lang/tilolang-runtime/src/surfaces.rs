@@ -1103,6 +1103,10 @@ impl Core {
         let mut line = empty(ROW, &format!("{key}~line"));
         line.props.insert(GAP.to_owned(), Value::text("related"));
         line.props.insert(ALIGN.to_owned(), Value::text("start"));
+        // A line narrower than the title and what stands beside it wraps instead of squeezing
+        // them into each other: the title keeps its line, and the views and the actions stand
+        // under it on a phone.
+        line.props.insert("wrap".to_owned(), Value::Int(1));
         let line = self.push(line)?;
         self.insert(line, 0, title)?;
         self.remove(parent, index)?;
