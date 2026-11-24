@@ -742,7 +742,7 @@ impl<'a> Validator<'a> {
                 value: Some(value), ..
             } => self.value(value, 0),
             ToApp::Splice { insert, .. } => self.string(insert),
-            ToApp::Edit { text, .. } => self.string(text),
+            ToApp::Edit { text, .. } | ToApp::FormEdit { text, .. } => self.string(text),
             ToApp::EditRich { rich, .. } => self.value(&Value::Rich(rich.clone()), 0),
             ToApp::Open { resource } => self.resource(resource),
             ToApp::OpenReference { reference } => self.string(reference),
@@ -769,7 +769,6 @@ impl<'a> Validator<'a> {
                 }
                 Ok(())
             }
-            ToApp::FormEdit { text, .. } => self.string(text),
             _ => Ok(()),
         }
     }
