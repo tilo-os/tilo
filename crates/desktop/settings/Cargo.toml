@@ -36,6 +36,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 # The sections' types as models, so an app edits them by path.
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
+tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model" }
 # The workspace store the sections are resources of: its commands, stamps and versions.

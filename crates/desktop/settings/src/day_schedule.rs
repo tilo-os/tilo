@@ -151,7 +151,10 @@ pub fn parse_hhmm(value: &str) -> Option<u16> {
 /// Format minutes after midnight as `HH:MM`.
 pub fn format_hhmm(minute_of_day: u16) -> String {
     let minute_of_day = minute_of_day % (24 * 60);
-    format!("{:02}:{:02}", minute_of_day / 60, minute_of_day % 60)
+    tilo_formats::machine!(
+        "a clock time the settings document stores for a person's schedule, read back by parse_hhmm",
+        format!("{:02}:{:02}", minute_of_day / 60, minute_of_day % 60)
+    )
 }
 
 /// Sunrise and sunset at `location` on `day_of_year`, in local minutes for `utc_offset_minutes`.

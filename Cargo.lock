@@ -20424,6 +20424,7 @@ dependencies = [
  "tilo-collab-types",
  "tilo-control",
  "tilo-files",
+ "tilo-formats",
  "tilo-lock",
  "tilo-paths",
  "tilo-platform-caps",
