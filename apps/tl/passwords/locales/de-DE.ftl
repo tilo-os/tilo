@@ -67,62 +67,6 @@ d-23s6djq3 = Überspringen
 
 d-njro7d44-filter-skip = Überspringen
 
-d-s4fdvwxi = Berechtigung
-    .doc = Die Berechtigung einer App auf einen Eintrag, wie der Geheimdienst dieses Geräts sie festhält.
-    .noun = { $count ->
-        [one] Berechtigung
-       *[other] Berechtigungen
-    }
-
-d-etxpt7ue = Berechtigung
-    .doc = Die Zeile, über die die Berechtigung widerrufen wird.
-
-d-zspj6dq3 = App-Name
-
-d-vmagdba7 = Eintrag
-
-d-q7swsgbi = Ursprung
-
-d-op3pmyoa = Dauer
-    .doc = `session` oder `persistent`, bis die Person sie widerruft.
-
-d-de7iridd = Dienst
-
-d-sokiqdma = Konto
-
-d-zbce7tha = Generation
-
-d-s4fdvwxi-filter-generation = Generation
-
-d-vw6re36r = Anfrage
-    .doc = Die Anfrage einer App nach dem Geheimnis eines Eintrags, die auf die Antwort der Person wartet.
-    .noun = { $count ->
-        [one] Anfrage
-       *[other] Anfragen
-    }
-
-d-7zdv4ybz = Anfrage-ID
-
-d-5v3lmcpz = App-Name
-
-d-yenlxk2y = Eintrag
-
-d-blg4plg5 = Zweck
-
-d-qdtznbmp = Ursprung
-
-d-oni7mwgp = Dienst
-
-d-f45qzy4l = Konto
-
-d-ar3uod2a = Generation
-
-d-mbd5xtx3 = Person
-
-d-trjs3k6z = Gerät
-
-d-vw6re36r-filter-generation = Generation
-
 d-iivmujua = Tresor
     .doc = Der Tresor des Arbeitsbereichs: jedes Geheimnis, das seine Mitglieder teilen, und was das Fenster vom Gerät über seine Versuche erfuhr.
     .noun = { $count ->
@@ -137,11 +81,6 @@ d-6n7bahst = Übernommen
 
 d-wa4uxojt = Wartend
     .doc = Die Zeilen, über die die Person vor einem Import entscheidet.
-
-d-jvcd466v = Berechtigungen
-    .doc = Die Apps, denen dieses Gerät einen Eintrag erlaubt, und die Anfragen, die auf eine Antwort warten.
-
-d-r7dqxet6 = Anfragen
 
 d-3xf6uda7 = Hinweis
     .doc = Was der letzte Import, Export oder die letzte Sicherung tat, als Zeile für die Übertragungsseite.
@@ -240,25 +179,6 @@ d-awblwezm = Entfernungsabfrage
 
 d-eevmellb = IDs
 
-d-lmzb2rbn = Entscheidungsabfrage
-    .doc = Was das Gerät über die Anfrage einer App entscheiden und was es zurücknehmen soll.
-    .noun = { $count ->
-        [one] Entscheidungsabfrage
-       *[other] Entscheidungsabfragen
-    }
-
-d-dccodeky = Anfrage
-
-d-36u2cbvc = Entscheidung
-
-d-fvu4io4l = Widerrufsabfrage
-    .noun = { $count ->
-        [one] Widerrufsabfrage
-       *[other] Widerrufsabfragen
-    }
-
-d-qpuk74yf = Berechtigung
-
 d-nkhxa77u = Geräteeintrag
     .doc = Ein Eintrag, wie ein Gerät oder eine Sicherung ihn übergibt.
     .noun = { $count ->
@@ -329,70 +249,6 @@ d-u4mryepl = Adressantwort
     }
 
 d-vlz4ie4r = Adresse
-
-d-d76ismcw = Berechtigungsantwort
-    .doc = Eine Berechtigung, die der Geheimdienst eines Geräts festhält, und eine Anfrage, die auf Antwort wartet.
-    .noun = { $count ->
-        [one] Berechtigungsantwort
-       *[other] Berechtigungsantworten
-    }
-
-d-rkxl2n54 = Berechtigung
-
-d-c46djuxv = App-Name
-
-d-vt3nge35 = Eintrag
-
-d-xpdw4tul = Ursprung
-
-d-ijngd2mn = Dauer
-
-d-2szewbhc = Dienst
-
-d-tzlrxgli = Konto
-
-d-fao4sv64 = Generation
-
-d-d76ismcw-filter-generation = Generation
-
-d-4qhxmyiy = Anfrageantwort
-    .noun = { $count ->
-        [one] Anfrageantwort
-       *[other] Anfrageantworten
-    }
-
-d-uwlz6snz = Anfrage-ID
-
-d-teuglrzi = App-Name
-
-d-vwm54rgj = Eintrag
-
-d-jtgqk4sy = Zweck
-
-d-iup6rajj = Ursprung
-
-d-3vyvxq7s = Dienst
-
-d-m44o5wly = Konto
-
-d-uqo357ru = Generation
-
-d-t2wg24vu = Person
-
-d-5m4hme6g = Gerät
-
-d-4qhxmyiy-filter-generation = Generation
-
-d-rukhwm6h = Zugriffsantwort
-    .doc = Was das Gerät über die Apps sagt, denen es den Tresor erlaubt, und über die, die fragen.
-    .noun = { $count ->
-        [one] Zugriffsantwort
-       *[other] Zugriffsantworten
-    }
-
-d-b57zg23u = Berechtigungen
-
-d-z4pg654o = Anfragen
 
 d-5p7rahwe = Art
     .doc = Welche Art Geheimnis ein Eintrag ist: wofür er ist, was seine Felder und ihre Wörter bestimmt.
@@ -551,25 +407,6 @@ d-wzx4ymwg-file = Datei
 d-flkitlvk = Den Tresor dieses Geräts importieren
     .doc = Nimmt in den Tresor, was der Geheimdienst dieses Geräts hält und ein Arbeitsbereich teilen darf.
 
-d-xy2sze2g = App-Zugriff neu lesen
-    .doc = Liest, was der Geheimdienst dieses Geräts Apps mit dem Tresor erlaubt und was sie fragen.
-
-d-25pg6fvt = Eine App-Anfrage beantworten
-    .doc = Beantwortet die Anfrage einer App: diese Sitzung, bis zum Widerruf oder nein.
-
-d-25pg6fvt-request_id = Anfrage-ID
-
-d-25pg6fvt-decision = Entscheidung
-
-d-yzff7tsb = App-Zugriff widerrufen
-    .doc = Nimmt eine Berechtigung zurück.
-    .did = revoked an app's access
-
-d-yzff7tsb-grant = Berechtigung
-
-d-feo4xfie = Gelesene Berechtigungen leeren
-    .doc = Leert, was das Fenster von den Berechtigungen des Geräts las.
-
 d-ugwe3ulv = Anmeldung speichern
 
 d-d2bzao4x = Editor speichern
@@ -588,7 +425,6 @@ d-bmtl4ylm = Tresorfenster
     .w-wi-fi = WLAN
     .w-other-secrets = Andere Geheimnisse
     .w-password-review = Passwortprüfung
-    .w-app-access = App-Zugriff
     .w-import-and-export = Import und Export
     .w-all-items = Alle Einträge
     .w-passwords = Passwörter
@@ -679,18 +515,6 @@ d-p4ndizd3 = Prüfseite
     .w-passwords-checked = Geprüfte Passwörter
     .w-checked-against = Geprüft gegen
     .w-only-the-passwords-in-this-vault = Nur die Passwörter in diesem Tresor
-
-d-yqi4zfzm = Zugriffsseite
-    .w-app-access = App-Zugriff
-    .w-each-app-below-can-fill-the = Jede App unten kann den Eintrag daneben ohne vorherige Nachfrage ausfüllen.
-    .w-refresh = Neu lesen
-    .w-waiting-for-your-decision = Wartet auf Ihre Entscheidung
-    .w-allow-for-this-session = Für diese Sitzung erlauben
-    .w-allow-until-revoked = Bis zum Widerruf erlauben
-    .w-decline = Ablehnen
-    .w-no-app-can-use-your-vault = Keine App kann Ihren Tresor ohne Nachfrage nutzen
-    .w-allowed-apps = Erlaubte Apps
-    .w-revoke-access = Zugriff widerrufen
 
 d-vskscvt7 = Importvorschau
     .w-nothing-new-to-import = Nichts Neues zu importieren

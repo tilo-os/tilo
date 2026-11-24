@@ -68,62 +68,6 @@ d-23s6djq3 = Skip
 
 d-njro7d44-filter-skip = Skip
 
-d-s4fdvwxi = Grant
-    .doc = One app's permission to an item, as this device's secret service records it.
-    .noun = { $count ->
-        [one] grant
-       *[other] grants
-    }
-
-d-etxpt7ue = Grant
-    .doc = The row the permission is revoked by.
-
-d-zspj6dq3 = App name
-
-d-vmagdba7 = Item
-
-d-q7swsgbi = Origin
-
-d-op3pmyoa = Lifetime
-    .doc = `session`, or `persistent` until the person revokes it.
-
-d-de7iridd = Service
-
-d-sokiqdma = Account
-
-d-zbce7tha = Generation
-
-d-s4fdvwxi-filter-generation = Generation
-
-d-vw6re36r = Ask
-    .doc = An app's request for one item's secret, waiting for the person's answer.
-    .noun = { $count ->
-        [one] ask
-       *[other] asks
-    }
-
-d-7zdv4ybz = Request id
-
-d-5v3lmcpz = App name
-
-d-yenlxk2y = Item
-
-d-blg4plg5 = Purpose
-
-d-qdtznbmp = Origin
-
-d-oni7mwgp = Service
-
-d-f45qzy4l = Account
-
-d-ar3uod2a = Generation
-
-d-mbd5xtx3 = Person
-
-d-trjs3k6z = Device
-
-d-vw6re36r-filter-generation = Generation
-
 d-iivmujua = Vault
     .doc = The workspace's vault: every secret its members share, and what the window learned from the device of what it tried to do.
     .noun = { $count ->
@@ -138,11 +82,6 @@ d-6n7bahst = Converted
 
 d-wa4uxojt = Pending
     .doc = The rows the person is deciding about, before an import.
-
-d-jvcd466v = Grants
-    .doc = The apps this device lets use an item, and the requests waiting for an answer.
-
-d-r7dqxet6 = Asks
 
 d-3xf6uda7 = Notice
     .doc = What the last import, export or backup did, as a line the transfer page reads.
@@ -241,25 +180,6 @@ d-awblwezm = Remove ask
 
 d-eevmellb = Ids
 
-d-lmzb2rbn = Decide ask
-    .doc = What the device is asked to decide about an app's request, and to take back.
-    .noun = { $count ->
-        [one] decide ask
-       *[other] decide asks
-    }
-
-d-dccodeky = Request
-
-d-36u2cbvc = Decision
-
-d-fvu4io4l = Revoke ask
-    .noun = { $count ->
-        [one] revoke ask
-       *[other] revoke asks
-    }
-
-d-qpuk74yf = Grant
-
 d-nkhxa77u = Device item
     .doc = One item as a device or a backup hands it over.
     .noun = { $count ->
@@ -330,70 +250,6 @@ d-u4mryepl = Url answer
     }
 
 d-vlz4ie4r = Url
-
-d-d76ismcw = Grant answer
-    .doc = One permission a device's secret service records, and one request waiting for an answer.
-    .noun = { $count ->
-        [one] grant answer
-       *[other] grant answers
-    }
-
-d-rkxl2n54 = Grant
-
-d-c46djuxv = App name
-
-d-vt3nge35 = Item
-
-d-xpdw4tul = Origin
-
-d-ijngd2mn = Lifetime
-
-d-2szewbhc = Service
-
-d-tzlrxgli = Account
-
-d-fao4sv64 = Generation
-
-d-d76ismcw-filter-generation = Generation
-
-d-4qhxmyiy = Ask answer
-    .noun = { $count ->
-        [one] ask answer
-       *[other] ask answers
-    }
-
-d-uwlz6snz = Request id
-
-d-teuglrzi = App name
-
-d-vwm54rgj = Item
-
-d-jtgqk4sy = Purpose
-
-d-iup6rajj = Origin
-
-d-3vyvxq7s = Service
-
-d-m44o5wly = Account
-
-d-uqo357ru = Generation
-
-d-t2wg24vu = Person
-
-d-5m4hme6g = Device
-
-d-4qhxmyiy-filter-generation = Generation
-
-d-rukhwm6h = Access answer
-    .doc = What the device says of the apps it lets use the vault, and of those asking.
-    .noun = { $count ->
-        [one] access answer
-       *[other] access answers
-    }
-
-d-b57zg23u = Grants
-
-d-z4pg654o = Asks
 
 d-5p7rahwe = Kind
     .doc = What kind of secret an item is: what it is for, which sets the fields it has and the words that name them.
@@ -552,25 +408,6 @@ d-wzx4ymwg-file = File
 d-flkitlvk = Import this device's vault
     .doc = Takes into the vault what this device's secret service holds and a workspace may share.
 
-d-xy2sze2g = Refresh app access
-    .doc = Reads what this device's secret service lets apps do with the vault, and what they ask.
-
-d-25pg6fvt = Answer an app's request
-    .doc = Answers an app's request: this session, until revoked, or no.
-
-d-25pg6fvt-request_id = Request id
-
-d-25pg6fvt-decision = Decision
-
-d-yzff7tsb = Revoke app access
-    .doc = Takes a permission back.
-    .did = revoked an app's access
-
-d-yzff7tsb-grant = Grant
-
-d-feo4xfie = Clear the read permissions
-    .doc = Empties what the window read of the device's permissions.
-
 d-ugwe3ulv = Save login~present
 
 d-d2bzao4x = Save editor~present
@@ -589,7 +426,6 @@ d-bmtl4ylm = Vault window
     .w-wi-fi = Wi-Fi
     .w-other-secrets = Other secrets
     .w-password-review = Password review
-    .w-app-access = App access
     .w-import-and-export = Import and export
     .w-all-items = All items
     .w-passwords = Passwords
@@ -680,18 +516,6 @@ d-p4ndizd3 = Review page
     .w-passwords-checked = Passwords checked
     .w-checked-against = Checked against
     .w-only-the-passwords-in-this-vault = Only the passwords in this vault
-
-d-yqi4zfzm = Access page
-    .w-app-access = App access
-    .w-each-app-below-can-fill-the = Each app below can fill the item beside it without asking you first.
-    .w-refresh = Refresh
-    .w-waiting-for-your-decision = Waiting for your decision
-    .w-allow-for-this-session = Allow for this session
-    .w-allow-until-revoked = Allow until revoked
-    .w-decline = Decline
-    .w-no-app-can-use-your-vault = No app can use your vault without asking
-    .w-allowed-apps = Allowed apps
-    .w-revoke-access = Revoke access
 
 d-vskscvt7 = Import preview
     .w-nothing-new-to-import = Nothing new to import
