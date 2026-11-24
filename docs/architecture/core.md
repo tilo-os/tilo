@@ -253,7 +253,8 @@ chosen in the workspace's AI settings. Tilo has no code for any particular
 outside agent. Claude Code, Codex, `t` and the rest are ordinary commands
 in a workspace's Terminal, run by a person or by the Tilo agent. A model
 provider (Anthropic, OpenAI, a local model) is one entry in AI settings,
-not a code path of its own.
+not a code path of its own. AI settings are the workspace's `tilo.models`
+resource, read on every model call; Settings' AI page shows it.
 
 The proof that this works is our own development: in the company workspace,
 the Tilo agent takes a small change to the tilo repo from a chat message,
@@ -907,7 +908,6 @@ Per-person stores still on `main`:
 | Personal records `(app, personal)` | `tilo-peer-state` `state/personal/`, `tilo-workspace-service` `apps/personal.rs`, `session` `personal.rs` | ~6,000 with tests |
 | The person's roaming settings | `settings-store` person document | part of 19,419 |
 | Connections under the person's root | `tilo-workspace-service` `connections` | 5,661 |
-| Model choice per person | `workspaces/person_model`, `person_models` | 6,071 |
 | A person's servers | the home-peer registry file, and again as the Servers workspace (`workspaces/servers.rs`) | 4,060 |
 
 `person_settings` and `person_vault` already keep their data in the
