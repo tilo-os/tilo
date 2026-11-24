@@ -588,7 +588,13 @@ while :; do
         case "$state" in active|failed) break ;; esac
         sleep 3
       done
-      [ "$state" = active ] || fail "boot $attempt's tilo-boot-fallback.service did not finish ($state); see $OUT/04-boot$attempt.txt"
+      if [ "$state" != active ]; then
+        # What the pass said, and whether bootc answers outside its sandbox.
+        as_root 'journalctl -b --no-pager -o short-monotonic -u tilo-boot-fallback
+                 echo "--- bootc status, run again:"; bootc status --format json; echo "exit $?"' \
+          > "$OUT/04-boot$attempt-fallback.txt" 2>&1
+        fail "boot $attempt's tilo-boot-fallback.service did not finish ($state); see $OUT/04-boot$attempt-fallback.txt"
+      fi
     fi
     TABLE="$(entry_table)"
     a_counted=no

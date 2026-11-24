@@ -290,6 +290,16 @@ loader_editor_off() {  # ESP
 # --- listing ------------------------------------------------------------------
 bootc_status_json() { bootc status --format json 2>/dev/null; }
 
+# bootc's status for a step that cannot go on without it: bootc's own error
+# reaches the unit's journal, and its exit status the message this dies with.
+bootc_status_or_die() {
+  local status rc
+  status="$(bootc status --format json)"; rc=$?
+  [ "$rc" = 0 ] || die "bootc status failed (exit $rc); its error is above"
+  [ -n "$status" ] || die "bootc status said nothing"
+  printf '%s' "$status"
+}
+
 # Fixed selectors are parsed from a bounded stream by the Rust identity tool.
 # This path supplies staged composefs identity to TPM rollback enrollment, so a
 # general interpreter/eval belongs nowhere on the authority boundary.
@@ -745,8 +755,7 @@ cmd_fallback() {
   local esp; esp="$(esp_path)" || { log "$(esp_missing); nothing to check"; return 0; }
   unpin_trial_default "$esp"
   local status queued digest f file="" name counter left done id report settled
-  status="$(bootc_status_json)"
-  [ -n "$status" ] || die "bootc status said nothing"
+  status="$(bootc_status_or_die)" || exit 1
   if [ -n "$(status_field "$status" staged-image)" ]; then
     log "an update is staged and boots next; nothing to settle"
     return 0
@@ -1099,8 +1108,7 @@ cmd_finalize() {
   [ "$(id -u)" = 0 ] || die "finalize needs root"
   local esp status
   esp="$(esp_path)" || { log "$(esp_missing); nothing to finalize"; return 0; }
-  status="$(bootc_status_json)"
-  [ -n "$status" ] || die "bootc status said nothing"
+  status="$(bootc_status_or_die)" || exit 1
   if [ -z "$(status_field "$status" staged-image)" ]; then
     log "no staged deployment to finalize"
     return 0
