@@ -45,8 +45,6 @@ description = "Understand and control which connections your system accepts."
 description = "Browse history, review changes, and work with Git visually."
 [apps.hex-editor]
 description = "Inspect and edit binary files with precision."
-[apps.launcher]
-description = "Find apps, windows, files and actions from one search, and start them from the keyboard."
 [apps.logs]
 description = "Search and understand system logs without a wall of noise."
 [apps.messages]
@@ -87,8 +85,6 @@ description = "Discover and open the apps of your workspace from the signed Tilo
 description = "Track the workspace's issues on a list and a board, and hand them to agents."
 [apps.terminal]
 description = "A capable terminal that belongs naturally in your Tilo workspace."
-[apps.themes]
-description = "Explore and shape the colors and appearance of your desktop."
 [apps.totp]
 description = "Generate time-based verification codes without losing your flow."
 [apps.typst-editor]

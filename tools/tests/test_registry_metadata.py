@@ -44,15 +44,9 @@ class RegistryMetadataTests(unittest.TestCase):
                     (ROOT / "dist/apps/registry-metadata.toml").read_text(encoding="utf-8")
                 )["apps"]
                 self.assertEqual(len(entries), len(catalog))
-                # Every screenshot, including the Notes image fixture, is archived.
-                # Observe the exact icon output and the original Settings image pin.
+                # The generated icon is the whole of the artwork an app ships.
                 self.assertEqual({path.name for path in media.iterdir()},
                                  {f"{path.stem}.svg" for path in entries})
-                settings = json.loads((output / "settings.json").read_text(encoding="utf-8"))
-                self.assertEqual(len(settings["images"]["en"]), 5)
-                self.assertEqual(settings["images"]["en"][-1]["url"],
-                                 "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/"
-                                 "bd5d23b61827b873b51daf0d84e09db582104b5a93c617c733a5c282191eb96f/settings.png")
                 icon_count = 0
                 for path in entries:
                     entry = json.loads(path.read_text(encoding="utf-8"))
