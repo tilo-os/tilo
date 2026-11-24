@@ -1221,11 +1221,12 @@ action update_all(s: Store) (label: "Update all apps", icon: .arrow_down) {
     )
 }
 
-/// Asks a workspace for a directory bot: a bot runs in a workspace, never on this computer, and
-/// is added from inside the workspace it runs in.
+/// Adds a directory bot to this workspace as the person's own shortcut: its program is verified
+/// against the signed listing and saved as the shortcut the workspace's host runs for them, under
+/// the triggers the program declares.
 action add_bot(s: Store, a: App) (label: "Add to this workspace…", icon: .bot) {
     require a.bot "Only a directory bot is added to a workspace"
-    s.trouble = "Add a bot from inside the workspace it runs in."
+    begin(s, a, "add-bot", json.encode(OneAsk(identity: a.identity, registry: a.registry)))
 }
 
 /// Blocks an app: it then appears nowhere in the Store or in search, and cannot be opened or
@@ -1491,8 +1492,11 @@ type Started {
     error: Text = ""
 }
 
+/// What one app is asked about: its id, and the registry its source is, when a bot is added from
+/// it.
 type OneAsk {
     identity: Text
+    registry: Text = ""
 }
 
 type One {

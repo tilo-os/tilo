@@ -179,7 +179,7 @@ fn read_catalogue() -> Result<CatalogueAnswer, String> {
     let blocks = registry_types::BlockList::load();
 
     let installed = installed_rows();
-    let listing = app_cli::all_offers();
+    let listing = app_cli::offered();
     for unreachable in &listing.unreachable {
         answer.unanswered.push(unreachable.name.clone());
     }
@@ -190,6 +190,14 @@ fn read_catalogue() -> Result<CatalogueAnswer, String> {
         seen.insert(offer.package_id.clone());
         tilo_names.insert(offer.display_name.trim().to_ascii_lowercase());
         items.push(record(&tilo_item(offer, &installed))?);
+    }
+    // A directory bot has no version to fetch on this computer: adding it saves its program as
+    // the person's shortcut, which the workspace's host runs for them.
+    for bot in &listing.bots {
+        if blocks.is_blocked(&bot.package_id) || !seen.insert(bot.package_id.clone()) {
+            continue;
+        }
+        items.push(record(&tilo_bot_item(bot))?);
     }
 
     let language = locale();
@@ -333,6 +341,53 @@ fn tilo_item(offer: &app_cli::CatalogueApp, installed: &Installed) -> Item {
     }
 }
 
+/// One directory bot as the Store reads it: what its program does, what it reaches, and whether
+/// it may post under other names. There is no version to fetch on this computer: adding it saves
+/// the program as the person's shortcut.
+fn tilo_bot_item(bot: &app_cli::bots::CatalogueBot) -> Item {
+    Item {
+        identity: bot.package_id.clone(),
+        name: bot.name.clone(),
+        summary: if bot.tagline.is_empty() {
+            bot.description.clone()
+        } else {
+            bot.tagline.clone()
+        },
+        description: bot.description.clone(),
+        developer: if bot.package_id.starts_with("so.tilo.") {
+            "Tilo".to_owned()
+        } else {
+            String::new()
+        },
+        icon: bot.icon_url.clone().unwrap_or_default(),
+        origin: "tilo".to_owned(),
+        registry: bot.registry_name.clone(),
+        branch: "stable".to_owned(),
+        user_managed: true,
+        trust: "publisher_signed".to_owned(),
+        versions: vec![record(&Version {
+            version: bot.version.clone(),
+            ..Version::default()
+        })
+        .unwrap_or_default()],
+        available: bot.version.clone(),
+        runnable: true,
+        publisher: bot.publisher_pubkey_hex.clone(),
+        bot: true,
+        bot_triggers: bot.artifact.requires.triggers.clone(),
+        bot_apps: bot.artifact.requires.apps.clone(),
+        bot_connectors: bot
+            .artifact
+            .requires
+            .connectors
+            .iter()
+            .map(|connector| connector.package_id.clone())
+            .collect(),
+        bot_appearance: bot.artifact.requires.appearance,
+        ..Item::default()
+    }
+}
+
 fn flathub_item(entry: &app_catalogue::CatalogueEntry, installed: &Installed) -> Item {
     let installed_version = installed.version.get(&entry.id).cloned().unwrap_or_default();
     Item {
@@ -446,12 +501,20 @@ fn one(input: &str) -> Result<String, String> {
         return writes(&json!({ "item": Value::Null }));
     }
     let installed = installed_rows();
-    if let Some(offer) = app_cli::all_offers()
+    let listing = app_cli::offered();
+    if let Some(offer) = listing
         .apps
         .into_iter()
         .find(|offer| offer.package_id == ask.identity)
     {
         return writes(&json!({ "item": record(&tilo_item(&offer, &installed))? }));
+    }
+    if let Some(bot) = listing
+        .bots
+        .into_iter()
+        .find(|bot| bot.package_id == ask.identity)
+    {
+        return writes(&json!({ "item": record(&tilo_bot_item(&bot))? }));
     }
     if let Some(entry) = app_catalogue::appstream::load_cached(&locale())
         .into_iter()
@@ -469,7 +532,8 @@ fn details(input: &str) -> Result<String, String> {
     }
     let ask: Ask = reads(input)?;
     require_app_id(&ask.identity)?;
-    if let Some(offer) = app_cli::all_offers()
+    let listing = app_cli::offered();
+    if let Some(offer) = listing
         .apps
         .into_iter()
         .find(|offer| offer.package_id == ask.identity)
@@ -483,6 +547,29 @@ fn details(input: &str) -> Result<String, String> {
             "homepage": item.homepage,
             "source_code": item.source_code,
             "size": offer.tapp_size_bytes,
+            "screenshots": item.screenshots,
+            "permissions": [],
+            "releases": [],
+            "runtime": item.runtime,
+            "runtime_registry": "",
+            "digest": item.digest,
+        }));
+    }
+    // A directory bot has nothing a source says beyond its listing: what its program does and
+    // reaches is on the item, and there is no version or screenshot to fetch.
+    if let Some(bot) = listing
+        .bots
+        .into_iter()
+        .find(|bot| bot.package_id == ask.identity)
+    {
+        let item = tilo_bot_item(&bot);
+        return writes(&json!({
+            "description": item.description,
+            "developer": item.developer,
+            "license": item.license,
+            "homepage": item.homepage,
+            "source_code": item.source_code,
+            "size": 0,
             "screenshots": item.screenshots,
             "permissions": [],
             "releases": [],
@@ -1108,11 +1195,19 @@ fn remote_change(op: &str, input: &str) -> Result<String, String> {
 
 fn registry_of(app: &str, wanted: &str) -> Result<app_cli::RegistryConfig, String> {
     let name = if wanted.is_empty() {
-        app_cli::all_offers()
+        let offered = app_cli::offered();
+        offered
             .apps
             .into_iter()
             .find(|offer| offer.package_id == app)
             .map(|offer| offer.registry)
+            .or_else(|| {
+                offered
+                    .bots
+                    .into_iter()
+                    .find(|bot| bot.package_id == app)
+                    .map(|bot| bot.registry_name)
+            })
     } else {
         Some(wanted.to_owned())
     }
@@ -1122,6 +1217,60 @@ fn registry_of(app: &str, wanted: &str) -> Result<app_cli::RegistryConfig, Strin
         .into_iter()
         .find(|registry| registry.enabled && registry.name == name)
         .ok_or_else(|| "The app's registry is unavailable.".to_owned())
+}
+
+// ---------------------------------------------------------------- directory bots
+
+/// Add a directory bot's program as the person's saved shortcut: it runs through the same trigger
+/// runner as any automation, and the workspace's host runs it for them when their own devices are
+/// away. A program given as text — a developer's own, or one a file holds — is checked and saved
+/// the same way, with no registry and no version to fetch.
+fn add_bot(input: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        #[serde(default)]
+        identity: String,
+        #[serde(default)]
+        registry: String,
+        #[serde(default)]
+        program: String,
+    }
+    let ask: Ask = reads(input)?;
+    let program = if ask.program.trim().is_empty() {
+        require_app_id(&ask.identity)?;
+        let registry = registry_of(&ask.identity, &ask.registry)?;
+        tilo_bot_directory::fetch_listed_bot(&registry, &ask.identity, tilo_bot_directory::NEWEST)
+            .map_err(|error| error.to_string())?
+            .program
+    } else {
+        let program = tilo_automation::program::parse_program(ask.program.as_bytes())
+            .map_err(|error| error.to_string())?;
+        tilo_automation::program::check_structure(&program).map_err(|errors| {
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
+        program
+    };
+    let name = program.name.clone();
+    // The program's own id names the shortcut, so adding a newer program of the same bot replaces
+    // what runs instead of saving a second copy beside it.
+    let id = program.id.clone();
+    let mut daemon = app_cli::device::Daemon::reach()?;
+    let saved = daemon.workspace("workspace/shortcuts#list", &json!({}))?;
+    let replacing = saved
+        .as_array()
+        .is_some_and(|list| list.iter().any(|one| one["id"] == json!(id)));
+    let action = if replacing { "update" } else { "create" };
+    daemon.workspace(
+        &format!("workspace/shortcuts#{action}"),
+        &json!({ "shortcut": program }),
+    )?;
+    Ok(format!(
+        "“{name}” is saved in your shortcuts; the workspace's host runs it for you."
+    ))
 }
 
 fn prepare_report(input: &str) -> Result<String, String> {
@@ -1517,6 +1666,12 @@ mod jobs {
             "report-status" => Ok(spawn("report-status", move |_, _| {
                 report_status(&input)
             })),
+            "add-bot" => Ok(spawn("add-bot", move |cancel, _| {
+                if cancel.load(Ordering::Relaxed) {
+                    return Ok(String::new());
+                }
+                super::add_bot(&input)
+            })),
             "submit-report" | "appeal" => Ok(json!({
                 "job": "",
                 "error": "A report is signed with your workspace identity, which this computer cannot do from here yet.",
@@ -1574,6 +1729,7 @@ fn call(op: &str, input: &str) -> Result<String, String> {
         "reference" => reference(input),
         "prepare-report" => prepare_report(input),
         "report-status" => report_status(input),
+        "add-bot" => add_bot(input),
         "block" => block(input),
         other => Err(format!("`{other}` is no op this device runs for {APP}")),
     }
@@ -1688,3 +1844,45 @@ fn flatpak_ref(content: &str) -> Option<FlatpakRef> {
     })
 }
 
+
+#[cfg(test)]
+mod bot_tests {
+    use super::*;
+
+    /// What the Bots view reads of a listed bot: what its program does and reaches, where it
+    /// comes from, and that it has no version to fetch on this computer.
+    #[test]
+    fn a_listed_bot_carries_what_its_program_does_and_reaches() {
+        let bot = app_cli::bots::CatalogueBot {
+            package_id: "so.tilo.bots.echo".into(),
+            name: "Echo".into(),
+            tagline: "Says what it is told".into(),
+            description: "A program that posts on a schedule.".into(),
+            icon_url: Some("https://example.test/echo.png".into()),
+            publisher_pubkey_hex: "ab".repeat(32),
+            registry_name: "Tilo main".into(),
+            version: "1.2.0".into(),
+            artifact: registry_types::BotArtifact {
+                program_url: "https://example.test/echo.program".into(),
+                program_blake3_hex: "00".repeat(32),
+                program_size_bytes: 64,
+                requires: registry_types::BotRequirements {
+                    connectors: Vec::new(),
+                    apps: vec!["so.tilo.chat".into()],
+                    appearance: true,
+                    triggers: vec!["schedule".into(), "resource_changed".into()],
+                },
+            },
+        };
+        let item = tilo_bot_item(&bot);
+        assert!(item.bot, "the Store filters it among bots");
+        assert_eq!(item.identity, "so.tilo.bots.echo");
+        assert_eq!(item.registry, "Tilo main");
+        assert_eq!(item.available, "1.2.0");
+        assert_eq!(item.bot_triggers, ["schedule", "resource_changed"]);
+        assert_eq!(item.bot_apps, ["so.tilo.chat"]);
+        assert!(item.bot_appearance, "it may post under other names");
+        assert!(item.installed.is_empty(), "nothing is fetched on this computer");
+        assert!(item.runnable, "a bot is always added, never built here");
+    }
+}

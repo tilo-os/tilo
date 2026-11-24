@@ -21001,6 +21001,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app-package",
+ "tilo-automation",
+ "tilo-bot-directory",
  "tilo-content",
  "tilo-desktop-entry",
  "tilo-net",

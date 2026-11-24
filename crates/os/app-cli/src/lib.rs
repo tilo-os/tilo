@@ -636,11 +636,24 @@ fn behind_accepted_detail(registry_name: &str, behind: client::BehindAccepted) -
     )
 }
 
-/// Everything the configured registries offer that is not installed.
-/// Blocking, but enabled registries are fetched concurrently so one slow
-/// mirror does not serially delay every healthy source. Results are still
-/// folded in configuration order, preserving the user's registry priority.
-pub fn all_offers() -> CatalogueListing {
+/// What the configured registries offer: the apps they list and the bots they list, with the
+/// registries that could not be read.
+#[derive(Clone, Debug, Default)]
+pub struct Offered {
+    /// The apps a person installs on this computer.
+    pub apps: Vec<CatalogueApp>,
+    /// The programs a person adds to a workspace, where they run as automations.
+    pub bots: Vec<bots::CatalogueBot>,
+    /// The enabled registries that could not be read, with why.
+    pub unreachable: Vec<UnreachableRegistry>,
+}
+
+/// Everything the configured registries offer, apps and bots: an app a person installs on this
+/// computer, and a bot whose program they add to a workspace. Blocking, but enabled registries
+/// are fetched concurrently so one slow mirror does not serially delay every healthy source.
+/// Results are still folded in configuration order, preserving the user's registry priority.
+#[must_use]
+pub fn offered() -> Offered {
     // Invoking the public app/store client is an explicit request to use the
     // store, so materialize the signed official source on first use.
     let registries = config::load_registries();
@@ -660,6 +673,8 @@ pub fn all_offers() -> CatalogueListing {
             .collect::<Vec<_>>()
     });
     let mut apps = Vec::new();
+    let mut bots = Vec::new();
+    let mut bot_ids = std::collections::BTreeSet::new();
     let mut unreachable = Vec::new();
     for (reg, result) in enabled.iter().zip(fetched) {
         match result {
@@ -671,6 +686,13 @@ pub fn all_offers() -> CatalogueListing {
                 for v in &entries {
                     if let Some(app) = entry_to_app_for_channel(v, &reg.name, reg.channel) {
                         apps.push(app);
+                    }
+                    // A bot is a program for a workspace, never a version to fetch on this
+                    // computer; the first registry that offers one is the one it comes from.
+                    if let Some(bot) = bots::bot_offer(v, &reg.name)
+                        && bot_ids.insert(bot.package_id.clone())
+                    {
+                        bots.push(bot);
                     }
                 }
             }
@@ -684,9 +706,21 @@ pub fn all_offers() -> CatalogueListing {
             }),
         }
     }
-    CatalogueListing {
+    Offered {
         apps: dedupe_and_subtract(apps, &[]),
+        bots,
         unreachable,
+    }
+}
+
+/// The apps the configured registries offer, and the registries that could not be read.
+///
+/// Blocking: one fetch of every enabled registry, shared with [`offered`]'s bots.
+pub fn all_offers() -> CatalogueListing {
+    let offered = offered();
+    CatalogueListing {
+        apps: offered.apps,
+        unreachable: offered.unreachable,
     }
 }
 

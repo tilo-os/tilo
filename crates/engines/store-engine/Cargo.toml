@@ -13,6 +13,8 @@ package-store = { package = "tilo-package-store", path = "../../core/package-sto
 package-actions = { path = "../../core/package-actions" }
 registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
 tilo-app-package = { path = "../../core/tilo-app-package" }
+tilo-automation = { path = "../../core/automation" }
+tilo-bot-directory = { path = "../../integrations/bot-directory" }
 tilo-content = { path = "../../core/content" }
 tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
