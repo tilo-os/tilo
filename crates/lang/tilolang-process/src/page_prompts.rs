@@ -146,7 +146,7 @@ impl PagePrompts {
         // What the page said of itself is the app's record's: its call runs at once, with no
         // question, and nothing waits to be withdrawn.
         if let Some(kind) = said.get("note").and_then(serde_json::Value::as_str) {
-            return note(kind, &said, (workspace, app, page), |request| send(request));
+            return note(kind, &said, (workspace, app, page), send);
         }
         if let Some(kind) = said.get("ended").and_then(serde_json::Value::as_str) {
             // The page no longer waits: the person is asked no more.
