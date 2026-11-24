@@ -4,9 +4,11 @@ autotests = false
 name = "tilolang-cli"
 version = "0.1.0"
 edition = "2024"
-publish = false
-license.workspace = true
+publish = true
+license = "MIT"
 description = "The tilolang command: create, check, run, build, package and publish Tilo apps, written in tilolang or in Rust."
+repository.workspace = true
+homepage.workspace = true
 
 # What authors type: `tilolang new`, `tilolang dev`, `tilolang package`.
 [[bin]]
@@ -25,48 +27,48 @@ path = "tests/it.rs"
 
 [dependencies]
 # The commands of an app written in Rust, and the ones every app shares (`src/cli.rs`).
-tilo-app-builder = { path = "../tilo-app-builder" }
+tilo-app-builder = { version = "0.1.0", path = "../tilo-app-builder" }
 anyhow.workspace = true
 clap.workspace = true
 # `check` reads the PNGs a responsive acceptance run left.
 image = { workspace = true, features = ["png"] }
 libc.workspace = true
 # `publish` and `apply`: the registry the packages go to.
-app-registry = { package = "tilo-app-registry", path = "../../core/app-registry" }
+app-registry = { version = "0.1.0", package = "tilo-app-registry", path = "../../core/app-registry" }
 # `ui`: the serialized screens it edits.
-tilo-ui-graph = { path = "../../ui/ui-graph" }
-tilo-advisory-lock = { path = "../../platform/advisory-lock" }
+tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
 jiff.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true
-runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
-bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
+runtime-portal = { version = "0.1.0", package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+bounded-command = { version = "0.1.0", package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 rustix = { workspace = true, features = ["event", "process", "termios"] }
 serde.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
 # The publisher key, written whole beside its place before it is linked there.
 tempfile.workspace = true
-tilo-app-package = { path = "../../core/tilo-app-package" }
+tilo-app-package = { version = "0.1.0", path = "../../core/tilo-app-package" }
 # The publisher key file.
-registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
-tilolang = { path = "../tilolang" }
-tilolang-tilo = { path = "../tilolang-tilo" }
+registry-types = { version = "0.1.0", package = "tilo-registry-types", path = "../../core/registry-types" }
+tilolang = { version = "0.1.0", path = "../tilolang" }
+tilolang-tilo = { version = "0.1.0", path = "../tilolang-tilo" }
 # The window with nothing on screen `layout-check` lays out, and the platform it stands on.
-tilolang-window = { path = "../tilolang-window" }
+tilolang-window = { version = "0.1.0", path = "../tilolang-window" }
 # The person the layout is checked for: their language, staged over the machine's.
-tilo-process = { path = "../../platform/tilo-process", features = ["native"] }
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 # Rebuilding on every saved source.
-tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"] }
 # The generations a saved build is published into for the running app (`src/dev.rs`).
 tilo-app-module = { version = "0.1.0", path = "../tilo-app-module" }
 toml.workspace = true
 tilo-paths.workspace = true
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 # The app window's half of a window and the patch protocol to it: what `layout-check` lays out.
-tilo-app-window = { path = "../../sdk/tilo-app-window" }
-tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
+tilo-app-window = { version = "0.1.0", path = "../../sdk/tilo-app-window" }
+tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
 # `tilolang profile --times`: the named scopes the framework marks, timed per interaction.
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 
@@ -97,4 +99,4 @@ required-features = ["native-sdk-qualification"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core" }

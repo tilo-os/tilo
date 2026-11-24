@@ -65,11 +65,11 @@ client_roots = [
 
 # The published crates people build apps on (LICENSING.md): each one's whole graph
 # ships to whoever depends on it, so tools/sdk/check_builder_licenses.py holds it
-# to the expressions above. tilo-app and tilolang-cli join once their graphs
-# are MIT.
+# to the expressions above. tilo-app joins once its graph is MIT.
 builder_roots = [
     "tilo-ui",
     "tilolang",
+    "tilolang-cli",
     "tilolang-lex",
     "tilolang-runtime",
     "tilolang-web",

@@ -35,7 +35,7 @@ tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional 
 [target.'cfg(unix)'.dependencies]
 # The files a person chose for an app, served to it as descriptors and named by a stable
 # reference.
-tilo-documents = { path = "../../core/documents" }
+tilo-documents = { version = "0.1.0", path = "../../core/documents" }
 # `O_NOFOLLOW`/`O_DIRECTORY` when opening a chosen file or folder.
 libc.workspace = true
 

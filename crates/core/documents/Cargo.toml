@@ -2,8 +2,9 @@
 name = "tilo-documents"
 version = "0.1.0"
 edition = "2024"
-publish = false
-license.workspace = true
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "The files a person chose for an app in the system file chooser, served into that app's sandbox and nothing else."
 repository.workspace = true
 homepage.workspace = true
@@ -23,7 +24,7 @@ blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # The grant records, replaced atomically in an owner-only folder.
-tilo-files = { path = "../../platform/tilo-files" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process", "std"] }
