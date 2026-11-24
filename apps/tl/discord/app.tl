@@ -464,6 +464,7 @@ fn may_configure(who: Actor) -> Bool {
 // ---- the page ---------------------------------------------------------------------------
 default view accounts_view for Accounts
 
+/// The bridge's window: the connected server, or the empty state that connects one.
 view accounts_view(accounts: Accounts) {
     if let d = accounts.accounts.first() {
         account(d)
@@ -574,10 +575,7 @@ view account(d: Discord) {
                             }
                             let mine = d.connects.any(c -> c.person == invoker.id())
                             if mine and d.sign_in_url != "" {
-                                ui.Link(
-                                    d.sign_in_url,
-                                    label: "Continue signing in with Discord",
-                                )
+                                ui.Link(d.sign_in_url, label: "Continue signing in with Discord")
                             }
                         } else {
                             ui.ListRow(
@@ -680,10 +678,7 @@ view channel_step(d: Discord) {
     if d.setup_channels.is_empty() {
         ui.Text("This server holds no channel to bring in.", role: .caption, secondary: true)
     } else {
-        ui.Text(
-            "Choose the one channel to bring in, or none for the whole server.",
-            role: .body,
-        )
+        ui.Text("Choose the one channel to bring in, or none for the whole server.", role: .body)
         for ch in d.setup_channels {
             if ch.kind != .category {
                 ui.ListRow(
@@ -697,14 +692,8 @@ view channel_step(d: Discord) {
             }
         }
     }
-    ui.Toggle(
-        bind: d.setup_mirror,
-        label: "Channels made here are made in Discord too",
-    )
-    ui.Toggle(
-        bind: d.setup_roles,
-        label: "The workspace's roles are kept as this server's",
-    )
+    ui.Toggle(bind: d.setup_mirror, label: "Channels made here are made in Discord too")
+    ui.Toggle(bind: d.setup_roles, label: "The workspace's roles are kept as this server's")
     row(gap: .related, align: .center, wrap: true) {
         ui.Button("Back", role: .plain) {
             on press: back_to_servers(d)
@@ -724,9 +713,7 @@ fn step_words(d: Discord) -> Text {
         "Asking Discord which servers the bot is in."
     } else if d.setup_wants == "channels" {
         "Reading the server's channels from Discord."
-    } else if d.setup_wants == "sign-in" {
-        "Starting the sign-in with Discord."
-    } else { "" }
+    } else if d.setup_wants == "sign-in" { "Starting the sign-in with Discord." } else { "" }
 }
 
 /// What the account calls a linked account: the name it shows, else its Discord user name.
@@ -949,9 +936,7 @@ action found_channels(d: Discord, ask: Text, channels: List<DChannel>) {
     require answers_now(d, ask) "That is no press this setup waits on"
     d.setup_channels.remove_where(c -> true)
     for ch in channels {
-        if ch.kind != .category {
-            d.setup_channels.insert(ch)
-        }
+        if ch.kind != .category { d.setup_channels.insert(ch) }
     }
     let chosen = d.setup_channel
     d.setup_channel = if d.setup_channels.any(c -> c.id == chosen) { chosen } else { "" }
@@ -1138,9 +1123,9 @@ action unmap(d: Discord, kind: MappedKind, tilo: Text, keep_apart: Bool = false)
     }
 }
 
-// ---- linking accounts -------------------------------------------------------------------
 /// Starts signing in with Discord, as the person looking: the bridge's program builds the
 /// consent page and the state that binds what comes back to them.
+// ---- linking accounts -------------------------------------------------------------------
 action connect_account(d: Discord) uses random (icon: .link, label: "Connect") {
     require d.guild_id != "" "This workspace is not bridged to a Discord server"
     require d.sign_in_page != "" "This device does not offer signing in with Discord"
@@ -1161,9 +1146,7 @@ action start_sign_in(d: Discord, ask: Text, url: Text, sha256: Text) uses time {
     for c in d.connects.filter(c -> c.person == person) {
         d.connects.remove(c)
     }
-    d.connects.insert(
-        Connect(person: person, state_sha256: sha256, expires: "{now + 10m}"),
-    )
+    d.connects.insert(Connect(person: person, state_sha256: sha256, expires: "{now + 10m}"))
     d.sign_in_url = url
     d.setup_wants = ""
     d.setup_problem = ""
