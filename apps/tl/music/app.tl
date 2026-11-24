@@ -510,7 +510,7 @@ view artist(a: Artist) {
     }
 }
 
-/// A catalogue playlist's page: its songs, played from the top.
+/// A catalogue playlist's page: what it says about itself, and its songs, played from the top.
 view playlist(pl: Playlist) {
     let lib = root Library
     let songs = lib.tracks.filter(t -> t.found_for == pl.found_for)
@@ -521,6 +521,9 @@ view playlist(pl: Playlist) {
         stack(gap: .related) {
             text(pl.title, role: .title)
             text(pl.subtitle, role: .subheading)
+            if pl.description != "" {
+                text(pl.description, role: .caption, secondary: true)
+            }
             track_list(lib, songs, "This playlist has no songs yet")
         }
     }

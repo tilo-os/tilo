@@ -282,6 +282,38 @@ mod cases {
                 "the artist asked for comes first"
             );
         }
+
+        phase a_catalogue_playlists_words_stand_on_its_page;
+        {
+            let s = Shelf::new();
+            let playlist = seed_origin(
+                &s.rt,
+                "music.playlist",
+                &s.lib,
+                &field_id(&s.app, "Library", "playlists"),
+                &type_id(&s.app, "Playlist"),
+                vec![
+                    ("key", Value::text("pl-1")),
+                    ("title", Value::text("Roads")),
+                    ("description", Value::text("Songs for the drive home")),
+                    ("found_for", Value::text("roads")),
+                ],
+            );
+            let mut page = s
+                .rt
+                .open_view(&me(), &s.app.view("playlist"), vec![Value::resource(&playlist)])
+                .unwrap();
+            page.set_lazy_rows(false).unwrap();
+            let words: Vec<String> = of_kind(page.tree(), "ui.Text")
+                .into_iter()
+                .filter_map(|node| node.props.get("value").and_then(Value::as_text))
+                .map(str::to_owned)
+                .collect();
+            assert!(
+                words.iter().any(|word| word == "Songs for the drive home"),
+                "the playlist's own words stand on its page: {words:?}"
+            );
+        }
     }
 }
 
@@ -575,6 +607,27 @@ mod spotify_cases {
                     ""
                 ])),
                 "the new name is Spotify's too"
+            );
+            // What the playlist says about itself is the person's too, and Spotify's.
+            s.call(
+                "describe_mixtape",
+                vec![
+                    Value::resource(&mixtape),
+                    Value::text("Songs for the drive home"),
+                ],
+            );
+            assert_eq!(
+                s.field_of(&mixtape, "Mixtape", "description"),
+                Value::text("Songs for the drive home")
+            );
+            assert!(
+                s.asked_for("music.spotify").contains(&serde_json::json!([
+                    "edit_playlist",
+                    "spotify:playlist:pl-1",
+                    "Roads at night",
+                    "Songs for the drive home"
+                ])),
+                "the description reaches the Spotify playlist"
             );
             s.call("mixtape_remove", vec![Value::resource(&mixtape), Value::resource(&song)]);
             assert!(
