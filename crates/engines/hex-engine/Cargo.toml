@@ -12,9 +12,13 @@ tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 tilo-resource = { path = "../../core/tilo-resource" }
 serde.workspace = true
 serde_json.workspace = true
+# The bytes a file's content travels as, when a save asks where it goes.
+base64.workspace = true
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }
+tilo-content = { path = "../../core/content" }
+tilo-wake = { path = "../../platform/tilo-wake" }
 
 [lints]
 workspace = true

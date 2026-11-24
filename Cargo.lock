@@ -6157,55 +6157,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
-name = "hex-editor"
-version = "0.1.0"
-dependencies = [
- "hex-editor",
- "hex-editor-model",
- "runtime-dylib",
- "serde_json",
- "tempfile",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-files",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "workspace-hack",
-]
-
-[[package]]
-name = "hex-editor-model"
-version = "0.1.0"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-automerge-fork",
- "tilo-resource",
- "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
-name = "hex-editor-model-wasm"
-version = "0.1.0"
-dependencies = [
- "hex-editor-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "hex-engine"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "serde_json",
+ "tilo-content",
  "tilo-resource",
  "tilo-test-env",
+ "tilo-wake",
  "tilolang-tilo",
 ]
 
@@ -18988,7 +18949,6 @@ dependencies = [
  "db-client-model-wasm",
  "diffmerge-model-wasm",
  "firewall-model-wasm",
- "hex-editor-model-wasm",
  "logs-model-wasm",
  "maps-model-wasm",
  "poker-model-wasm",
@@ -22616,6 +22576,7 @@ dependencies = [
  "bounded-zip",
  "foldhash 0.1.5",
  "getrandom 0.4.3",
+ "hex-engine",
  "jiff",
  "regex",
  "serde",
@@ -22627,6 +22588,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-content",
  "tilo-content-types",
  "tilo-doc",
  "tilo-doc-codecs",
@@ -22639,6 +22601,7 @@ dependencies = [
  "tilo-sheet",
  "tilo-spellcheck",
  "tilo-test-env",
+ "tilo-wake",
  "tilo-wasm-host",
  "tilolang",
  "tilolang-tilo",
@@ -27053,9 +27016,6 @@ dependencies = [
  "heapless",
  "heck",
  "hex",
- "hex-editor",
- "hex-editor-model",
- "hex-editor-model-wasm",
  "hex-literal 0.3.4",
  "hex-literal 1.1.0",
  "hexane",

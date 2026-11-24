@@ -701,6 +701,20 @@ tilo_test_env::scenario! {
             "each kind once, the extensions as media types and names: {:?}",
             compiled.meta.actions[0].opens
         );
+        // An app that opens every kind of file says so once, as a widget does.
+        let any = compile_body(
+            "type Doc {\n    title: Text\n}\nroot doc: Doc\n\
+             default view doc_view for Doc\n\
+             view doc_view(d: Doc) {\n    text(d.title)\n}\n\
+             action take(r: Doc, file: File) -> Text (\n    icon: .file_plus,\n    \
+             opens: [\"*/*\"],\n) { file.name }",
+        );
+        assert_eq!(
+            any.meta.actions[0].opens,
+            ["*/*"],
+            "every kind of file is a kind of its own: {:?}",
+            any.meta.actions[0].opens
+        );
         // The canonical text reads back as itself.
         let src = "app t.x \"X\"\ntype Doc {\n    title: Text\n}\nroot doc: Doc\n\
                    default view doc_view for Doc\nview doc_view(d: Doc) {\n    text(d.title)\n}\n\

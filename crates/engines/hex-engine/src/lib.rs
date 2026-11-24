@@ -64,6 +64,20 @@ pub struct Change {
 }
 
 impl Change {
+    /// The change as records keep it: `at:remove:insert`.
+    fn text(&self) -> String {
+        format!("{}:{}:{}", self.at, self.remove, self.insert)
+    }
+
+    /// The change `text` writes, and nothing when it is none.
+    fn parse(text: &str) -> Option<Self> {
+        let mut parts = text.splitn(3, ':');
+        let at = parts.next()?.parse().ok()?;
+        let remove = parts.next()?.parse().ok()?;
+        let insert = parts.next()?.to_owned();
+        Some(Self { at, remove, insert })
+    }
+
     fn inserted(&self) -> Vec<u8> {
         parse_hex(&self.insert).unwrap_or_default()
     }
@@ -89,7 +103,8 @@ impl HexEngine {
 
     /// The bytes `address` holds with `changes` applied, read afresh only when the edits made
     /// since are not the ones already applied.
-    fn derive(&self, address: &str, changes: &[Change]) -> Result<(Vec<u8>, usize, bool), String> {
+    fn derive(&self, address: &str, changes: &[String]) -> Result<(Vec<u8>, usize, bool), String> {
+        let changes: Vec<Change> = changes.iter().filter_map(|text| Change::parse(text)).collect();
         let mut buffers = self.buffers();
         if let Some(buffer) = buffers.get_mut(address)
             && changes.starts_with(&buffer.applied)
@@ -101,11 +116,17 @@ impl HexEngine {
             let edited = differing(&buffer.base, &buffer.bytes);
             return Ok((buffer.bytes.clone(), edited, true));
         }
-        let Some(base) = read_address(address) else {
-            return Ok((Vec::new(), 0, false));
+        // A buffer with no file yet stands on no bytes, and reads as one.
+        let base = if address.is_empty() {
+            Vec::new()
+        } else {
+            let Some(base) = read_address(address) else {
+                return Ok((Vec::new(), 0, false));
+            };
+            base
         };
         let mut bytes = base.clone();
-        for change in changes {
+        for change in &changes {
             change.apply_to(&mut bytes);
         }
         let edited = differing(&base, &bytes);
@@ -157,7 +178,7 @@ impl HexEngine {
         struct Ask {
             address: String,
             #[serde(default)]
-            changes: Vec<Change>,
+            changes: Vec<String>,
             #[serde(default)]
             first: usize,
             #[serde(default)]
@@ -173,7 +194,8 @@ impl HexEngine {
         let columns = ask.columns.clamp(1, 64);
         let (bytes, edited, read) = self.derive(&ask.address, &ask.changes)?;
         let base = self.base_of(&ask.address);
-        let mut rows = Vec::new();
+        let mut rows: Vec<String> = Vec::new();
+        let mut changed_rows: Vec<String> = Vec::new();
         let mut row = ask.first;
         while rows.len() < ask.count.min(4096) {
             let start = row.saturating_mul(columns);
@@ -189,16 +211,21 @@ impl HexEngine {
                 let held = base.as_ref().and_then(|base| base.get(start + index)).copied();
                 changed.push(if held == Some(byte) { '0' } else { '1' });
             }
-            rows.push(json!({ "hex": hex, "changed": changed }));
+            rows.push(hex);
+            changed_rows.push(changed);
             row += 1;
         }
-        let findings = findings(&bytes, ask.cursor, &ask.endian);
+        let findings: Vec<String> = findings(&bytes, ask.cursor, &ask.endian)
+            .into_iter()
+            .map(|row| format!("{}\t{}", row["label"].as_str().unwrap_or(""), row["value"].as_str().unwrap_or("")))
+            .collect();
         Ok(json!({
             "length": bytes.len(),
             "edited": edited,
             "read": read,
             "error": if read { "" } else { "The bytes are not on this device." },
             "rows": rows,
+            "changed": changed_rows,
             "findings": findings,
         })
         .to_string())
@@ -216,7 +243,7 @@ impl HexEngine {
         struct Ask {
             address: String,
             #[serde(default)]
-            changes: Vec<Change>,
+            changes: Vec<String>,
             query: String,
             #[serde(default)]
             kind: String,
@@ -249,9 +276,9 @@ impl HexEngine {
         };
         let limit = ask.limit.clamp(1, MAX_MATCHES);
         let (hits, truncated) = find_all(&bytes, &needle, rules, limit);
-        let hits: Vec<_> = hits
+        let hits: Vec<String> = hits
             .into_iter()
-            .map(|start| json!({ "start": start, "end": start + needle.len() }))
+            .map(|start| format!("{start}:{}", start + needle.len()))
             .collect();
         Ok(json!({ "hits": hits, "truncated": truncated }).to_string())
     }
@@ -261,7 +288,7 @@ impl HexEngine {
         struct Ask {
             address: String,
             #[serde(default)]
-            changes: Vec<Change>,
+            changes: Vec<String>,
             op: String,
             #[serde(default)]
             at: usize,
@@ -277,7 +304,7 @@ impl HexEngine {
         }
         let change = checked(&ask.op, bytes.len(), ask.at, ask.len, &ask.bytes)?;
         let length = apply_length(bytes.len(), &change);
-        Ok(json!({ "change": change, "length": length }).to_string())
+        Ok(json!({ "change": change.text(), "length": length }).to_string())
     }
 
     fn op_replace(&self, input: &str) -> Result<String, String> {
@@ -285,8 +312,9 @@ impl HexEngine {
         struct Ask {
             address: String,
             #[serde(default)]
-            changes: Vec<Change>,
-            spans: Vec<[usize; 2]>,
+            changes: Vec<String>,
+            #[serde(default)]
+            spans: Vec<String>,
             #[serde(default)]
             bytes: String,
             #[serde(default)]
@@ -297,12 +325,17 @@ impl HexEngine {
         if !read {
             return Err("The bytes are not on this device.".to_owned());
         }
-        let insert = parse_hex(&ask.bytes)
+        let insert = parse_bytes(&ask.bytes)
             .ok_or_else(|| "Write the replacement as hexadecimal bytes, like `de ad be ef`.".to_owned())?;
         let want = insert.len();
         let mut kept: Vec<(usize, usize)> = Vec::new();
         for span in &ask.spans {
-            let (start, end) = (span[0], span[1]);
+            let Some((start, end)) = span
+                .split_once(':')
+                .and_then(|(start, end)| Some((start.parse().ok()?, end.parse().ok()?)))
+            else {
+                continue;
+            };
             if start >= end || end > bytes.len() {
                 continue;
             }
@@ -336,7 +369,68 @@ impl HexEngine {
             changes.push(change);
         }
         let count = changes.len();
+        let changes: Vec<String> = changes.iter().map(Change::text).collect();
         Ok(json!({ "changes": changes, "count": count, "length": length }).to_string())
+    }
+
+    fn op_range(&self, input: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Ask {
+            address: String,
+            #[serde(default)]
+            changes: Vec<String>,
+            #[serde(default)]
+            start: usize,
+            #[serde(default)]
+            end: usize,
+            #[serde(default)]
+            kind: String,
+        }
+        let ask: Ask = read_ask(input)?;
+        let (bytes, _, read) = self.derive(&ask.address, &ask.changes)?;
+        if !read {
+            return Err("The bytes are not on this device.".to_owned());
+        }
+        let end = ask.end.min(bytes.len());
+        let start = ask.start.min(end);
+        let slice = &bytes[start..end];
+        let text = if ask.kind == "text" {
+            slice
+                .iter()
+                .map(|&byte| {
+                    if (0x20..=0x7E).contains(&byte) {
+                        char::from(byte)
+                    } else {
+                        '.'
+                    }
+                })
+                .collect::<String>()
+        } else {
+            let mut text = String::with_capacity(slice.len() * 3);
+            for byte in slice {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(&format!("{byte:02x}"));
+            }
+            text
+        };
+        Ok(json!({ "text": text }).to_string())
+    }
+
+    fn op_bytes(&self, input: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Ask {
+            address: String,
+            #[serde(default)]
+            changes: Vec<String>,
+        }
+        let ask: Ask = read_ask(input)?;
+        let (bytes, _, read) = self.derive(&ask.address, &ask.changes)?;
+        if !read {
+            return Err("The bytes are not on this device.".to_owned());
+        }
+        Ok(json!({ "bytes": base64_text(&bytes) }).to_string())
     }
 
     fn op_save(&self, input: &str) -> Result<String, String> {
@@ -344,7 +438,7 @@ impl HexEngine {
         struct Ask {
             address: String,
             #[serde(default)]
-            changes: Vec<Change>,
+            changes: Vec<String>,
             path: String,
         }
         let ask: Ask = read_ask(input)?;
@@ -364,6 +458,8 @@ impl tilolang_tilo::engine::Provider for HexEngine {
             "open" => self.op_open(input),
             "rows" => self.op_rows(input),
             "find" => self.op_find(input),
+            "range" => self.op_range(input),
+            "bytes" => self.op_bytes(input),
             "apply" => self.op_apply(input),
             "replace" => self.op_replace(input),
             "save" => self.op_save(input),
@@ -393,9 +489,11 @@ fn read_ask<T: serde::de::DeserializeOwned>(input: &str) -> Result<T, String> {
     serde_json::from_str(input).map_err(|error| format!("the ask does not read: {error}"))
 }
 
-/// The bytes of a `tilo-blob://` address, when this device holds them.
+/// The bytes of a `tilo-blob://` address, when this device holds them. The language names a
+/// file's content so; the content store names the same bytes by the reference under it.
 fn read_address(address: &str) -> Option<Vec<u8>> {
-    tilo_resource::content::read_reference(address).ok()
+    let reference = address.strip_prefix("tilo-blob://").unwrap_or(address);
+    tilo_resource::content::read_hash(reference).ok()
 }
 
 /// The address the workspace's content store keeps `bytes` at: the window whose code runs keeps
@@ -445,7 +543,7 @@ fn apply_length(length: usize, change: &Change) -> usize {
 
 /// The change `op` asks for, refused where it cannot stand.
 fn checked(op: &str, length: usize, at: usize, len: usize, bytes: &str) -> Result<Change, String> {
-    let insert = parse_hex(bytes)
+    let insert = parse_bytes(bytes)
         .ok_or_else(|| "Write the bytes as hexadecimal, like `de ad be ef`.".to_owned())?;
     match op {
         "insert" => {
@@ -482,6 +580,12 @@ fn checked(op: &str, length: usize, at: usize, len: usize, bytes: &str) -> Resul
         }
         other => Err(format!("`{other}` is no edit of bytes: insert, overwrite or delete")),
     }
+}
+
+/// Bytes written as base64 text, as a file's content travels.
+fn base64_text(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 /// Bytes written as hexadecimal text, two digits each.
@@ -784,5 +888,21 @@ mod tests {
             assert_eq!(leb128(&|at| [0xE5, 0x8E, 0x26].get(at).copied(), false), Some((624_485, 3)));
             assert_eq!(leb128(&|at| [0xC0, 0xBB, 0x78].get(at).copied(), true), Some((-123_456, 3)));
         }
+    }
+}
+
+#[cfg(test)]
+mod scope_test {
+    use super::*;
+
+    #[test]
+    fn a_kept_address_reads_back_inside_the_window_scope() {
+        let store = tilo_content::ContentStore::memory_in_workspace();
+        let scope = tilo_wake::WakeScope::new();
+        tilo_resource::content::register(&scope.handle(), store.clone());
+        let _guard = scope.enter();
+        let address = keep(&[1, 2, 3]).expect("kept");
+        let read = read_address(&address);
+        assert_eq!(read, Some(vec![1, 2, 3]), "{address}");
     }
 }

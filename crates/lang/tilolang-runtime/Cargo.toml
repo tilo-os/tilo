@@ -110,6 +110,10 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # The platform's packages (the device, the session) an app compiles against in its test.
 tilolang-tilo = { path = "../tilolang-tilo" }
 wat = "1"
+# The hex editor's device work, answered by the crate a session registers.
+hex-engine = { path = "../../engines/hex-engine" }
+tilo-content = { path = "../../core/content" }
+tilo-wake = { path = "../../platform/tilo-wake" }
 
 [lints]
 workspace = true

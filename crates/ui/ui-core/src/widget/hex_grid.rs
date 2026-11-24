@@ -72,7 +72,7 @@ pub struct HexGrid {
     scrollbar: Scrollbar,
     focused: bool,
     dirty: bool,
-    pub(crate) on_press: Option<Box<dyn FnMut(usize, HexColumn)>>,
+    pub(crate) on_press: Option<Box<dyn FnMut(usize, HexColumn, bool)>>,
     pub(crate) on_key: Option<Box<dyn FnMut(String)>>,
     pub(crate) on_wheel: Option<Box<dyn FnMut(i64)>>,
 }
@@ -360,9 +360,9 @@ impl HexGrid {
         }
     }
 
-    fn pressed(&mut self, at: usize, column: HexColumn) {
+    fn pressed(&mut self, at: usize, column: HexColumn, extend: bool) {
         if let Some(press) = self.on_press.as_mut() {
-            press(at, column);
+            press(at, column, extend);
         }
     }
 
@@ -610,7 +610,7 @@ impl Widget for HexGrid {
                     return;
                 }
                 if let Some((at, column)) = self.hit_test(point) {
-                    self.pressed(at, column);
+                    self.pressed(at, column, ctx.modifiers.state().shift_key());
                     *ctx.handled = true;
                 }
             }

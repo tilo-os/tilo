@@ -60,7 +60,6 @@ fn named(name: &str) -> Option<Icon> {
         "api-tester" => Icon::Send,
         "containers" => Icon::Box,
         "diffmerge" | "git-client" => Icon::Columns2,
-        "hex-editor" => Icon::FileCode,
         "windows" => Icon::LayoutGrid,
         _ => return None,
     })

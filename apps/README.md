@@ -207,7 +207,6 @@ touch. Expanded neighbouring targets must not overlap.
 | `code-editor` | Code editor / light IDE ("Code"): file-tree, editor tabs, syntect highlighting, command palette, problems panel.                     |
 | `diffmerge`   | Diff + 3-way merge tool ("Diff"): `similar` line diff, per-hunk conflict resolution, editable merged output.                         |
 | `db-client`   | Database client ("Database"): PostgreSQL/MySQL/SQLite, bundled SQLite sample (rusqlite), schema browser + SQL editor + results grid. |
-| `hex-editor`  | Hex editor ("Hex"): CRDT byte buffer, data inspector, hex/text search, goto-offset.                                                  |
 
 ## Files & web
 

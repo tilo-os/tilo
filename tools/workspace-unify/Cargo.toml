@@ -441,9 +441,6 @@ doc = false
 "headers-core-0_3_0" = { package = "headers-core", version = "^0.3.0", default-features = false, features = [] }
 "heapless-0_7_17" = { package = "heapless", version = "^0.7.17", default-features = false, features = ["atomic-polyfill", "cas", "serde"] }
 "hex-0_4_3" = { package = "hex", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
-"hex-editor" = { path = "../../apps/hex-editor", default-features = false, features = ["samples"] }
-"hex-editor-model" = { path = "../../apps/hex-editor-model", default-features = false, features = [] }
-"hex-editor-model-wasm" = { path = "../../apps/hex-editor-model-wasm", default-features = false, features = [] }
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", path = "../../vendor/hexane", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
@@ -3238,9 +3235,6 @@ doc = false
 "headers-core-0_3_0" = { package = "headers-core", version = "^0.3.0", default-features = false, features = [] }
 "heapless-0_7_17" = { package = "heapless", version = "^0.7.17", default-features = false, features = ["atomic-polyfill", "cas", "serde"] }
 "hex-0_4_3" = { package = "hex", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
-"hex-editor" = { path = "../../apps/hex-editor", default-features = false, features = ["samples"] }
-"hex-editor-model" = { path = "../../apps/hex-editor-model", default-features = false, features = [] }
-"hex-editor-model-wasm" = { path = "../../apps/hex-editor-model-wasm", default-features = false, features = [] }
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", path = "../../vendor/hexane", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }

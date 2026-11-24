@@ -2482,7 +2482,7 @@ impl Resolver<'_> {
             !part.is_empty()
                 && part
                     .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "!#$&-^_.+".contains(c))
+                    .all(|c| c.is_ascii_alphanumeric() || "!#$&-^_.+*".contains(c))
         };
         for item in items {
             let kind = match &item.kind {

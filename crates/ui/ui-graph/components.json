@@ -444,9 +444,9 @@
         },
         {
           "name": "faces",
-          "doc": "Who is here, as their faces: up to three faces, then a face counting the rest, and nothing else on the button at any width.",
+          "doc": "Who is here, as their faces: up to three faces, then a face counting the rest, and nothing else on the button at any width. Each is the member, so their face wears the picture they set.",
           "type": {
-            "list": "text"
+            "list": "actor"
           }
         },
         {
@@ -549,6 +549,41 @@
       "semantics": {
         "role": "Button",
         "label": "label"
+      }
+    },
+    {
+      "name": "CandlestickChart",
+      "doc": "A price per period as candles: what rose and fell when. Each period is a candle from its open to its close, its wick reaching the period's high and low; a period that closed above its open is drawn in the theme's success ink, one that closed below it in its danger ink, and a flat one dim. The traded volume stands under the prices when shown.",
+      "props": [
+        {
+          "name": "candles",
+          "doc": "The periods, oldest first: `.candle(label: \"Monday\", open: 82.0, high: 88.0, low: 80.0, close: 86.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Candle"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "volume",
+          "doc": "The traded volume under the prices; off unless said.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
       }
     },
     {
@@ -706,6 +741,50 @@
       }
     },
     {
+      "name": "CartesianPlot",
+      "doc": "Readings on numeric axes: a trend over time, a relationship between two measures, a comparison. Each series takes the next colour of the theme's palette and is named in a legend; it draws as a line, an area, steps, points, bars or stems.",
+      "props": [
+        {
+          "name": "points",
+          "doc": "What is measured, each with its readings: `.points(x: [1.0, 2.0], y: [4.0, 6.0], label: \"Latency\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Points"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "x_title",
+          "doc": "What the x axis measures, under it (\"Minute\", \"Distance\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "y_title",
+          "doc": "What the y axis measures, beside it (\"Milliseconds\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "BarChart",
       "doc": "Bars over named categories: how much there is of each, to compare. Several measured things stand beside each other in a category, stack on each other, or stack as shares of the category's whole; each takes the next colour of the theme's palette and is named in a legend.",
       "props": [
@@ -739,7 +818,7 @@
         },
         {
           "name": "layout",
-          "doc": "How several measured things share a category: `grouped` beside each other unless said, `stacked` on each other, `share` stacked as parts of the category's whole.",
+          "doc": "How several measured things share a category: `grouped` beside each other unless said, `stacked` on each other, `share` stacked as parts of the category's whole, or `waterfall` for the first measured thing's rises and falls, each standing on the one before.",
           "type": {
             "option": {
               "choice": {
@@ -747,7 +826,8 @@
                 "cases": [
                   "grouped",
                   "stacked",
-                  "share"
+                  "share",
+                  "waterfall"
                 ]
               }
             }
@@ -1271,6 +1351,48 @@
       }
     },
     {
+      "name": "ChordChart",
+      "doc": "How much moves between a set of things: which teams hand work to which, which services call which, which people write to whom. Each thing takes an arc as wide as everything that touches it, a ribbon as wide as its weight joins each pair, and a person pointing at an arc or a ribbon reads what it carries.",
+      "props": [
+        {
+          "name": "nodes",
+          "doc": "The things it relates, around the ring, in order: `.node(id: \"design\", label: \"Design\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "FlowNode"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "links",
+          "doc": "How much moves between them, in either direction: `.link(from: \"design\", to: \"engineering\", value: 32.0)`, `from` and `to` naming nodes by their ids.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "FlowLink"
+              }
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "Chrome",
       "doc": "A bar or a dock's body: the theme's bar finish behind what the body holds.",
       "props": [
@@ -1576,9 +1698,9 @@
         },
         {
           "name": "faces",
-          "doc": "Whose menu it is, as their faces in place of the label and icon: the person's own menu on a bar is their face, one person's at an avatar's full size. The label names it to assistive technology.",
+          "doc": "Whose menu it is, as their faces in place of the label and icon: the person's own menu on a bar is their face, one person's at an avatar's full size, wearing the picture they set. The label names it to assistive technology.",
           "type": {
-            "list": "text"
+            "list": "actor"
           }
         },
         {
@@ -2848,6 +2970,52 @@
       }
     },
     {
+      "name": "Heatmap",
+      "doc": "How a value varies across two axes at once: a week by weekday and hour, a year by month and region. Each cell's colour places it between the lowest and the highest value in the theme's ramp; pointing at it reads its value.",
+      "props": [
+        {
+          "name": "cells",
+          "doc": "Each cell, by the row and column it lies at: `.cell(row: \"Monday\", column: \"9h\", value: 12.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Cells"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "rows",
+          "doc": "The rows from top to bottom.",
+          "type": {
+            "list": "text"
+          },
+          "required": true
+        },
+        {
+          "name": "columns",
+          "doc": "The columns from left to right.",
+          "type": {
+            "list": "text"
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "HexGrid",
       "doc": "Bytes as a dense grid: an offset down the side, hexadecimal pairs and the same bytes as text across, with the cursor, the selection and a search's matches drawn over them.",
       "props": [
@@ -2953,6 +3121,55 @@
       "semantics": {
         "role": "Table",
         "label": "label"
+      }
+    },
+    {
+      "name": "Histogram",
+      "doc": "Raw observations as a distribution: how many fell in each bin, so a spread is read at a glance. The bars take the theme's first palette colour and the axis is fitted to the data.",
+      "props": [
+        {
+          "name": "samples",
+          "doc": "The observations, in any order: `samples: [12.0, 18.0, 15.0, 22.0]`.",
+          "type": {
+            "list": "float"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "bins",
+          "doc": "How many bins the range is cut into; twelve unless said.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "scale",
+          "doc": "What a bin reads: its `count` unless said, a `probability`, or a `density`.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "HistogramScale",
+                "cases": [
+                  "count",
+                  "probability",
+                  "density"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
       }
     },
     {
@@ -5311,6 +5528,121 @@
       }
     },
     {
+      "name": "RadioGroup",
+      "doc": "A short list of choices, exactly one of which is made, each a radio beside its words: for a choice a person reads before making (how a report is sent, who may open a page). A few short choices that switch a setting at once are a `ToggleGroup`; many are a `Dropdown`. The group is one stop of the keyboard's order, and the arrow keys move the choice along it.",
+      "props": [
+        {
+          "name": "selected",
+          "doc": "Which choice is made, counted from 0: none until the person makes one.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "label",
+          "doc": "Its spoken name: what the choices are of.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether any of it can be chosen now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why none of it can be chosen, while none can: its tooltip, and what assistive technology reads.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "options",
+          "doc": "The choices, in order.",
+          "accepts": {
+            "component": "Radio"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "change",
+          "doc": "A choice was made: carries its index, counted from 0.",
+          "value": "int"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
+      "name": "RangeChart",
+      "doc": "What takes a span of something, one row each: when things happen on a timeline, a plan's rows and how far each has come, the hours a room is booked, or the moments something happened. Each row is named before its bar and read out with its interval.",
+      "props": [
+        {
+          "name": "ranges",
+          "doc": "The rows, top to bottom: `.range(label: \"Design review\", start: 2.0, end: 5.0, progress: 0.6)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Range"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "kind",
+          "doc": "What it shows: `timeline` spans unless said, a `plan` whose rows fill to their progress, `intervals` between numbers, or `milestones` at points.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "RangeKind",
+                "cases": [
+                  "timeline",
+                  "plan",
+                  "intervals",
+                  "milestones"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "axis",
+          "doc": "What the axis under the rows measures (\"October\", \"Hour\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "unit",
+          "doc": "What an axis value counts, written after it (\"min\", \"°C\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "Time",
       "doc": "A moment as how long ago or how far ahead it was (`2 min ago`, `Yesterday`, `in 3 min`) in the person's language and time zone, changing only when its text does.",
       "props": [
@@ -5363,6 +5695,48 @@
       }
     },
     {
+      "name": "SankeyChart",
+      "doc": "Where a quantity moves between stages: visits that become trials, hours that become work, money that becomes cost. Each stage is a column of nodes as tall as what passes through them, each link a ribbon as thick as its share, its nodes and links named where they fit; a person pointing at one reads what it carries.",
+      "props": [
+        {
+          "name": "nodes",
+          "doc": "The stages and sources, in order: `.node(id: \"visits\", label: \"Visits\")`. Its stage is the longest chain of links that leads to it.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "FlowNode"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "links",
+          "doc": "What moves between them: `.link(from: \"visits\", to: \"signup\", value: 72.0)`, `from` and `to` naming nodes by their ids.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "FlowLink"
+              }
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "Scroll",
       "doc": "A body that scrolls under its column's fixed header, showing the part of the content the column fits.",
       "props": [
@@ -5385,6 +5759,14 @@
           "name": "shows_bar",
           "doc": "Show the bar for as long as the content overflows, not only while it is scrolled: a card held to a height whose words go on below it, so the person sees there is more.",
           "type": "bool"
+        },
+        {
+          "name": "keep",
+          "doc": "Keep the descendant that names itself this (`Widget::kept_in_view`) in view when the one that is named changes: the front strip of a row a person pans, brought into view as they move between windows.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
         }
       ],
       "parts": [
@@ -5735,6 +6117,39 @@
       "semantics": {
         "role": "Button",
         "label": "label"
+      }
+    },
+    {
+      "name": "InState",
+      "doc": "A control as it looks in one state of interaction (hovered, pressed, focused), held still and taking no input: the states of a button or a field side by side, as a style guide or a page of documentation shows them. Disabled, checked, chosen and invalid are the control's own props; this shows what only a pointer or the keyboard otherwise gives it. Assistive technology skips it: the control it shows is a picture of one, not one to use.",
+      "props": [
+        {
+          "name": "state",
+          "doc": "The state its content is shown in.",
+          "type": {
+            "choice": {
+              "name": "InteractionState",
+              "cases": [
+                "rest",
+                "hovered",
+                "pressed",
+                "focused"
+              ]
+            }
+          },
+          "positional": true
+        }
+      ],
+      "parts": [
+        {
+          "name": "content",
+          "doc": "The control shown.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group"
       }
     },
     {
@@ -6127,6 +6542,43 @@
       }
     },
     {
+      "name": "SunburstChart",
+      "doc": "A hierarchy as rings: how a whole divides, and how each part divides, down to the smallest ones. Each ring is a level, a part as wide as its share of the one it belongs to, and each part takes its colour from the theme; a person pointing at one reads its path and its value.",
+      "props": [
+        {
+          "name": "parts",
+          "doc": "The parts, each naming the part it belongs to: `.part(id: \"build\", parent: \"ci\", label: \"Build\", value: 12.0)`. A part nothing names as its parent stands at the centre ring.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Part"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "total",
+          "doc": "What the whole is, read at its centre (\"128 hours\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "TabStrip",
       "doc": "A frame's tabs, in one row above its content: the shell's tab strip.\nThe chosen tab stands lifted off the strip's ground, and every pill says who is at its resource now. Choosing a pill activates that tab; a pill's close chip closes it; dragging one within the strip reorders it, and letting one go outside the strip hands it to the frame under the pointer.",
       "props": [
@@ -6236,6 +6688,21 @@
           "name": "truncate",
           "doc": "It elides at the width it is given rather than wrapping wider, so its box may shrink to nothing and what does not fit ends in an ellipsis: a title in a narrow card.",
           "type": "bool"
+        },
+        {
+          "name": "live",
+          "doc": "What it says is announced when it changes instead of only read on the way past: a line a person is told without looking (a notice passing, a status that moved). `polite` waits for a pause, `assertive` interrupts; unset, it is read without announcing.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Politeness",
+                "cases": [
+                  "polite",
+                  "assertive"
+                ]
+              }
+            }
+          }
         }
       ],
       "semantics": {
@@ -6874,6 +7341,36 @@
       }
     },
     {
+      "name": "Treemap",
+      "doc": "A hierarchy as rectangles: each part of the first level a rectangle as large as its share of the whole, its label written on it where it fits, in a colour from the theme. Use it where labels have to be read, rather than followed round a ring.",
+      "props": [
+        {
+          "name": "parts",
+          "doc": "The parts, each naming the part it belongs to: `.part(id: \"build\", parent: \"ci\", label: \"Build\", value: 12.0)`. A part nothing names as its parent is a rectangle of its own, as large as everything under it.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Part"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "VideoPlayer",
       "doc": "A video with its playback controls over it: play/pause, the scrubber, the volume, mute and fullscreen. The app's player is the one truth; what the person does reaches the view as its events.\nThe video's bytes are a camera, a capture, or the medium it names (a file or a stream), which the toolkit opens on the engine its app hands in.",
       "props": [
@@ -7391,6 +7888,14 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "keep",
+          "doc": "The name a scroll view around this window keeps in view (`scroll(..., keep:)`): the front strip of a row, which comes into view as the person moves between windows. Unset, the window asks for nothing.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
         }
       ],
       "parts": [
@@ -7500,6 +8005,55 @@
           "type": {
             "list": "text"
           }
+        },
+        {
+          "name": "page",
+          "doc": "The paper the document is set on: `A4`, `Letter` or `Legal`. A view that asks for pages has the stack broken into sheets with the margins a printed page keeps, each sheet carrying `header` in its top margin and `footer` and its number in the bottom one.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "header",
+          "doc": "Words set in every page's top margin, such as the document's title.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "footer",
+          "doc": "Words set in every page's bottom margin, before the page number.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "margin_top",
+          "doc": "The page's top margin in points, where the view sets it; an inch otherwise.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "margin_right",
+          "doc": "The page's right margin in points, where the view sets it.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "margin_bottom",
+          "doc": "The page's bottom margin in points, where the view sets it.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "margin_left",
+          "doc": "The page's left margin in points, where the view sets it.",
+          "type": {
+            "option": "float"
+          }
         }
       ],
       "events": [
@@ -7531,6 +8085,16 @@
           "name": "slash_page",
           "doc": "The person chose a page from the slash menu, in the block the words are: the view makes the page, titled with those words.",
           "value": "text"
+        },
+        {
+          "name": "changes",
+          "doc": "The tracked changes the document holds, each time they change: each change's id, and its kind (0 for one that inserted words, 1 for one that deleted them). What a review panel lists so the person takes or rejects one change at a time.",
+          "value": {
+            "list": "text"
+          },
+          "at": {
+            "list": "int"
+          }
         },
         {
           "name": "headings",
@@ -7567,7 +8131,14 @@
       "state": [
         {
           "name": "format",
-          "doc": "The formatting a view asks for, as a toolbar beside the document asks it: `bold`, `italic`, `underline`, `strike`, `bullets`, `numbers`, `heading:<level>` or `link:<address>`, then a count the view changes each time it asks (`bold:1`, `bold:2`), so the same command asked twice is two commands. Formatting a message is a command of the shared editor's, never a control of the app's own.",
+          "doc": "The formatting a view asks for, as a toolbar beside the document asks it: `bold`, `italic`, `underline`, `strike`, `super`, `sub`, `size:<points>`, `font:<sans|serif|mono>`, `color:#rrggbb`, `highlight:#rrggbb`, `align:<left|center|right|justify>`, `before:<points>`, `after:<points>`, `indent:<points>`, `hanging:<points>`, `style:<name>`, `changes:accept`, `changes:reject`, `bullets`, `numbers`, `heading:<level>` or `link:<address>`, then a count the view changes each time it asks (`bold:1`, `bold:2`), so the same command asked twice is two commands. Formatting a message is a command of the shared editor's, never a control of the app's own.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "insert",
+          "doc": "A picture to write in at the caret, as a view asks after the person chose a file: the address of its content, then a count the view changes every time it asks (`{address}:1`), so the same picture chosen twice is two pictures. A view asks this from its own Insert image, so the picture lands where the person is writing rather than at the end of the document.",
           "type": {
             "option": "text"
           }
@@ -9181,6 +9752,42 @@
       ],
       "semantics": {
         "role": "ListItem",
+        "label": "label"
+      }
+    },
+    {
+      "name": "Radio",
+      "doc": "One choice of a [`RadioGroup`]: what it says, and a line under that saying what it means.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What it says, beside its radio: the whole row chooses it.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "detail",
+          "doc": "A line under it in smaller words: what choosing it means.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether it can be chosen now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be chosen, while it cannot: its tooltip, and what assistive technology reads.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "RadioButton",
         "label": "label"
       }
     },
@@ -10839,6 +11446,278 @@
               "name": "height",
               "ty": "float",
               "doc": "Its height in pixels."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Cells",
+      "doc": "One cell of a matrix, at the crossing of a row and a column.",
+      "cases": [
+        {
+          "name": "cell",
+          "doc": "The value at `row` and `column`, coloured by where it stands among all cells.",
+          "fields": [
+            {
+              "name": "row",
+              "ty": "text",
+              "doc": "Which row, by the name the rows give it."
+            },
+            {
+              "name": "column",
+              "ty": "text",
+              "doc": "Which column, by the name the columns give it."
+            },
+            {
+              "name": "value",
+              "ty": "float",
+              "doc": "What was measured there; a cell no number reaches stays empty."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Part",
+      "doc": "One part of a hierarchy: what it is, the part it belongs to, and how much of the whole it is.",
+      "cases": [
+        {
+          "name": "part",
+          "doc": "A part called `label`, under the part called `parent`, worth `value`.",
+          "fields": [
+            {
+              "name": "id",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "What its own parts call it as their parent; its label unless said."
+            },
+            {
+              "name": "parent",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "The id of the part it belongs to; nothing when it stands at the top level."
+            },
+            {
+              "name": "label",
+              "ty": "text",
+              "doc": "What it is called, on the chart and in its readout."
+            },
+            {
+              "name": "value",
+              "ty": "float",
+              "doc": "How much of the whole it is; a part with parts of its own is as large as everything under it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "FlowNode",
+      "doc": "One node of a flow or a web of relationships: a stage, a team, a source.",
+      "cases": [
+        {
+          "name": "node",
+          "doc": "A node named `label`, called `id` by the links that start or end at it.",
+          "fields": [
+            {
+              "name": "id",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "What the links call it; its label unless said."
+            },
+            {
+              "name": "label",
+              "ty": "text",
+              "doc": "What it is called."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "FlowLink",
+      "doc": "One weighted link of a graph: how much moves or crosses between two nodes.",
+      "cases": [
+        {
+          "name": "link",
+          "doc": "From the node called `from` to the node called `to`, worth `value`.",
+          "fields": [
+            {
+              "name": "from",
+              "ty": "text",
+              "doc": "The id of the node it starts at."
+            },
+            {
+              "name": "to",
+              "ty": "text",
+              "doc": "The id of the node it ends at."
+            },
+            {
+              "name": "value",
+              "ty": "float",
+              "doc": "How much moves between them; nothing at or below zero is drawn."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Points",
+      "doc": "One series of a plot: its readings at each x, and how they are drawn.",
+      "cases": [
+        {
+          "name": "points",
+          "doc": "A series through the reading at each x, named `label` in the legend.",
+          "fields": [
+            {
+              "name": "x",
+              "ty": {
+                "list": "float"
+              },
+              "doc": "Where each reading stands on the x axis, in order."
+            },
+            {
+              "name": "y",
+              "ty": {
+                "list": "float"
+              },
+              "doc": "The reading at each x, in the same order."
+            },
+            {
+              "name": "label",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "What is measured, in the legend."
+            },
+            {
+              "name": "kind",
+              "ty": {
+                "choice": {
+                  "name": "Curve",
+                  "cases": [
+                    "line",
+                    "smooth",
+                    "step",
+                    "area",
+                    "smooth_area",
+                    "step_area",
+                    "scatter",
+                    "bubble",
+                    "bar",
+                    "lollipop"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "line"
+              },
+              "doc": "How the readings are drawn: a line unless said."
+            },
+            {
+              "name": "marker",
+              "ty": {
+                "choice": {
+                  "name": "Marker",
+                  "cases": [
+                    "circle",
+                    "square",
+                    "diamond"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "circle"
+              },
+              "doc": "The shape of the dot at each point, where the kind draws one."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Candle",
+      "doc": "One period of a price: its open, high, low and close.",
+      "cases": [
+        {
+          "name": "candle",
+          "doc": "A period named `label`, from `open` through `high` and `low` to `close`.",
+          "fields": [
+            {
+              "name": "label",
+              "ty": "text",
+              "doc": "Which period it is: a day, a week, a session."
+            },
+            {
+              "name": "open",
+              "ty": "float",
+              "doc": "The price it opened at."
+            },
+            {
+              "name": "high",
+              "ty": "float",
+              "doc": "The highest price in it; never below the open or the close."
+            },
+            {
+              "name": "low",
+              "ty": "float",
+              "doc": "The lowest price in it; never above the open or the close."
+            },
+            {
+              "name": "close",
+              "ty": "float",
+              "doc": "The price it closed at."
+            },
+            {
+              "name": "volume",
+              "ty": "float",
+              "default": {
+                "float": 0.0
+              },
+              "doc": "How much was traded in it, drawn under the prices when the chart shows volume."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Range",
+      "doc": "One row of a range chart: what takes the span, from where to where.",
+      "cases": [
+        {
+          "name": "range",
+          "doc": "What `label` is from `start` to `end`; a single point when the two are the same.",
+          "fields": [
+            {
+              "name": "label",
+              "ty": "text",
+              "doc": "What takes the span."
+            },
+            {
+              "name": "start",
+              "ty": "float",
+              "doc": "Where the span begins."
+            },
+            {
+              "name": "end",
+              "ty": "float",
+              "doc": "Where the span ends; the same as `start` draws a milestone."
+            },
+            {
+              "name": "progress",
+              "ty": {
+                "option": "float"
+              },
+              "default": "none",
+              "doc": "How far it has come, from zero to one, filled in the bar by the `plan` kind."
             }
           ]
         }

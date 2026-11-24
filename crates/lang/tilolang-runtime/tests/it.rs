@@ -58,6 +58,8 @@ mod e2e_enums;
 mod engine;
 #[path = "e2e_layout.rs"]
 mod e2e_layout;
+#[path = "e2e_hex_editor.rs"]
+mod e2e_hex_editor;
 #[path = "e2e_mail_files.rs"]
 mod e2e_mail_files;
 #[path = "e2e_native.rs"]

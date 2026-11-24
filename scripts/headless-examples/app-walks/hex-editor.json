@@ -1,0 +1,49 @@
+{
+  "app": "hex-editor",
+  "said": "Hex Editor",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.hex-editor",
+    "package": "hex-editor"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Hex Editor on a fresh desktop: no file is open",
+      "ops": [
+        { "theme": false },
+        { "launch": true },
+        { "wait_for": "actions" },
+        { "targets": true }
+      ]
+    },
+    {
+      "id": "buffer",
+      "said": "Start an empty buffer and open it",
+      "ops": {
+        "tl": [
+          { "press_any": ["New empty file"] },
+          { "wait_for": { "prefix": "Untitled.bin" } },
+          { "press_any": ["Untitled.bin"] },
+          { "wait_for": { "prefix": "Save" } }
+        ]
+      }
+    },
+    {
+      "id": "inspector",
+      "said": "The window offers the inspector, the find and the go-to",
+      "ops": {
+        "tl": [
+          { "offered": ["Show or hide the inspector", "Find bytes", "Go to offset"] }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [{ "theme": true }],
+      "dark": true
+    }
+  ]
+}

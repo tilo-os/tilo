@@ -39,7 +39,8 @@ pub struct HexGridProps {
     pub at_match: Option<i64>,
     /// What the grid shows, as assistive technology announces it: "bytes.bin, 4096 bytes".
     pub label: Option<String>,
-    /// A byte was pressed: carries its offset and the column pressed, `["31", "hex"]`.
+    /// A byte was pressed: carries its offset, the column pressed, and `"shift"` when Shift held,
+    /// `["31", "hex", "shift"]`.
     #[component(event(value = Vec<String>))]
     pub press: Event,
     /// A key was pressed while the grid had the keyboard: carries it as a person's keyboard
@@ -95,12 +96,13 @@ impl Described for HexGrid {
         self.label = props.label;
         let press = props.press;
         self.on_press = (!press.is_none()).then(|| {
-            Box::new(move |at: usize, column: HexColumn| {
+            Box::new(move |at: usize, column: HexColumn, extend: bool| {
                 press.fire(Some(crate::component::Value::List(vec![
                     crate::component::Value::Text(at.to_string()),
                     crate::component::Value::Text(column.name().to_owned()),
+                    crate::component::Value::Text(if extend { "shift" } else { "" }.to_owned()),
                 ])));
-            }) as Box<dyn FnMut(usize, HexColumn)>
+            }) as Box<dyn FnMut(usize, HexColumn, bool)>
         });
         let key = props.key;
         self.on_key = (!key.is_none()).then(|| {

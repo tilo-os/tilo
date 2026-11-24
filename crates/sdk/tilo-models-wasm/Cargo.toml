@@ -25,7 +25,6 @@ console-model-wasm = { path = "../../../apps/console-model-wasm" }
 db-client-model-wasm = { path = "../../../apps/db-client-model-wasm" }
 diffmerge-model-wasm = { path = "../../../apps/diffmerge-model-wasm" }
 firewall-model-wasm = { path = "../../../apps/firewall-model-wasm" }
-hex-editor-model-wasm = { path = "../../../apps/hex-editor-model-wasm" }
 logs-model-wasm = { path = "../../../apps/logs-model-wasm" }
 maps-model-wasm = { path = "../../../apps/maps-model-wasm" }
 poker-model-wasm = { path = "../../../apps/poker-model-wasm" }
