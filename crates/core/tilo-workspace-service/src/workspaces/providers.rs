@@ -424,6 +424,12 @@ impl Providers {
         hosts(caller.workspace()?)
     }
 
+    /// Remember that the registered provider `provider` took invocation `id`: what its
+    /// observation and cancellation reach while the call it runs goes on.
+    pub fn took(&self, id: InvocationId, provider: &str) {
+        self.take(id, Taker::Registered(provider.into()));
+    }
+
     /// Remember that `taker` took invocation `id`.
     fn take(&self, id: InvocationId, taker: Taker) {
         let mut took = self.0.taken.lock_recover();
