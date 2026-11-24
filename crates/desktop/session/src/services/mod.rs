@@ -233,9 +233,15 @@ pub(crate) struct Served {
 
 /// What a session serves its services with.
 pub(crate) struct Serving {
-    /// The shell the session's apps act on, and the workspace their identity is signed in: a session
-    /// that serves no app wire serves no identity either. Its apps still render, all in the
-    /// private service.
+    /// The seat's shell: which workspaces' apps draw privately, and each workspace's sandbox a
+    /// Windows program reaches, read on the loop.
+    pub handle: tilo_session_core::desktop::state::DesktopHandle,
+    /// Whether the session serves its apps an app wire: one that serves none serves no identity
+    /// and no Windows programs either.
+    pub serves_apps: bool,
+    /// The workspaces a session the host placed in a workspace's VM signs its apps' identity in,
+    /// when it serves them an app wire: such a session runs no device daemon whose identity
+    /// service would.
     pub shell: Option<Arc<LayoutAuthority>>,
     /// The person at this device: whose workspaces are theirs alone, so their apps share one render
     /// service.
@@ -297,7 +303,7 @@ pub(crate) fn start(mut serving: Serving) -> Served {
         match service {
             Service::Identity => {
                 served.identity = match serving.daemon.clone() {
-                    Some(daemon) => identity_at_daemon(serving.shell.is_some(), daemon),
+                    Some(daemon) => identity_at_daemon(serving.serves_apps, daemon),
                     None => identity(
                         serving.shell.as_ref().map(Arc::clone),
                         std::mem::take(&mut serving.keys),
@@ -306,9 +312,8 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                 };
             }
             Service::Render => {
-                let shell = serving.shell.as_ref().map(Arc::clone);
                 match render::Broker::start(
-                    shell,
+                    &serving.handle,
                     serving.person.clone(),
                     serving.render_node.take(),
                 ) {
@@ -398,23 +403,34 @@ impl Served {
         self.clipboard.as_ref()
     }
 
-    /// Count what this device's traffic did since the last pass into the person's settings, on the
-    /// loop's pass: the only thread that may touch the services.
-    pub(crate) fn follow(&self, services: &mut Services) {
+    /// Count what this device's traffic did since the last pass into the person's settings, and
+    /// bring what the services read of the seat's shell `handle` and this device's `engine` level
+    /// with them, on the loop's pass: the only thread that may touch the services or the shell.
+    pub(crate) fn follow(
+        &self,
+        services: &mut Services,
+        handle: &tilo_session_core::desktop::state::DesktopHandle,
+        engine: Option<&crate::engine::Engine>,
+    ) {
         if let Some(usage) = &self.usage {
             usage.count(services);
         }
         if let Some(render) = &self.render {
-            render.sync_workspaces();
+            render.sync_workspaces(handle);
+        }
+        if let Some(windows) = &self.windows {
+            windows.answer_sandboxes(handle, engine);
         }
     }
 }
 
 /// The Windows compatibility service at the launcher's socket for it, for a session whose apps
-/// start through a launcher and read the workspaces' sandboxes from its app wire.
+/// start through a launcher and that serves them an app wire.
 fn windows(serving: &mut Serving) -> Option<crate::windows_compat::Served> {
-    let layout = serving.shell.as_ref().map(Arc::clone)?;
-    crate::windows_compat::serve(serving.windows.take()?, layout)
+    if !serving.serves_apps {
+        return None;
+    }
+    crate::windows_compat::serve(serving.windows.take()?, serving.wake.clone())
         .inspect_err(
             |error| tracing::warn!(%error, "the Windows compatibility service is unavailable"),
         )

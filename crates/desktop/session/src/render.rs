@@ -6,7 +6,7 @@
 //! person's private workspaces share one service and every other workspace gets its own, so an
 //! app never shares a device, a cache or GPU memory with another workspace's apps.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
@@ -15,14 +15,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_broker_core::services::{WorkspaceAuthority as _, workspace_in};
 use tilo_lock::MutexRecover as _;
 use tilo_render_protocol::broker as wire;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_service::RENDER_NODE_ENV;
 use tilo_render_service::broker::{FromService, MODE, ToService};
-
-use crate::app_wire::LayoutAuthority;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 /// The service name of the person's private workspaces.
 pub(crate) const PRIVATE: &str = "private";
@@ -46,27 +44,33 @@ const STRIPPED_ENV: &[&str] = &[
     "TILO_RENDER_SOCKET",
 ];
 
-/// Which service draws the apps of `workspace` : the person's own when nobody else may read it, and
-/// one of its own otherwise.
-pub(crate) fn render_key(
-    tree: &tilo_desktop_model::Layout,
-    person: &str,
-    workspace: Option<&str>,
-) -> String {
-    // Launched outside any workspace: by the person, from their own session.
-    let Some(workspace) = workspace else {
-        return PRIVATE.to_owned();
-    };
-    let Some(held) = workspace_in(tree, workspace) else {
+/// Which service draws the apps of `workspace`, given the workspaces that draw privately
+/// ([`private_workspaces`]): the person's own when nobody else may read it, and one of its own
+/// otherwise.
+fn render_key(private: &BTreeSet<String>, workspace: Option<&str>) -> String {
+    match workspace {
         // A workspace this session does not know is nobody's private one.
-        return format!("workspace:{workspace}");
-    };
-    let readers = held.policy.readers_at(tilo_clock::unix_now());
-    if readers.iter().all(|(user, _)| user == person) {
-        PRIVATE.to_owned()
-    } else {
-        format!("workspace:{workspace}")
+        Some(workspace) if !private.contains(workspace) => format!("workspace:{workspace}"),
+        // Launched outside any workspace: by the person, from their own session.
+        _ => PRIVATE.to_owned(),
     }
+}
+
+/// The workspaces of `tree` nobody but `person` may read, by their id: their apps draw in the
+/// private service.
+fn private_workspaces(tree: &tilo_desktop_model::Layout, person: &str) -> BTreeSet<String> {
+    let now = tilo_clock::unix_now();
+    tree.workspaces
+        .iter()
+        .filter(|workspace| {
+            workspace
+                .policy
+                .readers_at(now)
+                .iter()
+                .all(|(user, _)| user == person)
+        })
+        .map(|workspace| workspace.id().to_string())
+        .collect()
 }
 
 /// Whether a service has come up: `Some(Ok(device))` once ready,
@@ -97,7 +101,10 @@ struct Live {
 }
 
 struct Inner {
-    shell: Option<Arc<LayoutAuthority>>,
+    /// The workspaces on the seat's shell whose apps draw in the private service, as the loop
+    /// decided at the shell's last change ([`render_key`]): what an app connecting on its own
+    /// thread is placed by, since only the loop reads the shell.
+    private: Mutex<BTreeSet<String>>,
     person: String,
     /// The render node of the GPU the compositor composites on, as the session reads it once the
     /// backend is up: what every service opens.
@@ -107,7 +114,7 @@ struct Inner {
     crashes: Mutex<HashMap<String, Crashes>>,
     live: Mutex<HashMap<u64, Live>>,
     next_connection: AtomicU64,
-    /// The shell generation the live channels' keys were last checked at.
+    /// The shell revision the private workspaces and the live channels' keys were last decided at.
     checked: AtomicU64,
 }
 
@@ -132,7 +139,7 @@ impl Broker {
         reason = "session helper: the broker accepts and serves on its own threads"
     )]
     pub(crate) fn start(
-        shell: Option<Arc<LayoutAuthority>>,
+        handle: &DesktopHandle,
         person: String,
         node: Option<PathBuf>,
     ) -> Result<Self, String> {
@@ -147,9 +154,9 @@ impl Broker {
             .map_err(|error| format!("bind render broker {}: {error}", path.display()))?;
         let exe = std::env::current_exe()
             .map_err(|error| format!("render broker: the session's own binary: {error}"))?;
-        let generation = shell.as_ref().map_or(0, |shell| shell.generation());
+        let private = handle.read(|tree| private_workspaces(tree, &person));
         let inner = Arc::new(Inner {
-            shell,
+            private: Mutex::new(private),
             person,
             node,
             exe,
@@ -157,7 +164,7 @@ impl Broker {
             crashes: Mutex::default(),
             live: Mutex::default(),
             next_connection: AtomicU64::new(1),
-            checked: AtomicU64::new(generation),
+            checked: AtomicU64::new(handle.revision()),
         });
         // Warm before the first app asks: starting a service opens its device and builds every
         // vello pipeline, which the first app's first frame would otherwise wait on. A machine
@@ -200,29 +207,21 @@ impl Broker {
         Ok(Self { inner })
     }
 
-    /// Move apps whose workspace changed hands between private and shared to the right service.
-    /// Cheap when the shell did not change: call every pass.
-    pub(crate) fn sync_workspaces(&self) {
-        let generation = self
-            .inner
-            .shell
-            .as_ref()
-            .map_or(0, |shell| shell.generation());
-        if self.inner.checked.swap(generation, Ordering::AcqRel) == generation {
+    /// Decide again which workspaces of the seat's shell `handle` draw privately, and move apps
+    /// whose workspace changed hands between private and shared to the right service. Cheap when
+    /// the shell did not change: call every pass, on the loop.
+    pub(crate) fn sync_workspaces(&self, handle: &DesktopHandle) {
+        let revision = handle.revision();
+        if self.inner.checked.swap(revision, Ordering::AcqRel) == revision {
             return;
         }
-        let Some(shell) = &self.inner.shell else {
-            return;
-        };
+        *self.inner.private.lock_recover() =
+            handle.read(|tree| private_workspaces(tree, &self.inner.person));
         let mut moved = Vec::new();
         {
             let mut live = self.inner.live.lock_recover();
             live.retain(|connection, channel| {
-                let mut key = channel.key.clone();
-                let mut read = |tree: &tilo_desktop_model::Layout| {
-                    key = render_key(tree, &self.inner.person, channel.workspace.as_deref());
-                };
-                let _ = shell.with_tree(&mut read);
+                let key = self.inner.key(channel.workspace.as_deref());
                 if key == channel.key {
                     return true;
                 }
@@ -245,6 +244,11 @@ impl Broker {
 }
 
 impl Inner {
+    /// Which service draws the apps of `workspace`, as the loop last decided.
+    fn key(&self, workspace: Option<&str>) -> String {
+        render_key(&self.private.lock_recover(), workspace)
+    }
+
     /// Serve one app's broker connection: its handshake, then its requests.
     fn serve_app(self: &Arc<Self>, mut stream: UnixStream) {
         if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
@@ -291,13 +295,7 @@ impl Inner {
 
     /// A channel to the service of the app's workspace.
     fn connect(self: &Arc<Self>, handshake: &wire::Handshake) -> Result<(u64, Channel), String> {
-        let mut key = PRIVATE.to_owned();
-        if let Some(shell) = &self.shell {
-            let mut read = |tree: &tilo_desktop_model::Layout| {
-                key = render_key(tree, &self.person, handshake.workspace_id.as_deref());
-            };
-            let _ = shell.with_tree(&mut read);
-        }
+        let key = self.key(handshake.workspace_id.as_deref());
         let service = self.service(&key)?;
         let (app, theirs) = Channel::pair().map_err(|error| error.to_string())?;
         let connection = self.next_connection.fetch_add(1, Ordering::Relaxed);
@@ -521,17 +519,17 @@ mod tests {
             tree.workspaces.push(workspace);
 
             assert_eq!(
-                render_key(&tree, person, Some(&workspace_id)),
+                render_key(&private_workspaces(&tree, person), Some(&workspace_id)),
                 PRIVATE,
                 "the person's own workspace"
             );
             assert_eq!(
-                render_key(&tree, person, None),
+                render_key(&private_workspaces(&tree, person), None),
                 PRIVATE,
                 "a launch outside any workspace"
             );
             assert_eq!(
-                render_key(&tree, person, Some("elsewhere")),
+                render_key(&private_workspaces(&tree, person), Some("elsewhere")),
                 "workspace:elsewhere"
             );
 
@@ -539,7 +537,7 @@ mod tests {
                 workspace.admit("ada", tilo_action_policy::Role::Editor);
             }
             assert_eq!(
-                render_key(&tree, person, Some(&workspace_id)),
+                render_key(&private_workspaces(&tree, person), Some(&workspace_id)),
                 format!("workspace:{workspace_id}"),
                 "a workspace someone else is in"
             );

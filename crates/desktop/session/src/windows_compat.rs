@@ -6,8 +6,9 @@
 //!   that launch is still alive ([`Launches`]). Each launch hands off once. The service refuses any
 //!   other app id, any process the session did not start, and a second connection of the same
 //!   launch.
-//! - **What a program may reach.** The asking workspace's sandbox, read from the layout the broker
-//!   decides against at every request ([`LayoutAuthority`]).
+//! - **What a program may reach.** The asking workspace's sandbox, read at every request from the
+//!   seat's own shell on the loop's pass, or from this device's engine for a workspace the shell
+//!   does not show ([`WorkspaceSandboxes`]).
 //! - **Where it shows its windows.** The display the session's apps start on, once the compositor
 //!   has bound it ([`Display`]): asked when a program starts, never when the service starts, so a
 //!   program never gets a display that does not exist yet.
@@ -30,11 +31,10 @@ use compat_service::{
     ReopenAsk, Reopenings, SandboxCommand, SessionSide, StartedProgram, TakenBack,
     TrustedLauncherRegistry,
 };
-use tilo_broker_core::services::WorkspaceAuthority as _;
 use tilo_lock::MutexRecover as _;
+use tilo_session_core::desktop::state::DesktopHandle;
 
 use crate::Launches;
-use crate::app_wire::LayoutAuthority;
 
 /// The display the session's apps start on, as the compositor bound it, and the GPU it draws
 /// with: written on the loop as they become known, read by the service as a program starts.
@@ -720,22 +720,66 @@ impl TrustedLauncherRegistry for SessionLaunches {
     }
 }
 
-/// Each workspace's sandbox, from the layout the broker decides against.
-struct WorkspaceSandboxes(Arc<LayoutAuthority>);
+/// A workspace's sandbox capabilities, whole: restrictions included, as the service filters them to
+/// the program's own app id.
+type Sandbox = Vec<collab_types::caps::CapOverride>;
+
+/// How long the service waits for the loop to read a sandbox: the loop answers on its next pass, so
+/// this only bounds a frozen session.
+const SANDBOX_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Each workspace's sandbox as the service asks it from its own threads, answered on the loop's
+/// pass ([`Self::answer`]): the sandbox the seat's shell shows for the workspace, or for one the
+/// shell does not show, such as the person's own, the one this device's engine keeps for it.
+struct WorkspaceSandboxes {
+    asks: Mutex<Vec<(String, tilo_actions::remote::Completer<Option<Sandbox>>)>>,
+    wake: tilo_service::Wake,
+}
+
+impl WorkspaceSandboxes {
+    /// Answer what the service asked since the last pass, from the shell `handle` shows and the
+    /// workspaces `engine` keeps. On the loop's pass only.
+    fn answer(&self, handle: &DesktopHandle, engine: Option<&crate::engine::Engine>) {
+        let asks = std::mem::take(&mut *self.asks.lock_recover());
+        for (workspace, done) in asks {
+            let shown = handle.read(|tree| {
+                tilo_broker_core::services::workspace_in(tree, &workspace)
+                    .map(|shown| shown.sandbox.clone())
+            });
+            done.complete(shown.or_else(|| engine.and_then(|engine| kept(engine, &workspace))));
+        }
+    }
+}
+
+/// The sandbox `engine` keeps for `workspace`, a workspace this device was let into. `None` for
+/// one it does not keep.
+fn kept(engine: &crate::engine::Engine, workspace: &str) -> Option<Sandbox> {
+    let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
+    engine
+        .owner()
+        .with_current(id, |view| {
+            let peer = view.peer();
+            if peer.admitted_workspace().is_none() {
+                return Ok(None);
+            }
+            Ok(peer.governance().governed_sandbox().ok())
+        })
+        .ok()
+        .flatten()
+}
 
 impl CapabilityAuthority for WorkspaceSandboxes {
-    fn capabilities_for(
-        &self,
-        workspace_id: &str,
-        _app_id: &str,
-    ) -> Result<Vec<collab_types::caps::CapOverride>, String> {
-        let mut sandbox = None;
-        self.0.with_workspace(workspace_id, &mut |workspace| {
-            // The whole list, restrictions included: the service filters it to the program's own
-            // app id.
-            sandbox = workspace.map(|workspace| workspace.sandbox.clone());
-        })?;
-        sandbox.ok_or_else(|| "the workspace is no longer in this session".to_owned())
+    fn capabilities_for(&self, workspace_id: &str, _app_id: &str) -> Result<Sandbox, String> {
+        let (done, answered) = tilo_actions::remote::pending();
+        self.asks
+            .lock_recover()
+            .push((workspace_id.to_owned(), done));
+        (self.wake)();
+        answered
+            .wait_timeout(SANDBOX_WAIT)
+            .map_err(|_| "the session did not answer".to_owned())?
+            .flatten()
+            .ok_or_else(|| "the workspace is no longer in this session".to_owned())
     }
 }
 
@@ -744,6 +788,19 @@ pub(crate) struct Served {
     /// Filled once the service is up: loading the catalogues and the capsules reads files, so it
     /// starts on a thread of its own rather than the session's loop.
     _service: Arc<Mutex<Option<CompatSessionHandle>>>,
+    sandboxes: Arc<WorkspaceSandboxes>,
+}
+
+impl Served {
+    /// Answer the sandboxes the service asked for since the last pass, from the shell `handle`
+    /// shows and the workspaces `engine` keeps. On the loop's pass only.
+    pub(crate) fn answer_sandboxes(
+        &self,
+        handle: &DesktopHandle,
+        engine: Option<&crate::engine::Engine>,
+    ) {
+        self.sandboxes.answer(handle, engine);
+    }
 }
 
 /// What the service table serves Windows programs with: the session's launches, the launcher its
@@ -767,8 +824,9 @@ pub(crate) fn serving(options: &mut crate::Options) -> Option<Serving> {
     })
 }
 
-/// Serve the compatibility service at the launcher's socket for it, deciding against `layout`.
-pub(crate) fn serve(serving: Serving, layout: Arc<LayoutAuthority>) -> Result<Served, String> {
+/// Serve the compatibility service at the launcher's socket for it, asking each workspace's sandbox
+/// of the loop, which `wake` wakes ([`Served::answer_sandboxes`]).
+pub(crate) fn serve(serving: Serving, wake: tilo_service::Wake) -> Result<Served, String> {
     let Serving {
         launches,
         tilo_launcher,
@@ -778,6 +836,10 @@ pub(crate) fn serve(serving: Serving, layout: Arc<LayoutAuthority>) -> Result<Se
     let capsules = tilo_paths::xdg::data_home()
         .ok_or_else(|| "this login has no data directory".to_owned())?
         .join("tilo/windows-compat");
+    let sandboxes = Arc::new(WorkspaceSandboxes {
+        asks: Mutex::new(Vec::new()),
+        wake,
+    });
     let reopenings = Reopenings::default();
     *display.reopenings.lock_recover() = Some(reopenings.clone());
     let entries = display.entries.clone();
@@ -786,7 +848,7 @@ pub(crate) fn serve(serving: Serving, layout: Arc<LayoutAuthority>) -> Result<Se
         launcher: tilo_launcher,
         parent_pid: std::process::id(),
         launches: Arc::new(SessionLaunches(launches)),
-        sandboxes: Arc::new(WorkspaceSandboxes(layout)),
+        sandboxes: Arc::clone(&sandboxes) as _,
         displays: display,
         capsules,
         entries: entries.clone(),
@@ -815,7 +877,10 @@ pub(crate) fn serve(serving: Serving, layout: Arc<LayoutAuthority>) -> Result<Se
             }
         })
         .map_err(|error| error.to_string())?;
-    Ok(Served { _service: service })
+    Ok(Served {
+        _service: service,
+        sandboxes,
+    })
 }
 
 #[cfg(test)]

@@ -1358,7 +1358,11 @@ impl crate::Shared {
     /// Count what this device did since the last pass into the person's records, through the verb
     /// of the service that holds them.
     fn follow_data_usage(&self) {
-        self.table.follow(&mut self.services.borrow_mut());
+        self.table.follow(
+            &mut self.services.borrow_mut(),
+            &self.handle,
+            self.engine.as_deref(),
+        );
     }
 
     /// The name the shell holds for `workspace`, or none when it holds none.

@@ -69,8 +69,6 @@ pub struct Automation {
     armed_now: Vec<Armed>,
     /// The shell revision whose shortcuts were last armed.
     armed_at: Option<u64>,
-    /// The shell revision the broker's copy was last brought level with.
-    published: Option<u64>,
     /// The apps running at the last look; `None` before the first.
     running: Option<BTreeSet<String>>,
     /// The focus modes at the last look; `None` before the first.
@@ -109,32 +107,16 @@ impl Automation {
             person,
             armed_now: Vec::new(),
             armed_at: None,
-            published: None,
             running: None,
             focus: None,
             last_tick: RefCell::new(None),
         }
     }
 
-    /// The broker's copy of the shell has to follow the shell the loop shows: a firing starts on
-    /// the broker's thread, which checks the shortcut against that copy.
-    pub(crate) fn publish_layout(&mut self, shell: Option<&crate::app_wire::LayoutAuthority>) {
-        let Some(shell) = shell else {
-            return;
-        };
-        let revision = self.handle.revision();
-        if self.published == Some(revision) {
-            return;
-        }
-        shell.publish(self.handle.read(Clone::clone));
-        self.published = Some(revision);
-    }
-
     /// Look at the apps and focus modes when it is time, and start whatever fired. Once per pass.
-    pub fn settle(&mut self, shell: Option<&crate::app_wire::LayoutAuthority>) {
+    pub fn settle(&mut self) {
         if self.armed_at != Some(self.handle.revision()) {
             self.arm();
-            self.publish_layout(shell);
         }
         let now = Instant::now();
         let tick = self

@@ -607,6 +607,9 @@ pub struct Session {
     /// The shortcuts the person saved, started by their triggers.
     #[cfg(target_os = "linux")]
     pub(crate) automation: crate::automation::Automation,
+    /// The shell revision the app wire's layout was last brought level with.
+    #[cfg(target_os = "linux")]
+    pub(crate) layout_published: Option<u64>,
     /// The runtime the shortcuts' runs execute on, which the apps' broker
     /// starts them on. Kept for the session's life: dropping it stops the
     /// record feed and the runs still executing on it.

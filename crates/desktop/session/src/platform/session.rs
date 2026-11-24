@@ -1278,6 +1278,8 @@ impl Session {
         // identity an app signs in through, the machine's readings, the data this device used and
         // Windows programs. They start here, before any app does.
         let mut table = crate::services::start(crate::services::Serving {
+            handle: handle.clone(),
+            serves_apps: app_wire.is_some(),
             shell: app_wire
                 .as_ref()
                 .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
@@ -1357,14 +1359,8 @@ impl Session {
             );
         }
         let mcp_server = server.map(|server| {
-            let mut server = server.serve(
-                app_wire
-                    .as_ref()
-                    .and_then(|app_wire| app_wire.dispatch.clone()),
-                app_wire
-                    .as_ref()
-                    .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
-            );
+            let mut server =
+                server.serve(app_wire.as_ref().and_then(|app_wire| app_wire.dispatch.clone()));
             server.open_terminals_on(
                 app_wire
                     .as_ref()
@@ -2010,6 +2006,7 @@ impl Session {
             control,
             liveness,
             automation,
+            layout_published: None,
             automation_runtime,
             screen_locked: false,
             desktop: options.desktop,
@@ -2858,26 +2855,23 @@ impl Session {
         self.app_wire.as_ref().and_then(|wire| wire.seat.as_ref())
     }
 
-    /// Keep the broker's copy of the shell level with the shell as the pass leaves it: the workspaces
-    /// the pass opened, and whose each of them is, are decided here and a person's own action is
-    /// decided against that copy.
+    /// Bring the app wire's layout level with the shell as the pass leaves it, once per change of
+    /// the shell: the workspaces the pass opened, and whose each of them is.
     pub(crate) fn publish_layout(&mut self) {
         let Some(app_wire) = &self.app_wire else {
             return;
         };
-        let shell = std::sync::Arc::clone(&app_wire.layout);
-        self.automation.publish_layout(Some(&shell));
+        let revision = self.shared.handle.revision();
+        if self.layout_published == Some(revision) {
+            return;
+        }
+        app_wire.layout.publish(self.shared.handle.read(Clone::clone));
+        self.layout_published = Some(revision);
     }
 
-    /// Start the shortcuts whose triggers fired since the last pass, and keep
-    /// the apps' broker's copy of the shell level with the shell shown: a run
-    /// starting there checks the shortcut against it.
+    /// Start the shortcuts whose triggers fired since the last pass.
     pub(crate) fn follow_automation(&mut self) {
-        if let Some(app_wire) = &self.app_wire {
-            self.automation.settle(Some(&app_wire.layout));
-        } else {
-            self.automation.settle(None);
-        }
+        self.automation.settle();
         // The chords the armed shortcuts answer are the table's own chords
         // from here on: the keys claim them for the automation host instead
         // of the desktop, and the guide shows what each runs.

@@ -55,7 +55,6 @@ use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed};
 use crate::Shared;
 use crate::agent_sessions::{AgentSessions, Doing};
 use crate::app_names::app_name;
-use crate::app_wire::LayoutAuthority;
 use crate::launches::Launches;
 use crate::platform::steps::SessionSteps as _;
 use tilo_action_policy::AgentSessionId;
@@ -312,9 +311,6 @@ pub(crate) struct Loop {
     bindings_path: Option<PathBuf>,
     launches: Arc<Launches>,
     wake: Wake,
-    /// The shell the broker decides against, kept by the same loop: an admission made here reaches
-    /// the broker now, not on its next pass.
-    shell: Option<Arc<LayoutAuthority>>,
     /// The places connections are served in: as many as the server serves at once.
     room: Room,
     /// Polls the questions: the loop looks for an answer on each of its own passes, so nothing else
@@ -373,15 +369,10 @@ impl Serving {
 }
 
 impl Mounted {
-    /// Serve what the server listened for from `broker` , whose decisions read `shell` : an admission
-    /// on `shell` is what lets the client act.
-    pub(crate) fn serve(
-        mut self,
-        broker: Option<Arc<Dispatch>>,
-        shell: Option<Arc<LayoutAuthority>>,
-    ) -> Loop {
-        self.server.broker = broker;
-        self.server.shell = shell;
+    /// Serve what the server listened for through `dispatch`, the device's one dispatch, which
+    /// decides whether the client may act.
+    pub(crate) fn serve(mut self, dispatch: Option<Arc<Dispatch>>) -> Loop {
+        self.server.broker = dispatch;
         self.server
     }
 }
@@ -480,7 +471,6 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         bindings_path,
         launches,
         wake,
-        shell: None,
         room: Room::default(),
         // The loop polls its questions itself, each pass, so an answer needs no wakeup.
         waker: Waker::noop().clone(),
