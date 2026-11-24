@@ -99,9 +99,6 @@ tilolang-tilo = { path = "../../lang/tilolang-tilo", optional = true }
 tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"], optional = true }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 tilolang-calendar = { path = "../../integrations/tilolang-calendar", default-features = false, optional = true }
-# The workspace's vault: Passwords' document, which this service reads and writes as a holder of
-# its keys.
-passwords-model = { path = "../../../apps/passwords-model" }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true }
 tilo-automation = { path = "../automation" }
 # Resource identity, permissions and invocation leases: the model below the toolkit.

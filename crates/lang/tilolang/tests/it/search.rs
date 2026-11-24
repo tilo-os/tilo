@@ -26,6 +26,7 @@ type Message {
         filter "Has attachment" = not attachments.is_empty() (icon: .paperclip)
         sort received newest
         hide to
+        conceal body
     }
 }
 
@@ -127,7 +128,16 @@ tilo_test_env::scenario! {
             (sort.key.as_str(), sort.order),
             ("received", SortOrder::Newest)
         );
-        assert_eq!(search.hidden, [field_id(message, "to")]);
+        assert_eq!(
+            search.hidden,
+            [field_id(message, "to"), field_id(message, "body")],
+            "a concealed field is hidden from filters too"
+        );
+        assert_eq!(
+            search.concealed,
+            [field_id(message, "body")],
+            "a concealed field is kept out of the index"
+        );
         // It prints as it was written.
         let src = format!("app t.x \"X\"\n\n{MAIL}");
         let printed = print_module(&parse(&src).expect("parses"));
@@ -139,6 +149,7 @@ tilo_test_env::scenario! {
             printed.contains("not attachments.is_empty() (icon: .paperclip)"),
             "{printed}"
         );
+        assert!(printed.contains("conceal body"), "{printed}");
         assert_eq!(print_module(&parse(&printed).expect("parses")), printed);
     }
 
@@ -280,7 +291,9 @@ type Today {
                     .join("\n"),
             };
             assert!(
-                err.contains("a search block holds `filter`, `sort` and `hide` lines"),
+                err.contains(
+                    "a search block holds `filter`, `sort`, `hide`, `conceal`, `kind` and `people` lines"
+                ),
                 "`{line}` is not a search line: {err}"
             );
         }

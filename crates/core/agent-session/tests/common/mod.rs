@@ -26,10 +26,6 @@ pub const LOCAL_STATE: &[(&str, &str)] = &[
         "edits a local file; the record holds nothing until one is opened",
     ),
     (
-        "so.tilo.passwords",
-        "secrets live in the device's encrypted secret store",
-    ),
-    (
         "so.tilo.totp",
         "an account's seed lives in the device's secret store; adding one is the device's own",
     ),

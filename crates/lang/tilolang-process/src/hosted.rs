@@ -588,6 +588,22 @@ impl Locale for HostPlatform {
     }
 }
 
+/// This device's content store, as the Passwords engine asks for a file's bytes and keeps what it
+/// makes: the file address an app holds names the content, never a path.
+#[cfg(feature = "app-launch")]
+struct EngineContent<'a>(&'a HostPlatform);
+
+#[cfg(feature = "app-launch")]
+impl passwords_engine::Device for EngineContent<'_> {
+    fn read(&self, hash: &str) -> Option<Vec<u8>> {
+        self.0.read_content(hash)
+    }
+
+    fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<String, String> {
+        self.0.keep_content(name, media, bytes).map(|file| file.hash)
+    }
+}
+
 impl Platform for HostPlatform {
     /// The latest later build when there is one that loads, else the package the instance was
     /// started with.
@@ -658,10 +674,14 @@ impl Platform for HostPlatform {
         Some(crate::canvas::Engine::host())
     }
 
-    /// The Video Editor's engine work, answered by the editing and picture engines this device
-    /// links; every other app's asks go to the session's own registry.
+    /// The Passwords and Video Editor engines this device links; every other app's asks go to the
+    /// session's own registry.
     #[cfg(feature = "app-launch")]
     fn engine_call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        if app == passwords_engine::APP {
+            let device = EngineContent(self);
+            return passwords_engine::call(&device, app, op, input);
+        }
         if app == crate::video_engine::APP {
             return crate::video_engine::call(self, app, op, input);
         }

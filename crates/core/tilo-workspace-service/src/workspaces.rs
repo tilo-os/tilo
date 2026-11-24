@@ -151,6 +151,7 @@ pub(crate) mod person_vault;
 // The workspace's one vault, Passwords' document, as this device holds it.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod vault;
+mod vault_entries;
 // The accounts of the workspace, signed in with entries of that vault.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod account_logins;

@@ -20,7 +20,7 @@
 
 use accounts::vault_items::{UseRecord, VaultChange, VaultItems};
 use accounts::{SecretId, SecretItem};
-use passwords_model::WorkspaceVaultEntries;
+use super::vault_entries::{WorkspaceVaultEntries, uses_field};
 use tilo_action_policy::Acting;
 use tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT;
 use tilo_resource::{Id, Replica};
@@ -91,10 +91,6 @@ fn route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
     }
 }
 
-/// The field an entry's uses are sealed at.
-fn uses_field(id: &str) -> String {
-    passwords_model::uses_field(id)
-}
 
 impl Workspaces {
     /// `workspace`'s vault, opened on this device with the document's own keys.

@@ -1851,9 +1851,10 @@ impl Device {
         self.seeds.set(true);
     }
 
-    /// Install Passwords in this device's store, as a device with the app installed has it.
+    /// Install Passwords in this device's store, as a device with the app installed has it: the
+    /// tilolang package this run built.
     pub fn install_passwords(&self) {
-        self.install("so.tilo.passwords", passwords_install());
+        super::dev_apps::install_named(&self.store(), &["so.tilo.passwords"]);
     }
 
     /// Install Model Providers in this device's store, as a device with the app installed has it.
@@ -2211,19 +2212,6 @@ fn files_install() -> &'static (PathBuf, String) {
 }
 
 /// The payload Passwords is installed from here ([`stage`]), with the digest of its signed root.
-fn passwords_install() -> &'static (PathBuf, String) {
-    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
-    INSTALL.get_or_init(|| {
-        stage(
-            "passwords",
-            &[(
-                tilo_test_env::sibling_binary("passwords", "passwords"),
-                "passwords",
-            )],
-        )
-    })
-}
-
 /// The payload Model Providers is installed from here ([`stage`]), with the digest of its signed
 /// root.
 fn model_providers_install() -> &'static (PathBuf, String) {

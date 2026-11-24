@@ -50,7 +50,6 @@ hex-editor = { path = "../../../apps/hex-editor" }
 maps = { path = "../../../apps/maps" }
 messages = { path = "../../../apps/messages" }
 model-providers = { path = "../../../apps/model-providers" }
-passwords = { path = "../../../apps/passwords" }
 poker = { path = "../../../apps/poker" }
 scratchpad = { path = "../../../apps/scratchpad" }
 shortcuts = { path = "../../../apps/shortcuts" }

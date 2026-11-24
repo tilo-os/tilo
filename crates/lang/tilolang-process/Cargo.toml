@@ -30,6 +30,7 @@ app-launch = [
     "tilolang-mail/engine",
     "dep:video-edit",
     "dep:video-picture",
+    "dep:passwords-engine",
 ]
 # The toolkit and `libstd` linked from the Tilo runtime's one shared library, as every thin app
 # links them: the runtime bundle's build, and `tilolang dev`'s, whose window maps a rebuild of this
@@ -174,6 +175,9 @@ workspace-hack = { version = "0.1" }
 # still, a waveform, a colour and a render, through `video_engine`.
 video-edit = { package = "tilo-video-edit", path = "../../engines/video-edit", default-features = false, optional = true }
 video-picture = { package = "tilo-video-picture", path = "../../engines/video-picture", default-features = false, features = ["decode", "gst"], optional = true }
+# The Passwords app's own engine: this device's secret vault, its app permissions, browser CSV
+# files and encrypted backups.
+passwords-engine = { path = "../../engines/passwords-engine", optional = true }
 # A video a view declares plays in the app's window (`app-launch`): on Linux decoded by the system's
 # GStreamer, on an Apple silicon Mac by the decoders the tilolang runtime package carries beside
 # this binary (dist/macos/build-app.sh). An Intel Mac's slice and Windows build without one.

@@ -329,6 +329,9 @@ fn texted(store: &ResourceStore, meta: &Meta, ty: &str) -> Vec<FieldSpec> {
     let mut fields: Vec<FieldSpec> = declared
         .fields
         .iter()
+        // A field the type conceals is never read into the index: a credential, a note kept for
+        // one person, whatever search must neither hold nor find.
+        .filter(|field| !declared.search.concealed.contains(&field.id))
         .filter_map(|field| {
             let kind = entry.fields.get(&field.id)?.kind;
             matches!(kind, FieldKind::Text | FieldKind::RichText).then(|| FieldSpec {

@@ -1205,6 +1205,7 @@ impl Printer<'_> {
                     format!("sort {} {}", field.name, order.name)
                 }
                 SearchEntryKind::Hide { field } => format!("hide {}", field.name),
+                SearchEntryKind::Conceal { field } => format!("conceal {}", field.name),
                 SearchEntryKind::Kind { kind } => format!("kind {}", kind.name),
                 SearchEntryKind::People { field } => format!("people {}", field.name),
             };

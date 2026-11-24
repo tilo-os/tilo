@@ -201,7 +201,7 @@ setup = "headless-audio"
 [scripts.setup.vault-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "passwords:passwords", "model-providers:model-providers", "launcher:tilo-launcher",
+    "model-providers:model-providers", "launcher:tilo-launcher",
 ]
 
 [[profile.default.scripts]]
@@ -221,7 +221,7 @@ setup = "vault-siblings"
 command = [
     "bash", "tools/build-sibling-binaries.sh",
     "tilo-runtime:tilo-runtime",
-    "passwords:passwords", "model-providers:model-providers", "launcher:tilo-launcher",
+    "model-providers:model-providers", "launcher:tilo-launcher",
     "tilolang-process:tilolang-process=app-launch",
 ]
 

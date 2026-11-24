@@ -11425,44 +11425,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "passwords"
+name = "passwords-engine"
 version = "0.1.0"
 dependencies = [
  "accounts",
- "passwords-model",
- "runtime-dylib",
+ "serde",
  "serde_json",
- "tempfile",
- "tilo-app",
- "tilo-files",
  "tilo-messaging",
- "tilo-paths",
  "tilo-seal",
- "tilo-taffy",
  "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
  "workspace-hack",
  "zeroize",
-]
-
-[[package]]
-name = "passwords-model"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "passwords-model-wasm"
-version = "0.1.0"
-dependencies = [
- "passwords-model",
- "tilo-model-guest",
- "workspace-hack",
 ]
 
 [[package]]
@@ -16596,7 +16569,6 @@ dependencies = [
  "messages",
  "model-providers",
  "neighbour-wire",
- "passwords",
  "poker",
  "postcard",
  "rustls",
@@ -19377,7 +19349,6 @@ dependencies = [
  "logs-model-wasm",
  "maps-model-wasm",
  "monitor-model-wasm",
- "passwords-model-wasm",
  "poker-model-wasm",
  "print-centre-model-wasm",
  "publisher-model-wasm",
@@ -22580,7 +22551,6 @@ dependencies = [
  "neighbour-wire",
  "package-store",
  "parking_lot",
- "passwords-model",
  "postcard",
  "rand 0.10.3",
  "rcgen",
@@ -22866,6 +22836,7 @@ dependencies = [
  "libc",
  "mail-engine",
  "notify",
+ "passwords-engine",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -22970,7 +22941,6 @@ dependencies = [
  "collaboration",
  "jiff",
  "moderation-model",
- "passwords",
  "serde",
  "serde_json",
  "tempfile",
@@ -27692,9 +27662,6 @@ dependencies = [
  "parking_lot",
  "parking_lot_core",
  "password-hash",
- "passwords",
- "passwords-model",
- "passwords-model-wasm",
  "paste",
  "pastey",
  "pathdiff",

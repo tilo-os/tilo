@@ -214,6 +214,9 @@ pub enum SearchEntryKind {
     Sort { field: Ident, order: Ident },
     /// `hide to`: a field kept out of filters.
     Hide { field: Ident },
+    /// `conceal secret`: a field kept out of the search index and out of filters, so search never
+    /// holds or finds what it says. A credential, a note kept for one person.
+    Conceal { field: Ident },
     /// `kind conversation`: what a resource of the type is to the system's search, which draws
     /// it as one and sends to it (`conversation`, `message`, `person` or `agent`).
     Kind { kind: Ident },

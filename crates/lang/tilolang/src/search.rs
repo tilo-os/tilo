@@ -418,6 +418,25 @@ pub fn resolve(
                     }
                 }
             }
+            SearchEntryKind::Conceal { field } => {
+                if let Some(f) = ctx.field(field, "`conceal`") {
+                    let id = f.id.clone();
+                    if out.concealed.contains(&id) {
+                        ctx.err(
+                            "E104",
+                            field.span,
+                            format!("`{}` is concealed already", field.name),
+                        );
+                    } else {
+                        // A field search never holds is no filter either, here or by default.
+                        if !out.hidden.contains(&id) {
+                            out.hidden.push(id.clone());
+                            hidden_names.push((field.name.clone(), field.span));
+                        }
+                        out.concealed.push(id);
+                    }
+                }
+            }
         }
     }
     for (name, span) in hidden_names {

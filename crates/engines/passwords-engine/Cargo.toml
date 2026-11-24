@@ -1,0 +1,31 @@
+[package]
+name = "passwords-engine"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "The Passwords app's own engine: this device's secret vault, the permissions apps hold on it, browser CSV files and passphrase-encrypted backups. No UI."
+
+[lib]
+name = "passwords_engine"
+path = "src/lib.rs"
+
+[dependencies]
+# The device's secret vault: the entries a workspace may take in, and the permissions apps hold.
+accounts = { path = "../../integrations/accounts" }
+# The permission requests the messaging service asks the person about.
+tilo-messaging = { path = "../../integrations/tilo-messaging", features = ["service-client"] }
+# The passphrase envelope a backup is written in.
+tilo-seal = { path = "../../core/tilo-seal" }
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

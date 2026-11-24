@@ -1,24 +1,8 @@
-//! The Passwords resource carries encrypted workspace vault entries and their opaque ids.
+//! The workspace's vault, as this service reads and writes it: Passwords' document of sealed
+//! entries, which the service holds the keys of as a device that keeps the workspace does. The
+//! entries are the document's own: each sealed under its keys, with a use kept beside it.
 
 use tilo_resource::{self, Atom, Collection, Id, Model, Refusal, Set, resource};
-
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Passwords {}
-
-impl Passwords {
-    /// What the vault holds: nothing of its own. Its entries are the sealed
-    /// document beside it, which a reader opens under its keys; a caller with
-    /// no window open still learns that the vault is there.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(kind = "passwords.vault", read_content = Passwords::read_document)]
-impl Passwords {}
 
 /// The workspace's vault: the one place a workspace keeps what its members and agents sign in
 /// with. Each entry is sealed under the document's own keys, which every device policy lets

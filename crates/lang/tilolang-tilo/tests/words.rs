@@ -467,15 +467,7 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
     let notebook = notebook(&host, &package);
     let (contacts_host, contacts_package) = contacts("de-DE");
     let book = published_book(&contacts_host, &contacts_package);
-    let passwords = passwords::actions::PasswordsEffect::declarations()
-        .iter()
-        .map(EffectDecl::spec_of::<passwords::actions::PasswordsEffect>)
-        .fold(
-            tilo_actions::ResourceSpec::new("passwords", "passwords.effect", "Passwörter"),
-            tilo_actions::ResourceSpec::with_action,
-        );
     let palette = Published(vec![
-        PublishedActions::of("so.tilo.passwords", "workspace", &[passwords]),
         PublishedActions::of(CONTACTS, "workspace", &[book]),
         PublishedActions::of(NOTES, "workspace", &[notebook]),
     ]);
@@ -486,11 +478,6 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
             .map(|hit| hit.title)
             .collect()
     };
-    let native = rows("Zugriffe");
-    assert!(
-        native.iter().any(|title| title == "App-Zugriffe anzeigen"),
-        "the passwords app's action reads in German: {native:?}"
-    );
     let groups = rows("Gruppe");
     assert!(
         groups.iter().any(|title| title == "Neue Gruppe"),

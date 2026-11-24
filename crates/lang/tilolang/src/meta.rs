@@ -363,6 +363,10 @@ pub struct SearchMeta {
     /// The fields kept out of filters, by id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden: Vec<String>,
+    /// The fields kept out of the search index and out of filters, by id: what a credential or a
+    /// note search never holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concealed: Vec<String>,
     /// Whether the type declares these with a `search` block rather than taking the defaults.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub declared: bool,

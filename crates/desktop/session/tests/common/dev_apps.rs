@@ -26,7 +26,7 @@ use tilolang_cli::package::{self, BuildOptions};
 /// stands in only where the store holds none (docs/designs/app-language/shell.md §6). Discussion
 /// is no app of the session's: Tasks and Notes are made with it, and it is installed as no app
 /// of its own, so their comments stay in their own records.
-pub const APPS: [&str; 6] = ["shell", "notes", "tasks", "chat", "mail", "tube"];
+pub const APPS: [&str; 7] = ["shell", "notes", "tasks", "chat", "mail", "tube", "passwords"];
 
 /// The tree's `apps/tl` .
 fn packages() -> PathBuf {

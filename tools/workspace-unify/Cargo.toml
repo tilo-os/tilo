@@ -748,9 +748,6 @@ doc = false
 "parking_lot-0_12_5" = { package = "parking_lot", version = "^0.12.5", default-features = false, features = ["default"] }
 "parking_lot_core-0_9_12" = { package = "parking_lot_core", version = "^0.9.12", default-features = false, features = [] }
 "password-hash-0_6_1" = { package = "password-hash", version = "^0.6.1", default-features = false, features = ["getrandom"] }
-"passwords" = { path = "../../apps/passwords", default-features = false, features = [] }
-"passwords-model" = { path = "../../apps/passwords-model", default-features = false, features = [] }
-"passwords-model-wasm" = { path = "../../apps/passwords-model-wasm", default-features = false, features = [] }
 "pathdiff-0_2_3" = { package = "pathdiff", version = "^0.2.3", default-features = false, features = [] }
 "pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["default", "hmac"] }
 "pbkdf2-0_13_0" = { package = "pbkdf2", version = "^0.13.0", default-features = false, features = ["default", "hmac"] }
@@ -3364,9 +3361,6 @@ doc = false
 "parking_lot-0_12_5" = { package = "parking_lot", version = "^0.12.5", default-features = false, features = ["default"] }
 "parking_lot_core-0_9_12" = { package = "parking_lot_core", version = "^0.9.12", default-features = false, features = [] }
 "password-hash-0_6_1" = { package = "password-hash", version = "^0.6.1", default-features = false, features = ["getrandom"] }
-"passwords" = { path = "../../apps/passwords", default-features = false, features = [] }
-"passwords-model" = { path = "../../apps/passwords-model", default-features = false, features = [] }
-"passwords-model-wasm" = { path = "../../apps/passwords-model-wasm", default-features = false, features = [] }
 "pathdiff-0_2_3" = { package = "pathdiff", version = "^0.2.3", default-features = false, features = [] }
 "pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["default", "hmac"] }
 "pbkdf2-0_13_0" = { package = "pbkdf2", version = "^0.13.0", default-features = false, features = ["default", "hmac"] }

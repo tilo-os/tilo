@@ -50,6 +50,9 @@ type Message {
   filter with its value (`label:urgent`); a name the type declares no filter for is a compile
   error listing the ones it does.
 - `sort` sets the default order. Relevance is offered whenever there's text.
+- `hide field` keeps a field out of filters. `conceal field` keeps it out of the index as well:
+  search never holds or finds what a credential, or a note kept for one person, says. A concealed
+  field is no filter either.
 - Text fields: every `Text` and `RichText` field is indexed, and a result shows the resource's
   first one, cut to its first line.
 - Without a `search` block, every simple field (`Bool`, enum, date, number, reference, set) is a

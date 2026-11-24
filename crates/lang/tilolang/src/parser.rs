@@ -1495,6 +1495,9 @@ impl<'a> Parser<'a> {
             "hide" => SearchEntryKind::Hide {
                 field: self.ident("the field to keep out of filters")?,
             },
+            "conceal" => SearchEntryKind::Conceal {
+                field: self.ident("the field to keep out of the search index")?,
+            },
             "kind" => SearchEntryKind::Kind {
                 kind: self.ident("`conversation`, `message`, `person` or `agent`")?,
             },
@@ -1505,7 +1508,7 @@ impl<'a> Parser<'a> {
                 return self.fail(
                     word.span,
                     format!(
-                        "a search block holds `filter`, `sort`, `hide`, `kind` and `people` lines; `{other}` is none of them"
+                        "a search block holds `filter`, `sort`, `hide`, `conceal`, `kind` and `people` lines; `{other}` is none of them"
                     ),
                 );
             }
