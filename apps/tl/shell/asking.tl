@@ -297,8 +297,8 @@ fn asker_name(a: invocations.Asked) -> Text {
     if let agent = a.by.agent {
         return agent.name
     }
-    if let app = a.by.app {
-        return app.title
+    if let program = a.by.app {
+        return program.title
     }
     if let d = a.by.device {
         return d.name
