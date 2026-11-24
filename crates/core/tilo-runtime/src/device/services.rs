@@ -986,14 +986,6 @@ impl Daemon {
         self.workspaces.copies()
     }
 
-    /// The record content of this device's workspaces: where the bytes of their records' files
-    /// are kept and asked for. `None` before the device's content store is open.
-    pub(crate) fn record_content(
-        &self,
-    ) -> Option<Arc<tilo_workspace_service::content::RouteContent>> {
-        self.workspaces.record_content_service()
-    }
-
     /// Whether this device runs what waits for a device that keeps a person's root.
     #[cfg(test)]
     #[must_use]
@@ -2691,8 +2683,9 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
 
 /// The checks a project's host approved: this device's work, kept as its jobs at
 /// `devices/<device>/jobs` and read through the one record API. What runs comes from this
-/// device's own `checks` setting, so a check an app names never brings its own commands.
-#[cfg(unix)]
+/// device's own `checks` setting, so a check an app names never brings its own commands. A
+/// check's commands are ush's own, which a phone's app carries none of.
+#[cfg(all(unix, not(target_os = "android")))]
 fn approved_checks(
     parts: &BrokerParts<'_>,
 ) -> io::Result<
@@ -2723,7 +2716,7 @@ fn approved_checks(
 }
 
 /// Elsewhere, a host approves no checks.
-#[cfg(not(unix))]
+#[cfg(not(all(unix, not(target_os = "android"))))]
 fn approved_checks(
     _parts: &BrokerParts<'_>,
 ) -> io::Result<
