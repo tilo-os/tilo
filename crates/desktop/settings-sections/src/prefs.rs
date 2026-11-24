@@ -1184,7 +1184,105 @@ impl settings_model::SettingsSchema for WidgetsPrefs {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.widgets")]
-impl WidgetsPrefs {}
+impl WidgetsPrefs {
+    /// The widget `widget` names, by its key as the shell and Settings know it.
+    fn named(
+        &mut self,
+        widget: &str,
+    ) -> Result<&mut settings_store::widgets::WidgetPrefs, ui::tilo_resource::Refusal> {
+        match widget {
+            "music" => Ok(&mut self.music),
+            "team" => Ok(&mut self.team),
+            "calendar" => Ok(&mut self.calendar),
+            "system_monitor" => Ok(&mut self.system_monitor),
+            other => Err(ui::tilo_resource::Refusal::new(format!(
+                "`{other}` is not a widget: music, team, calendar or system_monitor"
+            ))),
+        }
+    }
+
+    /// Keep `widget` on this person's shell, or take it off: the same switch Settings shows, and
+    /// what a shell runs when the person keeps one or removes it.
+    #[action(id = "set-widget-enabled")]
+    pub fn set_widget_enabled(
+        &mut self,
+        #[param("The widget: music, team, calendar or system_monitor")] widget: String,
+        #[param("Whether the person keeps it on their shell")] enabled: bool,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.named(&widget)?.enabled = enabled;
+        Ok(())
+    }
+
+    /// When `widget` shows itself in its quiet form: after the person pauses (`pause`), always
+    /// (`always`), or only when they ask (`ask`).
+    #[action(id = "set-widget-show")]
+    pub fn set_widget_show(
+        &mut self,
+        #[param("The widget: music, team, calendar or system_monitor")] widget: String,
+        #[param("When it shows: pause, always or ask")] show: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        use settings_store::widgets::ShowMode;
+        let show = match show.as_str() {
+            "pause" => ShowMode::Pause,
+            "always" => ShowMode::Always,
+            "ask" => ShowMode::Ask,
+            other => {
+                return Err(ui::tilo_resource::Refusal::new(format!(
+                    "`{other}` is not a show mode: pause, always or ask"
+                )));
+            }
+        };
+        self.named(&widget)?.show = show;
+        Ok(())
+    }
+
+    /// Where `widget` rests on `display`: fractions of the room it moves in there, 0 against the
+    /// leading or top margin and 1 against the trailing or bottom one, so it keeps to its edge
+    /// when the display's resolution changes. The display it was last dropped on comes first.
+    #[action(id = "place-widget")]
+    pub fn place_widget(
+        &mut self,
+        #[param("The widget: music, team, calendar or system_monitor")] widget: String,
+        #[param("The display, by its stable identity")] display: String,
+        #[param("How far across the room it can move: 0 leading, 1 trailing")] x: f64,
+        #[param("How far down the room it can move: 0 top, 1 bottom")] y: f64,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if !(x.is_finite() && y.is_finite() && (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y))
+        {
+            return Err(ui::tilo_resource::Refusal::new(
+                "a place is a fraction of its room, 0 to 1",
+            ));
+        }
+        let named = self.named(&widget)?;
+        named.places.retain(|place| place.display != display);
+        named.places.insert(
+            0,
+            settings_store::widgets::Place {
+                display,
+                x,
+                y,
+            },
+        );
+        Ok(())
+    }
+
+    /// How wide `widget`'s open card is, in logical pixels: what the person left it at after
+    /// resizing it. Each widget keeps the width it asks for by its own bounds.
+    #[action(id = "resize-widget")]
+    pub fn resize_widget(
+        &mut self,
+        #[param("The widget: music, team, calendar or system_monitor")] widget: String,
+        #[param("The card's width in logical pixels, 160 to 640")] width: f64,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if !(width.is_finite() && (160.0..=640.0).contains(&width)) {
+            return Err(ui::tilo_resource::Refusal::new(
+                "a card is 160 to 640 logical pixels wide",
+            ));
+        }
+        self.named(&widget)?.width = Some(width);
+        Ok(())
+    }
+}
 
 /// This device's idle and button preferences, read by the compositor's
 /// idle layer.
