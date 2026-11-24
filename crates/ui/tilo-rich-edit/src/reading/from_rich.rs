@@ -109,15 +109,17 @@ fn spans_of(wire: &WireBlock) -> Vec<Span> {
             continue;
         }
         let run: String = text.chars().skip(previous).take(cut - previous).collect();
-        let bold = covered(wire, previous, cut, "strong");
-        let italic = covered(wire, previous, cut, "em");
-        let code = wire.marks.iter().any(|mark| {
-            mark.start <= previous
-                && mark.end >= cut
-                && mark.name == "fontFamily"
-                && matches!(&mark.value, Attr::Text(family) if family == "mono")
-        });
-        pending_space = push_run(&mut spans, &run, bold, italic, code, pending_space);
+        let look = RunLook {
+            bold: covered(wire, previous, cut, "strong"),
+            italic: covered(wire, previous, cut, "em"),
+            code: wire.marks.iter().any(|mark| {
+                mark.start <= previous
+                    && mark.end >= cut
+                    && mark.name == "fontFamily"
+                    && matches!(&mark.value, Attr::Text(family) if family == "mono")
+            }),
+        };
+        pending_space = push_run(&mut spans, &run, look, pending_space);
         previous = cut;
     }
     spans
@@ -133,17 +135,18 @@ fn covered(wire: &WireBlock, start: usize, end: usize, name: &str) -> bool {
     })
 }
 
-/// Push `run` as one or more spans: its lines break where the paragraph's text does (a `<br/>`
-/// or a verse line), and the whitespace around it says whether a word break came before it.
-/// Answers whether the run ended on a word break, which the span after it takes.
-fn push_run(
-    spans: &mut Vec<Span>,
-    run: &str,
+/// How a run of a paragraph's text is set: the marks that cover all of it.
+#[derive(Clone, Copy)]
+struct RunLook {
     bold: bool,
     italic: bool,
     code: bool,
-    pending_before: bool,
-) -> bool {
+}
+
+/// Push `run` as one or more spans: its lines break where the paragraph's text does (a `<br/>`
+/// or a verse line), and the whitespace around it says whether a word break came before it.
+/// Answers whether the run ended on a word break, which the span after it takes.
+fn push_run(spans: &mut Vec<Span>, run: &str, look: RunLook, pending_before: bool) -> bool {
     let mut pending = pending_before;
     let parts: Vec<&str> = run.split('\n').collect();
     for (index, part) in parts.iter().enumerate() {
@@ -160,9 +163,9 @@ fn push_run(
         spans.push(Span {
             text: trimmed.to_owned(),
             math: None,
-            bold,
-            italic,
-            code,
+            bold: look.bold,
+            italic: look.italic,
+            code: look.code,
             space_before,
             line_break,
             line_indent: 0,

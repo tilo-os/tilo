@@ -187,10 +187,7 @@ fn mark_tags(mark: &Mark) -> Option<(String, &'static str)> {
         Mark::Deletion(_) => ("<del>".into(), "</del>"),
         Mark::Superscript => ("<sup>".into(), "</sup>"),
         Mark::Subscript => ("<sub>".into(), "</sub>"),
-        Mark::Size(points) => (
-            format!("<span style=\"font-size: {points}pt\">"),
-            "</span>",
-        ),
+        Mark::Size(points) => (format!("<span style=\"font-size: {points}pt\">"), "</span>"),
         Mark::Font(family) => (
             format!(
                 "<span style=\"font-family: {}\">",
@@ -199,10 +196,7 @@ fn mark_tags(mark: &Mark) -> Option<(String, &'static str)> {
             "</span>",
         ),
         Mark::Color(rgb) => (
-            format!(
-                "<span style=\"color: {}\">",
-                crate::rich_doc::hex_of(*rgb)
-            ),
+            format!("<span style=\"color: {}\">", crate::rich_doc::hex_of(*rgb)),
             "</span>",
         ),
         Mark::Highlight(rgb) => (
@@ -212,14 +206,13 @@ fn mark_tags(mark: &Mark) -> Option<(String, &'static str)> {
             ),
             "</span>",
         ),
-        Mark::Transclusion(_) | Mark::Embed(_) => return None,
         // A comment keeps the thread it belongs to, so a copy of the words says what was said
         // about them; a field is drawn, never shown as the placeholder it is kept as.
         Mark::Comment(id) => (
             format!("<span data-comment=\"{}\">", escape_attr(id)),
             "</span>",
         ),
-        Mark::Field(_) => return None,
+        Mark::Transclusion(_) | Mark::Embed(_) | Mark::Field(_) => return None,
     })
 }
 

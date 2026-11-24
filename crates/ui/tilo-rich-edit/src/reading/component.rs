@@ -581,44 +581,41 @@ impl Reading {
         let Some(laid) = &self.laid else {
             return;
         };
-        match turning {
-            Some((progress, _moving, dir, from)) => {
-                let leaving = Drill::pose(-dir * progress, width, motion);
-                let arriving = Drill::pose(dir * (1.0 - progress), width, motion);
-                let spread = Spread {
-                    face: &face,
-                    ink,
-                    ink_dim,
-                    bands: &bands,
-                };
-                self.draw_spread(scene, transform, text, &spread, from, leaving, laid);
-                self.draw_spread(
-                    scene,
-                    transform,
-                    text,
-                    &spread,
-                    self.first_page(),
-                    arriving,
-                    laid,
-                );
-            }
-            None => {
-                let spread = Spread {
-                    face: &face,
-                    ink,
-                    ink_dim,
-                    bands: &bands,
-                };
-                self.draw_spread(
-                    scene,
-                    transform,
-                    text,
-                    &spread,
-                    self.first_page(),
-                    Pose::REST,
-                    laid,
-                );
-            }
+        if let Some((progress, _moving, dir, from)) = turning {
+            let leaving = Drill::pose(-dir * progress, width, motion);
+            let arriving = Drill::pose(dir * (1.0 - progress), width, motion);
+            let spread = Spread {
+                face: &face,
+                ink,
+                ink_dim,
+                bands: &bands,
+            };
+            self.draw_spread(scene, transform, text, &spread, from, leaving, laid);
+            self.draw_spread(
+                scene,
+                transform,
+                text,
+                &spread,
+                self.first_page(),
+                arriving,
+                laid,
+            );
+        } else {
+            let spread = Spread {
+                face: &face,
+                ink,
+                ink_dim,
+                bands: &bands,
+            };
+            self.draw_spread(
+                scene,
+                transform,
+                text,
+                &spread,
+                self.first_page(),
+                Pose::REST,
+                laid,
+            );
         }
     }
 
@@ -905,11 +902,11 @@ impl Widget for Reading {
         available: taffy::Size<taffy::AvailableSpace>,
         text: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let width = known.width.unwrap_or_else(|| match available.width {
+        let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(width) => width,
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => 640.0,
         });
-        let height = known.height.unwrap_or_else(|| match available.height {
+        let height = known.height.unwrap_or(match available.height {
             taffy::AvailableSpace::Definite(height) => height,
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => 900.0,
         });

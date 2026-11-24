@@ -415,9 +415,8 @@ fn pages_of(
         header.unwrap_or_default(),
         footer.unwrap_or_default(),
     )?;
-    let points = |value: Option<f64>| {
-        value.map_or(super::DEFAULT_PAGE_MARGIN, |points| points as f32)
-    };
+    let points =
+        |value: Option<f64>| value.map_or(super::DEFAULT_PAGE_MARGIN, |points| points as f32);
     Some(pages.with_margins(
         points(margins[0]),
         points(margins[1]),
@@ -495,18 +494,18 @@ impl Described for BlockEditor {
                 .with_flush_text()
                 .with_read_only(true)
         };
-        editor.offer(
+        editor.offer(Offered {
             links,
             links_open,
             links_query,
-            &commands,
+            commands,
             command,
             changes,
             headings,
             selection,
             comment,
-            Some(open_reference),
-        );
+            open_reference,
+        });
         editor.offer_slash(&slash, slash_image, slash_page);
         editor.set_image_store(Some(ui::pictures::Pictures::window().store().clone()));
         if editing {
@@ -571,18 +570,18 @@ impl Described for BlockEditor {
             return false;
         }
         let showing = self.body.is_none();
-        self.offer(
+        self.offer(Offered {
             links,
             links_open,
             links_query,
-            &commands,
+            commands,
             command,
             changes,
             headings,
             selection,
             comment,
-            Some(open_reference),
-        );
+            open_reference,
+        });
         self.offer_slash(&slash, slash_image, slash_page);
         self.set_find_replace_enabled(!showing);
         if !showing {
@@ -615,24 +614,35 @@ impl Described for BlockEditor {
     }
 }
 
+/// The props a view hands the editor that the editor answers: the pages it may link to, its
+/// commands, and the events it tells of each change.
+struct Offered {
+    links: Vec<Link>,
+    links_open: Event,
+    links_query: Event,
+    commands: Vec<String>,
+    command: Event,
+    changes: Event,
+    headings: Event,
+    selection: Event,
+    comment: Event,
+    open_reference: Event,
+}
+
 impl BlockEditor {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one call hands the editor the props it answers, each its own wiring"
-    )]
-    fn offer(
-        &mut self,
-        links: Vec<Link>,
-        links_open: Event,
-        links_query: Event,
-        commands: &[String],
-        command: Event,
-        changes: Event,
-        headings: Event,
-        selection: Event,
-        comment: Event,
-        open_reference: Option<Event>,
-    ) {
+    fn offer(&mut self, offered: Offered) {
+        let Offered {
+            links,
+            links_open,
+            links_query,
+            commands,
+            command,
+            changes,
+            headings,
+            selection,
+            comment,
+            open_reference,
+        } = offered;
         self.references.changes = changes;
         let answering = !links_query.is_none();
         self.set_links(
@@ -652,15 +662,13 @@ impl BlockEditor {
         self.references
             .picker
             .get_or_insert_with(|| (false, String::new()));
-        self.set_view_commands(commands);
+        self.set_view_commands(&commands);
         self.on_command(move |label| {
             command.fire(Some(Value::Text(label.to_owned())));
         });
-        if let Some(open_reference) = open_reference {
-            self.on_open_reference(move |reference| {
-                open_reference.fire(Some(Value::Text(reference.to_owned())));
-            });
-        }
+        self.on_open_reference(move |reference| {
+            open_reference.fire(Some(Value::Text(reference.to_owned())));
+        });
         self.references.headings = headings;
         self.references.selection = selection;
         self.references.comment = comment;
@@ -812,7 +820,7 @@ impl BlockEditor {
 
     /// Report the comment whose marker the pointer let go of, as a toolbar reports a press on
     /// its own button: what a view opens the thread with.
-    pub(super) fn activate_comment(&mut self, event: &WindowEvent) -> bool {
+    pub(super) fn activate_comment(&self, event: &WindowEvent) -> bool {
         let WindowEvent::MouseInput {
             state: ElementState::Released,
             button: MouseButton::Left,

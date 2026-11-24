@@ -179,17 +179,17 @@ fn draw_lines(
                 let (x0, x1) = if width > 0.5 {
                     let scale = width / f64::from(u32::try_from(run.char_len).unwrap_or(1));
                     (
-                        block.indent as f64
+                        f64::from(block.indent)
                             + f64::from(run.x)
                             + scale * (lo.saturating_sub(run_from)) as f64,
-                        block.indent as f64
+                        f64::from(block.indent)
                             + f64::from(run.x)
                             + scale * (hi.saturating_sub(run_from)) as f64,
                     )
                 } else {
                     (
-                        block.indent as f64 + f64::from(run.x),
-                        block.indent as f64 + f64::from(run.x) + 4.0,
+                        f64::from(block.indent) + f64::from(run.x),
+                        f64::from(block.indent) + f64::from(run.x) + 4.0,
                     )
                 };
                 let band = Rect::new(

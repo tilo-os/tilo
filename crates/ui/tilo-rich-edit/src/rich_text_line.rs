@@ -834,8 +834,9 @@ impl RichTextLine {
             self.dirty.marks = true;
             self.dirty.styled_layout = true;
         } else {
-            let already = self.pending_marks.iter().any(|pending| *pending == mark);
-            self.pending_marks.retain(|pending| !pending.same_kind(&mark));
+            let already = self.pending_marks.contains(&mark);
+            self.pending_marks
+                .retain(|pending| !pending.same_kind(&mark));
             let raised = matches!(mark, Mark::Superscript | Mark::Subscript);
             if !(already && raised) {
                 self.pending_marks.push(mark);
@@ -1178,13 +1179,7 @@ impl RichTextLine {
                     .inner
                     .selection_rects(theme, span.range.start, span.range.end)
                 {
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        band,
-                        None,
-                        &bounds,
-                    );
+                    scene.fill(vello::peniko::Fill::NonZero, transform, band, None, &bounds);
                 }
                 continue;
             }

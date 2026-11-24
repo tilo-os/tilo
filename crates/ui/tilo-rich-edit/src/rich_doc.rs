@@ -107,9 +107,9 @@ pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
         ("strike", _) => Some(Mark::Strikethrough),
         ("super", _) => Some(Mark::Superscript),
         ("sub", _) => Some(Mark::Subscript),
-        ("size", MarkValue::Int(points)) if *points > 0 => {
-            Some(Mark::Size(u16::try_from(*points).unwrap_or(u16::MAX).max(1)))
-        }
+        ("size", MarkValue::Int(points)) if *points > 0 => Some(Mark::Size(
+            u16::try_from(*points).unwrap_or(u16::MAX).max(1),
+        )),
         ("ins", MarkValue::Str(id)) => Some(Mark::Insertion(id.clone())),
         ("del", MarkValue::Str(id)) => Some(Mark::Deletion(id.clone())),
         (tilo_doc::schema::MARK_COMMENT, MarkValue::Str(id)) => Some(Mark::Comment(id.clone())),
@@ -372,7 +372,6 @@ pub fn view_of_content(content: &BlockContent) -> BlockView {
         attrs.insert("level".to_owned(), tilo_doc::AttrVal::Int(i64::from(depth)));
     };
     let kind = match &content.kind {
-        BlockKind::Paragraph => "paragraph",
         BlockKind::Quote => "quote",
         BlockKind::Callout(callout) => {
             attrs.insert(
@@ -421,7 +420,7 @@ pub fn view_of_content(content: &BlockContent) -> BlockView {
         }
         // The field the block is: its placeholder and the `field` mark its content carries are
         // what stores it, so it is a paragraph as a document keeps one.
-        BlockKind::Toc => "paragraph",
+        BlockKind::Paragraph | BlockKind::Toc => "paragraph",
     };
     if content.nesting > 0 && !content.kind.supports_indent() {
         attrs.insert(
@@ -442,17 +441,11 @@ pub fn view_of_content(content: &BlockContent) -> BlockView {
         ("first_line_indent", content.paragraph.first_line_indent),
     ] {
         if let Some(number) = value {
-            attrs.insert(
-                key.to_owned(),
-                tilo_doc::AttrVal::Float(f64::from(number)),
-            );
+            attrs.insert(key.to_owned(), tilo_doc::AttrVal::Float(f64::from(number)));
         }
     }
     if let Some(style) = &content.paragraph.style {
-        attrs.insert(
-            "style".to_owned(),
-            tilo_doc::AttrVal::Str(style.clone()),
-        );
+        attrs.insert("style".to_owned(), tilo_doc::AttrVal::Str(style.clone()));
     }
     let marks = content
         .marks
@@ -1198,7 +1191,10 @@ mod tests {
         assert_eq!(stored.kind, "paragraph");
         assert_eq!(stored.text, tilo_doc::schema::FIELD_PLACEHOLDER.to_string());
         assert_eq!(stored.marks[0].name, tilo_doc::schema::MARK_FIELD);
-        assert_eq!(stored.marks[0].value.as_str(), Some(tilo_doc::schema::FIELD_TOC));
+        assert_eq!(
+            stored.marks[0].value.as_str(),
+            Some(tilo_doc::schema::FIELD_TOC)
+        );
     }
 
     /// What a paragraph says of its own look goes to the document in the attributes its codecs

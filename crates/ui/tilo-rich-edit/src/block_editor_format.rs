@@ -30,8 +30,9 @@ impl ParagraphChange {
     }
 }
 
-/// The points a command names, or none for a number it does not hold; `0` clears.
-fn points(argument: &str) -> Option<Option<f32>> {
+/// The paragraph change `make` builds from the points a command names, or none for a number it
+/// does not hold; `0` clears the setting.
+fn points(argument: &str, make: fn(Option<f32>) -> ParagraphChange) -> Option<ParagraphChange> {
     argument
         .trim()
         .trim_end_matches("pt")
@@ -39,7 +40,7 @@ fn points(argument: &str) -> Option<Option<f32>> {
         .parse::<f32>()
         .ok()
         .filter(|points| (0.0..=288.0).contains(points))
-        .map(|points| (points > 0.0).then_some(points))
+        .map(|points| make((points > 0.0).then_some(points)))
 }
 
 /// `text` without `removed`, and where each later position lands: each range's end and the
@@ -253,9 +254,8 @@ impl BlockEditor {
             return false;
         }
         let mine = |mark: &Mark| only.is_none_or(|id| mark.change() == Some(id));
-        let dropped = |mark: &Mark| {
-            mine(mark) && matches!(mark, Mark::Insertion(_) | Mark::Deletion(_))
-        };
+        let dropped =
+            |mark: &Mark| mine(mark) && matches!(mark, Mark::Insertion(_) | Mark::Deletion(_));
         let removed = |mark: &Mark| {
             mine(mark)
                 && if accept {
@@ -349,8 +349,8 @@ impl BlockEditor {
                 ParagraphChange::SpaceBefore(_)
                 | ParagraphChange::SpaceAfter(_)
                 | ParagraphChange::Indent(_)
-                | ParagraphChange::FirstLineIndent(_) => relayout = true,
-                ParagraphChange::Style(_) => relayout = true,
+                | ParagraphChange::FirstLineIndent(_)
+                | ParagraphChange::Style(_) => relayout = true,
             }
         }
         if changed {
@@ -562,15 +562,14 @@ impl BlockEditor {
                 .is_some_and(|rgb| self.set_look_mark(Mark::Highlight(rgb))),
             "align" => crate::rich_doc::align_of(argument)
                 .is_some_and(|align| self.set_paragraph(ParagraphChange::Align(align))),
-            "before" => points(argument)
-                .is_some_and(|points| self.set_paragraph(ParagraphChange::SpaceBefore(points))),
-            "after" => points(argument)
-                .is_some_and(|points| self.set_paragraph(ParagraphChange::SpaceAfter(points))),
-            "indent" => points(argument)
-                .is_some_and(|points| self.set_paragraph(ParagraphChange::Indent(points))),
-            "hanging" => points(argument).is_some_and(|points| {
-                self.set_paragraph(ParagraphChange::FirstLineIndent(points))
-            }),
+            "before" => points(argument, ParagraphChange::SpaceBefore)
+                .is_some_and(|change| self.set_paragraph(change)),
+            "after" => points(argument, ParagraphChange::SpaceAfter)
+                .is_some_and(|change| self.set_paragraph(change)),
+            "indent" => points(argument, ParagraphChange::Indent)
+                .is_some_and(|change| self.set_paragraph(change)),
+            "hanging" => points(argument, ParagraphChange::FirstLineIndent)
+                .is_some_and(|change| self.set_paragraph(change)),
             // A named style is its name, and for the styles every document has it is also what
             // the paragraph is: a heading style makes a heading, as the paragraph panel does.
             "style" => {
@@ -709,7 +708,11 @@ mod tests {
         assert!(editor.format_asked(Some("font:serif:3".into())));
         assert!(editor.format_asked(Some("highlight:#fff8c5:4".into())));
         assert!(editor.format_asked(Some("super:5".into())));
-        assert!(editor.active_marks().contains(&Mark::Color([0x09, 0x69, 0xda])));
+        assert!(
+            editor
+                .active_marks()
+                .contains(&Mark::Color([0x09, 0x69, 0xda]))
+        );
         assert!(editor.active_marks().contains(&Mark::Size(14)));
         assert!(
             editor
