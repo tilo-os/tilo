@@ -89,20 +89,17 @@ pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 /// archive, its signed manifest, root and chunk list, and the registry's catalogue, each carrying
 /// the number in its `format` or `protocol` field.
 /// `crates/core/tilo-app-package/interface.toml` holds the schema.
-pub const PACKAGE_FORMAT_VERSION: u32 = 3;
+pub const PACKAGE_FORMAT_VERSION: u32 = 4;
 
 /// Every catalogue protocol this build verifies, oldest first, the newest being
-/// [`PACKAGE_FORMAT_VERSION`]. A reader keeps every format it understands, so raising
-/// [`PACKAGE_FORMAT_VERSION`] leaves older catalogues readable until one that changes their shape
-/// ships and the list drops what nothing decodes.
+/// [`PACKAGE_FORMAT_VERSION`]. A reader keeps every format it can decode and verify; a format
+/// that changes the catalogue's signed form leaves the earlier ones unreadable, and they go.
 ///
-/// Format 2 renumbered the protocols into one number and widened it in the canonical signing form,
-/// so a catalogue written before it fails every signature here. Format 3 drops the retired
-/// `[sandbox.fs]` manifest block, which changes a package's manifest and not the catalogue or its
-/// signing form: a registry that has not published since still serves format 2, and this reads it.
-/// Format 2 stays exactly until apps.tilo.so publishes format 3, and goes with that republish: it is
-/// what the live registry serves today, not older state to keep supporting.
-pub const READABLE_CATALOGUE_FORMATS: [u32; 2] = [2, PACKAGE_FORMAT_VERSION];
+/// Format 4 adds each version's `tapp_surface_hex` to the signed form. The form is positional,
+/// so a catalogue written before it neither decodes nor verifies here, and one written by this
+/// build does not by an earlier one: a reader refuses the other format in words
+/// ([`unreadable_catalogue_format`]), and a registry publishes its catalogue again at format 4.
+pub const READABLE_CATALOGUE_FORMATS: [u32; 1] = [PACKAGE_FORMAT_VERSION];
 
 /// What a catalogue at a protocol this build does not read means, and what to do.
 #[must_use]

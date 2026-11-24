@@ -144,7 +144,10 @@ because it boots the staged deployment that holds them.
   for the archive and `registry_types::READABLE_CATALOGUE_FORMATS` for the
   registry's catalogue. A format that changes a layout adds its reader there
   before anything ships at it, so a newer format never stops a reader from
-  reading the ones it already knew. There is no negotiation and no code for a
+  reading the ones it already knew. The catalogue's signed form is positional,
+  so a format that adds to it (format 4 added each version's surface) cannot
+  be read beside the one before: that format is dropped, and a registry
+  publishes its catalogue again. There is no negotiation and no code for a
   number no reader has: a side at a newer format than the reader says so and
   stops, naming the update that reads it ("update Tilo to read this
   catalogue"); a reader that no longer understands an older format says the
@@ -158,7 +161,7 @@ because it boots the staged deployment that holds them.
   rewritten at a new format without becoming another image. A format that
   changes the archive, signed root or chunk list layout adds its reader there
   before anything ships at it; until then it is a catalogue change and one
-  reader reads both, as format 2 was.
+  package reader reads both, as formats 2 and 4 were.
 - The Rust runtime a native app links has no stable ABI, so a build names the
   exact runtime build it links (`package.runtime`), and the store fetches that
   runtime with the app.

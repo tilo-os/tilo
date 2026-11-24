@@ -826,24 +826,26 @@ mod tests {
     }
 
     #[test]
-    fn a_catalogue_a_registry_published_before_the_format_bump_still_reads() {
-        // The format 3 bump dropped the retired `[sandbox.fs]` manifest block; the
-        // catalogue and its signing form are the same, so a registry that has not
-        // published since still serves format 2, and a device must read it.
+    fn a_catalogue_published_before_the_format_bump_is_refused_in_words() {
+        // Format 4 put each version's surface into the signed form, so a catalogue a registry
+        // signed at format 3 is not read: the device says the registry has to publish again.
         let (mut snapshot, owner) = fixture();
-        snapshot.protocol = 2;
+        snapshot.protocol = 3;
         snapshot.owner_signature_hex = hex::encode(
             owner
                 .sign(&snapshot_signing_message(&snapshot).unwrap())
                 .to_bytes(),
         );
-        assert_eq!(
-            verify_snapshot(
-                &snapshot,
-                &hex::encode(owner.verifying_key().to_bytes()),
-                15
-            ),
-            Ok(())
+        let refused = verify_snapshot(
+            &snapshot,
+            &hex::encode(owner.verifying_key().to_bytes()),
+            15,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refused.contains("package format 3") && refused.contains("publish its catalogue at format 4"),
+            "{refused}"
         );
     }
 }

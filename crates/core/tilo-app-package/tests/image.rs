@@ -139,7 +139,7 @@ tilo_test_env::scenario! {
         userland(src.path());
         let identity = SigningIdentity::generate();
         let packed = seal_image(src.path(), &spec(Kind::EnvRuntime, None), &identity).unwrap();
-        assert_eq!(tapp::READABLE_FORMATS, [1, 2, tapp::TAPP_FORMAT_VERSION]);
+        assert_eq!(tapp::READABLE_FORMATS, [1, 2, 3, tapp::TAPP_FORMAT_VERSION]);
         for format in tapp::READABLE_FORMATS {
             let meta = at_format(&packed, format, &identity);
             let bytes = tapp::to_bytes(&meta, Some(&packed)).unwrap();

@@ -846,6 +846,7 @@ mod tests {
                     tapp_size_bytes: 12_345_678,
                     tapp_blake3_hex: "ef".repeat(32),
                     target: tilo_target(),
+                    tapp_surface_hex: "12".repeat(32),
                 }),
             }],
             updated_at_unix: 1_800_000_100,
