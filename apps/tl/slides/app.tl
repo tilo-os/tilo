@@ -1922,7 +1922,7 @@ view present_view(
                     if let p = previous_slide(d, current) { p.id() } else { current },
                 )
             }
-            ui.Button("Next", icon: .chevron_right, key: "Right") {
+            ui.Button("Next", icon: .chevron_right, key: "Right", keys: ["Space"]) {
                 on press: set(
                     current,
                     if let n = next_slide(d, current) { n.id() } else { current },
