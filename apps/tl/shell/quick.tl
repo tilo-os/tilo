@@ -22,7 +22,7 @@ view quick_settings() {
 view quick_settings_panel(fill_height: Bool) {
     ui.FloatingPanel(
         width: if not space.compact { 360.0 },
-        fill: if space.compact { 1.0 } else { 0.0 },
+        fill: space.compact,
         fill_height: fill_height,
     ) {
         header: {
@@ -147,9 +147,7 @@ view vpn_tile() {
 action toggle_vpn(v: device.Vpn) {
     if let connected = v.profiles.find(p -> p.connected) {
         connected.disconnect()
-    } else if let first = v.profiles.first() {
-        first.connect()
-    }
+    } else if let first = v.profiles.first() { first.connect() }
 }
 
 /// Dark mode: on while every app draws dark, each with the theme the person chose for it.
@@ -229,11 +227,7 @@ view clipboard_section() {
     if not clip.copies.is_empty() {
         ui.Section("Clipboard") {
             for copy in clip.copies {
-                ui.ListRow(
-                    copy_label(copy),
-                    secondary: copy_from(copy),
-                    icon: .clipboard,
-                ) {
+                ui.ListRow(copy_label(copy), secondary: copy_from(copy), icon: .clipboard) {
                     on activate: device.paste(device.clipboard, copy: copy.key)
                     trailing: {
                         row(gap: .related, align: .center) {
@@ -280,9 +274,7 @@ fn copy_label(copy: device.ClipboardCopy) -> Text {
     if let text = copy.text {
         return text
     }
-    if copy.mime == "image/png"
-        or copy.mime == "image/jpeg"
-        or copy.mime == "image/webp" {
+    if copy.mime == "image/png" or copy.mime == "image/jpeg" or copy.mime == "image/webp" {
         return "A picture"
     }
     return "A copy"
@@ -574,9 +566,7 @@ view bluetooth_section() {
                 ) {
                     on activate: if accessory.connected {
                         accessory.disconnect()
-                    } else {
-                        accessory.connect()
-                    }
+                    } else { accessory.connect() }
                     trailing: {
                         row(gap: .related, align: .center) {
                             if accessory.connected {
@@ -896,11 +886,7 @@ fn sound_chosen(chosen: Option<Int>) -> Bool {
 fn device_line(d: device.PersonalDeviceView, chosen: Option<Int>) -> Text {
     return if sound_chosen(chosen) and d.online and d.audio_output {
         "Takes the sound you send"
-    } else if d.online {
-        "Here now"
-    } else {
-        "Away"
-    }
+    } else if d.online { "Here now" } else { "Away" }
 }
 
 /// Where a device of the person's stands in the Nearby Send list.

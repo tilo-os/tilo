@@ -63,7 +63,9 @@ view phone() {
                         ui.EmptyState("No apps yet", icon: .app_window, inline: true)
                     }
                     for a in device.apps.installed.sort_by(a -> a.name) {
-                        app_row(a)
+                        ui.ListRow(a.name, secondary: a.key, icon: a.icon) {
+                            on activate: session.open_app(app: a.key)
+                        }
                     }
                 }
             }

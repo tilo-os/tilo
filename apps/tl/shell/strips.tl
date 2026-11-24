@@ -524,7 +524,7 @@ view window_controls(s: LayoutStrip, shown: Option<LayoutPlace>, listed: Bool) {
                 } else if w.bar_field == "find" or w.bar_field == "replace" {
                     bar_search(w)
                 } else {
-                    window_menu(w, shown, listed)
+                    this_window_menu(w, shown, listed)
                     window_bar_actions(w)
                 }
             }
@@ -555,11 +555,7 @@ fn shown_window(p: LayoutPlace) -> Option<device.Window> {
 /// The chip that says who opened a window: their name (the workspace's, where its people say
 /// it), the glyph that says a person from an agent, and the live dot while they are here.
 view author_chip(a: device.Author) {
-    ui.Chip(
-        author_name(a),
-        icon: if a.kind == "agent" { .bot } else { .user },
-        tone: .neutral,
-    )
+    ui.Chip(author_name(a), icon: if a.kind == "agent" { .bot } else { .user }, tone: .neutral)
     if author_here(a) {
         ui.Badge(dot: true, tone: .success)
     }
@@ -599,7 +595,13 @@ view bar_parts(w: device.Window, bar: device.Bar) {
         }
     }
     if bar.sidebar {
-        ui.Button("Sidebar", icon: .panel_left, icon_only: true, role: .plain, toggled: bar.sidebar_on) {
+        ui.Button(
+            "Sidebar",
+            icon: .panel_left,
+            icon_only: true,
+            role: .plain,
+            toggled: bar.sidebar_on,
+        ) {
             on press: session.bar_sidebar(tab: w.key)
         }
     }
@@ -607,13 +609,24 @@ view bar_parts(w: device.Window, bar: device.Bar) {
         bar_button(w, a)
     }
     if bar.actions.any(a -> a.menu or not a.items.is_empty()) {
-        ui.MenuButton("More actions of this window", icon: .more_horizontal, icon_only: true, role: .plain) {
+        ui.MenuButton(
+            "More actions of this window",
+            icon: .more_horizontal,
+            icon_only: true,
+            role: .plain,
+        ) {
             for a in bar.actions.filter(a -> a.menu and a.items.is_empty()) {
                 bar_item(w, a)
             }
             for a in bar.actions.filter(a -> not a.items.is_empty()) {
                 for b in a.items {
-                    ui.MenuItem(b.name, icon: b.icon, checked: b.on, disabled: not b.enabled, group: a.name) {
+                    ui.MenuItem(
+                        b.name,
+                        icon: b.icon,
+                        checked: b.on,
+                        disabled: not b.enabled,
+                        group: a.name,
+                    ) {
                         on choose: session.bar_action(tab: w.key, id: b.id)
                     }
                 }
@@ -636,11 +649,7 @@ view bar_parts(w: device.Window, bar: device.Bar) {
                 .success
             } else if n.tone == "warning" {
                 .warning
-            } else if n.tone == "error" {
-                .danger
-            } else {
-                .info
-            },
+            } else if n.tone == "error" { .danger } else { .info },
         )
         for a in n.actions {
             ui.Button(a.name, icon: a.icon, role: .plain, size: .small) {
@@ -706,14 +715,16 @@ view bar_location(w: device.Window) {
 view bar_search(w: device.Window) {
     state query: Text = ""
     row(gap: .tight, align: .center) {
-        ui.TextInput(bind: query, autofocus: true, placeholder: if w.bar_field == "replace" {
-            "Search this window and replace"
-        } else {
-            "Search this window"
-        }) {
+        ui.TextInput(
+            bind: query,
+            autofocus: true,
+            placeholder: if w.bar_field == "replace" {
+                "Search this window and replace"
+            } else { "Search this window" },
+        ) {
             // Every word reaches the window's app as it is typed, so what it shows narrows with
             // the search; Enter asks for it again with the query it holds.
-            on change: session.bar_search(tab: w.key, query: query)
+            on changed: session.bar_search(tab: w.key, query: query)
             on submit: session.bar_search(tab: w.key, query: query)
         }
         ui.Button("Previous match", icon: .arrow_up, icon_only: true, role: .plain) {
@@ -956,7 +967,7 @@ fn strip_row(a: Layout, strip: Text) -> Text {
 /// what it covers and fills, the share of its strip it takes, where it goes, what it shows
 /// (another tab, its name, a split, its pin), stopping its app's control of the desktop, and
 /// closing it.
-view window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
+view this_window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
     ui.MenuButton(
         "This window",
         icon: .more_horizontal,

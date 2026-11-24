@@ -2046,12 +2046,7 @@ action a_query_place(a: Layout, strip: Text, text: Text) -> Text {
 fn installed_apps() -> List<device.App> {
     return [
         device.App(key: "so.tilo.notes", name: "Notes", icon: "file-text", category: "work"),
-        device.App(
-            key: "so.tilo.chat",
-            name: "Chat",
-            icon: "message-square",
-            category: "work",
-        ),
+        device.App(key: "so.tilo.chat", name: "Chat", icon: "message-square", category: "work"),
         device.App(key: "so.tilo.tasks", name: "Tasks", icon: "list-checks", category: "work"),
         device.App(key: "so.tilo.settings", name: "Settings", icon: "settings", category: "system"),
     ]
@@ -2958,10 +2953,7 @@ scenario "the power menu in a window" {
     d.person = "Ada Lovelace"
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(device.overlays, device.Overlays(here: "power"))
-    stage(
-        device.power_menu,
-        device.PowerMenu(open: true, offers: ["lock", "log-out", "shut-down"]),
-    )
+    stage(device.power_menu, device.PowerMenu(open: true, offers: ["lock", "log-out", "shut-down"]))
 }
 
 /// Holding Super: the keys it reaches, said over the person's work and in the way of nothing.
@@ -3283,24 +3275,45 @@ scenario "a press that needs a yes" {
         ),
     )
     stage(device.overlays, device.Overlays(here: "none"))
-    stage([
-        waiting_record(
-            "studio",
-            "invocations/share-1",
-            "Share",
-            invocations.Asker(app: .some(invocations.AskingApp(app: "so.tilo.notes", title: "Notes", author: .some(invocations.Named(id: "tilo", name: "Tilo"))))),
-            2,
-            "",
-            .some("Release planning"),
-            [invocations.Fact(label: "With", value: "Mia Clayton"), invocations.Fact(label: "Access", value: "Can edit")],
-            [],
-            false,
-            "share",
-            .some("notes"),
-            .some(invocations.Pressed(device: "laptop", app: "so.tilo.notes", instance: "p1", resource: "")),
-            .none,
-        ),
-    ])
+    stage(
+        [
+            waiting_record(
+                "studio",
+                "invocations/share-1",
+                "Share",
+                invocations.Asker(
+                    app: .some(
+                        invocations.AskingApp(
+                            app: "so.tilo.notes",
+                            title: "Notes",
+                            author: .some(invocations.Named(id: "tilo", name: "Tilo")),
+                        ),
+                    ),
+                ),
+                2,
+                "",
+                .some("Release planning"),
+                [
+                    invocations.Fact(label: "With", value: "Mia Clayton"),
+                    invocations.Fact(label: "Access", value: "Can edit"),
+                ],
+                [],
+                false,
+                "share",
+                .some("notes"),
+                .some(
+                    invocations.Pressed(
+                        device: "laptop",
+                        app: "so.tilo.notes",
+                        instance: "p1",
+                        resource: "",
+                    ),
+                ),
+                .none,
+                invoker,
+            ),
+        ],
+    )
 }
 
 /// What waits for the person in the notification centre: an agent's question with choices, a
@@ -3311,64 +3324,85 @@ scenario "questions waiting" {
     d.person = "Ada Lovelace"
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(device.overlays, device.Overlays(here: "centre"))
-    stage([
-        waiting_record(
-            "studio",
-            "invocations/ask-1",
-            "Answer",
-            invocations.Asker(agent: .some(invocations.Named(id: "scout", name: "Scout"))),
-            3,
-            "Which calendar should the launch review go on?",
-            .none,
-            [],
-            ["Team", "Launch reviews and retrospectives"],
-            false,
-            "",
-            .none,
-            .none,
-            .some("studio/chat/launch"),
-        ),
-        waiting_record(
-            "home",
-            "invocations/forget-1",
-            "Forget this device",
-            invocations.Asker(device: .some(invocations.Named(id: "phone", name: "Ada's phone"))),
-            2,
-            "",
-            .some("Ada's old ThinkPad X1 Carbon (6th generation)"),
-            [],
-            [],
-            true,
-            "",
-            .none,
-            .none,
-            .none,
-        ),
-        waiting_record(
-            "studio",
-            "invocations/alarm-1",
-            "Set alarm",
-            invocations.Asker(app: .some(invocations.AskingApp(app: "so.tilo.clocks", title: "Clocks", author: .some(invocations.Named(id: "mia", name: "Mia Clayton"))))),
-            1,
-            "",
-            .some("Stand-up"),
-            [invocations.Fact(label: "At", value: "09:30 every weekday")],
-            [],
-            false,
-            "set",
-            .some("alarms"),
-            .some(invocations.Pressed(device: "desktop", app: "so.tilo.clocks", instance: "w9", resource: "")),
-            .none,
-        ),
-    ])
+    stage(
+        [
+            waiting_record(
+                "studio",
+                "invocations/ask-1",
+                "Answer",
+                invocations.Asker(agent: .some(invocations.Named(id: "scout", name: "Scout"))),
+                3,
+                "Which calendar should the launch review go on?",
+                .none,
+                [],
+                ["Team", "Launch reviews and retrospectives"],
+                false,
+                "",
+                .none,
+                .none,
+                .some("studio/chat/launch"),
+                invoker,
+            ),
+            waiting_record(
+                "home",
+                "invocations/forget-1",
+                "Forget this device",
+                invocations.Asker(
+                    device: .some(invocations.Named(id: "phone", name: "Ada's phone")),
+                ),
+                2,
+                "",
+                .some("Ada's old ThinkPad X1 Carbon (6th generation)"),
+                [],
+                [],
+                true,
+                "",
+                .none,
+                .none,
+                .none,
+                invoker,
+            ),
+            waiting_record(
+                "studio",
+                "invocations/alarm-1",
+                "Set alarm",
+                invocations.Asker(
+                    app: .some(
+                        invocations.AskingApp(
+                            app: "so.tilo.clocks",
+                            title: "Clocks",
+                            author: .some(invocations.Named(id: "mia", name: "Mia Clayton")),
+                        ),
+                    ),
+                ),
+                1,
+                "",
+                .some("Stand-up"),
+                [invocations.Fact(label: "At", value: "09:30 every weekday")],
+                [],
+                false,
+                "set",
+                .some("alarms"),
+                .some(
+                    invocations.Pressed(
+                        device: "desktop",
+                        app: "so.tilo.clocks",
+                        instance: "w9",
+                        resource: "",
+                    ),
+                ),
+                .none,
+                invoker,
+            ),
+        ],
+    )
 }
 
-
-/// A call that waits for the person looking, as the workspace's invocations list it: its asked
-/// record `record` of `workspace`, the action `name`, who asks, since when, and what the card
-/// shows of it. Always is offered where it names what it lets the asker do.
+/// A call that waits for the person `waiting_for`, as the workspace's invocations list it: its
+/// asked record `record` of `asked_in`, the action `name`, who asks, since when, and what the
+/// card shows of it. Always is offered where it names what it lets the asker do.
 fn waiting_record(
-    workspace: Text,
+    asked_in: Text,
     record: Text,
     name: Text,
     by: invocations.Asker,
@@ -3382,8 +3416,9 @@ fn waiting_record(
     plural: Option<Text>,
     pressed: Option<invocations.Pressed>,
     conversation: Option<Text>,
+    waiting_for: Actor,
 ) -> invocations.Invocation {
-    let names = workspace == "home"
+    let names = asked_in == "home"
     return invocations.Invocation(
         id: .some(record),
         by: invocations.By(name: "Ada Lovelace", kind: "person"),
@@ -3394,18 +3429,22 @@ fn waiting_record(
         undoable: false,
         recorded: true,
         remembered: true,
-        person: .some(workspace.me),
+        person: .some(waiting_for),
         asked: .some(
             invocations.Asked(
-                record: invocations.AskedRecord(workspace: workspace, record: record),
-                workspace: workspace,
-                workspace_name: if names { "The Clayton–Lovelace household and everything we keep together" } else { "Studio" },
+                record: invocations.AskedRecord(workspace: asked_in, record: record),
+                workspace: asked_in,
+                workspace_name: if names {
+                    "The Clayton–Lovelace household and everything we keep together"
+                } else { "Studio" },
                 app: "",
                 action: "",
                 name: name,
                 asked_at_ms: asked_at_ms,
                 pressed: pressed,
-                offers: if verb != "" and plural.is_some() and not destructive { [.approve, .approve_and_grant, .decline] } else { [.approve, .decline] },
+                offers: if verb != "" and plural != .none and not destructive {
+                    [.approve, .approve_and_grant, .decline]
+                } else { [.approve, .decline] },
                 by: by,
                 words: words,
                 on: on,

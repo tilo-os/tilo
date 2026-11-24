@@ -14,10 +14,7 @@ view history() {
     let kind = device.overlays.history_kind
     let shown = recents_in(package, kind)
     row(fill, distribute: .center, padding: .related) {
-        ui.FloatingPanel(
-            width: if not space.compact { 480.0 },
-            fill: if space.compact { 1.0 } else { 0.0 },
-        ) {
+        ui.FloatingPanel(width: if not space.compact { 480.0 }, fill: space.compact) {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
                     ui.Text(history_title(package, kind, shown), role: .heading)
@@ -92,11 +89,20 @@ fn apps_of(shown: List<LayoutRecent>) -> List<Text> {
 /// One recent resource: what it is, who opened it last and when. Its app is the section it
 /// stands under, or the surface's title when it shows one app's.
 view recent_row(r: LayoutRecent) {
-    ui.ListRow(r.title, secondary: opened_by(r), item: r, icon: .history) {
-        trailing: {
-            ui.Time(r.at, role: .caption, past: true, secondary: true)
+    if let found = resource(r.resource) {
+        ui.ListRow(r.title, secondary: opened_by(r), item: r, icon: .history) {
+            trailing: {
+                ui.Time(r.at, role: .caption, past: true, secondary: true)
+            }
+            on activate: open(found).then(put_history_away())
         }
-        on activate: open_recent(r.resource)
+    } else {
+        // What was opened is gone: it stays in the history, with nothing to open.
+        ui.ListRow(r.title, secondary: opened_by(r), item: r, icon: .history) {
+            trailing: {
+                ui.Time(r.at, role: .caption, past: true, secondary: true)
+            }
+        }
     }
 }
 
@@ -105,9 +111,8 @@ fn opened_by(r: LayoutRecent) -> Text {
     if r.mine { "Opened by you" } else { "Opened by {r.by}" }
 }
 
-/// Opens the recent resource `address` again, beside the window in front, and puts the surface
-/// away: the same `open` an agent and a reference's press run.
-action open_recent(address: Text) (label: "Open") {
-    if let found = resource(address) { session.open(resource: found) }
+/// Puts the surface away once a recent resource is opened again beside the window in front, by
+/// the same `open` an agent and a reference's press run.
+action put_history_away() (label: "Close History") {
     device.show_surface(device.overlays, surface: "none")
 }

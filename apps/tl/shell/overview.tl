@@ -150,7 +150,7 @@ view window_place(w: device.Window, weight: Float, peek: Bool) {
                 row(gap: .tight, align: .center) {
                     ui.Text(app_line(w), role: .caption, secondary: true, lines: 1, truncate)
                     spacer
-                    window_menu(w, .none, false)
+                    this_window_menu(w, .none, false)
                 }
             }
         }
@@ -194,7 +194,7 @@ view window_line(w: device.Window) {
         icon: if w.preview == "withheld" { .eye_off } else { .app_window },
     ) {
         trailing: {
-            window_menu(w, .none, false)
+            this_window_menu(w, .none, false)
         }
         on activate: session.focus(window(w))
     }

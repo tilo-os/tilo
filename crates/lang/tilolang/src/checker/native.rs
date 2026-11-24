@@ -751,10 +751,15 @@ impl Checker<'_> {
                         self.value_field(b, &key, name)
                     }
                     // A resource's own `icon` field names the glyph it shows, as a host value's
-                    // does.
+                    // does; an optional one shows none while it is unset.
                     Ty::Record(_) => {
                         let icon = self.field_read(b, name);
-                        (icon.ty == Ty::Text).then_some(icon)
+                        let named = match &icon.ty {
+                            Ty::Text => true,
+                            Ty::Option(inner) => **inner == Ty::Text,
+                            _ => false,
+                        };
+                        named.then_some(icon)
                     }
                     Ty::Error => Some(Ex::error()),
                     _ => None,

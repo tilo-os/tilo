@@ -351,7 +351,7 @@ view workspace_menu() {
                 if w.home != "" {
                     // Where the shell is a page, each workspace is a page of its own: the menu
                     // leads to it as the workspaces' own cards do (`workspaces.tl`).
-                    ui.Link(w.home, label: w.name)
+                    ui.MenuItem(w.name, checked: w.current, link: w.home)
                 } else {
                     ui.MenuItem(w.name, checked: w.current) {
                         on choose: session.switch_workspace(workspace: w.key)
@@ -514,7 +514,7 @@ action rename_strip(key: Text, name: Text) {
 view person_menu() {
     let v = viewing
     let me = if layout.person != "" { layout.person } else { "You" }
-    let face = if layout.person != "" { workspace.me } else { person("You") }
+    let face = workspace.me
     ui.MenuButton("{me}: style and workspaces", faces: [face], role: .bar) {
         for style in styles.installed.offered {
             if style_listed(style) {

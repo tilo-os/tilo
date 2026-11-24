@@ -12,7 +12,7 @@ use tilo.invocations as invocations
 /// notification centre. An answer is the record's own `resolve`, as any caller would call it, so
 /// it is admitted, attributed and kept in history like every other action; a question answered
 /// on another device, or by someone else, leaves this view as its record stops waiting.
-
+///
 /// The folder a question that asks for files shows, as this device reads it: the shell's own
 /// look at the disk while the person chooses, never what they chose.
 type Picking {
@@ -24,10 +24,31 @@ type Picking {
 
 root picking: Picking
 
+default view picking_folder for picking
+
+/// The folder a question that asks for files shows, as opening the picking state shows it: what
+/// it holds, folders first. Answering happens in the question's own card (`files_asked`).
+view picking_folder(p: Picking) {
+    if p.folder == "" {
+        ui.EmptyState(
+            "No folder open",
+            message: "A question that asks for files opens one here",
+            icon: .folder,
+            inline: true,
+        )
+    } else {
+        ui.Section(p.folder) {
+            for e in p.entries.sort_by(e -> if e.folder { 0 } else { 1 }) {
+                ui.ListRow(e.name, icon: if e.folder { .folder } else { .file })
+            }
+        }
+    }
+}
+
 /// Every call that waits for the person looking, newest first.
 fn waiting() -> List<invocations.Invocation> {
     return query(invocations.Invocation, status: .waiting, person: me)
-        .filter(q -> q.asked.is_some())
+        .filter(q -> q.asked != .none)
         .sort_by(q -> 0 - asked_at(q))
 }
 
@@ -68,7 +89,7 @@ fn this_device() -> Text {
 /// Whether `q` is answered here: a question whose call runs on another device (what it asks
 /// for there is typed or chosen there) is answered on that device, or declined anywhere.
 fn answered_here(q: invocations.Invocation) -> Bool {
-    if let at = q.asked?.record.device {
+    if let at = q.asked?.record?.device {
         let here = this_device()
         return here == "" or at == here
     }
@@ -80,7 +101,7 @@ fn key_of(q: invocations.Invocation) -> Text {
     if let a = q.asked {
         return "{a.record.workspace}/{a.record.record}"
     }
-    return q.id ?? ""
+    return q.id
 }
 
 /// The questions a press in the window `w` made, over its lower edge where the person pressed.
@@ -157,8 +178,16 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
     state picked: List<Int> = []
     // A phrase to type, or a field the program needs filled: the answer waits until it
     // holds something.
-    let unfilled = a.takes.any(t -> not t.secret and not t.chord and (t.initial ?? "") == "" and (typed.at(a.takes.index_of(t) ?? 0) ?? "") == "")
-    let can_always = a.offers.contains(.approve_and_grant) and a.verb != "" and a.plural.is_some() and not a.destructive
+    let unfilled = a.takes.any(
+        t -> not t.secret
+            and not t.chord
+            and (t.initial ?? "") == ""
+            and (typed.at(a.takes.index_of(t) ?? 0) ?? "") == "",
+    )
+    let can_always = a.offers.contains(.approve_and_grant)
+        and a.verb != ""
+        and a.plural != .none
+        and not a.destructive
     ui.Card {
         stack(gap: .related) {
             asker(a)
@@ -202,9 +231,7 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
                                 picked,
                                 if picked.contains(i) {
                                     picked.filter(p -> p != i)
-                                } else {
-                                    [picked, [i]].flat_map(p -> p)
-                                },
+                                } else { [picked, [i]].flat_map(p -> p) },
                             )
                         }
                     }
@@ -213,11 +240,16 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
                     files_asked(key, files, typed)
                 }
             }
-            if a.files.is_none() or not here {
+            if a.files == .none or not here {
                 row(gap: .related, align: .center, wrap: true) {
                     if here and not a.choices.is_empty() and not a.many {
                         for c in a.choices {
-                            ui.Button(c, size: .small, enabled: not unfilled) {
+                            ui.Button(
+                                c,
+                                size: .small,
+                                enabled: not unfilled,
+                                description: "Fill in what it asks for first",
+                            ) {
                                 on press: host.resolve(
                                     resource(key, of: host.Invocation),
                                     resolution: "approve",
@@ -232,8 +264,15 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
                         }
                     } else {
                         if here and can_always {
-                            ui.Button("Always let {asker_name(a)} {a.verb} {a.plural ?? ""}", size: .small, role: .plain) {
-                                on press: host.resolve(resource(key, of: host.Invocation), resolution: "approve_and_grant")
+                            ui.Button(
+                                "Always let {asker_name(a)} {a.verb} {a.plural ?? ""}",
+                                size: .small,
+                                role: .plain,
+                            ) {
+                                on press: host.resolve(
+                                    resource(key, of: host.Invocation),
+                                    resolution: "approve_and_grant",
+                                )
                             }
                         }
                         spacer
@@ -245,6 +284,7 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
                                 a.name,
                                 size: .small,
                                 enabled: not unfilled,
+                                description: "Fill in what it asks for first",
                                 role: if a.destructive { .destructive } else { .primary },
                             ) {
                                 on press: host.resolve(
@@ -276,14 +316,18 @@ view files_asked(key: Text, files: invocations.FilesAsked, typed: List<Text>) {
             folder: p.folder,
             entries: p.entries,
             go: path -> open_folder(p, path),
-            pick: chosen -> host.resolve(
-                resource(key, of: host.Invocation),
-                resolution: "approve",
-                typed: .some(typed),
-                files: .some(chosen),
-            ).then(close_folder(p)),
+            pick: chosen -> host
+                .resolve(
+                    resource(key, of: host.Invocation),
+                    resolution: "approve",
+                    typed: .some(typed),
+                    files: .some(chosen),
+                )
+                .then(close_folder(p)),
             cancel: decline(key).then(close_folder(p)),
-            mode: if files.mode == .save { "save" } else if files.mode == .folder { "folder" } else { "open" },
+            mode: if files.mode == .save {
+                "save"
+            } else if files.mode == .folder { "folder" } else { "open" },
             multiple: files.many,
             types: files.types.map(t -> t.patterns),
             name: files.name ?? "",
@@ -313,7 +357,13 @@ fn asker_name(a: invocations.Asked) -> Text {
 /// with who wrote it beneath, and the workspace the call acts in.
 view asker(a: invocations.Asked) {
     row(gap: .related, align: .center) {
-        ui.Icon(if a.by.agent.is_some() { .bot } else if a.by.device.is_some() { .monitor } else if a.by.program.is_some() { .terminal } else { .app_window })
+        ui.Icon(
+            if a.by.agent != .none {
+                .bot
+            } else if a.by.device != .none {
+                .monitor
+            } else if a.by.program != .none { .terminal } else { .app_window },
+        )
         stack(gap: .tight) {
             ui.Text(asker_name(a), role: .caption)
             if let author = a.by.app?.author {

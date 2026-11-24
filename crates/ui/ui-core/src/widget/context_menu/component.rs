@@ -39,6 +39,9 @@ pub struct MenuItemProps {
     /// Its label and the rest say nothing while it is set.
     #[component(data)]
     pub separator: bool,
+    /// The address it leads to, when it is a way to a page rather than a command: choosing it
+    /// opens the address as a `ui.Link` does.
+    pub link: Option<String>,
     /// It was chosen.
     #[component(event(press))]
     pub choose: Event,
@@ -52,7 +55,7 @@ impl MenuItemProps {
         if self.separator {
             return MenuItem::separator();
         }
-        let press = Press::of(std::mem::take(&mut self.choose));
+        let press = Press::of(std::mem::take(&mut self.choose)).leading_to(self.link.take());
         let props = self;
         let item = MenuItem::bound(props.label, press).with_destructive(props.destructive);
         let item = match props.icon {
@@ -86,7 +89,7 @@ impl MenuItemProps {
         if self.separator {
             return MenuEntry::separator();
         }
-        let press = Press::of(std::mem::take(&mut self.choose));
+        let press = Press::of(std::mem::take(&mut self.choose)).leading_to(self.link.take());
         let props = self;
         let entry = MenuEntry::bound(props.label, press).with_destructive(props.destructive);
         let entry = match props.icon {
@@ -123,6 +126,7 @@ impl From<OfferedAction> for MenuItemProps {
             reason: None,
             group: None,
             key: action.key,
+            link: None,
             choose: action.run,
             separator: false,
         }
@@ -289,6 +293,44 @@ impl Described for MenuButton {
 mod tests {
     use super::*;
     use crate::component::PartType;
+
+    /// A row that is a way to a page leads there when chosen, as a link does; a row bound to a
+    /// command keeps its command whatever address it also names.
+    #[test]
+    fn a_menu_row_leads_to_the_address_it_links_to() {
+        let way = MenuItemProps {
+            label: "Studio".to_owned(),
+            link: Some("/w/studio/desktop".to_owned()),
+            ..MenuItemProps::default()
+        }
+        .into_item();
+        let press = way.press().expect("a row that links is chosen");
+        assert!(press.is_available() && press.address().is_none());
+        assert_eq!(format!("{press:?}"), "Press::Link(/w/studio/desktop)");
+
+        let queue = crate::Intents::<crate::component::Fired>::default();
+        let command = MenuItemProps {
+            label: "Studio".to_owned(),
+            link: Some("/w/studio/desktop".to_owned()),
+            choose: Event::View(crate::component::Intent::new(&queue, "row", "choose")),
+            ..MenuItemProps::default()
+        }
+        .into_item();
+        command.press().expect("a bound row is chosen").run();
+        assert_eq!(
+            queue.take().len(),
+            1,
+            "the view's own event is what choosing does"
+        );
+
+        let nothing = MenuItemProps {
+            label: "Studio".to_owned(),
+            link: Some(String::new()),
+            ..MenuItemProps::default()
+        }
+        .into_item();
+        assert!(nothing.press().is_none(), "an empty address leads nowhere");
+    }
 
     /// A menu button's rows take the rules between groups: a `ui.MenuSeparator` stands in the menu
     /// as a separator, and both it and a command are accepted where the rows go.

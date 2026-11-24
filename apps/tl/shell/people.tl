@@ -5,13 +5,6 @@
 /// Every entry is an action the session publishes (`so.tilo.session`). Nothing here reads a
 /// copy of presence: it reads the session's people and agents.
 ///
-/// The member a person here is, as the workspace lists them, so their face wears the picture
-/// they set. A sample person a scenario staged, one the workspace does not list, stands by name.
-fn here_member(p: LayoutPerson) -> Actor {
-    let found = workspace.members.filter(m -> m.name() == p.name).first()
-    if let m = found { m } else { person(p.name) }
-}
-
 /// Who else is here, as one api: the faces alone, up to three and then a face counting the
 /// rest, so the group says who is here at a glance and takes no words from the bar. The one
 /// button opens the roster, and its name names the people for assistive technology. With
@@ -35,7 +28,11 @@ view people_button() {
         } else {
             "{one.name} and {others} others are here"
         }
-        ui.Button(label, faces: people.map(p -> here_member(p)), role: .bar) {
+        ui.Button(
+            label,
+            faces: workspace.members.filter(m -> people.any(p -> p.name == m.name())),
+            role: .bar,
+        ) {
             on press: session.toggle_people()
         }
     }

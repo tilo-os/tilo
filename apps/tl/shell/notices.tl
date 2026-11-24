@@ -21,10 +21,7 @@ view notices() {
     let all = device.notifications.notices
     let shown = all.matching(query)
     row(fill, distribute: .end, padding: .related) {
-        ui.FloatingPanel(
-            width: if not space.compact { 360.0 },
-            fill: if space.compact { 1.0 } else { 0.0 },
-        ) {
+        ui.FloatingPanel(width: if not space.compact { 360.0 }, fill: space.compact) {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
                     ui.Text("Notifications", role: .heading)
@@ -179,11 +176,7 @@ view banner() {
                     }
                 }
                 if more > 0 {
-                    ui.FloatingPanel(
-                        width: if roomy { 360.0 },
-                        fill: not roomy,
-                        slide: true,
-                    ) {
+                    ui.FloatingPanel(width: if roomy { 360.0 }, fill: not roomy, slide: true) {
                         ui.Button(
                             if more == 1 {
                                 "1 more notification"

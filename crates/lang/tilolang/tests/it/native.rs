@@ -819,6 +819,16 @@ tilo_test_env::scenario! {
         assert!(err[0].message.contains(".pin"), "{}", err[0].message);
         expect("E090", "enum E {\n    a (label: .pin)\n}");
         expect("E090", "enum E {\n    a (icon: \"pin\")\n}");
+        // A record's `icon` field names the glyph a button shows, set or optional; any other
+        // field type is no icon.
+        let row = |icon: &str| {
+            format!(
+                "type R {{\n    label: Text\n    icon: {icon}\n}}\nview v(r: R) {{\n    ui.Button(r.label, icon: r.icon)\n}}"
+            )
+        };
+        ok(&row("Text"));
+        ok(&row("Option<Text>"));
+        expect("E097", &row("Int"));
     }
 
     phase a_field_is_its_name_its_type_and_its_default;

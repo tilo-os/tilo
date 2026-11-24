@@ -9045,6 +9045,13 @@
           "doc": "A rule between groups of commands, which chooses nothing: a menu's `ui.MenuSeparator`. Its label and the rest say nothing while it is set.",
           "type": "bool",
           "data": true
+        },
+        {
+          "name": "link",
+          "doc": "The address it leads to, when it is a way to a page rather than a command: choosing it opens the address as a `ui.Link` does.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [

@@ -478,6 +478,7 @@ impl Command {
             reason,
             group,
             key,
+            link,
             choose,
             separator: _,
         } = props;
@@ -490,7 +491,7 @@ impl Command {
             group,
             enabled: !disabled,
             reason,
-            press: Press::of(choose),
+            press: Press::of(choose).leading_to(link),
         }
     }
 

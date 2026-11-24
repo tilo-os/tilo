@@ -57,6 +57,7 @@ impl MenuPart {
                 reason: item.reason.clone(),
                 group: item.group.clone(),
                 key: item.key.clone(),
+                link: item.link.clone(),
                 choose: item.choose.clone(),
                 separator: item.separator,
             }),
