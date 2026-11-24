@@ -152,23 +152,26 @@ pub fn parse_otpauth_uri(uri: &str) -> Result<Setup, String> {
 
 /// A URI component's escapes read back as their bytes.
 fn percent_decode(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut at = 0usize;
-    while let Some(&one) = bytes.get(at) {
-        if one == b'%' {
-            let hex: Option<Vec<u8>> = bytes
-                .get(at + 1..at + 3)
-                .and_then(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
-                .map(|byte| vec![byte]);
-            if let Some(byte) = hex {
-                out.extend(byte);
-                at += 3;
-                continue;
+    let mut out = Vec::with_capacity(value.len());
+    let mut rest = value.as_bytes();
+    while let Some((&one, after)) = rest.split_first() {
+        let escaped = (one == b'%')
+            .then(|| after.split_first_chunk::<2>())
+            .flatten()
+            .and_then(|(pair, tail)| {
+                let byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+                Some((byte, tail))
+            });
+        match escaped {
+            Some((byte, tail)) => {
+                out.push(byte);
+                rest = tail;
+            }
+            None => {
+                out.push(one);
+                rest = after;
             }
         }
-        out.push(one);
-        at += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
 }
