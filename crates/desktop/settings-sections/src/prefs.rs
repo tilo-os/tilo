@@ -943,6 +943,41 @@ impl InputPrefs {
         Ok(())
     }
 
+    /// Type with the keyboard source `value`, adding it to the sources when it is not one of
+    /// them: the layout typed with as one value, as a device whose session is not running
+    /// chooses it.
+    #[action(id = "set-keyboard-layout")]
+    pub fn set_keyboard_layout(
+        &mut self,
+        #[param("An XKB layout or layout:variant (de, us:intl), or an input method (ime/hangul)")]
+        value: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.choose_layout(value)
+    }
+
+    /// Type with the keyboard sources `value`, in switching order: the whole source list as one
+    /// value, as a device whose session is not running chooses it. The source typed with stays
+    /// the one it was while it is one of them, or else the first is.
+    #[action(id = "set-keyboard-layouts")]
+    pub fn set_keyboard_layouts(
+        &mut self,
+        #[param(
+            "XKB layouts or layout:variants (de, us:intl) and input methods, in switching order"
+        )]
+        value: Vec<String>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let active = if value.contains(&self.keyboard_layout) {
+            self.keyboard_layout.clone()
+        } else {
+            value.first().cloned().unwrap_or_default()
+        };
+        valid_layouts(&value, &active)?;
+        self.keyboard_layouts = value;
+        self.keyboard_layout = active;
+        self.normalise_keyboard_sources();
+        Ok(())
+    }
+
     /// What the Caps Lock key does: `caps` for Caps Lock itself, or the key it stands in for,
     /// `ctrl`, `escape` or `backspace`.
     #[action(id = "set-caps-lock")]

@@ -394,6 +394,20 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-keyboard-layout"
+kind = "undoable"
+params = [
+  { name = "value", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-keyboard-layouts"
+kind = "undoable"
+params = [
+  { name = "value", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
 id = "set-caps-lock"
 kind = "undoable"
 params = [

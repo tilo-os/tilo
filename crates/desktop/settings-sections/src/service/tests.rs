@@ -254,6 +254,60 @@ fn the_keyboard_layout_is_chosen_through_its_sections_verb() {
     );
 }
 
+/// The keyboard sources are one value the section sets whole, and the source
+/// typed with is kept while it is one of them: what a device whose session is
+/// not running chooses them by.
+#[test]
+fn the_keyboard_sources_are_chosen_as_one_value() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settings = held();
+    let mut services = services();
+    let input = section("input");
+    services
+        .invoke(
+            &input,
+            "set-keyboard-layouts",
+            &arguments(json!({ "value": ["fr", "de"] })),
+        )
+        .unwrap()
+        .unwrap();
+    let chosen = services.read(&input).unwrap();
+    assert_eq!(chosen["keyboard_layouts"], json!(["fr", "de"]));
+    assert_eq!(
+        chosen["keyboard_layout"],
+        json!("fr"),
+        "the source typed with is one of the list; when it was not, the first is"
+    );
+    services
+        .invoke(
+            &input,
+            "set-keyboard-layouts",
+            &arguments(json!({ "value": ["de", "fr"] })),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        services.read(&input).unwrap()["keyboard_layout"],
+        json!("fr"),
+        "a list that still holds the source typed with keeps it"
+    );
+    services
+        .invoke(
+            &input,
+            "set-keyboard-layout",
+            &arguments(json!({ "value": "de" })),
+        )
+        .unwrap()
+        .unwrap();
+    let typed = services.read(&input).unwrap();
+    assert_eq!(typed["keyboard_layout"], json!("de"));
+    assert_eq!(
+        typed["keyboard_layouts"],
+        json!(["de", "fr"]),
+        "the chosen source stays in the list it is one of"
+    );
+}
+
 /// Set `appearance.high_contrast` on, as `service`'s person.
 fn high_contrast_on(service: &mut SettingsService) {
     service

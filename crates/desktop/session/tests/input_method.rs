@@ -44,20 +44,22 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     });
 }
 
-/// The person's sources as Settings keeps them: a layout, then Hangul.
+/// The person's sources as Settings keeps them: a layout, then Hangul. They are chosen on a
+/// device whose session is not running, as `tilo` chooses them there: kept for the session that
+/// follows, which reads them as its own.
 fn keep_sources() {
-    settings_store::update_section(
-        settings_store::hardware::INPUT_SECTION,
-        serde_json::Map::from_iter([
-            (
-                "keyboard_layout".to_owned(),
-                serde_json::Value::String("us".into()),
-            ),
-            (
-                "keyboard_layouts".to_owned(),
-                serde_json::json!(["us", "ime/hangul"]),
-            ),
-        ]),
+    let input =
+        settings_store::placement::address(settings_store::hardware::INPUT_SECTION, None, "").id;
+    settings_store::outside::set_on_this_device(
+        &input,
+        &settings_store::workspace::verb("keyboard_layout"),
+        &serde_json::json!("us"),
+    )
+    .expect("the person's chosen source is kept");
+    settings_store::outside::set_on_this_device(
+        &input,
+        &settings_store::workspace::verb("keyboard_layouts"),
+        &serde_json::json!(["us", "ime/hangul"]),
     )
     .expect("the person's sources are kept");
 }
