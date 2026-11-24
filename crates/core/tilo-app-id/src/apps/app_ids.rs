@@ -29,7 +29,6 @@ first_party_apps! {
     FIREWALL => "so.tilo.firewall",
     GIT_CLIENT => "so.tilo.git-client",
     HEX_EDITOR => "so.tilo.hex-editor",
-    LAUNCHER => "so.tilo.launcher",
     LOGS => "so.tilo.logs",
     MAIL => "so.tilo.mail",
     MAPS => "so.tilo.maps",

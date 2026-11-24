@@ -144,7 +144,6 @@ members = [
     "apps/hex-editor-model",
     "apps/hex-editor-model-wasm",
     "apps/imager",
-    "apps/launcher",
     "apps/logs",
     "apps/logs-model",
     "apps/logs-model-wasm",

@@ -83,7 +83,6 @@
   "install": {"libraries": 1627296, "tests": 244204208},
   "install-profile-model": {"libraries": 422206, "tests": 2954584},
   "launcher": {"libraries": 0, "tests": 251694792},
-  "launcher-app": {"libraries": 96890279, "tests": 756744896},
   "launcher-macos": {"libraries": 1031315, "tests": 63857784},
   "linux-vm-agent": {"libraries": 4060870, "tests": 19114352},
   "linux-vm-protocol": {"libraries": 4081929, "tests": 9345008},

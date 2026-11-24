@@ -38,7 +38,6 @@ export * as fileExplorer from "./file_explorer.ts";
 export * as firewall from "./firewall.ts";
 export * as gitClient from "./git_client.ts";
 export * as hexEditor from "./hex_editor.ts";
-export * as launcher from "./launcher.ts";
 export * as logs from "./logs.ts";
 export * as maps from "./maps.ts";
 export * as messages from "./messages.ts";

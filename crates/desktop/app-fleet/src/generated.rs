@@ -133,10 +133,6 @@ pub(super) const SURFACES: &[(&str, &str)] = &[
         "# Written by `tilo-app surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"hex-editor.document\"\nlabel = \"Hex document\"\nversion = 1\nshows = [\"goto-offset\", \"search\"]\nfields = [\n  { path = \"name\", type = { option = \"text\" }, readonly = true },\n  { path = \"opened\", type = \"int\", readonly = true },\n  { path = \"bytes\", type = \"any\", ops = \"sha256:f0a5ecce790f6c6d\" },\n]\n\n[[resources.verbs]]\nid = \"load\"\nkind = \"undoable\"\nparams = [\n  { name = \"name\", type = \"text\", required = true, schema = { type = \"string\" } },\n  { name = \"bytes\", required = true, schema = { type = \"string\" } },\n]\n\n[[resources.verbs]]\nid = \"insert-bytes\"\nkind = \"undoable\"\nparams = [\n  { name = \"offset\", type = \"int\", required = true, schema = { type = \"integer\", minimum = 0 } },\n  { name = \"bytes\", required = true, schema = { type = \"string\" } },\n]\n\n[[resources.verbs]]\nid = \"overwrite-bytes\"\nkind = \"undoable\"\nparams = [\n  { name = \"offset\", type = \"int\", required = true, schema = { type = \"integer\", minimum = 0 } },\n  { name = \"bytes\", required = true, schema = { type = \"string\" } },\n]\n\n[[resources.verbs]]\nid = \"delete-bytes\"\ndestructive = true\nkind = \"undoable\"\nparams = [\n  { name = \"offset\", type = \"int\", required = true, schema = { type = \"integer\", minimum = 0 } },\n  { name = \"len\", type = \"int\", required = true, schema = { type = \"integer\", minimum = 0 } },\n]\n\n",
     ),
     (
-        "so.tilo.launcher",
-        "# Written by `tilo-app surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"launcher.search\"\nlabel = \"Search\"\nversion = 1\nshows = [\"back\", \"dismiss\", \"filter\", \"move-selection\", \"open-search\", \"search\", \"widen\"]\n\n",
-    ),
-    (
         "so.tilo.logs",
         "# Written by `tilo-app surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"logs.journal\"\nlabel = \"System journal\"\nversion = 1\nfields = [\n  { path = \"severity\", type = { named = \"Priority\" } },\n  { path = \"unit\", type = \"text\" },\n  { path = \"boot\", type = \"text\" },\n  { path = \"search\", type = \"text\" },\n]\n\n[[resources.verbs]]\nid = \"clear-filters\"\nkind = \"undoable\"\n\n[[resources.verbs]]\nid = \"refresh\"\nkind = \"read\"\n\n[[resources.verbs]]\nid = \"set-live-tail\"\nkind = \"read\"\nparams = [\n  { name = \"enabled\", type = { option = \"bool\" }, required = false, schema = { type = [\"boolean\", \"null\"] } },\n]\n\n[[resources.verbs]]\nid = \"select-entry\"\nkind = \"read\"\nparams = [\n  { name = \"entry_id\", type = \"text\", required = true, schema = { type = \"string\" } },\n]\n\n[[resources.types]]\nname = \"Priority\"\ncases = [\n  { name = \"emerg\" },\n  { name = \"alert\" },\n  { name = \"crit\" },\n  { name = \"err\" },\n  { name = \"warning\" },\n  { name = \"notice\" },\n  { name = \"info\" },\n  { name = \"debug\" },\n]\n\n",
     ),
@@ -358,7 +354,6 @@ pub(super) const SURFACE_NAMES: &[(&str, &str)] = &[
     ("so.tilo.firewall", "Firewall"),
     ("so.tilo.git-client", "Git"),
     ("so.tilo.hex-editor", "Hex Editor"),
-    ("so.tilo.launcher", "Search"),
     ("so.tilo.logs", "Logs"),
     ("so.tilo.maps", "Maps"),
     ("so.tilo.messages", "Messages"),
