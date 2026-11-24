@@ -531,8 +531,8 @@ impl Daemon {
     /// ([`runtime_collab::wire::shell::SHELL_FD_ENV`]): the daemon starts the shell itself, so the
     /// link passes from it to that one process and to no other of the account. A session in a
     /// window sends the connection it draws on with its start (`window`, which the native endpoint
-    /// received); the shell is handed it at [`WINDOW_FD`] as `WAYLAND_SOCKET`, the variable a
-    /// Wayland client takes its connection from.
+    /// received); the shell is handed it at fd 4 as `WAYLAND_SOCKET`, the variable a Wayland client
+    /// takes its connection from.
     ///
     /// # Errors
     /// No link could be made, or the shell did not start.
