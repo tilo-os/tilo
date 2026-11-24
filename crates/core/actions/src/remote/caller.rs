@@ -55,10 +55,6 @@ pub struct Caller {
     // (`Self::delegated_to`), rather than the agent being admitted as a member
     // in its own right and acting for them (`Self::acting_for`).
     pub(super) session_delegated: bool,
-    // The agent's own key, which its person's own device made for it
-    // (`Self::own_key`): it carries the certificate's delegation whichever
-    // workspace it acts in. Set only where that device minted the key.
-    pub(super) own_key: bool,
     // How far the invocation this caller's requests continue was admitted
     // to reach, set by the provider that matched them to it.
     pub(super) within: within::Within,
@@ -112,7 +108,6 @@ impl Caller {
             workspace: None,
             execution: None,
             session_delegated: false,
-            own_key: false,
             within: within::Within::NONE,
             turn: None,
             roster_created_at: None,
@@ -386,19 +381,6 @@ impl Caller {
         self
     }
 
-    /// This agent's own key, which its person's own device made for it: the device that minted
-    /// the key certifies the agent, so the certificate's delegation reaches it as it reaches a
-    /// roster's. Set only where that device made the key, never from a payload; an agent that
-    /// only claims to be one for a person is left as it is. Changes nothing for a caller that is
-    /// not an agent.
-    #[must_use]
-    pub fn own_key(mut self) -> Self {
-        if self.acting.is_agent() && self.device_public_key.is_some() {
-            self.own_key = true;
-        }
-        self
-    }
-
     /// Mark this agent caller as one a device handed its session to: the mark
     /// [`Self::delegated_to`] sets, for a caller whose certificate the transport verified and
     /// whose admission said a member's own session runs it. Set only by that admission, never
@@ -638,10 +620,9 @@ impl Caller {
     /// certificate names as an agent: it holds only what the workspace grants it.
     ///
     /// The certificate delegates to an agent a device **handed** its session
-    /// ([`Self::delegated_to`]), a workspace's **roster** bound ([`Self::on_roster`]), or the
-    /// person's own device made a key of its own ([`Self::own_key`]): a caller that only says it
-    /// is an agent acting for a person, on that person's key, is named by no session, no roster
-    /// and no key of its own, and is offered nothing.
+    /// ([`Self::delegated_to`]) or a workspace's **roster** bound ([`Self::on_roster`]): a caller
+    /// that only says it is an agent acting for a person, on that person's key, is named by no
+    /// session and no roster, and is offered nothing.
     #[must_use]
     pub fn certified(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
         let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
@@ -649,7 +630,7 @@ impl Caller {
             return Vec::new();
         };
         if self.device_public_key.is_none()
-            || (self.roster_created_at.is_none() && !self.session_delegated && !self.own_key)
+            || (self.roster_created_at.is_none() && !self.session_delegated)
         {
             return Vec::new();
         }
@@ -759,7 +740,6 @@ impl Caller {
             device_public_key: self.device_public_key,
             workspace: self.workspace.clone(),
             session_delegated: self.session_delegated,
-            own_key: self.own_key,
             within: self.ceiling().map(|reach| (reach.kind, reach.privileged)),
             turn: self.turn.clone(),
             roster_created_at: self.roster_created_at,
@@ -785,7 +765,6 @@ pub struct KeptCaller {
     device_public_key: Option<[u8; 32]>,
     workspace: Option<String>,
     session_delegated: bool,
-    own_key: bool,
     within: Option<(tilo_action_policy::ActionKind, bool)>,
     turn: Option<tilo_action_policy::turn::Turn>,
     roster_created_at: Option<i64>,
@@ -814,7 +793,6 @@ impl KeptCaller {
             workspace: self.workspace,
             execution: None,
             session_delegated: self.session_delegated,
-            own_key: self.own_key,
             within: within::Within::of(
                 self.within
                     .map(|(kind, privileged)| tilo_action_policy::Reach { kind, privileged }),
@@ -904,9 +882,8 @@ mod tests {
 
     /// An agent's certificate gives it its person's default delegation in the workspace, which
     /// the workspace's own grants naming it then narrow. The certificate reaches an agent a
-    /// device handed its session to, a roster bound, or whose own key its person's device made:
-    /// a caller that only says it is an agent for a person is named by none of them and holds
-    /// nothing, and neither does a person.
+    /// device handed its session to or a roster bound: a caller that only says it is an agent
+    /// for a person is named by neither and holds nothing, and neither does a person.
     #[test]
     fn an_agents_certificate_gives_it_its_default_delegation() {
         use tilo_action_policy::Grantee;
@@ -940,17 +917,11 @@ mod tests {
             .session_handed()
             .in_workspace("w");
         assert_eq!(joined.certified("w"), expected);
-        // An agent's own key, made by its person's own device, carries the same delegation.
-        let own = Caller::delegated_agent("scout", ada, device)
-            .own_key()
-            .in_workspace("w");
-        assert_eq!(own.certified("w"), expected);
-        // An agent that only says it is one for a person is named by no session, no roster and
-        // no key of its own.
+        // An agent that only says it is one for a person is named by no session and no roster.
         let bare = Caller::delegated_agent("scout", ada, device).in_workspace("w");
         assert!(
             bare.certified("w").is_empty(),
-            "no session, no roster, no own key: {:?}",
+            "no session and no roster: {:?}",
             bare.certified("w")
         );
         // A person, and an agent no certificate names, hold nothing of their own.

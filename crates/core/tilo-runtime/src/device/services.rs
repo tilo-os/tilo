@@ -74,11 +74,6 @@ use uuid::Uuid;
 /// connects.
 const MCP_CLIENT: &str = "mcp";
 
-/// The name a plain connection from the person's own account goes by: no app and no agent was
-/// named, so the device gives it one of its own, which may do only what both an agent and the
-/// person may.
-const UNNAMED_AGENT: &str = "agent";
-
 /// Durable collaboration history, where the desktop session keeps it under
 /// the profile's `XDG_STATE_HOME`.
 const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
@@ -1042,9 +1037,9 @@ impl Daemon {
     }
 
     /// The tree a plain connection from the person's own account reaches in `workspace` (none:
-    /// the one this daemon serves), and the caller it is admitted as there: an unnamed agent of
-    /// theirs, which may do only what both an agent and the person may, even though the account
-    /// itself is theirs.
+    /// the one this daemon serves), and the caller it is admitted as there: the person, whom the
+    /// daemon admits from who is on the other end of its own socket, with no signing step of its
+    /// own added.
     ///
     /// The person's own workspace is opened the first time a connection reaches it, as every
     /// other caller of the daemon opens it ([`crate::RuntimeServices::workspace`]): founded then
@@ -1052,8 +1047,7 @@ impl Daemon {
     /// answered.
     ///
     /// # Errors
-    /// The person's workspace cannot be opened, the workspace cannot be admitted to now, or the
-    /// device cannot make the agent's key.
+    /// The person's workspace cannot be opened, or the workspace cannot be admitted to now.
     pub(crate) fn connection_tree_in(
         self: &Arc<Self>,
         workspace: Option<&str>,
@@ -1067,27 +1061,7 @@ impl Daemon {
                 ))
             })?;
         }
-        let time = self.policy_origin.capture().map_err(io::Error::other)?;
-        let base = self.provider_for(workspace)?;
-        let (provider, _) = base.agent_session(workspace, &self.actor, &time, |person| {
-            (
-                device_agent_id(person, UNNAMED_AGENT),
-                UNNAMED_AGENT.to_owned(),
-            )
-        })?;
-        // The connection is that agent's: the caller it acts as here is the agent itself, which
-        // the workspace decides with the delegation its person gave it and nothing more.
-        let caller = provider
-            .session
-            .as_ref()
-            .map(|session| session.acting())
-            .cloned()
-            .ok_or_else(|| io::Error::other("this device made no agent for the connection"))?;
-        let api = self.api()?;
-        let named = workspace.to_owned();
-        let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
-            .map_err(io::Error::other)?;
-        Ok((joined, caller))
+        self.person_tree_in(workspace)
     }
 
     /// The tree an app the daemon started reaches in `workspace`, and the caller it is there:

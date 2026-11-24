@@ -1548,69 +1548,70 @@ fn identity_steps_list_change_and_protect_the_store_without_answering_a_secret()
     );
 }
 
-const CONNECTION_AGENT_TEST: &str =
-    "device::services::tests::a_plain_connection_is_an_unnamed_agent_and_may_not_govern";
+const CONNECTION_PERSON_TEST: &str =
+    "device::services::tests::a_plain_connection_is_the_person_the_daemon_serves";
 
-/// A connection from the person's own account that names no app is admitted as an unnamed agent
-/// of theirs: it acts for them, and is refused what an agent may not do even though the person
-/// may, the workspace's governance being the person's alone.
+/// A connection from the person's own account that names no app is the person, admitted from who
+/// is on the other end of the daemon's own socket: it acts as them, holds no agent of its own,
+/// and may govern their workspace. Nothing the connection says makes it an agent: one that only
+/// claims to be an agent of the person's, on their device's key, is named by no session and no
+/// roster and is offered nothing.
 #[test]
-fn a_plain_connection_is_an_unnamed_agent_and_may_not_govern() {
-    use tilo_action_policy::{Answer, Context, Grantee, MemberAccess};
+fn a_plain_connection_is_the_person_the_daemon_serves() {
+    use tilo_action_policy::{Answer, Context, MemberAccess};
 
-    let Some(root) = isolated_root(CONNECTION_AGENT_TEST) else {
+    let Some(root) = isolated_root(CONNECTION_PERSON_TEST) else {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
     let workspace = daemon.workspace().unwrap();
-    let (_, agent) = daemon.connection_tree_in(None).unwrap();
-    assert!(
-        agent.acting().is_agent(),
-        "a plain connection is an agent, never the person: {agent:?}"
-    );
-    let person_key = daemon.workspaces.device_cert().user_public_key;
-    let person = hex::encode(person_key);
+    let (_, caller) = daemon.connection_tree_in(None).unwrap();
+    let cert = daemon.workspaces.device_cert();
+    let person = hex::encode(cert.user_public_key);
     assert_eq!(
-        agent.acting_for_person(),
+        caller.acting().person_id(),
         Some(person.as_str()),
-        "the agent acts for the person whose account connected"
+        "the person whose account is on the other end: {caller:?}"
     );
-    let agent_id = device_agent_id(&person_key, UNNAMED_AGENT);
     assert_eq!(
-        agent.acting().agent_id(),
-        Some(agent_id.as_str()),
-        "the unnamed agent is the one the device gives it"
+        caller.acting_for_person(),
+        None,
+        "the person acts for nobody but themselves: {caller:?}"
+    );
+    assert_eq!(
+        caller.acting().agent_id(),
+        None,
+        "a plain connection is no agent: {caller:?}"
+    );
+    assert!(
+        caller.certified(&workspace).is_empty(),
+        "a plain connection needs no certificate: {:?}",
+        caller.certified(&workspace)
+    );
+
+    // Only a connection the daemon admitted as the person gets this far: a caller that only
+    // claims to be an agent for the person, on the person's device key, is named by no session
+    // and no roster, and the certificate's delegation is offered it nothing.
+    let claimed = Caller::delegated_agent("scout", cert.user_public_key, cert.device_public_key)
+        .in_workspace(&workspace);
+    assert!(
+        claimed.certified(&workspace).is_empty(),
+        "a claim to be an agent is offered nothing: {:?}",
+        claimed.certified(&workspace)
     );
 
     let policy = daemon
         .workspaces
         .policy_of(WorkspaceId::parse(&workspace).unwrap())()
     .expect("the daemon's workspace has a policy");
-    let delegated: Vec<_> = policy
-        .grants
-        .iter()
-        .filter(|grant| grant.grantee == Grantee::agent(agent_id.clone()))
-        .cloned()
-        .collect();
-    assert!(
-        !delegated.is_empty(),
-        "the workspace grants its agent what its person delegated"
-    );
     let rename = tilo_action_policy::roles::governance_action(
         &workspace,
         tilo_action_policy::roles::governance::RENAME,
     );
     let kind = tilo_action_policy::roles::GOVERNANCE_KIND;
     let cx = Context::at(0);
-    let as_agent = MemberAccess::new(policy.clone(), agent.acting().clone()).granted(delegated);
     assert_eq!(
-        as_agent.answer(&rename, kind, &cx),
-        Answer::Deny,
-        "an agent never governs a workspace"
-    );
-    let as_person = MemberAccess::person(policy, person.as_str());
-    assert_eq!(
-        as_person.answer(&rename, kind, &cx),
+        MemberAccess::person(policy, person.as_str()).answer(&rename, kind, &cx),
         Answer::Allow,
         "the person the account is may rename their workspace"
     );
@@ -1733,8 +1734,7 @@ fn an_agent_asking_for_a_ticket_is_asked_of_its_person_and_gets_none() {
     );
 }
 
-const AGENT_TICKET_ANSWER_TEST: &str =
-    "device::services::tests::a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it";
+const AGENT_TICKET_ANSWER_TEST: &str = "device::services::tests::a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it";
 
 /// A ticket an agent of the person's asks for waits as their asking card on the device that
 /// keeps their root: only their yes issues it, a no ends it with none, and stopping it withdraws
@@ -1780,7 +1780,9 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
     let store = super::asked_store(&daemon.workspaces).expect("the device keeps asked records");
     // The device keeps the person's root: it marks itself in their devices record, as a start
     // does, and answers what waits for that root from here.
-    let kept_root = super::root().expect("the device reads its root").expect("it keeps one");
+    let kept_root = super::root()
+        .expect("the device reads its root")
+        .expect("it keeps one");
     let tickets = (*daemon.tickets).clone();
     tilo_rt::app().handle().block_on(async {
         tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
@@ -1853,7 +1855,10 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
         ))
         .expect("the answer is decided at once")
         .expect("the person's yes is taken");
-    wait_until("the ticket comes back", Box::new(|| ended(invocation).is_some()));
+    wait_until(
+        "the ticket comes back",
+        Box::new(|| ended(invocation).is_some()),
+    );
     let Some(InvocationUpdate::Succeeded { output, .. }) = ended(invocation) else {
         panic!("the yes issues a ticket: {:?}", ended(invocation));
     };
@@ -1865,7 +1870,10 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
     let request = issue();
     let invocation = request.invocation;
     ask(request);
-    wait_until("the person is asked it too", Box::new(|| requested(invocation)));
+    wait_until(
+        "the person is asked it too",
+        Box::new(|| requested(invocation)),
+    );
     let at = store
         .record(&invocation.0.to_string())
         .expect("the record waits for the person");
@@ -1881,7 +1889,10 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
         ))
         .expect("the answer is decided at once")
         .expect("the person's no is taken");
-    wait_until("the no ends the call", Box::new(|| ended(invocation).is_some()));
+    wait_until(
+        "the no ends the call",
+        Box::new(|| ended(invocation).is_some()),
+    );
     assert!(
         matches!(ended(invocation), Some(InvocationUpdate::Cancelled { .. })),
         "a no ends the call with no ticket: {:?}",
