@@ -49,7 +49,7 @@ pub fn call(device: &dyn Device, app: &str, op: &str, input: &str) -> Result<Str
         return Err(format!("`{op}` is no op this device runs for {app}"));
     }
     match op {
-        "device-items" => device_items(),
+        "device-items" => Ok(device_items()),
         "device-remove" => device_remove(input),
         "access" => access(),
         "decide" => decide(input),
@@ -66,10 +66,10 @@ pub fn call(device: &dyn Device, app: &str, op: &str, input: &str) -> Result<Str
 
 /// The entries this device's secret service holds that a workspace may share: the device's
 /// authentication material and its Wi-Fi networks stay where they are.
-fn device_items() -> Result<String, String> {
+fn device_items() -> String {
     let store = SecretStore::open();
     if let Some(error) = store.recovery_error() {
-        return Ok(json!({"items": [], "error": error}).to_string());
+        return json!({"items": [], "error": error}).to_string();
     }
     let items: Vec<Json> = store
         .list()
@@ -77,7 +77,7 @@ fn device_items() -> Result<String, String> {
         .filter(|item| travels_to_workspace(item))
         .map(item_json)
         .collect();
-    Ok(json!({"items": items, "error": ""}).to_string())
+    json!({"items": items, "error": ""}).to_string()
 }
 
 /// Whether an item of the device vault belongs in the workspace: what a workspace may share,
@@ -134,12 +134,11 @@ fn device_remove(input: &str) -> Result<String, String> {
     if let Some(error) = store.recovery_error() {
         return Err(error.to_owned());
     }
-    let mut removed = 0_usize;
-    for id in &ask.ids {
-        if store.remove(&SecretId(id.clone())).unwrap_or(false) {
-            removed += 1;
-        }
-    }
+    let removed = ask
+        .ids
+        .iter()
+        .filter(|id| store.remove(&SecretId((*id).clone())).unwrap_or(false))
+        .count();
     store
         .flush()
         .map_err(|error| format!("could not keep the device vault: {error}"))?;
@@ -199,7 +198,7 @@ fn grant_json(grant: &CredentialGrant, titles: &BTreeMap<String, String>) -> Jso
         },
         "service": scope.map(|scope| scope.service.clone()).unwrap_or_default(),
         "account": scope.map(|scope| scope.account.clone()).unwrap_or_default(),
-        "generation": scope.map(|scope| scope.generation).unwrap_or(0),
+        "generation": scope.map_or(0, |scope| scope.generation),
     })
 }
 
