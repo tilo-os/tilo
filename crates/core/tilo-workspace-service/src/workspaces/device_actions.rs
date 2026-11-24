@@ -1308,6 +1308,7 @@ impl Answers {
     /// `request`, a call an app makes while it runs the invocation the request carries as its
     /// proof, brought by the device that runs the app: decided as the invocation's caller, once
     /// [`serves_live`] finds the proof still stands.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     fn served(
         &self,
         caller: &Caller,
@@ -1394,12 +1395,24 @@ impl Answers {
     }
 }
 
+/// A device that runs no apps serves none of their calls.
+#[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
+fn served_by_no_app(
+    _caller: &Caller,
+    _request: InvokeRequest,
+) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+    Pending::ready(Err(ActionCallError::Refused {
+        reason: "this device runs no apps".into(),
+    }))
+}
+
 /// Whether `request`, brought by `caller`'s forwarder for an app serving the invocation the
 /// request carries, may run as that invocation's caller: the forwarder runs the connection of the
 /// app the invocation called, the app's own grants reach what the request asks where it asks
 /// another app's action, and the invocation still runs, as the forwarder's record of it says
 /// through the record API. Each is read now, so a lease that moved, a grant taken back or an
 /// invocation that ended refuses the call.
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 async fn serves_live(
     work: &Arc<DeviceWork>,
     caller: &Caller,
@@ -1567,4 +1580,17 @@ async fn app_may(
             address.resource, address.action
         ),
     })
+}
+
+/// [`Answers::served`] where no app runs: the call is refused, as no device here could have sent
+/// it.
+#[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
+impl Answers {
+    fn served(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        served_by_no_app(caller, request)
+    }
 }
