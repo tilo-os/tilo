@@ -164,26 +164,9 @@ impl AppBrokerState {
             admitted,
         })
     }
-    /// Whether `cert`'s device is held to the foreign-device cap in `workspace`.
-    pub(super) fn capped_in(&self, workspace: &str, cert: &tilo_user_identity::DeviceCert) -> bool {
-        cert_capped_in(
-            self.certificate_authority.get().map(AsRef::as_ref),
-            workspace,
-            cert,
-        )
-    }
-    /// The broker actor `caller` is in `workspace`.
-    pub(crate) fn caller_actor(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        workspace: &str,
-    ) -> BrokerActor {
-        let actor = BrokerActor::for_caller(caller).capped(cap_applies_in(
-            self.certificate_authority.get().map(AsRef::as_ref),
-            workspace,
-            caller.is_foreign_device(),
-            caller.device_public_key(),
-        ));
+    /// The broker actor `caller` is, in any workspace.
+    pub(crate) fn caller_actor(&self, caller: &tilo_actions::remote::Caller) -> BrokerActor {
+        let actor = BrokerActor::for_caller(caller).capped(caller.is_foreign_device());
         match caller.acting().app() {
             Some(app) => match self.app_resource_kinds(app.as_str()) {
                 Some(kinds) => actor.in_app(app.clone(), kinds),
@@ -201,14 +184,10 @@ impl AppBrokerState {
             .as_ref()
             .map(|resolve| resolve(app))
     }
-    /// The person `cert` certifies, acting in `workspace` from that certificate's device.
-    pub(super) fn certified_person(
-        &self,
-        workspace: &str,
-        cert: &tilo_user_identity::DeviceCert,
-    ) -> BrokerActor {
+    /// The person `cert` certifies, acting from that certificate's device.
+    pub(super) fn certified_person(&self, cert: &tilo_user_identity::DeviceCert) -> BrokerActor {
         BrokerActor::person(person_id_for_root(cert.user_public_key))
-            .capped(self.capped_in(workspace, cert))
+            .capped(cert.capabilities.foreign)
     }
     pub(crate) fn current_action_caller(
         &self,
@@ -285,7 +264,7 @@ impl AppBrokerState {
         // The certificate was checked above; its connection ceiling must also
         // reflect current governance, not just governance at the original join.
         let verified = match &admitted.certificate {
-            Some(cert) => VerifiedJoinIdentity::of(cert, self.capped_in(&route.cluster_id, cert)),
+            Some(cert) => VerifiedJoinIdentity::of(cert, cert.capabilities.foreign),
             None => admitted.verified.clone(),
         };
         let agents = self.services.agents.as_deref();

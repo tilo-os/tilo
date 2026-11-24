@@ -142,6 +142,11 @@ pub enum WorkspaceRefusal {
     /// The batch adds or changes the shortcut `0` naming who saved it
     /// without that person's device's proof ([`super::saved_shortcut`]).
     ShortcutAuthorship(String),
+    /// The batch starts the workspace's history where no device takes it
+    /// from: a base no device of its owner or an administrator signed, or,
+    /// for a device holding nothing of it yet, anything but its founding or
+    /// such a base ([`super::compaction`]).
+    Compaction(super::compaction::CompactionRefusal),
 }
 
 impl std::fmt::Display for WorkspaceRefusal {
@@ -167,6 +172,7 @@ impl std::fmt::Display for WorkspaceRefusal {
             Self::ReceiptWriter => f.write_str("effect receipt is not its writer's own"),
             Self::RefusalWriter => f.write_str("write refusal is not its recorder's own"),
             Self::CheckpointCheckWriter => f.write_str("checkpoint check is not its device's own"),
+            Self::Compaction(refusal) => refusal.fmt(f),
             Self::ShortcutAuthorship(shortcut) => write!(
                 f,
                 "the shortcut `{shortcut}` names who saved it without their device's proof"
@@ -188,6 +194,7 @@ impl WorkspaceRefusal {
             | Self::ReceiptWriter
             | Self::RefusalWriter
             | Self::CheckpointCheckWriter
+            | Self::Compaction(_)
             | Self::ShortcutAuthorship(_) => RefusalReason::Forbidden,
             Self::Malformed(_) | Self::DeclaredWorkspaceMismatch | Self::Coverage(_) => {
                 RefusalReason::Malformed
@@ -261,9 +268,6 @@ pub fn admit_workspace_changes(
     if matches!(input.source.access, SenderAccess::Enrolling) {
         return enrolling_writes(&input, changes);
     }
-    let keeps = input
-        .source
-        .keeps_history(input.owner, input.administrators);
     let writes = may_write(input.before, input.workspace, &input.source, input.now_ns)?;
     match super::base::lineage(input.before, changes) {
         super::base::Lineage::Same { changes, replaced } => {
@@ -321,21 +325,24 @@ pub fn admit_workspace_changes(
                 rebased: false,
             })
         }
-        super::base::Lineage::Newer { base, changes } if keeps => {
+        super::base::Lineage::Newer { base, changes } => {
             let candidate = super::candidate_on(*base, &changes)?;
-            // A base holds the workspace as it stands, so it carries every
-            // governance change made since the receiver's copy: an admission,
-            // a hand-over. The owner's base is taken whole when it keeps every
-            // membership operation the receiver holds and each one it adds
-            // proves its author, as a first governance is. Another keeper's
-            // base changes what the operations it adds say it changes, each
-            // its author's to make, as in a batch: a server keeping the
-            // workspace hands on what the owner's device signed.
-            let grown = crate::members::growth(input.before, &candidate)
+            // A newer base is its maker's signed compaction, whoever carried
+            // it: a device of the owner's or of an administrator's, as the
+            // base's own member list names them. A base holds the workspace as
+            // it stands, so it carries every governance change made since the
+            // receiver's copy: an admission, a hand-over. It is taken whole
+            // when it keeps every membership operation the receiver holds and
+            // each one it adds proves its author, as a first governance is.
+            // An administrator's base changes what the operations it adds say
+            // it changes, each its author's to make, as in a batch.
+            let maker = super::compaction::compacted_by(&candidate, input.workspace, input.owner)
+                .map_err(WorkspaceRefusal::Compaction)?;
+            crate::members::growth(input.before, &candidate)
                 .map_err(WorkspaceRefusal::Membership)?;
-            let governed = if input.source.person() == Some(input.owner) {
-                true
-            } else if let (Some(before), true) = (input.before, grown > 0) {
+            if maker != *input.owner
+                && let Some(before) = input.before
+            {
                 super::membership::admit_base_operations(
                     before,
                     &candidate,
@@ -343,19 +350,15 @@ pub fn admit_workspace_changes(
                     (input.now_ns, keeps_checkpoints(&input)),
                 )
                 .map_err(membership)?;
-                true
-            } else {
-                false
-            };
+            }
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
-            checked(&input, &candidate, governed)?;
+            checked(&input, &candidate, true)?;
             Ok(AdmittedWorkspace {
                 candidate,
                 rebased: true,
             })
         }
-        super::base::Lineage::Newer { .. } => Err(WorkspaceRefusal::GovernanceWriter.into()),
         super::base::Lineage::Refounded => Err(WorkspaceRefusal::Refounded.into()),
     }
 }
@@ -384,6 +387,10 @@ fn first_member_list(
     if super::declared_workspace_mismatches(&candidate, declared) {
         return Err(WorkspaceRefusal::DeclaredWorkspaceMismatch.into());
     }
+    // It starts at the workspace's founding or at a base its owner or an administrator signed,
+    // and nowhere else: whoever carried it cannot hand this replica a history of its own making.
+    super::compaction::verified_start(&candidate, input.workspace)
+        .map_err(WorkspaceRefusal::Compaction)?;
     crate::members::growth(None, &candidate).map_err(WorkspaceRefusal::Membership)?;
     let policy = super::policy_of(&candidate, input.workspace);
     if policy.owner().is_none() {
@@ -534,7 +541,8 @@ fn own_operations(
                 crate::members::MembershipOpCommand::Governance { rows } => {
                     *rows == [super::GovernanceRow::Identities]
                 }
-                crate::members::MembershipOpCommand::Project { .. } => false,
+                crate::members::MembershipOpCommand::Project { .. }
+                | crate::members::MembershipOpCommand::Compact { .. } => false,
             }
     });
     if !own {

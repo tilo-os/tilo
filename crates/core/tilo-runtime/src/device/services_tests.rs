@@ -57,9 +57,6 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority
         }
         self.authorize(workspace, cert)
     }
-    fn governs(&self, workspace: uuid::Uuid, _device: Option<&[u8; 32]>) -> bool {
-        workspace == self.workspace
-    }
 }
 
 /// An app whose every call asks its person first.
@@ -955,7 +952,6 @@ tilo_test_env::scenario! {
             certificates.authorize(workspace, &stranger).is_err(),
             "a device the member list does not name is not admitted"
         );
-        assert!(!certificates.governs(workspace, None), "no device governs by its certificate");
         drop(certificates);
     }
 

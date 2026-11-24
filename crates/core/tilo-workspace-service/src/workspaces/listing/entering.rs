@@ -336,7 +336,7 @@ impl Workspaces {
             return Err("the device's own row does not let it in".to_owned());
         }
         let state = governed.collaboration().clone();
-        governed.commit(
+        governed.keep(
             candidate,
             &key,
             crate::workspaces::system_time(now),

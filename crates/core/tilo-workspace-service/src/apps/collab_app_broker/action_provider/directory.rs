@@ -99,7 +99,7 @@ impl AppBrokerState {
                 ..CataloguePage::default()
             }));
         }
-        let actor = self.caller_actor(caller, &root.cluster_id);
+        let actor = self.caller_actor(caller);
         let queue = self.action_directory_request_queue();
         let reply = if let Some(target) = &query.target {
             let Some(revision) = query
@@ -221,7 +221,7 @@ impl AppBrokerState {
             Ok(Reservation::Reserved) => {}
         }
         let resolved = self.action_directory_request_queue().try_resolve_pending(
-            self.caller_actor(caller, &root.cluster_id),
+            self.caller_actor(caller),
             &root.cluster_id,
             root.peer_id,
             revision,
@@ -331,7 +331,7 @@ impl AppBrokerState {
                 reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
             });
         }
-        let actor = self.caller_actor(caller, &root.cluster_id);
+        let actor = self.caller_actor(caller);
         let token = self.confirmation_token(
             root.peer_id,
             &root.app_id,

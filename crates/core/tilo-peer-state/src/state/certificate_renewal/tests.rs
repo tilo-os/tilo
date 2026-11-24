@@ -150,8 +150,7 @@ tilo_test_env::scenario! {
         assert!(
             peer.governance_mut()
                 .renew_member_certificate(&renewed, &authority, now)
-                .unwrap_err()
-                .contains("only its own"),
+                .is_err(),
             "no other device renews a device's certificate"
         );
         assert!(

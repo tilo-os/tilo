@@ -19,7 +19,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         "Team",
         &cert,
         &key,
-        None,
+        Some(&crate::workspaces::fixtures::founding_device()),
         (&[], &[]),
         SystemTime::now(),
     )
@@ -43,7 +43,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         .publish_document(APP, "plan", large(), &key, SystemTime::now())
         .unwrap();
     workspace
-        .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
+        .keep(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
         .unwrap();
     let stored = |workspace: &GovernedWorkspace| {
         workspace
@@ -75,7 +75,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     // A change that leaves the record alone does not write it again.
     let candidate = workspace.peer().clone();
     workspace
-        .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
+        .keep(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
         .unwrap();
     assert_eq!(stored(&workspace), first);
     assert_eq!(modified(&workspace), written);
@@ -90,7 +90,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         .publish_document(APP, "plan", edited.save(), &key, SystemTime::now())
         .unwrap();
     workspace
-        .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
+        .keep(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
         .unwrap();
     let second = stored(&workspace);
     assert_eq!(second.len(), first.len());
@@ -106,7 +106,10 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         restored.peer().document(APP, "plan"),
         workspace.peer().document(APP, "plan")
     );
-    assert_eq!(restored.record.generation, workspace.record.generation);
+    assert_eq!(
+        restored.peer().governance().generation(),
+        workspace.peer().governance().generation()
+    );
 
     // A stored part that does not match its hash refuses to open.
     let peer_parts::PeerPart::Stored { digest, .. } = &second[0] else {

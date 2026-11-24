@@ -3,6 +3,7 @@ mod admit;
 mod adopt;
 pub mod base;
 pub mod basis;
+pub mod compaction;
 pub mod membership;
 pub(crate) mod policy;
 pub(crate) mod read;

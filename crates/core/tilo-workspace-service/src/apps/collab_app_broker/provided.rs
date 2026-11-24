@@ -935,7 +935,6 @@ pub(crate) mod signed_test_support {
     pub(crate) struct Authority {
         certificate: tilo_user_identity::DeviceCert,
         pub revoked: AtomicBool,
-        pub device_governs: AtomicBool,
         time: Mutex<crate::apps::policy_clock::PolicyTime>,
         replace_time_on_authorize: Mutex<Option<crate::apps::policy_clock::PolicyTime>>,
     }
@@ -947,10 +946,6 @@ pub(crate) mod signed_test_support {
     }
 
     impl crate::apps::certificate_authority::CertificateAuthority for Authority {
-        fn governs(&self, _: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
-            device.is_none() || self.device_governs.load(Ordering::SeqCst)
-        }
-
         fn policy_time(&self) -> Result<Option<crate::apps::policy_clock::PolicyTime>, String> {
             Ok(Some(self.time.lock().unwrap().clone()))
         }
@@ -1034,7 +1029,6 @@ pub(crate) mod signed_test_support {
             let authority = Arc::new(Authority {
                 certificate: certificate.clone(),
                 revoked: AtomicBool::new(false),
-                device_governs: AtomicBool::new(true),
                 time: Mutex::new(policy_origin.capture().unwrap()),
                 replace_time_on_authorize: Mutex::new(None),
             });

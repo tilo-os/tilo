@@ -117,7 +117,10 @@ async fn a_host_whose_endpoint_reaches_no_relay_opens_and_names_the_address_it_h
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
-        None,
+        Some(crate::workspaces::DeviceKeyGroups {
+            keys: crate::workspaces::fixtures::founding_device(),
+            sink: None,
+        }),
     )
     .await
     .expect("a host with no relay to reach opens");
@@ -165,7 +168,10 @@ async fn a_keeper_names_itself_and_its_rented_machine_in_the_address_it_signs() 
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
-        None,
+        Some(crate::workspaces::DeviceKeyGroups {
+            keys: crate::workspaces::fixtures::founding_device(),
+            sink: None,
+        }),
     )
     .await
     .expect("a keeper opens");

@@ -102,6 +102,18 @@ impl PeerGovernance<'_> {
     pub fn heads(self) -> Vec<[u8; 32]> {
         self.peer.governance_heads().unwrap_or_default()
     }
+    /// How far the workspace's member list has come: the number of signed
+    /// operations it holds that prove their writer. Every device holding the
+    /// same operations answers the same, and each change to the list counts
+    /// one more.
+    #[must_use]
+    pub fn generation(self) -> u64 {
+        self.peer
+            .core
+            .workspace_doc
+            .as_deref()
+            .map_or(0, |doc| crate::members::ops(doc).len() as u64)
+    }
     /// When the workspace was made, ms since the epoch: the time of the
     /// earliest change its governance holds, its founder's seed. A later
     /// change to it does not move it.
@@ -524,6 +536,7 @@ impl PeerGovernance<'_> {
                 crate::members::MembershipOpCommand::Project { changes } => {
                     format!("{changes:?}").chars().take(400).collect()
                 }
+                crate::members::MembershipOpCommand::Compact { .. } => "compaction".into(),
             };
             said.push(format!(
                 "  op by {} on device {} at {}: {command}",
@@ -1074,9 +1087,6 @@ impl PeerGovernanceMut<'_> {
         // The redeeming device writes its own redemption, the invitation its
         // authority: every receiver checks the invitation itself.
         let cert = redemption.certificate();
-        if key.device_public_key() != cert.device_public_key {
-            return Err("a device redeems only its own invitation".into());
-        }
         if self.peer.core.revocations.refuses(cert) {
             return Err("device revoked".into());
         }
@@ -1142,9 +1152,6 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        if key.device_public_key() != device.device_public_key {
-            return Err("a device writes only its own row".into());
-        }
         tilo_user_identity::verify_device_cert_at(device, now_ns(now)).map_err(err)?;
         if self.peer.core.revocations.refuses(device) {
             return Err("device revoked".into());
@@ -1802,8 +1809,22 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
+        self.remove_members(&[user_public_key], key, now)
+    }
+    /// Remove every one of `people` and their grants as one change of the
+    /// member list, as [`Self::remove_member`] removes one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::remove_member`], for any of them.
+    pub fn remove_members(
+        self,
+        people: &[[u8; 32]],
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
-        if user_public_key == self.peer.core.owner {
+        if people.contains(&self.peer.core.owner) {
             return Err("workspace owner cannot be removed".into());
         }
         let mut doc = self
@@ -1812,45 +1833,50 @@ impl PeerGovernanceMut<'_> {
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
-        let person = hex::encode(user_public_key);
         let policy = doc.workspace_policy(&self.peer.core.workspace);
-        // Removing a member takes every grant naming them with them; someone
-        // who is no member loses the grants that still name them.
-        let changes: Vec<Change> = if policy.members.contains_key(&person) {
-            vec![Change::RemoveMember {
-                person: person.clone(),
-            }]
-        } else {
-            policy
-                .grants
-                .iter()
-                .filter(|grant| grant.grantee.person_id() == Some(person.as_str()))
-                .map(|grant| Change::Revoke(grant.id.clone()))
-                .collect()
-        };
+        let signer = self
+            .peer
+            .certificate(&key.device_public_key(), now)
+            .ok()
+            .map(|cert| cert.user_public_key);
+        let mut changes = Vec::new();
+        let mut gone = Vec::new();
+        for user_public_key in people {
+            let person = hex::encode(user_public_key);
+            // Removing a member takes every grant naming them with them; someone
+            // who is no member loses the grants that still name them.
+            if policy.members.contains_key(&person) {
+                changes.push(Change::RemoveMember {
+                    person: person.clone(),
+                });
+            } else {
+                changes.extend(
+                    policy
+                        .grants
+                        .iter()
+                        .filter(|grant| grant.grantee.person_id() == Some(person.as_str()))
+                        .map(|grant| Change::Revoke(grant.id.clone())),
+                );
+            }
+            gone.push(person);
+        }
         if changes.is_empty() {
             return Ok(false);
         }
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
-        let mut gone = vec![person];
         // Someone who leaves takes their own devices off the workspace with
         // them: the rows that admit a device go, so no key of theirs stays
         // named here. Another person's devices stay until whoever may remove
         // them takes them.
-        if self
-            .peer
-            .certificate(&key.device_public_key(), now)
-            .is_ok_and(|cert| cert.user_public_key == user_public_key)
-        {
+        if let Some(leaving) = signer.filter(|signer| people.contains(signer)) {
             let identities = governed_map(&doc, "peer_identities_v1")?;
             let own: Vec<String> = crate::workspace::governance_of(Some(&doc))
                 .identities
                 .into_iter()
                 .filter(|(_, bytes)| {
-                    super::GovernedIdentity::decode(bytes).is_ok_and(|identity| {
-                        identity.device_cert.user_public_key == user_public_key
-                    })
+                    super::GovernedIdentity::decode(bytes)
+                        .is_ok_and(|identity| identity.device_cert.user_public_key == leaving)
                 })
                 .map(|(device, _)| device)
                 .collect();

@@ -225,11 +225,15 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
         readable(&workspaces, &workspace).await.as_deref(),
         Some("Welcome")
     );
-    // What the server keeps for the record's members, the governor's write last.
+    // The write is this host device's own, signed by it and carried as it signed it by the
+    // workspace's store, which holds no device and opens nothing.
     let own = retained_writes(&server, workspace_id, RESOURCE)
         .await
-        .pop()
-        .expect("the governor published its write");
+        .into_iter()
+        .rev()
+        .find(|op| op.author.as_bytes() == &governor.device_public_key)
+        .expect("the store carries the host device's write");
+    collab_types::verify_op(&own).expect("carried as its device signed it");
     assert!(own.encryption.is_some(), "never in the clear");
     member.take_in(&own);
     assert_eq!(
@@ -244,8 +248,9 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
 /// A public workspace's chat takes thousands of writes within hours. Past three
 /// quarters of a sealed history's bound the node compacts it into one sealed
 /// checkpoint, so its copy goes on following the record, and reads it whole.
-/// It publishes the compaction as a member does: every member's history then
-/// matches the copy, and their next compaction folds what the copy holds.
+/// The compaction is its device's own signed write, carried as a member's is:
+/// every member's history then matches the copy, and their next compaction
+/// folds what the copy holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_node_compacts_a_sealed_history_before_it_fills() {
     let Lounge {
@@ -269,12 +274,17 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
     let due = state.lock().await.peer().publication().sealed_to_compact();
     assert!(due.is_empty(), "the history was compacted: {due:?}");
     drop(state);
-    let published = retained_writes(&server, workspace_id, RESOURCE)
+    // The compaction is this host device's own signed write: the store, which holds no device
+    // and opens nothing, carries it to members as its device signed it.
+    let carried: Vec<SignedOp> = retained_writes(&server, workspace_id, RESOURCE)
         .await
-        .iter()
+        .into_iter()
         .filter(|op| op.kind == collab_types::OpKind::Compaction)
-        .count();
-    assert!(published > 0, "the compaction is published to members");
+        .collect();
+    assert!(!carried.is_empty(), "the compaction is carried to members");
+    for op in &carried {
+        collab_types::verify_op(op).expect("carried as its device signed it");
+    }
     drop(workspaces);
     server.shutdown().await;
 }

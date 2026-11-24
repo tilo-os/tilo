@@ -1265,6 +1265,9 @@ fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
 #[path = "written_under_tests.rs"]
 mod written_under;
 
+#[path = "compaction_tests.rs"]
+mod compaction;
+
 /// What the machine copied from the guest's writes: the record as it stood when the disk was
 /// copied, changed under the copy's own Automerge writer, and signed with the key both machines
 /// carry as the `seq`th write of the record, the number the original gave a write of its own.

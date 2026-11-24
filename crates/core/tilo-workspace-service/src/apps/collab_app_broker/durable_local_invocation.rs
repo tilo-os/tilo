@@ -195,7 +195,7 @@ impl AppBrokerState {
         let workspace = caller
             .workspace()
             .ok_or_else(|| ActionCallError::unavailable("caller workspace unavailable"))?;
-        let actor = self.caller_actor(caller, workspace);
+        let actor = self.caller_actor(caller);
         let owner = self
             .invocation_owner(Some(origin), workspace, &actor)
             .map_err(ActionCallError::unavailable)?;

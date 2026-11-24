@@ -245,7 +245,7 @@ impl Workspaces {
         // publishes it with the revocation, instead of landing between the
         // copy this change was made on and it and leaving the commit refused
         // for history it was not built on.
-        let carried_now = workspace.change_held(
+        let carried_now = workspace.change(
             key,
             now,
             |_, candidate| {

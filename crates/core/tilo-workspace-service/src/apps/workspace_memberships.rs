@@ -168,10 +168,8 @@ impl AppBrokerState {
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?;
-        let verified = super::VerifiedJoinIdentity::of(
-            certificate,
-            super::cert_capped_in(Some(authority.as_ref()), workspace, certificate),
-        );
+        let verified =
+            super::VerifiedJoinIdentity::of(certificate, certificate.capabilities.foreign);
         let mut admitted = membership.decide_in_workspace(&route.cluster_id, |workspace| {
             super::admit_verified_join_at(workspace, &route, verified, now / 1_000_000_000)
         })??;

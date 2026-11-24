@@ -493,21 +493,17 @@ impl Workspaces {
                 .check_workspace_administration(self.device_cert().device_public_key, now)?;
             let mut candidate = replica.clone();
             let signer = &self.inner.host.key;
-            let written = super::sealed_documents::publish_changes(
+            let written = super::sealed_documents::seal_changes(
                 &mut candidate,
-                Some(&writing),
+                &writing,
                 (app, &index),
                 changes,
                 signer,
                 now,
             )?;
-            governed.commit_held(
-                &mut replica,
-                candidate,
-                (signer, now),
-                super::Change::Other,
-                |entry, _| Ok(entry.collaboration.clone()),
-            )?;
+            governed.keep_held(&mut replica, candidate, (signer, now), |entry, _| {
+                Ok(entry.collaboration.clone())
+            })?;
             drop(replica);
             written
         };

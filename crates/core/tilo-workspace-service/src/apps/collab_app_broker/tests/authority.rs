@@ -353,63 +353,6 @@ tilo_test_env::scenario! {
         authorize(&foreign, Undoable).unwrap();
     }
 
-    phase a_foreign_device_is_capped_only_in_workspaces_it_does_not_govern;
-    {
-        let root = SigningKey::from_bytes(&[25; 32]);
-        let mut workspace =
-            crate::apps::test_support::Workspace::new(crate::apps::test_support::WorkspaceId::from_u128(5), "Own");
-        workspace.policy.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
-        let workspace_id = workspace.id().to_string();
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(tree.clone().shared()),
-            None,
-        );
-        let governor = [7; 32];
-        let authority: Arc<dyn crate::apps::certificate_authority::CertificateAuthority> =
-            Arc::new(GovernedBy(governor));
-        assert!(state.certificate_authority.set(authority).is_ok());
-        let foreign_cert = |device| tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device,
-            device_label: "mac".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities {
-                foreign: true,
-                ..tilo_user_identity::DeviceCapabilities::primary()
-            },
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        let admin = |cert: &tilo_user_identity::DeviceCert| {
-            let identity = VerifiedJoinIdentity::of(cert, state.capped_in(&workspace_id, cert));
-            let admitted =
-                admit_verified_join(&tree, &CrdtRoute::cluster(&workspace_id), identity).unwrap();
-            let actor = state.certified_person(&workspace_id, cert);
-            let admin = state.authorize_invocation_permission(
-                &workspace_id,
-                (
-                    "so.tilo.settings",
-                    "settings.workspace",
-                    "settings.workspace",
-                    "workspace.rename",
-                ),
-                &tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Outside),
-                &actor,
-                0,
-            );
-            (admitted.role, admin.is_ok())
-        };
-
-        assert_eq!(admin(&foreign_cert(governor)), (CapRole::Owner, true));
-        assert_eq!(admin(&foreign_cert([8; 32])), (CapRole::Owner, false));
-    }
-
     phase a_foreign_device_joins_with_at_most_the_workspace_cap;
     {
         let root = SigningKey::from_bytes(&[23; 32]);

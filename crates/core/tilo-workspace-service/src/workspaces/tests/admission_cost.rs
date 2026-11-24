@@ -119,8 +119,21 @@ async fn letting_one_more_person_in_costs_the_same_however_many_are_in() {
     };
     let small = middle(work_per_arrival(10, 5).await);
     let large = middle(work_per_arrival(40, 5).await);
+    // The change an arrival writes numbers its operations after every one
+    // the host's device wrote before, in variable-length integers: a longer
+    // history may take a byte more to name where it starts, and nothing more.
+    assert!(
+        large.bytes_written <= small.bytes_written + 8,
+        "an arrival among 40 people writes {} B, among 10 people {} B",
+        large.bytes_written,
+        small.bytes_written
+    );
     assert_eq!(
-        small, large,
+        tilo_peer_state::work::Work {
+            bytes_written: small.bytes_written,
+            ..large
+        },
+        small,
         "an arrival among 40 people costs what one among 10 does"
     );
     // Each state an admission writes is read from the one before it, with
@@ -159,17 +172,15 @@ async fn document_after(members: u32) -> (usize, u64) {
     record.peer.clear();
     let own = postcard::to_stdvec(&record).unwrap().len();
     let size = |path: &std::path::Path| std::fs::metadata(path).map_or(0, |file| file.len());
-    let beside = size(&path.with_extension(super::super::PUBLICATIONS))
-        + size(&path.with_extension(super::super::RECEIPTS));
+    let beside = size(&path.with_extension(super::super::RECEIPTS));
     drop(workspaces);
     server.shutdown().await;
     (own, beside)
 }
 
 /// The record a workspace writes with every change holds no more of its own
-/// for 40 people than for 10: their join receipts and the publications since
-/// the workspace's base are appended to the files beside it, and the record
-/// names how many those hold. (The peer state's parts it names are the peer
+/// for 40 people than for 10: their join receipts are appended to the file
+/// beside it, and the record names how many it holds. (The peer state's parts it names are the peer
 /// state's own layout.)
 #[tokio::test]
 async fn the_record_written_for_an_arrival_does_not_grow_with_the_workspace() {

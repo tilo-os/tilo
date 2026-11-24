@@ -313,6 +313,16 @@ impl SealingMember {
         let mut document = self.document();
         let heads = document.get_heads();
         let result = change(&mut document);
+        // A record's first write is the whole record, as a device starts one: a reader holding
+        // none of it reads the record from that write, and no one else writes a start before it.
+        if heads.is_empty() {
+            let whole = collab_types::DocumentMutation::Snapshot(document.save());
+            *self.document.lock().unwrap() = document;
+            return (
+                result,
+                self.seal_mutation(keys, workspace, &whole, ContentRetention::Checkpoint),
+            );
+        }
         let changes = document.save_after(&heads);
         *self.document.lock().unwrap() = document;
         (result, self.seal_changes_with(keys, workspace, changes))
@@ -452,7 +462,7 @@ impl SealingMember {
                         .record_checkpoint_check(cert, (app, record), &checkpoint, &self.key, now)
                         .unwrap();
                     state
-                        .commit(candidate, governor_key, now, |entry, _| {
+                        .keep(candidate, governor_key, now, |entry, _| {
                             Ok(entry.collaboration.clone())
                         })
                         .unwrap();
@@ -515,12 +525,7 @@ impl SealingMember {
         workspace: &str,
         change: impl FnOnce(&mut automerge::AutoCommit) -> R,
     ) -> (R, NeighbourMsg) {
-        let mut document = self.document();
-        let heads = document.get_heads();
-        let result = change(&mut document);
-        let changes = document.save_after(&heads);
-        *self.document.lock().unwrap() = document;
-        (result, self.seal_changes(workspace, changes))
+        self.seal_with(&self.keys, workspace, change)
     }
 
     /// The member's first write of a part it starts, as a device publishes it: the part whole,
@@ -553,12 +558,7 @@ impl SealingMember {
             .unwrap();
     }
 
-    /// `changes` as the member's next write of the record, sealed and signed.
-    fn seal_changes(&self, workspace: &str, changes: Vec<u8>) -> NeighbourMsg {
-        self.seal_changes_with(&self.keys, workspace, changes)
-    }
-
-    /// [`Self::seal_changes`] sealed with `keys`.
+    /// `changes` as the member's next write of the record, sealed with `keys` and signed.
     fn seal_changes_with(
         &self,
         keys: &ContentKeys,

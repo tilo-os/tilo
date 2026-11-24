@@ -820,6 +820,9 @@ pub enum AdminRefusal {
     /// source: none was made, and `part` names what did not come (`the files
     /// its records name`, `the record plan of so.tilo.notes`).
     BranchNotMade { part: String },
+    /// A workspace is founded by a device, which signs its founding and seals
+    /// its records, and the host asked to found one has none of its own.
+    NoDeviceToFound,
 }
 
 impl AdminRefusal {
@@ -847,6 +850,9 @@ impl std::fmt::Display for AdminRefusal {
             Self::BranchNotMade { part } => {
                 write!(f, "the branch was not made: {part} did not come")
             }
+            Self::NoDeviceToFound => f.write_str(
+                "a workspace is founded on a device, and this host has no device to found it on",
+            ),
         }
     }
 }

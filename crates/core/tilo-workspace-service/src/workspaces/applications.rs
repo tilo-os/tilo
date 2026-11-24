@@ -123,16 +123,16 @@ impl Workspaces {
             return Ok(result);
         }
         let mut candidate = governed.peer().clone();
-        let written = super::sealed_documents::publish_changes(
+        let written = super::sealed_documents::seal_changes(
             &mut candidate,
-            keys.as_ref(),
+            super::sealed_documents::sealed_with(keys.as_ref())?,
             (app, record),
             changes,
             &self.inner.host.key,
             system_time(now),
         )?;
         let collaboration = governed.collaboration().clone();
-        governed.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
+        governed.keep(candidate, &self.inner.host.key, system_time(now), |_, _| {
             Ok(collaboration)
         })?;
         self.settle(&mut governed).await?;

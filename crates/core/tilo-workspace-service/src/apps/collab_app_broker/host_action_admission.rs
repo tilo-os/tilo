@@ -481,7 +481,7 @@ impl AppBrokerState {
         let contract: tilo_actions::ActionContract =
             serde_json::from_value(record.intent.get("contract").cloned().unwrap_or_default())
                 .map_err(|_| ActionCallError::unavailable("host invocation contract invalid"))?;
-        let actor = self.host_replay_actor(workspace, origin)?;
+        let actor = self.host_replay_actor(origin)?;
         self.authorize_invocation_permission(
             workspace,
             (
@@ -508,11 +508,7 @@ impl AppBrokerState {
         ))
     }
 
-    fn host_replay_actor(
-        &self,
-        workspace: &str,
-        origin: &InvocationCaller,
-    ) -> Result<BrokerActor, ActionCallError> {
+    fn host_replay_actor(&self, origin: &InvocationCaller) -> Result<BrokerActor, ActionCallError> {
         Ok(match origin {
             InvocationCaller::Certified {
                 caller: original,
@@ -522,16 +518,7 @@ impl AppBrokerState {
                     .current_action_caller(original)
                     .map_err(ActionCallError::unavailable)?
                     .broker_actor();
-                admitted.capped |= super::cap_applies_in(
-                    self.certificate_authority.get().map(AsRef::as_ref),
-                    workspace,
-                    *foreign_restriction,
-                    original
-                        .admitted
-                        .certificate
-                        .as_ref()
-                        .map(|certificate| &certificate.device_public_key),
-                );
+                admitted.capped |= *foreign_restriction;
                 admitted
             }
             InvocationCaller::Local {
@@ -547,7 +534,7 @@ impl AppBrokerState {
                     .broker_actor()
             }
             InvocationCaller::NativePerson { certificate, .. } => {
-                self.certified_person(workspace, certificate)
+                self.certified_person(certificate)
             }
         })
     }

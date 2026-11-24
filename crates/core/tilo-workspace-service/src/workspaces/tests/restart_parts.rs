@@ -81,7 +81,7 @@ fn restart_with_chain_of(parts: usize) -> Restart {
         "Team",
         &cert,
         &key,
-        None,
+        Some(&crate::workspaces::fixtures::founding_device()),
         (&[], &[]),
         SystemTime::now(),
     )
@@ -101,7 +101,7 @@ fn restart_with_chain_of(parts: usize) -> Restart {
             .publish_document(APP, "welcome", document.save(), &key, SystemTime::now())
             .unwrap();
         workspace
-            .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
+            .keep(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
             .unwrap();
     }
     for index in 0..parts {
@@ -114,7 +114,7 @@ fn restart_with_chain_of(parts: usize) -> Restart {
             .publish_document(APP, part.as_str(), document.save(), &key, SystemTime::now())
             .unwrap();
         workspace
-            .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
+            .keep(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
             .unwrap();
     }
     let path = workspace.path.clone();

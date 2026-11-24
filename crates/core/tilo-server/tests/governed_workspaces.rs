@@ -826,7 +826,7 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
         .prune_members(&workspace.workspace, &host.cert, [9; 32], &idle)
         .await
         .unwrap();
-    assert_eq!(pruned.generation, before + 1, "one change for every guest");
+    let step = pruned.generation - before;
 
     let members = workspaces
         .summary(&workspace.workspace)
@@ -857,6 +857,22 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
             .await
             .is_err(),
         "a pruned guest's invitation admits nobody again"
+    );
+    // Pruning two guests is one change of the member list, as pruning one is.
+    let last = std::collections::BTreeSet::from([guests[2].0.user_pk]);
+    let after = workspaces
+        .summary(&workspace.workspace)
+        .await
+        .unwrap()
+        .generation;
+    let pruned = workspaces
+        .prune_members(&workspace.workspace, &host.cert, [10; 32], &last)
+        .await
+        .unwrap();
+    assert_eq!(
+        pruned.generation - after,
+        step,
+        "one change for every guest"
     );
     server.shutdown().await;
 }

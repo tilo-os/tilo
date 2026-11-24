@@ -223,7 +223,7 @@ impl Workspaces {
         }
         let log = governed.collaboration().clone();
         governed
-            .commit(candidate, &key, at, |_, _| Ok(log))
+            .keep(candidate, &key, at, |_, _| Ok(log))
             .map_err(CollaborationError::new)?;
         self.settle(&mut governed).await?;
         Ok(true)
@@ -274,7 +274,7 @@ impl Workspaces {
             .governance_mut()
             .author_workspace_name(name, key, now)?;
         let collaboration = governed.collaboration().clone();
-        governed.commit(candidate, key, now, |_, _| Ok(collaboration))?;
+        governed.keep(candidate, key, now, |_, _| Ok(collaboration))?;
         Ok(self.people(governed))
     }
 }

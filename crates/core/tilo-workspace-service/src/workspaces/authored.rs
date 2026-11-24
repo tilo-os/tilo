@@ -67,7 +67,7 @@ impl Workspaces {
         // a write the link takes in meanwhile waits for this commit, which
         // publishes it with this change.
         let (result, written) = governed
-            .change_held(
+            .change(
                 &self.inner.host.key,
                 system_time(now),
                 |_, candidate| {
@@ -273,18 +273,15 @@ fn publish_authored(
     if document.get_heads() == heads.clone().unwrap_or_default() {
         return Ok(Vec::new());
     }
-    let bytes = match (&heads, keys) {
-        (Some(heads), _) => document.save_after(heads),
-        (None, Some(_)) => document.save_after(&[]),
-        (None, None) => document.save(),
-    };
+    let keys = super::sealed_documents::sealed_with(keys)?;
+    let bytes = document.save_after(heads.as_deref().unwrap_or_default());
     if bytes.len() > 64 * 1024 {
         return Err(CollaborationError::new(
             "record authoring exceeds publication limit",
         ));
     }
-    Ok(match (heads, keys) {
-        (Some(_), keys) => vec![super::sealed_documents::publish_changes(
+    Ok(match heads {
+        Some(_) => vec![super::sealed_documents::seal_changes(
             candidate,
             keys,
             (app, record),
@@ -292,13 +289,8 @@ fn publish_authored(
             key,
             now,
         )?],
-        (None, Some(keys)) => {
+        None => {
             super::sealed_documents::start_sealed(candidate, keys, (app, record), bytes, key, now)?
         }
-        (None, None) => vec![
-            candidate
-                .publication_mut()
-                .publish_document(app, record, bytes, key, now)?,
-        ],
     })
 }

@@ -1555,7 +1555,7 @@ fn founded_by(founder: &DeviceCert, bases: u64) -> AutoCommit {
 /// replaces the document as before.
 #[test]
 fn a_workspace_founded_again_under_its_id_replaces_nothing_its_host_holds() {
-    let (_, host) = owner_device();
+    let (host_key, host) = owner_device();
     let mut held = founded_by(&host, 1);
     hold_document(&mut held, "file:/plan.md");
     held.commit();
@@ -1584,15 +1584,38 @@ fn a_workspace_founded_again_under_its_id_replaces_nothing_its_host_holds() {
             super::super::base::Lineage::Newer { .. }
         ));
     }
-    let next =
+    let unsigned =
         all_changes(&super::super::base::rebase(&held, automerge::ActorId::random()).unwrap());
+    assert_eq!(
+        admit(
+            Some(&held),
+            member(&restored_key, owner_root()),
+            &owner_root(),
+            &unsigned,
+        )
+        .map(|admitted| admitted.rebased),
+        Err(WorkspaceRefusal::Compaction(
+            super::super::compaction::CompactionRefusal::Unsigned
+        )),
+        "a base no device signed replaces nothing"
+    );
+    let next = all_changes(
+        &super::super::compaction::compact(
+            &held,
+            automerge::ActorId::random(),
+            (&host, &host_key),
+            WORKSPACE,
+            1,
+        )
+        .unwrap(),
+    );
     let admitted = admit(
         Some(&held),
         member(&restored_key, owner_root()),
         &owner_root(),
         &next,
     )
-    .expect("the host's own next base is the workspace's");
+    .expect("the compaction the owner's device signed is the workspace's next base");
     assert!(
         admitted.rebased,
         "a newer base of the same founding replaces the document"
@@ -1641,7 +1664,16 @@ fn a_newer_base_an_administrator_made_carries_the_administrators_it_made() {
         let mut made = held.clone();
         edit(&mut made);
         made.commit();
-        all_changes(&super::super::base::rebase(&made, automerge::ActorId::random()).unwrap())
+        all_changes(
+            &super::super::compaction::compact(
+                &made,
+                automerge::ActorId::random(),
+                (&admin.1, &admin.0),
+                WORKSPACE,
+                1,
+            )
+            .unwrap(),
+        )
     };
     let based = |changes: Vec<Change>| {
         rebased_after(&|made: &mut AutoCommit| sign(made, &admin, changes.clone()))

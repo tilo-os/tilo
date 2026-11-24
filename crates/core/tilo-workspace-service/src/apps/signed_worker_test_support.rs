@@ -13,10 +13,6 @@ pub struct CurrentHost {
     pub additional_certificates: Mutex<Vec<DeviceCert>>,
     pub checks: AtomicUsize,
     pub time: Option<crate::apps::policy_clock::PolicyTime>,
-    /// Whether this host governs its workspace, as a standalone runtime governs its
-    /// own: then only its own device (or this host itself) escapes the
-    /// foreign-device cap there.
-    pub governs_workspace: std::sync::atomic::AtomicBool,
 }
 
 impl CurrentHost {
@@ -31,7 +27,6 @@ impl CurrentHost {
             additional_certificates: Mutex::new(vec![]),
             checks: AtomicUsize::new(0),
             time,
-            governs_workspace: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }
@@ -39,17 +34,6 @@ impl CurrentHost {
 impl crate::apps::certificate_authority::CertificateAuthority for CurrentHost {
     fn policy_time(&self) -> Result<Option<crate::apps::policy_clock::PolicyTime>, String> {
         Ok(self.time.clone())
-    }
-    fn governs(&self, workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
-        self.governs_workspace.load(Ordering::SeqCst)
-            && workspace.to_string() == self.route.cluster_id
-            && device.is_none_or(|device| {
-                self.certificate
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .is_some_and(|cert| &cert.device_public_key == device)
-            })
     }
     fn device(&self) -> Option<[u8; 32]> {
         self.certificate

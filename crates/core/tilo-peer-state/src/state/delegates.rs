@@ -200,9 +200,6 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        if key.device_public_key() != cert.device_public_key {
-            return Err("an agent writes only its own row".into());
-        }
         if delegation.delegate.agent_id().is_none() {
             return Err("the delegation is not an agent's".into());
         }

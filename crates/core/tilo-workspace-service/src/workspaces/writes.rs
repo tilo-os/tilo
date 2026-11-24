@@ -165,6 +165,7 @@ mod tests {
 
     use super::super::fixtures::{
         TestGroupKeys, device_cert, governor_with, test_host, test_host_holding,
+        test_host_in_the_clear,
     };
     use super::super::{MemberDevice, Workspaces};
     use tilo_peer_state::workspace_documents::DocumentRead;
@@ -316,6 +317,33 @@ mod tests {
             } => (changes.0, pending),
             other => panic!("a read of a small record answers it in one page: {other:?}"),
         }
+    }
+
+    /// A host that takes part in no workspace's channels has no device to found a workspace on:
+    /// asked to make one, it refuses, and says why in words its person reads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_host_with_no_device_founds_no_workspace() {
+        let dir = tempfile::tempdir().expect("a state directory");
+        let (key, cert) = governor_with(DeviceCapabilities::member());
+        let server = test_host_in_the_clear(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces().clone();
+        let refused = workspaces
+            .create("Notes")
+            .await
+            .expect_err("no device founds it");
+        let refusal = tilo_server_protocol::workspaces::AdminRefusal::from_reason(&refused);
+        assert_eq!(
+            refusal,
+            Some(tilo_server_protocol::workspaces::AdminRefusal::NoDeviceToFound),
+            "{refused}"
+        );
+        assert!(
+            refusal.unwrap().to_string().contains("device"),
+            "the person is told a device founds it"
+        );
+        assert!(workspaces.list().await.is_empty(), "nothing was made");
+        drop(workspaces);
+        server.shutdown().await;
     }
 
     /// A window that asks for its documents before this device holds their workspace (one the

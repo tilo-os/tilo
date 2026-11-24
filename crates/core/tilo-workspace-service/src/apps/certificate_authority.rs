@@ -28,20 +28,14 @@ pub trait CertificateAuthority: Send + Sync {
         workspace: Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String>;
-    /// Whether `_device` governs `_workspace`; `None` is this host's own device.
-    /// A foreign device is held to the workspace's cap only in workspaces it
-    /// does not govern; the default governs none.
-    fn governs(&self, _workspace: Uuid, _device: Option<&[u8; 32]>) -> bool {
-        false
-    }
     /// The key of the device this host runs on: the computer whose displays its seat holds.
     /// `None` on a host that runs on no computer of its own, which changes no displays.
     fn device(&self) -> Option<[u8; 32]> {
         None
     }
     /// The certificate this host's own device holds, which it acts under itself before anyone
-    /// signs in here: in the workspace founded on it, the one it governs ([`Self::governs`] with
-    /// `None`). `None` on a host whose device does not act as itself.
+    /// signs in here: in a workspace its person governs. `None` on a host whose device does not
+    /// act as itself.
     fn own_device(&self) -> Option<tilo_user_identity::DeviceCert> {
         None
     }

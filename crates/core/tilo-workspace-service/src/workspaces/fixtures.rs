@@ -360,6 +360,13 @@ pub async fn lists(reader: &Workspaces, workspace: &str) -> bool {
 /// # Panics
 ///
 /// The endpoint cannot bind or the host cannot open.
+/// A device's own keys, as the channel service of the device a workspace is founded on holds
+/// them: what a founding seals the workspace's records with.
+#[must_use]
+pub fn founding_device() -> crate::documents::device_keys::DeviceKeys {
+    Arc::<TestGroupKeys>::default()
+}
+
 pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -> TestHost {
     test_host_with_grants(state_root, key, cert, None).await
 }

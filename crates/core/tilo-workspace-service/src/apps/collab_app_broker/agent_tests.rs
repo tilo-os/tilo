@@ -19,7 +19,6 @@ struct Native {
     certificate: tilo_user_identity::DeviceCert,
     origin: PolicyOrigin,
     cached_projection: Mutex<Option<tilo_desktop_model::Layout>>,
-    capped_connection: std::sync::atomic::AtomicBool,
     spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
     /// The workspace's governor records no effect receipt: one it is asked for
     /// is refused, as a governor out of reach refuses it.
@@ -123,14 +122,6 @@ impl CertificateAuthority for Native {
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         })
-    }
-    fn governs(&self, requested: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
-        requested.to_string() == workspace_id().to_string()
-            && !(self
-                .capped_connection
-                .load(std::sync::atomic::Ordering::SeqCst)
-                && device.is_some())
-            && device.is_none_or(|key| *key == self.certificate.device_public_key)
     }
 }
 impl WorkspaceCommits for Native {
@@ -278,7 +269,7 @@ impl Fixture {
         providers: crate::workspaces::providers::Providers,
         resource_changes: Option<Arc<dyn crate::apps::services::DocumentChangeServices>>,
     ) -> Self {
-        Self::built(launcher, providers, resource_changes, true)
+        Self::built(launcher, providers, resource_changes, false)
     }
     /// The fixture, its signed device `foreign` to this host or one of its own.
     #[allow(
@@ -314,8 +305,8 @@ impl Fixture {
             &key,
             "Governor",
         );
-        // The signed device is initially governed here, so its foreign-device
-        // ceiling only applies after the live connection loses that authority.
+        // A device of the person's own runs the agents: a foreign one is held to the
+        // workspace's cap, which no agent runs under.
         certificate.capabilities.foreign = foreign;
         tilo_user_identity::sign_device_cert(&mut certificate, &SigningKey::from_bytes(&[91; 32]))
             .unwrap();
@@ -327,7 +318,6 @@ impl Fixture {
             certificate,
             origin: OwnerPolicyClock::new().unwrap().new_origin(),
             cached_projection: Mutex::new(None),
-            capped_connection: std::sync::atomic::AtomicBool::new(false),
             spent_grants: Mutex::new(Vec::new()),
             receipts_refused: std::sync::atomic::AtomicBool::new(false),
             opening: std::sync::atomic::AtomicBool::new(false),

@@ -7,7 +7,7 @@
 //! reached since some time. Every device reads from those rows, against how
 //! many copies the workspace wants, which holder is short of what.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tilo_lock::MutexRecover as _;
@@ -33,9 +33,6 @@ pub(super) struct Links(Arc<LinksInner>);
 #[derive(Default)]
 struct LinksInner {
     links: std::sync::Mutex<BTreeMap<[u8; 32], Link>>,
-    /// The holders a change is held back from until the history it builds
-    /// on arrives.
-    held_from: std::sync::Mutex<BTreeSet<[u8; 32]>>,
     /// How many blobs of the content the workspace's files name this device
     /// lacks.
     content_missing: std::sync::atomic::AtomicU32,
@@ -74,19 +71,6 @@ impl Links {
     /// Wait until a link changes, or say it changed at once.
     pub(super) async fn changed(&self) {
         self.0.changed.notified().await;
-    }
-
-    /// Changes from `held_from` are held back for history this device lacks.
-    pub(super) fn hold_from(&self, held_from: BTreeSet<[u8; 32]>) {
-        if *self.0.held_from.lock_recover() != held_from {
-            *self.0.held_from.lock_recover() = held_from;
-            self.0.changed.notify_one();
-        }
-    }
-
-    /// The holders a change is held back from.
-    pub(super) fn held_from(&self) -> BTreeSet<[u8; 32]> {
-        self.0.held_from.lock_recover().clone()
     }
 
     /// This device lacks `blobs` of the content the workspace names.

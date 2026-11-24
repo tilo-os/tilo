@@ -534,14 +534,10 @@ impl GovernedWorkspace {
             workspace_id: bootstrap.workspace_id,
             owner: bootstrap.host.clone(),
             peer: parts.stage(&peer)?,
-            generation: bootstrap.generation.max(1),
-            outgoing: Vec::new(),
-            published: 0,
             collaboration: super::collaboration::CollaborationState::default(),
         };
-        let (publications, _) = appended::Appended::open(&path, super::PUBLICATIONS, 0)?;
         let (receipts, _) = appended::Appended::open(&path, super::RECEIPTS, 0)?;
-        let mut this = Self::assemble(entry, peer, path, parts, (publications, receipts), device)?;
+        let mut this = Self::assemble(entry, peer, path, parts, receipts, device)?;
         this.persist()?;
         Ok(this)
     }

@@ -240,12 +240,7 @@ impl AppBrokerState {
                         .map_err(unavailable)?;
                 }
                 let mut actor = current.broker_actor();
-                actor.capped |= super::cap_applies_in(
-                    self.certificate_authority.get().map(AsRef::as_ref),
-                    workspace,
-                    *foreign_restriction,
-                    Some(&certificate.device_public_key),
-                );
+                actor.capped |= *foreign_restriction;
                 Some(actor)
             }
             Some(InvocationCaller::Local {
@@ -290,7 +285,7 @@ impl AppBrokerState {
                 self.checked_policy_time(Some(time)).map_err(unavailable)?;
                 self.current_native_person(workspace, certificate)
                     .map_err(unavailable)?;
-                Some(self.certified_person(workspace, certificate))
+                Some(self.certified_person(certificate))
             }
             None => None,
         };
@@ -688,13 +683,7 @@ impl AppBrokerState {
             Ok(actor)
         })?;
         let started = service.start(&crate::apps::services::WorkspaceGovernanceRequest {
-            local_device: (caller.device_public_key().is_none()
-                || matches!(&admitted.owner,
-                    super::InvocationOwner::Certified { device, .. }
-                    | super::InvocationOwner::AuthenticatedLocal { device, agent: None, .. }
-                    if self.services.native_certificates.as_ref().is_some_and(|authority|
-                        uuid::Uuid::parse_str(&workspace_id).is_ok_and(|workspace|
-                            authority.governs(workspace, Some(device))))))
+            local_device: caller.device_public_key().is_none()
                 && !caller.acting().is_automation()
                 && caller.acting_for_person().is_none()
                 && request.on_behalf_of.is_none(),

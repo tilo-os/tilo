@@ -169,10 +169,6 @@ impl Workspaces {
             .lock_recover()
             .remove(workspace);
         self.inner.queued_writes.lock_recover().remove(workspace);
-        self.inner
-            .unbuildable_windows
-            .lock_recover()
-            .remove(workspace);
         // Its retained history and its files go off the runtime's threads:
         // removing a workspace walks and unlinks directories, and the store's
         // index is held only while its entry is dropped.

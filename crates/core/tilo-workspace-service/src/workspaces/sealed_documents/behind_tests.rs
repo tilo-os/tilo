@@ -166,20 +166,27 @@ async fn a_copy_that_passed_a_write_over_takes_it_in_again_on_load() {
 }
 
 /// The server keeps a member's compaction its governor's copy never decided, as when the node
-/// was ended between the two, and the compaction covers a write the copy passed over. The
-/// server keeps that write beside the compaction until every device with the record's keys has
-/// checked it, the copy among them; loading the workspace takes the compaction with the node's
-/// keys, as it holds every change the copy holds, and the record reads whole.
+/// was ended between the two, and the compaction covers a write the copy passed over. A holder
+/// drops the writes a checkpoint covers only once every device with the record's keys checked
+/// it, and the node, one of them, never did: the server still keeps the write beside the
+/// compaction. Loading the workspace takes the compaction with the node's keys, as it holds
+/// every change the copy holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
     let (lounge, session) = lounge_with_link().await;
     let (state, second, compaction) = a_copy_without_the_second_write(&lounge, &session).await;
     kept_untold(&lounge, &compaction);
+    let NeighbourMsg::AppDocument { envelope, .. } = &compaction else {
+        panic!("a compaction is a document write");
+    };
+    let kept = retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT).await;
     assert!(
-        retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
-            .await
-            .contains(&second),
-        "the server keeps the write until the copy has checked the compaction"
+        kept.contains(envelope),
+        "the server keeps the member's compaction as its device signed it"
+    );
+    assert!(
+        kept.contains(&second),
+        "a write the compaction covers stays until every key holder checked the compaction"
     );
 
     lounge
@@ -187,9 +194,6 @@ async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
         .recall(&mut *state.lock().await)
         .await
         .unwrap();
-    let NeighbourMsg::AppDocument { envelope, .. } = &compaction else {
-        panic!("a compaction is a document write");
-    };
     let held = state
         .lock()
         .await
@@ -235,7 +239,7 @@ async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
             .unwrap();
         assert!(filed, "the member's check is kept in its row");
         governed
-            .commit(candidate, &lounge.governor_key, now, |entry, _| {
+            .keep(candidate, &lounge.governor_key, now, |entry, _| {
                 Ok(entry.collaboration.clone())
             })
             .unwrap();
@@ -277,9 +281,10 @@ async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
     lounge.server.shutdown().await;
 }
 
-/// The node folds its copy of a document its members seal, as it does before the history fills,
-/// and publishes the fold as a member publishes its own: the history the server keeps leads
-/// with it. A member's compaction of that history is taken in its place.
+/// The node's device folds its copy of a document its members seal, as it does before the
+/// history fills, and carries the fold as its own signed write, as a member carries its own:
+/// the server keeps it as the device signed it, and the history leads with it. A member's
+/// compaction of that history is taken in its place.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_members_compaction_of_the_nodes_fold_is_taken() {
     let (lounge, session) = lounge_with_link().await;
@@ -308,7 +313,7 @@ async fn a_members_compaction_of_the_nodes_fold_is_taken() {
         .unwrap();
     let collaboration = governed.collaboration().clone();
     governed
-        .commit(folded, &lounge.governor_key, now, |_, _| Ok(collaboration))
+        .keep(folded, &lounge.governor_key, now, |_, _| Ok(collaboration))
         .unwrap();
     lounge.workspaces.settle(&mut governed).await.unwrap();
     lounge

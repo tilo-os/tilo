@@ -336,12 +336,6 @@ tilo_test_env::scenario! {
                     },
                 )
                 .unwrap();
-            // The host remains a governor; only the original device loses its
-            // uncapped authority while the durable admission is in flight.
-            fixture
-                .authority
-                .device_governs
-                .store(false, Ordering::SeqCst);
             let ownership = (
                 &fixture.caller,
                 Some(&fixture.origin),

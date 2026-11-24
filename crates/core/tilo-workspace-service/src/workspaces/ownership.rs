@@ -66,7 +66,7 @@ impl Workspaces {
             return Ok(());
         }
         let state = governed.collaboration().clone();
-        governed.commit(candidate, key, now, |_, _| Ok(state))?;
+        governed.keep(candidate, key, now, |_, _| Ok(state))?;
         self.settle(governed).await
     }
 
@@ -170,7 +170,7 @@ impl Workspaces {
                 .governance_mut()
                 .remove_governed_grants(&ids, key, now)?;
             let state = governed.collaboration().clone();
-            governed.commit(candidate, key, now, |_, _| Ok(state))?;
+            governed.keep(candidate, key, now, |_, _| Ok(state))?;
         }
         self.give_ownership(governed, person, None).await?;
         tracing::info!(workspace = %governed.workspace(), owner = %hex::encode(person),

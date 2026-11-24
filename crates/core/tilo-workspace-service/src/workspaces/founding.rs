@@ -17,10 +17,9 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
 
-use super::commit::{prepare_governance, publication, select_exact_admission};
 use super::{
-    DOCUMENT_VERSION, DeviceKeys, GovernedWorkspace, PUBLICATIONS, RECEIPTS,
-    WorkspaceDocumentEntry, appended, collaboration, peer_parts,
+    DOCUMENT_VERSION, DeviceKeys, GovernedWorkspace, RECEIPTS, WorkspaceDocumentEntry, appended,
+    collaboration, peer_parts, select_exact_admission,
 };
 
 impl GovernedWorkspace {
@@ -61,6 +60,13 @@ impl GovernedWorkspace {
         now: SystemTime,
     ) -> Result<Self, String> {
         let name = tilo_peer_state::workspace_membership::valid_founding_name(name)?;
+        // A workspace is founded by a device, which signs its founding and seals its records.
+        // A host with no device of its own writes no record and founds nothing.
+        let Some(device) = device else {
+            return Err(
+                tilo_server_protocol::workspaces::AdminRefusal::NoDeviceToFound.to_reason(),
+            );
+        };
         let workspace = uuid::Uuid::parse_str(workspace)
             .map_err(|_| "a workspace is a UUID".to_owned())?
             .hyphenated()
@@ -78,26 +84,19 @@ impl GovernedWorkspace {
         )?;
         select_exact_admission(&mut peer)?;
         let mut seed = tilo_peer_state::workspace_seed(&workspace, authority, &roster, name, now)?;
-        if device.is_some() {
-            // The workspace's records are sealed channels this node opens on
-            // first use: a seed record would go out in the clear before its
-            // channel exists, and every member who joins after the channel
-            // opened refuses that cleartext. The shared desktop starts with
-            // the first layout written to it, sealed, as in a workspace that
-            // never had one (`prepare_desktop_document`).
-            seed.documents.clear();
-        }
+        // The workspace's records are sealed channels this device opens on
+        // first use: a seed record would go out in the clear before its
+        // channel exists, and every member who joins after the channel
+        // opened refuses that cleartext. The shared desktop starts with
+        // the first layout written to it, sealed, as in a workspace that
+        // never had one (`prepare_desktop_document`).
+        seed.documents.clear();
         peer.install_seed(seed, key, now)?;
-        prepare_governance(&mut peer, key, now)?;
         let (registries, defaults) = starts;
         record_registries(&mut peer, authority, key, registries, now)?;
         record_defaults(&mut peer, authority, key, defaults, now)?;
-        let outgoing = peer
-            .publication_mut()
-            .bootstrap_messages(key, now)?
-            .iter()
-            .map(|message| publication(message, true))
-            .collect::<Result<Vec<_>, _>>()?;
+        // The founding is the founding device's own change, carried as it signed it.
+        let founding = peer.workspace_message();
         let path = dir.join(format!("{workspace}.workspace"));
         let mut parts = peer_parts::PeerParts::open(&path)?;
         let record = WorkspaceDocumentEntry {
@@ -107,14 +106,11 @@ impl GovernedWorkspace {
             workspace: workspace.clone(),
             owner: authority.clone(),
             peer: parts.stage(&peer)?,
-            generation: 1,
-            outgoing,
-            published: 0,
             collaboration: collaboration::CollaborationState::default(),
         };
-        let (publications, _) = appended::Appended::open(&path, PUBLICATIONS, 0)?;
         let (receipts, _) = appended::Appended::open(&path, RECEIPTS, 0)?;
-        let mut this = Self::assemble(record, peer, path, parts, (publications, receipts), device)?;
+        let mut this = Self::assemble(record, peer, path, parts, receipts, Some(device))?;
+        this.unsent.push(founding);
         this.moderation_history_checked
             .store(true, std::sync::atomic::Ordering::Relaxed);
         this.persist()?;
@@ -203,7 +199,7 @@ mod tests {
             "Team",
             &cert,
             &key,
-            None,
+            Some(&crate::workspaces::fixtures::founding_device()),
             (&[], &defaults),
             SystemTime::now(),
         )
@@ -239,7 +235,7 @@ mod tests {
             "Team",
             &cert,
             &key,
-            None,
+            Some(&crate::workspaces::fixtures::founding_device()),
             (&registries, &defaults),
             SystemTime::now(),
         )
@@ -272,7 +268,7 @@ mod tests {
             "Team",
             &cert,
             &key,
-            None,
+            Some(&crate::workspaces::fixtures::founding_device()),
             (&[], &ran),
             SystemTime::now(),
         )
@@ -304,7 +300,7 @@ mod tests {
             "Placed",
             &cert,
             &key,
-            None,
+            Some(&crate::workspaces::fixtures::founding_device()),
             (&[], &[]),
             SystemTime::now(),
         )
@@ -323,7 +319,7 @@ mod tests {
             "Team",
             &cert,
             &key,
-            None,
+            Some(&crate::workspaces::fixtures::founding_device()),
             (&[], &[malformed]),
             SystemTime::now(),
         );

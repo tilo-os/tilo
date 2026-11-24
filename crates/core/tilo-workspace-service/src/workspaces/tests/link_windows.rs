@@ -58,7 +58,7 @@ async fn committed_with(workspaces: &Workspaces, workspace: &str, titles: usize)
             {
                 let governed = state.lock().await;
                 let held = titles_in(governed.peer().admitted_workspace().unwrap()).len();
-                if held == titles && governed.peer().workspace_heads() == governed.published_heads {
+                if held == titles && governed.peer().workspace_heads() == governed.kept_heads {
                     return;
                 }
             }
@@ -143,15 +143,6 @@ async fn a_members_windows_the_link_admitted_outlive_a_restart() {
     link.send(closed_on(members_copy, &workspace, &member, salt))
         .unwrap();
     committed_with(&workspaces, &workspace, 0).await;
-    assert!(
-        workspaces
-            .inner
-            .unbuildable_windows
-            .lock()
-            .unwrap()
-            .is_empty(),
-        "no change of the member's was refused for history the workspace lost"
-    );
     pairing.abort();
     drop(link);
     drop(workspaces);

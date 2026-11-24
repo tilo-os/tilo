@@ -960,7 +960,7 @@ impl AppBrokerState {
         let now = self.policy_now_ns().ok()? / 1_000_000_000;
         // The actor consults the certificate authority: asked before the
         // workspace is borrowed, never under it.
-        let actor = self.caller_actor(caller, workspace);
+        let actor = self.caller_actor(caller);
         membership
             .decide_in_workspace(workspace, |workspace| {
                 let workspace =
@@ -1016,7 +1016,7 @@ impl AppBrokerState {
         workspaces
             .into_iter()
             .map(|workspace| {
-                let actor = self.caller_actor(caller, &workspace.id().to_string());
+                let actor = self.caller_actor(caller);
                 (workspace, actor, now)
             })
             .collect()
@@ -2834,7 +2834,7 @@ impl AppBrokerState {
             })
             .and_then(|allowed| allowed.then_some((action, workspace)))
             .ok_or(ActionCallError::UnknownAction)?;
-        let actor = self.caller_actor(caller, &workspace);
+        let actor = self.caller_actor(caller);
         let token = self.confirmation_token(
             peer_id,
             &app_id,
@@ -3398,7 +3398,7 @@ mod foreign_caller_tests {
             );
         }
 
-        phase a_foreign_caller_is_capped_only_in_workspaces_its_device_does_not_govern;
+        phase a_foreign_caller_is_capped_whoever_its_device_is;
         {
             let user = [26; 32];
             let mut workspace = Workspace::new(WorkspaceId::from_u128(6), "Callers");
@@ -3412,10 +3412,6 @@ mod foreign_caller_tests {
                 Some(tree.shared()),
                 None,
             );
-            let governor = [7; 32];
-            let authority: Arc<dyn crate::apps::certificate_authority::CertificateAuthority> =
-                Arc::new(GovernedBy(governor));
-            assert!(state.certificate_authority.set(authority).is_ok());
             let may_administer = |caller: &Caller| {
                 let (workspace, policy, now) = state.workspaces_for(caller).pop().unwrap();
                 policy.may_in(
@@ -3428,25 +3424,9 @@ mod foreign_caller_tests {
             let caller =
                 |device, foreign| Caller::authenticated(user, device).from_foreign_device(foreign);
 
-            assert!(may_administer(&caller(governor, true)));
+            assert!(!may_administer(&caller([7; 32], true)));
             assert!(!may_administer(&caller([8; 32], true)));
             assert!(may_administer(&caller([8; 32], false)));
-        }
-    }
-
-    /// Every workspace is governed by one device.
-    struct GovernedBy([u8; 32]);
-
-    impl crate::apps::certificate_authority::CertificateAuthority for GovernedBy {
-        fn authorize(
-            &self,
-            _workspace: uuid::Uuid,
-            _certificate: &tilo_user_identity::DeviceCert,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-        fn governs(&self, _workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
-            device == Some(&self.0)
         }
     }
 }

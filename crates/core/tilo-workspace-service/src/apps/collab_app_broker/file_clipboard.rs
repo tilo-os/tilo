@@ -61,7 +61,7 @@ impl JoinedChannel {
                 .caller
                 .as_ref()
                 .and_then(|caller| caller.current(&self.state))
-                .map(|caller| self.state.caller_actor(&caller, &workspace))
+                .map(|caller| self.state.caller_actor(&caller))
                 .ok_or("original clipboard caller unavailable")?;
             actor.actor().clone()
         } else {
@@ -249,7 +249,7 @@ fn clipboard_actor(
         if caller.execution_id().is_some() && !caller.execution_is_live() {
             return Err("original clipboard execution ended".into());
         }
-        state.caller_actor(&caller, &route.cluster_id)
+        state.caller_actor(&caller)
     } else {
         state
             .revalidate_admission(route, admitted)

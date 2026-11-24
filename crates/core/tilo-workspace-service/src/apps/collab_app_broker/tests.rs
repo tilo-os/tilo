@@ -888,24 +888,6 @@ fn verified_device(root: &SigningKey) -> VerifiedJoinIdentity {
     }
 }
 
-/// Governs every workspace for one device; admits every certificate.
-#[cfg(test)]
-struct GovernedBy([u8; 32]);
-
-#[cfg(test)]
-impl crate::apps::certificate_authority::CertificateAuthority for GovernedBy {
-    fn authorize(
-        &self,
-        _workspace: uuid::Uuid,
-        _certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-    fn governs(&self, _workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
-        device == Some(&self.0)
-    }
-}
-
 #[cfg(test)]
 #[derive(Clone)]
 struct ListingAuthority {

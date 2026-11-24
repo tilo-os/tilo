@@ -252,7 +252,7 @@ fn operations_name_rows(
                 }
                 continue;
             }
-            MembershipOpCommand::Project { .. } => continue,
+            MembershipOpCommand::Project { .. } | MembershipOpCommand::Compact { .. } => continue,
         };
         // A batch carries every change its writer made since the receiver's
         // heads: several of them may name one part, each judged under its

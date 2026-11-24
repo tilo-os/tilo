@@ -1331,7 +1331,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .governance_mut()
             .admit_invited_member(&redemption, &other_owner_device, now)
             .unwrap_err()
-            .contains("only its own"),
+            .contains("written by the device it admits"),
         "no other device writes the guest's redemption, the owner's neither"
     );
     assert!(

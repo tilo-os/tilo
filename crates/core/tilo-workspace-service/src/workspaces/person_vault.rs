@@ -99,7 +99,7 @@ impl Workspaces {
             .remove_governed_grants(ids, key, at)?
         {
             let state = workspace.collaboration().clone();
-            workspace.commit(candidate, key, at, |_, _| Ok(state))?;
+            workspace.keep(candidate, key, at, |_, _| Ok(state))?;
             self.settle(workspace).await?;
         }
         Ok(())

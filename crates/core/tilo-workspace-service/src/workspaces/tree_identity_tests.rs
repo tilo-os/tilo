@@ -62,7 +62,7 @@ async fn keep(
     }
     let collaboration = governed.collaboration().clone();
     governed
-        .commit(candidate, key, at, |_, _| Ok(collaboration))
+        .keep(candidate, key, at, |_, _| Ok(collaboration))
         .unwrap();
     workspaces.settle(&mut governed).await.unwrap();
 }

@@ -499,7 +499,7 @@ impl Workspaces {
         {
             let log = workspace.collaboration().clone();
             workspace
-                .commit(candidate, &key, at, |_, _| Ok(log))
+                .keep(candidate, &key, at, |_, _| Ok(log))
                 .map_err(CollaborationError::new)?;
             self.settle(&mut workspace).await?;
         }

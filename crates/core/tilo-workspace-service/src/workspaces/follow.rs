@@ -212,30 +212,23 @@ impl GovernedWorkspace {
         Ok(())
     }
 
-    /// Keep and carry the governance this workspace published that the device
-    /// store does not hold yet, in order; `published` moves past each. Stops
-    /// at a change that could not be kept, with why, for the next settle to
-    /// publish again.
-    pub(super) fn publish(
+    /// Carry this host's own changes of the workspace not carried yet, in the
+    /// order they were made, each as the frame its device signed. Stops at a
+    /// change that could not be carried, with why, for the next settle to
+    /// carry again.
+    pub(super) fn carry_unsent(
         &mut self,
         records: &crate::workspace_documents::WorkspaceDocuments,
     ) -> Result<(), String> {
-        while let Some(entry) = self.record.outgoing.get(self.record.published) {
+        while let Some(frame) = self.unsent.first() {
+            let body = postcard::to_stdvec(frame).map_err(|error| error.to_string())?;
             records
                 .commit(
                     self.record.workspace_id,
-                    &crate::workspace_documents::HostCommit {
-                        body: entry.bytes.to_vec(),
-                    },
+                    &crate::workspace_documents::HostCommit { body },
                 )
-                .map_err(|error| {
-                    format!(
-                        "governance publication {} of {} not carried: {error}",
-                        self.record.published,
-                        self.record.outgoing.len()
-                    )
-                })?;
-            self.record.published = self.record.published.saturating_add(1);
+                .map_err(|error| format!("this host's change was not carried: {error}"))?;
+            self.unsent.remove(0);
         }
         Ok(())
     }
@@ -1301,14 +1294,59 @@ struct LinkDecision {
 
 impl Workspaces {
     /// Replay every record write the device's store keeps for `workspace` into
-    /// the governor's copy, and keep what it took in.
+    /// the governor's copy, and keep what it took in. A sealed write the copy
+    /// holds and the store lost is carried again, as the bytes its author
+    /// signed: a device that links later reads it from the store as from
+    /// anyone who kept it.
     pub(super) async fn recall(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
         let retained = self
             .inner
             .records
             .retained(workspace.workspace_id())
             .await?;
+        let kept: std::collections::HashSet<collab_types::Signature> = retained
+            .iter()
+            .filter_map(|retained| match retained_message(retained, true) {
+                Some(neighbour_wire::NeighbourMsg::AppDocument { envelope, .. }) => {
+                    Some(envelope.signature)
+                }
+                _ => None,
+            })
+            .collect();
         self.recall_retained(workspace, retained).await;
+        self.carry_held(workspace, &kept)
+    }
+
+    /// Carry each sealed write `workspace`'s copy holds whose signature is not
+    /// among `kept`, under its author, unchanged.
+    fn carry_held(
+        &self,
+        workspace: &GovernedWorkspace,
+        kept: &std::collections::HashSet<collab_types::Signature>,
+    ) -> Result<(), String> {
+        let peer = workspace.peer();
+        for (app, record) in peer.records() {
+            for op in peer.publication().sealed_history(&app, &record) {
+                if kept.contains(&op.signature) {
+                    continue;
+                }
+                let author = *op.author.as_bytes();
+                let message = neighbour_wire::NeighbourMsg::AppDocument {
+                    peer: tilo_peer_state::peer_handle(&author),
+                    app_id: app.clone(),
+                    cluster_id: workspace.workspace().to_owned(),
+                    document_id: record.clone(),
+                    envelope: Box::new(op),
+                    readers: None,
+                };
+                let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
+                self.inner.records.carry(
+                    workspace.workspace_id(),
+                    author,
+                    &crate::workspace_documents::HostCommit { body },
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -1326,7 +1364,6 @@ impl Workspaces {
         retained: Vec<crate::workspace_documents::RetainedBody>,
     ) {
         let (mut changed, mut again) = (false, false);
-        let mut windows = Vec::new();
         // The documents this replay changed: whoever follows them is told, as a write taken in
         // as it is made tells them, since a replay runs again whenever something a write waited
         // for lands, long after those followers first read the copy.
@@ -1345,7 +1382,11 @@ impl Workspaces {
             // `KEEP_FOLLOWED`: a server killed inside that time starts
             // without them, and nobody sends them again. So those are
             // replayed like a member's.
-            if own && !written_as_a_record(&message) {
+            // Changes of the workspace's own document are taken as the link
+            // admits them, and kept then: none waits in the store for this.
+            if (own && !written_as_a_record(&message))
+                || matches!(message, neighbour_wire::NeighbourMsg::SyncResp { .. })
+            {
                 continue;
             }
             let followed = self
@@ -1353,21 +1394,6 @@ impl Workspaces {
                 .await;
             self.replay_resource_write(workspace, retained.author, &message)
                 .await;
-            if let neighbour_wire::NeighbourMsg::SyncResp {
-                workspace: named,
-                changes,
-            } = &message
-            {
-                if named == workspace.workspace()
-                    && !super::unbuildable_windows::holds_all(
-                        workspace.peer().admitted_workspace(),
-                        changes,
-                    )
-                {
-                    windows.push((retained.author, message));
-                }
-                continue;
-            }
             let Followed {
                 changed: took,
                 replay_wanted,
@@ -1408,39 +1434,11 @@ impl Workspaces {
         for (app, record) in written {
             self.wrote(workspace.workspace(), &app, &record);
         }
-        self.recall_windows(workspace, windows).await;
         // What a write let go waited for landed in this replay: the server's
         // copy is read again, with what reached it since this one was read.
         // Each further replay needs something new to land, so it ends.
         if again {
             self.replay_soon(workspace.workspace().to_owned());
-        }
-    }
-
-    /// Take `windows`, members' changes to the workspace's own state the
-    /// server retains and the governor's copy lacks, into it, in the order
-    /// they were retained: a member's change the link admitted that the
-    /// server stopped before committing. The member's device holds it as the
-    /// workspace's, and builds every later change on it, never sending it
-    /// again; without it each of those is refused for history the workspace
-    /// lost, for as long as the member keeps publishing.
-    async fn recall_windows(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        windows: Vec<([u8; 32], NeighbourMsg)>,
-    ) {
-        let mut taken = 0_usize;
-        for (author, message) in windows {
-            match self.take_topology(workspace, author, message).await {
-                Ok(true) => taken = taken.saturating_add(1),
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::debug!(workspace = %workspace.workspace(), %error, "a retained change of a member's was not taken in");
-                }
-            }
-        }
-        if taken > 0 {
-            tracing::info!(workspace = %workspace.workspace(), taken, "the governor took in members' changes it kept but had not committed");
         }
     }
 

@@ -544,10 +544,9 @@ async fn the_admitted_workspace_widens_nothing_for_an_agent() {
     h.server.shutdown().await;
 }
 
-/// This device as its certificate authority names it before anyone signs in: it governs the
-/// workspace founded on it, and acts there under its own certificate.
+/// This device as its certificate authority names it before anyone signs in: it acts under its
+/// own certificate.
 struct ThisDevice {
-    founded: uuid::Uuid,
     certificate: tilo_user_identity::DeviceCert,
 }
 
@@ -555,26 +554,37 @@ impl crate::apps::certificate_authority::CertificateAuthority for ThisDevice {
     fn authorize(&self, _: uuid::Uuid, _: &tilo_user_identity::DeviceCert) -> Result<(), String> {
         Ok(())
     }
-    fn governs(&self, workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
-        device.is_none() && workspace == self.founded
-    }
     fn own_device(&self) -> Option<tilo_user_identity::DeviceCert> {
         Some(self.certificate.clone())
     }
 }
 
-/// The device's reader with nobody signed in on it: Kitchen is the workspace founded on it;
-/// Garden, though its person's too, it did not found.
+/// The device's reader with nobody signed in on it: its person owns Kitchen, and in Garden is
+/// a member whom someone else made neither owner nor administrator.
 fn before_sign_in(
     h: &Host,
 ) -> (
     std::sync::Arc<dyn ResourceReads>,
     crate::apps::collab_broker::AppActionBroker,
 ) {
-    let membership = crate::apps::test_support::WorkspaceTree::default().shared();
+    let mut tree = crate::apps::test_support::WorkspaceTree::default();
+    let held = |id: &str, name: &str| {
+        crate::apps::test_support::Workspace::new(
+            crate::apps::test_support::WorkspaceId::parse(id).unwrap(),
+            name,
+        )
+    };
+    let mut kitchen = held(&h.kitchen, "Kitchen");
+    kitchen.policy.set_owner(h.person.clone());
+    let mut garden = held(&h.garden, "Garden");
+    garden.policy.set_owner(hex::encode([5; 32]));
+    garden
+        .policy
+        .add_member(h.person.clone(), crate::apps::test_support::Role::Editor);
+    tree.workspaces.extend([kitchen, garden]);
+    let membership = tree.shared();
     let services = crate::apps::services::ProcessServices {
         native_certificates: Some(std::sync::Arc::new(ThisDevice {
-            founded: uuid::Uuid::parse_str(&h.kitchen).unwrap(),
             certificate: h.cert.clone(),
         })),
         ..membership.services()
@@ -588,10 +598,11 @@ fn before_sign_in(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn before_sign_in_the_device_reads_the_workspace_founded_on_it_alone() {
+async fn before_sign_in_the_device_reads_only_where_its_person_governs() {
     let h = host().await;
     let (reads, _broker) = before_sign_in(&h);
-    // Settings on this device, with nobody signed in to act for, reads the founded workspace.
+    // Settings on this device, with nobody signed in to act for, reads the workspace its person
+    // owns.
     let settings = Caller::local_app("so.tilo.settings")
         .in_workspace(h.kitchen.clone())
         .in_new_execution();
@@ -600,9 +611,9 @@ async fn before_sign_in_the_device_reads_the_workspace_founded_on_it_alone() {
     let device = Caller::local_person(h.person.clone()).in_workspace(h.kitchen.clone());
     let read = read_with(std::sync::Arc::clone(&reads), &device, &h.kitchen, "").await;
     assert!(document(&read), "{read:?}");
-    // Garden's owner is the device's own person, so its grants would allow its person's read: an
-    // app that names nobody reads it no more, as the device founded only Kitchen. A caller that
-    // names the person is decided by Garden's governance, as any other.
+    // Garden's grants would allow its member's read, but an app that names nobody reads as the
+    // device only where the signed member list makes its person owner or administrator. A caller
+    // that names the person is decided by Garden's governance, as any other.
     let read = read_with(std::sync::Arc::clone(&reads), &settings, &h.garden, "").await;
     assert!(not_read(&read), "{read:?}");
     // Nothing reads as this device but what runs on it: no agent, and no other person.

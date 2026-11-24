@@ -426,19 +426,20 @@ mod copy {
             let now = tilo_clock::wall();
             let key = &self.inner.host.key;
             let mut candidate = governed.peer().clone();
-            sealed_documents::refound(
+            let written = sealed_documents::refound(
                 &mut candidate,
-                keys.as_ref(),
+                sealed_documents::sealed_with(keys.as_ref()).map_err(CollaborationError::new)?,
                 (app, record),
                 whole.save(),
                 key,
                 now,
             )
             .map_err(CollaborationError::new)?;
-            governed.commit(candidate, key, now, |record, _| {
+            governed.keep(candidate, key, now, |record, _| {
                 Ok(record.collaboration.clone())
             })?;
             self.settle(&mut governed).await?;
+            self.carry_written(governed.workspace_id(), &[written])?;
             Ok(())
         }
     }

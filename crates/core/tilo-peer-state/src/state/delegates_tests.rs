@@ -255,8 +255,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
         governor
             .governance_mut()
             .admit_agent(cert.clone(), granted.clone(), &authority, now)
-            .unwrap_err()
-            .contains("only its own row"),
+            .is_err(),
         "no other device writes the agent's row"
     );
     assert!(

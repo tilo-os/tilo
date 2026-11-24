@@ -46,7 +46,6 @@ mod moderation_history;
 pub use branch::{BranchContent, BranchFileKeys, Branched};
 mod channel_governance;
 mod collaboration;
-mod commit;
 mod content;
 /// The records of the content a host stopped keeping, which its members read.
 pub use refused::Refusal as ContentRefusalRecord;
@@ -55,7 +54,6 @@ mod default_apps;
 mod delete;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
-mod genesis;
 mod machines;
 mod mcp_server;
 mod refused;
@@ -197,10 +195,6 @@ mod personal;
 pub use personal::{PresentDevices, on_presence_change, presence_changed, present_on};
 mod weak;
 pub use weak::WeakWorkspaces;
-mod publication;
-use publication::{Change, SinceBase, starts_over, withdraws};
-#[cfg(test)]
-use publication::{MAX_PUBLICATION_TAIL, MIN_PUBLICATION_TAIL_BYTES, based};
 mod document_format;
 mod record_authority;
 mod resources;
@@ -254,7 +248,6 @@ pub(crate) mod tests;
 #[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
 pub(crate) use actions::tests::governed;
 mod unattended;
-mod unbuildable_windows;
 #[cfg(feature = "agents")]
 mod views;
 mod wait_list;
@@ -305,31 +298,17 @@ use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// The record's version this build writes, and the one it reads: it keeps no
 /// name of its own, the governance's being the one (see [`document_format`]).
-const DOCUMENT_VERSION: u32 = 5;
+const DOCUMENT_VERSION: u32 = 6;
 /// How long members' writes the governor took in may wait to be written
 /// through to the workspace file. A hard stop loses at most these; replaying
 /// what the server retains brings them back.
 const KEEP_FOLLOWED: Duration = Duration::from_secs(1);
 
-/// One governance message this workspace has published, in publication order.
-/// Its bytes are shared by every copy of the record, so the workspace file's
-/// writer knows a publication it wrote before by its allocation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Publication {
-    #[serde(with = "shared_bytes")]
-    bytes: Arc<[u8]>,
-    checkpoint: bool,
-}
-
-mod shared_bytes;
-
 /// Everything a governed workspace keeps across restarts. Written atomically
-/// after each decision, before it is published or answered; the large parts
-/// of `peer` are files of their own ([`peer_parts`]), and the publications
-/// and join receipts are in files appended to beside it ([`appended`]), all
-/// written before it ([`document_format::StoredResource`]). Its own encoding is the
-/// version 3 layout, which is what a record holds once its files are read back
-/// into it.
+/// after each decision, before it is carried or answered; the large parts
+/// of `peer` are files of their own ([`peer_parts`]), and the join receipts
+/// are in a file appended to beside it ([`appended`]), all written before it
+/// ([`document_format::StoredResource`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct WorkspaceDocumentEntry {
     version: u32,
@@ -337,20 +316,9 @@ struct WorkspaceDocumentEntry {
     workspace_id: WorkspaceId,
     owner: DeviceCert,
     peer: Vec<peer_parts::PeerPart>,
-    generation: u64,
-    /// The complete committed publication: the last full checkpoint and every
-    /// change after it. Members receive it over the workspace's sync.
-    outgoing: Vec<Publication>,
-    /// How much of `outgoing` the server has retained, as of the workspace's last
-    /// write. Publishing does not write the workspace again: after a crash the
-    /// workspace republishes what it published since, which members tolerate.
-    published: usize,
     collaboration: collaboration::CollaborationState,
 }
 
-/// The extension of the file beside a workspace record holding its
-/// publications ([`appended`]).
-const PUBLICATIONS: &str = "published";
 /// The extension of the file beside a workspace record holding its join
 /// receipts ([`appended`]).
 const RECEIPTS: &str = "joins";
@@ -369,8 +337,6 @@ pub(crate) struct GovernedWorkspace {
     path: PathBuf,
     /// The files of `record.peer`'s large parts.
     parts: peer_parts::PeerParts,
-    /// `record.outgoing`, in its own file.
-    publications: appended::Appended<Publication>,
     /// The join receipts of `record.collaboration`, in their own file.
     receipts: Receipts,
     /// The channel keys of the device this host runs on, asked for the
@@ -418,22 +384,17 @@ pub(crate) struct GovernedWorkspace {
     /// ([`Workspaces::join_soon`]).
     #[cfg(feature = "device-keys")]
     asking: std::collections::BTreeSet<(String, String)>,
-    /// Whether something the workspace published since its document last
-    /// started over overwrote or deleted a value ([`withdraws`]): a shared
-    /// window closed, a member removed, a name changed. A newcomer replayed
-    /// that history would read what was taken back before they came, so the
-    /// next arrival starts the workspace over. Arrivals and other changes that
-    /// only add are appended, and the publication then starts over only on its
-    /// cadence ([`starts_over`]). Kept in memory: a workspace just made or read
-    /// back from its file counts as having withdrawn something until it next
-    /// starts over.
-    since_base: SinceBase,
-    /// Where the workspace's own document stood when this holder last
-    /// published a change of it, or opened it. The replica moves past it
-    /// between commits, as the workspace's link takes in a member's change or
-    /// writes this holder's own checkpoints of the documents it covers, and the
-    /// next commit publishes those changes with its own ([`Self::commit_held`]).
-    published_heads: Option<Vec<automerge::ChangeHash>>,
+    /// Where the workspace's own document stood when its file was last
+    /// written, or it was opened. The workspace's link takes a member's change
+    /// into the replica without the workspace's lock, so the replica moves past
+    /// it between writes; a change taken in that no write holds yet is written
+    /// with the next one ([`Workspaces::take_members_change`]).
+    kept_heads: Option<Vec<automerge::ChangeHash>>,
+    /// This host's own changes of the workspace's document, signed by its
+    /// device, that the next settle carries to the workspace's devices
+    /// ([`Workspaces::settle`]): only what this device wrote. A member's change
+    /// reaches the others as its own device sent it, carried unchanged.
+    unsent: Vec<neighbour_wire::NeighbourMsg>,
     /// This host's sessions to the workspace's other holders
     /// ([`Workspaces::dial_holders`]).
     holders: holding::Holders,
@@ -453,6 +414,47 @@ pub(crate) struct GovernedWorkspace {
 fn base_generation(peer: &StatePeer) -> u64 {
     peer.admitted_workspace()
         .map_or(0, tilo_peer_state::workspace::base::generation)
+}
+
+/// Keep exact admission evidence in this host's copy of the workspace. A
+/// member of a workspace whose channels are sealed writes its records sealed,
+/// and the host follows those writes into its copy: with exact evidence it
+/// keeps each one as the record's ciphertext history and acknowledges it in
+/// its next change of the workspace. Without it a sealed write only marks the
+/// record encrypted, and every later change of the workspace (letting the
+/// next person in among them) is refused as incomplete encryption state.
+///
+/// The copy also writes under the host's own actor
+/// ([`tilo_peer_state::workspace_host_actor`]): a device hosting its own workspaces
+/// never writes one workspace from two documents under one actor.
+fn select_exact_admission(peer: &mut StatePeer) -> Result<(), String> {
+    peer.write_as_workspace_host();
+    peer.select_exact_admissions()
+        .map_err(|error| format!("workspace exceeds exact admission bounds: {error}"))
+}
+
+/// What `candidate`, built from `replica`, holds of the workspace's document
+/// that `device`'s host wrote itself, as the one frame its device signs and
+/// sends: none when it wrote nothing. What else `candidate` took in past
+/// `replica` is a member's, which reached it as that member's device sent it.
+fn own_changes(
+    replica: &StatePeer,
+    candidate: &StatePeer,
+    device: &[u8; 32],
+) -> Option<neighbour_wire::NeighbourMsg> {
+    let actor = candidate.workspace_actor_for(device);
+    let changes: Vec<Vec<u8>> = candidate
+        .workspace_changes_since(&replica.workspace_heads().unwrap_or_default())
+        .into_iter()
+        .filter(|bytes| {
+            automerge::Change::try_from(bytes.as_slice())
+                .is_ok_and(|change| *change.actor_id() == actor)
+        })
+        .collect();
+    (!changes.is_empty()).then(|| neighbour_wire::NeighbourMsg::SyncResp {
+        changes,
+        workspace: candidate.workspace_id().to_owned(),
+    })
 }
 
 /// The people `peer`'s governance admits now.
@@ -496,25 +498,13 @@ impl GovernedWorkspace {
                 )
             })?;
         let mut parts = peer_parts::PeerParts::open(&path)?;
-        let (mut publications, published) =
-            appended::Appended::open(&path, PUBLICATIONS, stored.filed_publications)?;
         let (receipts, receipted) =
             appended::Appended::open(&path, RECEIPTS, stored.filed_receipts)?;
-        let mut record = WorkspaceDocumentEntry::read(stored, published, receipted);
-        // Publications an earlier build kept in its layout are written again in today's with the
-        // record, the publications file whole, so no later start reads the older one.
-        let republished = publication::brought_up(&mut record.outgoing)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        if republished {
-            publications.unsure();
-        }
         // The record names the workspace's owner, a fact of its membership
         // that every holder keeps as it was handed over; the device opening
         // it only writes what this host changes, and is never taken for the
         // owner.
-        if record.published > record.outgoing.len() {
-            return Err("workspace record is inconsistent".into());
-        }
+        let record = WorkspaceDocumentEntry::read(stored, receipted);
         let kept = parts
             .load(&record.peer)
             .map_err(|error| format!("peer state parts: {error}"))?;
@@ -546,12 +536,11 @@ impl GovernedWorkspace {
             parts.collect(&record.peer);
             None
         };
-        let mut workspace =
-            Self::assemble(record, peer, path, parts, (publications, receipts), device)?;
+        let mut workspace = Self::assemble(record, peer, path, parts, receipts, device)?;
         if let Some(today) = today {
             workspace.record.peer = today;
         }
-        if older || republished {
+        if older {
             workspace
                 .persist()
                 .map_err(|error| format!("workspace written again in today's layout: {error}"))?;
@@ -560,16 +549,16 @@ impl GovernedWorkspace {
     }
 
     /// A workspace of `entry` and its replica `peer`, kept at `path` with
-    /// its `parts` and its publications' and receipts' files.
+    /// its `parts` and its receipts' file.
     fn assemble(
         entry: WorkspaceDocumentEntry,
         peer: StatePeer,
         path: PathBuf,
         parts: peer_parts::PeerParts,
-        (publications, receipts): (appended::Appended<Publication>, Receipts),
+        receipts: Receipts,
         device: Option<&DeviceKeys>,
     ) -> Result<Self, String> {
-        let published_heads = peer.workspace_heads();
+        let kept_heads = peer.workspace_heads();
         let made_at_ms = peer.governance().made_at_ms();
         let invitations = readings::Invitations::default();
         let workspace = Self {
@@ -585,7 +574,6 @@ impl GovernedWorkspace {
             peer: Replica::new(peer),
             made_at_ms,
             parts,
-            publications,
             receipts,
             // Read before the path moves into the workspace.
             handed_by: holding::handed_by(&path),
@@ -598,8 +586,8 @@ impl GovernedWorkspace {
             keeping: false,
             #[cfg(feature = "device-keys")]
             asking: std::collections::BTreeSet::new(),
-            since_base: SinceBase::Withdrew,
-            published_heads,
+            kept_heads,
+            unsent: Vec::new(),
             holders: holding::Holders::default(),
             invitations,
         };
@@ -608,9 +596,9 @@ impl GovernedWorkspace {
     }
 
     /// Write the record as it stands ([`document_format::StoredResource`]): the
-    /// publications and join receipts added since the last write appended to
-    /// their files, then the workspace file naming how many those hold. A
-    /// write costs what the change added, not the workspace's size.
+    /// join receipts added since the last write appended to their file, then
+    /// the workspace file naming how many it holds. A write costs what the
+    /// change added, not the workspace's size.
     fn persist(&mut self) -> Result<(), String> {
         let write = self.file_write()?;
         if let Err(error) = self.parts.files().write(&write) {
@@ -645,17 +633,13 @@ impl GovernedWorkspace {
     /// The files a write of the workspace file found appended may hold
     /// entries the workspace file on disk does not name.
     fn unsure(&mut self) {
-        self.publications.unsure();
         self.receipts.unsure();
     }
 
-    /// The workspace file as the record stands, to write: the publications and
-    /// join receipts added since the last write are appended to their files
-    /// first.
+    /// The workspace file as the record stands, to write: the join receipts
+    /// added since the last write are appended to their file first.
     fn file_write(&mut self) -> Result<peer_parts::FileWrite, String> {
-        let published = self.record.published;
         let log = &self.record.collaboration;
-        let filed_publications = self.publications.file(&self.record.outgoing)?;
         let filed_receipts = self.receipts.file(&log.join_completions)?;
         let beyond = |filed: u64| usize::try_from(filed).map_err(|error| error.to_string());
         let record = document_format::StoredDocumentRef {
@@ -664,13 +648,6 @@ impl GovernedWorkspace {
             workspace_id: self.record.workspace_id,
             owner: &self.record.owner,
             peer: &self.record.peer,
-            generation: self.record.generation,
-            outgoing: self
-                .record
-                .outgoing
-                .get(beyond(filed_publications)?..)
-                .unwrap_or_default(),
-            published,
             collaboration: document_format::LogRef {
                 invitations: &log.invitations,
                 join_challenges: &log.join_challenges,
@@ -681,7 +658,6 @@ impl GovernedWorkspace {
                 membership_challenges: &log.membership_challenges,
                 administration: &log.administration,
             },
-            filed_publications,
             filed_receipts,
         };
         let bytes = postcard::to_stdvec(&record).map_err(|error| error.to_string())?;
@@ -726,8 +702,8 @@ impl GovernedWorkspace {
         self.collaboration().invitation_for(person, now_ns)
     }
 
-    /// Record `state` alone: challenges, invitations, receipts. Governance and
-    /// its publication are unchanged.
+    /// Record `state` alone: challenges, invitations, receipts. The workspace's
+    /// document is unchanged.
     fn commit_state(&mut self, state: collaboration::CollaborationState) -> Result<(), String> {
         let prior = std::mem::replace(&mut self.record.collaboration, state);
         if let Err(error) = self.persist() {
@@ -737,15 +713,12 @@ impl GovernedWorkspace {
         Ok(())
     }
 
-    /// Make `change` to the workspace's governance and commit it as
-    /// [`Self::commit`] does, staged from the replica (which `change` reads as
-    /// it stands) held until the change
-    /// commits: a member's write the workspace's link takes in meanwhile
-    /// waits, rather than landing between the copy the change was made on and
-    /// the commit, which would refuse the change for dropping that write.
-    /// Answers what `change` answers; nothing is committed when it changed
-    /// nothing.
-    fn change_held<T>(
+    /// Make `change` to the workspace as its copy stands, and keep it as
+    /// [`Self::keep`] does, the copy held from the build to the write: a
+    /// member's write the workspace's link takes in meanwhile waits, rather
+    /// than landing between the copy the change was made on and its write.
+    /// Answers what `change` answers; nothing is kept when it changed nothing.
+    fn change<T>(
         &mut self,
         key: &SigningKey,
         now: SystemTime,
@@ -760,44 +733,18 @@ impl GovernedWorkspace {
         let mut candidate = replica.clone();
         let (answer, changed) = change(&replica, &mut candidate)?;
         if changed {
-            self.commit_held(&mut replica, candidate, (key, now), Change::Other, state)?;
+            self.keep_held(&mut replica, candidate, (key, now), state)?;
         }
         drop(replica);
         Ok(answer)
     }
 
-    /// What `replica` took in or wrote since this holder last published a
-    /// change of the workspace's own document, as one publication: a member's
-    /// change its link admitted, or this holder's checkpoints of the documents
-    /// it covers. It goes out ahead of the change being committed, which builds
-    /// on it: a holder reaching this one only over a session is sent nothing
-    /// else of it, and would hold every later change back for its history.
-    fn published_since(&self, replica: &StatePeer) -> Result<Option<Publication>, String> {
-        let Some(published) = &self.published_heads else {
-            return Ok(None);
-        };
-        if replica.workspace_heads().as_ref() == Some(published) {
-            return Ok(None);
-        }
-        let changes = replica.workspace_changes_since(published);
-        if changes.is_empty() {
-            return Ok(None);
-        }
-        publication(
-            &neighbour_wire::NeighbourMsg::SyncResp {
-                changes,
-                workspace: replica.workspace_id().to_owned(),
-            },
-            false,
-        )
-        .map(Some)
-    }
-
-    /// Commit a governance change of `candidate`: sign it as the workspace's next
-    /// generation, append its publication, and persist it with the
-    /// collaboration state `state` derives from the committed workspace, all in
-    /// one write before anything is answered.
-    fn commit(
+    /// Keep `candidate`, the workspace's copy with a change made to it, as
+    /// the workspace: written with the collaboration state `state` derives
+    /// from it, in one write before anything is answered. What this host's
+    /// own device wrote in it the next settle carries; nothing else of it is
+    /// sent from here.
+    fn keep(
         &mut self,
         candidate: StatePeer,
         key: &SigningKey,
@@ -806,109 +753,61 @@ impl GovernedWorkspace {
             &WorkspaceDocumentEntry,
             &StatePeer,
         ) -> Result<collaboration::CollaborationState, String>,
-    ) -> Result<u64, String> {
+    ) -> Result<(), String> {
         let shared = self.peer.shared();
         let mut replica = shared.lock();
-        self.commit_held(&mut replica, candidate, (key, now), Change::Other, state)
+        self.keep_held(&mut replica, candidate, (key, now), state)
     }
 
-    /// Commit `candidate`, a change built from `replica`, which the caller
+    /// Keep `candidate`, a change built from `replica`, which the caller
     /// holds: a member's write taken into the replica meanwhile waits, so it is
-    /// neither lost to the change nor leaves the change uncommittable.
-    fn commit_held(
+    /// neither lost to the change nor leaves the change unkeepable.
+    ///
+    /// When the workspace's history is due to start over
+    /// ([`StatePeer::compaction_due`]) and this host's device is one of a
+    /// person the member list names as its owner or an administrator, it
+    /// starts it over from a base it signs ([`StatePeer::compact_workspace`]):
+    /// the host acts through its own row, as any of their devices does.
+    fn keep_held(
         &mut self,
         replica: &mut StatePeer,
         mut candidate: StatePeer,
         (key, now): (&SigningKey, SystemTime),
-        change: Change,
         state: impl FnOnce(
             &WorkspaceDocumentEntry,
             &StatePeer,
         ) -> Result<collaboration::CollaborationState, String>,
-    ) -> Result<u64, String> {
-        let committing = crate::timing::start();
-        // The owner changes only by a transfer the workspace's governance
+    ) -> Result<(), String> {
+        let keeping = crate::timing::start();
+        let device = key.verifying_key().to_bytes();
+        // The owner changes only by a transfer the workspace's member list
         // replays; any other owner is another workspace.
         if candidate.workspace_id() != replica.workspace_id() || !candidate.keeps_owner_of(replica)
         {
             return Err("a workspace change cannot replace the workspace".into());
         }
-        // A holder that does not make the base takes the one its maker made as
-        // the maker's own commit did: the workspace starts over from it here
-        // too. Published as a change of the history before it, every holder's
-        // check that a publication keeps the workspace's history would refuse
-        // it, and the holders would part, each holding back the other's
-        // changes for a history neither keeps any more. What this holder wrote
-        // against that history and the base does not hold it writes again on
-        // the base before anything is signed.
-        let adopted = base_generation(&candidate) > base_generation(replica);
-        if adopted {
-            candidate.carry_onto_base(replica, &key.verifying_key().to_bytes())?;
+        // A base an owner's or administrator's device made, taken in here: what
+        // this host wrote against the history it replaced and the base does not
+        // hold, it writes again on the base, as its own change.
+        if base_generation(&candidate) > base_generation(replica) {
+            candidate.carry_onto_base(replica, &device)?;
         }
-        let preparing = crate::timing::start();
-        prepare_governance(&mut candidate, key, now)?;
-        crate::timing::window("workspace.commit.prepare", preparing);
-        let generation = self
-            .record
-            .generation
-            .checked_add(1)
-            .ok_or("workspace generation exhausted")?;
-        let copying = crate::timing::start();
-        let mut record = self.record.clone();
-        crate::timing::window("workspace.commit.record", copying);
-        // A member admitted from now on is given the workspace as it stands,
-        // not what was withdrawn before they joined.
-        // One device makes the workspace's compacted base, the one its
-        // governance names for it, so every holder agrees which, and the next
-        // one takes over when that one stops holding the workspace; every
-        // other holder publishes only its own changes after it. A workspace
-        // naming no holder of its owner's with its keys keeps it with the
-        // device that made it.
-        let base_maker = candidate
-            .governance()
-            .base_maker()
-            .unwrap_or(record.owner.device_public_key);
-        let makes_base = base_maker == key.verifying_key().to_bytes();
-        let started_over = makes_base
-            && (starts_over(&record.outgoing)
-                || (self.since_base == SinceBase::Withdrew
-                    && !member_roots(&candidate, now).is_subset(&member_roots(replica, now))));
-        let mut since_base = self.since_base;
-        if started_over || adopted {
-            // Keep unchanged record checkpoints on their own channels; replacing
-            // those baselines could discard member writes. A record changed by
-            // this commit must still publish at the governance rollover.
-            let changed_documents = changed_records(&candidate, replica, (key, now), generation);
-            // The workspace's document starts over from a base holding its
-            // state as it stands, with none of the history that led there.
-            if !adopted {
-                candidate.rebase_workspace()?;
+        let arriving = !member_roots(&candidate, now).is_subset(&member_roots(replica, now));
+        let compacts = match self.compacts(&candidate, &device) {
+            Some(cert) if candidate.compaction_due(arriving) => {
+                candidate.compact_workspace(&cert, key, now)?
             }
-            since_base = SinceBase::Added;
-            record.outgoing = base_publications(
-                &mut candidate,
-                replica,
-                &changed_documents,
-                (key, now),
-                generation,
-            )?;
-            record.published = 0;
+            _ => false,
+        };
+        let own = if compacts {
+            Some(candidate.workspace_message())
         } else {
-            let diffing = crate::timing::start();
-            record.outgoing.extend(self.published_since(replica)?);
-            let messages = durable_messages(&candidate, replica, (key, now), generation);
-            for message in &messages {
-                if change == Change::Other && withdraws(message) {
-                    since_base = SinceBase::Withdrew;
-                }
-                record.outgoing.push(publication(message, false)?);
-            }
-            crate::timing::window("workspace.commit.messages", diffing);
-        }
+            own_changes(replica, &candidate, &device)
+        };
+        let mut record = self.record.clone();
         let encoding = crate::timing::start();
         record.peer = self.parts.stage(&candidate)?;
         crate::timing::window("workspace.commit.durable", encoding);
-        record.generation = generation;
         let deriving = crate::timing::start();
         record.collaboration = state(&record, &candidate)?;
         crate::timing::window("workspace.commit.state", deriving);
@@ -920,15 +819,33 @@ impl GovernedWorkspace {
             self.record = prior;
             return Err(error);
         }
-        self.published_heads = candidate.workspace_heads();
+        self.kept_heads = candidate.workspace_heads();
         *replica = candidate;
-        self.since_base = since_base;
-        crate::timing::event(
-            "workspace.governance_commit",
-            committing,
-            self.record.outgoing.len() as u64,
-        );
-        Ok(generation)
+        self.unsent.extend(own);
+        crate::timing::event("workspace.governance_commit", keeping, 0);
+        Ok(())
+    }
+
+    /// The certificate of `device`, this host's, when it starts `candidate`'s
+    /// history over once that is due: the device is one of a person who
+    /// governs the workspace's history, as the member list names them, and the
+    /// holder its governance names to do it
+    /// ([`tilo_peer_state::PeerGovernance::base_maker`]), so two holders do not
+    /// each start it over; the device the workspace was made on while its
+    /// governance names none.
+    fn compacts(&self, candidate: &StatePeer, device: &[u8; 32]) -> Option<DeviceCert> {
+        let maker = candidate
+            .governance()
+            .base_maker()
+            .unwrap_or(self.record.owner.device_public_key);
+        if maker != *device {
+            return None;
+        }
+        candidate
+            .certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == *device)
+            .filter(|cert| candidate.governs_history(&cert.user_public_key))
     }
 
     /// The workspace's name: the one its governance records, which its
@@ -953,7 +870,7 @@ impl GovernedWorkspace {
             workspace: self.record.workspace.clone(),
             workspace_id: self.record.workspace_id,
             name: self.name(),
-            generation: self.record.generation,
+            generation: self.peer().governance().generation(),
             members: list.members,
             devices: list.devices,
         }
@@ -967,7 +884,7 @@ impl GovernedWorkspace {
             workspace: self.record.workspace.clone(),
             workspace_id: self.record.workspace_id,
             name: self.name(),
-            generation: self.record.generation,
+            generation: self.peer().governance().generation(),
             role: None,
             labels: tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             unattended: false,
@@ -975,11 +892,6 @@ impl GovernedWorkspace {
         }
     }
 }
-
-use commit::{
-    base_publications, changed_records, durable_messages, fold_into_checkpoint, prepare_governance,
-    publication, select_exact_admission,
-};
 
 /// The extension of the marker beside a workspace file this host released.
 const RELEASED: &str = "released";
@@ -1273,10 +1185,9 @@ struct WorkspacesInner {
     /// Those waiting for their workspace's next write of the changes it staged,
     /// by workspace.
     queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
-    /// How many members' windows each workspace could not take in because they
-    /// build on history it no longer has
-    /// ([`unbuildable_windows::missing_history`]), by workspace.
-    unbuildable_windows: std::sync::Mutex<HashMap<String, u64>>,
+    /// How many times a workspace replayed what the store keeps for it
+    /// ([`Workspaces::replays`]).
+    replays: std::sync::atomic::AtomicU64,
     /// When each workspace was last written to, and a ping after each entry
     /// that changed: the directory's own, beside the entries' governance.
     directory: listing::Directory,
@@ -1670,7 +1581,7 @@ impl Workspaces {
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),
                 queued_writes: std::sync::Mutex::default(),
-                unbuildable_windows: std::sync::Mutex::default(),
+                replays: std::sync::atomic::AtomicU64::default(),
                 directory: listing::Directory::default(),
                 host,
                 entry: wait_list::EntrySettings::default(),
@@ -2541,6 +2452,9 @@ impl Workspaces {
     /// Replay what the server retains for `workspace` into the governor's
     /// copy now: [`Self::replay_soon`] in the caller's own time.
     async fn replay(&self, workspace: &str) {
+        self.inner
+            .replays
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Ok(state) = self.workspace(workspace).await else {
             return;
         };
@@ -2556,7 +2470,6 @@ impl Workspaces {
         self.found_retained(workspace, &state, &retained).await;
         let mut governed = state.lock().await;
         self.recall_retained(&mut governed, retained).await;
-        self.retry_held(&mut governed).await;
     }
 
     /// Ask the key holders of `app`'s `record`'s channel in `workspace` to
@@ -2666,7 +2579,7 @@ impl Workspaces {
             neighbour_wire::NeighbourMsg::SyncResp {
                 workspace: ref named,
                 ..
-            } if named == workspace => self.absorb_topology(workspace, author, message).await,
+            } if named == workspace => self.take_members_change(workspace, author, message).await,
             // A resource's document is the store's, which hands any other write back.
             _ => return self.absorb_resources(workspace, author, message).await,
         }
@@ -2679,6 +2592,17 @@ impl Workspaces {
     async fn absorb(&self, workspace: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
         self.absorb_carried(workspace, author, body, Carried::Kept)
             .await
+    }
+
+    /// How many times this device's workspaces replayed what the store keeps
+    /// for them: once each time an app surface arrives or a write let go can
+    /// be taken in, so a count that keeps growing is a replay arming itself.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn replays(&self) -> u64 {
+        self.inner
+            .replays
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// [`Self::absorb`] for a test that hands a member's device's write to the host as the
@@ -2697,10 +2621,9 @@ impl Workspaces {
     }
 
     /// Take in the record write `body` of `author`. A record the workspace lacks
-    /// is created from it, if `author` is a device of an editor: records are
-    /// born only from a governor checkpoint. A write to a record the workspace has
-    /// updates the governor's copy, written through to the workspace file soon
-    /// after ([`Self::keep_soon`]).
+    /// is created from it, if `author` is a device of an editor. A write to a
+    /// record the workspace has updates this host's copy, written through to
+    /// the workspace file soon after ([`Self::keep_soon`]).
     /// Note the surface a change's op names when this host does not keep it: the change is
     /// decided against the surface its op names, the one this host runs the app with or one the
     /// workspace keeps for it ([`crate::surfaces`]), and what it lacks it asks the workspace's
@@ -2816,38 +2739,17 @@ impl Workspaces {
         }
         let now = tilo_clock::wall();
         workspace.may_start(author, (&app_id, &document_id), now)?;
-        // A record starts from the write that founds it: a write that is the
-        // whole record founds the route on its own, and is not preceded by a
-        // cleartext genesis the members, who read only what the channel seals,
-        // would have to account for. The checkpoint includes the write that
-        // created a record founded here in the clear: the server retains a
-        // member's changes only as a tail of a checkpoint that resolves their
-        // dependencies.
-        let whole = envelope.is_whole_resource();
+        // A record starts from the write that founds it, as its writer's device sent it: this
+        // host neither writes a start of its own before it nor folds it into a copy it signs.
         // A record this host's own device founds starts from the write itself: that write is the
         // whole record, and the coverage row the workspace governs its checkpoints by is
         // published with it, as a snapshot this device publishes itself has it
-        // ([`StatePeer::cover_own_checkpoint`]). It is no cleartext genesis the members would
-        // have to account for. Any other writer's founding write is a change to the record, and
-        // the host starts that one empty first.
+        // ([`StatePeer::cover_own_checkpoint`]).
         let own = author == host.cert.device_public_key;
-        let founding_keys = self
-            .founding_keys(&workspace, &app_id, &document_id, whole)
-            .await?;
-        workspace.change_held(
+        workspace.change(
             &host.key,
             now,
             |_, candidate| {
-                if !whole && !own {
-                    sealed_documents::refound(
-                        candidate,
-                        founding_keys.as_ref(),
-                        (&app_id, &document_id),
-                        automerge::AutoCommit::new().save(),
-                        &host.key,
-                        now,
-                    )?;
-                }
                 if own {
                     candidate.cover_own_checkpoint(
                         &app_id,
@@ -2863,11 +2765,6 @@ impl Workspaces {
                         now,
                     )
                     .map_err(|error| error.to_string())?;
-                // A sealed write stays in the record's sealed history; a
-                // readable one is folded into the governor's checkpoint.
-                if !sealed {
-                    fold_into_checkpoint(candidate, (&app_id, &document_id), &host.key, now)?;
-                }
                 Ok(((), true))
             },
             |record, _| Ok(record.collaboration.clone()),
@@ -2880,16 +2777,12 @@ impl Workspaces {
         self.settle(&mut workspace).await
     }
 
-    /// Take a member's own windows into the workspace's governance: the changes
-    /// a member publishes to the workspace's layout. The workspace's admission decides
-    /// them exactly as every member's does (a change to what someone else
-    /// made, without the workspace's leave, is refused); the governor commits what
-    /// it admitted as the workspace's next generation, which every member then
-    /// takes in. Until this, a window someone opened after joining reached
-    /// nobody: members take governance only from the governor, and the
-    /// governor never took these in, so the member published them again
-    /// every few seconds for nothing.
-    async fn absorb_topology(
+    /// Take `message`, `author`'s change to the workspace's own document, into
+    /// the workspace and keep it: a window a member opened, a member removed.
+    /// The workspace's admission decides it as every member's device does.
+    /// One that builds on history this device lacks waits in the copy for
+    /// that history, and its sender is asked for it.
+    async fn take_members_change(
         &self,
         workspace: &str,
         author: [u8; 32],
@@ -2900,85 +2793,18 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut workspace = workspace.lock().await;
-        if !self.take_topology(&mut workspace, author, message).await? {
-            // Held back for history this device lacks: the history the
-            // server keeps is taken in again, and the change with it.
-            self.replay_soon(workspace.workspace().to_owned());
-            return Ok(());
-        }
-        self.retry_held(&mut workspace).await;
-        drop(workspace);
-        Ok(())
-    }
-
-    /// Try again the changes held back for history (`take_topology`), now
-    /// that something landed: those whose history arrived are taken in, the
-    /// others held on.
-    async fn retry_held(&self, workspace: &mut GovernedWorkspace) {
-        loop {
-            let held = workspace.holders.take_held();
-            if held.is_empty() {
-                break;
-            }
-            let mut took = false;
-            for (author, message) in held {
-                match self.take_topology(workspace, author, message).await {
-                    Ok(taken) => took |= taken,
-                    Err(error) => {
-                        tracing::warn!(workspace = %workspace.workspace(), %error, "a change held back for its history was refused");
-                    }
-                }
-            }
-            if !took {
-                break;
-            }
-        }
-        workspace.holders.say_held();
-    }
-
-    /// Take `message`, `author`'s change to the workspace's state, into
-    /// `workspace`. Whether it was taken: a change another holder sent that
-    /// builds on history this device lacks is held back
-    /// ([`holding::Holders::hold`]) until that history arrives, and the
-    /// workspace's copy status says so; a member's windows built on a
-    /// history the workspace started over from are refused.
-    async fn take_topology(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        author: [u8; 32],
-        message: neighbour_wire::NeighbourMsg,
-    ) -> Result<bool, String> {
         let host = &self.inner.host;
-        if let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = &message {
-            let missing = unbuildable_windows::missing_history(
-                workspace.peer().admitted_workspace(),
-                changes,
-            )?;
-            if missing > 0 {
-                let from_holder = workspace
-                    .peer()
-                    .governance()
-                    .keeping_devices()
-                    .iter()
-                    .any(|hint| hint.host.device_public_key == author);
-                if from_holder {
-                    workspace.holders.hold(author, message);
-                    return Ok(false);
-                }
-                return Err(self.unbuildable_windows(workspace.workspace(), missing));
-            }
-        }
         let now = tilo_clock::wall();
         // What the workspace's link admitted is in the replica before it comes
-        // here, and is on disk only once the governor commits it: a change
-        // already taken in that no commit carries yet is committed now. Left
+        // here, and is on disk only once a write of the workspace holds it: a
+        // change already taken in that no write holds yet is written now. Left
         // for whichever change came next, a restart before that dropped it,
         // and every later change of its member built on a change the
         // workspace no longer had.
-        let uncommitted = workspace.peer().workspace_heads() != workspace.published_heads;
+        let uncommitted = workspace.peer().workspace_heads() != workspace.kept_heads;
         let removed = std::cell::RefCell::new(std::collections::BTreeSet::new());
         let mut author_person = None;
-        let changed = workspace.change_held(
+        let changed = workspace.change(
             &host.key,
             now,
             |replica, candidate| {
@@ -3014,12 +2840,11 @@ impl Workspaces {
             },
         )?;
         if !changed {
-            return Ok(true);
+            return Ok(());
         }
         let removed = removed.into_inner();
         workspace.keep_out_removed(&removed, author_person, tilo_clock::unix_now_ns())?;
-        self.settle(workspace).await?;
-        Ok(true)
+        self.settle(&mut workspace).await
     }
 
     /// Refound `record` of `app` from what the governor itself can still read,
@@ -3076,16 +2901,18 @@ impl Workspaces {
         // of the route: a whole record, sealed where the record is sealed,
         // admitted as this state's own write so the replay that follows
         // carries it.
+        let sealed =
+            sealed_documents::sealed_with(sealed.as_ref()).map_err(CollaborationError::new)?;
         let written = sealed_documents::refound(
             &mut candidate,
-            sealed.as_ref(),
+            sealed,
             (app, record),
             readable,
             &host.key,
             now,
         )
         .map_err(CollaborationError::new)?;
-        workspace.commit(candidate, &host.key, now, |record, _| {
+        workspace.keep(candidate, &host.key, now, |record, _| {
             Ok(record.collaboration.clone())
         })?;
         self.settle(&mut workspace).await?;
@@ -3119,7 +2946,7 @@ impl Workspaces {
         {
             return Ok(false);
         }
-        workspace.commit(candidate, &host.key, now, |record, _| {
+        workspace.keep(candidate, &host.key, now, |record, _| {
             Ok(record.collaboration.clone())
         })?;
         Ok(true)
@@ -3211,7 +3038,7 @@ impl Workspaces {
     ) -> Result<(), String> {
         let host = &self.inner.host;
         let now = tilo_clock::wall();
-        let filed = workspace.change_held(
+        let filed = workspace.change(
             &host.key,
             now,
             |_, candidate| {
@@ -3279,15 +3106,15 @@ impl Workspaces {
         }
     }
 
-    /// Bring the server in line with the workspace's committed state: admit exactly
-    /// the members its signed list has, then retain every governance change not yet
-    /// published. Runs after each
-    /// decision, before the decision is answered.
+    /// Bring the server in line with the workspace's kept state: admit exactly
+    /// the members its signed list has, then carry this host's own changes of
+    /// it not yet carried. Runs after each decision, before the decision is
+    /// answered.
     ///
-    /// The changes are kept at the device store and carried on the
-    /// workspace's link here, under the workspace's lock, in publication
-    /// order. A change that could not be kept is published again by the next
-    /// settle.
+    /// The changes are carried on the workspace's link here, under the
+    /// workspace's lock, in the order they were made. A change that could not
+    /// be carried is carried by the next settle; a device that links later is
+    /// sent the workspace as it stands.
     async fn settle(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
         let host = &self.inner.host;
         // A page's device certificate lasts an hour: the row it left goes with
@@ -3333,31 +3160,28 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         crate::timing::event("workspace.settle.access", accessing, 0);
-        let publishing = crate::timing::start();
-        let published_from = workspace.record.published;
-        workspace.publish(&self.inner.records)?;
-        // A member copy's governance is a write of its own, and reaches the
-        // device serving it over the copy's link as every write of its does.
-        // The records store keeps the publication for whichever device links
-        // next; the serving device takes it in now. A host publishes to its
-        // members from that store and has no member link to itself.
+        let carrying = crate::timing::start();
+        // A member copy's own change reaches the device serving it over the
+        // copy's link as every write of its does: the records store keeps it
+        // for whichever device links next, and the serving device takes it in
+        // now. A host carries to its members from that store and has no member
+        // link to itself.
         let workspace_id = workspace.workspace_id();
-        if self.member_link(workspace_id).is_some() {
-            for entry in workspace
-                .record
-                .outgoing
-                .get(published_from..workspace.record.published)
-                .unwrap_or_default()
-            {
-                let Ok(message @ neighbour_wire::NeighbourMsg::SyncResp { .. }) =
-                    neighbour_wire::NeighbourMsg::decode(entry.bytes.as_ref())
-                else {
-                    continue;
-                };
-                self.forward_member_document(workspace_id, message);
-            }
+        let forwarded: Vec<_> = if self.member_link(workspace_id).is_some() {
+            workspace
+                .unsent
+                .iter()
+                .filter(|message| matches!(message, neighbour_wire::NeighbourMsg::SyncResp { .. }))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        workspace.carry_unsent(&self.inner.records)?;
+        for message in forwarded {
+            self.forward_member_document(workspace_id, message);
         }
-        crate::timing::event("workspace.settle.publish", publishing, 0);
+        crate::timing::event("workspace.settle.publish", carrying, 0);
         let observing = crate::timing::start();
         self.dial_holders(workspace);
         self.governance_moved(workspace);

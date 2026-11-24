@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
                 .governance_mut()
                 .admit_invited_member(&invited, key, now)
                 .unwrap_err();
-            assert!(refused.contains("only its own"), "{who}: {refused}");
+            assert!(refused.contains("written by the device it admits"), "{who}: {refused}");
         }
         assert!(
             peer.governance_mut()
@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
             .governance_mut()
             .admit_member_device(&further, &editor_key, now)
             .unwrap_err();
-        assert!(refused.contains("only its own"), "{refused}");
+        assert!(refused.contains("no other device writes it in"), "{refused}");
         assert!(
             peer.governance_mut()
                 .admit_member_device(&further, &further_key, now)

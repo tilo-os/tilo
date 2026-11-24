@@ -252,18 +252,13 @@ impl OriginalInvocationData {
         };
         tilo_user_identity::verify_device_cert_at(&certificate, now)
             .map_err(|_| "original invocation certificate expired")?;
-        let mut person = state.certified_person(&self.route.cluster_id, &certificate);
+        let mut person = state.certified_person(&certificate);
         if let InvocationCaller::Certified {
             foreign_restriction,
             ..
         } = &self.caller
         {
-            person.capped |= super::cap_applies_in(
-                state.certificate_authority.get().map(AsRef::as_ref),
-                &self.route.cluster_id,
-                *foreign_restriction,
-                Some(&certificate.device_public_key),
-            );
+            person.capped |= *foreign_restriction;
         }
         let seconds = now / 1_000_000_000;
         state
@@ -655,22 +650,15 @@ impl OriginalInvocation {
         if self.agent_id().is_some() {
             return Ok(None);
         }
-        let workspace = &self.data.route.cluster_id;
         let certificate = self.certificate()?;
-        let mut person = state.certified_person(workspace, certificate);
+        let mut person = state.certified_person(certificate);
         if let InvocationCaller::Certified {
             foreign_restriction,
             ..
         } = &self.data.caller
         {
-            // Re-evaluate the governing exemption with the original exact device;
-            // never let a weaker certificate erase the host's retained restriction.
-            person.capped |= super::cap_applies_in(
-                state.certificate_authority.get().map(AsRef::as_ref),
-                workspace,
-                *foreign_restriction,
-                Some(&certificate.device_public_key),
-            );
+            // Never let a weaker certificate erase the host's retained restriction.
+            person.capped |= *foreign_restriction;
         }
         Ok(Some(person))
     }

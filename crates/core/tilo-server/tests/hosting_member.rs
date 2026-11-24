@@ -1075,7 +1075,8 @@ async fn a_server_that_does_not_take_the_changes_in_is_not_handed_the_workspace(
 /// A server of the person that took part in their workspace as a member first, as a server
 /// signed in with a ticket does, is handed the workspace later: it holds the workspace from then
 /// on, served over the workspace's link, so the device handing it over hears that it keeps every
-/// change, and what that device writes next reaches the server's own copy.
+/// change, what that device writes next reaches the server's own copy, and neither device
+/// keeps replaying what its store holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_server_that_joined_as_a_member_holds_the_workspace_it_is_handed() {
     let alice = TestUser::fresh("Alice");
@@ -1167,6 +1168,10 @@ async fn a_server_that_joined_as_a_member_holds_the_workspace_it_is_handed() {
         "after the hand-over",
     )
     .await;
+    // Neither device replays what its store keeps for the workspace over and over: the
+    // changes the server made as a member are the workspace's own once, and no replay of
+    // them arms another.
+    still(|| (workspaces.replays(), at_server.replays())).await;
 
     server.stop().await;
     governor.stop().await;

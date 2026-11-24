@@ -484,7 +484,7 @@ fn tier(policy: &WorkspacePolicy, person: &str) -> u8 {
 /// False when it was an admission that admitted no one.
 fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp, log: &mut Log) -> bool {
     match &op.command {
-        MembershipOpCommand::Governance { .. } => {}
+        MembershipOpCommand::Governance { .. } | MembershipOpCommand::Compact { .. } => {}
         MembershipOpCommand::Admit { invite, person } => {
             if !log.admit(policy, *invite, *person, op.at_ns) {
                 return false;

@@ -76,7 +76,7 @@ impl AppBrokerState {
         (hash, len): (&str, u64),
     ) -> Result<(), ActionCallError> {
         let unavailable = |reason: String| ActionCallError::Unavailable { reason };
-        let actor = self.caller_actor(caller, workspace).actor().clone();
+        let actor = self.caller_actor(caller).actor().clone();
         let store = self.services.content_store.clone();
         let durable = {
             let mut journal = self

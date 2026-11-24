@@ -145,6 +145,8 @@ pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge:
         ));
     };
     state.remove(KEPT_KEY);
+    // The signature of the base this one replaces is of that base alone.
+    state.remove(super::compaction::COMPACTION_KEY);
     let mut covered = std::collections::BTreeMap::<String, u64>::new();
     let mut heads = replaced(doc);
     for change in doc.clone().get_changes(&[]) {
@@ -282,6 +284,15 @@ fn covered_seq(base: &AutoCommit, actor: &ActorId) -> Option<u64> {
     })
 }
 
+/// Whether `key` of a document's root is its base's own: what the base says of
+/// itself, never a write to carry onto another.
+fn is_base_key(key: &str) -> bool {
+    key == BASE_KEY
+        || key == COVERS_KEY
+        || key == REPLACED_KEY
+        || key == super::compaction::COMPACTION_KEY
+}
+
 /// The changes of `set` no other change of it builds on.
 fn heads_of(set: &[&automerge::Change]) -> Vec<ChangeHash> {
     let deps: std::collections::HashSet<&ChangeHash> =
@@ -305,7 +316,7 @@ fn carry_map(
 ) -> Result<bool, automerge::AutomergeError> {
     let mut wrote = false;
     for (key, value) in is.iter() {
-        if root && (key == BASE_KEY || key == COVERS_KEY || key == REPLACED_KEY) {
+        if root && is_base_key(key) {
             continue;
         }
         let value = &value.value;
@@ -330,7 +341,7 @@ fn carry_map(
         }
     }
     for (key, _) in was.iter() {
-        if root && (key == BASE_KEY || key == COVERS_KEY) {
+        if root && is_base_key(key) {
             continue;
         }
         if is.get(key).is_none() && doc.get(obj, key)?.is_some() {

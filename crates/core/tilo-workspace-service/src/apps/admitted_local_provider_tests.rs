@@ -506,9 +506,6 @@ async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
                 ContinuingCaller, published_invocation::InvocationCaller,
             };
             let env = Environment::new();
-            env.authority
-                .governs_workspace
-                .store(true, Ordering::SeqCst);
             let rig = Rig::new(&env).await;
             let workspace = env.route.cluster_id.clone();
             for (seed, foreign, restricted) in [(94, true, false), (95, false, true)] {
@@ -525,7 +522,7 @@ async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
                 .current(&rig.state)
                 .expect("the caller still verifies");
                 assert!(
-                    rig.state.caller_actor(&continued, &workspace).capped,
+                    rig.state.caller_actor(&continued).capped,
                     "a foreign device (certified {foreign}, restricted {restricted}) stays capped"
                 );
             }
@@ -541,7 +538,7 @@ async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
             })
             .current(&rig.state)
             .unwrap();
-            assert!(!rig.state.caller_actor(&continued, &workspace).capped);
+            assert!(!rig.state.caller_actor(&continued).capped);
             rig.stop().await;
         })
         .await;

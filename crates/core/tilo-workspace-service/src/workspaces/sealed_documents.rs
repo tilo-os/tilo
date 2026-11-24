@@ -506,61 +506,61 @@ pub(super) async fn whole_document(
     }
 }
 
-/// Publish `changes` to `record` of `app` into `candidate` as `key`'s write:
-/// sealed with `keys` for a sealed record, in the clear otherwise.
+/// Why a host writes no record its device holds no keys of: it writes a record
+/// only sealed, as every device does, and never in the clear.
+pub(super) const SEALED_ONLY: &str =
+    "this host writes a record only sealed, and holds no keys to seal this one with";
+
+/// `keys`, the keys this host writes a record with, when it holds any.
 ///
-/// The first sealed write of a record is the whole record, its cleartext base
-/// with `changes`: a reader holding only the record's ciphertext history — a
-/// page that joins later, whose host replays nothing the workspace's
-/// governance already covers — reads the record from it, where a change
-/// alone would wait forever for a base that never comes.
-pub(super) fn publish_changes(
+/// # Errors
+///
+/// It holds none: [`SEALED_ONLY`].
+pub(super) fn sealed_with(keys: Option<&DocumentKeys>) -> Result<&DocumentKeys, String> {
+    keys.ok_or_else(|| SEALED_ONLY.to_owned())
+}
+
+/// Write `changes` to `record` of `app` into `candidate` as `key`'s own
+/// write, sealed with `keys`: answers the frame this host's device carries,
+/// as any device's write reaches the workspace's readers.
+///
+/// The first sealed write of a record is the whole record, what it held with
+/// `changes`: a reader holding only the record's ciphertext history — a
+/// page that joins later — reads the record from it, where a change alone
+/// would wait forever for a base that never comes.
+pub(super) fn seal_changes(
     candidate: &mut StatePeer,
-    keys: Option<&DocumentKeys>,
+    keys: &DocumentKeys,
     (app, record): (&str, &str),
     changes: Vec<u8>,
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
-    match keys {
-        None => candidate
-            .publication_mut()
-            .publish_incremental(app, record, changes, key, now),
-        Some(keys) if !candidate.publication().is_sealed_document(app, record) => {
-            let mut document = match candidate.document(app, record) {
-                Some(base) => {
-                    automerge::AutoCommit::load(&base).map_err(|error| error.to_string())?
-                }
-                None => automerge::AutoCommit::new(),
-            };
-            tilo_automerge::ApplyIncoming::load_incoming(&mut document, &changes)
-                .map_err(|error| error.to_string())?;
-            refound(
-                candidate,
-                Some(keys),
-                (app, record),
-                document.save(),
-                key,
-                now,
-            )
-        }
-        Some(keys) => candidate.publication_mut().publish_sealed_incremental(
+    if candidate.publication().is_sealed_document(app, record) {
+        return candidate.publication_mut().publish_sealed_incremental(
             app,
             record,
             changes,
             &mut keys.seal(ContentRetention::Delta),
             key,
             now,
-        ),
+        );
     }
+    let mut document = match candidate.document(app, record) {
+        Some(base) => automerge::AutoCommit::load(&base).map_err(|error| error.to_string())?,
+        None => automerge::AutoCommit::new(),
+    };
+    tilo_automerge::ApplyIncoming::load_incoming(&mut document, &changes)
+        .map_err(|error| error.to_string())?;
+    refound(candidate, keys, (app, record), document.save(), key, now)
 }
 
-/// Publish `record` of `app` as the workspace's own checkpoint of it, from
-/// `document`, the record as its key holder reads it: sealed with `keys` for a
-/// sealed record, in the clear otherwise. This is what founds a route again
-/// after its retained history lost the base its deltas were written over
-/// ([`Workspaces::refound_document`]): the checkpoint is the whole record, so a
-/// device that joins afterwards reads it and the writes after it.
+/// Write `record` of `app` as this host's own sealed checkpoint of it, from
+/// `document`, the record as its key holder reads it, sealed with `keys`. This
+/// is what founds a route again after its retained history lost the base its
+/// deltas were written over ([`Workspaces::refound_document`]): the checkpoint
+/// is the whole record, so a device that joins afterwards reads it and the
+/// writes after it.
 ///
 /// `document` is admitted as this state's own write and joined to its sealed
 /// history, exactly as [`super::applications`]' authoring path does, so the
@@ -571,35 +571,20 @@ pub(super) fn publish_changes(
 /// The write could not be sealed, signed or admitted.
 pub(super) fn refound(
     candidate: &mut StatePeer,
-    keys: Option<&DocumentKeys>,
+    keys: &DocumentKeys,
     (app, record): (&str, &str),
     document: Vec<u8>,
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
-    match keys {
-        None => {
-            let snapshot = collab_types::DocumentMutation::Snapshot(document);
-            let message = candidate.publication_mut().publish_document(
-                app,
-                record,
-                snapshot.data().to_vec(),
-                key,
-                now,
-            )?;
-            Ok(message)
-        }
-        // The record is sealed: the checkpoint is the whole record, sealed as
-        // the workspace's own, and the sealed writer's history keeps it.
-        Some(keys) => candidate.publication_mut().publish_sealed_checkpoint(
-            app,
-            record,
-            document,
-            &mut keys.seal(collab_types::ContentRetention::Checkpoint),
-            key,
-            now,
-        ),
-    }
+    candidate.publication_mut().publish_sealed_checkpoint(
+        app,
+        record,
+        document,
+        &mut keys.seal(collab_types::ContentRetention::Checkpoint),
+        key,
+        now,
+    )
 }
 
 /// Start `record` of `app` in `candidate` as the workspace's host, signed with
@@ -628,9 +613,9 @@ pub(super) fn start_sealed(
             now,
         )?);
     }
-    written.push(publish_changes(
+    written.push(seal_changes(
         candidate,
-        Some(keys),
+        keys,
         (app, record),
         changes,
         key,
@@ -814,9 +799,9 @@ impl Workspaces {
     /// Replace the sealed history of `record` of `app` in `workspace` with
     /// `rebuilt`, the record as an operator rebuilt it from that history
     /// ([`Self::document_history`]) where it does not merge whole: one sealed
-    /// checkpoint, compacted by this host as the workspace's governor and
-    /// published like any compaction, which every member takes in place of
-    /// exactly the writes it covers.
+    /// checkpoint, compacted and signed by this host's device and carried like
+    /// any compaction, which every member takes in place of exactly the writes
+    /// it covers.
     ///
     /// # Errors
     ///
@@ -839,41 +824,23 @@ impl Workspaces {
             .ok_or_else(|| CollaborationError::new("the record is held in the clear"))?;
         let now = tilo_clock::wall();
         let mut candidate = governed.peer().clone();
-        keys.compact(
-            &mut candidate,
-            (app, record),
-            Some(rebuilt),
-            (&self.inner.host.cert, &self.inner.host.key),
-            now,
-        )
-        .map_err(CollaborationError::new)?;
+        let written = keys
+            .compact(
+                &mut candidate,
+                (app, record),
+                Some(rebuilt),
+                (&self.inner.host.cert, &self.inner.host.key),
+                now,
+            )
+            .map_err(CollaborationError::new)?;
         let collaboration = governed.collaboration().clone();
-        governed.commit(candidate, &self.inner.host.key, now, |_, _| {
+        governed.keep(candidate, &self.inner.host.key, now, |_, _| {
             Ok(collaboration)
         })?;
         self.settle(&mut governed).await?;
+        self.carry_written(governed.workspace_id(), &written)?;
         drop(governed);
         Ok(())
-    }
-
-    /// The keys a record another writer founds is founded under: a record that needs keys of
-    /// its own is founded under them, so even its empty base is not written in the clear. None
-    /// for a `whole` write, which is the record itself, and for a record that needs none.
-    pub(super) async fn founding_keys(
-        &self,
-        workspace: &GovernedWorkspace,
-        app: &str,
-        document: &str,
-        whole: bool,
-    ) -> Result<Option<DocumentKeys>, String> {
-        if whole
-            || !workspace
-                .peer()
-                .requires_document_keys(app, document, tilo_clock::wall())?
-        {
-            return Ok(None);
-        }
-        self.sealing_keys(workspace, app, document).await
     }
 
     /// The keys the governor writes `record` of `app` with: in a workspace whose
@@ -1007,7 +974,7 @@ impl Workspaces {
         }
         let host = &self.inner.host;
         let now = tilo_clock::wall();
-        workspace.change_held(
+        workspace.change(
             &host.key,
             now,
             |_, candidate| {
@@ -1079,7 +1046,7 @@ impl Workspaces {
             return Ok(());
         }
         let collaboration = workspace.collaboration().clone();
-        workspace.commit(candidate, &self.inner.host.key, now, |_, _| {
+        workspace.keep(candidate, &self.inner.host.key, now, |_, _| {
             Ok(collaboration)
         })?;
         self.settle(workspace).await?;

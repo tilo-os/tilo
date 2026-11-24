@@ -482,8 +482,7 @@ impl AppBrokerState {
         let now = self.policy_now_ns()?;
         tilo_user_identity::verify_device_cert_at(certificate, now)
             .map_err(|_| "worker certificate rejected")?;
-        let verified =
-            VerifiedJoinIdentity::of(certificate, self.capped_in(&route.cluster_id, certificate));
+        let verified = VerifiedJoinIdentity::of(certificate, certificate.capabilities.foreign);
         self.membership
             .as_ref()
             .ok_or("current workspace authority unavailable")?

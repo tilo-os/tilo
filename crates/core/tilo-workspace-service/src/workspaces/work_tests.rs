@@ -494,7 +494,7 @@ async fn claim_as(workspaces: &Workspaces, workspace: &str, device: &DeviceCert,
     let claimed = copy
         .lock()
         .await
-        .change_held(
+        .change(
             &key,
             now,
             |_, candidate| {
@@ -653,7 +653,7 @@ async fn done_as(workspaces: &Workspaces, workspace: &str, device: &DeviceCert, 
     let kept = copy
         .lock()
         .await
-        .change_held(
+        .change(
             &key,
             now,
             |_, candidate| {

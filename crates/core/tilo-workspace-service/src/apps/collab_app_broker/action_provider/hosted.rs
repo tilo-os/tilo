@@ -132,7 +132,7 @@ impl AppBrokerState {
             workspace,
             app_id,
         } = forward;
-        let actor = self.caller_actor(caller, &workspace);
+        let actor = self.caller_actor(caller);
         self.launchable
             .note_view(&workspace, actor.actor(), &app_id);
         let (done, answer) = pending();

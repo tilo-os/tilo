@@ -202,7 +202,8 @@ tilo_test_env::scenario! {
         // A copy made after the workspace started over from a base, as at the
         // next admission: the heads the write names went into the base.
         let mut based = story.governor.clone();
-        assert!(based.rebase_workspace().unwrap());
+        let (owner_key, owner) = owner();
+        assert!(based.compact_workspace(&owner, &owner_key, now()).unwrap());
         let mut late = empty_copy(Arc::new(Source(true)));
         take_in(&mut late, &mut based, true);
         let refusal = handed(&mut late, &guest, story.beside.clone()).unwrap_err();
@@ -296,7 +297,7 @@ tilo_test_env::scenario! {
             .governance_mut()
             .transfer_ownership(guest.user_public_key, &owner_key, now())
             .unwrap();
-        assert!(governor.rebase_workspace().unwrap());
+        assert!(governor.compact_workspace(&owner, &owner_key, now()).unwrap());
 
         take_in(&mut device, &mut governor.clone(), false);
         assert_eq!(device.owner(), guest.user_public_key);

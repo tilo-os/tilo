@@ -132,7 +132,7 @@ impl super::AppBrokerState {
         let caller = self
             .continuing_caller(peer_id, parent)
             .ok_or("the invocation's caller is no longer admitted")?;
-        let actor = self.caller_actor(&caller, workspace);
+        let actor = self.caller_actor(&caller);
         let membership = self
             .membership
             .as_ref()

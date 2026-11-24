@@ -67,9 +67,6 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        if key.device_public_key() != renewed.device_public_key {
-            return Err("a device renews only its own certificate".into());
-        }
         let Some(held) = self.peer.governance().renewal_of(renewed, now)? else {
             return Ok(false);
         };

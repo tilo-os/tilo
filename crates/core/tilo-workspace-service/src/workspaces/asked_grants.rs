@@ -75,7 +75,7 @@ impl Workspaces {
             .put_governed_grants(grants, key, at)?
         {
             let state = workspace.collaboration().clone();
-            workspace.commit(candidate, key, at, |_, _| Ok(state))?;
+            workspace.keep(candidate, key, at, |_, _| Ok(state))?;
             self.settle(workspace)
                 .await
                 .map_err(|error| error.to_string())?;

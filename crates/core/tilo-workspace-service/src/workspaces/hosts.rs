@@ -325,7 +325,7 @@ impl Workspaces {
             .transport_hint(governed)
             .map_err(|error| error.to_string())?;
         let now = tilo_clock::wall();
-        let named = governed.change_held(
+        let named = governed.change(
             &host.key,
             now,
             |_, candidate| {
@@ -411,7 +411,7 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
         let now = tilo_clock::wall();
-        let changed = governed.change_held(
+        let changed = governed.change(
             &host.key,
             now,
             |_, candidate| {

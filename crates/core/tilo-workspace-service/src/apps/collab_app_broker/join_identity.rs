@@ -59,38 +59,6 @@ impl VerifiedJoinIdentity {
     }
 }
 
-/// Whether a device is held to the foreign-device cap in `workspace`, as far as
-/// `authority` knows who governs it; `device` `None` is this host's own.
-pub(super) fn cap_applies_in(
-    authority: Option<&dyn crate::apps::certificate_authority::CertificateAuthority>,
-    workspace: &str,
-    foreign: bool,
-    device: Option<&[u8; 32]>,
-) -> bool {
-    let governs = authority
-        .zip(tilo_failure::ignored!(
-            "a workspace named by anything but a UUID is governed by no authority",
-            uuid::Uuid::parse_str(workspace).ok()
-        ))
-        .is_some_and(|(authority, workspace)| authority.governs(workspace, device));
-    // A foreign device is held to the bound only in a workspace it does not govern.
-    foreign && !governs
-}
-
-/// [`cap_applies_in`] for `cert`'s device.
-pub(super) fn cert_capped_in(
-    authority: Option<&dyn crate::apps::certificate_authority::CertificateAuthority>,
-    workspace: &str,
-    cert: &tilo_user_identity::DeviceCert,
-) -> bool {
-    cap_applies_in(
-        authority,
-        workspace,
-        cert.capabilities.foreign,
-        Some(&cert.device_public_key),
-    )
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AdmittedJoinIdentity {
     pub(super) worker_registration: Option<PrivateWorkerRegistration>,
@@ -462,7 +430,7 @@ fn admit_device(
     )?;
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     let verified = VerifiedJoinIdentity {
-        capped: cert_capped_in(authority, &route.cluster_id, &cert),
+        capped: cert.capabilities.foreign,
         ..verify(&expected_root, now_ns, revoked, enrolled)?
     };
     let membership = membership

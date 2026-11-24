@@ -6,8 +6,9 @@
 //! decided by the workspace the record is in. A caller inside this device that the workspace did
 //! not admit as a device reads there as [`AppBrokerState::reading_caller`] names it: the person
 //! signed in here, an app or an agent acting for them, never one a person's device handed its
-//! session to. Before anyone signs in, the device itself reads the records of the workspace
-//! founded on it, as the person its own certificate ([`CertificateAuthority::own_device`]) names.
+//! session to. Before anyone signs in, the device itself reads the records of a workspace its
+//! person governs, as the person its own certificate ([`CertificateAuthority::own_device`]) names
+//! and the workspace's signed member list makes owner or administrator.
 //!
 //! [`CertificateAuthority::own_device`]: crate::apps::certificate_authority::CertificateAuthority::own_device
 
@@ -109,19 +110,25 @@ impl AppBrokerState {
                 reason: RESOURCE_READS_FOR_AGENTS.into(),
             });
         }
-        let (Some(authority), Some(certificate)) =
-            (self.certificate_authority.get(), self.own_device())
+        let (Some(membership), Some(certificate)) = (self.membership.as_ref(), self.own_device())
         else {
             return Err(ActionCallError::Unavailable {
                 reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
             });
         };
-        let founded_here =
-            uuid::Uuid::parse_str(workspace).is_ok_and(|founded| authority.governs(founded, None));
-        if !founded_here {
+        let device = super::person_id_for_root(certificate.user_public_key);
+        // The device reads as its own person only in a workspace that person governs, as the
+        // workspace's signed member list names its owner and administrators.
+        let governs = membership
+            .decide_in_workspace(workspace, |held| {
+                held.is_some_and(|held| {
+                    held.policy.is_owner(&device) || held.policy.is_administrator(&device)
+                })
+            })
+            .map_err(|reason| ActionCallError::Unavailable { reason })?;
+        if !governs {
             return Err(refused());
         }
-        let device = super::person_id_for_root(certificate.user_public_key);
         // Nobody is signed in here: a caller naming a person names this device's own.
         let named = match acting.app() {
             Some(_) => caller.acting_for_person(),

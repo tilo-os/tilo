@@ -1973,7 +1973,7 @@ impl Workspaces {
                     Some(self.agent_grants(Some(workspace_id), caller).await)
                 };
                 let workspace = governed.lock().await;
-                offer.generation = workspace.record.generation;
+                offer.generation = workspace.peer().governance().generation();
                 let now = tilo_clock::unix_now_ns();
                 let offered = |verb: &Verb| {
                     self.offers(verb, (caller, &device), &workspace, grants.as_ref(), now)

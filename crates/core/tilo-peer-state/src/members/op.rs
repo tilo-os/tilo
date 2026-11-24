@@ -79,6 +79,15 @@ pub enum MembershipOpCommand {
     /// Whoever records the redemption writes it; the invitation is its
     /// authority, not its writer.
     Admit { invite: [u8; 32], person: [u8; 32] },
+    /// Its author's device made `base`, the hash of the base change of
+    /// `workspace`'s document at `generation`, that the document's history
+    /// starts over from ([`crate::workspace::compaction`]). It is kept beside
+    /// the member list, never in it, and changes no membership.
+    Compact {
+        workspace: String,
+        generation: u64,
+        base: [u8; 32],
+    },
 }
 
 /// One member's change to a workspace's authority, signed by their device.

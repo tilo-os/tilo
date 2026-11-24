@@ -170,6 +170,10 @@ impl std::fmt::Display for ServerError {
                             "The branch wasn't made: {part} didn't come along. Nothing of it was kept."
                         )
                     }
+                    WorkspaceRefusal::NoDeviceToFound => f.write_str(
+                        "This server can't make a workspace: it has no device of its own to make \
+                         it on. Make it on one of your devices.",
+                    ),
                 }
             }
         }

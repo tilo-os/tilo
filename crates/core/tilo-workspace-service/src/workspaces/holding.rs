@@ -301,14 +301,10 @@ impl GovernedWorkspace {
             workspace_id: request.workspace_id,
             owner: request.bootstrap.host.clone(),
             peer: parts.stage(&peer)?,
-            generation: request.bootstrap.generation.max(1),
-            outgoing: Vec::new(),
-            published: 0,
             collaboration: super::collaboration::CollaborationState::default(),
         };
-        let (publications, _) = appended::Appended::open(&path, super::PUBLICATIONS, 0)?;
         let (receipts, _) = appended::Appended::open(&path, super::RECEIPTS, 0)?;
-        let mut this = Self::assemble(entry, peer, path, parts, (publications, receipts), device)?;
+        let mut this = Self::assemble(entry, peer, path, parts, receipts, device)?;
         this.persist()?;
         Ok(this)
     }
@@ -843,11 +839,9 @@ async fn report_copy(workspaces: Weak<super::WorkspacesInner>, workspace: String
 }
 
 /// Where this device's copy stands, as its sessions to the other holders
-/// do, with the holders it holds changes back from for lack of history and
-/// the content it lacks.
+/// do, with the content it lacks.
 fn held_copy(links: &Links) -> tilo_peer_state::HeldCopy {
     let mut held = tilo_peer_state::HeldCopy {
-        catching_up_from: links.held_from(),
         content_missing: links.content_missing(),
         ..tilo_peer_state::HeldCopy::default()
     };
@@ -927,37 +921,9 @@ pub(super) struct Holders {
     /// Whether the workspace's governance has named this device among its
     /// holders: once it has, naming it no more lets the workspace go here.
     named: bool,
-    /// Changes of the workspace another holder sent that build on history
-    /// this device lacks, by that holder: taken in once the history is.
-    held: Vec<([u8; 32], NeighbourMsg)>,
 }
 
-/// The most changes held back for history at once: the oldest goes first,
-/// and the next catch-up from its holder brings it again.
-const MOST_HELD: usize = 256;
-
 impl Holders {
-    /// Hold `message` of the holder `from` back until the history it builds
-    /// on arrives.
-    pub(super) fn hold(&mut self, from: [u8; 32], message: NeighbourMsg) {
-        if self.held.len() >= MOST_HELD {
-            self.held.remove(0);
-        }
-        self.held.push((from, message));
-        self.say_held();
-    }
-
-    /// The changes held back, taken to be tried again.
-    pub(super) fn take_held(&mut self) -> Vec<([u8; 32], NeighbourMsg)> {
-        std::mem::take(&mut self.held)
-    }
-
-    /// Say in the copy's links which holders changes are held back from.
-    pub(super) fn say_held(&self) {
-        self.links
-            .hold_from(self.held.iter().map(|(from, _)| *from).collect());
-    }
-
     /// Where this device's copy stands against the other holders.
     pub(super) fn links(&self) -> &Links {
         &self.links

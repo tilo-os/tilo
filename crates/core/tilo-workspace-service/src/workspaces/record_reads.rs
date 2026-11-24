@@ -600,7 +600,7 @@ impl RecordReads {
         // An app acts as the one actor the dispatch decides its calls as, bounded by what it
         // declares; a reader with no apps to say that reads nothing for an app.
         let actor = match &broker {
-            Some(broker) => broker.caller_actor(&decided, &address.workspace),
+            Some(broker) => broker.caller_actor(&decided),
             None if decided.acting().app().is_some() => return Err(refused()),
             None => tilo_broker_core::actor::BrokerActor::for_caller(&decided),
         };

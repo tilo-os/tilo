@@ -34,7 +34,7 @@ impl Workspaces {
             at,
         )?;
         let collaboration = governed.collaboration().clone();
-        governed.commit(candidate, &self.inner.host.key, at, |_, _| {
+        governed.keep(candidate, &self.inner.host.key, at, |_, _| {
             Ok(collaboration)
         })?;
         self.settle(governed).await?;

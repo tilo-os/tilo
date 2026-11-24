@@ -212,6 +212,7 @@ fn a_workspace_refusal_is_read_back_typed() {
         AdminRefusal::BranchNotMade {
             part: "the record uuid:plan of so.tilo.notes".into(),
         },
+        AdminRefusal::NoDeviceToFound,
     ] {
         assert_eq!(
             AdminRefusal::from_reason(&refusal.to_reason()),

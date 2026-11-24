@@ -457,14 +457,19 @@ pub async fn join_person_workspace(governor: &Hosted, device: &TestDevice, at: &
     .await;
 }
 
-/// A host as [`serve_on`] makes one, over the state `state` holds.
+/// A host as [`serve_on`] makes one, over the state `state` holds. Its device takes part in
+/// its workspaces' channels, as every device that founds a workspace or seals its records does.
 pub async fn serve_in(
     user: &TestUser,
     device: &TestDevice,
     work: WorkSetting,
     state: TempDir,
 ) -> Hosted {
-    serve_with_keys(user, device, work, state, None).await
+    let channels = tilo_workspace_service::workspaces::DeviceKeyGroups {
+        keys: Arc::<tilo_workspace_service::workspaces::fixtures::TestGroupKeys>::default(),
+        sink: None,
+    };
+    serve_with_keys(user, device, work, state, Some(channels)).await
 }
 
 /// [`serve_in`], whose device takes part in its workspaces' channels through `channels`, as a

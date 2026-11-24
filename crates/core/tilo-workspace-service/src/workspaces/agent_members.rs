@@ -272,7 +272,7 @@ impl Workspaces {
             return Ok(());
         }
         let state = workspace.collaboration().clone();
-        workspace.commit(candidate, &self.inner.host.key, now, |_, _| Ok(state))?;
+        workspace.keep(candidate, &self.inner.host.key, now, |_, _| Ok(state))?;
         self.settle(workspace).await?;
         tracing::info!(workspace = %workspace.workspace(), device = %hex::encode(device),
             "an agent's place on the workspace's roster changed with its grant");

@@ -304,7 +304,7 @@ impl Workspaces {
             .transport_hint_as(&governed, CopyRole::KeyHolder)
             .map_err(|error| error.to_string())?;
         let now = tilo_clock::wall();
-        governed.change_held(
+        governed.change(
             key,
             now,
             |_, candidate| {

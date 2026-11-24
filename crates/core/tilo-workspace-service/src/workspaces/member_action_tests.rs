@@ -408,7 +408,9 @@ async fn a_base_keeps_every_action_the_history_before_it_took() {
             .map_or(0, tilo_peer_state::workspace::base::generation)
     };
     assert!(
-        rebased.rebase_workspace().unwrap(),
+        rebased
+            .compact_workspace(&owner, &key, std::time::SystemTime::now())
+            .unwrap(),
         "the document starts over"
     );
     assert!(
@@ -420,7 +422,11 @@ async fn a_base_keeps_every_action_the_history_before_it_took() {
         .unwrap()
         .clone()
         .get_changes(&[]);
-    assert_eq!(base.len(), 1, "a base holds none of the history before it");
+    assert_eq!(
+        base.len(),
+        2,
+        "a base holds none of the history before it: its change and the one signing it"
+    );
     assert!(
         base[0].message().is_none(),
         "the base itself names no action"

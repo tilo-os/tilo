@@ -169,14 +169,15 @@ fn governed<'a>(
     peer: tilo_peer_state::join_log::PeerRef<'a>,
     answering: &'a DeviceCert,
 ) -> Governed<'a> {
+    let generation = peer.governance().generation();
     Governed {
         peer,
         host: answering,
         workspace_id: record.workspace_id,
-        generation: record.generation,
+        generation,
         // A newcomer admits the workspace's governance alone: one message
-        // holding its complete committed document. What the record retains of
-        // its own publications builds on that document, so it reaches the
+        // holding its complete committed document. What members' devices
+        // wrote of its records builds on that document, so it reaches the
         // newcomer through the workspace's sync, not through this answer.
         governance_messages: None,
     }
@@ -618,7 +619,7 @@ impl Workspaces {
             return Ok(false);
         }
         let state = workspace.collaboration().clone();
-        workspace.commit(candidate, &self.inner.host.key, at, |_, _| Ok(state))?;
+        workspace.keep(candidate, &self.inner.host.key, at, |_, _| Ok(state))?;
         self.settle(&mut workspace).await?;
         drop(workspace);
         Ok(true)
@@ -1022,13 +1023,9 @@ impl Workspaces {
                 request_id,
                 request_digest(people)?,
                 |peer| {
-                    let mut changed = false;
-                    for person in people {
-                        changed |=
-                            peer.governance_mut()
-                                .remove_member(*person, &key, system_time(now))?;
-                    }
-                    Ok(changed)
+                    let people: Vec<[u8; 32]> = people.iter().copied().collect();
+                    peer.governance_mut()
+                        .remove_members(&people, &key, system_time(now))
                 },
                 by.as_deref()
                     .and_then(|by| stamped(governance::REMOVE_MEMBER, actor_of(by))),
@@ -1372,7 +1369,7 @@ impl Workspaces {
         )? {
             return Ok((
                 GovernanceCompletion {
-                    generation: workspace.record.generation,
+                    generation: workspace.peer().governance().generation(),
                 },
                 Vec::new(),
             ));
@@ -1391,11 +1388,12 @@ impl Workspaces {
                 .difference(&super::member_roots(&changed, system_time(now)))
                 .copied()
                 .collect();
-        let generation = workspace.commit(changed, &key, system_time(now), |record, _| {
+        workspace.keep(changed, &key, system_time(now), |record, _| {
             let mut state = record.collaboration.clone();
             state.withdraw_invitations(&removed);
             Ok(state)
         })?;
+        let generation = workspace.peer().governance().generation();
         workspace
             .keep_out_removed(
                 &removed,
@@ -1442,7 +1440,7 @@ impl Workspaces {
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         let key = self.inner.host.key.clone();
-        let (answer, changed) = workspace.change_held(
+        let (answer, changed) = workspace.change(
             &key,
             now,
             |_, candidate| {
@@ -1933,21 +1931,18 @@ impl Workspaces {
             // after it: a base made, a name dropped or a grant reconciled with
             // it is bookkeeping the change itself is not.
             candidate.clear_action_stamp();
+            let generation = candidate.governance().generation();
             let mut state = workspace.collaboration().clone();
-            state.record_administration(
-                request_id,
-                digest,
-                workspace.record.generation.saturating_add(1),
-            );
-            let committed = workspace.commit_held(
+            state.record_administration(request_id, digest, generation);
+            let kept = workspace.keep_held(
                 &mut replica,
                 candidate,
                 (&self.inner.host.key, system_time(now)),
-                super::Change::Other,
                 |_, _| Ok(state),
             );
             drop(replica);
-            committed?
+            kept?;
+            generation
         };
         self.settle(workspace).await?;
         Ok(GovernanceCompletion { generation })
@@ -2047,20 +2042,18 @@ impl<'a> HeldWorkspace<'a> {
         }
     }
 
-    /// Commit `peer` as `change`, and `log`'s answer as the workspace's join
-    /// log.
-    fn commit(
+    /// Keep `peer`, with what it keeps along written in it, and `log`'s
+    /// answer as the workspace's join log.
+    fn keep(
         &mut self,
         peer: tilo_peer_state::StatePeer,
         now: u64,
-        change: super::Change,
         log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
-        self.workspace.commit_held(
+        self.workspace.keep_held(
             self.replica,
             peer,
             (self.key, system_time(now)),
-            change,
             |record, peer| {
                 log(&governed(record, peer.into(), self.answering))
                     .map_err(|error| error.to_string())
@@ -2100,7 +2093,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
         now: u64,
         log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
-        self.commit(peer, now, super::Change::Other, log)
+        self.keep(peer, now, log)
     }
 
     fn commit_admission(
@@ -2109,7 +2102,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
         now: u64,
         log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
-        self.commit(peer, now, super::Change::Admission, log)
+        self.keep(peer, now, log)
     }
 }
 
