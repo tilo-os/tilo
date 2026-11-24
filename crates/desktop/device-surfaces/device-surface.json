@@ -5970,8 +5970,22 @@
           ]
         },
         {
+          "name": "WindowsOffer",
+          "doc": "An action the reading offers now: installing the layer, or removing it.",
+          "cases": [
+            {
+              "name": "install",
+              "label": "Install"
+            },
+            {
+              "name": "remove",
+              "label": "Remove"
+            }
+          ]
+        },
+        {
           "name": "WindowsPrograms",
-          "doc": "What this computer's Windows compatibility reads as now.",
+          "doc": "What this computer's Windows layer reads as now.",
           "fields": [
             {
               "name": "available",
@@ -6026,20 +6040,6 @@
                   "named": "WindowsOffer"
                 }
               }
-            }
-          ]
-        },
-        {
-          "name": "WindowsOffer",
-          "doc": "An action the reading offers now: installing the layer, or removing it.",
-          "cases": [
-            {
-              "name": "install",
-              "label": "Install"
-            },
-            {
-              "name": "remove",
-              "label": "Remove"
             }
           ]
         },
