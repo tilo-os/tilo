@@ -202,6 +202,7 @@ test("a workspace message goes through the webhook, cut where Discord takes it",
     id: "m9",
     text: "word ".repeat(600),
     author: ADA,
+    written: 1_700_000_000_123,
     attachments: [{ blob: "tilo-blob://abc123", name: "a.png", size: 10 }],
   });
   expect(ops).toHaveLength(1);
@@ -213,6 +214,11 @@ test("a workspace message goes through the webhook, cut where Discord takes it",
   expect([...op.content].length).toBe(2000);
   expect(op.content.endsWith("…")).toBe(true);
   expect(op.tilo).toBe("tl:so.tilo.chat:m9");
+  // An absent thread and blob are none rather than empty text, and the time the message was
+  // written here goes with it.
+  expect(op.thread).toBeNull();
+  expect(op.avatar_blob).toBeNull();
+  expect(op.created_ms).toBe(1_700_000_000_123);
 });
 
 test("a conversation is carried through its channel and webhook, a thread through its root", () => {

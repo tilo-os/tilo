@@ -13,8 +13,9 @@ use tilo.workspace as workspace
 /// what joins the two sides.
 // Discord as one of Chat's connected accounts: a Discord account's server, its channels and
 // its direct messages are conversations here, and what people say in a bridged one is said
-// there too. The bridge is this app's origin (`discord.perform`): it carries each queued call to
-// Discord as the person it maps, and writes what Discord reports back through these actions.
+// there too. The bridge is this app's own program: it asks these actions before each of its
+// calls to Discord, so a call the app refuses reaches Discord not at all, and it writes what
+// Discord reports back through the same actions.
 type Discord (origin: discord.account) {
     /// What the account is called on Discord.
     name: Text
@@ -433,12 +434,6 @@ type DeleteEmojiOp {
     op: Text = "delete-emoji"
     emoji: Text
     tilo: Text
-}
-
-/// What the bridge carries out: which account's server, and the call, as JSON.
-type Perform {
-    account: Text
-    op: Text
 }
 
 /// The servers this app bridges: one account per connected Discord server.
@@ -1306,7 +1301,6 @@ action set_sign_in(d: Discord, page: Text) {
 action answer_interaction(d: Discord, op: AnswerInteractionOp) {
     require may_configure(invoker) "Only the bridge answers a slash command"
     require op.content != "" and op.content.len() <= 2000 "A reply holds 1 to 2000 characters"
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
 /// Takes a linked account's newer names and avatar.
@@ -1714,7 +1708,7 @@ fn reads_emoji(op: json.Value) -> Bool {
 }
 
 /// Sends a message through a channel's webhook, as the bridge plans it. The call arrives as the
-/// JSON the bridge's program writes, and is read as the record the worker's shape declares.
+/// JSON the bridge's program writes, and is read as the record its shape declares.
 // ---- messages and reactions --------------------------------------------------------------
 action send_there(d: Discord, op: json.Value) {
     require reads_send(op) "A Discord message does not read"
@@ -1726,8 +1720,6 @@ action send_there(d: Discord, op: json.Value) {
         and (read_send(op).content.len() > 0 or not read_send(op).attachments.is_empty()) "A Discord message is 1 to 2000 characters"
     require read_send(op).attachments.len() <= 10
         and not read_send(op).attachments.any(a -> a.size > 10 * 1024 * 1024) "Discord takes at most ten files of 10 MiB from a webhook"
-    let call = read_send(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Edits a message the bridge sent.
@@ -1738,8 +1730,6 @@ action edit_there(d: Discord, op: json.Value) {
     require reaches(d, read_edit(op).channel) "This bridge reaches only its one Discord channel"
     require by_discord(d, .webhook, read_edit(op).webhook) != .none "That is not one of the bridge's webhooks"
     require read_edit(op).content.len() <= 2000 "A Discord message is 1 to 2000 characters"
-    let call = read_edit(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Deletes a message there.
@@ -1750,8 +1740,6 @@ action delete_there(d: Discord, op: json.Value) {
     require reaches(d, read_delete(op).channel) "This bridge reaches only its one Discord channel"
     require read_delete(op).webhook == .none
         or by_discord(d, .webhook, or_empty(read_delete(op).webhook)) != .none "That is not one of the bridge's webhooks"
-    let call = read_delete(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Adds the bot's reaction.
@@ -1760,8 +1748,6 @@ action react_there(d: Discord, op: json.Value) {
     require the_bridge(invoker) "The bridge carries reactions to Discord"
     require knows_channel(d, read_react(op).channel) "There is no such channel in the server"
     require reaches(d, read_react(op).channel) "This bridge reaches only its one Discord channel"
-    let call = read_react(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Takes the bot's reaction back.
@@ -1770,14 +1756,6 @@ action unreact_there(d: Discord, op: json.Value) {
     require the_bridge(invoker) "The bridge carries reactions to Discord"
     require knows_channel(d, read_react(op).channel) "There is no such channel in the server"
     require reaches(d, read_react(op).channel) "This bridge reaches only its one Discord channel"
-    let call = read_react(op)
-    let back = ReactOp(
-        op: "unreact",
-        channel: call.channel,
-        message: call.message,
-        emoji: call.emoji,
-    )
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(back))))
 }
 
 /// Starts a thread on a message.
@@ -1786,8 +1764,6 @@ action start_thread_there(d: Discord, op: json.Value) {
     require the_bridge(invoker) "The bridge starts threads on Discord"
     require knows_channel(d, read_thread(op).channel) "There is no such channel in the server"
     require reaches(d, read_thread(op).channel) "This bridge reaches only its one Discord channel"
-    let call = read_thread(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Creates a channel's webhook.
@@ -1796,8 +1772,6 @@ action create_webhook(d: Discord, op: json.Value) {
     require the_bridge(invoker) "The bridge makes the server's webhooks"
     require knows_channel(d, read_webhook(op).channel) "There is no such channel in the server"
     require reaches(d, read_webhook(op).channel) "This bridge reaches only its one Discord channel"
-    let call = read_webhook(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Creates a channel there, or brings it back in line.
@@ -1815,7 +1789,6 @@ action apply_channel(d: Discord, op: ChannelSpec) {
         ) "The bridge changes only channels it made, never the server's own"
     require op.parent == .none or knows_channel(d, or_empty(op.parent)) "There is no such channel in the server"
     require op.name != "" and op.name.len() <= 100 "A Discord channel name is 1 to 100 characters"
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
 /// Deletes a channel there.
@@ -1829,8 +1802,6 @@ action delete_channel_there(d: Discord, channel: Text) {
             and m.discord == channel
             and m.origin == .tilo,
     ) "The bridge changes only channels it made, never the server's own"
-    let call = ChannelDeletion(channel: channel)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Puts channels and categories in their places there, so the server lists them in this order.
@@ -1845,7 +1816,6 @@ action arrange_channels(d: Discord, op: ArrangeOp) {
         place -> place.parent == .none or knows_channel(d, or_empty(place.parent)),
     ) "There is no such channel in the server"
     require op.channels.all(place -> not moves_bridged(d, place)) "The bridge moves only the channels it bridges to another category"
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
 /// Says whether the bridge may change the server's channels: mirroring is on and the server is
@@ -1880,8 +1850,6 @@ action apply_role(d: Discord, op: json.Value) {
     require reaches_server(d) "A bridge of one channel changes nothing else in the server"
     require d.map_roles "This bridge leaves the server's roles alone"
     require fresh(read_role(op).id) or by_discord(d, .role, or_empty(read_role(op).id)) != .none "The bridge changes only the roles it made"
-    let call = read_role(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Deletes a role there.
@@ -1889,7 +1857,6 @@ action delete_role(d: Discord, op: DeleteRoleOp) {
     require may_configure(invoker) "Only the workspace's moderators change the server's roles"
     require reaches_server(d) "A bridge of one channel changes nothing else in the server"
     require by_discord(d, .role, op.role) != .none "The bridge deletes only roles it manages"
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
 /// Sets a linked member's roles there.
@@ -1899,7 +1866,6 @@ action set_member_roles(d: Discord, op: MemberRolesOp) {
     require d.map_roles "This bridge leaves the server's roles alone"
     require d.links.any(l -> l.discord_user == op.user) "That Discord account is not linked to anyone here"
     require [op.add, op.remove].flat_map(x -> x).all(role -> by_discord(d, .role, role) != .none) "The bridge assigns only roles it manages"
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
 /// Kicks a linked member there.
@@ -1908,9 +1874,6 @@ action kick(d: Discord, op: json.Value) {
     require may_configure(invoker) "Only the workspace's moderators manage Discord members"
     require reaches_server(d) "A bridge of one channel changes nothing else in the server"
     require d.links.any(l -> l.discord_user == read_member(op).user) "That Discord account is not linked to anyone here"
-    let call = read_member(op)
-    let out = MemberOp(op: "kick", user: call.user, reason: call.reason)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(out))))
 }
 
 /// Bans a linked member there.
@@ -1919,9 +1882,6 @@ action ban(d: Discord, op: json.Value) {
     require may_configure(invoker) "Only the workspace's moderators manage Discord members"
     require reaches_server(d) "A bridge of one channel changes nothing else in the server"
     require d.links.any(l -> l.discord_user == read_member(op).user) "That Discord account is not linked to anyone here"
-    let call = read_member(op)
-    let out = MemberOp(op: "ban", user: call.user, reason: call.reason)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(out))))
 }
 
 /// Unbans a linked member there.
@@ -1930,9 +1890,6 @@ action unban(d: Discord, op: json.Value) {
     require may_configure(invoker) "Only the workspace's moderators manage Discord members"
     require reaches_server(d) "A bridge of one channel changes nothing else in the server"
     require d.links.any(l -> l.discord_user == read_member(op).user) "That Discord account is not linked to anyone here"
-    let call = read_member(op)
-    let out = MemberOp(op: "unban", user: call.user, reason: call.reason)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(out))))
 }
 
 /// Sets a channel's permission overwrite, for a role the bridge made.
@@ -1944,8 +1901,6 @@ action set_overwrite(d: Discord, op: json.Value) {
     require knows_channel(d, read_overwrite(op).channel) "There is no such channel in the server"
     require read_overwrite(op).target_kind == .role
         and by_discord(d, .role, read_overwrite(op).target) != .none "The bridge sets overwrites only for the roles it made"
-    let call = read_overwrite(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Copies a file from Discord's CDN into the workspace's content store.
@@ -1954,8 +1909,6 @@ action fetch_asset(d: Discord, op: json.Value) {
     require reads_asset(op) "A Discord file does not read"
     require the_bridge(invoker) "The bridge copies Discord's files"
     require read_asset(op).max_bytes <= 32 * 1024 * 1024 "Chat holds files of at most 32 MiB"
-    let call = read_asset(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Uploads a workspace emoji to the server, or renames one the bridge uploaded.
@@ -1965,8 +1918,6 @@ action apply_emoji(d: Discord, op: json.Value) {
     require valid_discord_emoji_name(read_emoji(op).name) "A Discord emoji's name is 2 to 32 letters, digits and underscores"
     require fresh(read_emoji(op).id) or by_discord(d, .emoji, or_empty(read_emoji(op).id)) != .none "The bridge changes only emoji it uploaded"
     require is_content_address(read_emoji(op).picture) "An emoji op names its picture's content address"
-    let call = read_emoji(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Deletes an emoji the bridge uploaded.
@@ -1974,8 +1925,6 @@ action delete_emoji(d: Discord, op: json.Value) {
     require reads_emoji_delete(op) "A Discord emoji does not read"
     require reaches_server(d) "A bridge of one channel changes nothing else in the server"
     require by_discord(d, .emoji, read_emoji_delete(op).emoji) != .none "The bridge changes only emoji it uploaded"
-    let call = read_emoji_delete(op)
-    outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(call))))
 }
 
 /// Whether `name` is one Discord takes for a custom emoji: 2 to 32 letters, digits and

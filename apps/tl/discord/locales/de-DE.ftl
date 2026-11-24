@@ -690,17 +690,6 @@ d-h2uwhtax = Emoji
 
 d-3ze5unut = Tilo
 
-d-7yhl3zrz = Ausführen
-    .doc = Was die Bridge ausführt: der Server welchen Kontos, und der Aufruf, als JSON.
-    .noun = { $count ->
-        [one] Ausführung
-       *[other] Ausführungen
-    }
-
-d-x5ajf4ny = Konto
-
-d-4flmqbgo = Op
-
 d-5fgcd6rc = Konten
     .doc = Die Server, die diese App überbrückt: ein Konto pro verbundenem Discord-Server.
     .noun = { $count ->

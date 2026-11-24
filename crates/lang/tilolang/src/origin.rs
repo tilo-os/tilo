@@ -207,12 +207,6 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          the person's sign-in, reads their library and the devices Spotify plays on, and moves \
          playback between them; the catalogue pages it finds are written as any catalogue's.",
     ),
-    (
-        "discord.perform",
-        "Carries a call to Discord as the account a person linked there: (the bridged account's \
-         key, the call, as JSON). What Discord answers is written through the account's own \
-         actions, and a message someone wrote there comes in as the message it is.",
-    ),
 ];
 
 pub const KINDS: &[OriginKind] = &[

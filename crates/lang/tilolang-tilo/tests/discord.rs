@@ -4,7 +4,7 @@
 
 use serde_json::{Value as Json, json};
 use tilolang_runtime::value::{EnumValue, ResourceRef};
-use tilolang_runtime::{Actor, InvokeOutcome, MemorySink, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
 use crate::fixtures::{self, Replica, Workspace};
 
@@ -684,7 +684,7 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
 /// moderator are allowed.
 #[test]
 fn a_member_reaches_only_what_their_grants_give_them() {
-    let (ada, sink, account) = mirrored();
+    let (ada, account) = mirrored();
     let meta = ada.host.package(APP).unwrap().meta;
     // The bridge links Ada's Discord account from `/link`: the person's side hands over the
     // digest of the one-time code it holds, and the bridge keeps the digest of that.
@@ -813,24 +813,9 @@ fn a_member_reaches_only_what_their_grants_give_them() {
         Value::text("3002"),
     ]));
 
-    // What the moderators did reached Discord; nothing of the member's did.
-    drain(&ada, &sink);
-    let ops = carried(&sink);
-    assert_eq!(
-        ops.iter().filter(|op| op["op"] == "kick").count(),
-        1,
-        "{ops:?}"
-    );
-    assert_eq!(
-        ops.iter().filter(|op| op["op"] == "ban").count(),
-        1,
-        "{ops:?}"
-    );
-    assert!(
-        ops.iter()
-            .any(|op| op["op"] == "delete-channel" && op["channel"] == "457"),
-        "{ops:?}"
-    );
+    // The members' calls were refused and the moderators' went through, each read by the app
+    // before the program makes its own call to Discord.
+    ada.commit();
 }
 
 // ---- the bridge's calls, and the one channel it reaches --------------------------------
@@ -883,33 +868,6 @@ fn carry_as(
     )
 }
 
-/// Call an outbound action as the bridge's own process, and let what it queued reach Discord.
-fn settled(
-    r: &Replica,
-    account: &ResourceRef,
-    action: &str,
-    args: Json,
-) -> Result<InvokeOutcome, tilolang_runtime::RuntimeError> {
-    let outcome = carried_out(r, account, action, args);
-    if outcome.is_ok() {
-        r.commit();
-        // The first settle moves the invocation's effect into the document's outbox; the second
-        // hands it to the sink.
-        r.host.settle_outbox().expect("the call is carried");
-        r.host.settle_outbox().expect("the call is carried");
-    }
-    outcome
-}
-
-/// Let every effect the calls queued reach the sink: a settle moves one invocation's effect on,
-/// so settle until the sink stops growing.
-fn drain(r: &Replica, _sink: &MemorySink) {
-    r.commit();
-    for _ in 0..16 {
-        r.host.settle_outbox().expect("the calls are carried");
-    }
-}
-
 /// Call an outbound action as the bridge's own process.
 fn carried_out(
     r: &Replica,
@@ -937,19 +895,6 @@ fn allowed<T: std::fmt::Debug, E: std::fmt::Debug>(result: &Result<T, E>) {
     }
 }
 
-/// The `discord.perform` calls the sink was handed, each with its op decoded.
-fn carried(sink: &MemorySink) -> Vec<Json> {
-    sink.delivered()
-        .into_iter()
-        .filter(|(capability, _)| capability == "discord.perform")
-        .filter_map(|(_, payload)| payload.as_str().map(str::to_owned))
-        .map(|payload| {
-            let perform: Json = serde_json::from_str(&payload).expect("a Discord call");
-            serde_json::from_str(perform["op"].as_str().expect("the call's op")).expect("the op")
-        })
-        .collect()
-}
-
 /// The first account of the app's root: the one connected server.
 fn account_of(r: &Replica) -> ResourceRef {
     let root = r.host.root_of(APP).unwrap();
@@ -964,13 +909,13 @@ fn account_of(r: &Replica) -> ResourceRef {
 
 /// A Discord app in a workspace of an owner, an editor and a moderator, its one server
 /// connected (to one channel when `only` names one) with the channel 456 and its webhook 555
-/// mapped to a conversation, and a sink taking what it carries to Discord.
-fn connected(only: Option<&str>) -> (Replica, MemorySink, ResourceRef) {
+/// mapped to a conversation.
+fn connected(only: Option<&str>) -> (Replica, ResourceRef) {
     connected_with(only, false)
 }
 
 /// The same, with the server mirrored: the bridge makes its channels there.
-fn connected_with(only: Option<&str>, mirror_channels: bool) -> (Replica, MemorySink, ResourceRef) {
+fn connected_with(only: Option<&str>, mirror_channels: bool) -> (Replica, ResourceRef) {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
     ada.host.runtime().set_members(
         vec![
@@ -980,8 +925,6 @@ fn connected_with(only: Option<&str>, mirror_channels: bool) -> (Replica, Memory
         ],
         None,
     );
-    let sink = MemorySink::new();
-    ada.host.runtime().set_sink(sink.clone());
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     let meta = ada.host.package(APP).unwrap().meta;
     let done = |action: &str, args: Vec<Value>| match ada.host.runtime().invoke_action(
@@ -1031,13 +974,13 @@ fn connected_with(only: Option<&str>, mirror_channels: bool) -> (Replica, Memory
     }
     ada.commit();
     let account = account_of(&ada);
-    (ada, sink, account)
+    (ada, account)
 }
 
 /// The same workspace with the server mirrored and adopted: the bridge makes the channel 457
 /// there, so it is the bridge's to delete.
-fn mirrored() -> (Replica, MemorySink, ResourceRef) {
-    let (ada, sink, account) = connected_with(None, true);
+fn mirrored() -> (Replica, ResourceRef) {
+    let (ada, account) = connected_with(None, true);
     let meta = ada.host.package(APP).unwrap().meta;
     let discord = Value::resource(&account);
     let done = |who: &Actor, action: &str, args: Vec<Value>| match ada
@@ -1060,25 +1003,21 @@ fn mirrored() -> (Replica, MemorySink, ResourceRef) {
         Value::List(Vec::new()),
     ]);
     ada.commit();
-    (ada, sink, account)
+    (ada, account)
 }
 
-/// A bridged conversation is said on Discord through the bridge's own actions: a message goes
-/// there with the channel, the webhook and the person's name, an edit, a reaction, a deletion and
-/// a thread follow it, and a message over Discord's 2000 characters is refused. Each call is made
-/// on its own bridge, since one device hands on the effect of one invocation per settle.
+/// A bridged conversation's calls read the shape the bridge's program writes: a send through the
+/// channel's webhook, an edit, a reaction, a deletion and a thread are read as the records they
+/// name, and a message over Discord's 2000 characters is refused. The program makes the call to
+/// Discord itself, only once the app has read it.
 #[test]
-fn what_a_bridged_conversation_says_is_carried_to_discord() {
-    let carried_op = |action: &str, args: Json| -> Json {
-        let (ada, sink, account) = connected(None);
+fn what_a_bridged_conversation_says_is_read_by_the_bridge() {
+    let reads = |action: &str, args: Json| {
+        let (ada, account) = connected(None);
         allowed(&carried_out(&ada, &account, action, args));
-        drain(&ada, &sink);
-        let ops = carried(&sink);
-        assert_eq!(ops.len(), 1, "one call reached Discord: {ops:?}");
-        ops.into_iter().next().expect("the call")
     };
 
-    let send = carried_op(
+    reads(
         "send_there",
         json!({
             "op": "send",
@@ -1090,18 +1029,7 @@ fn what_a_bridged_conversation_says_is_carried_to_discord() {
             "tilo": "tl:so.tilo.chat:m1",
         }),
     );
-    assert_eq!(send["op"], "send", "{send}");
-    assert_eq!(send["channel"], "456", "{send}");
-    assert_eq!(send["webhook"], "555", "{send}");
-    assert_eq!(send["content"], "hello", "{send}");
-    assert_eq!(send["tilo"], "tl:so.tilo.chat:m1", "{send}");
-    assert_eq!(send["username"], "ada", "{send}");
-    assert!(
-        send.get("thread").is_none_or(Json::is_null),
-        "a channel's send names no thread: {send}"
-    );
-
-    let edit = carried_op(
+    reads(
         "edit_there",
         json!({
             "op": "edit",
@@ -1111,11 +1039,7 @@ fn what_a_bridged_conversation_says_is_carried_to_discord() {
             "content": "hello again",
         }),
     );
-    assert_eq!(edit["message"], "999", "{edit}");
-    assert_eq!(edit["content"], "hello again", "{edit}");
-    assert_eq!(edit["webhook"], "555", "{edit}");
-
-    let react = carried_op(
+    reads(
         "react_there",
         json!({
             "op": "react",
@@ -1124,10 +1048,7 @@ fn what_a_bridged_conversation_says_is_carried_to_discord() {
             "emoji": "👍",
         }),
     );
-    assert_eq!(react["message"], "999", "{react}");
-    assert_eq!(react["emoji"], "👍", "{react}");
-
-    let delete = carried_op(
+    reads(
         "delete_there",
         json!({
             "op": "delete",
@@ -1136,10 +1057,7 @@ fn what_a_bridged_conversation_says_is_carried_to_discord() {
             "message": "999",
         }),
     );
-    assert_eq!(delete["message"], "999", "{delete}");
-    assert_eq!(delete["webhook"], "555", "{delete}");
-
-    let thread = carried_op(
+    reads(
         "start_thread_there",
         json!({
             "op": "start-thread",
@@ -1149,12 +1067,10 @@ fn what_a_bridged_conversation_says_is_carried_to_discord() {
             "tilo": "tl:so.tilo.chat:topic",
         }),
     );
-    assert_eq!(thread["message"], "999", "{thread}");
-    assert_eq!(thread["channel"], "456", "{thread}");
 
     // Discord takes 2000 characters: the bridge's program cuts to it, and a call over it is
     // refused before Discord hears of it.
-    let (ada, _sink, account) = connected(None);
+    let (ada, account) = connected(None);
     was_refused(
         &carried_out(
             &ada,
@@ -1179,7 +1095,7 @@ fn what_a_bridged_conversation_says_is_carried_to_discord() {
 /// hears of them.
 #[test]
 fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
-    let (ada, sink, account) = connected(Some("456"));
+    let (ada, account) = connected(Some("456"));
     let meta = ada.host.package(APP).unwrap().meta;
     let discord = Value::resource(&account);
     // A thread grown from a message in the bridged channel.
@@ -1222,12 +1138,12 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
             "tilo": "tl:so.tilo.chat:made",
         })
     };
-    allowed(&settled(&ada, &account, "send_there", send("456")));
+    allowed(&carried_out(&ada, &account, "send_there", send("456")));
     was_refused(
         &carried_out(&ada, &account, "send_there", send("999")),
         "This bridge reaches only its one Discord channel",
     );
-    allowed(&settled(
+    allowed(&carried_out(
         &ada,
         &account,
         "start_thread_there",
@@ -1335,13 +1251,6 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
     );
 
     ada.commit();
-    ada.host.settle_outbox().expect("the last call is carried");
-    let ops = carried(&sink);
-    assert_eq!(
-        ops.iter().filter(|op| op["op"] == "send").count(),
-        1,
-        "only the send in its one channel reached Discord: {ops:?}"
-    );
 }
 
 /// Run `name` of `app` as `who`, with `args`.
@@ -1570,16 +1479,17 @@ fn a_linked_discord_account_speaks_as_its_member_and_an_unlinked_one_as_itself()
     );
 }
 
-/// What the bridge hands the worker is the shape it reads: an absent thread, avatar and webhook
-/// are none rather than empty text, a file is its bare content hash, a permission overwrite says
-/// whether it is a role's or a member's, a fetched picture may come back inline, and the time a
-/// message was written here goes with it.
+/// What the bridge's program hands the app is the shape its actions read: a file is its bare
+/// content hash, a permission overwrite says its target is a role or a member rather than a
+/// number, a fetched picture may come back inline, the time a message was written here goes with
+/// it, and an absent thread, avatar and webhook are none rather than empty text. A shape the
+/// actions do not read is refused, so Discord never hears of it.
 #[test]
-fn what_the_bridge_carries_to_discord_is_the_shape_the_worker_reads() {
-    let (ada, sink, account) = connected(None);
+fn what_the_bridge_hands_a_call_is_the_shape_its_actions_read() {
+    let (ada, account) = connected(None);
     let hash = "b".repeat(64);
 
-    allowed(&settled(
+    allowed(&carried_out(
         &ada,
         &account,
         "fetch_asset",
@@ -1590,7 +1500,7 @@ fn what_the_bridge_carries_to_discord_is_the_shape_the_worker_reads() {
             "inline": true,
         }),
     ));
-    allowed(&settled(
+    allowed(&carried_out(
         &ada,
         &account,
         "send_there",
@@ -1598,14 +1508,17 @@ fn what_the_bridge_carries_to_discord_is_the_shape_the_worker_reads() {
             "op": "send",
             "channel": "456",
             "webhook": "555",
+            "thread": null,
             "username": "Ada",
+            "avatar_url": null,
+            "avatar_blob": null,
             "content": "look",
             "attachments": [{"blob": hash, "name": "shot.png", "size": 12}],
             "created_ms": 1_700_000_000_123_i64,
             "tilo": "tl:so.tilo.chat:made",
         }),
     ));
-    allowed(&settled(
+    allowed(&carried_out(
         &ada,
         &account,
         "edit_there",
@@ -1614,16 +1527,18 @@ fn what_the_bridge_carries_to_discord_is_the_shape_the_worker_reads() {
             "channel": "456",
             "webhook": "555",
             "message": "9001",
+            "thread": null,
             "content": "look again",
         }),
     ));
-    allowed(&settled(
+    allowed(&carried_out(
         &ada,
         &account,
         "delete_there",
         json!({
             "op": "delete",
             "channel": "456",
+            "webhook": null,
             "message": "9001",
         }),
     ));
@@ -1640,7 +1555,7 @@ fn what_the_bridge_carries_to_discord_is_the_shape_the_worker_reads() {
             case(&meta, "OriginSide", "tilo"),
         ],
     ));
-    allowed(&settled(
+    allowed(&carried_out(
         &ada,
         &account,
         "set_overwrite",
@@ -1651,40 +1566,20 @@ fn what_the_bridge_carries_to_discord_is_the_shape_the_worker_reads() {
             "target_kind": "role",
         }),
     ));
-    ada.commit();
-    ada.host.settle_outbox().expect("the last call is carried");
-    let ops = carried(&sink);
-    let send = ops.iter().find(|op| op["op"] == "send").expect("a send");
-    assert!(send["thread"].is_null(), "an absent thread is none: {send}");
-    assert!(
-        send["avatar_url"].is_null() && send["avatar_blob"].is_null(),
-        "an absent avatar is none: {send}"
-    );
-    assert_eq!(send["created_ms"], 1_700_000_000_123_i64, "{send}");
-    assert_eq!(
-        send["attachments"][0]["blob"], hash,
-        "a bare content hash: {send}"
-    );
-    assert_eq!(send["attachments"][0]["name"], "shot.png", "{send}");
 
-    let edit = ops.iter().find(|op| op["op"] == "edit").expect("an edit");
-    assert!(edit["thread"].is_null(), "an absent thread is none: {edit}");
-    let delete = ops
-        .iter()
-        .find(|op| op["op"] == "delete")
-        .expect("a delete");
-    assert!(
-        delete["webhook"].is_null(),
-        "an absent webhook is none: {delete}"
+    // A kind Discord numbers is no kind the action reads.
+    was_refused(
+        &carried_out(
+            &ada,
+            &account,
+            "set_overwrite",
+            json!({
+                "op": "set-overwrite",
+                "channel": "456",
+                "target": "700",
+                "target_kind": 0,
+            }),
+        ),
+        "A Discord permission does not read",
     );
-    let overwrite = ops
-        .iter()
-        .find(|op| op["op"] == "set-overwrite")
-        .expect("an overwrite");
-    assert_eq!(overwrite["target_kind"], "role", "{overwrite}");
-    let asset = ops
-        .iter()
-        .find(|op| op["op"] == "fetch-asset")
-        .unwrap_or_else(|| panic!("a fetched asset: {ops:?} all: {:?}", sink.delivered()));
-    assert_eq!(asset["inline"], true, "{asset}");
 }
