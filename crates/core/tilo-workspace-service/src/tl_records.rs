@@ -274,8 +274,9 @@ pub fn built_in_apps() -> Vec<String> {
 }
 
 /// Declare the types and verbs of every package built into this build in `surfaces`, the
-/// registry a workspace's store judges writes by: a record of a built-in app is written with no
-/// package installed, so nothing else names them.
+/// registry a workspace's store judges writes by, and where this device decides the receipts of
+/// the changes that name them: a record of a built-in app is written with no package installed,
+/// so nothing else names them.
 ///
 /// # Panics
 /// A built-in package does not compile, which is a bug of this build.
@@ -285,7 +286,7 @@ pub(crate) fn declare_built_in(surfaces: &collab_types::app_surface::Surfaces) {
         .expect("the packages built into this build compile")
     {
         for (app, bytes) in packages.surfaces() {
-            surfaces.register_package(&app, &bytes);
+            crate::workspaces::keep_surface(surfaces, &app, &bytes);
         }
     }
 }

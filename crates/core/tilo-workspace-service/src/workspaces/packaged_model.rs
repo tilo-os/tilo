@@ -110,7 +110,7 @@ pub fn package_surface(package: &[u8], app: &str) -> Result<Vec<u8>, Collaborati
 /// device's stores judge the app's resource writes by `surfaces`, its own; the
 /// receipts are decided by the process's, which is the same registry on a
 /// device that runs alone, where the second naming changes nothing.
-pub(super) fn keep_surface(
+pub(crate) fn keep_surface(
     surfaces: &collab_types::app_surface::Surfaces,
     app: &str,
     surface: &[u8],
