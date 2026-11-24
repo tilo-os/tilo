@@ -1,5 +1,8 @@
 //! The apps an agent can open in a browser session: one per app whose manifest
 //! declares the web platform. Keep it in step with the app manifests.
+//!
+//! Settings is not linked here: an agent reaches it through Settings' actions on
+//! the device's dispatch.
 
 use ui::application::ApplicationDefinition;
 
