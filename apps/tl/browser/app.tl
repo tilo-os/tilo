@@ -4,6 +4,7 @@ app so.tilo.browser "Browser" (
     tagline: "Web browser with ad blocking and Chrome extensions",
     engine: "tilo-runtime/2026.10.23-chromium",
     keywords: ["web", "internet", "surf", "website", "url", "www", "web browser", "chrome", "safari", "edge", "firefox", "browser", "browsen", "webseite", "internetseite"],
+    schemes: ["http", "https", "web+search"],
 )
 
 use so.tilo.file-explorer as files
@@ -534,6 +535,21 @@ action go(b: Browser, typed: Text) -> Page (icon: .arrow_right, label: "Open add
     require typed.trim() != "" "Type an address or what to search for"
     let url = resolve(b, typed)
     b.pages.insert(Page(url: url, title: ""))
+}
+
+/// Opens a link of a scheme this browser claims: the address in a page of its own, or the search
+/// a `web+search:` link asks for. A shell hands a link here whether or not a window of the app is
+/// open, and what this returns opens in the window.
+action open_link(b: Browser, link: Text) -> Page (icon: .external_link, label: "Open link") {
+    let asked = link.trim()
+    let search = "web+search:"
+    if asked.starts_with(search) {
+        let words = asked.slice(search.len(), asked.len()).replace("+", " ").replace("%20", " ")
+        b.pages.insert(Page(url: resolve(b, words), title: ""))
+    } else {
+        let url = normalized(asked)
+        b.pages.insert(Page(url: if url == "" { b.homepage } else { url }, title: ""))
+    }
 }
 
 /// What the page of `p` says and does, carried to the window that holds it. Each action answers

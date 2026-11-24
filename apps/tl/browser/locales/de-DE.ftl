@@ -1637,3 +1637,8 @@ d-w6ubskp2 = Mitteilung wegnehmen
     .doc = Nimmt eine Mitteilung, die eine Erweiterung gezeigt hat, weg, ohne etwas zu drücken.
 
 d-w6ubskp2-n = M
+
+d-6kjhqwh5 = Link öffnen
+    .doc = Öffnet einen Link eines Schemas, das dieser Browser beansprucht: die Adresse in einer eigenen Seite, oder die Suche, die ein `web+search:`-Link verlangt. Eine Shell reicht einen Link hierher, ob ein Fenster der App offen ist oder nicht, und was dies zurückgibt, öffnet sich im Fenster.
+
+d-6kjhqwh5-link = Link
