@@ -15,7 +15,7 @@ use crate::value::{RefValue, ResourceRef, Value};
 
 /// How deep held records may nest: the checker refuses a record that holds itself, so a deeper
 /// nesting is a package the checker did not make.
-const DEPTH: usize = 32;
+pub(crate) const DEPTH: usize = 32;
 
 /// Whether `field` holds a record of its own when its resource is made without it: a field of a
 /// declared record type with no default. A field given a value holds what it was given.
@@ -71,7 +71,7 @@ impl Core {
     }
 
     /// The type of the record `field` holds, when it holds one ([`holds`]).
-    fn held_type(&self, field: &FieldInfo) -> Option<Rc<TypeInfo>> {
+    pub(crate) fn held_type(&self, field: &FieldInfo) -> Option<Rc<TypeInfo>> {
         let Ty::Record(key) = &field.ty else {
             return None;
         };

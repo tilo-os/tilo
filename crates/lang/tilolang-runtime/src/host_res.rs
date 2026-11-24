@@ -760,6 +760,35 @@ impl Core {
 
     fn res_set(&self, rh: i32, fh: i32, v: &Value) -> HResult<Option<Wasm>> {
         let ctx = self.mut_ctx(rh, fh)?;
+        // A field holding a record of its own (one made with its resource, an item of the same
+        // document) keeps that record: a record value given to it is written into it field by
+        // field, so the record stays the item it is and what reads the field keeps reading a
+        // record with an id, whose own fields can be changed in turn.
+        if let Value::Rec(rec) = v
+            && crate::held::holds(&ctx.field)
+        {
+            let Some(ty) = self.held_type(&ctx.field) else {
+                return trap("the record's type is not loaded");
+            };
+            let Some(Value::Ref(held)) = self.held_ref(&ctx.target, &ctx.field) else {
+                return trap("the field holds no record of its own");
+            };
+            let target = Rc::unwrap_or_clone(held.target);
+            self.init_item(&ctx, &ty, &target, rec)?;
+            self.touched(target.id_string());
+            let m = Mutation::SetRegister {
+                field: ctx.field.id.clone(),
+                value: to_scalar(
+                    &Value::Ref(RefValue {
+                        target: Rc::new(target),
+                        author: held.author,
+                    }),
+                    &ctx.field.ty,
+                )?,
+            };
+            self.apply_mut(&ctx, &m)?;
+            return ret_void();
+        }
         let id = ctx.field.id.clone();
         let m = match ctx.field.kind {
             FieldKind::Register => Mutation::SetRegister {
@@ -1036,10 +1065,52 @@ impl Core {
         target: &ResourceRef,
         rec: &RecordInit,
     ) -> HResult<()> {
+        self.init_record(ctx, ty, target, rec, 0)
+    }
+
+    /// [`init_item`] with how deep into the records it holds it is: a field holding a record of
+    /// its own is written into the record made with `target`, never stored beside it as a value,
+    /// so the records a record holds stay items of the same document.
+    fn init_record(
+        &self,
+        ctx: &MutCtx,
+        ty: &TypeInfo,
+        target: &ResourceRef,
+        rec: &RecordInit,
+        depth: usize,
+    ) -> HResult<()> {
+        if depth > crate::held::DEPTH {
+            return trap("records holding records nest deeper than any package can declare");
+        }
         for (fid, v) in &rec.fields {
             let Some(f) = ty.field(fid) else {
                 return trap(format!("`{}` has no field `{fid}`", ty.name));
             };
+            if let (FieldKind::Register, Value::Rec(inner)) = (f.kind, v)
+                && crate::held::holds(&f)
+            {
+                let Some(inner_ty) = self.held_type(&f) else {
+                    return trap("the record's type is not loaded");
+                };
+                let Some(Value::Ref(held)) = self.held_ref(target, &f) else {
+                    return trap("the field holds no record of its own");
+                };
+                let child = Rc::unwrap_or_clone(held.target);
+                self.init_record(ctx, &inner_ty, &child, inner, depth + 1)?;
+                self.touched(child.id_string());
+                let m = Mutation::SetRegister {
+                    field: f.id.clone(),
+                    value: to_scalar(
+                        &Value::Ref(RefValue {
+                            target: Rc::new(child),
+                            author: held.author,
+                        }),
+                        &f.ty,
+                    )?,
+                };
+                self.journaled_apply(ctx.txn, target, &m)?;
+                continue;
+            }
             let m = match (f.kind, v) {
                 // A register holding a record, a reference, a list or a set (`to_scalar`'s
                 // last arm) is one JSON value in the record: a place's resource, a note's
