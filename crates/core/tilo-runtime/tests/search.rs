@@ -3,7 +3,7 @@
 //! shell link, an agent, another device over `tilo-actions/1`) is answered from that index with
 //! only what it may read.
 
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 use std::time::Duration;
 
@@ -115,8 +115,15 @@ fn what_an_app_publishes_is_found_through_the_daemon_by_whoever_may_read_it() {
         .await;
         let note = found.iter().find(|found| found.label == TITLE).unwrap();
         assert_eq!(note.app.as_deref(), Some(NOTES), "{note:?}");
-        assert_eq!(note.workspace.as_deref(), Some(workspace.as_str()), "{note:?}");
-        assert!(note.open.is_some(), "the result opens Notes at the note: {note:?}");
+        assert_eq!(
+            note.workspace.as_deref(),
+            Some(workspace.as_str()),
+            "{note:?}"
+        );
+        assert!(
+            note.open.is_some(),
+            "the result opens Notes at the note: {note:?}"
+        );
 
         // A key the workspace does not know asks the same search over the device link.
         let visitor = host.visitor(&workspace).await;
