@@ -416,7 +416,6 @@ async fn a_workspace_is_answered_by_the_one_model_it_linked_and_another_by_its_o
 
 /// Her yes to `agent` replaces the key of her `provider`, and still no answer carries a key.
 async fn her_yes_replaces_the_key(
-    workspaces: &Workspaces,
     host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     ada: &DeviceCert,
@@ -586,7 +585,7 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
 
     // Her yes replaces the key, and the provider is asked about the new one once.
     stand_in.drain_requests();
-    her_yes_replaces_the_key(workspaces, &host, workspace_id, &ada, &agent, &provider).await;
+    her_yes_replaces_the_key(&host, workspace_id, &ada, &agent, &provider).await;
     let asked = stand_in.drain_requests();
     assert_eq!(
         asked.len(),
@@ -1284,14 +1283,15 @@ async fn an_agent_no_members_device_stands_behind_asks_nothing() {
 /// A model call an invocation made writes what it cost into that invocation's record, where the
 /// record's reading shows it: the provider and model that answered, the tokens counted and the
 /// millionths of the currency spent.
-#[test]
-fn a_model_call_writes_what_it_cost_into_the_invocations_record() {
+#[tokio::test]
+async fn a_model_call_writes_what_it_cost_into_the_invocations_record() {
     use std::sync::Arc;
 
     use tilo_actions::remote::invocation_record::Invocations;
+    use tilo_actions::InvocationId;
     use tilo_actions::remote::{
-        ActionProvider, CataloguePage, CatalogueQuery, InvocationId, InvocationReceipt,
-        InvocationState, Pending, settle_with,
+        ActionProvider, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
+        InvokeRequest, Pending, settle_with,
     };
 
     /// A provider that answers nothing: the record of the ask is what the test reads.

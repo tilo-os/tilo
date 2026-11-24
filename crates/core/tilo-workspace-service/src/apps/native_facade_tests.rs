@@ -48,7 +48,7 @@ impl tilo_actions::remote::ActionProvider for NativeFacadeHostSteps {
         &self,
         _caller: &tilo_actions::remote::Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Option<tilo_actions::InvocationState> {
+    ) -> Option<tilo_actions::remote::InvocationState> {
         None
     }
     fn cancel(

@@ -1527,10 +1527,7 @@ async fn a_developer_installs_its_own_build(
     let running = workspaces.app_versions(workspace).await.unwrap();
     assert_eq!(running.len(), 1, "{running:?}");
     assert_eq!(running[0].release.version, "1.5.0-dev.2");
-    assert_eq!(
-        running[0].release.surface.as_deref(),
-        Some(hex::encode([2; 32]).as_str())
-    );
+    assert_eq!(running[0].release.surface, hex::encode([2; 32]));
 
     // The app is a resource of the workspace's apps, which offers updating, pinning and
     // uninstalling it; pinned, the version stays until it is unpinned.
@@ -2507,21 +2504,19 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let ask = |device: &DeviceCert, verb: &str, argument: Value| {
-        invoke(
-            &host,
-            workspace_id,
-            &caller(device),
-            request(&workspace, verb, argument),
-        )
+        let asking = caller(device);
+        let asked = request(&workspace, verb, argument);
+        let host = &host;
+        async move { invoke(host, workspace_id, &asking, asked).await }
     };
 
     // Every member reads the lists, and an Editor by role alone changes none.
-    let read = ask(&ada_caller, TRUSTED_ATTESTORS, json!({}))
+    let read = ask(&ada, TRUSTED_ATTESTORS, json!({}))
         .await
         .unwrap();
     assert_eq!(read["attestors"], json!([]));
     assert_eq!(read["revoked"], json!([]));
-    let read = ask(&ada_caller, REGISTRIES, json!({})).await.unwrap();
+    let read = ask(&ada, REGISTRIES, json!({})).await.unwrap();
     assert_eq!(read["registries"], json!([]));
     for verb in [ADD_ATTESTOR, REVOKE_PUBLISHER, ADD_REGISTRY] {
         assert!(
@@ -2564,12 +2559,12 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     assert_eq!(added["attestors"][0]["id"], "acme/1");
     assert_eq!(added["attestors"][0]["pubkey_hex"], attestor_key);
     assert_eq!(added["attestors"][0]["scope"], "prefix:so.tilo.");
-    let listed = ask(&ada_caller, TRUSTED_ATTESTORS, json!({}))
+    let listed = ask(&ada, TRUSTED_ATTESTORS, json!({}))
         .await
         .unwrap();
     assert_eq!(listed["attestors"], added["attestors"]);
 
-    let removed = ask(&ada_caller, REMOVE_ATTESTOR, json!({ "id": "acme/1" }))
+    let removed = ask(&ada, REMOVE_ATTESTOR, json!({ "id": "acme/1" }))
         .await
         .unwrap();
     assert_eq!(removed["attestors"], json!([]));
@@ -2585,7 +2580,7 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     assert_eq!(revoked["revoked"][0]["pubkey_hex"], refused_key);
     assert_eq!(revoked["revoked"][0]["reason"], "lost key");
     assert_eq!(
-        ask(&ada_caller, REVOKED_PUBLISHERS, json!({}))
+        ask(&ada, REVOKED_PUBLISHERS, json!({}))
             .await
             .unwrap()["revoked"],
         revoked["revoked"]
@@ -2606,14 +2601,14 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     assert_eq!(added["registries"][0]["channel"], "stable");
 
     let disabled = ask(
-        &ada_caller,
+        &ada,
         DISABLE_REGISTRY,
         json!({ "name": "Tilo main" }),
     )
     .await
     .unwrap();
     assert_eq!(disabled["registries"][0]["enabled"], false);
-    let enabled = ask(&ada_caller, ENABLE_REGISTRY, json!({ "name": "Tilo main" }))
+    let enabled = ask(&ada, ENABLE_REGISTRY, json!({ "name": "Tilo main" }))
         .await
         .unwrap();
     assert_eq!(enabled["registries"][0]["enabled"], true);
@@ -2655,7 +2650,7 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
         Err(ActionCallError::InvalidRequest { .. })
     ));
 
-    let removed = ask(&ada_caller, REMOVE_REGISTRY, json!({ "name": "Tilo main" }))
+    let removed = ask(&ada, REMOVE_REGISTRY, json!({ "name": "Tilo main" }))
         .await
         .unwrap();
     assert_eq!(removed["registries"], json!([]));
@@ -2717,11 +2712,15 @@ async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
     );
     let kept = |cert: &DeviceCert| {
         let record = membership::member_record(&cert.user_public_key);
-        crate::workspaces::person_workspace::read_on::<Membership>(
-            workspaces,
-            &workspace,
-            (membership::APP, record.as_str()),
-        )
+        let workspace = &workspace;
+        async move {
+            crate::workspaces::person_workspace::read_on::<Membership>(
+                workspaces,
+                workspace,
+                (membership::APP, record.as_str()),
+            )
+            .await
+        }
     };
     assert_eq!(
         kept(winner).await.unwrap().role.as_deref(),

@@ -921,13 +921,6 @@ async fn the_host_authors_a_workspace_record_no_factory_makes() {
     server.shutdown().await;
 }
 
-#[cfg(feature = "agents")]
-#[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one authoring pass: granted, written and read back through the native view"
-)]
-
 pub(crate) async fn is_banned(
     workspaces: &Workspaces,
     workspace: &str,
