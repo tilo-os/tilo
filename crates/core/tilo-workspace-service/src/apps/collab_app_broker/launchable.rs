@@ -515,12 +515,20 @@ mod tests {
     const APP: &str = "so.tilo.files";
 
     /// The card a call of the fixture app's `verb` on its files waits on its person's yes
-    /// with, asked by `by`.
+    /// with, asked by `by`: what it is on, what the app's declaration is able to do with it,
+    /// and whether it reaches outside the files Undo puts back.
     fn card(by: AskedBy, verb: &str, destructive: bool) -> ActionCallError {
         ActionCallError::asks(AskedFacts {
             on: Some("Files".into()),
             verb: verb.into(),
             destructive,
+            plural: Some("Files".into()),
+            kind: "files.app".into(),
+            effect: Some(if destructive {
+                tilo_actions::ActionKind::Outside
+            } else {
+                tilo_actions::ActionKind::Undoable
+            }),
             ..AskedFacts::by(by)
         })
     }
