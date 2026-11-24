@@ -2888,6 +2888,7 @@ settings-effect-cancel-removal = Abbrechen
 settings-effect-revoke-device = Gerät entfernen
 settings-effect-revoke-browser = Browser entfernen
 settings-effect-stop-session = Agentensitzung beenden
+settings-effect-let-agent-go-on = Weiterlaufen lassen
 settings-effect-refresh-disk-unlock = Datenträgerentsperrung aktualisieren
 settings-effect-set-disk-unlock-networks = Entsperrnetzwerke wählen
 settings-effect-set-brightness = Helligkeit festlegen

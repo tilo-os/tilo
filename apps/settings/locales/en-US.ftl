@@ -2888,6 +2888,7 @@ settings-effect-cancel-removal = Cancel
 settings-effect-revoke-device = Remove device
 settings-effect-revoke-browser = Remove browser
 settings-effect-stop-session = Stop agent session
+settings-effect-let-agent-go-on = Let it go on
 settings-effect-refresh-disk-unlock = Refresh disk unlock
 settings-effect-set-disk-unlock-networks = Choose unlock networks
 settings-effect-set-brightness = Set brightness
