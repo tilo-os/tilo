@@ -8,7 +8,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, RESOURCE_PROVIDER, RemoteActionTarget, ResourceReadRequest,
+    InvokeArgument, InvokeRequest, RESOURCE_PROVIDER, ReceiptStatus, RemoteActionTarget,
+    ResourceReadRequest,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_resource::{Invoke, Resource};
@@ -40,25 +41,48 @@ struct Latest {
     copy: Reading,
 }
 
+/// How writes sent without waiting went.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Went {
+    /// The daemon made every one.
+    Made,
+    /// The daemon refused one, saying why: the ones after it were not sent, and the resource as
+    /// the daemon holds it was read again.
+    Refused(String),
+    /// The daemon did not answer, or answered nothing settled: they may be made yet, and a
+    /// caller asks again.
+    Unreached(String),
+}
+
+impl Went {
+    /// As a result: either kind of failure says why.
+    pub(crate) fn result(self) -> Result<(), String> {
+        match self {
+            Self::Made => Ok(()),
+            Self::Refused(why) | Self::Unreached(why) => Err(why),
+        }
+    }
+}
+
 /// Writes sent to the daemon without waiting ([`FollowedResource::send`]): how they went, once
 /// they did.
 #[derive(Clone, Default)]
-pub(crate) struct Sending(Arc<(Mutex<Option<Result<(), String>>>, std::sync::Condvar)>);
+pub(crate) struct Sending(Arc<(Mutex<Option<Went>>, std::sync::Condvar)>);
 
 impl Sending {
     /// How they went: `None` while they are on their way.
-    pub(crate) fn went(&self) -> Option<Result<(), String>> {
+    pub(crate) fn went(&self) -> Option<Went> {
         self.0.0.lock_recover().clone()
     }
 
-    fn finish(&self, went: Result<(), String>) {
+    fn finish(&self, went: Went) {
         *self.0.0.lock_recover() = Some(went);
         self.0.1.notify_all();
     }
 
     /// Wait until they went: what a test takes its next step after.
     #[cfg(test)]
-    pub(crate) fn wait(&self) -> Result<(), String> {
+    pub(crate) fn wait(&self) -> Went {
         let (went, done) = &*self.0;
         let (went, timeout) = done
             .wait_timeout_while(
@@ -318,7 +342,7 @@ impl<P: Resource> FollowedResource<P> {
         invoke: &Invoke<P>,
         done: impl FnOnce(Result<(), String>) + Send + 'static,
     ) {
-        self.unwaited(std::slice::from_ref(invoke), done);
+        self.unwaited(std::slice::from_ref(invoke), |went| done(went.result()));
     }
 
     /// Run `invokes` at the device's daemon, in order, as the person, without waiting for them:
@@ -335,11 +359,7 @@ impl<P: Resource> FollowedResource<P> {
         sending
     }
 
-    fn unwaited(
-        &self,
-        invokes: &[Invoke<P>],
-        done: impl FnOnce(Result<(), String>) + Send + 'static,
-    ) {
+    fn unwaited(&self, invokes: &[Invoke<P>], done: impl FnOnce(Went) + Send + 'static) {
         let requests: Result<Vec<(&'static str, InvokeRequest)>, String> = invokes
             .iter()
             .map(|invoke| match invoke.refusal() {
@@ -353,7 +373,7 @@ impl<P: Resource> FollowedResource<P> {
         let requests = match requests {
             Ok(requests) => requests,
             Err(refusal) => {
-                done(Err(refusal));
+                done(Went::Refused(refusal));
                 return;
             }
         };
@@ -366,20 +386,24 @@ impl<P: Resource> FollowedResource<P> {
         );
         let read = read_of(&shared.workspace, shared.app, &shared.id, None);
         shared.daemon.runtime().spawn(async move {
+            let mut went = Went::Made;
             for (action, request) in requests {
-                let ran = daemon
-                    .dispatch(
-                        Some(&workspace),
-                        &tilo_actions::remote::RemoteActionMessage::Invoke(request),
-                    )
-                    .await;
-                if let Err(error) = ran {
+                went = match daemon.invoke_receipt(Some(&workspace), request).await {
+                    Ok(receipt) => match receipt.status {
+                        ReceiptStatus::Completed { .. } => Went::Made,
+                        ReceiptStatus::Rejected { error } => Went::Refused(error.to_string()),
+                        ReceiptStatus::Failed { error } => Went::Refused(error.message),
+                        status => Went::Unreached(format!("the action did not settle: {status:?}")),
+                    },
+                    Err(error) => Went::Unreached(error),
+                };
+                if let Went::Refused(error) | Went::Unreached(error) = &went {
                     tracing::warn!(%error, kind = P::KIND, action, "a resource was not changed");
-                    done(Err(error));
-                    return;
+                    break;
                 }
             }
-            // What they changed shows before the caller hears they went.
+            // What they changed, or what a refusal left, shows before the caller hears how they
+            // went.
             match daemon.read(read).await {
                 Ok(readings) => {
                     if take(&latest, &readings) {
@@ -391,7 +415,7 @@ impl<P: Resource> FollowedResource<P> {
                     tracing::debug!(%error, "a resource was not read again after its writes")
                 ),
             }
-            done(Ok(()));
+            done(went);
         });
     }
 

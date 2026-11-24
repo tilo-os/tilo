@@ -19,6 +19,7 @@ use tilo_workspace_service::workspaces::person_workspace::devices::{
 };
 
 use crate::Shared;
+use crate::followed_resource::Sending;
 use crate::i18n::{t, t_args};
 use crate::platform::fabric::{DeviceId, SharedLink};
 use crate::platform::notice::Notice;
@@ -31,6 +32,12 @@ enum Done {
         address: String,
         target: String,
         name: Result<String, String>,
+    },
+    /// Whether the daemon took the ask to move the accessory `name` to `device`.
+    Asked {
+        name: String,
+        device: String,
+        asked: Result<(), String>,
     },
     /// How one piece of this device's part of a move went.
     Turned {
@@ -52,6 +59,8 @@ pub(crate) struct Handoffs {
     told: RefCell<BTreeSet<(String, i64)>>,
     sender: mpsc::Sender<Done>,
     results: RefCell<mpsc::Receiver<Done>>,
+    /// The moves given up, on their way to the record.
+    giving_up: RefCell<Option<Sending>>,
 }
 
 impl Default for Handoffs {
@@ -64,6 +73,7 @@ impl Default for Handoffs {
             told: RefCell::default(),
             sender,
             results: RefCell::new(results),
+            giving_up: RefCell::default(),
         }
     }
 }
@@ -105,24 +115,17 @@ impl Handoffs {
                     let held = record.get();
                     match accessory::asking(&held, &local, &address, &name, &target, now_ns()) {
                         Ok(ask) => {
-                            if let Err(error) = record.invoke(&ask) {
-                                tracing::warn!(%error, "a Bluetooth handoff was not asked");
-                                refused(shared, &name, &t("session-bluetooth-target-away"));
-                                continue;
-                            }
+                            // The daemon's store may be slow: the ask goes without the pass
+                            // waiting, and a later pass tells the person how it went.
                             let device = crate::wake::label(&held, &key(&target));
-                            tell(
-                                shared,
-                                0,
-                                t_args(
-                                    "session-bluetooth-moving",
-                                    &[("accessory", name.as_str().into())],
-                                ),
-                                t_args(
-                                    "session-bluetooth-moving-body",
-                                    &[("device", device.as_str().into())],
-                                ),
-                            );
+                            let sender = self.sender.clone();
+                            record.invoke_unwaited(&ask, move |asked| {
+                                let _ = sender.send(Done::Asked {
+                                    name,
+                                    device,
+                                    asked,
+                                });
+                            });
                         }
                         Err(MoveRefusal::SameDevice) => {}
                         Err(MoveRefusal::UnknownDevice) => {
@@ -130,6 +133,31 @@ impl Handoffs {
                         }
                         Err(MoveRefusal::Moving) => {
                             refused(shared, &name, &t("session-bluetooth-moving-already"));
+                        }
+                    }
+                    continue;
+                }
+                Done::Asked {
+                    name,
+                    device,
+                    asked,
+                } => {
+                    match asked {
+                        Ok(()) => tell(
+                            shared,
+                            0,
+                            t_args(
+                                "session-bluetooth-moving",
+                                &[("accessory", name.as_str().into())],
+                            ),
+                            t_args(
+                                "session-bluetooth-moving-body",
+                                &[("device", device.as_str().into())],
+                            ),
+                        ),
+                        Err(error) => {
+                            tracing::warn!(%error, "a Bluetooth handoff was not asked");
+                            refused(shared, &name, &t("session-bluetooth-target-away"));
                         }
                     }
                     continue;
@@ -149,10 +177,12 @@ impl Handoffs {
                     )
                 }
             };
-            if let Some(write) = write
-                && let Err(error) = record.invoke(&write)
-            {
-                tracing::warn!(%error, "how a Bluetooth step went was not written");
+            if let Some(write) = write {
+                record.invoke_unwaited(&write, |written| {
+                    if let Err(error) = written {
+                        tracing::warn!(%error, "how a Bluetooth step went was not written");
+                    }
+                });
             }
         }
 
@@ -169,10 +199,15 @@ impl Handoffs {
             now_ns(),
             &mut self.part.borrow_mut(),
         );
-        for write in writes {
-            if let Err(error) = record.invoke(&write) {
-                tracing::warn!(%error, "a Bluetooth move was not given up");
-            }
+        // The record reads what they wrote once they went: until then a pass would find the same
+        // moves to give up, so none is sent again while some are on their way.
+        let giving_up = self
+            .giving_up
+            .borrow()
+            .as_ref()
+            .is_some_and(|sending| sending.went().is_none());
+        if !writes.is_empty() && !giving_up {
+            *self.giving_up.borrow_mut() = Some(record.send(&writes));
         }
         for turn in turns {
             self.spawn_turn(turn);
