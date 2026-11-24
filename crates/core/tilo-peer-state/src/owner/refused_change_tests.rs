@@ -254,7 +254,7 @@ fn a_device_refuses_its_own_sealed_change_for_a_caller_who_never_signed() {
     let mut own = AutoCommit::load(&base).unwrap();
     let before = own.get_heads();
     own.put(ROOT, "topic", "its own").unwrap();
-    own.commit_edit("chat", "topic", &person);
+    own.commit_edit("chat", "topic", &crate::owner::testing::member_person());
     assert_eq!(
         drafted(&own.save_after(&before)),
         Ok(()),

@@ -4060,7 +4060,7 @@ mod tests {
         let roster = [device(&root, 2), device(&root, 3)];
         let mut record = AutoCommit::new();
         record.put(ROOT, "start", "here").unwrap();
-        record.commit_edit("fixture", "start");
+        record.commit_edit("fixture", "start", &root.verifying_key().to_bytes());
         let host = link(
             &roster,
             RevocationList::new(),
@@ -4091,7 +4091,7 @@ mod tests {
                 .with_actor(automerge::ActorId::from(vec![actor; 16]));
             let heads = edit.get_heads();
             edit.put(ROOT, field, "written").unwrap();
-            edit.commit_edit("fixture", field);
+            edit.commit_edit("fixture", field, &root.verifying_key().to_bytes());
             edit.save_after(&heads)
         };
         let (first, second) = (edit("first", 4), edit("second", 5));

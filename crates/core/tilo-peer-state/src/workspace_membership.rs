@@ -707,9 +707,9 @@ mod tests {
             let install = WorkspaceMembershipCommand::InstallApp(AppRelease {
                 app: app.to_owned(),
                 version: "1.0.0".into(),
-                surface: Some(hex64("a")),
-                package: Some(hex64("b")),
-                publisher: Some(hex64("c")),
+                surface: hex64("a"),
+                package: hex64("b"),
+                publisher: hex64("c"),
                 file: None,
                 dev: false,
                 pinned: false,
