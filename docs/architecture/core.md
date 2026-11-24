@@ -670,6 +670,9 @@ and screen share only, never documents, and stays as it is.
   goes, and settings are records read and written like any other.
   No action lists or returns records (`keys#list`, `devices#list`): actions
   change things, and a list is a read of the records the caller may see.
+  One check decides every read, apps' included: only grants the record's own
+  workspace issued count, and a call made for someone gets the smaller of
+  the caller's grant and theirs.
 - **One way to ask**: whenever a person is asked for a yes, a choice or a
   secret, the question is an asked invocation record answered through
   `tilo.invocations#resolve`. An app, an agent, a web page in the Browser, an
