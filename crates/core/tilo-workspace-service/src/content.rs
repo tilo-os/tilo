@@ -1084,9 +1084,40 @@ impl MemberContent {
 }
 
 impl ContentKeeper for MemberContent {
-    fn piece(&self, _workspace: &str, _from: [u8; 32], frame: &[u8]) {
-        match NeighbourMsg::decode(frame) {
-            Ok(NeighbourMsg::DocumentContentPiece {
+    fn take(
+        &self,
+        _workspace: &str,
+        _from: [u8; 32],
+        message: NeighbourMsg,
+    ) -> Result<(), NeighbourMsg> {
+        let expected = match &message {
+            NeighbourMsg::DocumentContentPiece {
+                app_id,
+                cluster_id,
+                hash,
+                ..
+            }
+            | NeighbourMsg::DocumentContentLacks {
+                app_id,
+                cluster_id,
+                hash,
+                ..
+            }
+            | NeighbourMsg::DocumentContentRefused {
+                app_id,
+                cluster_id,
+                hash,
+                ..
+            } => self
+                .0
+                .expecting(&CrdtRoute::app(app_id.clone(), cluster_id.clone()), hash),
+            _ => false,
+        };
+        if !expected {
+            return Err(message);
+        }
+        match message {
+            NeighbourMsg::DocumentContentPiece {
                 app_id,
                 cluster_id,
                 hash,
@@ -1094,7 +1125,7 @@ impl ContentKeeper for MemberContent {
                 offset,
                 bytes,
                 ..
-            }) => self.0.peer_piece(
+            } => self.0.peer_piece(
                 &CrdtRoute::app(app_id, cluster_id),
                 &ContentPiece {
                     hash,
@@ -1103,52 +1134,27 @@ impl ContentKeeper for MemberContent {
                     bytes,
                 },
             ),
-            Ok(NeighbourMsg::DocumentContentLacks {
+            NeighbourMsg::DocumentContentLacks {
                 responder,
                 app_id,
                 cluster_id,
                 hash,
                 ..
-            }) => self
+            } => self
                 .0
                 .peer_lacks(&CrdtRoute::app(app_id, cluster_id), responder, &hash),
-            Ok(NeighbourMsg::DocumentContentRefused {
+            NeighbourMsg::DocumentContentRefused {
                 responder,
                 app_id,
                 cluster_id,
                 hash,
                 ..
-            }) => self
+            } => self
                 .0
                 .peer_refused(&CrdtRoute::app(app_id, cluster_id), responder, &hash),
             _ => {}
         }
-    }
-
-    fn expects(&self, _workspace: &str, frame: &[u8]) -> bool {
-        match NeighbourMsg::decode(frame) {
-            Ok(
-                NeighbourMsg::DocumentContentPiece {
-                    app_id,
-                    cluster_id,
-                    hash,
-                    ..
-                }
-                | NeighbourMsg::DocumentContentLacks {
-                    app_id,
-                    cluster_id,
-                    hash,
-                    ..
-                }
-                | NeighbourMsg::DocumentContentRefused {
-                    app_id,
-                    cluster_id,
-                    hash,
-                    ..
-                },
-            ) => self.0.expecting(&CrdtRoute::app(app_id, cluster_id), &hash),
-            _ => false,
-        }
+        Ok(())
     }
 }
 

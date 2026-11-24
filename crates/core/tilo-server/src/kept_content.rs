@@ -1384,18 +1384,31 @@ impl ContentKeeper for KeptContent {
         self.ask_now.notify_one();
     }
 
-    fn piece(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
+    fn take(
+        &self,
+        workspace: &str,
+        from: [u8; 32],
+        message: NeighbourMsg,
+    ) -> Result<(), NeighbourMsg> {
         let limits = self.limits_of(workspace);
         let now = now_ms();
         let mut state = self.state.lock_recover();
+        // A file over the cap is taken in here too, so its poster is answered
+        // with the refusal: it is refused before any byte is kept.
+        if !state.wants.expects_in(&self.device, &message)
+            && !state.wants.awaits_in(&self.device, &message)
+        {
+            return Err(message);
+        }
         let mut refused = Vec::new();
-        if let Ok(NeighbourMsg::DocumentContentPiece {
+        if let NeighbourMsg::DocumentContentPiece {
             app_id,
             hash,
             total,
             ..
-        }) = NeighbourMsg::decode(frame)
+        } = &message
         {
+            let total = *total;
             let hash = hash.to_ascii_lowercase();
             if let Some(refusal) = state
                 .refused
@@ -1403,7 +1416,7 @@ impl ContentKeeper for KeptContent {
                 .and_then(|held| held.get(&hash))
             {
                 if !refusal.withdrawn && !limits.allows(refusal.limit, refusal.bytes) {
-                    return;
+                    return Ok(());
                 }
                 // The limit that refused it was raised: it is kept now, if its
                 // poster answers again, and its refusal is withdrawn then.
@@ -1415,12 +1428,12 @@ impl ContentKeeper for KeptContent {
             }
             if let Some(file_bytes) = limits.file_bytes
                 && total > file_bytes
-                && state.wants.expects(&self.device, frame)
+                && state.wants.expects_in(&self.device, &message)
             {
                 refused.push(self.refuse(
                     &mut state,
                     workspace,
-                    &app_id,
+                    app_id,
                     "",
                     &hash,
                     from,
@@ -1430,19 +1443,26 @@ impl ContentKeeper for KeptContent {
                 ));
                 drop(state);
                 self.record_refusals(workspace, refused);
-                return;
+                return Ok(());
             }
         }
-        if state.wants.lacks(&self.device, frame) {
-            return;
+        if state.wants.lacks_in(&self.device, &message) {
+            return Ok(());
         }
-        let arrived = state.wants.piece(&self.device, frame, now);
+        let assembled = state.wants.assemble(&self.device, message, now);
         if state.wants.take_continued() {
             self.ask_now.notify_one();
         }
-        let Some(arrived) = arrived else {
-            return;
+        let Some(assembled) = assembled else {
+            return Ok(());
         };
+        drop(state);
+        // Checked against its address with the lock let go: hashing a large
+        // file takes a while, and every other piece waits on the lock.
+        let Some(arrived) = assembled.verified() else {
+            return Ok(());
+        };
+        let mut state = self.state.lock_recover();
         let size = u64::try_from(arrived.bytes.len()).unwrap_or(u64::MAX);
         if let Some((limit, allowed)) = Self::over(&mut state, &limits, workspace, &from, size, now)
         {
@@ -1459,7 +1479,7 @@ impl ContentKeeper for KeptContent {
             ));
             drop(state);
             self.record_refusals(workspace, refused);
-            return;
+            return Ok(());
         }
         // Counted as it is taken in, so what arrives while earlier content is
         // still being written stays within the limits too; a write that
@@ -1469,13 +1489,7 @@ impl ContentKeeper for KeptContent {
         state.arrivals.push((workspace.to_owned(), arrived));
         drop(state);
         self.arrived.notify_one();
-    }
-
-    fn expects(&self, _workspace: &str, frame: &[u8]) -> bool {
-        // A file over the cap is taken in here too, so `piece` answers its
-        // poster with the refusal: it is refused before any byte is kept.
-        let state = self.state.lock_recover();
-        state.wants.expects(&self.device, frame) || state.wants.awaits(&self.device, frame)
+        Ok(())
     }
 
     fn refused<'a>(

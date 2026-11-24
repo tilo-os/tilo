@@ -91,23 +91,29 @@ impl ContentRefusal {
 
 /// Where content members answer the host with goes.
 pub trait ContentKeeper: Send + Sync {
-    /// `frame`, a `NeighbourMsg::DocumentContentPiece` the member device
-    /// `from` sent this host in `workspace`.
-    fn piece(&self, workspace: &str, from: [u8; 32], frame: &[u8]);
+    /// Take `message`, a content frame the member device `from` sent this
+    /// host in `workspace`, when it answers a request this keeper made: such a
+    /// piece counts against what the keeper keeps, not the member's general
+    /// content budget. `message` comes back when it answers none of them, for
+    /// whatever else this host asked. The frame is decoded once, and taken in
+    /// one look at what is asked for: a large tree's pieces arrive by the
+    /// thousand.
+    ///
+    /// # Errors
+    ///
+    /// `message`, handed back, when it answers no request of this keeper's.
+    fn take(
+        &self,
+        workspace: &str,
+        from: [u8; 32],
+        message: NeighbourMsg,
+    ) -> Result<(), NeighbourMsg>;
 
     /// A link to `workspace`'s devices started: ask again at once for what
     /// is still being gathered there, since what a link that ended carried
     /// of the asks and their answers ended with it.
     fn relinked(&self, workspace: &str) {
         let _ = workspace;
-    }
-
-    /// Whether `frame` answers a request this host made in `workspace` and
-    /// would keep: such a piece counts against what the keeper keeps, not
-    /// the member's general content budget.
-    fn expects(&self, workspace: &str, frame: &[u8]) -> bool {
-        let _ = (workspace, frame);
-        false
     }
 
     /// How many blobs of the content the resources of `workspace` that open
@@ -576,14 +582,18 @@ impl Workspaces {
     /// surface the host asked for, into the content store the host decides
     /// with. Dropped when the host expects neither.
     pub fn content_for_host(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
-        self.keep_content_for_host(workspace, from, frame);
+        let message = match NeighbourMsg::decode(frame) {
+            Ok(message) => message,
+            Err(error) => {
+                tracing::warn!(workspace, from = %hex::encode(from), %error, "a content frame from a member did not decode");
+                return;
+            }
+        };
+        let lacks = matches!(message, NeighbourMsg::DocumentContentLacks { .. });
+        self.keep_content_for_host(workspace, from, message);
         // Told once what it brings is kept.
         let answers = &self.inner.content.answers.0;
         if answers.receiver_count() > 0 {
-            let lacks = matches!(
-                NeighbourMsg::decode(frame),
-                Ok(NeighbourMsg::DocumentContentLacks { .. })
-            );
             drop(answers.send(ContentAnswer {
                 workspace: workspace.to_owned(),
                 from,
@@ -592,25 +602,26 @@ impl Workspaces {
         }
     }
 
-    /// Hand `frame` to whoever asked for what it brings
+    /// Hand `message` to whoever asked for what it brings
     /// ([`Self::content_for_host`]).
-    fn keep_content_for_host(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
+    fn keep_content_for_host(&self, workspace: &str, from: [u8; 32], message: NeighbourMsg) {
+        let mut message = message;
         for keeper in self.inner.content.keepers() {
-            if keeper.expects(workspace, frame) {
-                keeper.piece(workspace, from, frame);
-                return;
+            match keeper.take(workspace, from, message) {
+                Ok(()) => return,
+                Err(back) => message = back,
             }
         }
         // The asker of a surface is this host: a piece is kept when it is
         // addressed to the host's own device, whoever among the members
         // answered with it.
         let device = self.device_cert().device_public_key;
-        let arrived = self.inner.content.surfaces.lock_recover().piece(
+        let assembled = self.inner.content.surfaces.lock_recover().assemble(
             &device,
-            frame,
+            message,
             tilo_clock::unix_now_ms(),
         );
-        if let Some(arrived) = arrived {
+        if let Some(arrived) = assembled.and_then(neighbour_wire::content::Assembled::verified) {
             crate::surfaces::keep(&arrived.hash, &arrived.bytes);
         }
     }
