@@ -363,6 +363,12 @@ impl Core {
                     }
                     other => (self.show(&other), self.show_for_a_person(&other)),
                 };
+                // A program runs again from its start when a call it made is answered; what it
+                // printed on the way to that call was said the first time.
+                let replaying = self.frames.borrow().run().is_some_and(|run| run.replaying());
+                if replaying {
+                    return Ok(None);
+                }
                 if let Some(io) = self.program.borrow_mut().as_mut() {
                     io.output.push(said);
                     io.person_output.push(said_for_a_person);
