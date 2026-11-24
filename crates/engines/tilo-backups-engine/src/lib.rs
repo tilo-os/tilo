@@ -17,7 +17,7 @@ pub mod model;
 mod repository;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -93,27 +93,17 @@ struct Job {
     answer: Mutex<Option<Result<serde_json::Value, String>>>,
     progress: Mutex<String>,
     cancelled: AtomicBool,
+    /// Where each move of the job is told: its state, its line, and what it answered.
+    moved: Moved,
 }
+
+/// Where a job tells each move it makes: the state's word (`running`, `done`, `failed`,
+/// `cancelled`) and the job's own fields.
+pub type Moved = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
 fn jobs() -> &'static Mutex<std::collections::BTreeMap<String, Arc<Job>>> {
     static JOBS: OnceLock<Mutex<std::collections::BTreeMap<String, Arc<Job>>>> = OnceLock::new();
     JOBS.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
-}
-
-fn job_counter() -> u64 {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        });
-    // The moment and the count together: unique on a device across restarts.
-    let count = NEXT.fetch_add(1, Ordering::Relaxed);
-    at.saturating_mul(1000).saturating_add(count)
-}
-
-fn fresh(n: u64) -> String {
-    format!("backup-{n}")
 }
 
 /// The folder a path names, refusing one the app left out.
@@ -207,13 +197,14 @@ pub fn call(op: &str, input: &str) -> Result<String, String> {
     }
 }
 
-/// One `engine.start`: a backup, a verification or a restore, answered with the job's id.
+/// One `engine.start`: a backup, a verification or a restore, run as the job `id`, which tells
+/// each move it makes to `moved`.
 ///
 /// # Errors
 ///
 /// The op is unknown, the request does not read, the paths it names are unsafe, or the
 /// device could not start the work.
-pub fn start(op: &str, input: &str) -> Result<String, String> {
+pub fn start(id: &str, op: &str, input: &str, moved: Moved) -> Result<(), String> {
     let ask: Ask = serde_json::from_str(input)
         .map_err(|error| format!("the request does not read: {error}"))?;
     let job = Arc::new(Job {
@@ -221,29 +212,37 @@ pub fn start(op: &str, input: &str) -> Result<String, String> {
         answer: Mutex::new(None),
         progress: Mutex::new(String::new()),
         cancelled: AtomicBool::new(false),
+        moved,
     });
-    let run = progress_writer(&job);
-    match op {
-        "backup" => start_backup(&job, &ask, run)?,
-        "verify" => start_verify(&job, ask, run)?,
-        "restore" => start_restore(&job, ask, run)?,
-        other => return Err(format!("`{other}` is no op this device runs for {APP}")),
-    };
-    let id = fresh(job_counter());
     jobs()
         .lock()
         .map_err(|_| "the job table is unreadable".to_owned())?
-        .insert(id.clone(), job);
-    Ok(id)
+        .insert(id.to_owned(), Arc::clone(&job));
+    let run = progress_writer(&job);
+    tell(&job);
+    let started = match op {
+        "backup" => start_backup(&job, &ask, run),
+        "verify" => start_verify(&job, ask, run),
+        "restore" => start_restore(&job, ask, run),
+        other => Err(format!("`{other}` is no op this device runs for {APP}")),
+    };
+    if let Err(why) = started {
+        if let Ok(mut known) = jobs().lock() {
+            known.remove(id);
+        }
+        return Err(why);
+    }
+    Ok(())
 }
 
-/// A job's progress line, written where the job reports it.
+/// A job's progress line, written where the job reports it, and told.
 fn progress_writer(job: &Arc<Job>) -> impl Fn(&Progress) + Send + 'static {
     let work = Arc::clone(job);
     move |progress: &Progress| {
         if let Ok(mut line) = work.progress.lock() {
             *line = saying(progress);
         }
+        tell(&work);
     }
 }
 
@@ -354,7 +353,7 @@ struct Checked {
     bytes: u64,
 }
 
-/// Keeps what the job answered, and notes that a stopped job stopped.
+/// Keeps what the job answered, notes that a stopped job stopped, and tells its end.
 fn finish(job: &Job, answer: Result<serde_json::Value, String>) {
     if job.cancel.load(Ordering::Acquire) {
         job.cancelled.store(true, Ordering::Release);
@@ -362,62 +361,35 @@ fn finish(job: &Job, answer: Result<serde_json::Value, String>) {
     if let Ok(mut slot) = job.answer.lock() {
         *slot = Some(answer);
     }
+    tell(job);
+    if let Ok(mut known) = jobs().lock() {
+        known.retain(|_, kept| !std::ptr::eq(Arc::as_ptr(kept), job));
+    }
 }
 
-/// How far the job `job` has got, as JSON: its state, its line, and what it answered.
-///
-/// # Errors
-///
-/// No such job on this device.
-pub fn status(job: &str) -> Result<String, String> {
-    let found = jobs()
-        .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?
-        .get(job)
-        .cloned();
-    let Some(job) = found else {
-        return Err(format!("no job `{job}` runs on this device"));
-    };
+/// Tell how the job stands now: its state, its line, and what it answered.
+fn tell(job: &Job) {
     let progress = job
         .progress
         .lock()
         .map_or_else(|_| String::new(), |line| line.clone());
-    if job.cancelled.load(Ordering::Acquire) {
-        return Ok(serde_json::json!({
-            "state": "cancelled",
-            "progress": progress,
-            "answer": "",
-            "error": "The work was stopped.",
-        })
-        .to_string());
-    }
-    let answer = job
-        .answer
-        .lock()
-        .map_err(|_| "the job is unreadable".to_owned())?;
-    match answer.as_ref() {
-        None => Ok(serde_json::json!({
-            "state": "running",
-            "progress": progress,
-            "answer": "",
-            "error": "",
-        })
-        .to_string()),
-        Some(Ok(value)) => Ok(serde_json::json!({
-            "state": "done",
-            "progress": progress,
-            "answer": value.to_string(),
-            "error": "",
-        })
-        .to_string()),
-        Some(Err(error)) => Ok(serde_json::json!({
-            "state": "failed",
-            "progress": progress,
-            "answer": "",
-            "error": error,
-        })
-        .to_string()),
-    }
+    let (state, answer, error) = if job.cancelled.load(Ordering::Acquire) {
+        (
+            "cancelled",
+            String::new(),
+            "The work was stopped.".to_owned(),
+        )
+    } else {
+        match job.answer.lock().ok().and_then(|answer| answer.clone()) {
+            None => ("running", String::new(), String::new()),
+            Some(Ok(value)) => ("done", value.to_string(), String::new()),
+            Some(Err(error)) => ("failed", String::new(), error),
+        }
+    };
+    (job.moved)(
+        state,
+        serde_json::json!({ "progress": progress, "answer": answer, "error": error }),
+    );
 }
 
 /// Stop the job `job`: false when it is not this device's or it had finished.
@@ -439,18 +411,30 @@ pub fn cancel(job: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn unheard() -> Moved {
+        Arc::new(|_, _| {})
+    }
+
     #[test]
     fn a_job_is_unknown_until_it_starts_and_a_bad_op_is_refused() {
-        assert!(status("no-such-job").is_err());
         assert!(!cancel("no-such-job"));
-        assert!(start("paint", "{}").is_err());
-        assert!(start("backup", "not json").is_err());
+        assert!(start("job-1", "paint", "{}", unheard()).is_err());
+        assert!(start("job-2", "backup", "not json", unheard()).is_err());
+        assert!(!cancel("job-1"), "a job that did not start is not kept");
         assert!(call("paint", "{}").is_err());
     }
 
     #[test]
     fn a_backup_without_folders_is_refused_and_an_empty_one_answers_nothing() {
-        assert!(start("backup", r#"{"source": "", "destination": ""}"#).is_err());
+        assert!(
+            start(
+                "job-3",
+                "backup",
+                r#"{"source": "", "destination": ""}"#,
+                unheard()
+            )
+            .is_err()
+        );
         let empty = catalog(&Ask {
             source: String::new(),
             destination: String::new(),

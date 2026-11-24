@@ -1,11 +1,10 @@
-//! The engine's own surface: a job is asked about and taken, and an op it does not know is
+//! The engine's own surface: a job is taken, and an op it does not know is
 //! refused in its words.
 
 use super::*;
 
 #[test]
 fn a_job_nobody_started_answers_nothing() {
-    assert!(status("no-such-job").is_err());
     assert!(!cancel("no-such-job"));
     assert!(call("take", r#"{"job":"no-such-job","url":"https://x.test/f"}"#).is_err());
 }
@@ -14,7 +13,7 @@ fn a_job_nobody_started_answers_nothing() {
 fn an_op_the_engine_does_not_know_is_refused_in_its_words() {
     let refused = call("paint", "{}").unwrap_err();
     assert!(refused.contains("is no op this device runs"), "{refused}");
-    let refused = start("paint", "{}").unwrap_err();
+    let refused = start("job-1", "paint", "{}", Arc::new(|_, _| {})).unwrap_err();
     assert!(refused.contains("is no op this device runs"), "{refused}");
 }
 
@@ -34,7 +33,9 @@ fn an_opml_file_is_read_and_written_through_the_engine() {
         .as_array()
         .expect("outlines")
         .iter()
-        .map(|said| serde_json::from_str(said.as_str().expect("an outline's JSON text")).expect("json"))
+        .map(|said| {
+            serde_json::from_str(said.as_str().expect("an outline's JSON text")).expect("json")
+        })
         .collect();
     assert_eq!(outlines.len(), 2);
     assert_eq!(outlines[0]["title"], "LWN");

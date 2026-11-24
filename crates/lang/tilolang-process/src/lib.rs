@@ -40,13 +40,13 @@ pub mod connection;
 pub mod containers_engine;
 #[cfg(feature = "app-launch")]
 pub mod db_engine;
+pub mod engines;
 #[cfg(all(
     feature = "app-launch",
     any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
 ))]
 pub mod feed_engine;
 pub mod files;
-#[cfg(feature = "app-launch")]
 #[cfg(feature = "app-launch")]
 pub mod grayjay_engine;
 pub mod hosted;

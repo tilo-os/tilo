@@ -357,12 +357,18 @@ impl Engine {
 
     /// One `engine.start`: `pair` or `sync`, answered with the job's id.
     pub fn start(&self, op: &str, input: &str) -> Result<String, String> {
+        self.start_told(op, input, None)
+    }
+
+    /// [`Self::start`], telling `told` how the job ended (its state and the fields
+    /// [`Self::status`] reads) the moment it does, so its host need not ask.
+    pub fn start_told(&self, op: &str, input: &str, told: Option<Told>) -> Result<String, String> {
         match op {
             "pair" => {
                 let ask: PairAsk = serde_json::from_str(input)
                     .map_err(|error| format!("the invite does not read: {error}"))?;
                 let engine = self.clone();
-                spawn_job(move |job: &Job| {
+                spawn_job(told, move |job: &Job| {
                     if job.cancelled() {
                         return Ok(JobEnd::Cancelled);
                     }
@@ -378,7 +384,7 @@ impl Engine {
                 let ask: SyncAsk = serde_json::from_str(input)
                     .map_err(|error| format!("the sync ask does not read: {error}"))?;
                 let engine = self.clone();
-                spawn_job(move |job: &Job| {
+                spawn_job(told, move |job: &Job| {
                     let mut answer = SyncAnswer::default();
                     let client = engine.client().map_err(|error| error.to_string())?;
                     for peer in &ask.peers {
@@ -492,14 +498,28 @@ fn jobs() -> MutexGuard<'static, Jobs> {
     .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// What a job's host is told once it ends: its state, and the fields [`Engine::status`] reads.
+pub type Told = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 /// Makes sure a job that leaves its thread without saying how it ended still ends legibly.
 struct Finish {
     id: String,
     said: bool,
+    told: Option<Told>,
 }
 
 impl Finish {
     fn say(&mut self, state: &str, answer: Option<String>, error: String) {
+        if let Some(told) = &self.told {
+            told(
+                state,
+                serde_json::json!({
+                    "state": state,
+                    "answer": answer.clone().unwrap_or_default(),
+                    "error": error,
+                }),
+            );
+        }
         let mut jobs = jobs();
         if let Some(held) = jobs.held.get_mut(&self.id) {
             held.state.clear();
@@ -524,8 +544,9 @@ impl Drop for Finish {
     }
 }
 
-/// Start `work` on a thread of its own, and answer the job's id.
+/// Start `work` on a thread of its own, telling `told` how it ended, and answer the job's id.
 fn spawn_job(
+    told: Option<Told>,
     work: impl FnOnce(&Job) -> Result<JobEnd, String> + Send + 'static,
 ) -> Result<String, String> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -573,6 +594,7 @@ fn spawn_job(
             let mut finish = Finish {
                 id: finished_id,
                 said: false,
+                told,
             };
             match work(&job) {
                 Ok(JobEnd::Answer(answer)) => finish.say(DONE, Some(answer), String::new()),

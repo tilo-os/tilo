@@ -76,7 +76,7 @@ impl<L: Loads> Platform for OnSession<L> {
 
     fn engine_cancel(&self, job: &str) -> bool {
         ui::live_pictures::forget(job);
-        tilolang_tilo::engine::stop(job)
+        tilolang_tilo::engine::stop_here(job)
     }
 }
 

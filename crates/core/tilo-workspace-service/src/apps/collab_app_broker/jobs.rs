@@ -31,6 +31,9 @@ use tilo_actions::{ActionAddress, ActionFailure, ActionOutput, InvocationId, Inv
 
 use super::AppBrokerState;
 
+/// The argument of a handler the app left for the job: the job's record goes there.
+const JOB_SLOT: &str = "$job";
+
 /// How long a handler's own answer is waited for before its invocation hears it did not come.
 const HANDLER_DEADLINE: Duration = Duration::from_secs(300);
 
@@ -137,8 +140,9 @@ impl AppBrokerState {
     }
 
     /// Run the handler `handler`, `{"resource", "action", "arguments"}`, as a child of the
-    /// invocation `parent`: the app `app` publishes it in `workspace`, and it is admitted as that
-    /// invocation's own caller. `None` when no such invocation runs here, or when `handler` names
+    /// invocation `parent`, handed the job as `record` says it stands in each argument the app left
+    /// for it (`{"$job": null}`): the app `app` publishes it in `workspace`, and it is admitted as
+    /// that invocation's own caller. `None` when no such invocation runs here, or when `handler` names
     /// no action.
     ///
     /// The app is started with no window when it publishes nothing there yet: a handler the app
@@ -149,15 +153,12 @@ impl AppBrokerState {
         workspace: &str,
         app: &str,
         handler: &Value,
+        record: &Value,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         let peer = self.running_peer(&parent)?;
         let (caller, _reach) = self.running_for(peer, parent)?;
         let (resource, action) = handler_address(handler)?;
-        let arguments = handler
-            .get("arguments")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
+        let arguments = handler_arguments(handler, record);
         // A handler runs whether or not a window of its app is open: an app that publishes
         // nothing here yet is started with no window first.
         if !self.publishes_in(workspace, app)
@@ -191,6 +192,22 @@ impl AppBrokerState {
                 .any(|surface| surface.app_id == app && surface.route.cluster_id == workspace)
         })
     }
+}
+
+/// The arguments `handler` is invoked with: its own, the job's `record` in each the app left for
+/// the job.
+fn handler_arguments(handler: &Value, record: &Value) -> serde_json::Map<String, Value> {
+    let mut arguments = handler
+        .get("arguments")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for argument in arguments.values_mut() {
+        if argument.get(JOB_SLOT).is_some() {
+            argument.clone_from(record);
+        }
+    }
+    arguments
 }
 
 /// The resource and action `handler` names, when it names one.
@@ -298,7 +315,13 @@ impl Inner {
     fn call(&self, job: &Job, kind: &str) -> Option<InvocationReceipt> {
         let handler = job.handler(kind)?;
         self.broker
-            .invoke_job_handler(job.invocation, &job.workspace, &job.app, &handler)?
+            .invoke_job_handler(
+                job.invocation,
+                &job.workspace,
+                &job.app,
+                &handler,
+                &job.record,
+            )?
             .wait_timeout(HANDLER_DEADLINE)
             .ok()
             .flatten()

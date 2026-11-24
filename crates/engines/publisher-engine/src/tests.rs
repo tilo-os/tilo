@@ -110,25 +110,44 @@ impl Registry {
     }
 }
 
-fn job_id(answer: &str) -> String {
-    let parsed: Value = serde_json::from_str(answer).expect("a job");
-    parsed
-        .get("job")
-        .and_then(Value::as_str)
-        .expect("the job's id")
-        .to_owned()
+/// The moves one job tells.
+type Moves = std::sync::mpsc::Receiver<(tilolang_tilo::engine::State, Value)>;
+
+/// One job started on `machine`'s engine, with the moves it tells.
+fn start(machine: &Machine, op: &str, ask: &str) -> Result<Moves, String> {
+    use tilolang_tilo::engine::JobSink;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let job = format!(
+        "job-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let (tell, moves) = std::sync::mpsc::channel();
+    let tell = std::sync::Mutex::new(tell);
+    machine.engine.start(
+        &job,
+        op,
+        ask,
+        JobSink::new(move |state, detail| {
+            let _ = tell
+                .lock()
+                .expect("the test's channel")
+                .send((state, detail));
+        }),
+    )?;
+    Ok(moves)
 }
 
-fn outcome(job: &str) -> Value {
-    let ended = crate::jobs::wait(job);
-    // The status the app reads is what the run came to, as JSON.
-    let status = crate::jobs::status(job).expect("the job's status");
-    let value: Value = serde_json::from_str(&status).expect("the status reads");
-    match ended {
-        Ok(summary) => assert_eq!(value["summary"], summary.as_str()),
-        Err(error) => assert_eq!(value["error"], error.as_str()),
+/// What the job came to: its last move, its state among its fields.
+fn outcome(moves: &Moves) -> Value {
+    loop {
+        let (state, mut detail) = moves
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the job ends");
+        if state.ended() {
+            detail["state"] = Value::from(state.word());
+            return detail;
+        }
     }
-    value
 }
 
 #[test]
@@ -228,12 +247,8 @@ fn an_application_is_signed_with_the_device_key_and_its_namespaces() {
         "contact": "ada@example.com",
     })
     .to_string();
-    let started = machine
-        .engine
-        .start("apply", &ask)
-        .expect("the application starts");
-    let job = job_id(&started);
-    let ended = outcome(&job);
+    let started = start(&machine, "apply", &ask).expect("the application starts");
+    let ended = outcome(&started);
     assert_eq!(ended["state"], "done", "{ended}");
     assert_eq!(ended["summary"], "pending (com.example)");
 
@@ -261,11 +276,8 @@ fn the_registrys_answer_about_the_key_reads_back() {
         r#"{"status":"approved","namespaces":["com.example","io.github.ada"]}"#,
     ]);
     let ask = serde_json::json!({ "registry": registry.url() }).to_string();
-    let started = machine
-        .engine
-        .start("status", &ask)
-        .expect("the check starts");
-    let ended = outcome(&job_id(&started));
+    let started = start(&machine, "status", &ask).expect("the check starts");
+    let ended = outcome(&started);
     assert_eq!(ended["state"], "done", "{ended}");
     assert_eq!(ended["summary"], "approved (com.example, io.github.ada)");
     let seen = registry.seen();
@@ -282,11 +294,8 @@ fn a_key_the_registry_knows_nothing_of_reads_as_no_application() {
     machine.call("create", "").expect("a key is made");
     let registry = Registry::answering(&[r#"{"status":"none"}"#]);
     let ask = serde_json::json!({ "registry": registry.url() }).to_string();
-    let started = machine
-        .engine
-        .start("status", &ask)
-        .expect("the check starts");
-    let ended = outcome(&job_id(&started));
+    let started = start(&machine, "status", &ask).expect("the check starts");
+    let ended = outcome(&started);
     assert_eq!(ended["state"], "done", "{ended}");
     assert_eq!(ended["summary"], "none ()");
 }
@@ -301,10 +310,7 @@ fn an_application_that_claims_nothing_is_refused_before_a_call() {
         "forge_account": "",
     })
     .to_string();
-    let refused = machine
-        .engine
-        .start("apply", &ask)
-        .expect_err("nothing is claimed");
+    let refused = start(&machine, "apply", &ask).expect_err("nothing is claimed");
     assert!(
         refused.contains("name a domain or a forge account"),
         "{refused}"
@@ -315,7 +321,7 @@ fn an_application_that_claims_nothing_is_refused_before_a_call() {
         "forge_account": "nowhere:ada",
     })
     .to_string();
-    let refused = machine.engine.start("apply", &forge).expect_err("no forge");
+    let refused = start(&machine, "apply", &forge).expect_err("no forge");
     assert!(refused.contains("unknown forge"), "{refused}");
 }
 
@@ -331,10 +337,7 @@ fn a_registry_is_https_or_this_machine() {
         "not a URL",
     ] {
         let ask = serde_json::json!({ "registry": address, "domain": "example.com" }).to_string();
-        let refused = machine
-            .engine
-            .start("apply", &ask)
-            .expect_err("an address the client refuses");
+        let refused = start(&machine, "apply", &ask).expect_err("an address the client refuses");
         assert!(
             refused.contains("registry") || refused.contains("URL"),
             "{address}: {refused}"
@@ -347,7 +350,7 @@ fn a_registry_is_https_or_this_machine() {
     ] {
         let ask = serde_json::json!({ "registry": address, "domain": "example.com" }).to_string();
         assert!(
-            machine.engine.start("apply", &ask).is_ok(),
+            start(&machine, "apply", &ask).is_ok(),
             "a registry the client accepts: {address}"
         );
     }
@@ -363,11 +366,8 @@ fn an_unreachable_registry_fails_the_job_with_its_address() {
         "contact": "ada@example.com",
     })
     .to_string();
-    let started = machine
-        .engine
-        .start("apply", &ask)
-        .expect("the application starts");
-    let ended = outcome(&job_id(&started));
+    let started = start(&machine, "apply", &ask).expect("the application starts");
+    let ended = outcome(&started);
     assert_eq!(ended["state"], "failed", "{ended}");
     assert!(
         ended["error"]
@@ -380,8 +380,6 @@ fn an_unreachable_registry_fails_the_job_with_its_address() {
 #[test]
 fn a_job_this_device_does_not_know_is_refused() {
     let machine = Machine::new();
-    let refused = machine.engine.status("apply-999").expect_err("no such job");
-    assert!(refused.contains("no job"), "{refused}");
     assert!(!machine.engine.cancel("apply-999"));
 }
 
@@ -395,7 +393,7 @@ fn no_other_app_is_answered_and_no_other_op() {
     assert!(refused.contains("does not read"), "{refused}");
     let unknown = machine.engine.call("publish", "").expect_err("no such op");
     assert!(unknown.contains("no op this device runs for"), "{unknown}");
-    let unknown = machine.engine.start("publish", "").expect_err("no such op");
+    let unknown = start(&machine, "publish", "").expect_err("no such op");
     assert!(unknown.contains("no op this device runs for"), "{unknown}");
 }
 

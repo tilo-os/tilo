@@ -654,6 +654,13 @@ impl LspClient {
         &self.server_name
     }
 
+    /// The server's events from now on, for one reader of its own that waits for each; this
+    /// client's own [`Self::poll`] reads nothing more.
+    pub fn take_events(&mut self) -> Receiver<LspEvent> {
+        let (_gone, none) = mpsc::sync_channel(0);
+        std::mem::replace(&mut self.events, none)
+    }
+
     pub fn poll(&mut self) -> Vec<LspEvent> {
         let mut out = Vec::new();
         loop {

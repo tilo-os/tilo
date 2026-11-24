@@ -7,157 +7,103 @@
 //! minutes; the text and the PDF answer now.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use serde::Deserialize;
+use serde_json::json;
 
-use tilolang_tilo::instance::Platform;
+use tilo_content::ContentStore;
+use tilolang_tilo::engine::{self, JobOp, JobSink, Needs, Provider, Running, State};
 
 /// The one app this device answers engine work for.
 pub const APP: &str = "so.tilo.print-centre";
 
-/// One `engine.call` for this device's app, or a refusal.
-///
-/// # Errors
-///
-/// The op is unknown, an input does not read, or the work cannot be done.
-pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
-    if app != APP {
-        return Err(format!("`{op}` is no op this device runs for {app}"));
-    }
-    match op {
-        "options" => options(input),
-        "ocr" => ocr(platform, input),
-        "pages_pdf" => pages_pdf(platform, input),
-        other => Err(format!("`{other}` is no op this device runs for {app}")),
-    }
+/// Printing and scanning are jobs, since they can take minutes. Both run in the app's own
+/// process: a scan keeps its page in the app's content store as it ends.
+const JOBS: &[JobOp] = &[
+    JobOp::new("print", Needs::APP_STATE),
+    JobOp::new("scan", Needs::APP_STATE),
+];
+
+/// Print Centre's engine, keeping what it makes in `store`.
+struct Engine {
+    store: ContentStore,
 }
 
-/// One `engine.start`: a print or a scan, answered with the job's id.
-///
-/// # Errors
-///
-/// Not this device's app, or the input does not read.
-pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
-    if app != APP {
-        return Err(format!("`{op}` is no op this device runs for {app}"));
-    }
-    match op {
-        "print" => print(platform, input),
-        "scan" => scan(platform, input),
-        other => Err(format!("`{other}` is no op this device runs for {app}")),
-    }
+/// Register Print Centre's engine over the app's content store `store`.
+pub fn register(store: &ContentStore) {
+    engine::register(
+        APP,
+        Arc::new(Engine {
+            store: store.clone(),
+        }),
+    );
 }
 
-/// How far a job has got, as JSON: its state, and what it made or why it failed.
-///
-/// # Errors
-///
-/// No such job on this device.
-pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
-    let state = jobs()
-        .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?
-        .get(job)
-        .cloned();
-    let Some(state) = state else {
-        return Err(format!("no job `{job}` runs on this device"));
-    };
-    state.take_scan(platform);
-    if state.stopped.load(Ordering::Relaxed) {
-        return Ok(serde_json::json!({ "state": "cancelled", "url": "", "error": "" }).to_string());
+impl Provider for Engine {
+    fn jobs(&self) -> &'static [JobOp] {
+        JOBS
     }
-    if let Some(error) = state.error.lock().ok().and_then(|error| error.clone()) {
-        return Ok(serde_json::json!({ "state": "failed", "url": "", "error": error }).to_string());
-    }
-    match state.url.lock().ok().and_then(|url| url.clone()) {
-        Some(url) => {
-            Ok(serde_json::json!({ "state": "done", "url": url, "error": "" }).to_string())
-        }
-        None => Ok(serde_json::json!({ "state": "running", "url": "", "error": "" }).to_string()),
-    }
-}
 
-/// Stop a job: false when it is not this device's or it had finished.
-pub fn cancel(job: &str) -> bool {
-    let Ok(known) = jobs().lock() else {
-        return false;
-    };
-    let Some(state) = known.get(job) else {
-        return false;
-    };
-    if state.finished.load(Ordering::Relaxed) {
-        return false;
-    }
-    state.stopped.store(true, Ordering::Relaxed);
-    true
-}
-
-/// A scan the scanner answered: its name, and the bytes its receiver keeps as the job's file on
-/// the next ask.
-type Scan = (String, std::sync::mpsc::Receiver<Result<Vec<u8>, String>>);
-
-/// One job in flight, and what it made.
-struct Job {
-    finished: AtomicBool,
-    stopped: AtomicBool,
-    error: Mutex<Option<String>>,
-    url: Mutex<Option<String>>,
-    /// A scan the scanner answered, kept as the job's file on the next ask.
-    scan: Mutex<Option<Scan>>,
-}
-
-impl Job {
-    /// Keep what the scanner answered, once: the file the app shows.
-    fn take_scan(&self, platform: &dyn Platform) {
-        let Ok(mut slot) = self.scan.lock() else {
-            return;
-        };
-        let Some((name, rx)) = slot.as_ref() else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(Ok(png)) => {
-                match platform.keep_content(name, "image/png", &png) {
-                    Ok(kept) => {
-                        if let Ok(mut url) = self.url.lock() {
-                            *url = Some(format!("tilo-blob://{}", kept.hash));
-                        }
-                    }
-                    Err(error) => {
-                        if let Ok(mut slot) = self.error.lock() {
-                            *slot = Some(error);
-                        }
-                    }
-                }
-                *slot = None;
-            }
-            Ok(Err(error)) => {
-                if let Ok(mut slot) = self.error.lock() {
-                    *slot = Some(error);
-                }
-                *slot = None;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                if let Ok(mut slot) = self.error.lock() {
-                    *slot = Some("the scanner did not answer".to_owned());
-                }
-                *slot = None;
-            }
+    fn call(&self, op: &str, input: &str) -> Result<String, String> {
+        match op {
+            "options" => options(input),
+            "ocr" => ocr(&self.store, input),
+            "pages_pdf" => pages_pdf(&self.store, input),
+            other => Err(format!("`{other}` is no op this device runs for {APP}")),
         }
     }
+
+    fn start(&self, job: &str, op: &str, input: &str, moved: JobSink) -> Result<(), String> {
+        match op {
+            "print" => print(&self.store, job, input, moved),
+            "scan" => scan(&self.store, job, input, moved),
+            other => Err(format!("`{other}` is no op this device runs for {APP}")),
+        }
+    }
+
+    fn cancel(&self, job: &str) -> bool {
+        if running().get(job).is_none() {
+            return false;
+        }
+        running().end(job, State::Cancelled, json!({ "url": "", "error": "" }));
+        true
+    }
 }
 
-fn jobs() -> &'static Mutex<std::collections::BTreeMap<String, Arc<Job>>> {
-    static JOBS: OnceLock<Mutex<std::collections::BTreeMap<String, Arc<Job>>>> = OnceLock::new();
-    JOBS.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
+/// The prints and scans running now.
+fn running() -> &'static Running<()> {
+    static RUNNING: OnceLock<Running<()>> = OnceLock::new();
+    RUNNING.get_or_init(Running::default)
 }
 
-fn next_job_id() -> String {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    format!("print-centre-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+/// The job `job` ended: done with the file it made at `url` (empty for a print), or failed.
+fn end(job: &str, made: Result<String, String>) {
+    match made {
+        Ok(url) => running().end(job, State::Done, json!({ "url": url, "error": "" })),
+        Err(error) => running().end(job, State::Failed, json!({ "url": "", "error": error })),
+    }
+}
+
+/// Run `work` as the job `job` on a thread of its own, named `name`: it is kept until it ends,
+/// and stopping it tells its end at once.
+fn run(
+    job: &str,
+    moved: JobSink,
+    name: &str,
+    work: impl FnOnce() -> Result<String, String> + Send + 'static,
+) -> Result<(), String> {
+    moved.moved(State::Running, json!({ "url": "", "error": "" }));
+    running().keep(job, Arc::new(()), moved);
+    let named = job.to_owned();
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || end(&named, work()))
+        .map(|_| ())
+        .map_err(|error| {
+            running().forget(job);
+            format!("could not start the work: {error}")
+        })
 }
 
 fn reads<T: for<'de> Deserialize<'de>>(input: &str) -> Result<T, String> {
@@ -165,12 +111,11 @@ fn reads<T: for<'de> Deserialize<'de>>(input: &str) -> Result<T, String> {
 }
 
 /// The bytes a `tilo-blob://` address holds, read from the device's content store.
-fn bytes_of(platform: &dyn Platform, url: &str) -> Result<Vec<u8>, String> {
+fn bytes_of(store: &ContentStore, url: &str) -> Result<Vec<u8>, String> {
     let hash = url
         .strip_prefix("tilo-blob://")
         .ok_or_else(|| format!("`{url}` is no content address"))?;
-    platform
-        .read_content(hash)
+    crate::files::read(store, hash)
         .ok_or_else(|| format!("the content store does not hold `{hash}`"))
 }
 
@@ -206,7 +151,7 @@ fn options(input: &str) -> Result<String, String> {
     .to_string())
 }
 
-fn print(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn print(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Result<(), String> {
     #[derive(Deserialize)]
     struct Ask {
         queue: String,
@@ -221,7 +166,7 @@ fn print(platform: &dyn Platform, input: &str) -> Result<String, String> {
         orientation: Option<String>,
     }
     let ask: Ask = reads(input)?;
-    let bytes = bytes_of(platform, &ask.url)?;
+    let bytes = bytes_of(store, &ask.url)?;
     let path = scratch(&ask.name.replace(['/', '\\'], "_"));
     std::fs::write(&path, &bytes).map_err(|error| error.to_string())?;
     let settings = os_actions::printing::PrintSettings {
@@ -238,43 +183,14 @@ fn print(platform: &dyn Platform, input: &str) -> Result<String, String> {
         duplex: ask.duplex,
         orientation: ask.orientation,
     };
-    let id = next_job_id();
-    let state = Arc::new(Job {
-        finished: AtomicBool::new(false),
-        stopped: AtomicBool::new(false),
-        error: Mutex::new(None),
-        url: Mutex::new(None),
-        scan: Mutex::new(None),
-    });
-    jobs()
-        .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?
-        .insert(id.clone(), Arc::clone(&state));
-    let worker = Arc::clone(&state);
-    std::thread::Builder::new()
-        .name("print-centre-print".to_owned())
-        .spawn(move || {
-            let result = os_actions::printing::print_document(&ask.queue, &path, &settings);
-            let _ = std::fs::remove_file(&path);
-            match result {
-                Ok(()) => {
-                    if let Ok(mut url) = worker.url.lock() {
-                        *url = Some(String::new());
-                    }
-                }
-                Err(error) => {
-                    if let Ok(mut slot) = worker.error.lock() {
-                        *slot = Some(error);
-                    }
-                }
-            }
-            worker.finished.store(true, Ordering::Relaxed);
-        })
-        .map_err(|error| format!("could not start the print: {error}"))?;
-    Ok(serde_json::json!({ "job": id }).to_string())
+    run(job, moved, "print-centre-print", move || {
+        let result = os_actions::printing::print_document(&ask.queue, &path, &settings);
+        let _ = std::fs::remove_file(&path);
+        result.map(|()| String::new())
+    })
 }
 
-fn scan(_platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn scan(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Result<(), String> {
     #[derive(Deserialize)]
     struct Ask {
         scanner: String,
@@ -297,46 +213,26 @@ fn scan(_platform: &dyn Platform, input: &str) -> Result<String, String> {
             _ => tilo_capture::scanner::ScanSource::Flatbed,
         },
     };
-    let id = next_job_id();
-    let state = Arc::new(Job {
-        finished: AtomicBool::new(false),
-        stopped: AtomicBool::new(false),
-        error: Mutex::new(None),
-        url: Mutex::new(None),
-        scan: Mutex::new(None),
-    });
-    jobs()
-        .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?
-        .insert(id.clone(), Arc::clone(&state));
-    let worker = Arc::clone(&state);
-    let name = ask.name.unwrap_or_else(|| format!("scan-{id}.png"));
+    let name = ask
+        .name
+        .unwrap_or_else(|| format!("scan-{}.png", uuid::Uuid::new_v4().simple()));
     let scanner = ask.scanner;
-    // The platform is not `Send` everywhere; the scan runs on its own thread with the bytes it
-    // writes kept through a channel back to this one, which keeps them when the job is asked.
-    let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u8>, String>>();
-    std::thread::Builder::new()
-        .name("print-centre-scan".to_owned())
-        .spawn(move || {
-            let result = tilo_capture::scanner::scan_page(&scanner, settings);
-            let _ = tx.send(result);
-            worker.finished.store(true, Ordering::Relaxed);
-        })
-        .map_err(|error| format!("could not start the scan: {error}"))?;
-    if let Ok(mut slot) = state.scan.lock() {
-        *slot = Some((name, rx));
-    }
-    Ok(serde_json::json!({ "job": id }).to_string())
+    let store = store.clone();
+    run(job, moved, "print-centre-scan", move || {
+        let png = tilo_capture::scanner::scan_page(&scanner, settings)?;
+        let kept = crate::files::keep(&store, &name, "image/png", &png)?;
+        Ok(format!("tilo-blob://{}", kept.hash))
+    })
 }
 
-fn ocr(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn ocr(store: &ContentStore, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         url: String,
         language: Option<String>,
     }
     let ask: Ask = reads(input)?;
-    let bytes = bytes_of(platform, &ask.url)?;
+    let bytes = bytes_of(store, &ask.url)?;
     let path = scratch("ocr.png");
     std::fs::write(&path, &bytes).map_err(|error| error.to_string())?;
     let outcome = tilo_ocr::recognize_path(&path, ask.language.as_deref().unwrap_or("eng"));
@@ -345,7 +241,7 @@ fn ocr(platform: &dyn Platform, input: &str) -> Result<String, String> {
     Ok(serde_json::json!({ "text": document.plain_text() }).to_string())
 }
 
-fn pages_pdf(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn pages_pdf(store: &ContentStore, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Page {
         url: String,
@@ -360,7 +256,7 @@ fn pages_pdf(platform: &dyn Platform, input: &str) -> Result<String, String> {
     let ask: Ask = reads(input)?;
     let mut pages = Vec::with_capacity(ask.pages.len());
     for page in &ask.pages {
-        let bytes = bytes_of(platform, &page.url)?;
+        let bytes = bytes_of(store, &page.url)?;
         let decoded = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
         let rgb = decoded.to_rgb8();
         pages.push(tilo_doc_pdf::ScannedPdfPage {
@@ -372,6 +268,6 @@ fn pages_pdf(platform: &dyn Platform, input: &str) -> Result<String, String> {
     }
     let pdf = tilo_doc_pdf::render_scanned_pdf(&pages);
     let name = ask.name.unwrap_or_else(|| "scan.pdf".to_owned());
-    let kept = platform.keep_content(&name, "application/pdf", &pdf)?;
+    let kept = crate::files::keep(store, &name, "application/pdf", &pdf)?;
     Ok(serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string())
 }

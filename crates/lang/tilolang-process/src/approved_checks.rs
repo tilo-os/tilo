@@ -132,7 +132,12 @@ impl Checks {
     ///
     /// Why it does not start: no broker, no served invocation, an action other than the app's
     /// `run-approved-check`, or the request refused before it left.
-    pub fn start(&self, served: Option<Served<'_>>, check_id: &str) -> Result<String, String> {
+    pub fn start(
+        &self,
+        served: Option<Served<'_>>,
+        check_id: &str,
+        record: impl FnOnce() -> Option<Result<crate::engines::Recorded, String>>,
+    ) -> Result<String, String> {
         let route = self
             .route
             .as_deref()
@@ -150,6 +155,16 @@ impl Checks {
             .map_err(|why| {
             format!("The workspace's host did not take the check `{check_id}`: {why}")
         })?;
+        // Its record is the device's, as every job's is, so every window of the app reads it.
+        let recorded = record().transpose()?;
+        let job = recorded.as_ref().map_or_else(
+            || {
+                let n = self.next.get();
+                self.next.set(n.saturating_add(1));
+                format!("approved-check-{n}")
+            },
+            |recorded| recorded.path().to_owned(),
+        );
         let shared = Arc::new(Shared {
             heard: Mutex::default(),
             stop: AtomicBool::new(false),
@@ -160,32 +175,18 @@ impl Checks {
         let thread = std::thread::Builder::new()
             .name("tilolang-approved-check".into())
             .spawn(move || {
-                // Dropping the receivers once stopped tells the broker's queue its observer left,
-                // which ends the host's work on the check.
                 let (mut receipt, mut reports) = (receipt, reports);
                 let end = block_on(async {
                     let mut open = true;
                     loop {
-                        let step = {
+                        let next = {
                             let mut changed = std::pin::pin!(reports.changed());
                             std::future::poll_fn(|cx: &mut Context<'_>| {
-                                if hearing.stop.load(Ordering::SeqCst) {
-                                    return Poll::Ready(Step::Stopped);
-                                }
-                                if open && let Poll::Ready(said) = changed.as_mut().poll(cx) {
-                                    return Poll::Ready(Step::Reported(said.is_ok()));
-                                }
-                                match Pin::new(&mut receipt).poll(cx) {
-                                    Poll::Ready(Ok(ended)) => Poll::Ready(Step::Ended(ended)),
-                                    Poll::Ready(Err(_)) => Poll::Ready(Step::Ended(Err(
-                                        "The check's host stopped answering".to_owned(),
-                                    ))),
-                                    Poll::Pending => Poll::Pending,
-                                }
+                                step(&hearing.stop, open, changed.as_mut(), &mut receipt, cx)
                             })
                             .await
                         };
-                        match step {
+                        match next {
                             Step::Stopped => return End::Cancelled,
                             Step::Ended(Ok(observed)) => return End::Observed(Box::new(observed)),
                             Step::Ended(Err(why)) => return End::Failed(why),
@@ -193,22 +194,24 @@ impl Checks {
                             Step::Reported(true) => {
                                 let said = reports.borrow_and_update().clone();
                                 if let Some(report) = said {
-                                    hearing.said(report.observation);
-                                    wake();
+                                    reported(
+                                        &hearing,
+                                        report.observation,
+                                        recorded.as_ref(),
+                                        &wake,
+                                    );
                                 }
                             }
                         }
                     }
                 });
+                // Dropping the receivers once stopped tells the broker's queue its observer left,
+                // which ends the host's work on the check.
                 drop((receipt, reports));
-                hearing.heard().end = Some(end);
-                wake();
+                ended(&hearing, end, recorded.as_ref(), &wake);
             })
             .map_err(|error| format!("The check could not be followed: {error}"))?;
         let _ = shared.thread.set(thread.thread().clone());
-        let n = self.next.get();
-        self.next.set(n.saturating_add(1));
-        let job = format!("approved-check-{n}");
         let mut jobs = self.jobs.borrow_mut();
         forget_ended(&mut jobs);
         jobs.insert(
@@ -234,44 +237,7 @@ impl Checks {
     pub fn status(&self, job: &str) -> Option<String> {
         let jobs = self.jobs.borrow();
         let heard = jobs.get(job)?.shared.heard();
-        let (phase, completed, total) = match &heard.latest {
-            Some(ReportObservation::Reported {
-                phase,
-                completed,
-                total,
-            }) => (phase.clone(), *completed, *total),
-            Some(ReportObservation::Disabled { .. }) | None => (String::new(), None, None),
-        };
-        let mut status = serde_json::json!({
-            "state": "running",
-            "phase": phase,
-            "completed": completed,
-            "total": total,
-        });
-        match &heard.end {
-            None => {}
-            Some(End::Observed(receipt)) => {
-                let observed = serde_json::to_value(receipt).expect("a receipt is JSON");
-                status["state"] = "done".into();
-                status["outcome"] = observed["outcome"].clone();
-                status["exit_code"] = receipt.exit_code.into();
-                status["elapsed_ms"] = receipt.elapsed_ms.into();
-                status["output"] = receipt.stdout.preview.clone().into();
-                status["errors"] = receipt.stderr.preview.clone().into();
-                status["failure"] = receipt
-                    .failure
-                    .as_ref()
-                    .map_or_else(String::new, |failure| failure.preview.clone())
-                    .into();
-                status["receipt"] = observed;
-            }
-            Some(End::Failed(why)) => {
-                status["state"] = "failed".into();
-                status["error"] = why.clone().into();
-            }
-            Some(End::Cancelled) => status["state"] = "cancelled".into(),
-        }
-        Some(status.to_string())
+        Some(status_of(&heard).to_string())
     }
 
     /// Stop the check `job`: false when it is no check of this instance or it had ended.
@@ -393,6 +359,110 @@ impl Checks {
         }
         owed
     }
+}
+
+/// What the check's next wait comes to: stopped, a report heard (or its reports closed), or its
+/// end.
+fn step<C, E, R, F>(
+    stop: &AtomicBool,
+    open: bool,
+    changed: Pin<&mut C>,
+    receipt: &mut R,
+    cx: &mut Context<'_>,
+) -> Poll<Step>
+where
+    C: Future<Output = Result<(), E>>,
+    R: Future<Output = Result<Result<Receipt, String>, F>> + Unpin,
+{
+    if stop.load(Ordering::SeqCst) {
+        return Poll::Ready(Step::Stopped);
+    }
+    if open && let Poll::Ready(said) = changed.poll(cx) {
+        return Poll::Ready(Step::Reported(said.is_ok()));
+    }
+    match Pin::new(receipt).poll(cx) {
+        Poll::Ready(Ok(ended)) => Poll::Ready(Step::Ended(ended)),
+        Poll::Ready(Err(_)) => Poll::Ready(Step::Ended(Err(
+            "The check's host stopped answering".to_owned()
+        ))),
+        Poll::Pending => Poll::Pending,
+    }
+}
+
+/// The host reported `observation` of the check `hearing` is: told to the device's record of it
+/// when it keeps one, waking the instance with `wake`.
+fn reported(
+    hearing: &Shared,
+    observation: ReportObservation,
+    recorded: Option<&crate::engines::Recorded>,
+    wake: &Waker,
+) {
+    hearing.said(observation);
+    if let Some(recorded) = recorded {
+        let status = status_of(&hearing.heard());
+        recorded.moved(tilolang_tilo::engine::State::Running, &status);
+    }
+    wake();
+}
+
+/// The check `hearing` is ended as `end`: told to the device's record of it when it keeps one,
+/// waking the instance with `wake`.
+fn ended(hearing: &Shared, end: End, recorded: Option<&crate::engines::Recorded>, wake: &Waker) {
+    let state = match &end {
+        End::Observed(_) => tilolang_tilo::engine::State::Done,
+        End::Failed(_) => tilolang_tilo::engine::State::Failed,
+        End::Cancelled => tilolang_tilo::engine::State::Cancelled,
+    };
+    let mut heard = hearing.heard();
+    heard.end = Some(end);
+    let status = status_of(&heard);
+    drop(heard);
+    if let Some(recorded) = recorded {
+        recorded.moved(state, &status);
+    }
+    wake();
+}
+
+/// What `heard` of a check says of how far it got, as its record's fields.
+fn status_of(heard: &Heard) -> serde_json::Value {
+    let (phase, completed, total) = match &heard.latest {
+        Some(ReportObservation::Reported {
+            phase,
+            completed,
+            total,
+        }) => (phase.clone(), *completed, *total),
+        Some(ReportObservation::Disabled { .. }) | None => (String::new(), None, None),
+    };
+    let reported = serde_json::json!({ "phase": phase, "completed": completed, "total": total });
+    let mut status = match &heard.end {
+        None => serde_json::json!({ "state": "running" }),
+        Some(End::Observed(receipt)) => {
+            let observed = serde_json::to_value(receipt).unwrap_or_else(|why| {
+                tracing::error!(%why, "a check's receipt is not JSON");
+                serde_json::Value::Null
+            });
+            serde_json::json!({
+                "state": "done",
+                "outcome": observed.get("outcome").cloned().unwrap_or_default(),
+                "exit_code": receipt.exit_code,
+                "elapsed_ms": receipt.elapsed_ms,
+                "output": receipt.stdout.preview,
+                "errors": receipt.stderr.preview,
+                "failure": receipt
+                    .failure
+                    .as_ref()
+                    .map_or_else(String::new, |failure| failure.preview.clone()),
+                "receipt": observed,
+            })
+        }
+        Some(End::Failed(why)) => serde_json::json!({ "state": "failed", "error": why }),
+        Some(End::Cancelled) => serde_json::json!({ "state": "cancelled" }),
+    };
+    if let (Some(status), serde_json::Value::Object(reported)) = (status.as_object_mut(), reported)
+    {
+        status.extend(reported);
+    }
+    status
 }
 
 /// Forget the checks that ended longest ago once more than [`ENDED_KEPT`] are kept: their

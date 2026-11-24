@@ -82,10 +82,22 @@ pub struct Job {
 }
 
 impl Job {
+    /// What stops the walk.
+    #[must_use]
+    pub fn canceller(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
+    /// The walk's next message, once it is sent; `None` once the walk has let go.
+    pub fn wait_next(&mut self) -> Option<Msg> {
+        self.rx.recv().ok()
+    }
+
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
+    #[cfg(test)]
     pub fn drain(&mut self) -> Vec<Msg> {
         let mut out = Vec::new();
         while let Ok(msg) = self.rx.try_recv() {

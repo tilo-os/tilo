@@ -10,12 +10,12 @@
 //! its registries and Flathub publish — is read here.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tilolang_tilo::engine::Provider;
+use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider};
 
 /// The one app this device answers engine work for.
 pub const APP: &str = "so.tilo.store";
@@ -33,12 +33,32 @@ impl Provider for Store {
         call(op, input)
     }
 
-    fn start(&self, op: &str, input: &str) -> Result<String, String> {
-        jobs::start(op, input)
+    fn jobs(&self) -> &'static [JobOp] {
+        // Every change reads the sources' catalogues and fetches what it installs.
+        const JOBS: &[JobOp] = &[
+            JobOp::new("catalogue", Needs::NETWORK),
+            JobOp::new("install", Needs::NETWORK),
+            JobOp::new("update", Needs::NETWORK),
+            JobOp::new("install-runtime", Needs::NETWORK),
+            JobOp::new("uninstall", Needs::NETWORK),
+            JobOp::new("pin", Needs::NETWORK),
+            JobOp::new("unpin", Needs::NETWORK),
+            JobOp::new("update-all", Needs::NETWORK),
+            JobOp::new("remote-add", Needs::NETWORK),
+            JobOp::new("remote-enable", Needs::NETWORK),
+            JobOp::new("remote-remove", Needs::NETWORK),
+            JobOp::new("browse", Needs::NETWORK),
+            JobOp::new("prepare-report", Needs::NETWORK),
+            JobOp::new("report-status", Needs::NETWORK),
+            JobOp::new("add-bot", Needs::NETWORK),
+            JobOp::new("submit-report", Needs::NETWORK),
+            JobOp::new("appeal", Needs::NETWORK),
+        ];
+        JOBS
     }
 
-    fn status(&self, job: &str) -> Result<String, String> {
-        jobs::status(job)
+    fn start(&self, job: &str, op: &str, input: &str, moved: JobSink) -> Result<(), String> {
+        jobs::start(job, op, input, moved)
     }
 
     fn cancel(&self, job: &str) -> bool {
@@ -1415,33 +1435,25 @@ impl JobState {
 
 mod jobs {
     use super::{
-        Arc, AtomicBool, AtomicU64, Job, JobState, Mutex, OnceLock, Ordering, change, json,
-        prepare_report, report_status, uninstall, update_all,
+        Arc, AtomicBool, Job, JobState, Mutex, Ordering, change, json, prepare_report,
+        report_status, uninstall, update_all,
     };
-    use std::collections::BTreeMap;
+    use tilolang_tilo::engine::{JobSink, Running, State};
 
-    fn table() -> &'static Mutex<BTreeMap<String, Arc<Job>>> {
-        static JOBS: OnceLock<Mutex<BTreeMap<String, Arc<Job>>>> = OnceLock::new();
-        JOBS.get_or_init(|| Mutex::new(BTreeMap::new()))
+    fn table() -> &'static Running<Job> {
+        static JOBS: std::sync::OnceLock<Running<Job>> = std::sync::OnceLock::new();
+        JOBS.get_or_init(Running::default)
     }
 
-    fn next() -> String {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        format!("store-{}", NEXT.fetch_add(1, Ordering::Relaxed))
-    }
-
-    fn started(job: &str) -> String {
-        json!({ "job": job, "error": "" }).to_string()
-    }
-
-    /// Runs `work` after the answer, keeping what it came to.
+    /// Runs `work` as the job `id` after the answer, telling each move to `moved`.
     fn spawn(
+        id: &str,
+        moved: JobSink,
         op: &'static str,
         work: impl FnOnce(&AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<String, String>
         + Send
         + 'static,
-    ) -> String {
-        let id = next();
+    ) -> Result<(), String> {
         let job = Arc::new(Job {
             state: Mutex::new(JobState {
                 state: "running".to_owned(),
@@ -1449,11 +1461,11 @@ mod jobs {
             }),
             cancel: AtomicBool::new(false),
         });
-        if let Ok(mut known) = table().lock() {
-            known.insert(id.clone(), Arc::clone(&job));
-        }
+        table().keep(id, Arc::clone(&job), moved.clone());
+        moved.moved(State::Running, JobState::default().json());
         let running = Arc::clone(&job);
-        let spawned = std::thread::Builder::new()
+        let named = id.to_owned();
+        std::thread::Builder::new()
             .name(format!("store-{op}"))
             .spawn(move || {
                 let cancel = Arc::clone(&running);
@@ -1461,37 +1473,42 @@ mod jobs {
                     if let Ok(mut state) = running.state.lock() {
                         state.done = done;
                         state.total = total;
+                        moved.moved(State::Running, state.json());
                     }
                 };
                 let outcome = work(&cancel.cancel, &mut progress);
-                if let Ok(mut state) = running.state.lock() {
-                    if cancel.cancel.load(Ordering::Relaxed) {
-                        "cancelled".clone_into(&mut state.state);
-                    } else {
-                        match outcome {
-                            Ok(status) => {
-                                "done".clone_into(&mut state.state);
-                                state.status = status;
-                            }
-                            Err(error) => {
-                                "failed".clone_into(&mut state.state);
-                                state.error = error;
-                            }
+                let Ok(mut state) = running.state.lock() else {
+                    return;
+                };
+                let ended = if cancel.cancel.load(Ordering::Relaxed) {
+                    State::Cancelled
+                } else {
+                    match outcome {
+                        Ok(status) => {
+                            state.status = status;
+                            State::Done
+                        }
+                        Err(error) => {
+                            state.error = error;
+                            State::Failed
                         }
                     }
-                }
-            });
-        if let Err(error) = spawned {
-            return json!({ "job": "", "error": error.to_string() }).to_string();
-        }
-        started(&id)
+                };
+                ended.word().clone_into(&mut state.state);
+                table().end(&named, ended, state.json());
+            })
+            .map_err(|error| {
+                table().end(id, State::Failed, json!({ "error": error.to_string() }));
+                error.to_string()
+            })?;
+        Ok(())
     }
 
-    pub(super) fn start(op: &str, input: &str) -> Result<String, String> {
+    pub(super) fn start(id: &str, op: &str, input: &str, moved: JobSink) -> Result<(), String> {
         let input = input.to_owned();
         let op = op.to_owned();
         match op.as_str() {
-            "catalogue" => Ok(spawn("catalogue", |cancel, progress| {
+            "catalogue" => spawn(id, moved, "catalogue", |cancel, progress| {
                 if cancel.load(Ordering::Relaxed) {
                     return Ok(String::new());
                 }
@@ -1499,37 +1516,37 @@ mod jobs {
                 super::catalogue(true)?;
                 progress(1, 1);
                 Ok("Store refreshed.".to_owned())
-            })),
+            }),
             "install" | "update" | "install-runtime" => {
                 let asked: super::Change = super::reads(&input)?;
                 let update = op == "update";
-                Ok(spawn("change", move |cancel, _progress| {
+                spawn(id, moved, "change", move |cancel, _progress| {
                     if cancel.load(Ordering::Relaxed) {
                         return Ok(String::new());
                     }
                     change(&asked, update)
-                }))
+                })
             }
             "uninstall" => {
                 let asked: super::Change = super::reads(&input)?;
-                Ok(spawn("uninstall", move |cancel, _| {
+                spawn(id, moved, "uninstall", move |cancel, _| {
                     if cancel.load(Ordering::Relaxed) {
                         return Ok(String::new());
                     }
                     uninstall(&asked)
-                }))
+                })
             }
             "pin" | "unpin" => {
                 let asked: super::Change = super::reads(&input)?;
                 let pinned = op == "pin";
-                Ok(spawn("pin", move |cancel, _| {
+                spawn(id, moved, "pin", move |cancel, _| {
                     if cancel.load(Ordering::Relaxed) {
                         return Ok(String::new());
                     }
                     super::pin(&asked, pinned)
-                }))
+                })
             }
-            "update-all" => Ok(spawn("update-all", move |_cancel, progress| {
+            "update-all" => spawn(id, moved, "update-all", move |_cancel, progress| {
                 #[derive(serde::Deserialize)]
                 struct Ask {
                     list: Vec<super::Change>,
@@ -1540,74 +1557,50 @@ mod jobs {
                 let status = update_all(&input)?;
                 progress(total, total);
                 Ok(status)
-            })),
+            }),
             "remote-add" | "remote-enable" | "remote-remove" => {
                 let op = op.clone();
-                Ok(spawn("remote", move |cancel, _| {
+                spawn(id, moved, "remote", move |cancel, _| {
                     if cancel.load(Ordering::Relaxed) {
                         return Ok(String::new());
                     }
                     super::remote_change(&op, &input)
-                }))
+                })
             }
-            "browse" => Ok(spawn("browse", move |cancel, _| {
+            "browse" => spawn(id, moved, "browse", move |cancel, _| {
                 if cancel.load(Ordering::Relaxed) {
                     return Ok(String::new());
                 }
                 let ask: super::BrowseAsk = super::reads(&input)?;
                 super::browse(&json!({ "name": ask.name }).to_string())
-            })),
-            "prepare-report" => Ok(spawn("prepare-report", move |_, _| {
+            }),
+            "prepare-report" => spawn(id, moved, "prepare-report", move |_, _| {
                 prepare_report(&input)
-            })),
-            "report-status" => Ok(spawn("report-status", move |_, _| {
+            }),
+            "report-status" => spawn(id, moved, "report-status", move |_, _| {
                 report_status(&input)
-            })),
-            "add-bot" => Ok(spawn("add-bot", move |cancel, _| {
+            }),
+            "add-bot" => spawn(id, moved, "add-bot", move |cancel, _| {
                 if cancel.load(Ordering::Relaxed) {
                     return Ok(String::new());
                 }
                 super::add_bot(&input)
-            })),
-            "submit-report" | "appeal" => Ok(json!({
-                "job": "",
-                "error": "A report is signed with your workspace identity, which this computer cannot do from here yet.",
-            })
-            .to_string()),
+            }),
+            "submit-report" | "appeal" => Err(
+                "A report is signed with your workspace identity, which this computer cannot do from here yet."
+                    .to_owned(),
+            ),
             other => Err(format!("`{other}` is no job this device runs")),
         }
     }
 
-    pub(super) fn status(job: &str) -> Result<String, String> {
-        let found = {
-            let known = table()
-                .lock()
-                .map_err(|_| "the job table is unreadable".to_owned())?;
-            known.get(job).cloned()
-        };
-        let Some(found) = found else {
-            return Err(format!("no job `{job}` runs on this device"));
-        };
-        let state = found
-            .state
-            .lock()
-            .map_err(|_| "the job is unreadable".to_owned())?;
-        Ok(state.json().to_string())
-    }
-
+    /// Stop a job: it says `cancelled` once its work lets go. False for a job this device does
+    /// not run, or one that had ended.
     pub(super) fn cancel(job: &str) -> bool {
-        let Ok(known) = table().lock() else {
+        let Some((running, _)) = table().get(job) else {
             return false;
         };
-        let Some(job) = known.get(job) else {
-            return false;
-        };
-        if let Ok(state) = job.state.lock()
-            && matches!(state.state.as_str(), "done" | "failed" | "cancelled")
-        {
-            return false;
-        }
-        job.cancel.store(true, Ordering::Relaxed);
+        running.cancel.store(true, Ordering::Relaxed);
         true
     }
 }

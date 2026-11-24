@@ -19,30 +19,29 @@
 //! | `key-file` | none | `{text}`: the key file, for the person to copy or export |
 //! | `sign` | `{message_hex}` | `{signature_hex}`: the message, signed by this machine's key |
 //!
-//! Jobs (`engine.start`, asked about by `engine.status`, stopped by `engine.cancel`):
+//! Jobs (`engine.start`, stopped by `engine.cancel`):
 //!
 //! | op | asks | answers |
 //! |---|---|---|
-//! | `apply` | `{registry, domain, forge_account, contact}` | `{job}` |
-//! | `status` | `{registry}` | `{job}` |
+//! | `apply` | `{registry, domain, forge_account, contact}` | the job |
+//! | `status` | `{registry}` | the job |
 //!
-//! A job's status answers `{state, summary, error}`: `running`, `done`, `failed` or `cancelled`,
+//! A job's record says `{state, summary, error}`: `running`, `done`, `failed` or `cancelled`,
 //! the registry's own summary of the application in `done`, and why it failed otherwise. An
 //! application with no complaint on the registry answers an empty summary.
 //!
 //! Nothing here publishes a package: `apply` asks the registry for the namespaces an app's ids
 //! live in, and `status` reads the registry's answer about this machine's key.
 
-use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use app_registry::publisher::{RegistryClient, key};
 use ed25519_dalek::Signer as _;
 use serde::Deserialize;
 use serde_json::json;
 use tilo_secrets::SecretStore;
-use tilolang_tilo::engine::Provider;
+use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider};
 
 /// The app whose engine this is: the one that asks these ops, and no other.
 pub const APP: &str = key::SECRETS_APP;
@@ -86,12 +85,18 @@ impl Provider for Publisher {
         }
     }
 
-    fn start(&self, op: &str, input: &str) -> Result<String, String> {
-        jobs::start(&self.store, op, input)
+    fn jobs(&self) -> &'static [JobOp] {
+        // The key is a secret this machine's store keeps, and the registry is reached over the
+        // network: both are the app's own, never a shared process's.
+        const JOBS: &[JobOp] = &[
+            JobOp::new("apply", Needs::SECRET_AND_NETWORK),
+            JobOp::new("status", Needs::SECRET_AND_NETWORK),
+        ];
+        JOBS
     }
 
-    fn status(&self, job: &str) -> Result<String, String> {
-        jobs::status(job)
+    fn start(&self, job: &str, op: &str, input: &str, moved: JobSink) -> Result<(), String> {
+        jobs::start(&self.store, job, op, input, moved)
     }
 
     fn cancel(&self, job: &str) -> bool {
@@ -146,40 +151,35 @@ fn signed_with(store: &SecretStore) -> Result<key::SigningKey, String> {
 // ---------------------------------------------------------------- the registry, as jobs
 
 mod jobs {
-    //! The registry's calls as jobs: what a person waits for, asks about and can stop.
+    //! The registry's calls as jobs: what a person waits for, and can stop.
 
-    use super::{
-        Arc, AtomicBool, BTreeMap, Condvar, Deserialize, Mutex, OnceLock, Ordering, RegistryClient,
-        SecretStore, json, key,
-    };
-
-    /// Every job this device runs, and the id the next one takes.
-    #[derive(Default)]
-    struct Jobs {
-        next: u64,
-        running: BTreeMap<String, Arc<Job>>,
-    }
+    use super::{Arc, AtomicBool, Deserialize, Ordering, RegistryClient, SecretStore, json, key};
+    use tilolang_tilo::engine::{JobSink, Running, State};
 
     /// One registry call under way.
     struct Job {
         stopped: AtomicBool,
-        outcome: Mutex<Option<Result<String, String>>>,
-        /// Moves when the outcome lands: what a test waits on instead of asking again.
-        landed: Condvar,
     }
 
-    fn jobs() -> &'static Mutex<Jobs> {
-        static JOBS: OnceLock<Mutex<Jobs>> = OnceLock::new();
-        JOBS.get_or_init(|| Mutex::new(Jobs::default()))
+    /// Every job this device runs.
+    fn running() -> &'static Running<Job> {
+        static RUNNING: std::sync::OnceLock<Running<Job>> = std::sync::OnceLock::new();
+        RUNNING.get_or_init(Running::default)
     }
 
-    /// Starts one registry call, answering the job's id.
+    /// Starts one registry call as the job `job`, telling each move to `moved`.
     ///
     /// # Errors
     ///
     /// Not this device's app, a request that does not read, a registry address the client refuses,
     /// or namespaces that could not be applied for.
-    pub(super) fn start(store: &SecretStore, op: &str, input: &str) -> Result<String, String> {
+    pub(super) fn start(
+        store: &SecretStore,
+        job: &str,
+        op: &str,
+        input: &str,
+        moved: JobSink,
+    ) -> Result<(), String> {
         match op {
             "apply" => {
                 #[derive(Deserialize)]
@@ -203,7 +203,7 @@ mod jobs {
                 .map_err(|error| format!("{error:#}"))?;
                 RegistryClient::new(&ask.registry).map_err(|error| format!("{error:#}"))?;
                 let store = store.clone();
-                begin("apply", move || {
+                begin(job, "apply", moved, move || {
                     let key = key::resolve(None, &store).map_err(|error| format!("{error:#}"))?;
                     let client =
                         RegistryClient::new(&ask.registry).map_err(|error| format!("{error:#}"))?;
@@ -227,7 +227,7 @@ mod jobs {
                     .map_err(|error| format!("the registry does not read: {error}"))?;
                 RegistryClient::new(&ask.registry).map_err(|error| format!("{error:#}"))?;
                 let store = store.clone();
-                begin("status", move || {
+                begin(job, "status", moved, move || {
                     let key = key::resolve(None, &store).map_err(|error| format!("{error:#}"))?;
                     let client =
                         RegistryClient::new(&ask.registry).map_err(|error| format!("{error:#}"))?;
@@ -243,116 +243,53 @@ mod jobs {
         }
     }
 
-    /// Runs `work` on a thread of its own, answering the job's id.
+    /// Runs `work` on a thread of its own as the job `job`: `{summary, error}` told as it ends.
     fn begin(
+        job: &str,
         name: &str,
+        moved: JobSink,
         work: impl FnOnce() -> Result<String, String> + Send + 'static,
-    ) -> Result<String, String> {
-        let mut known = jobs()
-            .lock()
-            .map_err(|_| "the job table is unreadable".to_owned())?;
-        known.next = known.next.saturating_add(1);
-        let id = format!("{name}-{}", known.next);
-        let job = Arc::new(Job {
+    ) -> Result<(), String> {
+        let state = Arc::new(Job {
             stopped: AtomicBool::new(false),
-            outcome: Mutex::new(None),
-            landed: Condvar::new(),
         });
-        known.running.insert(id.clone(), Arc::clone(&job));
-        drop(known);
-        let worker = Arc::clone(&job);
+        moved.moved(State::Running, json!({ "summary": "", "error": "" }));
+        running().keep(job, Arc::clone(&state), moved);
+        let named = job.to_owned();
         std::thread::Builder::new()
             .name(format!("publisher-{name}"))
             .spawn(move || {
                 let outcome = work();
-                if let Ok(mut slot) = worker.outcome.lock() {
-                    *slot = Some(outcome);
-                    worker.landed.notify_all();
-                }
+                let (ended, detail) = match outcome {
+                    _ if state.stopped.load(Ordering::Relaxed) => {
+                        (State::Cancelled, json!({ "summary": "", "error": "" }))
+                    }
+                    Ok(summary) => (State::Done, json!({ "summary": summary, "error": "" })),
+                    Err(error) => (State::Failed, json!({ "summary": "", "error": error })),
+                };
+                running().end(&named, ended, detail);
             })
-            .map_err(|error| format!("the registry call did not start: {error}"))?;
-        Ok(json!({ "job": id }).to_string())
+            .map_err(|error| {
+                running().end(
+                    job,
+                    State::Failed,
+                    json!({ "summary": "", "error": error.to_string() }),
+                );
+                format!("the registry call did not start: {error}")
+            })?;
+        Ok(())
     }
 
-    /// How far a job has got, as JSON.
-    ///
-    /// # Errors
-    ///
-    /// No such job on this device.
-    pub(super) fn status(job: &str) -> Result<String, String> {
-        let state = {
-            let known = jobs()
-                .lock()
-                .map_err(|_| "the job table is unreadable".to_owned())?;
-            known
-                .running
-                .get(job)
-                .cloned()
-                .ok_or_else(|| format!("no job `{job}` runs on this device"))?
-        };
-        let outcome = state
-            .outcome
-            .lock()
-            .map_err(|_| "the job's outcome is unreadable".to_owned())?
-            .clone();
-        let (state_word, summary, error) = match outcome {
-            Some(Ok(summary)) => ("done", summary, String::new()),
-            Some(Err(error)) => ("failed", String::new(), error),
-            None if state.stopped.load(Ordering::Relaxed) => {
-                ("cancelled", String::new(), String::new())
-            }
-            None => ("running", String::new(), String::new()),
-        };
-        Ok(json!({ "state": state_word, "summary": summary, "error": error }).to_string())
-    }
-
-    /// Stops a job: the registry's call cannot be called back, so a stopped one says `cancelled`
-    /// once it would have ended. False for a job this device does not know or that had finished.
+    /// Stops a job: the registry's call cannot be called back, so a stopped one is `cancelled`
+    /// at once and what it comes to is not told. False for a job this device does not know or
+    /// that had finished.
     pub(super) fn cancel(job: &str) -> bool {
-        let Ok(known) = jobs().lock() else {
+        let Some((state, _)) = running().get(job) else {
             return false;
         };
-        let Some(state) = known.running.get(job) else {
-            return false;
-        };
-        if state
-            .outcome
-            .lock()
-            .map_or(true, |outcome| outcome.is_some())
-        {
-            return false;
-        }
         state.stopped.store(true, Ordering::Relaxed);
+        running().end(job, State::Cancelled, json!({ "summary": "", "error": "" }));
         true
-    }
-
-    /// Waits for `job` to end and answers what it came to: what a test holds the registry to
-    /// instead of asking again in a loop.
-    #[cfg(test)]
-    pub(super) fn wait(job: &str) -> Result<String, String> {
-        let state = {
-            let known = jobs()
-                .lock()
-                .map_err(|_| "the job table is unreadable".to_owned())?;
-            known
-                .running
-                .get(job)
-                .cloned()
-                .ok_or_else(|| format!("no job `{job}` runs on this device"))?
-        };
-        let mut outcome = state
-            .outcome
-            .lock()
-            .map_err(|_| "the job's outcome is unreadable".to_owned())?;
-        while outcome.is_none() {
-            outcome = state
-                .landed
-                .wait(outcome)
-                .map_err(|_| "the job's outcome is unreadable".to_owned())?;
-        }
-        outcome
-            .clone()
-            .unwrap_or_else(|| Err("the job did not end".to_owned()))
     }
 }
 

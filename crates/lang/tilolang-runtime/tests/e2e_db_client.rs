@@ -25,6 +25,7 @@ mod cases {
     struct Engine {
         database: Database,
         handlers: Rc<RefCell<Vec<tilolang_runtime::host_work::JobHandlers>>>,
+        jobs: DeviceJobs,
     }
 
     impl EngineHost for Engine {
@@ -41,23 +42,23 @@ mod cases {
             handlers: &tilolang_runtime::host_work::JobHandlers,
         ) -> Result<String, String> {
             assert_eq!(app, "so.tilo.db-client");
-            let said = self.database.start(op, input)?;
-            let started: serde_json::Value =
-                serde_json::from_str(&said).map_err(|error| error.to_string())?;
-            let job = started
-                .get("job")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| format!("the engine started no job: {said}"))?
-                .to_owned();
+            let (job, moved) = self.jobs.begin(app, op);
+            self.database.start(
+                &job,
+                op,
+                input,
+                std::sync::Arc::new(move |state, detail| {
+                    let state = tilolang_tilo::engine::State::from_word(state)
+                        .unwrap_or(tilolang_tilo::engine::State::Running);
+                    moved.moved(state, detail);
+                }),
+            )?;
             self.handlers.borrow_mut().push(handlers.clone());
             Ok(job)
         }
 
         fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-            let said = || -> Result<String, String> { self.database.status(job) };
-            Ok(said()
-                .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
+            Ok(self.jobs.job(job))
         }
 
         fn cancel(&self, job: &str) -> bool {
@@ -288,21 +289,16 @@ mod cases {
                     return;
                 }
                 let id = self.text(&self.session(), "busy");
-                let said = self.engine.database.status(&id).unwrap();
-                let state = serde_json::from_str::<serde_json::Value>(&said)
-                    .ok()
-                    .and_then(|said| {
-                        said.get("state")
-                            .and_then(|s| s.as_str())
-                            .map(str::to_owned)
-                    })
-                    .unwrap_or_default();
-                if state == "running" || state == "unknown" || state.is_empty() {
+                let record = self
+                    .engine
+                    .jobs
+                    .job(&id)
+                    .expect("the device records the job");
+                let state = record["state"].as_str().unwrap_or_default();
+                if matches!(state, "queued" | "running") {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                     continue;
                 }
-                let record = tilolang_tilo::engine::record_of(&id, &said)
-                    .expect("the device records the job it ran");
                 let kept = self
                     .engine
                     .handlers

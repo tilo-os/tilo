@@ -9,6 +9,12 @@
 //! person does to one (stop it, run it again, answer what it asks) is an action on its record
 //! (`host.cancel`, `host.retry`, `host.resolve`), sent through the dispatch like any call.
 //!
+//! A view reads an engine job by its path (`engine.job(path)`, `devices/<device>/jobs/<job>`) the
+//! same way: its record is the device's, read through the record API as the caller the instance
+//! runs for, held open until the job moves again, and read no more once it ended
+//! ([`Invocations::follow_job`]). A job this process ran with no device to hand it to is read
+//! where it runs.
+//!
 //! A line the person runs (`run_line(r, line)`) is their own step: the session's program host
 //! runs it as them (`session:programs#run-line`), every call it makes is theirs, and what it
 //! answers is shown where they ran it (`lines_run(r)`) while the window is open. What it changed
@@ -54,6 +60,40 @@ pub struct Invocations {
     lines_moved: BTreeSet<String>,
     /// What waits to be sent.
     queued: Vec<RemoteActionMessage>,
+    /// Each engine job a view read, by its path.
+    jobs: BTreeMap<String, FollowedJob>,
+    /// The job reads in flight, by their correlation: the path of the job each asks for.
+    job_reads: BTreeMap<u64, String>,
+}
+
+/// How long a read of a job that has not ended waits for its next move.
+const JOB_WAIT: Duration = Duration::from_secs(10);
+
+/// One engine job a view reads.
+#[derive(Default)]
+struct FollowedJob {
+    /// Where its record is (`devices/<device>`, and its id there); `None` for a job this process
+    /// runs with no device, read where it runs.
+    address: Option<(String, String)>,
+    /// Its record as last read, and the revision it was read at.
+    record: Option<Value>,
+    revision: Option<String>,
+    /// When it was last asked for, and whether an answer is still awaited.
+    asked_at: Option<Instant>,
+    waiting: bool,
+    /// The views were told what was read last.
+    told: bool,
+}
+
+impl FollowedJob {
+    /// Whether the job it reads has ended: it moves no more.
+    fn ended(&self) -> bool {
+        self.record
+            .as_ref()
+            .and_then(|record| record.get("state"))
+            .and_then(Value::as_str)
+            .is_some_and(|state| matches!(state, "done" | "failed" | "cancelled"))
+    }
 }
 
 /// One invocation a view reads.
@@ -90,7 +130,116 @@ impl Invocations {
             lines: BTreeMap::new(),
             lines_moved: BTreeSet::new(),
             queued: Vec::new(),
+            jobs: BTreeMap::new(),
+            job_reads: BTreeMap::new(),
         }
+    }
+
+    /// A view reads the engine job `path`: its record is read from now on, as it moves, until it
+    /// ends. A job of this device's is read through the record API; one this process runs with no
+    /// device, where it runs.
+    pub fn follow_job(&mut self, path: &str) {
+        if path.is_empty() {
+            // A view that holds no job yet reads nothing.
+            return;
+        }
+        let address = crate::engines::recorded()
+            .then(|| tilo_actions::remote::parse_job_path(path))
+            .flatten()
+            .map(|(device, id)| (tilo_actions::remote::device_record_space(&device), id));
+        self.jobs
+            .entry(path.to_owned())
+            .or_insert_with(|| FollowedJob {
+                address,
+                ..FollowedJob::default()
+            });
+    }
+
+    /// Ask for each job record that is due: one never read, and one that has not ended once its
+    /// last read answered. A read of one that was read waits for its next move.
+    fn follow_jobs(&mut self) {
+        let now = ui_core::time::now();
+        let mut due = Vec::new();
+        for (path, followed) in &mut self.jobs {
+            let Some((space, id)) = followed.address.clone() else {
+                // Read where it runs: told whenever it moved since.
+                let record = tilolang_tilo::engine::job(path);
+                if record != followed.record {
+                    followed.record = record;
+                    followed.told = false;
+                }
+                continue;
+            };
+            if followed.ended() {
+                continue;
+            }
+            let lost = followed.asked_at.is_some_and(|at| {
+                now.saturating_duration_since(at) >= JOB_WAIT.saturating_add(READ_LOST)
+            });
+            if followed.waiting && !lost {
+                continue;
+            }
+            followed.asked_at = Some(now);
+            followed.waiting = true;
+            due.push((path.clone(), space, id, followed.revision.clone()));
+        }
+        for (path, workspace, record, after) in due {
+            let correlation = self.next_correlation;
+            self.next_correlation = self.next_correlation.saturating_add(1);
+            self.job_reads.insert(correlation, path);
+            let wait_ms = after
+                .is_some()
+                .then(|| u32::try_from(JOB_WAIT.as_millis()).unwrap_or(u32::MAX));
+            self.queued.push(RemoteActionMessage::ResourceRead {
+                correlation,
+                on_behalf_of: None,
+                read: ResourceReadRequest {
+                    workspace,
+                    app: tilo_actions::remote::DEVICE_JOBS.to_owned(),
+                    record,
+                    joined: false,
+                    after,
+                    wait_ms,
+                    answer: tilo_actions::remote::ReadAnswer::Reading,
+                },
+            });
+        }
+    }
+
+    /// Take the reading `result` of the job `correlation` asked for.
+    fn read_job(&mut self, correlation: u64, result: Option<&String>) -> bool {
+        let Some(path) = self.job_reads.remove(&correlation) else {
+            return false;
+        };
+        let Some(followed) = self.jobs.get_mut(&path) else {
+            return true;
+        };
+        followed.waiting = false;
+        let Some(text) = result else {
+            // A read the device refused says nothing of the job: it is read again.
+            tracing::debug!(%path, "a job's record was not read");
+            return true;
+        };
+        let readings = match serde_json::from_str::<Value>(text) {
+            Ok(readings) => readings,
+            Err(why) => {
+                tracing::warn!(%path, %why, "a job's reading is not JSON: it is read again");
+                return true;
+            }
+        };
+        followed.revision = readings
+            .get("revision")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let record = readings.pointer("/records/0/value").cloned();
+        if let Some(record) = &record {
+            crate::engines::read_record(&path, record);
+        }
+        if record.is_some() && record != followed.record {
+            followed.record = record;
+            followed.told = false;
+        }
+        true
     }
 
     /// How long until a record that runs or waits is due to be read again: `None` when no view
@@ -143,6 +292,7 @@ impl Invocations {
     /// Follow every invocation `instance`'s views read now, and ask for the records that are due:
     /// one never read, and one that runs or waits once [`READ_AGAIN`] passed.
     pub fn follow(&mut self, instance: &Instance) {
+        self.follow_jobs();
         for read in instance.invoked_read() {
             self.followed
                 .entry(read.clone())
@@ -212,11 +362,17 @@ impl Invocations {
                 if let Some(Asked::Line { place, at }) = self.asked.remove(&invocation) {
                     self.said(&place, at, "The line could not be sent: try again.", true);
                 }
-            } else if let Some(correlation) = correlation
-                && let Some(read) = self.reads.remove(&correlation)
-                && let Some(followed) = self.followed.get_mut(&read)
-            {
-                followed.waiting = false;
+            } else if let Some(correlation) = correlation {
+                if let Some(read) = self.reads.remove(&correlation)
+                    && let Some(followed) = self.followed.get_mut(&read)
+                {
+                    followed.waiting = false;
+                }
+                if let Some(path) = self.job_reads.remove(&correlation)
+                    && let Some(followed) = self.jobs.get_mut(&path)
+                {
+                    followed.waiting = false;
+                }
             }
         }
     }
@@ -231,7 +387,9 @@ impl Invocations {
             result,
         } = message
         {
-            self.read(*correlation, result.as_ref().ok());
+            if !self.read_job(*correlation, result.as_ref().ok()) {
+                self.read(*correlation, result.as_ref().ok());
+            }
             return true;
         }
         let receipt = match message {
@@ -265,6 +423,17 @@ impl Invocations {
 
     /// Tell `instance`'s views what moved: each invocation read since, and each place's lines.
     pub fn show(&mut self, instance: &mut Instance) {
+        if let Some(host) = instance.host() {
+            for (path, followed) in &mut self.jobs {
+                if followed.told {
+                    continue;
+                }
+                if let Some(record) = &followed.record {
+                    host.runtime().set_job(path, record);
+                }
+                followed.told = true;
+            }
+        }
         for (read, followed) in &mut self.followed {
             if followed.told {
                 continue;

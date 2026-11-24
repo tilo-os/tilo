@@ -74,9 +74,6 @@ const PLAYBACK_APP: &str = "so.tilo.playback";
 use crate::phrases::Phrases;
 use crate::presence::Presence;
 
-/// The API Tester's app id: the one app the general network client answers its requests for.
-const API_TESTER_APP: &str = "so.tilo.api-tester";
-
 thread_local! {
     /// The caller of the invocation being built on this thread, as the broker delivered it.
     static CALLER: RefCell<Option<Caller>> = const { RefCell::new(None) };
@@ -526,6 +523,8 @@ pub type Formats = Rc<Cell<tilo_formats::RegionFormats>>;
 /// host, and publishing on its connection.
 struct HostPlatform {
     bundle: Arc<Bundle>,
+    /// The host the instance runs, once it loaded: what a job's handlers are read against.
+    host: RefCell<Option<tilolang_tilo::host::HostHandle>>,
     /// The apps installed here ([`Spec::installed`]): a package the app uses that is one of them
     /// is loaded as another app's.
     installed: BTreeMap<String, String>,
@@ -565,6 +564,8 @@ struct HostPlatform {
     no_chooser: String,
     /// The member the instance acts for: whose changes a watched folder's action makes.
     person: String,
+    /// The workspace the instance runs in: whose device a job it starts is recorded on.
+    workspace: String,
     /// The folders this instance watches, shared with the frames that run their actions.
     watches: Rc<crate::files::Watches>,
     /// The platform packages this bundle uses, loaded into its host before the bundle links.
@@ -576,41 +577,6 @@ struct HostPlatform {
     vaults: Rc<RefCell<BTreeMap<String, VaultWatch>>>,
     /// The checks the project's host runs for this instance's served invocations.
     checks: Rc<crate::approved_checks::Checks>,
-    /// What each job an engine pushes its record for said last, by job: Photos' import reports
-    /// its moves this way rather than being asked.
-    pushed: Arc<PushedJobs>,
-}
-
-/// The last word of each job whose engine pushes it, as `engine.job` reads it.
-#[derive(Default)]
-struct PushedJobs(std::sync::Mutex<BTreeMap<String, String>>);
-
-impl PushedJobs {
-    fn said(&self, job: &str) -> Option<String> {
-        self.0.lock().ok()?.get(job).cloned()
-    }
-}
-
-/// A pushing engine's job as the instance keeps it: each word kept, and the window woken to
-/// read it again.
-struct PushedJob {
-    jobs: Arc<PushedJobs>,
-    wake: Waker,
-}
-
-impl tilolang_tilo::runtime::host_work::Push for PushedJob {
-    fn frame(&self, _frame: tilolang_tilo::runtime::host_work::Frame) {}
-
-    fn state(&self, slot: &str, state: &str) {
-        if let Ok(mut jobs) = self.jobs.0.lock() {
-            jobs.insert(slot.to_owned(), state.to_owned());
-        }
-        (self.wake)();
-    }
-
-    fn ended(&self, slot: &str, state: &str) {
-        self.state(slot, state);
-    }
 }
 
 /// One vault item this window follows: its reading, and the code last read from it.
@@ -769,32 +735,47 @@ impl tilolang_tilo::runtime::host_work::Push for StreamFrames {
 }
 
 impl HostPlatform {
-    /// What the engine running `job` says of it now.
+    /// What a job of `app` runs as it moves and once it ends, as `{done, progress}`: each the
+    /// app's own action as it publishes it ([`tilolang_tilo::host::HostHandle::published_handler`]), `null` with
+    /// neither.
+    ///
+    /// # Errors
+    ///
+    /// A handler that is no action the app publishes on one of its resources, in words the app
+    /// shows.
     #[cfg(feature = "app-launch")]
-    fn engine_said(&self, job: &str) -> Result<String, String> {
-        if let Some(status) = self.checks.status(job) {
-            return Ok(status);
+    fn published_handlers(
+        &self,
+        app: &str,
+        handlers: &tilolang_tilo::runtime::host_work::JobHandlers,
+    ) -> Result<serde_json::Value, String> {
+        if handlers.done.is_none() && handlers.progress.is_none() {
+            return Ok(serde_json::Value::Null);
         }
-        if let Some(said) = self.pushed.said(job) {
-            return Ok(said);
-        }
-        if let Some(status) = crate::loaded_engines::status(self, job) {
-            return status;
-        }
+        let host = self.host.borrow();
+        let host = host
+            .as_ref()
+            .ok_or_else(|| "the app has not started yet".to_owned())?;
+        let published = |handler: Option<&serde_json::Value>| {
+            handler
+                .map(|handler| host.published_handler(app, handler))
+                .transpose()
+        };
+        Ok(serde_json::json!({
+            "done": published(handlers.done.as_ref())?,
+            "progress": published(handlers.progress.as_ref())?,
+        }))
+    }
+
+    /// Register the engines that keep what they make in this app's content store: each holds
+    /// the store this instance was handed, so a job it runs keeps its file there as it ends.
+    fn register_content_engines(&self) {
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
-            crate::backups_engine::register();
-            crate::feed_engine::register();
-            if let Ok(status) = tilo_network_client::status(job)
-                .or_else(|_| crate::video_engine::status(self, job))
-                .or_else(|_| crate::print_centre_engine::status(self, job))
-            {
-                return Ok(status);
-            }
+            crate::video_engine::register(self.store());
+            crate::print_centre_engine::register(self.store());
         }
-        crate::containers_engine::status(job).or_else(|unknown| {
-            tilolang_tilo::engine::progress(job).map_err(|_| unknown)
-        })
+        crate::photos_engine::register(self.store(), self.previews());
     }
 }
 
@@ -802,6 +783,7 @@ impl Platform for HostPlatform {
     /// The latest later build when there is one that loads, else the package the instance was
     /// started with.
     fn load(&self, host: &Host) -> u64 {
+        *self.host.borrow_mut() = Some(host.handle());
         // The platform's packages are descriptions the bundle's `use`s name: loaded before the
         // bundle, whose types read them.
         self.platform
@@ -904,9 +886,9 @@ impl Platform for HostPlatform {
         Some(crate::canvas::Engine::host())
     }
 
-    /// The engines this device links; every other app's asks go to the session's own registry.
-    /// The Passwords, Video Editor, Feeds, Print Centre and API Tester engines build for Linux and
-    /// Apple silicon alone.
+    /// The engines this process links. The Passwords engine keeps what it makes in the app's
+    /// content store, which this instance holds, so it is answered here; every other app's asks go
+    /// to the registry ([`crate::engines::register_all`]), the content engines among them.
     #[cfg(feature = "app-launch")]
     fn engine_call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
         // The engines this process opens from its runtime bundle rather than linking: an app's
@@ -923,27 +905,14 @@ impl Platform for HostPlatform {
                 }
                 return passwords_engine::call(&device, app, op, input);
             }
-            if app == crate::video_engine::APP {
-                return crate::video_engine::call(self, app, op, input);
-            }
-            if app == crate::print_centre_engine::APP {
-                return crate::print_centre_engine::call(self, app, op, input);
-            }
-            crate::backups_engine::register();
-            if app == API_TESTER_APP {
-                return tilo_network_client::call(app, op, input);
-            }
-            crate::feed_engine::register();
         }
-        if app == crate::containers_engine::APP {
-            return crate::containers_engine::call(self, app, op, input);
-        }
-        // YouTube's Grayjay link, whose exchanges touch the network and whose key is the app's
-        // own secret.
-        crate::grayjay_engine::register();
+        crate::engines::register_all();
+        self.register_content_engines();
         tilolang_tilo::engine::answer(app, op, input)
     }
 
+    /// A job, started where its op runs: the device's shared engine host, or this process for
+    /// work that needs what the app's own process holds. The call it runs for is its caller.
     #[cfg(feature = "app-launch")]
     fn engine_start(
         &self,
@@ -952,47 +921,33 @@ impl Platform for HostPlatform {
         input: &str,
         handlers: &tilolang_tilo::runtime::host_work::JobHandlers,
     ) -> Result<String, String> {
-        let _ = handlers;
         if crate::loaded_engines::answers(app) {
+            // A loaded engine's job is followed through the engine that runs it: its moves do not
+            // reach the device's records yet.
             return crate::loaded_engines::start(self, app, op, input);
         }
-        if app == crate::photos_engine::APP {
-            let record = Arc::new(PushedJob {
-                jobs: Arc::clone(&self.pushed),
-                wake: self.waker(),
-            });
-            // A job is named by its path alone, which the engine answers inside its JSON.
-            let said = crate::photos_engine::start(
-                self.store().clone(),
-                self.previews(),
-                op,
-                input,
-                record,
-            )?;
-            return Ok(serde_json::from_str::<serde_json::Value>(&said)
-                .ok()
-                .and_then(|json| json.get("job")?.as_str().map(str::to_owned))
-                .unwrap_or(said));
-        }
-        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
-        {
-            if app == API_TESTER_APP {
-                return tilo_network_client::start(app, op, input);
-            }
-            if app == crate::video_engine::APP {
-                return crate::video_engine::start(self, app, op, input);
-            }
-            if app == crate::print_centre_engine::APP {
-                return crate::print_centre_engine::start(self, app, op, input);
-            }
-            crate::backups_engine::register();
-            crate::feed_engine::register();
-        }
-        if app == crate::containers_engine::APP {
-            return crate::containers_engine::start(self, app, op, input);
-        }
-        crate::grayjay_engine::register();
-        tilolang_tilo::engine::begin(app, op, input)
+        crate::engines::register_all();
+        self.register_content_engines();
+        let served = SERVING.with(|served| served.borrow().clone());
+        let invocation = served
+            .as_ref()
+            .map(|served| served.invocation.to_string())
+            .unwrap_or_default();
+        let by = served
+            .and_then(|served| served.person)
+            .unwrap_or_else(|| self.person.clone());
+        let handlers = self.published_handlers(app, handlers)?;
+        crate::engines::start(
+            &crate::engines::Caller {
+                app,
+                workspace: &self.workspace,
+                invocation: &invocation,
+                by: &by,
+                handlers: &handlers,
+            },
+            op,
+            input,
+        )
     }
 
     #[cfg(feature = "app-launch")]
@@ -1017,13 +972,22 @@ impl Platform for HostPlatform {
                 .insert(answer.clone(), Arc::clone(&frames));
             return Ok(answer);
         }
+        self.register_content_engines();
         tilolang_tilo::engine::stream(app, op, input, frames)
     }
 
     /// A check the project's host approved, for the invocation the broker is serving on this
     /// thread, on the route the instance joined: the same queue a Rust app's check goes through.
-    fn approved_check(&self, _app: &str, check_id: &str) -> Result<String, String> {
+    fn approved_check(&self, app: &str, check_id: &str) -> Result<String, String> {
         let served = SERVING.with(|served| served.borrow().clone());
+        let invocation = served
+            .as_ref()
+            .map(|served| served.invocation.to_string())
+            .unwrap_or_default();
+        let by = served
+            .as_ref()
+            .and_then(|served| served.person.clone())
+            .unwrap_or_else(|| self.person.clone());
         self.checks.start(
             served
                 .as_ref()
@@ -1032,31 +996,45 @@ impl Platform for HostPlatform {
                     action: &served.action,
                 }),
             check_id,
+            || {
+                crate::engines::record_here(
+                    &crate::engines::Caller {
+                        app,
+                        workspace: &self.workspace,
+                        invocation: &invocation,
+                        by: &by,
+                        handlers: &serde_json::Value::Null,
+                    },
+                    "check",
+                )
+            },
         )
     }
 
     #[cfg(not(feature = "app-launch"))]
     fn engine_job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-        let said = match self.checks.status(job) {
-            Some(status) => Ok(status),
-            None => tilolang_tilo::engine::progress(job),
-        };
-        Ok(said
-            .ok()
-            .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
+        Ok(self.checks.status(job).map_or_else(
+            || crate::engines::job(job),
+            |said| tilolang_tilo::engine::record_of(job, &said),
+        ))
     }
 
     #[cfg(not(feature = "app-launch"))]
     fn engine_cancel(&self, job: &str) -> bool {
-        self.checks.cancel(job) || tilolang_tilo::engine::stop(job)
+        self.checks.cancel(job) || crate::engines::cancel(job)
     }
 
+    /// The job's record as it was last read from the device's records, or a check's as the
+    /// project's host says it stands.
     #[cfg(feature = "app-launch")]
     fn engine_job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-        Ok(self
-            .engine_said(job)
-            .ok()
-            .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
+        if let Some(said) = self.checks.status(job) {
+            return Ok(tilolang_tilo::engine::record_of(job, &said));
+        }
+        if let Some(said) = crate::loaded_engines::status(self, job) {
+            return Ok(tilolang_tilo::engine::record_of(job, &said?));
+        }
+        Ok(crate::engines::job(job))
     }
 
     #[cfg(feature = "app-launch")]
@@ -1067,23 +1045,10 @@ impl Platform for HostPlatform {
         if let Some(cancelled) = crate::loaded_engines::cancel(self, job) {
             return cancelled;
         }
-        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
-        {
-            crate::backups_engine::register();
-            crate::feed_engine::register();
-            if tilo_network_client::cancel(job)
-                || crate::video_engine::cancel(job)
-                || crate::print_centre_engine::cancel(job)
-            {
-                return true;
-            }
-        }
         // A stream's last frame goes with its job: the window shows the session closed, not a
         // frozen screen.
         ui_core::live_pictures::forget(job);
-        crate::containers_engine::cancel(job)
-            || crate::photos_engine::cancel(job)
-            || tilolang_tilo::engine::stop(job)
+        crate::engines::cancel(job)
     }
 
     fn choose_files(
@@ -1842,8 +1807,8 @@ fn open_instance(
         Arc::clone(wake),
     ));
     let platform = HostPlatform {
-        pushed: Arc::default(),
         bundle: Arc::clone(bundle),
+        host: RefCell::new(None),
         installed: spec.installed.clone(),
         shows: spec.shows,
         phrases: Rc::clone(phrases),
@@ -1859,6 +1824,7 @@ fn open_instance(
         tools: kept.tools.clone(),
         no_chooser: crate::files::NO_CHOOSER.to_owned(),
         person: spec.person.clone(),
+        workspace: spec.workspace.clone(),
         watches: Rc::clone(&watches),
         platform: Rc::clone(&roots),
         root_wake: scope.0.handle(),
@@ -2239,6 +2205,16 @@ impl Hosted {
         ran
     }
 
+    /// The jobs the views began reading, followed from now on as they move.
+    fn follow_jobs(&mut self) {
+        let Some(host) = self.instance.host() else {
+            return;
+        };
+        for job in host.runtime().take_wanted_jobs() {
+            self.invocations.follow_job(&job);
+        }
+    }
+
     /// One frame: what the connection delivered taken in, what the person did run (its writes
     /// sent to the store as it ran), what the broker delivered run, and the surface published.
     /// Whether anything changed.
@@ -2287,6 +2263,7 @@ impl Hosted {
         for pressed in self.instance.take_pressed() {
             self.pressed(pressed);
         }
+        self.follow_jobs();
         // A watched folder that changed runs its action now, as the person's own step.
         changed |= self.run_watches();
         let chose = self.chosen();
@@ -2619,12 +2596,9 @@ impl Hosted {
         // which is the narrower claim, else the media type the name declares.
         let media =
             tilolang_tilo::runtime::blob::media_of(file.name.as_deref().unwrap_or_default());
-        let declared = tilolang_tilo::meta::action_opening(
-            &self.bundle.meta,
-            file.name.as_deref(),
-            &media,
-        )
-        .cloned();
+        let declared =
+            tilolang_tilo::meta::action_opening(&self.bundle.meta, file.name.as_deref(), &media)
+                .cloned();
         let Some(action) = declared else {
             // The app does not open this kind of file: its window shows its records, and says why
             // rather than opening a window that took nothing.

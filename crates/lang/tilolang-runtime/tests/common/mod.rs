@@ -1055,3 +1055,50 @@ pub fn field_id(app: &App, ty: &str, name: &str) -> String {
         .id
         .clone()
 }
+
+/// The jobs a test's device runs, each by the latest record it told, as the device keeps them:
+/// what `engine.job` answers.
+#[derive(Clone, Default)]
+pub struct DeviceJobs {
+    records: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Json>>>,
+    started: Rc<std::cell::Cell<u64>>,
+}
+
+impl DeviceJobs {
+    /// Start `op` of `engine` for `app` as a job, whose moves are kept here: answered with its
+    /// path.
+    pub fn start(
+        &self,
+        engine: &dyn tilolang_tilo::engine::Provider,
+        app: &str,
+        op: &str,
+        input: &str,
+    ) -> Result<String, String> {
+        let (job, moved) = self.begin(app, op);
+        engine.start(&job, op, input, moved)?;
+        Ok(job)
+    }
+
+    /// A job of `op` for `app` about to start: its path, and the sink its engine tells its moves
+    /// to.
+    pub fn begin(&self, app: &str, op: &str) -> (String, tilolang_tilo::engine::JobSink) {
+        self.started.set(self.started.get().wrapping_add(1));
+        let job = format!("devices/test/jobs/{}", self.started.get());
+        let (records, named, app, doing) = (
+            std::sync::Arc::clone(&self.records),
+            job.clone(),
+            app.to_owned(),
+            op.to_owned(),
+        );
+        let moved = tilolang_tilo::engine::JobSink::new(move |state, detail| {
+            let record = tilolang_tilo::engine::record(&named, &app, &doing, state, &detail);
+            records.lock().unwrap().insert(named.clone(), record);
+        });
+        (job, moved)
+    }
+
+    /// The job `job` as its last move left it.
+    pub fn job(&self, job: &str) -> Option<Json> {
+        self.records.lock().unwrap().get(job).cloned()
+    }
+}

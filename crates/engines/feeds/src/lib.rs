@@ -139,6 +139,35 @@ struct Job {
     stopped: AtomicBool,
     /// What each feed answered, by its address, until the app takes it.
     results: Mutex<BTreeMap<String, Result<Found, Failure>>>,
+    /// Where each move of the refresh is told.
+    moved: Moved,
+}
+
+/// Where a job tells each move it makes: the state's word (`running`, `done`, `cancelled`) and
+/// the job's own fields.
+pub type Moved = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
+impl Job {
+    /// Tell how the refresh stands now: its count, and the feeds whose answer is waiting.
+    fn tell(&self) {
+        let done = self.done.load(Ordering::Relaxed);
+        let ready: Vec<String> = self
+            .results
+            .lock()
+            .map(|results| results.keys().cloned().collect())
+            .unwrap_or_default();
+        let state = if self.stopped.load(Ordering::Relaxed) {
+            "cancelled"
+        } else if done >= self.total {
+            "done"
+        } else {
+            "running"
+        };
+        (self.moved)(
+            state,
+            serde_json::json!({ "done": done, "total": self.total, "ready": ready }),
+        );
+    }
 }
 
 /// The jobs running on this device.
@@ -148,7 +177,9 @@ fn jobs() -> &'static Mutex<BTreeMap<String, Arc<Job>>> {
 }
 
 fn held() -> MutexGuard<'static, BTreeMap<String, Arc<Job>>> {
-    jobs().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    jobs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// One `engine.call` for this app: read now, or take what a job fetched.
@@ -165,48 +196,16 @@ pub fn call(op: &str, input: &str) -> Result<String, String> {
     }
 }
 
-/// One `engine.start`: a refresh, answered with the job's id.
+/// One `engine.start`: a refresh, run as the job `id`, which tells each move it makes to `moved`.
 ///
 /// # Errors
 ///
 /// The op is not a refresh, or the feeds do not read.
-pub fn start(op: &str, input: &str) -> Result<String, String> {
+pub fn start(id: &str, op: &str, input: &str, moved: Moved) -> Result<(), String> {
     match op {
-        "refresh" => refresh(input),
+        "refresh" => refresh(id, input, moved),
         other => Err(format!("`{other}` is no op this device runs for {APP}")),
     }
-}
-
-/// How far a job has got: its state, its count, and the feeds whose answer is waiting.
-///
-/// # Errors
-///
-/// No such job runs on this device.
-pub fn status(job: &str) -> Result<String, String> {
-    let job = held()
-        .get(job)
-        .cloned()
-        .ok_or_else(|| format!("no job `{job}` runs on this device"))?;
-    let done = job.done.load(Ordering::Relaxed);
-    let ready: Vec<String> = job
-        .results
-        .lock()
-        .map(|results| results.keys().cloned().collect())
-        .unwrap_or_default();
-    let state = if job.stopped.load(Ordering::Relaxed) {
-        "cancelled"
-    } else if done >= job.total {
-        "done"
-    } else {
-        "running"
-    };
-    Ok(serde_json::json!({
-        "state": state,
-        "done": done,
-        "total": job.total,
-        "ready": ready,
-    })
-    .to_string())
 }
 
 /// Stop a job: false when no engine runs it or it had finished.
@@ -215,7 +214,10 @@ pub fn cancel(job: &str) -> bool {
         return false;
     };
     let running = job.done.load(Ordering::Relaxed) < job.total;
-    job.stopped.store(true, Ordering::Relaxed);
+    if running {
+        job.stopped.store(true, Ordering::Relaxed);
+        job.tell();
+    }
     running
 }
 
@@ -271,7 +273,7 @@ fn take(input: &str) -> Result<String, String> {
 }
 
 /// Start a refresh of `feeds`, read by a few workers side by side.
-fn refresh(input: &str) -> Result<String, String> {
+fn refresh(id: &str, input: &str, moved: Moved) -> Result<(), String> {
     let asked: Refresh = serde_json::from_str(input).map_err(|e| format!("refresh: {e}"))?;
     let total = asked.feeds.len();
     let job = Arc::new(Job {
@@ -280,9 +282,10 @@ fn refresh(input: &str) -> Result<String, String> {
         done: AtomicUsize::new(0),
         stopped: AtomicBool::new(false),
         results: Mutex::new(BTreeMap::new()),
+        moved,
     });
-    let id = next_job_id();
-    held().insert(id.clone(), Arc::clone(&job));
+    held().insert(id.to_owned(), Arc::clone(&job));
+    job.tell();
     let feeds = Arc::new(asked.feeds);
     for _ in 0..AT_ONCE.min(total) {
         let job = Arc::clone(&job);
@@ -299,16 +302,13 @@ fn refresh(input: &str) -> Result<String, String> {
                     results.insert(feed.url.clone(), answer);
                 }
                 job.done.fetch_add(1, Ordering::Relaxed);
+                if !job.stopped.load(Ordering::Relaxed) {
+                    job.tell();
+                }
             }
         });
     }
-    Ok(id)
-}
-
-/// A job's id: one per refresh, never reused.
-fn next_job_id() -> String {
-    static NEXT: AtomicUsize = AtomicUsize::new(1);
-    format!("feeds-refresh-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    Ok(())
 }
 
 /// What an OPML file lists.

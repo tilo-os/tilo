@@ -74,6 +74,7 @@ mod cases {
     struct Engine {
         engine: Rc<hex_engine::HexEngine>,
         scope: Rc<tilo_wake::WakeScope>,
+        jobs: DeviceJobs,
     }
 
     impl EngineHost for Engine {
@@ -85,25 +86,17 @@ mod cases {
 
         fn start(
             &self,
-            _app: &str,
+            app: &str,
             op: &str,
             input: &str,
             _handlers: &tilolang_runtime::host_work::JobHandlers,
         ) -> Result<String, String> {
-            use tilolang_tilo::engine::Provider as _;
             let _window = self.scope.enter();
-            self.engine.start(op, input)
+            self.jobs.start(&*self.engine, app, op, input)
         }
 
         fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-            let said = || -> Result<String, String> {
-                use tilolang_tilo::engine::Provider as _;
-                let _window = self.scope.enter();
-                self.engine.status(job)
-            };
-            Ok(said()
-                .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
+            Ok(self.jobs.job(job))
         }
 
         fn cancel(&self, job: &str) -> bool {
@@ -152,6 +145,7 @@ mod cases {
             rt.set_engine(Engine {
                 engine: Rc::new(hex_engine::HexEngine::new()),
                 scope: device.scope.clone(),
+                jobs: DeviceJobs::default(),
             });
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));

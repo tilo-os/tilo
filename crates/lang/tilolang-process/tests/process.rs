@@ -38,6 +38,9 @@ mod chat;
 /// An app's calls of another app's action, through the dispatch.
 #[path = "process/children.rs"]
 mod children;
+/// A job outlives its window and its process, and its end reaches the app.
+#[path = "process/jobs.rs"]
+mod jobs;
 #[path = "process/native_notes.rs"]
 mod native_notes;
 /// A paste past a mebibyte, kept and undone.
@@ -175,10 +178,8 @@ impl Window {
                         ..
                     } => {
                         let stored = self.rows.entry(list).or_default();
-                        let mut held: BTreeMap<String, patch::Node> = stored
-                            .drain(..)
-                            .map(|row| (row.key.clone(), row))
-                            .collect();
+                        let mut held: BTreeMap<String, patch::Node> =
+                            stored.drain(..).map(|row| (row.key.clone(), row)).collect();
                         for row in rows {
                             held.insert(row.key.clone(), row);
                         }

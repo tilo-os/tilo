@@ -659,7 +659,9 @@ pub trait Platform {
         crate::engine::answer(app, op, input)
     }
 
-    /// The device's own work for `app`, started as a job that runs `handlers` as it moves.
+    /// The device's own work for `app`, started as a job that runs `handlers` as it moves:
+    /// answered with the job's path. A platform with no device to hand it to runs it in its own
+    /// process, and its views follow it there.
     ///
     /// # Errors
     ///
@@ -671,8 +673,14 @@ pub trait Platform {
         input: &str,
         handlers: &tilolang_runtime::host_work::JobHandlers,
     ) -> Result<String, String> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let _ = handlers;
-        crate::engine::begin(app, op, input)
+        let job = format!(
+            "job-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        crate::engine::begin_here(app, &job, op, input, |_, _| {})?;
+        Ok(job)
     }
 
     /// The device's own work for `app`, started as a stream whose frames reach `push`.
@@ -690,19 +698,19 @@ pub trait Platform {
         crate::engine::stream(app, op, input, push)
     }
 
-    /// The job `path` as the device that holds it records it, as its record's JSON; `None` for a
-    /// job no device records.
+    /// The job `path` as the latest record of it this process heard, as JSON; `None` for a job
+    /// it never heard of.
     ///
     /// # Errors
     ///
     /// The read was refused.
     fn engine_job(&self, path: &str) -> Result<Option<serde_json::Value>, String> {
-        crate::engine::record(path)
+        Ok(crate::engine::job(path))
     }
 
     /// Stop the job `job`: false when no engine runs it or it had finished.
     fn engine_cancel(&self, job: &str) -> bool {
-        crate::engine::stop(job)
+        crate::engine::stop_here(job)
     }
 
     /// One check the project's host approved, started by its id for `app` as a job

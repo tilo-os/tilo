@@ -60,6 +60,8 @@ use tilo_lock::MutexRecover as _;
 
 use super::package_runs::{Verified, installed_apps, runs_in_process, verified_installed};
 
+mod engines;
+
 /// Hand the process behind `socket` the instance `request` with its connections, keeping them
 /// to hand to another process should this one have ended.
 fn send_instance(
@@ -102,6 +104,9 @@ enum Alone {
     Task(String),
     /// The page window's start, numbered apart from every other.
     Page(u64),
+    /// The device's engine host, which runs every app's engine work that needs nothing of the
+    /// app's own ([`engines`]).
+    Engines,
 }
 
 /// What identifies one process: one workspace and one app, on the runtimes its package names; or
@@ -292,6 +297,8 @@ pub struct Processes {
     /// is written there as the device's record, and a process that runs one is never closed as
     /// idle.
     jobs: OnceLock<Arc<super::jobs::DeviceJobs>>,
+    /// Where each engine job this device admitted runs, until it ends.
+    engines: Mutex<engines::Engines>,
 }
 
 impl Processes {
@@ -333,6 +340,7 @@ impl Processes {
             provided: OnceLock::new(),
             attests: OnceLock::new(),
             jobs: OnceLock::new(),
+            engines: Mutex::default(),
         })
     }
 
@@ -1021,6 +1029,7 @@ impl Processes {
             .join(match &key.alone {
                 Some(Alone::Task(_)) => TASK_STORAGE,
                 Some(Alone::Page(_)) => PAGE_STORAGE,
+                Some(Alone::Engines) => engines::ENGINE_STORAGE,
                 None => &key.app,
             });
         std::fs::create_dir_all(&dir)?;
@@ -1045,8 +1054,12 @@ impl Processes {
         });
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
         let socket = Arc::new(ours);
+        self.tell_jobs_under(key, &socket);
         // A connection from this process is the app it runs, not the account that started it.
-        if let Some(attests) = self.attests.get() {
+        // The engine host runs no app: nothing that connects from it is admitted as one.
+        if key.alone != Some(Alone::Engines)
+            && let Some(attests) = self.attests.get()
+        {
             let _ = attests.record_started(started.pid, &key.app, &key.workspace);
         }
         tracing::info!(
@@ -1092,20 +1105,12 @@ impl Processes {
                 Ok(Some(FromProcess::Media { instance, view })) => {
                     self.media(key, instance, view);
                 }
-                // The app and workspace are this process's own, never what the record says: a
-                // process reports only jobs it runs.
+                Ok(Some(FromProcess::EngineStart(job))) => {
+                    self.engine_start(key, generation, &job);
+                }
+                Ok(Some(FromProcess::EngineCancel { job })) => self.engine_cancel(key, &job),
                 Ok(Some(FromProcess::Job { job, record })) => {
-                    if let Some(jobs) = self.jobs() {
-                        jobs.moved(
-                            &super::jobs::ProcessKey {
-                                workspace: key.workspace.clone(),
-                                app: key.app.clone(),
-                                generation,
-                            },
-                            &job,
-                            record,
-                        );
-                    }
+                    self.job_moved(key, generation, &job, record);
                 }
                 Ok(None) => break,
                 // The packet was taken: the socket carries the next one.
@@ -1144,13 +1149,16 @@ impl Processes {
         } else {
             tracing::error!(workspace = %key.workspace, app = %key.app, ?status, reason, "tilolang process ended");
         }
-        let mut processes = self.running();
-        if processes
-            .get(key)
-            .is_some_and(|process| process.generation == generation)
         {
-            processes.remove(key);
+            let mut processes = self.running();
+            if processes
+                .get(key)
+                .is_some_and(|process| process.generation == generation)
+            {
+                processes.remove(key);
+            }
         }
+        self.engines().ended_process(key, generation);
     }
 
     /// The process `key` (its start `generation`) says the instance of the window `instance` ended.
@@ -1174,18 +1182,23 @@ impl Processes {
             })
         };
         if idle.is_some() {
-            let processes = Arc::clone(self);
-            let spawned = std::thread::Builder::new()
-                .name("tilolang-process-idle".into())
-                .spawn(move || {
-                    std::thread::sleep(IDLE);
-                    processes.close_idle(Instant::now());
-                });
-            if let Err(error) = spawned {
-                // With no thread to end it later, it ends now: a process is never left for good.
-                tracing::warn!(%error, "no thread to end an idle tilolang process later");
-                self.close_idle(Instant::now() + IDLE);
-            }
+            self.idle_later();
+        }
+    }
+
+    /// Close the processes that are idle by then, [`IDLE`] from now.
+    fn idle_later(self: &Arc<Self>) {
+        let processes = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("tilolang-process-idle".into())
+            .spawn(move || {
+                std::thread::sleep(IDLE);
+                processes.close_idle(Instant::now());
+            });
+        if let Err(error) = spawned {
+            // With no thread to end it later, it ends now: a process is never left for good.
+            tracing::warn!(%error, "no thread to end an idle tilolang process later");
+            self.close_idle(Instant::now() + IDLE);
         }
     }
 
@@ -1489,8 +1502,12 @@ fn seen_end(status: &std::io::Result<std::process::ExitStatus>, last: &VecDeque<
 
 impl super::jobs::JobProcesses for Processes {
     /// Tell the process that reported `job` to stop running it: the call that started it was
-    /// cancelled.
+    /// cancelled. The process names the job by its record's path.
     fn cancel(&self, process: &super::jobs::ProcessKey, job: &str) {
+        let job = &self.jobs().map_or_else(
+            || job.to_owned(),
+            |jobs| tilo_actions::remote::device_job_path(&jobs.device(), job),
+        );
         let sent = {
             let running = self.running();
             running

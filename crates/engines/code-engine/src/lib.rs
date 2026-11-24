@@ -38,7 +38,7 @@
 //! the language servers that answer for them.
 //!
 //! An app runs sandboxed and starts no process, so this crate is what the app reaches through
-//! `engine.call`, `engine.start`, `engine.status` and `engine.cancel`. It registers as the
+//! `engine.call`, `engine.start` and `engine.cancel`. It registers as the
 //! engine of `so.tilo.code-editor` and answers that app alone; every answer is JSON the package
 //! reads into its own records.
 //!
@@ -54,11 +54,11 @@
 //! | `stat` | `{path}` | `{exists, mtime, len}` |
 //! | `list` | `{path}` | `{entries}` |
 //!
-//! Jobs (`engine.start`), asked about by `engine.status` and stopped by `engine.cancel`:
+//! Jobs (`engine.start`), each telling every move it makes, and stopped by `engine.cancel`:
 //!
-//! | op | asks | `status` answers |
+//! | op | asks | each move says |
 //! |---|---|---|
-//! | `search` | `{root, needle, case_sensitive, whole_word}` | `{state, hits, files, truncated}` |
+//! | `search` | `{root, needle, case_sensitive, whole_word}` | `{state, hits, files, truncated}`: every hit so far |
 //! | `run` | `{command, cwd}` | `{state, exit, output, truncated, failure}` |
 
 use std::collections::BTreeMap;
@@ -69,6 +69,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tilolang_tilo::engine::{JobOp, JobSink, Needs, State};
 
 pub mod disk;
 pub mod held;
@@ -89,23 +90,22 @@ const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 /// The engine of the code editor, as the session keeps it for the app.
 #[derive(Default)]
 pub struct CodeEngine {
-    jobs: Mutex<Jobs>,
+    jobs: Arc<Mutex<Jobs>>,
 }
 
 #[derive(Default)]
 struct Jobs {
-    next: u64,
     running: BTreeMap<String, Job>,
 }
 
 enum Job {
-    Search(search::Job),
+    /// A search, by what stops its walk.
+    Search(Arc<AtomicBool>),
     Run(RunJob),
 }
 
 struct RunJob {
     child: Arc<Mutex<Option<std::process::Child>>>,
-    output: Arc<Mutex<RunOutput>>,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -122,17 +122,6 @@ impl CodeEngine {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    fn next_job(jobs: &mut Jobs, name: &str) -> String {
-        jobs.next += 1;
-        format!("{name}-{}", jobs.next)
-    }
-
-    fn job_mut<'a>(jobs: &'a mut Jobs, id: &str) -> Result<&'a mut Job, String> {
-        jobs.running
-            .get_mut(id)
-            .ok_or_else(|| format!("no job `{id}` runs on this device"))
     }
 }
 
@@ -227,99 +216,36 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
         }
     }
 
-    fn start(&self, op: &str, input: &str) -> Result<String, String> {
-        let mut jobs = self
-            .jobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    fn jobs(&self) -> &'static [JobOp] {
+        // A search and a command read the person's project: each runs where the app's calls are
+        // answered.
+        const JOBS: &[JobOp] = &[
+            JobOp::new("search", Needs::APP_STATE),
+            JobOp::new("run", Needs::APP_STATE),
+        ];
+        JOBS
+    }
+
+    fn start(&self, job: &str, op: &str, input: &str, moved: JobSink) -> Result<(), String> {
         match op {
             "search" => {
                 let ask: SearchAsk = read_ask(input)?;
                 let query = search::Query::new(&ask.needle)
                     .case_sensitive(ask.case_sensitive)
                     .whole_word(ask.whole_word);
-                let id = Self::next_job(&mut jobs, "search");
-                jobs.running.insert(
-                    id.clone(),
-                    Job::Search(search::start(&expand(&ask.root), query)),
-                );
-                Ok(json!({ "job": id }).to_string())
+                let walk = search::start(&expand(&ask.root), query);
+                self.held()
+                    .running
+                    .insert(job.to_owned(), Job::Search(walk.canceller()));
+                follow_search(Arc::clone(&self.jobs), job.to_owned(), walk, moved)
             }
             "run" => {
                 let ask: RunAsk = read_ask(input)?;
-                let id = Self::next_job(&mut jobs, "run");
-                jobs.running.insert(
-                    id.clone(),
-                    Job::Run(spawn_run(&ask.command, &expand(&ask.cwd))?),
-                );
-                Ok(json!({ "job": id }).to_string())
+                let run = spawn_run(&ask.command, &expand(&ask.cwd), moved)?;
+                self.held().running.insert(job.to_owned(), Job::Run(run));
+                Ok(())
             }
             other => Err(format!("`{other}` is no job this engine starts")),
-        }
-    }
-
-    fn status(&self, job: &str) -> Result<String, String> {
-        let mut jobs = self
-            .jobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match Self::job_mut(&mut jobs, job)? {
-            Job::Search(search) => {
-                let mut hits = Vec::new();
-                let mut files = 0;
-                let mut truncated = false;
-                let mut done = false;
-                for message in search.drain() {
-                    match message {
-                        search::Msg::Hits(found) => {
-                            hits.extend(found.into_iter().map(hit_json));
-                        }
-                        search::Msg::Done {
-                            files: scanned,
-                            truncated: cut,
-                        } => {
-                            files = scanned;
-                            truncated = cut;
-                            done = true;
-                        }
-                    }
-                }
-                if done {
-                    jobs.running.remove(job);
-                }
-                Ok(json!({
-                    "state": if done { "done" } else { "running" },
-                    "hits": hits,
-                    "files": files,
-                    "truncated": truncated,
-                })
-                .to_string())
-            }
-            Job::Run(run) => {
-                let output = run
-                    .output
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let state = if output.finished {
-                    if output.failure.is_empty() {
-                        "done"
-                    } else {
-                        "stopped"
-                    }
-                } else if run.cancelled.load(Ordering::Relaxed) {
-                    "stopped"
-                } else {
-                    "running"
-                };
-                Ok(json!({
-                    "state": state,
-                    "exit": output.exit,
-                    "output": String::from_utf8_lossy(&output.bytes),
-                    "truncated": output.truncated,
-                    "failure": output.failure,
-                })
-                .to_string())
-            }
         }
     }
 
@@ -332,7 +258,7 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
             return false;
         };
         match held {
-            Job::Search(search) => search.cancel(),
+            Job::Search(stop) => stop.store(true, Ordering::Relaxed),
             Job::Run(run) => {
                 run.cancelled.store(true, Ordering::Relaxed);
                 if let Some(mut child) = run
@@ -348,6 +274,51 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
         }
         true
     }
+}
+
+impl CodeEngine {
+    fn held(&self) -> std::sync::MutexGuard<'_, Jobs> {
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Follow the search `job` walking as `walk`: every hit so far is told as it is found, and its
+/// end once the walk is done.
+fn follow_search(
+    jobs: Arc<Mutex<Jobs>>,
+    job: String,
+    mut walk: search::Job,
+    moved: JobSink,
+) -> Result<(), String> {
+    let reading = |hits: &[Value], files: usize, truncated: bool, state: &str| json!({ "state": state, "hits": hits, "files": files, "truncated": truncated });
+    moved.moved(State::Running, reading(&[], 0, false, "running"));
+    std::thread::Builder::new()
+        .name("code-editor-search-moves".into())
+        .spawn(move || {
+            let mut hits = Vec::new();
+            while let Some(message) = walk.wait_next() {
+                match message {
+                    search::Msg::Hits(found) => {
+                        hits.extend(found.into_iter().map(hit_json));
+                        moved.moved(State::Running, reading(&hits, 0, false, "running"));
+                    }
+                    search::Msg::Done { files, truncated } => {
+                        moved.moved(State::Done, reading(&hits, files, truncated, "done"));
+                        break;
+                    }
+                }
+            }
+            // A walk that let go without saying it was done was stopped.
+            moved.moved(State::Cancelled, reading(&hits, 0, false, "done"));
+            jobs.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .running
+                .remove(&job);
+        })
+        .map(|_| ())
+        .map_err(|error| format!("the search could not be followed: {error}"))
 }
 
 fn hit_json(hit: search::Hit) -> Value {
@@ -391,7 +362,34 @@ fn expand(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn spawn_run(command: &str, cwd: &Path) -> Result<RunJob, String> {
+/// What the app reads of a command now.
+fn run_reading(output: &RunOutput, cancelled: bool) -> (State, Value) {
+    let (state, word) = if output.finished {
+        if cancelled {
+            (State::Cancelled, "stopped")
+        } else if output.failure.is_empty() {
+            (State::Done, "done")
+        } else {
+            (State::Failed, "stopped")
+        }
+    } else if cancelled {
+        (State::Cancelled, "stopped")
+    } else {
+        (State::Running, "running")
+    };
+    (
+        state,
+        json!({
+            "state": word,
+            "exit": output.exit,
+            "output": String::from_utf8_lossy(&output.bytes),
+            "truncated": output.truncated,
+            "failure": output.failure,
+        }),
+    )
+}
+
+fn spawn_run(command: &str, cwd: &Path, moved: JobSink) -> Result<RunJob, String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_owned());
     let mut child = Command::new(shell)
         .arg("-lc")
@@ -411,14 +409,22 @@ fn spawn_run(command: &str, cwd: &Path) -> Result<RunJob, String> {
         let output = Arc::clone(&output);
         let held = Arc::clone(&held);
         let cancelled = Arc::clone(&cancelled);
+        let tell = {
+            let cancelled = Arc::clone(&cancelled);
+            move |output: &RunOutput| {
+                let (state, reading) = run_reading(output, cancelled.load(Ordering::Relaxed));
+                moved.moved(state, reading);
+            }
+        };
+        tell(&RunOutput::default());
         std::thread::Builder::new()
             .name("code-editor-run".into())
             .spawn(move || {
                 if let Some(out) = stdout.as_mut() {
-                    read_into(out, &output);
+                    read_into(out, &output, &tell);
                 }
                 if let Some(err) = stderr.as_mut() {
-                    read_into(err, &output);
+                    read_into(err, &output, &tell);
                 }
                 let exit = held
                     .lock()
@@ -435,17 +441,21 @@ fn spawn_run(command: &str, cwd: &Path) -> Result<RunJob, String> {
                 if cancelled.load(Ordering::Relaxed) {
                     output.failure = "stopped".to_owned();
                 }
+                tell(&output);
             })
             .map_err(|error| format!("the command could not be watched: {error}"))?;
     }
     Ok(RunJob {
         child: held,
-        output,
         cancelled,
     })
 }
 
-fn read_into(mut reader: impl std::io::Read, output: &Arc<Mutex<RunOutput>>) {
+fn read_into(
+    mut reader: impl std::io::Read,
+    output: &Arc<Mutex<RunOutput>>,
+    tell: &impl Fn(&RunOutput),
+) {
     let mut buffer = [0u8; 8192];
     loop {
         match reader.read(&mut buffer) {
@@ -465,6 +475,7 @@ fn read_into(mut reader: impl std::io::Read, output: &Arc<Mutex<RunOutput>>) {
                         .bytes
                         .extend_from_slice(buffer.get(..size).unwrap_or_default());
                 }
+                tell(&output);
             }
         }
     }

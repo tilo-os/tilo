@@ -112,9 +112,16 @@ pub enum ToProcess {
     /// Nothing more comes: the process lets its link go and ends once it runs nothing. This
     /// is the session's half of closing the link, which a Windows pipe cannot close one way.
     Finish,
-    /// Stop running engine job `job`: the call that started it was cancelled, and the daemon
-    /// ends it. The process reports the job cancelled as its engine lets it go.
+    /// Stop running engine job `job` (its record's path, `devices/<device>/jobs/<job>`): the call
+    /// that started it was cancelled, or the app that started it stopped it. The process reports
+    /// the job cancelled as its engine lets it go.
     CancelJob { job: String },
+    /// Where this device keeps its jobs' records (`devices/<device>/jobs`): a job the process
+    /// starts is named beneath it. Said once, before anything is asked of the process.
+    JobsUnder(String),
+    /// Run one engine job: said to the device's engine host, which runs every app's shared
+    /// engine work under each call's grants.
+    Engine(Box<EngineJob>),
 }
 
 impl Packet for ToProcess {
@@ -129,7 +136,9 @@ impl Packet for ToProcess {
             | Self::Access(_)
             | Self::MediaCommand { .. }
             | Self::CancelJob { .. }
-            | Self::Finish => false,
+            | Self::Finish
+            | Self::JobsUnder(_)
+            | Self::Engine(_) => false,
         };
         if over {
             Err("a module over the link's limit")
@@ -157,14 +166,96 @@ pub enum FromProcess {
         instance: u64,
         view: Option<MediaView>,
     },
-    /// The engine job `job` moved, as `record` says: its `{id, app, workspace, invocation, by,
-    /// op, state, detail}` and, where the app asked for them, its `done` and `progress` handlers.
-    /// The daemon keeps it as the device's job record (`devices/<device>/jobs/<job>`), naming the
-    /// app and workspace from this process's own identity rather than from what the record says.
+    /// The engine job `job` (its record's path, `devices/<device>/jobs/<job>`) moved, as `record`
+    /// says: its `{id, app, workspace, invocation, by, op, state, detail}` and, where the app asked
+    /// for them, its `done` and `progress` handlers. The daemon keeps it as the device's job
+    /// record, naming the app and workspace from this process's own identity (or, for the
+    /// device's engine host, from the start it admitted) rather than from what the record says. A
+    /// job's moves come at most four times a second, and its last (`done`, `failed` or
+    /// `cancelled`) always comes.
     Job {
         job: String,
+        #[serde(with = "json_text")]
         record: serde_json::Value,
     },
+    /// Start an engine job as the call this process runs: the device admits it as that caller,
+    /// records it, and runs it on its engine host, refusing work the shared host may not run; or,
+    /// for a job this process runs itself ([`EngineJob::here`]), holds the process until it ends.
+    EngineStart(Box<EngineJob>),
+    /// Stop an engine job this process started: the process running it is told
+    /// ([`ToProcess::CancelJob`]).
+    EngineCancel { job: String },
+}
+
+/// One engine job: the work an app asked of its device (`engine.start`), as the device hands it
+/// to the process that runs it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineJob {
+    /// The job's record path, `devices/<device>/jobs/<job>`: its id everywhere.
+    pub job: String,
+    /// The app whose engine runs it: an app asks its own engine's work and no other's.
+    pub app: String,
+    pub workspace: String,
+    /// The invocation that started it, which holds it until it ends; empty for a call made
+    /// under none.
+    pub invocation: String,
+    /// The member it acts for.
+    pub by: String,
+    pub op: String,
+    /// The op's input, as the app wrote it (JSON).
+    pub input: String,
+    /// What the op declared it needs, as the engine registered it.
+    pub needs: JobNeeds,
+    /// Whether the app's own process runs it, for work that needs what only that process may
+    /// hold: the device records it and holds the process until it ends, and runs nothing itself.
+    pub here: bool,
+    /// What the app asked to run as the job moves and once it ends, `{done, progress}`, each an
+    /// action of the app (`{resource, action, arguments}`) the device's dispatch runs as a child
+    /// of the job's invocation, handed the job as it stands.
+    #[serde(with = "json_text")]
+    pub handlers: serde_json::Value,
+}
+
+/// What an engine op declared it needs beyond the engine's code, which decides where it runs: a
+/// process several apps share never holds a released secret, and reaches no network for an app.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobNeeds {
+    /// A secret the vault released to the app.
+    pub secret: bool,
+    /// The network the app's package was granted.
+    pub network: bool,
+    /// What the app's own process keeps: a file the job writes into the app's content store, or
+    /// answers the app's calls read back from the engine.
+    pub app_state: bool,
+}
+
+impl JobNeeds {
+    /// Whether the device's shared engine host may run it: only work that needs nothing of the
+    /// app's own.
+    #[must_use]
+    pub const fn shared(self) -> bool {
+        !self.secret && !self.network && !self.app_state
+    }
+}
+
+/// A JSON value carried as its text: postcard reads by position and cannot read a self-describing
+/// value.
+mod json_text {
+    use serde::{Deserialize as _, Deserializer, Serialize as _, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        value: &serde_json::Value,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.to_string().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<serde_json::Value, D::Error> {
+        use serde::de::Error as _;
+        serde_json::from_str(&String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
 }
 
 /// What one instance plays, as the system's media controls show it: the Playback's own reading,

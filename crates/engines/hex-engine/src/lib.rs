@@ -106,7 +106,10 @@ impl HexEngine {
     /// since are not the ones already applied. Beside the bytes: how many of them differ from
     /// the base, and whether the base's bytes are on this device.
     fn derive(&self, address: &str, changes: &[String]) -> (Vec<u8>, usize, bool) {
-        let changes: Vec<Change> = changes.iter().filter_map(|text| Change::parse(text)).collect();
+        let changes: Vec<Change> = changes
+            .iter()
+            .filter_map(|text| Change::parse(text))
+            .collect();
         let mut buffers = self.buffers();
         if let Some(buffer) = buffers.get_mut(address)
             && changes.starts_with(&buffer.applied)
@@ -170,9 +173,10 @@ impl HexEngine {
             ));
         }
         let address = keep(&bytes)?;
-        let name = path
-            .file_name()
-            .map_or_else(|| ask.path.clone(), |name| name.to_string_lossy().into_owned());
+        let name = path.file_name().map_or_else(
+            || ask.path.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         Ok(json!({ "name": name, "address": address, "length": bytes.len() }).to_string())
     }
 
@@ -274,9 +278,8 @@ impl HexEngine {
                 ask.query.as_bytes().to_vec()
             }
         } else {
-            parse_hex_query(&ask.query).ok_or_else(|| {
-                "Write the bytes as hexadecimal, like `de ad be ef`.".to_owned()
-            })?
+            parse_hex_query(&ask.query)
+                .ok_or_else(|| "Write the bytes as hexadecimal, like `de ad be ef`.".to_owned())?
         };
         let rules = Rules {
             match_case: ask.case && ask.kind == "text",
@@ -333,8 +336,9 @@ impl HexEngine {
         if !read {
             return Err("The bytes are not on this device.".to_owned());
         }
-        let insert = parse_bytes(&ask.bytes)
-            .ok_or_else(|| "Write the replacement as hexadecimal bytes, like `de ad be ef`.".to_owned())?;
+        let insert = parse_bytes(&ask.bytes).ok_or_else(|| {
+            "Write the replacement as hexadecimal bytes, like `de ad be ef`.".to_owned()
+        })?;
         let want = insert.len();
         let mut kept: Vec<(usize, usize)> = Vec::new();
         for span in &ask.spans {
@@ -478,18 +482,6 @@ impl tilolang_tilo::engine::Provider for HexEngine {
             other => Err(format!("`{other}` is no op this engine runs")),
         }
     }
-
-    fn start(&self, _op: &str, _input: &str) -> Result<String, String> {
-        Err("the hex editor asks no job of its device".to_owned())
-    }
-
-    fn status(&self, job: &str) -> Result<String, String> {
-        Err(format!("no job `{job}` runs on this device"))
-    }
-
-    fn cancel(&self, _job: &str) -> bool {
-        false
-    }
 }
 
 /// Register the hex editor's engine for the session's lifetime.
@@ -520,9 +512,10 @@ fn keep(bytes: &[u8]) -> Result<String, String> {
 /// Write `bytes` to `path` whole or not at all: a temporary file beside it, then a rename.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let folder = path.parent().unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .map_or_else(|| "untitled.bin".into(), |name| name.to_string_lossy().into_owned());
+    let name = path.file_name().map_or_else(
+        || "untitled.bin".into(),
+        |name| name.to_string_lossy().into_owned(),
+    );
     let temporary = folder.join(format!(".{name}.{}", std::process::id()));
     {
         let mut file = std::fs::File::create(&temporary).map_err(|error| error.to_string())?;
@@ -551,7 +544,9 @@ fn differing(base: &[u8], bytes: &[u8]) -> usize {
 
 /// The length of the bytes after `change`.
 fn apply_length(length: usize, change: &Change) -> usize {
-    let removed = change.remove.min(length.saturating_sub(change.at.min(length)));
+    let removed = change
+        .remove
+        .min(length.saturating_sub(change.at.min(length)));
     length
         .saturating_sub(removed)
         .saturating_add(change.inserted().len())
@@ -594,7 +589,9 @@ fn checked(op: &str, length: usize, at: usize, len: usize, bytes: &str) -> Resul
                 insert: String::new(),
             })
         }
-        other => Err(format!("`{other}` is no edit of bytes: insert, overwrite or delete")),
+        other => Err(format!(
+            "`{other}` is no edit of bytes: insert, overwrite or delete"
+        )),
     }
 }
 
@@ -721,7 +718,14 @@ fn findings(bytes: &[u8], cursor: usize, endian: &str) -> Vec<serde_json::Value>
             }
         }
     }
-    for (label, n) in [("i16", 2), ("u16", 2), ("i32", 4), ("u32", 4), ("i64", 8), ("u64", 8)] {
+    for (label, n) in [
+        ("i16", 2),
+        ("u16", 2),
+        ("i32", 4),
+        ("u32", 4),
+        ("i64", 8),
+        ("u64", 8),
+    ] {
         rows.push(int_row(label, read(n), big, n));
     }
     rows.push(float_row("f32", read(4), big, 4));
@@ -805,7 +809,9 @@ fn float_row(label: &str, raw: Option<&[u8]>, big: bool, width: usize) -> (Strin
 
 /// The `name` field of a row `findings` answered, or nothing when it is not there.
 fn field<'a>(row: &'a serde_json::Value, name: &str) -> &'a str {
-    row.get(name).and_then(serde_json::Value::as_str).unwrap_or("")
+    row.get(name)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
 }
 
 /// An unsigned or signed LEB128 varint at a byte source: the value and how many bytes it took.
@@ -838,7 +844,11 @@ fn format_float(v: f64) -> String {
     } else if v.is_nan() {
         "NaN".to_owned()
     } else if v.is_infinite() {
-        if v > 0.0 { "+inf".to_owned() } else { "-inf".to_owned() }
+        if v > 0.0 {
+            "+inf".to_owned()
+        } else {
+            "-inf".to_owned()
+        }
     } else if v.abs() >= 1e-4 && v.abs() < 1e9 {
         let s = format!("{v:.6}");
         s.trim_end_matches('0').trim_end_matches('.').to_owned()

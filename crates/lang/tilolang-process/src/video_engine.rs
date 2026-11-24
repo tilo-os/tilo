@@ -6,15 +6,16 @@
 //! still, a waveform and a probe answer now; a render starts as a job whose progress is asked by
 //! its id and which can be stopped.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use serde::Deserialize;
 
+use serde_json::json;
+use tilo_content::ContentStore;
 use tilo_resource::{Keyed, Ordered};
-use tilolang_tilo::instance::Platform;
+use tilolang_tilo::engine::{self, JobOp, JobSink, Needs, Provider, Running, State};
 use video_edit::model;
 use video_edit::param::{ClipAnimation, Interp, Param};
 use video_picture::export::{Container, ExportSettings, FrameRate, Resolution};
@@ -22,140 +23,76 @@ use video_picture::export::{Container, ExportSettings, FrameRate, Resolution};
 /// The one app this device answers engine work for.
 pub const APP: &str = "so.tilo.video-editor";
 
-/// One `engine.call` for this device's app, or a refusal.
-///
-/// # Errors
-///
-/// The op is unknown, the cut does not read, or the engine cannot do the work.
-pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
-    if app != APP {
-        return Err(format!("`{op}` is no op this device runs for {app}"));
+/// A render is a job: it runs in the app's own process, whose content store keeps the finished
+/// file as it ends.
+const JOBS: &[JobOp] = &[JobOp::new("render", Needs::APP_STATE)];
+
+/// Video Editor's engine, keeping what it makes in `store`.
+struct Engine {
+    store: ContentStore,
+}
+
+/// Register Video Editor's engine over the app's content store `store`.
+pub fn register(store: &ContentStore) {
+    engine::register(
+        APP,
+        Arc::new(Engine {
+            store: store.clone(),
+        }),
+    );
+}
+
+impl Provider for Engine {
+    fn jobs(&self) -> &'static [JobOp] {
+        JOBS
     }
-    match op {
-        "probe" => probe(platform, input),
-        "still" => still(platform, input),
-        "thumb" => thumb(platform, input),
-        "waveform" => waveform(platform, input),
-        "sample" => sample(platform, input),
-        other => Err(format!("`{other}` is no op this device runs for {app}")),
+
+    fn call(&self, op: &str, input: &str) -> Result<String, String> {
+        let store = &self.store;
+        match op {
+            "probe" => probe(store, input),
+            "still" => still(store, input),
+            "thumb" => thumb(store, input),
+            "waveform" => waveform(store, input),
+            "sample" => sample(store, input),
+            other => Err(format!("`{other}` is no op this device runs for {APP}")),
+        }
+    }
+
+    fn start(&self, job: &str, op: &str, input: &str, moved: JobSink) -> Result<(), String> {
+        match op {
+            "render" => render(&self.store, job, input, moved),
+            other => Err(format!("`{other}` is no op this device runs for {APP}")),
+        }
+    }
+
+    fn cancel(&self, job: &str) -> bool {
+        let Some((render, _)) = running().get(job) else {
+            return false;
+        };
+        render.store(true, Ordering::Relaxed);
+        running().end(job, State::Cancelled, json!({ "url": "", "error": "" }));
+        true
     }
 }
 
-/// One `engine.start`: a render, answered with the job's id.
-///
-/// # Errors
-///
-/// Not this device's app, or the cut does not read.
-pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
-    if app != APP {
-        return Err(format!("`{op}` is no op this device runs for {app}"));
-    }
-    match op {
-        "render" => render(platform, input),
-        other => Err(format!("`{other}` is no op this device runs for {app}")),
-    }
+/// The renders running now, each by what stops it.
+fn running() -> &'static Running<AtomicBool> {
+    static RUNNING: OnceLock<Running<AtomicBool>> = OnceLock::new();
+    RUNNING.get_or_init(Running::default)
 }
 
-/// How far a job has got, as JSON: its state, what it has done of how much, and what it made.
-///
-/// # Errors
-///
-/// No such job on this device.
-pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
-    let state = jobs()
-        .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?
-        .get(job)
-        .cloned();
-    let Some(state) = state else {
-        return Err(format!("no job `{job}` runs on this device"));
-    };
-    let done = state.done.load(Ordering::Relaxed);
-    let total = state.total.load(Ordering::Relaxed);
-    if state.cancel.load(Ordering::Relaxed) {
-        return Ok(serde_json::json!({
-            "state": "cancelled", "done": done, "total": total, "url": "", "error": "",
-        })
-        .to_string());
-    }
-    if let Some(error) = state.error.lock().ok().and_then(|e| e.clone()) {
-        return Ok(serde_json::json!({
-            "state": "failed", "done": done, "total": total, "url": "", "error": error,
-        })
-        .to_string());
-    }
-    if let Some(url) = set_done(&state, platform) {
-        return Ok(serde_json::json!({
-            "state": "done", "done": total, "total": total, "url": url, "error": "",
-        })
-        .to_string());
-    }
-    Ok(serde_json::json!({
-        "state": "running", "done": done, "total": total, "url": "", "error": "",
-    })
-    .to_string())
-}
-
-/// Stop a job: false when it is not this device's or it had finished.
-pub fn cancel(job: &str) -> bool {
-    let Ok(known) = jobs().lock() else {
-        return false;
-    };
-    let Some(state) = known.get(job) else {
-        return false;
-    };
-    if state.finished.load(Ordering::Relaxed) {
-        return false;
-    }
-    state.cancel.store(true, Ordering::Relaxed);
-    true
-}
-
-/// One render in flight, and what it made when it is done.
-struct Job {
-    cancel: Arc<AtomicBool>,
-    finished: AtomicBool,
-    done: AtomicU64,
-    total: AtomicU64,
-    /// The file the render writes, until the answer puts it in the content store.
-    path: PathBuf,
-    /// The name its bytes are kept under.
-    name: String,
-    error: Mutex<Option<String>>,
-    /// The address of the finished file, once `status` has kept it.
-    url: Mutex<Option<String>>,
-}
-
-fn jobs() -> &'static Mutex<BTreeMap<String, Arc<Job>>> {
-    static JOBS: OnceLock<Mutex<BTreeMap<String, Arc<Job>>>> = OnceLock::new();
-    JOBS.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-/// Keep a finished render as the answer's file, once: what `status` hands the app.
-fn set_done(state: &Job, platform: &dyn Platform) -> Option<String> {
-    if !state.finished.load(Ordering::Relaxed) {
-        return None;
-    }
-    if let Some(url) = state.url.lock().ok().and_then(|u| u.clone()) {
-        return Some(url);
-    }
-    let bytes = std::fs::read(&state.path).ok()?;
-    let media = match state.path.extension().and_then(std::ffi::OsStr::to_str) {
+/// The media type of a render written to `path`.
+fn media_of(path: &Path) -> &'static str {
+    match path.extension().and_then(std::ffi::OsStr::to_str) {
         Some("webm") => "video/webm",
         Some("mov") => "video/quicktime",
         _ => "video/mp4",
-    };
-    let kept = platform.keep_content(&state.name, media, &bytes).ok()?;
-    let url = format!("tilo-blob://{}", kept.hash);
-    if let Ok(mut slot) = state.url.lock() {
-        *slot = Some(url.clone());
     }
-    let _ = std::fs::remove_file(&state.path);
-    Some(url)
 }
 
 /// The still the app asked for at `at`, kept as a picture in the content store.
-fn still(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn still(store: &ContentStore, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         project: String,
@@ -164,20 +101,20 @@ fn still(platform: &dyn Platform, input: &str) -> Result<String, String> {
         height: u32,
     }
     let ask: Ask = reads(input)?;
-    let project = reads::<Shot>(&ask.project)?.into_project(Some(platform))?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(store))?;
     let settings = video_picture::render::AgentFrameSettings {
         at: ask.at,
         width: ask.width.clamp(16, 4096),
         height: ask.height.clamp(16, 4096),
     };
     let png = video_picture::render::render_still(&project, &settings)?;
-    let kept = platform.keep_content("frame.png", "image/png", &png)?;
+    let kept = crate::files::keep(store, "frame.png", "image/png", &png)?;
     Ok(serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string())
 }
 
 /// One source's picture at `at`, kept as a picture in the content store: a bin swatch or a
 /// filmstrip frame.
-fn thumb(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn thumb(store: &ContentStore, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         url: String,
@@ -188,7 +125,7 @@ fn thumb(platform: &dyn Platform, input: &str) -> Result<String, String> {
     let ask: Ask = reads(input)?;
     let mut project = model::Project::new("thumb");
     project.set_frame_size(ask.width.clamp(16, 4096), ask.height.clamp(16, 4096));
-    let path = media_path(platform, &ask.url)?;
+    let path = media_path(store, &ask.url)?;
     let probed = video_edit::probe::probe_file(&path).map_err(|e| format!("{e:?}"))?;
     let media = model::MediaItem {
         id: uuid::Uuid::from_u128(1),
@@ -231,18 +168,18 @@ fn thumb(platform: &dyn Platform, input: &str) -> Result<String, String> {
         height: ask.height.clamp(16, 4096),
     };
     let png = video_picture::render::render_still(&project, &settings)?;
-    let kept = platform.keep_content("thumb.png", "image/png", &png)?;
+    let kept = crate::files::keep(store, "thumb.png", "image/png", &png)?;
     Ok(serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string())
 }
 
 /// What the file at `url` really is.
-fn probe(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn probe(store: &ContentStore, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         url: String,
     }
     let ask: Ask = reads(input)?;
-    let path = media_path(platform, &ask.url)?;
+    let path = media_path(store, &ask.url)?;
     let probed = video_edit::probe::probe_file(&path).map_err(|e| format!("{e:?}"))?;
     Ok(serde_json::json!({
         "kind": probed.kind.as_str(),
@@ -257,14 +194,14 @@ fn probe(platform: &dyn Platform, input: &str) -> Result<String, String> {
 }
 
 /// The source's peaks, as fractions of full scale.
-fn waveform(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn waveform(store: &ContentStore, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         url: String,
         buckets: Option<usize>,
     }
     let ask: Ask = reads(input)?;
-    let path = media_path(platform, &ask.url)?;
+    let path = media_path(store, &ask.url)?;
     let buckets = ask.buckets.unwrap_or(512).clamp(16, 4096);
     let peaks = video_edit::waveform::peaks_from_file(&path, buckets)
         .ok_or_else(|| "no samples could be read from that source".to_owned())?;
@@ -272,7 +209,7 @@ fn waveform(platform: &dyn Platform, input: &str) -> Result<String, String> {
 }
 
 /// The colour of the cut's frame at (x, y), a fraction of its box each.
-fn sample(platform: &dyn Platform, input: &str) -> Result<String, String> {
+fn sample(store: &ContentStore, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         project: String,
@@ -281,7 +218,7 @@ fn sample(platform: &dyn Platform, input: &str) -> Result<String, String> {
         y: f64,
     }
     let ask: Ask = reads(input)?;
-    let project = reads::<Shot>(&ask.project)?.into_project(Some(platform))?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(store))?;
     let (width, height) = (480_u32, 270_u32);
     let mut compositor = video_picture::gpu::HeadlessCompositor::new()
         .map_err(|error| format!("this device cannot draw the frame: {error}"))?;
@@ -311,8 +248,9 @@ fn axis_index(fraction: f64, extent: u32) -> usize {
     at.min(usize::try_from(last).unwrap_or(usize::MAX))
 }
 
-/// Start a cut's render as a job.
-fn render(platform: &dyn Platform, input: &str) -> Result<String, String> {
+/// Start a cut's render as the job `job`: its frames done of how many are told as it goes, and
+/// the finished file is kept in `store` as it ends.
+fn render(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Result<(), String> {
     #[derive(Deserialize)]
     struct Ask {
         project: String,
@@ -323,7 +261,7 @@ fn render(platform: &dyn Platform, input: &str) -> Result<String, String> {
         name: Option<String>,
     }
     let ask: Ask = reads(input)?;
-    let project = reads::<Shot>(&ask.project)?.into_project(Some(platform))?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(store))?;
     let resolution = match ask.resolution.as_deref() {
         Some("720") => Resolution::P720,
         Some("2160" | "4k") => Resolution::P2160,
@@ -344,71 +282,68 @@ fn render(platform: &dyn Platform, input: &str) -> Result<String, String> {
         container,
         frame_rate,
     };
-    let id = next_job_id();
     let extension = match container {
         Container::WebM => "webm",
         Container::Mov => "mov",
         Container::Mp4 => "mp4",
     };
+    let id = uuid::Uuid::new_v4().simple().to_string();
     let name = ask.name.unwrap_or_else(|| format!("cut-{id}.{extension}"));
     let path = scratch_dir().join(format!("render-{id}.{extension}"));
-    let state = Arc::new(Job {
-        cancel: Arc::new(AtomicBool::new(false)),
-        finished: AtomicBool::new(false),
-        done: AtomicU64::new(0),
-        total: AtomicU64::new(0),
-        path,
-        name,
-        error: Mutex::new(None),
-        url: Mutex::new(None),
-    });
-    jobs()
-        .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?
-        .insert(id.clone(), Arc::clone(&state));
-    let worker = Arc::clone(&state);
+    let cancel = Arc::new(AtomicBool::new(false));
+    moved.moved(
+        State::Running,
+        json!({ "done": 0, "total": 0, "url": "", "error": "" }),
+    );
+    running().keep(job, Arc::clone(&cancel), moved.clone());
+    let (named, store) = (job.to_owned(), store.clone());
     let spawned = std::thread::Builder::new()
         .name("video-editor-render".to_owned())
         .spawn(move || {
-            let cancel = Arc::clone(&worker.cancel);
-            let done = Arc::new(AtomicU64::new(0));
-            let report_done = Arc::clone(&done);
-            let report_total = Arc::new(AtomicU64::new(0));
-            let report_total_in = Arc::clone(&report_total);
+            let total = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let counted = Arc::clone(&total);
             let outcome = video_picture::export::render_to(
                 &project,
                 settings,
-                &worker.path,
+                &path,
                 cancel,
-                move |done_frames, total| {
-                    report_done.store(done_frames, Ordering::Relaxed);
-                    report_total_in.store(total, Ordering::Relaxed);
+                move |done, of| {
+                    counted.store(of, Ordering::Relaxed);
+                    moved.moved(
+                        State::Running,
+                        json!({ "done": done, "total": of, "url": "", "error": "" }),
+                    );
                 },
             );
-            worker
-                .done
-                .store(done.load(Ordering::Relaxed), Ordering::Relaxed);
-            worker
-                .total
-                .store(report_total.load(Ordering::Relaxed), Ordering::Relaxed);
-            match outcome {
-                Ok(_) => worker.finished.store(true, Ordering::Relaxed),
-                Err(error) => {
-                    if let Ok(mut slot) = worker.error.lock() {
-                        *slot = Some(error);
-                    }
-                }
+            let total = total.load(Ordering::Relaxed);
+            let kept = outcome.and_then(|_| {
+                let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+                crate::files::keep(&store, &name, media_of(&path), &bytes)
+            });
+            let _ = std::fs::remove_file(&path);
+            match kept {
+                Ok(kept) => running().end(
+                    &named,
+                    State::Done,
+                    json!({
+                        "done": total,
+                        "total": total,
+                        "url": format!("tilo-blob://{}", kept.hash),
+                        "error": "",
+                    }),
+                ),
+                Err(error) => running().end(
+                    &named,
+                    State::Failed,
+                    json!({ "done": 0, "total": total, "url": "", "error": error }),
+                ),
             }
         });
     if spawned.is_err() {
+        running().forget(job);
         return Err("could not start the render".to_owned());
     }
-    Ok(serde_json::json!({ "job": id }).to_string())
-}
-
-fn next_job_id() -> String {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    format!("render-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    Ok(())
 }
 
 /// Where a render writes its file before the answer keeps it: one directory per process.
@@ -428,7 +363,7 @@ fn reads<T: for<'de> Deserialize<'de>>(input: &str) -> Result<T, String> {
 
 /// A source's bytes as a file this device can decode: what a `tilo-blob://` address names,
 /// laid out once, or a path already here.
-fn media_path(platform: &dyn Platform, url: &str) -> Result<PathBuf, String> {
+fn media_path(store: &ContentStore, url: &str) -> Result<PathBuf, String> {
     let hash = url.strip_prefix("tilo-blob://");
     let Some(hash) = hash else {
         let path = Path::new(url);
@@ -442,8 +377,7 @@ fn media_path(platform: &dyn Platform, url: &str) -> Result<PathBuf, String> {
     if file.exists() {
         return Ok(file);
     }
-    let bytes = platform
-        .read_content(hash)
+    let bytes = crate::files::read(store, hash)
         .ok_or_else(|| "that source's bytes are not on this device yet".to_owned())?;
     std::fs::write(&file, bytes)
         .map_err(|error| format!("the source cannot be laid out: {error}"))?;
@@ -784,7 +718,7 @@ fn effect_of(name: &str) -> Option<model::EffectKind> {
 
 impl Shot {
     /// The model this cut is, with every source laid out where this device can decode it.
-    fn into_project(self, platform: Option<&dyn Platform>) -> Result<model::Project, String> {
+    fn into_project(self, store: Option<&ContentStore>) -> Result<model::Project, String> {
         let mut project = model::Project::new(&self.name);
         project.set_frame_size(self.width, self.height);
         project.fps = self.fps.clamp(model::MIN_FPS, model::MAX_FPS);
@@ -792,7 +726,7 @@ impl Shot {
         project.mark_out = (self.mark_out >= 0.0).then_some(self.mark_out);
         for media in self.media {
             let media: ShotMedia = reads(&media)?;
-            project.media.push(media_item(media, platform));
+            project.media.push(media_item(media, store));
         }
         for track in self.tracks {
             let track: ShotTrack = reads(&track)?;
@@ -813,9 +747,9 @@ impl Shot {
 /// The media `media` names, laid out where this device can decode it: the content store's bytes
 /// laid out, or a path that is already here. An address this device cannot read stays as the app
 /// wrote it, which the picture draws from the source's own fill.
-fn media_item(media: ShotMedia, platform: Option<&dyn Platform>) -> model::MediaItem {
-    let path = platform
-        .and_then(|platform| media_path(platform, &media.path).ok())
+fn media_item(media: ShotMedia, store: Option<&ContentStore>) -> model::MediaItem {
+    let path = store
+        .and_then(|store| media_path(store, &media.path).ok())
         .map_or_else(
             || media.path.clone(),
             |at| at.to_string_lossy().into_owned(),

@@ -263,6 +263,74 @@ impl HostHandle {
     }
 }
 
+impl HostHandle {
+    /// What a job's `done:` or `progress:` runs, as the app publishes it: `handler` (as the
+    /// runtime wrote it, [`tilolang_runtime::value::job_handler_to_json`]) as
+    /// `{resource, action, arguments}`, the action `app` publishes on the resource its first
+    /// argument is, with each other argument by its parameter's name and the job's own left as
+    /// `{"$job": null}`, which the device fills with the job's record when it runs it.
+    ///
+    /// # Errors
+    ///
+    /// The handler is no action `app` publishes on a resource: a scenario's, another app's, or one
+    /// whose first argument is no resource. The words say so to the person.
+    pub fn published_handler(&self, app: &str, handler: &Json) -> Result<Json, String> {
+        with_host(self.id, |host| published_handler(host, app, handler))
+    }
+}
+
+/// [`HostHandle::published_handler`] over the packages `host` runs.
+fn published_handler(host: &HostInner, app: &str, handler: &Json) -> Result<Json, String> {
+    const SLOT: &str = "$job";
+    let call = tilolang_runtime::value::job_handler_call(handler, &Value::Unit)?;
+    let slots: Vec<bool> = handler
+        .get("args")
+        .and_then(Json::as_array)
+        .map(|args| args.iter().map(|arg| arg.get(SLOT).is_some()).collect())
+        .unwrap_or_default();
+    let packages = host.packages.borrow();
+    let refused = || {
+        "What runs when the job moves or ends must be one of this app's own actions on one of \
+         its resources."
+            .to_owned()
+    };
+    let package = packages
+        .iter()
+        .find(|package| package.meta.app == app)
+        .ok_or_else(refused)?;
+    let declared = package
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.id == call.action && !action.scenario)
+        .ok_or_else(refused)?;
+    let Some(Value::Ref(on)) = call.args.first() else {
+        return Err(refused());
+    };
+    let owner = |other: &str| {
+        packages
+            .iter()
+            .find(|package| package.meta.app == other)
+            .map(|package| package.meta.clone())
+            .ok_or_else(|| format!("no package of {other} runs here"))
+    };
+    let mut arguments = serde_json::Map::new();
+    for (at, (param, value)) in declared.params.iter().zip(&call.args).enumerate().skip(1) {
+        let argument = if slots.get(at).copied().unwrap_or(false) {
+            serde_json::json!({ SLOT: null })
+        } else {
+            let ty = parse_ty(&param.ty, app)?;
+            argument_json(&owner, &package.meta, value, &ty)?
+        };
+        arguments.insert(param.name.clone(), argument);
+    }
+    Ok(serde_json::json!({
+        "resource": crate::call::address_of(app, &on.target),
+        "action": declared.name,
+        "arguments": arguments,
+    }))
+}
+
 fn with_host<T>(id: u64, run: impl FnOnce(&HostInner) -> Result<T, String>) -> Result<T, String> {
     let host = LIVE
         .with(|live| live.borrow().get(&id).and_then(Weak::upgrade))
@@ -296,6 +364,11 @@ pub(crate) fn value_of(
 /// ([`from_json`]) is taken as it is.
 fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Value, String> {
     match (ty, json) {
+        // A job, as its device records it: what a `done:` or `progress:` handler is handed when
+        // the device runs it as the app's published action.
+        (Ty::Record(key), Json::Object(_)) if key.app == "host" && key.name == "Job" => {
+            Ok(tilolang_runtime::host_work::job_value(json))
+        }
         (Ty::Record(key), _) => {
             // A parameter may be a type of another app of the workspace: one this host runs, or one
             // it reads a document of (Today's cleanup over the Tasks list it shows). A document of an
@@ -1597,8 +1670,9 @@ impl Host {
         // its window is never of those roots, so this is when they are wanted.
         if !device_root {
             let device_roots: Vec<String> = self
-                .find_in_packages(|package| (package.meta.app == app).then(|| package.clone()))
-                .map(|package| package.meta.device_roots.clone())
+                .find_in_packages(|package| {
+                    (package.meta.app == app).then(|| package.meta.device_roots.clone())
+                })
                 .unwrap_or_default();
             for device_ty in device_roots {
                 if let Err(error) = self.root_resource(app, &device_ty) {

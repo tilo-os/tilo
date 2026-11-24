@@ -1241,12 +1241,35 @@ impl tilolang_tilo::engine::Provider for Databases {
         self.0.call(op, input)
     }
 
-    fn start(&self, op: &str, input: &str) -> Result<String, String> {
-        self.0.start(op, input)
+    fn jobs(&self) -> &'static [tilolang_tilo::engine::JobOp] {
+        use tilolang_tilo::engine::{JobOp, Needs};
+        // A connection holds the database's login, reaches it over the network, and is what the
+        // app's calls read.
+        const NEEDS: Needs = Needs {
+            secret: true,
+            network: true,
+            app_state: true,
+        };
+        const JOBS: &[JobOp] = &[JobOp::new("open", NEEDS), JobOp::new("query", NEEDS)];
+        JOBS
     }
 
-    fn status(&self, job: &str) -> Result<String, String> {
-        self.0.status(job)
+    fn start(
+        &self,
+        job: &str,
+        op: &str,
+        input: &str,
+        moved: tilolang_tilo::engine::JobSink,
+    ) -> Result<(), String> {
+        use tilolang_tilo::engine::State;
+        self.0.start(
+            job,
+            op,
+            input,
+            std::sync::Arc::new(move |word: &str, detail| {
+                moved.moved(State::from_word(word).unwrap_or(State::Running), detail);
+            }),
+        )
     }
 
     fn cancel(&self, job: &str) -> bool {

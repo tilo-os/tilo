@@ -7,7 +7,7 @@ use serde_json::json;
 use tilo_actions::remote::{ActionCallError, InvocationReceipt, ReceiptStatus};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 
-use super::{handler_address, handler_invocation, job_outcome, update_of};
+use super::{handler_address, handler_arguments, handler_invocation, job_outcome, update_of};
 use crate::apps::collab_app_broker::AppBrokerState;
 
 /// This broker's state, with no transport and no workers.
@@ -91,6 +91,27 @@ fn a_handler_names_an_action_and_its_arguments() {
     );
     assert_eq!(handler_address(&json!({"resource": "x"})), None);
     assert_eq!(handler_address(&json!(null)), None);
+}
+
+#[test]
+fn a_handler_is_handed_the_jobs_record_where_the_app_left_it() {
+    let record = json!({"id": "1", "state": "done", "detail": {"done": 4, "total": 4}});
+    let arguments = handler_arguments(
+        &json!({
+            "resource": "so.tilo.painter",
+            "action": "finished",
+            "arguments": {"j": {"$job": null}, "words": "painted"},
+        }),
+        &record,
+    );
+    assert_eq!(
+        arguments["j"], record,
+        "the job's record fills the slot the app left"
+    );
+    assert_eq!(
+        arguments["words"], "painted",
+        "the app's own arguments stay"
+    );
 }
 
 #[test]

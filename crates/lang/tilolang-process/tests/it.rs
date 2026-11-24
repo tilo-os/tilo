@@ -9,5 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
+mod engine_host;
 mod process;
 mod workspace_mail;

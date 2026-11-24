@@ -236,6 +236,103 @@ fn media_of(name: &str) -> &'static str {
     }
 }
 
+/// Photos' engine over the app's content store and the device's preview cache: an import is a job
+/// of the device's, which runs in the app's own process (it writes into the app's content store).
+struct Engine {
+    store: ContentStore,
+    previews: Option<Previews>,
+    /// The import each running job is, by the job's path: what a stop reaches.
+    imports: Mutex<BTreeMap<String, String>>,
+}
+
+/// Register Photos' engine over the app's content store `store` and the device's preview cache.
+pub fn register(store: &ContentStore, previews: Option<Previews>) {
+    tilolang_tilo::engine::register(
+        APP,
+        Arc::new(Engine {
+            store: store.clone(),
+            previews,
+            imports: Mutex::new(BTreeMap::new()),
+        }),
+    );
+}
+
+impl tilolang_tilo::engine::Provider for Engine {
+    fn jobs(&self) -> &'static [tilolang_tilo::engine::JobOp] {
+        // An import keeps what it reads in the app's content store.
+        const JOBS: &[tilolang_tilo::engine::JobOp] = &[tilolang_tilo::engine::JobOp::new(
+            "import",
+            tilolang_tilo::engine::Needs::APP_STATE,
+        )];
+        JOBS
+    }
+
+    fn call(&self, op: &str, _input: &str) -> Result<String, String> {
+        Err(format!("`{op}` is no op Photos answers on this device"))
+    }
+
+    fn start(
+        &self,
+        job: &str,
+        op: &str,
+        input: &str,
+        moved: tilolang_tilo::engine::JobSink,
+    ) -> Result<(), String> {
+        let said = start(
+            self.store.clone(),
+            self.previews.clone(),
+            op,
+            input,
+            Arc::new(Moves(moved)),
+        )?;
+        let import = serde_json::from_str::<serde_json::Value>(&said)
+            .ok()
+            .and_then(|json| json.get("job")?.as_str().map(str::to_owned))
+            .ok_or_else(|| format!("the import named no job: {said}"))?;
+        self.imports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(job.to_owned(), import);
+        Ok(())
+    }
+
+    fn cancel(&self, job: &str) -> bool {
+        let import = self
+            .imports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(job);
+        import.is_some_and(|import| cancel(&import))
+    }
+}
+
+/// An import's records, told as the job's moves: what it read so far is the move's detail.
+struct Moves(tilolang_tilo::engine::JobSink);
+
+impl Push for Moves {
+    fn frame(&self, _frame: tilolang_tilo::runtime::host_work::Frame) {}
+
+    fn state(&self, _slot: &str, state: &str) {
+        let detail: serde_json::Value = serde_json::from_str(state).unwrap_or_else(
+            |why| json!({ "why": format!("the import said what it could not: {why}") }),
+        );
+        let word = detail
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("running");
+        let state = match word {
+            "done" => tilolang_tilo::engine::State::Done,
+            "stopped" => tilolang_tilo::engine::State::Cancelled,
+            _ => tilolang_tilo::engine::State::Running,
+        };
+        self.0.moved(state, detail);
+    }
+
+    fn ended(&self, slot: &str, state: &str) {
+        self.state(slot, state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

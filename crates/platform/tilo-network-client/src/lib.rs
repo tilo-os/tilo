@@ -24,7 +24,6 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC};
 use serde::Deserialize;
 use tilo_secrets::{PutOptions, SecretStore};
 
-
 /// The longest one request may take. A server that never answers is a failure with a reason,
 /// not a job that waits forever.
 pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -169,7 +168,7 @@ fn store(app: &str) -> SecretStore {
 ///
 /// The device has no secret store it may write to.
 pub fn keep_credential(app: &str, value: &str) -> Result<String, String> {
-    let reference = fresh(job_counter());
+    let reference = fresh_reference();
     store(app)
         .put_blocking(&reference, value.as_bytes(), PutOptions::default())
         .map_err(|error| format!("this device keeps no credentials: {error}"))?;
@@ -303,32 +302,32 @@ pub fn build_outgoing(app: &str, ask: &Ask) -> Result<Outgoing, String> {
     })
 }
 
-/// How a job is doing, as the app reads it.
+/// Where a job tells each move it makes: the state's word (`running`, `done`, `failed`,
+/// `cancelled`) and the job's own fields (`answer`, `error`).
+pub type Moved = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
+/// One request on its way, telling each move it makes.
 struct Job {
     cancel: Arc<AtomicBool>,
-    answer: Mutex<Option<Result<serde_json::Value, String>>>,
-    cancelled: AtomicBool,
+    moved: Moved,
 }
 
-fn jobs() -> &'static Mutex<std::collections::BTreeMap<String, Arc<Job>>> {
-    static JOBS: OnceLock<Mutex<std::collections::BTreeMap<String, Arc<Job>>>> = OnceLock::new();
-    JOBS.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
-}
-
-fn job_counter() -> u64 {
+/// A credential's reference: the moment and a count together, unique on a device across
+/// restarts.
+fn fresh_reference() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| {
             u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
         });
-    // The moment and the count together: unique on a device across restarts.
     let count = NEXT.fetch_add(1, Ordering::Relaxed);
-    at.saturating_mul(1000).saturating_add(count)
+    format!("api-{}", at.saturating_mul(1000).saturating_add(count))
 }
 
-fn fresh(n: u64) -> String {
-    format!("api-{n}")
+fn jobs() -> &'static Mutex<std::collections::BTreeMap<String, Arc<Job>>> {
+    static JOBS: OnceLock<Mutex<std::collections::BTreeMap<String, Arc<Job>>>> = OnceLock::new();
+    JOBS.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
 }
 
 /// One `engine.call`: what is answered now. `send` sends a request and answers its response,
@@ -371,12 +370,13 @@ pub fn call(app: &str, op: &str, input: &str) -> Result<String, String> {
     }
 }
 
-/// One `engine.start`: a request on its way, answered with the job's id.
+/// One `engine.start`: a request on its way as the job `id`, which tells each move it makes to
+/// `moved`.
 ///
 /// # Errors
 ///
 /// The op is unknown, the request does not read, or the device could not start it.
-pub fn start(app: &str, op: &str, input: &str) -> Result<String, String> {
+pub fn start(app: &str, id: &str, op: &str, input: &str, moved: Moved) -> Result<(), String> {
     if op != "send" {
         return Err(format!("`{op}` is no op this device runs for {app}"));
     }
@@ -385,76 +385,46 @@ pub fn start(app: &str, op: &str, input: &str) -> Result<String, String> {
     let outgoing = build_outgoing(app, &ask)?;
     let job = Arc::new(Job {
         cancel: Arc::new(AtomicBool::new(false)),
-        answer: Mutex::new(None),
-        cancelled: AtomicBool::new(false),
+        moved,
     });
-    let id = fresh(job_counter());
     jobs()
         .lock()
         .map_err(|_| "the job table is unreadable".to_owned())?
-        .insert(id.clone(), Arc::clone(&job));
+        .insert(id.to_owned(), Arc::clone(&job));
+    (job.moved)("running", serde_json::json!({ "answer": "", "error": "" }));
     let worker = Arc::clone(&job);
+    let named = id.to_owned();
     std::thread::Builder::new()
         .name(format!("api-client {id}"))
         .spawn(move || {
             let answer = send(&outgoing, &worker.cancel);
-            if worker.cancel.load(Ordering::Acquire) {
-                worker.cancelled.store(true, Ordering::Release);
+            if let Ok(mut known) = jobs().lock() {
+                known.remove(&named);
             }
-            if let Ok(mut slot) = worker.answer.lock() {
-                *slot = Some(answer);
+            let (state, answer, error) = if worker.cancel.load(Ordering::Acquire) {
+                (
+                    "cancelled",
+                    String::new(),
+                    "The request was cancelled.".to_owned(),
+                )
+            } else {
+                match answer {
+                    Ok(value) => ("done", value.to_string(), String::new()),
+                    Err(error) => ("failed", String::new(), error),
+                }
+            };
+            (worker.moved)(
+                state,
+                serde_json::json!({ "answer": answer, "error": error }),
+            );
+        })
+        .map_err(|error| {
+            if let Ok(mut known) = jobs().lock() {
+                known.remove(id);
             }
-        })
-        .map_err(|error| format!("this device could not start the request: {error}"))?;
-    Ok(id)
-}
-
-/// How far the job `job` has got, as JSON: its state and what it answered.
-///
-/// # Errors
-///
-/// No such job on this device.
-pub fn status(job: &str) -> Result<String, String> {
-    let found = jobs()
-        .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?
-        .get(job)
-        .cloned();
-    let Some(job) = found else {
-        return Err(format!("no job `{job}` runs on this device"));
-    };
-    if job.cancelled.load(Ordering::Acquire) {
-        return Ok(serde_json::json!({
-            "state": "cancelled",
-            "answer": "",
-            "error": "The request was cancelled.",
-        })
-        .to_string());
-    }
-    let answer = job
-        .answer
-        .lock()
-        .map_err(|_| "the job is unreadable".to_owned())?;
-    match answer.as_ref() {
-        None => Ok(serde_json::json!({
-            "state": "running",
-            "answer": "",
-            "error": "",
-        })
-        .to_string()),
-        Some(Ok(value)) => Ok(serde_json::json!({
-            "state": "done",
-            "answer": value.to_string(),
-            "error": "",
-        })
-        .to_string()),
-        Some(Err(error)) => Ok(serde_json::json!({
-            "state": "failed",
-            "answer": "",
-            "error": error,
-        })
-        .to_string()),
-    }
+            format!("this device could not start the request: {error}")
+        })?;
+    Ok(())
 }
 
 /// Stop the job `job`: false when it is not this device's or it had finished.
@@ -465,9 +435,6 @@ pub fn cancel(job: &str) -> bool {
     let Some(state) = known.get(job) else {
         return false;
     };
-    if state.answer.lock().is_ok_and(|answer| answer.is_some()) {
-        return false;
-    }
     state.cancel.store(true, Ordering::Release);
     true
 }
@@ -722,7 +689,11 @@ mod tests {
         ] {
             let mut ask = ask("GET", base);
             ask.params = vec![("q".into(), "rust lang".into())];
-            assert_eq!(build_outgoing(APP, &ask).unwrap().url, expected, "base: {base}");
+            assert_eq!(
+                build_outgoing(APP, &ask).unwrap().url,
+                expected,
+                "base: {base}"
+            );
 
             ask.params.clear();
             assert_eq!(build_outgoing(APP, &ask).unwrap().url, base);
@@ -815,10 +786,10 @@ mod tests {
 
     #[test]
     fn a_job_is_unknown_until_it_starts_and_a_bad_op_is_refused() {
-        assert!(status("no-such-job").is_err());
+        let unheard: Moved = Arc::new(|_, _| {});
         assert!(!cancel("no-such-job"));
-        assert!(start(APP, "paint", "{}").is_err());
-        assert!(start(APP, "send", "not json").is_err());
+        assert!(start(APP, "job-1", "paint", "{}", Arc::clone(&unheard)).is_err());
+        assert!(start(APP, "job-2", "send", "not json", unheard).is_err());
         assert!(call(APP, "paint", "{}").is_err());
     }
 
@@ -826,7 +797,10 @@ mod tests {
     fn a_credential_is_kept_and_forgotten_on_this_device() {
         tilo_secrets::keep_in_memory_for_process();
         let reference = keep_credential(APP, "private-token").unwrap();
-        assert_eq!(credential(APP, &reference).as_deref(), Some("private-token"));
+        assert_eq!(
+            credential(APP, &reference).as_deref(),
+            Some("private-token")
+        );
         forget_credential(APP, &reference).unwrap();
         assert_eq!(credential(APP, &reference), None);
 
@@ -1017,6 +991,9 @@ mod fetch_tests {
             std::time::Duration::from_millis(200),
         );
         let reason = answer.expect_err("no answer");
-        assert!(reason.contains("no answer") || reason.contains("could not reach"), "{reason}");
+        assert!(
+            reason.contains("no answer") || reason.contains("could not reach"),
+            "{reason}"
+        );
     }
 }

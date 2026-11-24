@@ -47,7 +47,10 @@ fn a_storage_report_keeps_its_provenance_exact_bytes_and_arithmetic() {
     assert_eq!(answer["stored"], REPORT);
     let report = &answer["facts"];
     assert_eq!(report["model"], "Synthetic/Contract-Example");
-    assert_eq!(report["revision"], "ad835591193cff5d2a231485cab35f8654c71287");
+    assert_eq!(
+        report["revision"],
+        "ad835591193cff5d2a231485cab35f8654c71287"
+    );
     assert_eq!(report["packed_weight_bytes"], 512);
     assert!(
         report["not_estimated"]
@@ -109,7 +112,10 @@ fn every_evidence_class_of_hardware_receipt_is_taken_in() {
         (RMS, "bounded_fused_scalar_rms_norm"),
         (SILU, "bounded_scalar_silu_libm_characterization"),
         (DELTA, "bounded_scalar_gated_delta_state_transition"),
-        (DELTA_GEOMETRY, "bounded_scalar_gated_delta_state_transition"),
+        (
+            DELTA_GEOMETRY,
+            "bounded_scalar_gated_delta_state_transition",
+        ),
         (SOFTMAX, "bounded_scalar_masked_softmax_characterization"),
     ] {
         let answer = imported(json);
@@ -197,7 +203,10 @@ fn device_paths_never_reach_the_workspace() {
     assert!(!stored.contains("/private/device"), "{stored}");
     assert!(!answer["facts"].to_string().contains("/private/device"));
     let failure = answer["facts"]["receipt"]["failure"].as_str().unwrap();
-    assert!(failure.contains("<input directory>/sample.json"), "{failure}");
+    assert!(
+        failure.contains("<input directory>/sample.json"),
+        "{failure}"
+    );
     assert!(failure.contains("<run directory>/run.log"), "{failure}");
 }
 
@@ -210,7 +219,12 @@ fn a_cpu_receipt_is_normalized_with_its_observation_summary() {
         "47d47caf9ce1a08e1146eea8531a591dcd95010ef8edab7617d6743ba9e90eb2"
     );
     assert_eq!(summary["observations"][0]["kind"], "rms_norm");
-    assert!(!summary["local_source_sha256"].as_array().unwrap().is_empty());
+    assert!(
+        !summary["local_source_sha256"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let stored = imported(RMS)["stored"].as_str().unwrap().to_owned();
     assert!(!stored.contains("/lib64/"), "{stored}");
     for json in [SILU, DELTA, SOFTMAX] {
@@ -224,7 +238,9 @@ fn a_cpu_receipt_is_normalized_with_its_observation_summary() {
 #[test]
 fn a_cpu_claim_that_contradicts_its_own_observations_is_refused() {
     let cases = [
-        changed(RMS, |receipt| receipt["status"] = serde_json::json!("failed")),
+        changed(RMS, |receipt| {
+            receipt["status"] = serde_json::json!("failed")
+        }),
         changed(RMS, |receipt| {
             receipt["primary_revision"] = serde_json::json!("main");
         }),
@@ -330,7 +346,10 @@ fn a_reported_flow_keeps_its_placements_and_their_macros() {
     assert_eq!(placement["dbu_per_micron"], 1000);
     assert_eq!(placement["total_instances"], 1);
     assert_eq!(placement["macros"][0]["name"], "SRAM0");
-    assert_eq!(placement["macros"][0]["bounds_dbu"], serde_json::json!([0, 0, 1000, 2000]));
+    assert_eq!(
+        placement["macros"][0]["bounds_dbu"],
+        serde_json::json!([0, 0, 1000, 2000])
+    );
 }
 
 #[test]
@@ -350,7 +369,10 @@ fn a_placement_that_leaves_the_die_or_loses_an_instance_is_refused() {
 #[test]
 fn an_architecture_study_keeps_its_stage_links_and_variants() {
     let facts = document(CHECKPOINT);
-    assert_eq!(facts["receipt"]["evidence"], "checkpoint_tile_integer_contract");
+    assert_eq!(
+        facts["receipt"]["evidence"],
+        "checkpoint_tile_integer_contract"
+    );
     assert!(
         facts["receipt"]["checks"]
             .as_array()
@@ -393,10 +415,7 @@ fn an_architecture_study_keeps_its_stage_links_and_variants() {
         receipt["failure_stage"] = serde_json::Value::Null;
     });
     let facts = document(&json);
-    assert_eq!(
-        facts["receipt"]["architecture_study"]["stage"],
-        "prepare"
-    );
+    assert_eq!(facts["receipt"]["architecture_study"]["stage"], "prepare");
     assert_eq!(
         facts["receipt"]["architecture_study"]["expected_comparison_words"],
         64
@@ -439,7 +458,8 @@ fn a_superblock_receipt_refuses_incomplete_success() {
     let sources = facts["receipt"]["source_sha256"].as_array().unwrap();
     assert!(sources.iter().any(|source| {
         source["name"] == "harness"
-            && source["digest"] == "53d12021f98728cd7e92147cecf8b7c2dc5d69d74467b912e33d46b1b1f8c7bc"
+            && source["digest"]
+                == "53d12021f98728cd7e92147cecf8b7c2dc5d69d74467b912e33d46b1b1f8c7bc"
     }));
     refused(&changed(SUPERBLOCK, |receipt| {
         receipt["primary_source_sha256"]["ggml-common.h"] = serde_json::json!("a".repeat(64));
@@ -511,12 +531,7 @@ fn every_operator_offers_the_typed_ports_its_shape_gives_it() {
             node("x", OperatorKind::Input, &[4, 8], None),
             node("w", OperatorKind::NormWeightInput, &[8], None),
             node("rms", OperatorKind::RmsNorm, &[4, 8], None),
-            node(
-                "linear",
-                OperatorKind::LinearProjection,
-                &[4, 8],
-                Some(16),
-            ),
+            node("linear", OperatorKind::LinearProjection, &[4, 8], Some(16)),
         ],
         &[],
     );
@@ -618,8 +633,7 @@ fn a_connection_identity_is_its_content_and_does_not_move() {
     let second = resolved(&nodes, &[link]);
     assert_eq!(first["active"][0]["id"], second["active"][0]["id"]);
     assert_eq!(
-        first["active"][0]["id"],
-        first["candidates"][0]["id"],
+        first["active"][0]["id"], first["candidates"][0]["id"],
         "the active edge is the candidate that holds"
     );
 }
@@ -683,11 +697,8 @@ fn an_operator_no_design_can_hold_is_refused() {
 }
 
 #[test]
-fn an_unknown_ask_is_refused_and_no_ask_is_a_job() {
+fn an_unknown_ask_is_refused() {
     assert!(call("paint", "{}").is_err());
-    assert!(crate::start("import", "{}").is_err());
-    assert!(crate::status("job-1").is_err());
-    assert!(!crate::cancel("job-1"));
 }
 
 #[test]

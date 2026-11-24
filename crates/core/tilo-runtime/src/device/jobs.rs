@@ -151,9 +151,22 @@ impl DeviceJobs {
         let _ = self.processes.set(processes);
     }
 
-    /// The job `job` moved, as `process` reported it. A job never leaves an ended state, so a
-    /// move that arrives late cannot take back an answer a person already saw.
+    /// The job `job` moved, as `process` reported it of its own app. A job never leaves an ended
+    /// state, so a move that arrives late cannot take back an answer a person already saw.
     pub fn moved(&self, process: &ProcessKey, job: &str, record: Value) {
+        self.moved_for(process, (&process.workspace, &process.app), job, record);
+    }
+
+    /// The job `job` moved, as `process` reported it for the app `owner` (`(workspace, app)`)
+    /// the daemon admitted it for: the device's engine host runs every app's shared work, and
+    /// each job it runs is that app's.
+    pub fn moved_for(
+        &self,
+        process: &ProcessKey,
+        (workspace, app): (&str, &str),
+        job: &str,
+        record: Value,
+    ) {
         if job.is_empty() {
             tracing::warn!(
                 workspace = %process.workspace,
@@ -188,11 +201,8 @@ impl DeviceJobs {
             // Whose job it is comes from the process that runs it, never from what it says of
             // itself.
             record.insert("id".to_owned(), Value::String(job.to_owned()));
-            record.insert("app".to_owned(), Value::String(process.app.clone()));
-            record.insert(
-                "workspace".to_owned(),
-                Value::String(process.workspace.clone()),
-            );
+            record.insert("app".to_owned(), Value::String(app.to_owned()));
+            record.insert("workspace".to_owned(), Value::String(workspace.to_owned()));
             let value = Value::Object(record);
             let state = state_of(&value).to_owned();
             let ended = ended_state(&state);

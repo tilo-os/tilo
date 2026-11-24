@@ -1,11 +1,12 @@
 //! The broker's end of an instance's connections, for the host's tests and examples: a fake in
 //! place of the session's broker that admits the routes a connection joins, keeps what it sends
 //! where the test reads it, answers its resource commands from the workspace's store, relays a
-//! presence frame to the connections joined on its route, and hands each connection the
-//! workspace's member list, as the broker does.
+//! presence frame to the connections joined on its route, hands each connection the
+//! workspace's member list, and answers reads of a device's records (its engine jobs) as the
+//! record API does, a held read once the record moves, as the broker does.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use collab_types::document::ResourceType;
@@ -157,6 +158,13 @@ pub struct Directory {
     pub asked: Vec<ActionDirectoryRequest>,
 }
 
+/// A device record: the space it is in (`devices/<device>`), its app and its id.
+type DeviceRecord = (String, String, String);
+
+/// A read of a device record held until it moves: where it is answered, its correlation, the
+/// record and the revision the reader read.
+type HeldRead = (Inbox, u64, DeviceRecord, Option<String>);
+
 /// The connections of one workspace, as the broker holds them: the workspace's store every
 /// connection reads and writes, and the workspace's members, people and software, with their
 /// names, which every connection is handed when it joins and whenever the list changes.
@@ -167,6 +175,15 @@ pub struct Bus {
     members: RefCell<Vec<MemberRow>>,
     /// The workspace's one store.
     workspace: Rc<Workspace>,
+    /// The device records the test publishes (`devices/<device>`, its app, its record), each as
+    /// it stands and the revision it stands at.
+    device_records: RefCell<BTreeMap<DeviceRecord, (serde_json::Value, u64)>>,
+    /// The reads of a device record held until it moves past what the reader read: where each is
+    /// answered, its correlation, the record and the revision it read.
+    held_reads: RefCell<Vec<HeldRead>>,
+    /// What a reader's loop is woken by once its read of a device record is answered, as a
+    /// connection wakes it when an answer arrives.
+    answered: RefCell<Option<tilolang_tilo::background::Waker>>,
 }
 
 /// One member of a test's workspace: who, what they are called, and the picture they set.
@@ -181,6 +198,91 @@ impl Bus {
     #[must_use]
     pub fn workspace(&self) -> Rc<Workspace> {
         Rc::clone(&self.workspace)
+    }
+
+    /// The device record `record` of `app` in `space` (`devices/<device>`) is `value` now, as the
+    /// device publishes it: each read held for it is answered.
+    pub fn publish_device_record(
+        &self,
+        space: &str,
+        app: &str,
+        record: &str,
+        value: serde_json::Value,
+    ) {
+        let key = (space.to_owned(), app.to_owned(), record.to_owned());
+        {
+            let mut records = self.device_records.borrow_mut();
+            let revision = records
+                .get(&key)
+                .map_or(1, |(_, revision)| revision.saturating_add(1));
+            records.insert(key.clone(), (value, revision));
+        }
+        let held: Vec<_> = {
+            let mut reads = self.held_reads.borrow_mut();
+            let (due, kept) = std::mem::take(&mut *reads)
+                .into_iter()
+                .partition(|(_, _, read, _)| *read == key);
+            *reads = kept;
+            due
+        };
+        for (inbox, correlation, key, _) in held {
+            self.answer_device_read(&inbox, correlation, &key);
+        }
+    }
+
+    /// Wake the readers' loops with `wake` whenever a read of a device record is answered.
+    pub fn wake_on_answers(&self, wake: tilolang_tilo::background::Waker) {
+        *self.answered.borrow_mut() = Some(wake);
+    }
+
+    /// Read the device record `read` asks for, into `inbox`: held while it stands at the
+    /// revision the reader read, when the reader waits.
+    fn read_device_record(
+        &self,
+        inbox: &Inbox,
+        correlation: u64,
+        read: &tilo_actions::remote::ResourceReadRequest,
+    ) {
+        let key = (
+            read.workspace.clone(),
+            read.app.clone(),
+            read.record.clone(),
+        );
+        let stands = self
+            .device_records
+            .borrow()
+            .get(&key)
+            .map(|(_, revision)| revision.to_string());
+        if read.wait_ms.is_some() && (stands.is_none() || stands == read.after) {
+            self.held_reads.borrow_mut().push((
+                Rc::clone(inbox),
+                correlation,
+                key,
+                read.after.clone(),
+            ));
+            return;
+        }
+        self.answer_device_read(inbox, correlation, &key);
+    }
+
+    /// Answer the read `correlation` of the device record `key` into `inbox`, as it stands.
+    fn answer_device_read(&self, inbox: &Inbox, correlation: u64, key: &DeviceRecord) {
+        let reading = match self.device_records.borrow().get(key) {
+            Some((value, revision)) => serde_json::json!({
+                "revision": revision.to_string(),
+                "records": [{ "app": key.1, "record": key.2, "value": value }],
+            }),
+            None => serde_json::json!({ "revision": "0", "records": [] }),
+        };
+        inbox.borrow_mut().push_back(CollabEvent::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::ResourceReading {
+                correlation,
+                result: Ok(reading.to_string()),
+            },
+        });
+        if let Some(wake) = &*self.answered.borrow() {
+            wake();
+        }
     }
 
     /// The workspace has the member `who`, named `name`: every connection is told.
@@ -451,6 +553,14 @@ impl PeerTransport for Broker {
                     self.bus
                         .present(&self.route, &self.inbox, &self.person, key, &payload);
                 }
+            }
+            CollabRequest::RemoteAction {
+                message:
+                    tilo_actions::remote::RemoteActionMessage::ResourceRead {
+                        correlation, read, ..
+                    },
+            } if read.workspace.starts_with("devices/") => {
+                self.bus.read_device_record(&self.inbox, *correlation, read);
             }
             _ => {}
         }

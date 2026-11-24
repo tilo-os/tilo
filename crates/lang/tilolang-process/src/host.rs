@@ -24,6 +24,8 @@ use tilolang_process::wait::{Wake, wait};
 static API: OnceLock<Arc<Descriptor>> = OnceLock::new();
 
 pub(super) fn main() -> std::process::ExitCode {
+    // The engines this host answers its apps with, registered before any of them asks.
+    tilolang_process::engines::register_all();
     tracing_subscriber::fmt()
         // RUST_LOG, with the launch timing lines kept, as the session's own log keeps them.
         .with_env_filter(tracing_subscriber::EnvFilter::new(
@@ -141,10 +143,8 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         Err(error) => return (Exit::failed(format!("no wake: {error}")), Some(api)),
     };
     keep_compiled();
-    // The engines this host answers its apps by name: the database engine a package's
-    // `engine.call` and jobs reach (`db_engine`).
-    #[cfg(feature = "app-launch")]
-    tilolang_process::db_engine::register();
+    // Jobs this host runs or starts are the device's: their moves go to it on the api.
+    tilolang_process::engines::attach(Arc::clone(&api), wake.waker());
     let stop = stop_watching();
     // The platform's published resources (the device, Settings, the workspace's activity) are
     // read from the session's services, which this process's connection reaches.
@@ -171,7 +171,8 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
                 tracing::warn!(%error, instance, "the session was not told an instance ended");
             }
         }
-        if api.is_none() && host.is_empty() {
+        // A job the device holds this process for finishes first: its record must say how.
+        if api.is_none() && host.is_empty() && !tilolang_process::engines::busy() {
             let exit = match api_failed {
                 Some(reason) => Exit::failed(reason),
                 None => Exit {
@@ -264,13 +265,11 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
                 tracing::error!(task = request.task, %error, "a task did not start");
             }
         }
-        ToProcess::CancelJob { job } => {
-            // The call that started the job was cancelled: its engine stops it, and the job
-            // reads cancelled over the link.
-            if !tilolang_tilo::engine::stop(&job) {
-                tracing::debug!(job, "a cancelled job had already ended");
-            }
-        }
+        // The call that started the job was cancelled, or its app stopped it: its engine stops
+        // it, and the job reads cancelled over the link.
+        ToProcess::CancelJob { job } => tilolang_process::engines::stop(&job),
+        ToProcess::JobsUnder(under) => tilolang_process::engines::jobs_under(under),
+        ToProcess::Engine(job) => tilolang_process::engines::run(&job),
         ToProcess::Finish => {}
         other @ (ToProcess::Window { .. } | ToProcess::Patch { .. }) => {
             tracing::error!(

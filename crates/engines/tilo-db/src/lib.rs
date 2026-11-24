@@ -11,7 +11,7 @@
 )]
 //!
 //! An app runs sandboxed with no driver of its own, so it asks the device by name: `engine.call`
-//! for a connection, a catalog or one page of a table, and `engine.start`/`engine.status`/
+//! for a connection, a catalog or one page of a table, and `engine.start`/
 //! `engine.cancel` for a statement that may take a while and can be stopped. Each answer is JSON
 //! the app reads into its own records ([`model::ResultAnswer`], [`model::DatabaseSchema`]), so
 //! one engine serves every app that runs SQL and none of the words are the engine's.
@@ -50,7 +50,6 @@ pub struct Database(Arc<Inner>);
 struct Inner {
     live: Mutex<Live>,
     next_connection: AtomicU64,
-    next_job: AtomicU64,
 }
 
 #[derive(Default)]
@@ -59,8 +58,13 @@ struct Live {
     jobs: HashMap<String, Job>,
 }
 
-/// A statement running off the app's thread, as [`Database::status`] answers it.
+/// Where a job tells each move it makes: the state's word (`running`, `done`, `failed`,
+/// `cancelled`) and the job's own fields (`result`, `error`).
+pub type Moved = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
+/// A statement running off the app's thread, telling each move it makes.
 struct Job {
+    moved: Moved,
     state: JobState,
     /// What the statement answered, as JSON, once it is `done`.
     answer: String,
@@ -78,6 +82,16 @@ enum JobState {
     Done,
     Failed,
     Cancelled,
+}
+
+impl Job {
+    /// Tell how the job stands now.
+    fn tell(&self) {
+        (self.moved)(
+            self.state.key(),
+            serde_json::json!({ "result": self.answer, "error": self.error }),
+        );
+    }
 }
 
 impl JobState {
@@ -122,18 +136,18 @@ impl Database {
         }
     }
 
-    /// One request started as a job: a connection being opened, which may wait on a server, or
-    /// a statement, which may run long. Both answer with the job's id.
+    /// One request started as the job `id`: a connection being opened, which may wait on a
+    /// server, or a statement, which may run long. Each move is told to `moved`.
     ///
     /// # Errors
     ///
     /// The op is unknown, the input does not read, the engine is not one this device runs, or
     /// the connection is gone.
-    pub fn start(&self, op: &str, input: &str) -> Result<String, String> {
+    pub fn start(&self, id: &str, op: &str, input: &str, moved: Moved) -> Result<(), String> {
         match op {
             "open" => {
                 let profile = open_profile(input)?;
-                self.job("tilo-db-open", move |database, job| {
+                self.job(id, moved, "tilo-db-open", move |database, job| {
                     run_open(&database, &job, &profile);
                 })
             }
@@ -145,7 +159,7 @@ impl Database {
                 }
                 let ask: Ask = serde_json::from_str(input).map_err(|error| error.to_string())?;
                 let engine = self.engine_of(ask.connection)?;
-                self.job("tilo-db-query", move |database, job| {
+                self.job(id, moved, "tilo-db-query", move |database, job| {
                     run_job(&database, &job, &engine, &ask.sql);
                 })
             }
@@ -157,22 +171,24 @@ impl Database {
     /// the app never waits on the device.
     fn job(
         &self,
+        id: &str,
+        moved: Moved,
         thread: &str,
         work: impl FnOnce(Database, String) + Send + 'static,
-    ) -> Result<String, String> {
-        let job = format!("db-job-{}", self.0.next_job.fetch_add(1, Ordering::Relaxed) + 1);
+    ) -> Result<(), String> {
+        let job = id.to_owned();
         {
             let mut live = self.live();
-            live.jobs.insert(
-                job.clone(),
-                Job {
-                    state: JobState::Running,
-                    answer: String::new(),
-                    error: String::new(),
-                    cancel: None,
-                    stopped: Arc::new(AtomicBool::new(false)),
-                },
-            );
+            let held = Job {
+                moved,
+                state: JobState::Running,
+                answer: String::new(),
+                error: String::new(),
+                cancel: None,
+                stopped: Arc::new(AtomicBool::new(false)),
+            };
+            held.tell();
+            live.jobs.insert(job.clone(), held);
         }
         let held = job.clone();
         let database = self.clone();
@@ -184,26 +200,7 @@ impl Database {
             live.jobs.remove(&job);
             return Err(format!("the job could not start: {error}"));
         }
-        Ok(format!(r#"{{"job":"{job}"}}"#))
-    }
-
-    /// How far `job` has got, as `{state, result, error}`; a job this device does not run is
-    /// `unknown`, never another app's answer.
-    ///
-    /// # Errors
-    ///
-    /// Never for a job name it does not know: the app reads `unknown` and keeps what it shows.
-    pub fn status(&self, job: &str) -> Result<String, String> {
-        let live = self.live();
-        let Some(held) = live.jobs.get(job) else {
-            return Ok(r#"{"state":"unknown","result":"","error":""}"#.to_owned());
-        };
-        Ok(serde_json::json!({
-            "state": held.state.key(),
-            "result": held.answer,
-            "error": held.error,
-        })
-        .to_string())
+        Ok(())
     }
 
     /// Stop `job`: false when this device does not run it or it had finished.
@@ -220,6 +217,7 @@ impl Database {
             cancel.request();
         }
         held.state = JobState::Cancelled;
+        held.tell();
         true
     }
 
@@ -385,7 +383,7 @@ impl Database {
     }
 }
 
-/// Runs one statement on its own thread and keeps what it answered for [`Database::status`].
+/// Runs one statement on its own thread and tells what it answered.
 fn run_job(database: &Database, job: &str, engine: &Arc<Mutex<LiveEngine>>, sql: &str) {
     let stopped = {
         let live = database.live();
@@ -403,7 +401,13 @@ fn run_job(database: &Database, job: &str, engine: &Arc<Mutex<LiveEngine>>, sql:
     }
     let stopped = stopped.unwrap_or_default();
     if stopped.load(Ordering::Relaxed) {
-        finish(database, job, JobState::Cancelled, String::new(), String::new());
+        finish(
+            database,
+            job,
+            JobState::Cancelled,
+            String::new(),
+            String::new(),
+        );
         return;
     }
     match engine.run(sql) {
@@ -505,11 +509,12 @@ fn open_profile(input: &str) -> Result<Profile, String> {
 
 fn finish(database: &Database, job: &str, state: JobState, answer: String, error: String) {
     let mut live = database.live();
-    if let Some(held) = live.jobs.get_mut(job) {
+    if let Some(mut held) = live.jobs.remove(job) {
         held.state = state;
         held.answer = answer;
         held.error = error;
         held.cancel = None;
+        held.tell();
     }
 }
 
@@ -529,8 +534,6 @@ mod tests {
         assert!(opened.contains("\"connection\""), "{opened}");
         database
     }
-
-
 
     tilo_test_env::scenario! {
         fn the_database_engine_opens_a_catalog_and_runs_a_statement;
@@ -560,11 +563,12 @@ mod tests {
         phase a_connection_opens_as_a_job_the_app_asks_about;
         {
             let database = Database::new();
-            let started = database
-                .start("open", r#"{"engine":"sqlite","file_path":":memory:","sample":true}"#)
-                .unwrap();
-            let job = job_of(&started);
-            let answer = wait_for(&database, &job);
+            let (_, moves) = begin(
+                &database,
+                "open",
+                r#"{"engine":"sqlite","file_path":":memory:","sample":true}"#,
+            );
+            let answer = wait_for(&moves);
             let opened: serde_json::Value = serde_json::from_str(&answer).unwrap();
             let connection = opened["connection"].as_u64().unwrap_or(0);
             assert!(connection > 0, "{opened}");
@@ -596,15 +600,13 @@ mod tests {
                     r#"{"engine":"sqlite","file_path":":memory:","sample":true}"#,
                 )
                 .unwrap();
-            let started = database
-                .start(
-                    "query",
-                    &format!(r#"{{"connection":{},"sql":"SELECT name FROM artists ORDER BY name LIMIT 3"}}"#,
-                        connection_id(&opened)),
-                )
-                .unwrap();
-            let job = job_of(&started);
-            let answer = wait_for(&database, &job);
+            let (_, moves) = begin(
+                &database,
+                "query",
+                &format!(r#"{{"connection":{},"sql":"SELECT name FROM artists ORDER BY name LIMIT 3"}}"#,
+                    connection_id(&opened)),
+            );
+            let answer = wait_for(&moves);
             let result: serde_json::Value = serde_json::from_str(&answer).unwrap();
             assert_eq!(result["is_select"], true);
             assert_eq!(result["columns"][0], "name");
@@ -645,19 +647,15 @@ mod tests {
                 )
                 .unwrap();
             let id = connection_id(&opened);
-            let started = database
-                .start(
-                    "query",
-                    &format!(r#"{{"connection":{id},"sql":"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000000) SELECT sum(x) FROM n"}}"#),
-                )
-                .unwrap();
-            let job = job_of(&started);
+            let (job, moves) = begin(
+                &database,
+                "query",
+                &format!(r#"{{"connection":{id},"sql":"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000000) SELECT sum(x) FROM n"}}"#),
+            );
             assert!(database.cancel(&job), "the statement in flight is stopped");
-            let status = wait_for_state(&database, &job);
+            let status = wait_for_state(&moves);
             assert_eq!(status, "cancelled", "{status}");
-            let unknown: serde_json::Value =
-                serde_json::from_str(&database.status("no-such-job").unwrap()).unwrap();
-            assert_eq!(unknown["state"], "unknown");
+            assert!(!database.cancel("no-such-job"), "a job nobody started is not stopped");
         }
 
         phase an_unreachable_server_fails_honestly_and_a_bad_engine_is_named;
@@ -682,44 +680,62 @@ mod tests {
         parsed["connection"].as_u64().unwrap()
     }
 
-    fn job_of(started: &str) -> String {
-        let parsed: serde_json::Value = serde_json::from_str(started).unwrap();
-        parsed["job"].as_str().unwrap().to_owned()
+    type Moves = std::sync::mpsc::Receiver<(String, serde_json::Value)>;
+
+    /// One job started, with the moves it tells.
+    fn begin(database: &Database, op: &str, input: &str) -> (String, Moves) {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let job = format!("job-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+        let (tell, moves) = std::sync::mpsc::channel();
+        let tell = Mutex::new(tell);
+        database
+            .start(
+                &job,
+                op,
+                input,
+                Arc::new(move |state, detail| {
+                    let _ = tell
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .send((state.to_owned(), detail));
+                }),
+            )
+            .unwrap();
+        (job, moves)
     }
 
-    fn wait_for(database: &Database, job: &str) -> String {
-        for _ in 0..2000 {
-            let status: serde_json::Value =
-                serde_json::from_str(&database.status(job).unwrap()).unwrap();
-            if status["state"] == "done" {
-                return status["result"].as_str().unwrap().to_owned();
+    /// The result a job told once it was done.
+    fn wait_for(moves: &Moves) -> String {
+        loop {
+            let (state, detail) = moves
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the statement finishes");
+            if state == "done" {
+                return detail["result"].as_str().unwrap().to_owned();
             }
-            assert_ne!(status["state"], "failed", "{status}");
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            assert_ne!(state, "failed", "{detail}");
         }
-        panic!("the statement did not finish");
     }
 
-    fn wait_for_state(database: &Database, job: &str) -> String {
-        for _ in 0..4000 {
-            let status: serde_json::Value =
-                serde_json::from_str(&database.status(job).unwrap()).unwrap();
-            if status["state"] != "running" {
-                return status["state"].as_str().unwrap_or_default().to_owned();
+    /// The first state a job told past `running`.
+    fn wait_for_state(moves: &Moves) -> String {
+        loop {
+            let (state, _) = moves
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the statement settles");
+            if state != "running" {
+                return state;
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        panic!("the statement never settled");
     }
 
     /// One statement run as a job and read once it is done.
     fn run_now(database: &Database, connection: u64, sql: &str) -> serde_json::Value {
-        let started = database
-            .start(
-                "query",
-                &serde_json::json!({ "connection": connection, "sql": sql }).to_string(),
-            )
-            .unwrap();
-        serde_json::from_str(&wait_for(database, &job_of(&started))).unwrap()
+        let (_, moves) = begin(
+            database,
+            "query",
+            &serde_json::json!({ "connection": connection, "sql": sql }).to_string(),
+        );
+        serde_json::from_str(&wait_for(&moves)).unwrap()
     }
 }

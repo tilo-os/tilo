@@ -1,16 +1,15 @@
 //! The disk usage analyzer's device work: a folder measured, all the way down.
 //!
 //! An app runs sandboxed and reads no disk of its own, so this crate is what
-//! `so.tilo.disk-usage` reaches through `engine.start`, `engine.status` and `engine.cancel`.
+//! `so.tilo.disk-usage` reaches through `engine.start` and `engine.cancel`.
 //! It registers as that app's engine and answers no other app's asks; every answer is JSON the
 //! package reads into its own records.
 //!
-//! Jobs (`engine.start`), asked about by `engine.status` and stopped by `engine.cancel`:
+//! Jobs (`engine.start`), whose record says how they stand, and stopped by `engine.cancel`:
 //!
 //! | op | asks | answers |
 //! |---|---|---|
-//! | `scan` (start) | `{path}` | `{job}` |
-//! | `status` | the job | `{state, path, bytes, files, total, unreadable, error}` |
+//! | `scan` (start) | `{path}` | the job, `{state, path, bytes, files, total, unreadable, error}` |
 //! | `entries` (call) | `{job}` | `[{name, path, bytes, files}]` |
 //!
 //! `entries` are the folders directly in the measured one, largest first, each with what it
@@ -29,7 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Deserialize;
 use serde_json::json;
-use tilolang_tilo::engine::Provider;
+use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider, State};
 
 use crate::scan::{ScanCancellation, ScanResult};
 
@@ -50,13 +49,10 @@ pub struct DiskUsage {
 
 #[derive(Default)]
 struct Jobs {
-    next: u64,
     running: BTreeMap<String, Job>,
 }
 
 struct Job {
-    /// The folder measured, as the ask named it.
-    path: String,
     scan: Arc<Mutex<Measured>>,
     cancellation: ScanCancellation,
     /// Set once the scan's thread has written its answer.
@@ -65,7 +61,7 @@ struct Job {
     stopped: Arc<AtomicBool>,
 }
 
-/// What a scan has measured, as `status` reads it.
+/// What a scan has measured.
 #[derive(Default)]
 struct Measured {
     bytes: u64,
@@ -89,12 +85,7 @@ fn held<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-impl DiskUsage {
-    fn next_job(jobs: &mut Jobs, name: &str) -> String {
-        jobs.next = jobs.next.saturating_add(1);
-        format!("{name}-{}", jobs.next)
-    }
-}
+impl DiskUsage {}
 
 impl Provider for DiskUsage {
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
@@ -137,7 +128,14 @@ impl Provider for DiskUsage {
         Ok(serde_json::Value::Array(entries).to_string())
     }
 
-    fn start(&self, op: &str, input: &str) -> Result<String, String> {
+    fn jobs(&self) -> &'static [JobOp] {
+        // Its entries are read back by a call once it has ended, so the job runs where the
+        // app's calls are answered: the app's own process.
+        const JOBS: &[JobOp] = &[JobOp::new("scan", Needs::APP_STATE)];
+        JOBS
+    }
+
+    fn start(&self, job: &str, op: &str, input: &str, moved: JobSink) -> Result<(), String> {
         if op != "scan" {
             return Err(format!("`{op}` is no op this device runs"));
         }
@@ -148,10 +146,24 @@ impl Provider for DiskUsage {
         let finished = Arc::new(AtomicBool::new(false));
         let stopped = Arc::new(AtomicBool::new(false));
         let cancellation = ScanCancellation::default();
-        let job = Self::next_job(&mut held(&self.jobs), "scan");
         let (writing, truth) = (Arc::clone(&state), Arc::clone(&state));
         let (done, stop) = (Arc::clone(&finished), Arc::clone(&stopped));
         let worker = cancellation.clone();
+        let (telling, told) = (moved.clone(), moved.clone());
+        let (asked, named) = (ask.path.clone(), ask.path);
+        held(&self.jobs).running.insert(
+            job.to_owned(),
+            Job {
+                scan: state,
+                cancellation,
+                finished,
+                stopped,
+            },
+        );
+        moved.moved(
+            State::Running,
+            json!({ "path": asked, "bytes": 0, "files": 0, "total": 0, "unreadable": 0, "error": "" }),
+        );
         std::thread::Builder::new()
             .name(format!("disk-usage-{job}"))
             .spawn(move || {
@@ -159,71 +171,47 @@ impl Provider for DiskUsage {
                     let mut seen = held(&writing);
                     seen.bytes = bytes;
                     seen.files = files;
+                    drop(seen);
+                    telling.moved(
+                        State::Running,
+                        json!({
+                            "path": asked,
+                            "bytes": bytes,
+                            "files": files,
+                            "total": 0,
+                            "unreadable": 0,
+                            "error": "",
+                        }),
+                    );
                 });
                 let mut seen = held(&truth);
                 if let Some(error) = &result.error {
                     seen.failure = Some(error.clone());
                 }
+                let cancelled = worker.is_cancelled();
+                let ended = if cancelled {
+                    State::Cancelled
+                } else if seen.failure.is_some() {
+                    State::Failed
+                } else {
+                    State::Done
+                };
+                let detail = json!({
+                    "path": named,
+                    "bytes": seen.bytes,
+                    "files": seen.files,
+                    "total": result.total,
+                    "unreadable": result.unreadable,
+                    "error": seen.failure.clone().unwrap_or_default(),
+                });
                 seen.result = Some(result);
                 drop(seen);
                 done.store(true, Ordering::Relaxed);
-                stop.store(worker.is_cancelled(), Ordering::Relaxed);
+                stop.store(cancelled, Ordering::Relaxed);
+                told.moved(ended, detail);
             })
             .map_err(|error| format!("the scan starts no thread: {error}"))?;
-        held(&self.jobs).running.insert(
-            job.clone(),
-            Job {
-                path: ask.path,
-                scan: state,
-                cancellation,
-                finished,
-                stopped,
-            },
-        );
-        Ok(json!({ "job": job }).to_string())
-    }
-
-    fn status(&self, job: &str) -> Result<String, String> {
-        let mut jobs = held(&self.jobs);
-        let Some(scan) = jobs.running.get(job) else {
-            return Err(format!("no job `{job}` runs on this device"));
-        };
-        let seen = held(&scan.scan);
-        if !scan.finished.load(Ordering::Relaxed) {
-            return Ok(json!({
-                "state": "running",
-                "path": scan.path,
-                "bytes": seen.bytes,
-                "files": seen.files,
-                "total": 0,
-                "unreadable": 0,
-                "error": "",
-            })
-            .to_string());
-        }
-        let state = if scan.stopped.load(Ordering::Relaxed) {
-            "cancelled"
-        } else if seen.failure.is_some() {
-            "failed"
-        } else {
-            "done"
-        };
-        let answer = json!({
-            "state": state,
-            "path": scan.path,
-            "bytes": seen.bytes,
-            "files": seen.files,
-            "total": seen.result.as_ref().map_or(0, |result| result.total),
-            "unreadable": seen.result.as_ref().map_or(0, |result| result.unreadable),
-            "error": seen.failure.clone().unwrap_or_default(),
-        })
-        .to_string();
-        drop(seen);
-        if state != "done" {
-            jobs.running.remove(job);
-        }
-        drop(jobs);
-        Ok(answer)
+        Ok(())
     }
 
     fn cancel(&self, job: &str) -> bool {
@@ -260,30 +248,38 @@ fn expand(path: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// A job answers JSON the package reads, and a folder that is not there fails rather than
+    /// A job tells JSON the package reads, and a folder that is not there fails rather than
     /// answering nothing.
     #[test]
     fn a_scan_answers_the_folders_largest_first_and_a_missing_one_fails() {
         let engine = DiskUsage::default();
         let ask = json!({ "path": "/no/such/folder" }).to_string();
-        let started: serde_json::Value =
-            serde_json::from_str(&engine.start("scan", &ask).expect("the job starts")).unwrap();
-        let job = started["job"].as_str().expect("a job id");
-        let answer = loop {
-            let said: serde_json::Value =
-                serde_json::from_str(&engine.status(job).expect("the job answers")).unwrap();
-            if said["state"] == "failed" || said["state"] == "cancelled" {
-                break said;
+        let (tell, moves) = std::sync::mpsc::channel();
+        let tell = Mutex::new(tell);
+        engine
+            .start(
+                "scan-1",
+                "scan",
+                &ask,
+                JobSink::new(move |state, detail| {
+                    let _ = held(&tell).send((state, detail));
+                }),
+            )
+            .expect("the job starts");
+        let (state, answer) = loop {
+            let (state, detail) = moves
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the job moves");
+            if state.ended() {
+                break (state, detail);
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
         };
-        assert_eq!(answer["state"], "failed");
+        assert_eq!(state, State::Failed);
         assert!(
             answer["error"]
                 .as_str()
                 .is_some_and(|said| !said.is_empty()),
             "a folder that is not there says why: {answer}"
         );
-        assert!(engine.status(job).is_err(), "a finished job is let go");
     }
 }

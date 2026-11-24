@@ -18,7 +18,9 @@ pub mod operator;
 mod ops;
 pub mod verification;
 
-pub use model::{AttentionCache, Assumptions, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport, report_id};
+pub use model::{
+    Assumptions, AttentionCache, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport, report_id,
+};
 pub use operator::{Connection, OperatorKind, OperatorNode, OperatorState};
 pub use verification::{CheckStatus, ReceiptStatus, VerificationReceipt, VerificationRecord};
 
@@ -36,30 +38,6 @@ pub fn call(op: &str, input: &str) -> Result<String, String> {
         "graph" => ops::graph(input),
         other => Err(format!("`{other}` is no op this device runs")),
     }
-}
-
-/// No ask of this engine runs as a job: a document is checked in one breath.
-///
-/// # Errors
-///
-/// Every op, since none of them runs as work a person waits for or stops.
-pub fn start(op: &str, _input: &str) -> Result<String, String> {
-    Err(format!("`{op}` is no work this device starts"))
-}
-
-/// No ask of this engine runs as a job.
-///
-/// # Errors
-///
-/// Every job, since this engine starts none.
-pub fn status(job: &str) -> Result<String, String> {
-    Err(format!("no work `{job}` runs on this device"))
-}
-
-/// No ask of this engine runs as a job, so there is none to stop.
-#[must_use]
-pub fn cancel(_job: &str) -> bool {
-    false
 }
 
 #[cfg(test)]
