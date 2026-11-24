@@ -189,8 +189,8 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
         workspaces
             .own_route_keys(&route, true)
             .await
-            .unwrap()
-            .is_some(),
+            .expect("the workspace answers for its keys")
+            .is_ok(),
         "the workspace's channel keys are here"
     );
     let (member_key, member) = device_cert(
