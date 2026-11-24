@@ -115,7 +115,10 @@ never changes an id that grants and records already name.
   moderator`) or both. Its group holds whoever the workspace's policy says
   reads it now, so a role granted or taken away moves the group by the same
   commits as a member joining or leaving. No action hands out or rotates
-  keys itself. What a device already received cannot be taken back.
+  keys itself. A device creates a record offline: it uses the group key it
+  holds for those readers, or, for a new reader set, makes the group key and
+  wraps it for each reader itself, and the setup syncs later like any change.
+  Nothing waits on a host. What a device already received cannot be taken back.
 - A window does not decide permissions itself. The device's daemon answers
   for the actions a view shows, the window holds those answers for its
   controls and updates them live as grants change, and the call is still
