@@ -254,6 +254,7 @@ impl TurnHistory {
         let actor = Actor::Member(MemberId::agent(agent));
         // The agent reads what the person it works for may read, never the moderated person.
         let reader = crate::workspaces::person_reading(caller);
+        let acted_for = reader.clone();
         let undone = self
             .workspaces
             .with_tl_record(
@@ -262,6 +263,9 @@ impl TurnHistory {
                 (actor.clone(), &reader),
                 move |opened| {
                     let store = opened.host().store();
+                    // The agent takes the changes back for the person it works for, as every
+                    // write an agent makes is made for them.
+                    let _for = store.acting_for(Some(acted_for));
                     store.set_run(Some(run.clone()));
                     let mut undone = 0_u32;
                     let mut failure = None;

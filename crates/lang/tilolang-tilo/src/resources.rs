@@ -847,6 +847,19 @@ impl ResourceStore {
             invoker: invoker
                 .and_then(|actor| serde_json::to_string(actor).ok())
                 .unwrap_or_default(),
+            // An undo is a write like any other: made for the person its invoker acts for, under
+            // the call its caller signed, as a step of the run it is part of.
+            acted_for: self.inner.serving_acted_for.borrow().clone(),
+            signed: self.inner.serving_signed.borrow().clone(),
+            group: self
+                .inner
+                .run
+                .borrow()
+                .clone()
+                .map(|run| tilo_resource_store::Group {
+                    id: run.id,
+                    label: run.title,
+                }),
             invocation: own.clone(),
             undoes: Some(invocation.to_owned()),
             at: now_text(),

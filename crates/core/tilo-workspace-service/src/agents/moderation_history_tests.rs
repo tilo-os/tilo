@@ -61,18 +61,7 @@ impl PlanTurns for Scripted {
                     .iter()
                     .flat_map(|message| message.content.iter())
                     .filter_map(|content| match content {
-                        Content::ToolResult(result) => {
-                            let value: Value = serde_json::from_str(&result.content).ok()?;
-                            Some(
-                                value["versions"]
-                                    .as_array()?
-                                    .iter()
-                                    .filter_map(|version| {
-                                        version["change"].as_str().map(str::to_owned)
-                                    })
-                                    .collect::<Vec<_>>(),
-                            )
-                        }
+                        Content::ToolResult(result) => Some(changes_named(&result.content)),
                         _ => None,
                     })
                     .flatten()
@@ -111,6 +100,19 @@ impl PlanTurns for Scripted {
 }
 
 /// A `tilo_do` call of the history provider.
+/// The changes a read's answer names, as its model reads them: each version's `change`, wherever
+/// the answer carries the versions it read.
+fn changes_named(answer: &str) -> Vec<String> {
+    let unquoted = answer.replace("\\\"", "\"").replace("\": \"", "\":\"");
+    unquoted
+        .match_indices("\"change\":\"")
+        .filter_map(|(at, said)| {
+            let rest = &unquoted[at + said.len()..];
+            rest.split('"').next().map(str::to_owned)
+        })
+        .collect()
+}
+
 fn tool_call(id: &str, action: &str, arguments: Value) -> Content {
     Content::ToolCall(ToolCall {
         id: id.to_owned(),
