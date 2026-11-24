@@ -58,6 +58,13 @@ one that moves slides from where it was. `motion:` sets the pace, as it does for
 names only, never timings. A change no hand made (a sync, an agent, a shortcut) and reduced motion
 land at once.
 
+A view that shows one page at a time swaps its page whole: `layers(transition: .cross_fade)` (a
+`ui.Stage` presenting a slide says the same with its own `transition:`). The page it showed stays
+laid out where it was while it fades out, the page that comes fades in over it, and once the swap
+has played only the new one stands. `motion:` paces it; a press or a key plays it at `fast`, while
+a change no hand made and reduced motion land at once. A change of the same page — a place moved, a
+zoom — is reconciled where it stands and never swaps.
+
 ## 4. Responding to space
 
 The primitives do most of it. For the rest, a view reads `space`, what its container offers:

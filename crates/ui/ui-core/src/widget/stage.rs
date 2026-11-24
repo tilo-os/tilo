@@ -154,6 +154,14 @@ pub struct StageProps {
     /// over a page another view draws sets this, so the page under it keeps its own zoom and
     /// its own keys and its places move only where the hand puts them.
     pub still: bool,
+    /// How the stage plays another page swapped for the one it shows: `.cross_fade` keeps the
+    /// page that was shown laid out while it fades out and fades the new one in over it, for a
+    /// stage that presents one page at a time. A change of the same page (a moved place, a zoom)
+    /// is reconciled in place and never swaps.
+    pub transition: Option<crate::motion::Swap>,
+    /// The pace a page swap plays at: `.standard` (the theme's, and what the stage does anyway),
+    /// `.brisk`, `.calm`, or `.still`, whose swaps land at once.
+    pub motion: Option<crate::motion::Feel>,
 }
 
 impl PartType for Vec<StagePinProps> {
@@ -628,10 +636,8 @@ impl Stage {
                     )?;
                     place.h
                 };
-                let rect = Rect::from_origin_size(
-                    (place.x, place.y),
-                    (place.w, height.max(LEAST_SIDE)),
-                );
+                let rect =
+                    Rect::from_origin_size((place.x, place.y), (place.w, height.max(LEAST_SIDE)));
                 cx.place(index, rect)?;
                 out.push(rect);
             }
@@ -752,11 +758,7 @@ impl Stage {
 
     /// Route `event` to the open menu. Returns whether it consumed it; a press outside closes
     /// the menu and falls through to the places.
-    fn route_menu(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) -> bool {
+    fn route_menu(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
         if !self.menu.is_open() {
             return false;
         }
@@ -847,6 +849,8 @@ impl Described for Stage {
             open,
             delete,
             still,
+            transition: _,
+            motion: _,
         } = props;
         let mut stage = Self {
             parts: Parts::default(),
@@ -940,6 +944,8 @@ impl Described for Stage {
             open,
             delete,
             still,
+            transition: _,
+            motion: _,
         } = props;
         if pins.len() != self.pins.len()
             || pins
@@ -1337,7 +1343,8 @@ impl Widget for Stage {
     /// The menu a place opened paints in the top layer, above every place and the page itself.
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         crate::widget::defaults::draw_overlay(self.children_mut(), ctx);
-        self.paint_menu(ctx);    }
+        self.paint_menu(ctx);
+    }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // The menu a place opened hears the event first, above the places and the page.
@@ -1477,9 +1484,7 @@ impl Widget for Stage {
                 if !self.still && self.focused && event.state == ElementState::Pressed =>
             {
                 // The Menu key and Shift+F10 open the chosen place's menu where it stands.
-                if keyboard_menu
-                    && let Some(index) = self.chosen_index()
-                {
+                if keyboard_menu && let Some(index) = self.chosen_index() {
                     let at = self
                         .laid
                         .borrow()
@@ -1706,7 +1711,9 @@ impl Widget for Stage {
         let Some(target) = target.strip_prefix(MENU_TARGET) else {
             return false;
         };
-        let performed = self.menu.perform_semantic_action(target, action, state, path);
+        let performed = self
+            .menu
+            .perform_semantic_action(target, action, state, path);
         if performed {
             self.drain_menu_selection();
         }

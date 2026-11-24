@@ -75,7 +75,7 @@ pub const PRIMS: &[Prim] = &[
     Prim {
         name: "page",
         positional: &[],
-        named: &[],
+        named: &["transition"],
         flags: &["full"],
         component: None,
         builds: None,
@@ -88,14 +88,24 @@ pub const PRIMS: &[Prim] = &[
     prim_of("choice", &[], &["bind"]),
     // `motion:` is the pace what a container holds moves at when it changes (a `Motion`, the feel
     // a list or a section takes): `.standard`, `.brisk`, `.calm`, or `.still`, which lands at once.
-    prim_of("stack", &[], &["gap", "padding", "align", "motion"]),
+    // `transition: .cross_fade` says what the container shows is swapped whole when another page
+    // comes: the old page stays laid out while it fades out and the new one fades in over it.
+    prim_of(
+        "stack",
+        &[],
+        &["gap", "padding", "align", "motion", "transition"],
+    ),
     // With a block, a layout row; with a title and no block, a list row.
     prim_of("row", &[], LAYOUT_ROW_ARGS),
-    prim_of("grid", &[], &["min", "columns", "gap", "motion"]),
+    prim_of(
+        "grid",
+        &[],
+        &["min", "columns", "gap", "motion", "transition"],
+    ),
     prim_of("split", &[], &["side", "ratio", "collapse", "gap"]),
     prim_of("primary", &[], &[]),
     prim_of("secondary", &[], &[]),
-    prim_of("layers", &[], &[]),
+    prim_of("layers", &[], &["transition", "motion"]),
     // A column that scrolls: down, sideways (`axis: .horizontal`) or both ways.
     prim_of("scroll", &[], &["axis", "across", "both", "keep"]),
     prim_of("spacer", &[], &[]),
@@ -165,6 +175,11 @@ pub const CHOICES: &[Choice] = &[
         kind: "motion",
         name: "Motion",
         variants: &["standard", "brisk", "calm", "still"],
+    },
+    Choice {
+        kind: "transition",
+        name: "Transition",
+        variants: &["none", "cross_fade"],
     },
     Choice {
         kind: "collapse",
@@ -247,6 +262,7 @@ pub fn arg_choice(prim: &str, arg: &str) -> Option<&'static str> {
         (_, "distribute") => "distribute",
         (_, "collapse") => "collapse",
         (_, "motion") => "motion",
+        (_, "transition") => "transition",
         (_, "side") => "side",
         (_, "at") => "at",
         (_, "axis") => "axis",

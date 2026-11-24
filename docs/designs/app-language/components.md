@@ -336,7 +336,8 @@ next frame). It changes *how long* the design system's named motions take, never
 the curve stays the theme's spring, reduced motion and a still theme pass through untouched.
 
 The components that own motion take it: `ui.VirtualList`, `ui.ListRow`, `ui.Checkbox`,
-`ui.Badge`, `ui.Section`, `ui.DisclosureRow`, `ui.TreeView`, `ui.Drawing`. A list's own pace is the pace of the
+`ui.Badge`, `ui.Section`, `ui.DisclosureRow`, `ui.TreeView`, `ui.Drawing`, and a `ui.Stage`
+swapping its page whole. A list's own pace is the pace of the
 rows it builds (rung 1 example above), so one option covers a whole list; a row says its own when
 it needs to differ from the list's. `std`'s shapes take the platform's pace — a view that wants
 its own either names the row it builds or composes the list itself (rung 2).
@@ -397,13 +398,15 @@ What it does *not* let a view say, and this is deliberate: no duration, no cubic
 per-property easing, no keyframes. An app's motion comes from which named motion plays and at
 which pace, so every app accelerates, settles and respects reduced motion the same way, and a
 theme change reaches all of them. A figure a view draws moves with its drawing (`ui.Drawing`,
-rung 4). Two things are specified and not in the language yet, and both would be a `motion:` on
-the view rather than a new syntax:
+rung 4). A view that shows one page at a time says what it swaps whole with
+`transition: .cross_fade` on its stage (`ui.Stage`, or `layers`): the old page stays laid out while
+it fades out and the new one fades in over it, and a change of the same page — a place moved, a
+zoom — is reconciled where it stands and never swaps. One thing is specified and not in the
+language yet, and it would be a `motion:` on the view rather than a new syntax:
 
 - a transition on a written value a component does not own (a figure that changes when a filter
   does): today that text lands on the next frame, and the smallest form it will take is the same
-  `motion:` on the `ui.Text` that shows it;
-- a view that wants to say what moved as a whole, rather than which component animated.
+  `motion:` on the `ui.Text` that shows it.
 
 ### 4. Draw with the design system
 

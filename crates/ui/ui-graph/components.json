@@ -7115,6 +7115,38 @@
           "name": "still",
           "doc": "The stage stands the page where the view puts it and takes nothing of its own: the wheel and a pinch do not zoom it, no pan moves it, the keys that walk and move its places do not reach it, and a dragged place does not line up with the page's margins. A stage laid over a page another view draws sets this, so the page under it keeps its own zoom and its own keys and its places move only where the hand puts them.",
           "type": "bool"
+        },
+        {
+          "name": "transition",
+          "doc": "How the stage plays another page swapped for the one it shows: `.cross_fade` keeps the page that was shown laid out while it fades out and fades the new one in over it, for a stage that presents one page at a time. A change of the same page (a moved place, a zoom) is reconciled in place and never swaps.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Transition",
+                "cases": [
+                  "none",
+                  "cross_fade"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "motion",
+          "doc": "The pace a page swap plays at: `.standard` (the theme's, and what the stage does anyway), `.brisk`, `.calm`, or `.still`, whose swaps land at once.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Motion",
+                "cases": [
+                  "standard",
+                  "brisk",
+                  "calm",
+                  "still"
+                ]
+              }
+            }
+          }
         }
       ],
       "parts": [

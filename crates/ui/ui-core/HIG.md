@@ -1547,6 +1547,7 @@ says how (no curve, duration, spring constant or eased ratio of its own):
 | `Disclose` / `Extent` | expand and collapse; a panel's height following its page (clip, never re-layout) |
 | `PanelSlide` | sidebars, drawers, the inspector; content beside reflows once, at the wide end; edge sheets |
 | `CrossFade` | content swapped in place |
+| `Swap` | one view replaced by another whole in place (a stage's page, a slide): the old stays laid out and fades out over the first 60 %, the new fades in over `fast`; a key plays it at `fast`, and a change no hand made and reduced motion land it |
 | `ListChange` | rows arriving, leaving, changing places |
 | `Snap` | carousels settling on a detent with the release velocity |
 | `Zoom` | one thing becoming another (window and overview card) |

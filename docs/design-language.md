@@ -379,9 +379,10 @@ primitives exist to replace.
 
 - Motion answers an action (open, expand, confirm, move) and shows what changed.
 - Every animation is one of the standard motions in `ui::motion` (appear,
-  drill, disclose, panel slide, cross-fade, list change, snap, zoom, window
-  motion, ambient, feedback, attention; HIG §9.7), so the same relationship
-  always moves the same way. No literal durations, curves or springs.
+  drill, disclose, panel slide, cross-fade, swap, list change, snap, zoom,
+  window motion, ambient, feedback, attention; HIG §9.7), so the same
+  relationship always moves the same way. No literal durations, curves or
+  springs.
 - Motion never delays the person: input acts at once, nothing bounces, a
   keyboard shortcut's result shows on the next frame, and repeated actions
   collapse into one motion.

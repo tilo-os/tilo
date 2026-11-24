@@ -397,6 +397,35 @@ pub fn draw_child(
     draw_child_at(child, None, scene, transform, text_renderer, theme, env);
 }
 
+/// Draw `paint` at `opacity`, in a layer only while it is part-way, and draw nothing at all once
+/// it is gone: the one way a view drawn translucent (one fading in or out over another) reaches
+/// the scene.
+pub(crate) fn in_opacity_layer(
+    scene: &mut Scene,
+    transform: Affine,
+    clip: vello::kurbo::Rect,
+    opacity: f32,
+    paint: impl FnOnce(&mut Scene),
+) {
+    if opacity <= 0.0 {
+        return;
+    }
+    let part = opacity < 1.0;
+    if part {
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            opacity,
+            transform,
+            &clip.inflate(2.0, 2.0),
+        );
+    }
+    paint(scene);
+    if part {
+        scene.pop_layer();
+    }
+}
+
 /// [`draw_child`] for a container that knows `child`'s place among its
 /// children (`index`), so a host that keys widgets
 /// ([`crate::scene_parts::key_widgets`]) keys it by that place even when the
@@ -2753,6 +2782,8 @@ pub mod arriving_rows;
 pub mod arriving_view;
 pub use arriving_rows::{ArrivingRows, RowFade};
 pub use arriving_view::{ArrivalFace, ArrivingView, AwaitsContent, ReservedShape, Showing};
+pub mod swapped;
+pub use swapped::Swapped;
 pub mod stepper;
 pub use stepper::{Stepper, StepperFace, StepperProps};
 pub mod property_list;

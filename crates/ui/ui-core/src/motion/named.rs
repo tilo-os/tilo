@@ -476,11 +476,40 @@ pub const CROSS_FADE: MotionSpec = MotionSpec {
     shortcut: Shortcut::Lands,
 };
 
+/// One view replaced by another whole, where it stands (a stage's page, a slide): the old stays
+/// laid out and fades out over the first 60 %, the new fades in over the whole `fast` spring, and
+/// nothing moves. A key plays it at `fast`, since the whole view is what a reader watches; a change
+/// no hand made and reduced motion land it.
+pub const SWAP: MotionSpec = MotionSpec {
+    enter: Pace::Fast,
+    exit: Pace::Fast,
+    reduced: Reduced::Lands,
+    shortcut: Shortcut::Context,
+};
+
+/// How a view that swaps what it shows whole plays the swap (`transition: .cross_fade` on a
+/// stage).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Swap {
+    /// The new content shows on the next frame.
+    #[default]
+    None,
+    /// The old content fades out where it is laid out while the new one fades in, over [`SWAP`].
+    CrossFade,
+}
+
+crate::component::choice!(Swap, "Transition", {
+    None => "none",
+    CrossFade => "cross_fade",
+});
+
 #[derive(Clone, Debug)]
 pub struct CrossFade<K> {
     shown: K,
     previous: Option<(K, f32)>,
     progress: MotionValue<f64>,
+    /// The named motion it plays.
+    spec: MotionSpec,
 }
 
 impl<K: Clone + PartialEq> CrossFade<K> {
@@ -489,10 +518,18 @@ impl<K: Clone + PartialEq> CrossFade<K> {
 
     /// Showing `shown`, at rest.
     pub fn new(shown: K) -> Self {
+        Self::of_spec(Self::SPEC, shown)
+    }
+
+    /// Showing `shown`, at rest, under the named motion `spec` rather than [`CROSS_FADE`]: a view
+    /// swapped whole plays [`SWAP`] through the same math.
+    #[must_use]
+    pub fn of_spec(spec: MotionSpec, shown: K) -> Self {
         Self {
             shown,
             previous: None,
             progress: MotionValue::new(1.0),
+            spec,
         }
     }
 
@@ -502,7 +539,7 @@ impl<K: Clone + PartialEq> CrossFade<K> {
         if next == self.shown {
             return;
         }
-        let timing = Self::SPEC.timing(Direction::Enter, motion, source);
+        let timing = self.spec.timing(Direction::Enter, motion, source);
         self.show_with(next, timing, now);
     }
 

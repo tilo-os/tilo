@@ -4,7 +4,8 @@
 //! their origin and going back | | [`Drill`] / [`DrillDepth`] | drill-in and back inside a panel;
 //! whole-column pushes | | [`Disclose`] / [`Extent`] / [`Disclosure`] | expand and collapse; a panel's
 //! height following its content; a find bar or banner coming and going | | [`PanelSlide`] | sidebars,
-//! drawers, the inspector | | [`CrossFade`] | swapping content in place | | [`ListChange`] | rows
+//! drawers, the inspector | | [`CrossFade`] | swapping content in place | | [`Swap`] | one view
+//! replaced by another whole (a stage's page) | | [`ListChange`] | rows
 //! arriving, leaving and changing places | | [`Snap`] | carousels and paged strips settling on a detent
 //! | | [`ScrollTo`] | a scroll view going to what it was asked to show (find next, a revealed row) | |
 //! [`Zoom`] | one thing becoming another (window and overview card) | | [`WindowMotion`] | windows
@@ -69,8 +70,8 @@ pub use kept::{
 pub(crate) use kept::{closing_window, frame_ended, kept_any};
 pub use named::{
     Ambient, Appear, Attention, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill, DrillDepth,
-    Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reveal, Snap, Speaking, Sweep,
-    Thumb, Trace, Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
+    Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reveal, SWAP, Snap, Speaking,
+    Swap, Sweep, Thumb, Trace, Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
 };
 pub use placed::Placed;
 pub use pose::Pose;
