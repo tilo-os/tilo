@@ -34,8 +34,8 @@ workspace-hack = { version = "0.1" }
 tilo-rt = { path = "../../platform/tilo-rt", optional = true }
 
 # GStreamer everywhere but macOS, which captures through AVFoundation and
-# never links GStreamer.
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+# never links GStreamer, and Android, whose capture goes through its own platform.
+[target.'cfg(not(any(target_os = "macos", target_os = "android")))'.dependencies]
 gstreamer = { workspace = true, optional = true }
 gstreamer-app = { workspace = true, optional = true }
 gstreamer-video = { workspace = true, optional = true }

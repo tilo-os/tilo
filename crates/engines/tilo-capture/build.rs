@@ -5,12 +5,15 @@
 fn main() {
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let mac = os == "macos";
-    let gst = !mac;
+    // Android's capture goes through its own platform, which no backend here reaches yet: it
+    // captures nothing rather than linking a GStreamer it does not have.
+    let gst = !mac && os != "android";
+    let native = gst || mac;
     let feature = |name: &str| std::env::var_os(format!("CARGO_FEATURE_{name}")).is_some();
     let cfgs = [
-        ("native_camera", feature("CAMERA")),
-        ("native_microphone", feature("MICROPHONE")),
-        ("native_screen", feature("SCREEN")),
+        ("native_camera", native && feature("CAMERA")),
+        ("native_microphone", native && feature("MICROPHONE")),
+        ("native_screen", native && feature("SCREEN")),
         ("gst_camera", gst && feature("CAMERA")),
         ("gst_microphone", gst && feature("MICROPHONE")),
         ("gst_screen", gst && feature("SCREEN")),
