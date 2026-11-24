@@ -929,10 +929,22 @@ fn network_children(network: &Network) -> impl Iterator<Item = ResourceSpec> + '
             .bind(SavedNetworkAction::SET_AUTOCONNECT, NO_ARGUMENTS)
             .bind(SavedNetworkAction::FORGET, NO_ARGUMENTS)
             .bind(SavedNetworkAction::SET_PROXY, NO_ARGUMENTS)
-            .bind(NetworkAction::SET_NETWORK_IPV4, [("profile", profile_id.clone())])
-            .bind(NetworkAction::SET_NETWORK_IPV6, [("profile", profile_id.clone())])
-            .bind(NetworkAction::SET_NETWORK_DNS, [("profile", profile_id.clone())])
-            .bind(NetworkAction::SET_NETWORK_POLICY, [("profile", profile_id.clone())])
+            .bind(
+                NetworkAction::SET_NETWORK_IPV4,
+                [("profile", profile_id.clone())],
+            )
+            .bind(
+                NetworkAction::SET_NETWORK_IPV6,
+                [("profile", profile_id.clone())],
+            )
+            .bind(
+                NetworkAction::SET_NETWORK_DNS,
+                [("profile", profile_id.clone())],
+            )
+            .bind(
+                NetworkAction::SET_NETWORK_POLICY,
+                [("profile", profile_id.clone())],
+            )
             .bind(
                 NetworkAction::SET_ENTERPRISE_IDENTITY,
                 [("profile", profile_id.clone())],
@@ -967,9 +979,7 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
             );
         }
     } else if !bluetooth.on {
-        for action in ["scan"] {
-            unavailable(&mut resource, action, "bluetooth_off", "Bluetooth is off");
-        }
+        unavailable(&mut resource, "scan", "bluetooth_off", "Bluetooth is off");
     }
     let paired = bluetooth.accessories.iter().filter_map(|accessory| {
         let id = child_id(BLUETOOTH_ACCESSORY, &accessory.address)?;
@@ -1214,12 +1224,10 @@ fn network_modes(key: &str) -> Result<os_actions::NetworkModes, String> {
         2 => Some(1 << 1),
         _ => None,
     };
-    let (allowed, preferred) = key
-        .trim()
-        .split_once("-prefer-")
-        .map_or_else(|| (key.trim(), None), |(allowed, preferred)| {
-            (allowed, Some(preferred))
-        });
+    let (allowed, preferred) = key.trim().split_once("-prefer-").map_or_else(
+        || (key.trim(), None),
+        |(allowed, preferred)| (allowed, Some(preferred)),
+    );
     let mut allowed_bits = 0_u32;
     for part in allowed.split('-').filter(|part| !part.is_empty()) {
         let generation = part

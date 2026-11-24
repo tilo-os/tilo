@@ -323,7 +323,7 @@ pub enum NetworkAction {
 }
 
 /// The `bluetooth` resource's actions.
-#[derive(Clone, Debug, PartialEq, Effect)]
+#[derive(Clone, Copy, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.connectivity.bluetooth")]
 pub enum BluetoothAction {
     /// Turn Bluetooth on or off.
@@ -567,7 +567,12 @@ pub enum ModemAction {
     },
     /// Choose the network types the modem may use.
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "signal", keywords = "network type, 5g, 4g")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "signal",
+        keywords = "network type, 5g, 4g"
+    )]
     SetPreferredNetwork {
         #[param("The modem, as listed; the first when omitted")]
         modem: Option<String>,
