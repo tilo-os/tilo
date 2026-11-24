@@ -390,7 +390,7 @@ impl Core {
     fn admitted(
         &self,
         verb: Option<String>,
-        need: tilo_actions::ActionNeed,
+        need: &tilo_actions::ActionNeed,
     ) -> Result<(), ActionError> {
         if let Some(verb) = verb {
             return if self.may(&verb) || self.keeps_its_own_housekeeping(&verb) {
@@ -439,7 +439,7 @@ impl Core {
                 self.wait(action, invoker.clone(), Box::new(|_| {}));
                 Applied::Waits
             }
-            done => done,
+            done @ Applied::Done(_) => done,
         }
     }
 
@@ -901,7 +901,7 @@ impl<P: Resource> WorkspaceResource<P> {
     fn admitted(&self, action: &P::Action) -> Result<(), ActionError> {
         self.shared
             .core
-            .admitted(verb_of::<P>(action), tilo_resource::need_of::<P>(action))
+            .admitted(verb_of::<P>(action), &tilo_resource::need_of::<P>(action))
     }
 
     /// The action `invoke` names, once the workspace's grants admit it.
@@ -1493,7 +1493,7 @@ impl WorkspaceState {
         match open(&self.records) {
             Ok(opened) => {
                 self.opened_now(&key);
-                self.held(key, opened)
+                Some(self.held(key, opened))
             }
             Err(why) => {
                 let again = matches!(why, Unopened::Arriving | Unopened::InUse)
@@ -1638,11 +1638,7 @@ impl WorkspaceState {
     /// Keep an opened record for the window: its route reported to the
     /// runtime, its changes followed, and the record held for the views that
     /// ask for it again.
-    fn held<P: Resource>(
-        &self,
-        key: OpenKey,
-        opened: WorkspaceResource<P>,
-    ) -> Option<WorkspaceResource<P>> {
+    fn held<P: Resource>(&self, key: OpenKey, opened: WorkspaceResource<P>) -> WorkspaceResource<P> {
         let WorkspaceResource { shared } = opened;
         let weak = Rc::downgrade(&shared);
         let refresh = Box::new(move || weak.upgrade().is_some_and(|shared| shared.refresh()));
@@ -1667,7 +1663,7 @@ impl WorkspaceState {
             publishing,
             Rc::clone(&shared) as Rc<dyn Any>,
         );
-        Some(WorkspaceResource { shared })
+        WorkspaceResource { shared }
     }
 
     /// [`Self::held`] for a record of any type: `refresh` follows it, and `publishing` offers it

@@ -85,7 +85,7 @@ impl WindowEmoji {
                     match std::io::Read::read_to_end(&mut file, &mut bytes) {
                         Ok(_) if bytes.len() <= MAX_CHOSEN_BYTES => chosen.push((name, bytes)),
                         Ok(_) => {
-                            tracing::warn!(%name, "the picture is larger than an emoji may be")
+                            tracing::warn!(%name, "the picture is larger than an emoji may be");
                         }
                         Err(error) => {
                             tracing::warn!(%name, %error, "the chosen picture could not be read");
