@@ -250,3 +250,169 @@ fn an_apps_writes_land_beside_the_types_other_apps_declare() {
     t.call("toggle", vec![Value::resource(&milk)]);
     assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(true));
 }
+
+/// A board whose items stand in two collections of the one type, and whose items hold two of one
+/// type themselves.
+const SWEEP: &str = include_str!("../../tilolang/tests/fixtures/sweep.tl");
+
+/// The sweep board over the workspace's store, and the store, to take its last change back.
+struct Sweep {
+    rt: Runtime,
+    meta: tilolang::PackageMeta,
+    store: ResourceStore,
+    board: ResourceRef,
+}
+
+impl Sweep {
+    fn new() -> Self {
+        let compiled = tilolang::compile_package(SWEEP, &tilolang::IdsLock::new(), &[])
+            .unwrap_or_else(|errors| panic!("{errors:#?}"));
+        let store = ResourceStore::in_memory();
+        store.declare(&compiled.meta);
+        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        rt.load_compiled(&compiled).unwrap();
+        let board = rt.create("Board").unwrap();
+        Self {
+            rt,
+            meta: compiled.meta,
+            store,
+            board,
+        }
+    }
+
+    fn call(&self, action: &str, args: Vec<Value>) -> Value {
+        let id = &self
+            .meta
+            .actions
+            .iter()
+            .find(|held| held.name == action)
+            .unwrap()
+            .id;
+        match self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap() {
+            InvokeOutcome::Done(value) => value,
+            other => panic!("{action} answered {other:?}"),
+        }
+    }
+
+    /// Items titled `titles` in the collection `field`, those titled in `done` finished.
+    fn fill(&self, field: &str, titles: &[&str], done: &[&str]) {
+        let add = if field == "items" { "add" } else { "keep" };
+        for title in titles {
+            let made = self.call(add, vec![Value::resource(&self.board), Value::text(*title)]);
+            if done.contains(title) {
+                self.call("finish", vec![made]);
+            }
+        }
+    }
+
+    /// The titles of the items of the board's `field`, in order.
+    fn titles(&self, field: &str) -> Vec<String> {
+        self.names(&self.board, field, "title")
+    }
+
+    /// The text field `name` of each item of `holder`'s collection `field`, in order.
+    fn names(&self, holder: &ResourceRef, field: &str, name: &str) -> Vec<String> {
+        let Value::List(items) = self.rt.read(holder, field).unwrap() else {
+            panic!("{field} reads as a list");
+        };
+        items
+            .iter()
+            .map(|item| {
+                let Value::Ref(item) = item else {
+                    panic!("an item reads as its reference, not {item:?}");
+                };
+                match self.rt.read(&item.target, name).unwrap() {
+                    Value::Text(text) => String::from(&*text),
+                    other => panic!("{name} reads {other:?}"),
+                }
+            })
+            .collect()
+    }
+
+    /// Take the last change back, as the window's undo does.
+    fn undo(&self) {
+        assert!(
+            self.store
+                .undo_last(Some(&me()))
+                .expect("the store takes it back"),
+            "there was a change to take back"
+        );
+    }
+}
+
+/// Items a list operation answered are the collection's own items: removing the finished ones a
+/// filter, a `remove_where`, a sort or a `find` picked out removes exactly those, as one change
+/// that one undo takes back, and the rest stay where they were.
+#[test]
+fn items_a_list_operation_picked_out_are_removed_from_their_collection() {
+    for (action, answer) in [
+        ("clear_filtered", Value::Unit),
+        ("clear_where", Value::Int(2)),
+        ("clear_sorted", Value::Unit),
+    ] {
+        let s = Sweep::new();
+        s.fill("items", &["milk", "eggs", "bread", "tea"], &["eggs", "tea"]);
+        assert_eq!(
+            s.call(action, vec![Value::resource(&s.board)]),
+            answer,
+            "{action}"
+        );
+        assert_eq!(s.titles("items"), ["milk", "bread"], "{action}");
+        s.undo();
+        assert_eq!(
+            s.titles("items"),
+            ["milk", "eggs", "bread", "tea"],
+            "{action} is one change"
+        );
+    }
+    let s = Sweep::new();
+    s.fill("items", &["milk", "eggs", "tea"], &["eggs", "tea"]);
+    s.call("clear_first", vec![Value::resource(&s.board)]);
+    assert_eq!(s.titles("items"), ["milk", "tea"]);
+}
+
+/// A holder with two collections of one type: the finished items set aside leave the collection
+/// they stand in, and the items on the board, finished or not, stay.
+#[test]
+fn items_filtered_from_one_of_two_collections_of_a_type_leave_that_one() {
+    let s = Sweep::new();
+    s.fill("items", &["milk", "eggs"], &["eggs"]);
+    s.fill("kept", &["old", "older", "keep"], &["old", "older"]);
+    s.call("clear_kept", vec![Value::resource(&s.board)]);
+    assert_eq!(s.titles("kept"), ["keep"]);
+    assert_eq!(s.titles("items"), ["milk", "eggs"]);
+    s.call("clear_filtered", vec![Value::resource(&s.board)]);
+    assert_eq!(s.titles("items"), ["milk"]);
+    assert_eq!(s.titles("kept"), ["keep"]);
+}
+
+/// An item that holds two collections of one type itself: its worn spares leave its spares, and
+/// its parts, worn or not, stay.
+#[test]
+fn an_items_filtered_spares_leave_its_spares_and_its_parts_stay() {
+    let s = Sweep::new();
+    let bike = made(&s.call("add", vec![Value::resource(&s.board), Value::text("bike")]));
+    for (action, name, worn) in [
+        ("fit", "chain", true),
+        ("fit", "bell", false),
+        ("stock", "tube", true),
+        ("stock", "pad", false),
+        ("stock", "cable", true),
+    ] {
+        s.call(
+            action,
+            vec![Value::resource(&bike), Value::text(name), Value::Bool(worn)],
+        );
+    }
+    s.call("clear_worn_spares", vec![Value::resource(&bike)]);
+    assert_eq!(s.names(&bike, "spares", "name"), ["pad"]);
+    assert_eq!(s.names(&bike, "parts", "name"), ["chain", "bell"]);
+}
+
+/// The resource an action answered it made.
+fn made(value: &Value) -> ResourceRef {
+    match value {
+        Value::Ref(made) => (*made.target).clone(),
+        other => panic!("an action answered {other:?}, not what it made"),
+    }
+}
