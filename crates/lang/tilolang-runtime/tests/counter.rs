@@ -347,15 +347,33 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
     use std::rc::Rc;
     use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Words};
 
+    /// The catalogues handed over: the window's package's own, which choose its language, and
+    /// those of the packages it uses (the standard library's among them), which ride along.
     #[derive(Clone, Default)]
-    struct Taken(Rc<RefCell<Vec<(String, String)>>>);
+    struct Taken {
+        own: Rc<RefCell<Vec<(String, String)>>>,
+        used: Rc<RefCell<Vec<(String, String)>>>,
+    }
+    impl Taken {
+        fn own(&self) -> Vec<(String, String)> {
+            self.own.borrow().clone()
+        }
+
+        /// Whether the standard library's words rode along.
+        fn library_rode_along(&self) -> bool {
+            self.used
+                .borrow()
+                .iter()
+                .any(|(_, text)| text.contains("d-tilo-std"))
+        }
+    }
     impl Words for Taken {
         fn add(&self, catalogues: &[(String, String)]) {
-            self.0.borrow_mut().extend_from_slice(catalogues);
+            self.own.borrow_mut().extend_from_slice(catalogues);
         }
 
         fn add_used(&self, catalogues: &[(String, String)]) {
-            self.0.borrow_mut().extend_from_slice(catalogues);
+            self.used.borrow_mut().extend_from_slice(catalogues);
         }
         fn word(&self, _key: &str, _args: &[(String, String)], source: &str) -> String {
             source.to_owned()
@@ -371,14 +389,16 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
     rt.set_words(before.clone());
     rt.load_package(&wasm, crate::common::counter_meta())
         .unwrap();
-    assert_eq!(*before.0.borrow(), catalogues);
+    assert_eq!(before.own(), catalogues);
+    assert!(before.library_rode_along());
 
     let after = Taken::default();
     let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
     rt.load_package(&wasm, crate::common::counter_meta())
         .unwrap();
     rt.set_words(after.clone());
-    assert_eq!(*after.0.borrow(), catalogues);
+    assert_eq!(after.own(), catalogues);
+    assert!(after.library_rode_along());
 
     // A window loads its app as a module, which is a package reload: the load that first brings
     // a package hands its catalogues over too, as a later build of it does.
@@ -387,5 +407,6 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
     rt.set_words(window.clone());
     rt.reload_package(&wasm, crate::common::counter_meta())
         .unwrap();
-    assert_eq!(*window.0.borrow(), catalogues);
+    assert_eq!(window.own(), catalogues);
+    assert!(window.library_rode_along());
 }
