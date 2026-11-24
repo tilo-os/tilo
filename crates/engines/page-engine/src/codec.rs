@@ -342,6 +342,11 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             request_id: 1,
             id: extension_id(&value)?,
         }),
+        // A press on an extension's toolbar button: the engine runs the extension's action, or
+        // opens the page it offers.
+        "extension_click" => Ask::Command(WebViewCommand::ExtensionClick {
+            id: extension_id(&value)?,
+        }),
         // The engine's own credential store: the logins it keeps for this site, the forms it
         // reads them from, and the capture it takes of one the person typed. The password never
         // crosses this vocabulary.
@@ -515,6 +520,19 @@ pub fn asks_json(asks: &Asks) -> String {
                     "description": entry.description,
                     "permissions": entry.permissions,
                     "enabled": entry.enabled,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "extension_buttons": asks
+            .extension_buttons
+            .iter()
+            .map(|button| {
+                serde_json::json!({
+                    "id": button.id,
+                    "title": button.title,
+                    "badge": button.badge,
+                    "enabled": button.enabled,
+                    "popup": button.popup,
                 })
             })
             .collect::<Vec<_>>(),

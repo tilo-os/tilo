@@ -136,6 +136,8 @@ type Page (title: title) {
     capture: Text = ""
     /// What the engine's credential store answered last, in its own words.
     login_notice: Text = ""
+    /// The toolbar buttons this page's extensions show, as the engine last reported them.
+    buttons: Collection<PageButton>
     /// The pages before this one and the ones after it, as the engine last answered the window's
     /// request for them.
     back: Collection<HistoryEntry>
@@ -267,6 +269,21 @@ type HistoryEntry (title: title) {
 
     search {
         hide url
+    }
+}
+
+/// One extension's button in the page's toolbar: what it shows, whether it takes a press, and
+/// whether pressing it opens a page of the extension's own.
+type PageButton (title: label) {
+    /// The engine's identifier of the extension the button stands for.
+    ext: Text
+    label: Text
+    badge: Text = ""
+    enabled: Bool = true
+    popup: Bool = false
+
+    search {
+        hide ext
     }
 }
 
@@ -989,6 +1006,11 @@ action refresh_page(p: Page) -> Answer uses page (
     }
     p.muted = json_flag(value, "muted")
     p.site = site_of(value)
+    let buttons = buttons_of(value)
+    p.buttons.remove_where(b -> true)
+    for b in buttons {
+        p.buttons.insert(b)
+    }
     let before = history_of(value, "back")
     p.back.remove_where(e -> true)
     for e in before {
@@ -1307,6 +1329,17 @@ destructive action remove_extension(p: Page, e: Extension) -> Answer uses page (
     shows: [e.name],
 ) {
     ask_page(p, json.encode(Ask(op: "extension_remove", extension: .some(e.key))))
+}
+
+/// Presses one of the page's extension buttons: the engine runs the extension's action, or opens
+/// the page it offers.
+action click_extension(p: Page, b: PageButton) -> Answer uses page (
+    icon: .puzzle,
+    label: "Press the extension",
+    shows: [b.label],
+) {
+    require b.enabled "The extension turned its button off on this page"
+    ask_page(p, json.encode(Ask(op: "extension_click", extension: .some(b.ext))))
 }
 
 /// Writes the extensions a page's window listed into the Browser's record. The window raises it;
@@ -2165,6 +2198,39 @@ fn extension_trouble(kind: Text, said: Text) -> Text {
     } else if said != "" { said } else { "The extension could not be changed" }
 }
 
+/// What one of the page's extension buttons is called: the extension's own title for it, else
+/// the extension's name, with its badge after it while it shows one.
+fn button_label(b: Browser, button: PageButton) -> Text {
+    let name = if button.label != "" {
+        button.label
+    } else if let e = b.extensions.find(x -> x.key == button.ext) { e.name } else { "Extension" }
+    if button.badge != "" { "{name} · {button.badge}" } else { name }
+}
+
+/// The toolbar buttons the page's extensions show, as the engine last reported them.
+fn buttons_of(value: json.Value) -> List<PageButton> {
+    let found: List<PageButton> = []
+    for held in json_arrays(json_field(value, "extension_buttons") ?? value) {
+        let ext = json_text(held, "id")
+        if ext != "" {
+            found = [
+                found,
+                [
+                    PageButton(
+                        ext: ext,
+                        label: json_text(held, "title"),
+                        badge: json_text(held, "badge"),
+                        enabled: json_flag(held, "enabled"),
+                        popup: json_flag(held, "popup"),
+                    ),
+                ],
+            ]
+                .flat_map(x -> x)
+        }
+    }
+    found
+}
+
 /// The extensions an engine's inventory listed.
 fn extensions_of(installed: Text) -> List<Extension> {
     let value = match json.parse(installed) {
@@ -2524,6 +2590,15 @@ view page_view(p: Page) {
                         on press: refresh_page(p)
                     }
                     page_menu(b, p, zoom, reading)
+                }
+                if not p.buttons.is_empty() {
+                    row {
+                        for button in p.buttons {
+                            ui.Button(button_label(b, button), icon: .puzzle, role: .plain) {
+                                on press: click_extension(p, button)
+                            }
+                        }
+                    }
                 }
                 if address.trim() != "" and not looks_like_site(address) {
                     let found = suggestions(b, address)

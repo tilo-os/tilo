@@ -614,6 +614,63 @@ mod cases {
         );
     }
 
+    /// The extensions' toolbar buttons are read from the page, a press reaches the engine with
+    /// the extension it stands for, and one the extension dimmed takes no press.
+    #[test]
+    fn the_extensions_toolbar_buttons_are_read_and_pressed_through_the_page() {
+        let b = Browser::new();
+        b.page(
+            "remember_extensions",
+            &[
+                (
+                    "installed",
+                    Value::text(
+                        r#"[{"id":"abcdefghijklmnopabcdefghijklmnop","name":"Reader","version":"1.0","manifest_version":3,"description":"","permissions":[],"enabled":true}]"#,
+                    ),
+                ),
+                ("message", Value::text("")),
+            ],
+        );
+        b.page.answer_asks(json!({
+            "extension_buttons": [
+                {"id":"abcdefghijklmnopabcdefghijklmnop","title":"","badge":"3","enabled":true,"popup":false},
+                {"id":"ponmlkjihgfedcbaponmlkjihgfedcba","title":"Dimmer","badge":"","enabled":false,"popup":false},
+            ],
+        }));
+        b.page("refresh_page", &[]);
+        let view = b.page_view();
+        // A button with no title of its own is named by its extension, with its badge.
+        view.fire(&button_key(&view, "Reader · 3"), "press")
+            .unwrap();
+        assert_eq!(
+            b.page.last()["op"].as_str(),
+            Some("extension_click"),
+            "the engine is asked to press the extension"
+        );
+        assert_eq!(
+            b.page.last()["extension"].as_str(),
+            Some("abcdefghijklmnopabcdefghijklmnop")
+        );
+
+        // The dimmed one does not answer a press, and its refusal says why.
+        let Value::List(items) = b.read(&b.opened, "buttons") else {
+            panic!("the buttons are a list");
+        };
+        let Value::Ref(dimmer) = items.get(1).expect("the dimmed button") else {
+            panic!("a button is a resource");
+        };
+        let refused = Browser::call(
+            &b.app,
+            &b.rt,
+            "click_extension",
+            &[
+                ("p", Value::resource(&b.opened)),
+                ("b", Value::resource(&dimmer.target)),
+            ],
+        );
+        assert!(refused.is_err(), "a press on a dimmed button is refused");
+    }
+
     /// A saved download is shown in Files by calling Files' own action: the Browser names the
     /// place and Files, the app that knows the device's files, shows it. The Browser never reads
     /// a folder itself.

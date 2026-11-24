@@ -11,7 +11,7 @@ pub mod codec;
 mod asks;
 mod prompts;
 
-pub use asks::{Asks, Download, Menu};
+pub use asks::{Asks, Download, ExtensionButton, Menu};
 pub use prompts::{Prompt, PromptChange, PromptKey, PromptKind, Prompts};
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -187,6 +187,12 @@ impl PageSession {
                     installed, message, ..
                 } => {
                     self.notes.push(codec::extensions_note(installed, message));
+                    continue;
+                }
+                // A press on an extension's toolbar button that opens a page of the extension's
+                // own is a popup: the app keeps it as a page of the browser.
+                WebViewEvent::ExtensionOpenPopup { url, .. } => {
+                    self.notes.push(codec::open_note(url, true));
                     continue;
                 }
                 WebViewEvent::ExtensionOutcome {
@@ -572,6 +578,60 @@ mod tests {
     #[test]
     fn an_ordinary_page_is_not_private() {
         assert!(!PageSession::new(TestEngine::new()).is_private());
+    }
+
+    /// An extension's toolbar button is what the engine last said of it, and a reset takes them
+    /// all away; the button a press opens a page from is a popup the app keeps as a page.
+    #[test]
+    fn an_extensions_toolbar_button_is_what_the_engine_last_said() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::ExtensionAction {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            global: false,
+            change: tilo_webview::ExtensionActionChange {
+                badge: Some(Some("3".to_owned())),
+                title: Some(Some("Read later".to_owned())),
+                popup: None,
+                enabled: None,
+                icon: None,
+            },
+        });
+        test.push_event(WebViewEvent::ExtensionAction {
+            id: "ponmlkjihgfedcbaponmlkjihgfedcba".to_owned(),
+            global: false,
+            change: tilo_webview::ExtensionActionChange {
+                enabled: Some(Some(false)),
+                ..Default::default()
+            },
+        });
+        session.poll();
+        let buttons = &session.asks().extension_buttons;
+        assert_eq!(buttons.len(), 2, "two buttons: {buttons:?}");
+        assert!(buttons[0].enabled, "a button nobody dimmed takes a press");
+        assert!(
+            !buttons[1].enabled,
+            "a button its extension dimmed does not"
+        );
+        assert_eq!(buttons[0].badge, "3");
+        assert_eq!(buttons[0].title, "Read later");
+
+        test.push_event(WebViewEvent::ExtensionActionReset);
+        session.poll();
+        assert!(
+            session.asks().extension_buttons.is_empty(),
+            "a reset takes them all away"
+        );
+
+        test.push_event(WebViewEvent::ExtensionOpenPopup {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            url: "https://example.org/popup".to_owned(),
+        });
+        session.poll();
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).expect("a note");
+        assert_eq!(note["note"], "open");
+        assert_eq!(note["url"], "https://example.org/popup");
+        assert_eq!(note["popup"], true, "a popup is shown as a page of its own");
     }
 
     /// A page a script opened (a popup the site sized, a plain new tab) is a note the window

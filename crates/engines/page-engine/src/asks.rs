@@ -36,6 +36,35 @@ pub struct Menu {
     pub items: Vec<ContextMenuItem>,
 }
 
+/// What an action change set of `button`: only the fields it names, and `None` inside one clears
+/// it to what the extension's manifest said.
+fn apply_action(button: &mut ExtensionButton, change: &tilo_webview::ExtensionActionChange) {
+    if let Some(badge) = &change.badge {
+        button.badge = badge.clone().unwrap_or_default();
+    }
+    if let Some(title) = &change.title {
+        button.title = title.clone().unwrap_or_default();
+    }
+    if let Some(popup) = &change.popup {
+        button.popup = popup.is_some();
+    }
+    if let Some(enabled) = &change.enabled {
+        button.enabled = enabled.unwrap_or(true);
+    }
+}
+
+/// One extension's toolbar button, as the engine last reported it: what it shows, whether it
+/// takes a press, and whether pressing it opens a page of the extension's own instead of running
+/// its action.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionButton {
+    pub id: String,
+    pub title: String,
+    pub badge: String,
+    pub enabled: bool,
+    pub popup: bool,
+}
+
 /// An ask a person answers: the id that names the question, and what it asks.
 pub type Permission = (u32, String, String);
 
@@ -65,6 +94,8 @@ pub struct Asks {
     pub site: Option<tilo_webview::SiteStatus>,
     /// What this device keeps installed, as the engine last listed it, and whether each is on.
     pub extensions: Vec<tilo_webview::ExtensionEntry>,
+    /// The toolbar buttons the page's extensions show, in the order the engine named them.
+    pub extension_buttons: Vec<ExtensionButton>,
 }
 
 impl Asks {
@@ -129,6 +160,25 @@ impl Asks {
             WebViewEvent::ExtensionList { installed, .. } => {
                 self.extensions.clone_from(installed);
             }
+            WebViewEvent::ExtensionAction { id, change, .. } => {
+                match self
+                    .extension_buttons
+                    .iter_mut()
+                    .find(|button| &button.id == id)
+                {
+                    Some(button) => apply_action(button, change),
+                    None => {
+                        let mut button = ExtensionButton {
+                            id: id.clone(),
+                            enabled: true,
+                            ..ExtensionButton::default()
+                        };
+                        apply_action(&mut button, change);
+                        self.extension_buttons.push(button);
+                    }
+                }
+            }
+            WebViewEvent::ExtensionActionReset => self.extension_buttons.clear(),
             WebViewEvent::NavigationHistory {
                 direction, entries, ..
             } => match direction {

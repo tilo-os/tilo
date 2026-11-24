@@ -1570,3 +1570,32 @@ d-2kfxgvhv = Download in Dateien anzeigen
 d-2kfxgvhv-path = Pfad
 
 d-arui4kb5 = Download anzeigen~present
+
+d-3j7hm4v2 = Seitenknopf
+    .doc = Der Knopf einer Erweiterung in der Leiste der Seite: was er zeigt, ob er einen Druck annimmt und ob ein Druck eine Seite der Erweiterung selbst öffnet.
+    .noun = { $count ->
+        [one] Seitenknopf
+       *[other] Seitenknöpfe
+    }
+
+d-t25qin6v = Erweiterung
+    .doc = Die Kennung des Motors für die Erweiterung, für die der Knopf steht.
+
+d-pigtj7mb = Beschriftung
+
+d-dizhfbps = Abzeichen
+
+d-ugbnd25j = Eingeschaltet
+
+d-2wovoiro = Popup
+
+d-a45urcsf = Knöpfe
+    .doc = Die Knöpfe der Erweiterungen dieser Seite in der Leiste, wie der Motor sie zuletzt gemeldet hat.
+
+d-asvx3wpo = Erweiterung drücken
+    .doc = Drückt einen der Erweiterungsknöpfe der Seite: der Motor führt die Aktion der Erweiterung aus oder öffnet die Seite, die sie anbietet.
+    .w-the-extension-turned-its-button-off = Die Erweiterung hat ihren Knopf auf dieser Seite ausgeschaltet
+
+d-asvx3wpo-b = B
+
+d-5r7zzpz6 = Erweiterung drücken~present
