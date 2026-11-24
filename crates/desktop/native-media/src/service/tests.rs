@@ -636,3 +636,68 @@ async fn a_camera_chosen_is_the_one_the_call_sends_and_the_status_says_so() {
         "the camera stays"
     );
 }
+
+/// Unmuting right after joining, before the call is live, keeps the call:
+/// the person is heard once it is.
+#[tokio::test]
+async fn unmuting_on_the_way_in_is_heard_once_the_call_is_live() {
+    let service = service(vec![microphone()]);
+    let who = caller(Arc::new(AtomicBool::new(true)));
+
+    send(&service, &who, request(1, join("c_voice"))).expect("an app joins a voice channel");
+    let asked = send(
+        &service,
+        &who,
+        request(2, Command::SetMuted { muted: false }),
+    )
+    .expect("an app asks to be heard on the way in");
+    assert_eq!(asked.state, State::Joining, "the call is not ended for it");
+
+    let live = settled(&service, &who).await;
+    assert!(!live.muted, "the person is heard once the call is live");
+    assert!(live.capture_active);
+}
+
+/// The system's own step on this device's call (the call card's mute and
+/// leave) leaves the app's count of its steps as it was: the app's next
+/// step is taken.
+#[tokio::test]
+async fn the_systems_step_does_not_make_the_apps_next_one_stale() {
+    let service = service(vec![microphone()]);
+    let who = caller(Arc::new(AtomicBool::new(true)));
+
+    send(&service, &who, request(1, join("c_voice"))).expect("an app joins a voice channel");
+    settled(&service, &who).await;
+    send(
+        &service,
+        &who,
+        request(2, Command::SetMuted { muted: false }),
+    )
+    .expect("an app asks to be heard");
+
+    let muted = service
+        .command_own(Command::SetMuted { muted: true })
+        .expect("the system mutes this device's call");
+    assert!(muted.muted);
+    assert!(
+        service.command_own(join("c_other")).is_err(),
+        "the system does not join for an app"
+    );
+
+    let heard = send(
+        &service,
+        &who,
+        request(3, Command::SetMuted { muted: false }),
+    )
+    .expect("the app's next step is not stale");
+    assert!(!heard.muted);
+
+    service
+        .command_own(Command::Leave)
+        .expect("the system leaves this device's call");
+    assert!(service.own_call().is_none());
+    assert!(
+        service.command_own(Command::Leave).is_err(),
+        "no call is left to leave"
+    );
+}

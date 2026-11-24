@@ -479,6 +479,17 @@ call-microphone-reason = to be heard in the call
 call-camera-reason = to be seen in the call
 call-camera-test-picture = Test picture
 call-screen-reason = to share this screen in the call
+call-card-mute = Mute
+call-card-unmute = Unmute
+call-card-deafen = Deafen
+call-card-undeafen = Undeafen
+call-card-leave = Leave
+call-card-open = Open
+call-card-joining = Joining
+call-card-reconnecting = Reconnecting
+call-card-muted = Muted
+call-card-deafened = Deafened
+call-card-connected = Connected
 
 ## What the window names
 session-resource-keyboard = On-screen keyboard

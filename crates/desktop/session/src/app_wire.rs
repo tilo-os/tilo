@@ -1539,6 +1539,8 @@ pub(crate) struct AppWire {
     /// The app whose call the proxies were last told is live, so a change of call opens one app's
     /// UDP lane and closes the one before it.
     pub(crate) call_lane: Mutex<Option<String>>,
+    /// The card of this device's call over the windows.
+    pub(crate) call_card: Mutex<crate::call_card::CallCard>,
 }
 
 impl AppWire {
@@ -1550,12 +1552,13 @@ impl AppWire {
 
     /// Say this device's call where everyone in the workspace reads it, and take
     /// in what they say of theirs: the channel a person is in and who is in
-    /// each channel's call, which is what this session's apps show of calls.
+    /// each channel's call, which is what this session's apps show of calls. What this device's
+    /// call is named, the channel's name.
     pub(crate) fn follow_calls(
         &self,
         sync: &crate::sync::Client,
         published: impl FnOnce() -> Vec<tilo_actions::remote::CatalogueRow>,
-    ) {
+    ) -> String {
         let own = self
             .calls_service
             .as_ref()
@@ -1589,7 +1592,7 @@ impl AppWire {
         let presence = own.as_ref().map(|call| crate::sync::InCall {
             call: ui::CallPresence {
                 channel: call.channel.clone(),
-                name,
+                name: name.clone(),
                 bridge: None,
             },
             camera: call.camera,
@@ -1599,6 +1602,7 @@ impl AppWire {
         });
         sync.in_call(presence.clone());
         self.calls.follow(sync, presence.as_ref());
+        name
     }
 
     /// The broker the apps' runs are started on, while it serves one.

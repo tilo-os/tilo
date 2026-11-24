@@ -484,6 +484,17 @@ call-microphone-reason = um im Anruf gehört zu werden
 call-camera-reason = um im Anruf gesehen zu werden
 call-camera-test-picture = Testbild
 call-screen-reason = um diesen Bildschirm im Anruf zu teilen
+call-card-mute = Stummschalten
+call-card-unmute = Stummschaltung aufheben
+call-card-deafen = Ton aus
+call-card-undeafen = Ton an
+call-card-leave = Verlassen
+call-card-open = Öffnen
+call-card-joining = Beitreten
+call-card-reconnecting = Verbindung wird wiederhergestellt
+call-card-muted = Stumm
+call-card-deafened = Ton aus
+call-card-connected = Verbunden
 
 ## What the window names
 session-resource-keyboard = Bildschirmtastatur
