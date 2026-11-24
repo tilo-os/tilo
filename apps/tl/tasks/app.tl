@@ -800,8 +800,9 @@ action assign(
     require not (t.assignee == who and t.contact == contact) "It is theirs already"
     t.assignee = who
     t.contact = contact
-    t.assigned_by = if who != .none { .some(invoker) } else { .none }
-    t.assigned_at = if who != .none { .some(now) } else { .none }
+    let to_agent = if let w = who { w.kind() == .agent } else { false }
+    t.assigned_by = if to_agent { .some(invoker) } else { .none }
+    t.assigned_at = if to_agent { .some(now) } else { .none }
 }
 
 /// Gives every chosen task to one person (or nobody), as one change.
@@ -815,8 +816,9 @@ action assign_many(chosen: List<Task>, who: Option<Actor>) uses time (
         if t.assignee != who or t.contact != .none {
             t.assignee = who
             t.contact = .none
-            t.assigned_by = if who != .none { .some(invoker) } else { .none }
-            t.assigned_at = if who != .none { .some(now) } else { .none }
+            let to_agent = if let w = who { w.kind() == .agent } else { false }
+            t.assigned_by = if to_agent { .some(invoker) } else { .none }
+            t.assigned_at = if to_agent { .some(now) } else { .none }
         }
     }
 }
