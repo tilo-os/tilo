@@ -22240,6 +22240,7 @@ dependencies = [
  "tilo-recurrence",
  "tilo-reference",
  "tilo-resource",
+ "tilo-resource-store",
  "tilo-sheet",
  "tilo-spellcheck",
  "tilo-test-env",

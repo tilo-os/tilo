@@ -85,16 +85,7 @@ pub fn split_id(text: &str) -> Option<(&str, Option<&str>)> {
     // A device's resource is kept under the device (`devices/<device>/<app>/…`), so its document
     // is every step up to its last: an item of it follows that. Any other document is one step.
     if text.starts_with("devices/") {
-        let (head, tail) = text.rsplit_once('/')?;
-        if head.is_empty() || tail.is_empty() {
-            return None;
-        }
-        // The document itself, a root a device keeps its own, has no item after it.
-        if tail.starts_with("root-") {
-            return Some((text, None));
-        }
-        let item = tail.split_once(':').map_or(tail, |(_, item)| item);
-        return (!item.is_empty()).then_some((head, Some(item)));
+        return tilo_resource_store::split_device_id(text);
     }
     let Some((doc, rest)) = text.split_once('/') else {
         return (!text.is_empty()).then_some((text, None));

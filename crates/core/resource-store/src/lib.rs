@@ -25,6 +25,7 @@
 
 pub mod admit;
 pub mod history;
+pub mod id;
 mod index;
 mod port;
 mod query;
@@ -39,6 +40,7 @@ pub use admit::{
     Admit, Group, Origin, Proposal, Received, Refusal, Stamp, Touch, Touched, touches,
 };
 pub use history::{Nested, Version, VersionKind, touched_by};
+pub use id::{doc_of, item_of, split_device_id};
 pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};
 pub use port::{LocalPort, Port};
 pub use query::{Absent, Cursor, Filter, Order, Page, Query, Sort};
