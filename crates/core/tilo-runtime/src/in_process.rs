@@ -15,12 +15,17 @@ use std::time::Duration;
 use crate::daemon::Running;
 use anyhow::{Context as _, Result};
 use serde_json::Value;
+use tilo_actions::remote::{ReceiptStatus, person_telling};
 use tilo_api::calls::{Calls, Reach};
 use tilo_device_identity::login::Place;
 
 /// How long a view waits for the person's services to start in the daemon before their apps read
 /// as none: the daemon starts them on its own thread, and the view asks again.
 const SERVICES_STARTING: Duration = Duration::from_secs(2);
+
+/// How long one of the person's own actions is waited for: each is answered at once, off a store
+/// this device reaches, and a longer wait is a host that is not answering.
+const PERSON_ACTION_WAIT_MS: u32 = 10_000;
 
 /// What an app's view reads of the device: whether a person's identity has it, and their
 /// workspaces, by id and name.
@@ -163,6 +168,145 @@ impl Device {
         Ok(apps)
     }
 
+    /// A call of one of the person's own actions in `workspace`, made as them on this device,
+    /// through the one dispatch every call of theirs takes (`tilo.telling`'s, whose answers the
+    /// workspace's host keeps, and any action of the workspace itself): the same path the
+    /// desktop's shell and a program of the person's reach it by, so what the host decides for
+    /// them decides this too.
+    ///
+    /// # Errors
+    /// The person's services did not start, the action was refused or failed, or it did not
+    /// answer.
+    pub fn person_action(
+        &self,
+        workspace: &str,
+        provider: &str,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<Value> {
+        let running = self
+            .running
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("the daemon is stopped"))?;
+        let services = running
+            .services(SERVICES_STARTING)
+            .context("the person's services did not start")?;
+        let pending = services.person_action(
+            workspace,
+            provider,
+            resource,
+            action,
+            arguments,
+            PERSON_ACTION_WAIT_MS,
+        )?;
+        let receipt = self
+            .runtime
+            .block_on(pending)
+            .ok_or_else(|| anyhow::anyhow!("the action's answer was abandoned"))?
+            .map_err(|error| {
+                anyhow::anyhow!("the action did not reach the workspace's host: {error}")
+            })?;
+        match receipt.status {
+            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
+            ReceiptStatus::Failed { error } => Err(anyhow::anyhow!("{error:?}")),
+            ReceiptStatus::Rejected { error } => Err(anyhow::anyhow!("{error}")),
+            ReceiptStatus::Cancelled { message } => Err(anyhow::anyhow!(
+                "{}",
+                message.unwrap_or_else(|| "the action was cancelled".to_owned())
+            )),
+            ReceiptStatus::Accepted => Err(anyhow::anyhow!("the action did not answer in time")),
+        }
+    }
+
+    /// What the person was told in `workspace` after the place `after`, waiting up to `wait_ms`
+    /// for their log to move: their own log, read as one of their devices asks it, on the device
+    /// that names itself `device`. Asking is looking, for as long as the ask waits.
+    ///
+    /// # Errors
+    /// As [`Self::person_action`], or the answer does not read.
+    pub fn told(
+        &self,
+        workspace: &str,
+        after: u64,
+        wait_ms: u64,
+        device: &str,
+    ) -> Result<person_telling::ToldList> {
+        let asking = person_telling::ListAfter {
+            after,
+            wait_ms: Some(wait_ms),
+            device: device.to_owned(),
+        };
+        let answer = self.person_action(
+            workspace,
+            person_telling::PROVIDER,
+            person_telling::TOLD,
+            person_telling::LIST,
+            arguments_of(&asking)?,
+        )?;
+        serde_json::from_value(answer).context("what the person was told does not read")
+    }
+
+    /// Where this device is reached while its app is closed: the web push `endpoint` a phone's
+    /// UnifiedPush distributor gave it, with the P-256 key its pushes are encrypted for and the
+    /// auth secret (`p256dh` and `auth`, in hex), handed over as one of the person's addresses.
+    /// Answered with the addresses their devices are reached at.
+    ///
+    /// # Errors
+    /// As [`Self::person_action`], or the address was refused.
+    pub fn register_web_push_address(
+        &self,
+        workspace: &str,
+        endpoint: &str,
+        p256dh: &str,
+        auth: &str,
+    ) -> Result<tilo_workspace_service::workspaces::push_addresses::AddressList> {
+        use tilo_workspace_service::workspaces::push_addresses as addresses;
+        let register = addresses::Register::WebPush {
+            endpoint: endpoint.to_owned(),
+            key: addresses::PushKey {
+                p256dh: p256dh.to_owned(),
+                auth: auth.to_owned(),
+            },
+        };
+        let answer = self.person_action(
+            workspace,
+            person_telling::PROVIDER,
+            addresses::RESOURCE,
+            addresses::REGISTER,
+            arguments_of(&register)?,
+        )?;
+        serde_json::from_value(answer)
+            .context("where the person's devices are reached does not read")
+    }
+
+    /// The person answered the thing `told` on this device: it waits for them no more, and what
+    /// showed it elsewhere is taken back.
+    ///
+    /// # Errors
+    /// As [`Self::person_action`].
+    pub fn acknowledge_told(
+        &self,
+        workspace: &str,
+        told: &str,
+        device: &str,
+        by: &str,
+    ) -> Result<person_telling::Told> {
+        let acknowledged = person_telling::Acknowledge {
+            told: told.to_owned(),
+            device: device.to_owned(),
+            by: by.to_owned(),
+        };
+        let answer = self.person_action(
+            workspace,
+            person_telling::PROVIDER,
+            person_telling::TOLD,
+            person_telling::ACKNOWLEDGE,
+            arguments_of(&acknowledged)?,
+        )?;
+        serde_json::from_value(answer).context("what was acknowledged does not read")
+    }
+
     /// Sign this device in with `ticket`, as `tilo login` does: its daemon logs in
     /// (`devices#logIn`), whether or not a person's identity has the device yet, and its person's
     /// part starts again as the device the login made, entering where the ticket says. The daemon
@@ -237,3 +381,13 @@ impl Device {
 /// The agent such a device's login names: the person's own, as `tilo login` names it with no agent
 /// given.
 const AGENT: &str = "Your agent";
+
+/// `value` as the arguments of an action, which are one JSON object.
+fn arguments_of(value: &impl serde::Serialize) -> Result<serde_json::Map<String, Value>> {
+    match serde_json::to_value(value).context("the action's arguments")? {
+        Value::Object(arguments) => Ok(arguments),
+        other => Err(anyhow::anyhow!(
+            "the action's arguments are an object, not {other}"
+        )),
+    }
+}

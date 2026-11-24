@@ -43,7 +43,7 @@ use tilo_actions::remote::person_telling::Told;
 use tilo_lock::MutexRecover as _;
 
 use crate::workspaces::Workspaces;
-use crate::workspaces::push_addresses::{PushAddress, PushEnvironment};
+use crate::workspaces::push_addresses::{PushAddress, PushEnvironment, PushKind};
 
 /// What this sender is called where a telling is written down on the thing
 /// told.
@@ -232,17 +232,11 @@ fn clip(text: &str, most: usize) -> &str {
 
 /// What the thing `id` is called in a push to the device at `address`: a
 /// name only that device can tie to the thing, made with the device's own
-/// secret. A thing's id says which workspace it came from and what caused
-/// it, so the id itself is in no push; and one thing has another name on
-/// each device, so nothing ties the pushes of one person together.
+/// secret ([`tilo_actions::remote::person_telling::known_as`], which the
+/// device computes the same name with for what it shows itself).
 fn name_for(address: &PushAddress, id: &str) -> Option<String> {
     let secret = hex::decode(&address.auth).ok()?;
-    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &secret);
-    let mut named = ring::hmac::Context::with_key(&key);
-    named.update(b"tilo told\0");
-    named.update(id.as_bytes());
-    let tag = named.sign();
-    Some(URL_SAFE_NO_PAD.encode(tag.as_ref().get(..16)?))
+    Some(tilo_actions::remote::person_telling::known_as(&secret, id))
 }
 
 /// What a push of `told` says to the device at `address` alone, encrypted
@@ -279,10 +273,11 @@ fn sealed(told: &Told, address: &PushAddress) -> Option<String> {
     if plain.len() > MAX_SEALED {
         return None;
     }
+    let (p256dh, auth) = address.subscription_key().ok()?;
     let device = PushSubscription {
         endpoint: String::new(),
-        p256dh: hex::decode(&address.p256dh).ok()?,
-        auth: hex::decode(&address.auth).ok()?,
+        p256dh,
+        auth,
     };
     let message = crate::web_push::encrypt(&device, &plain).ok()?;
     Some(STANDARD.encode(message))
@@ -482,12 +477,13 @@ impl ApplePush {
     fn request(
         &self,
         address: &PushAddress,
+        environment: PushEnvironment,
         push: &Push<'_>,
         body: Vec<u8>,
         bearer: &str,
         now_secs: u64,
     ) -> Result<hyper::Request<Full<Bytes>>, String> {
-        let reached = match address.environment {
+        let reached = match environment {
             PushEnvironment::Production => &self.inner.service.production,
             PushEnvironment::Development => &self.inner.service.development,
         };
@@ -524,14 +520,17 @@ impl ApplePush {
     /// Send `body` as `push` to the device at `address`.
     async fn post(&self, address: &PushAddress, push: &Push<'_>, body: Vec<u8>) -> Answer {
         let now_secs = tilo_clock::unix_now_ms() / 1000;
+        let Some(environment) = address.environment else {
+            return Answer::Failed("an Apple push address names its environment".to_owned());
+        };
         let Some(bearer) = self.bearer(now_secs) else {
             return Answer::Failed("the push could not be signed".to_owned());
         };
-        let request = match self.request(address, push, body, &bearer, now_secs) {
+        let request = match self.request(address, environment, push, body, &bearer, now_secs) {
             Ok(request) => request,
             Err(reason) => return Answer::Failed(reason),
         };
-        let mut sender = match self.connected(address.environment).await {
+        let mut sender = match self.connected(environment).await {
             Ok(sender) => sender,
             Err(reason) => return Answer::Failed(reason),
         };
@@ -610,7 +609,7 @@ impl ApplePush {
         }
         let mut took: Vec<String> = Vec::new();
         for address in self.inner.workspaces.push_addresses(person) {
-            if !self.inner.topics.contains(&address.topic) {
+            if address.kind != PushKind::Apns || !self.inner.topics.contains(&address.topic) {
                 continue;
             }
             let Some(name) = name_for(&address, &told.id) else {
@@ -635,8 +634,12 @@ impl ApplePush {
     /// showed one of them on is sent one push that shows nothing and names
     /// the thing as gone, once.
     async fn gone(&self, person: &[u8; 32], ids: &[String]) {
-        for (address, shown) in self.inner.workspaces.push_taken_back(person, ids) {
-            if !self.inner.topics.contains(&address.topic) {
+        for (address, shown) in self
+            .inner
+            .workspaces
+            .push_taken_back(person, ids, PushKind::Apns)
+        {
+            if address.kind != PushKind::Apns || !self.inner.topics.contains(&address.topic) {
                 continue;
             }
             for id in shown {

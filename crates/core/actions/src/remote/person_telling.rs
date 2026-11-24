@@ -684,6 +684,54 @@ impl Told {
     }
 }
 
+/// What a telling says of `told`, wherever it is shown off the host: its
+/// title and its body. The words are the thing's own where they may leave
+/// the host; where a person keeps them on the host, the body says only
+/// where to look. A device of theirs that runs shows the same words as a
+/// push does, so a person reads one telling one way.
+#[must_use]
+pub fn words_outside(told: &Told) -> (String, String) {
+    let name = told
+        .from
+        .as_ref()
+        .map(|from| from.name.trim())
+        .filter(|name| !name.is_empty());
+    let title = if told.title.trim().is_empty() {
+        match (told.kind, name) {
+            (Kind::Question, Some(name)) => format!("{name} needs you"),
+            (Kind::Question, None) => "An agent needs you".to_owned(),
+            (Kind::Mention, Some(name)) => format!("{name} mentioned you"),
+            (_, Some(name)) => name.to_owned(),
+            (_, None) => "Tilo".to_owned(),
+        }
+    } else {
+        told.title.trim().to_owned()
+    };
+    let body = if told.outside {
+        told.words.clone()
+    } else {
+        "Open Tilo to see it.".to_owned()
+    };
+    (title, body)
+}
+
+/// What the thing `id` is called in what one device shows and is pushed:
+/// a name only that device can tie to the thing, made with the device's
+/// own secret (its address's auth). A thing's id says which workspace it
+/// came from and what caused it, so the id itself is in no push; and one
+/// thing has another name on each device, so nothing ties the pushes of
+/// one person together.
+#[must_use]
+pub fn known_as(auth: &[u8], id: &str) -> String {
+    let key = blake3::hash(auth);
+    let mut hasher = blake3::Hasher::new_keyed(key.as_bytes());
+    hasher.update(b"tilo told\0");
+    hasher.update(id.as_bytes());
+    let tag = hasher.finalize();
+    // A tag names it on the device alone: short enough for a notification.
+    tag.to_hex().get(..16).unwrap_or_default().to_owned()
+}
+
 /// Something to tell the person.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

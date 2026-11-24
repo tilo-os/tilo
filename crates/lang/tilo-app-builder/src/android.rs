@@ -879,12 +879,21 @@ pub struct AndroidMetadata {
     pub version_code: u32,
     /// Android permissions the manifest's sandbox grants map to.
     pub permissions: Vec<&'static str>,
+    /// Whether pushes and the taps on them reach this app, through a `UnifiedPush` distributor the
+    /// person installed: the app's manifest declares the connector's receiver then, and nothing
+    /// of it is in an app that does not.
+    pub unified_push: bool,
 }
 
 impl AndroidMetadata {
-    pub fn from_manifest(package: &str, manifest: &tilo_app_package::Manifest) -> Result<Self> {
+    pub fn from_manifest(
+        package: &str,
+        manifest: &tilo_app_package::Manifest,
+        unified_push: bool,
+    ) -> Result<Self> {
         let id = &manifest.package.id;
         Ok(Self {
+            unified_push,
             package: package.to_owned(),
             application_id: application_id(id)?,
             label: manifest
@@ -1050,6 +1059,38 @@ pub fn android_manifest(
     } else {
         String::new()
     };
+    // An app that takes pushes from a UnifiedPush distributor the person installed registers with
+    // it as the connector protocol says, and receives what it carries here.
+    // A push's distributor is another app: naming its registration action is what lets this one
+    // see it.
+    let queries = if app.unified_push {
+        r#"
+        <intent>
+            <action android:name="org.unifiedpush.android.connector.REGISTER" />
+        </intent>"#
+    } else {
+        ""
+    };
+    let push = if app.unified_push {
+        r#"
+        <!-- Pushes reach this app through the UnifiedPush distributor its person installed, and
+             each one is shown as a notification by Tilo's Rust. -->
+        <meta-data android:name="so.tilo.unified-push" android:value="true" />
+        <receiver
+            android:name="so.tilo.android.TiloPush"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+                <action android:name="org.unifiedpush.android.distributor.DISTRIBUTOR" />
+            </intent-filter>
+        </receiver>
+"#
+    } else {
+        ""
+    };
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -1068,7 +1109,7 @@ pub fn android_manifest(
     <queries>
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
-        </intent>
+        </intent>{queries}
     </queries>
 
     <application
@@ -1106,12 +1147,15 @@ pub fn android_manifest(
             android:authorities="{id}.tilo.files"
             android:exported="false"
             android:grantUriPermissions="true" />
-{documents}    </application>
+{documents}{push}    </application>
 </manifest>
 "#,
         code = app.version_code,
         name = xml_escape(&app.version_name),
         label = xml_escape(&app.label),
+        push = push,
+        queries = queries,
+        documents = documents,
     )
 }
 
@@ -1502,7 +1546,8 @@ pub fn build(start: &Path, request: &BuildRequest) -> Result<AndroidBuild> {
         .with_context(|| format!("reading {}", spec.manifest_path.display()))?;
     let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_source)
         .with_context(|| format!("parsing {}", spec.manifest_path.display()))?;
-    let metadata = AndroidMetadata::from_manifest(&spec.cargo_package, &manifest)?;
+    let metadata =
+        AndroidMetadata::from_manifest(&spec.cargo_package, &manifest, spec.unified_push)?;
     check_library_entry(&app_dir)?;
     super::validate_profile_name(&request.profile)?;
 
@@ -2935,7 +2980,8 @@ type = "gui"
         phase metadata_comes_from_the_manifest;
         {
             let metadata =
-                AndroidMetadata::from_manifest("field-notes", &manifest("off", "")).expect("metadata");
+                AndroidMetadata::from_manifest("field-notes", &manifest("off", ""), false)
+                    .expect("metadata");
             assert_eq!(metadata.application_id, "so.example.field_notes");
             assert_eq!(metadata.label, "Field Notes");
             assert_eq!(metadata.version_name, "1.2.3");
@@ -2988,7 +3034,8 @@ type = "gui"
         phase the_manifest_names_the_library_and_escapes_text;
         {
             let mut metadata =
-                AndroidMetadata::from_manifest("field-notes", &manifest("off", "")).expect("metadata");
+                AndroidMetadata::from_manifest("field-notes", &manifest("off", ""), false)
+                    .expect("metadata");
             metadata.label = "Notes & <Things>".to_owned();
             let xml = android_manifest(&metadata, "field_notes", false, true);
             assert!(xml.contains(r#"package="so.example.field_notes""#));
@@ -3005,6 +3052,15 @@ type = "gui"
             assert!(!without.contains("DOCUMENTS_PROVIDER"));
             assert!(xml.contains("android.permission.POST_NOTIFICATIONS"));
             assert!(!xml.contains("android.permission.INTERNET"));
+            // No push reaches an app that did not declare it, and an app that did takes its
+            // distributor's messages and taps.
+            assert!(!xml.contains("so.tilo.android.TiloPush"));
+            let mut pushing = metadata.clone();
+            pushing.unified_push = true;
+            let xml = android_manifest(&pushing, "field_notes", false, false);
+            assert!(xml.contains(r#"android:name="so.tilo.android.TiloPush""#));
+            assert!(xml.contains("org.unifiedpush.android.connector.MESSAGE"));
+            assert!(xml.contains(r#"android:name="so.tilo.unified-push" android:value="true""#));
         }
 
         phase the_default_icon_is_a_disc_in_the_ids_colour;

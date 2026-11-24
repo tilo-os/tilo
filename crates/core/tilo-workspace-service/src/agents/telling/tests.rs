@@ -15,7 +15,7 @@
 )]
 
 use tilo_actions::remote::person_telling::{
-    Cause, Fact, Holds, Importance, Line, ListAfter, Tell, Teller as ToldBy, WhyCode,
+    Cause, Fact, Holds, Importance, Kind, Line, ListAfter, Tell, Teller as ToldBy, WhyCode,
 };
 
 use super::*;

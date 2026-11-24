@@ -2,13 +2,13 @@
 //!
 //! An app that is closed hears of nothing unless the push service of its
 //! system carries it there. A device of a person's hands this server what
-//! such a push needs: the token that service gave the app on that device,
-//! which of the service's environments the token belongs to, the app it
-//! was given to, and a key of the device's own that the words of a push
-//! are encrypted for, so that nobody between reads them. The server keeps
-//! a few per person in the person's own store, beside their rule and
-//! their log, because it is the server that tells while every device of
-//! theirs is off.
+//! such a push needs: where the push goes — the token that service gave the
+//! app on that device, with which of the service's environments and which
+//! app it belongs to, or the web push endpoint the device subscribed with —
+//! and a key of the device's own that the words of a push are encrypted
+//! for, so that nobody between reads them. The server keeps a few per
+//! person in the person's own store, beside their rule and their log,
+//! because it is the server that tells while every device of theirs is off.
 //!
 //! An address is its device's own. The device it is kept for is the one
 //! the transport certified, never one a request names, so no device hands
@@ -17,7 +17,7 @@
 //! a caller asking for something that does not exist is answered. What the
 //! person reads back names their devices and never an address or a key.
 //!
-//! An address reaches one person: a token handed over for a person is no
+//! An address reaches one person: one handed over for a person is no
 //! longer anybody else's, so an app whose person signed out and another
 //! signed in tells only the one who is there. It is forgotten when its
 //! device hands over another, when its person removes it, when the
@@ -55,6 +55,8 @@ const MIN_TOKEN_HEX: usize = 16;
 const MAX_TOKEN_HEX: usize = 200;
 /// The longest name of an app an address was given to, in bytes.
 const MAX_TOPIC_BYTES: usize = 255;
+/// The longest web push endpoint taken, in bytes: the sender's own limit.
+pub const MAX_ENDPOINT_BYTES: usize = 1024;
 /// How many things a push showed on one device are remembered, so they
 /// can be taken back: the newest are.
 const SHOWN_KEPT: usize = 64;
@@ -69,6 +71,20 @@ pub enum PushEnvironment {
     Production,
 }
 
+/// How a device is reached while its app is closed: the push service of
+/// its system, by the token that service gave the app there, or a web push
+/// endpoint the device itself subscribed with (RFC 8030), as a phone's
+/// UnifiedPush distributor gives one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PushKind {
+    /// Apple's push service, by the token it gave the app.
+    #[default]
+    Apns,
+    /// A web push service, by the endpoint the device subscribed with.
+    WebPush,
+}
+
 /// The key the words of a push to one device are encrypted for.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -81,17 +97,31 @@ pub struct PushKey {
 
 /// Where the asking device is reached: what [`REGISTER`] takes. It names
 /// no device: the address is kept for the device that hands it over.
+///
+/// One action carries both kinds a push is sent by: a token of the app's
+/// push service, or the web push endpoint the device subscribed with. The
+/// kind is the address's own, and what it names is exactly that kind's.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Register {
-    /// The token the push service gave the app on this device, in hex.
-    pub token: String,
-    /// The environment the token belongs to.
-    pub environment: PushEnvironment,
-    /// The app the token was given to, by its identifier.
-    pub topic: String,
-    /// The key the words of a push to this device are encrypted for.
-    pub key: PushKey,
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Register {
+    /// The token Apple's push service gave the app on this device.
+    Apns {
+        /// The token the push service gave the app on this device, in hex.
+        token: String,
+        /// The environment the token belongs to.
+        environment: PushEnvironment,
+        /// The app the token was given to, by its identifier.
+        topic: String,
+        /// The key the words of a push to this device are encrypted for.
+        key: PushKey,
+    },
+    /// The web push endpoint the device subscribed with.
+    WebPush {
+        /// The push service's `https` address for this device.
+        endpoint: String,
+        /// The key the words of a push to this device are encrypted for.
+        key: PushKey,
+    },
 }
 
 /// Which device's address to forget: what [`UNREGISTER`] takes.
@@ -111,9 +141,14 @@ pub struct Unregister {
 pub struct Listed {
     /// The device, by the key the transport certified, in hex.
     pub device: String,
-    /// The environment its address belongs to.
-    pub environment: PushEnvironment,
-    /// The app its address was given to.
+    /// How it is reached: Apple's push service, or a web push endpoint it
+    /// subscribed with.
+    pub kind: PushKind,
+    /// The environment its address belongs to, for Apple's push service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<PushEnvironment>,
+    /// The app its address was given to, for Apple's push service.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub topic: String,
     /// When it handed its address over, in milliseconds since the epoch.
     pub at_ms: u64,
@@ -136,11 +171,22 @@ pub struct AddressList {
 pub struct PushAddress {
     /// The device, by the key the transport certified, in hex.
     pub device: String,
-    /// The token the push service gave the app on it, in lowercase hex.
+    /// How it is reached.
+    #[serde(default)]
+    pub kind: PushKind,
+    /// The token the push service gave the app on it, in lowercase hex: for
+    /// Apple's push service alone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub token: String,
+    /// The web push endpoint the device subscribed with: for a web push
+    /// address alone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub endpoint: String,
     /// The environment the token belongs to.
-    pub environment: PushEnvironment,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<PushEnvironment>,
     /// The app the token was given to.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub topic: String,
     /// The device's P-256 public key, uncompressed, in hex.
     pub p256dh: String,
@@ -152,6 +198,29 @@ pub struct PushAddress {
     /// by their ids, the newest last.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shown: Vec<String>,
+}
+
+impl PushAddress {
+    /// What reaches this device: the token or the endpoint its push is
+    /// sent to, as the sender reads it and as a push service names it when
+    /// it is gone.
+    #[must_use]
+    pub fn reached_as(&self) -> &str {
+        match self.kind {
+            PushKind::Apns => &self.token,
+            PushKind::WebPush => &self.endpoint,
+        }
+    }
+
+    /// The key the words of a push to this device are encrypted for.
+    ///
+    /// # Errors
+    /// The stored key or secret is not one.
+    pub fn subscription_key(&self) -> Result<(Vec<u8>, Vec<u8>), String> {
+        let p256dh = hex::decode(&self.p256dh).map_err(|error| error.to_string())?;
+        let auth = hex::decode(&self.auth).map_err(|error| error.to_string())?;
+        Ok((p256dh, auth))
+    }
 }
 
 impl fmt::Debug for PushAddress {
@@ -194,25 +263,68 @@ fn person_named(name: &std::ffi::OsStr) -> Option<[u8; 32]> {
 impl Register {
     /// This, as the address of `device` handed over at `now_ms`.
     fn checked(self, device: &[u8; 32], now_ms: u64) -> Result<PushAddress, String> {
-        let token = self.token.trim().to_ascii_lowercase();
-        // A token becomes a part of the address a push is sent to: hex
-        // digits and nothing else.
-        if !(MIN_TOKEN_HEX..=MAX_TOKEN_HEX).contains(&token.len())
-            || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err("An address is the push service's token for the device, in hex".to_owned());
-        }
-        let topic = self.topic.trim();
-        let named = !topic.is_empty()
-            && topic.len() <= MAX_TOPIC_BYTES
-            && topic
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'));
-        if !named {
-            return Err("An address names the app it was given to".to_owned());
-        }
-        let p256dh = hex_of(&self.key.p256dh, 65).filter(|key| key.starts_with("04"));
-        let auth = hex_of(&self.key.auth, 16);
+        let (kind, token, endpoint, environment, topic, key) = match self {
+            Self::Apns {
+                token,
+                environment,
+                topic,
+                key,
+            } => {
+                let token = token.trim().to_ascii_lowercase();
+                // A token becomes a part of the address a push is sent to: hex
+                // digits and nothing else.
+                if !(MIN_TOKEN_HEX..=MAX_TOKEN_HEX).contains(&token.len())
+                    || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err(
+                        "An address is the push service's token for the device, in hex".to_owned(),
+                    );
+                }
+                let topic = topic.trim();
+                let named = !topic.is_empty()
+                    && topic.len() <= MAX_TOPIC_BYTES
+                    && topic
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'));
+                if !named {
+                    return Err("An address names the app it was given to".to_owned());
+                }
+                (
+                    PushKind::Apns,
+                    token,
+                    String::new(),
+                    Some(environment),
+                    topic.to_owned(),
+                    key,
+                )
+            }
+            Self::WebPush { endpoint, key } => {
+                let endpoint = endpoint.trim();
+                // The endpoint is posted to as given: an `https` address of
+                // printable characters and nothing else, nothing after it.
+                let address = endpoint.strip_prefix("https://").unwrap_or_default();
+                let named = !address.is_empty()
+                    && endpoint.len() <= MAX_ENDPOINT_BYTES
+                    && endpoint
+                        .bytes()
+                        .all(|byte| matches!(byte, 0x21..=0x7e) && byte != b'#');
+                if !named {
+                    return Err(
+                        "An address is the https endpoint the device subscribed with".to_owned(),
+                    );
+                }
+                (
+                    PushKind::WebPush,
+                    String::new(),
+                    endpoint.to_owned(),
+                    None,
+                    String::new(),
+                    key,
+                )
+            }
+        };
+        let p256dh = hex_of(&key.p256dh, 65).filter(|key| key.starts_with("04"));
+        let auth = hex_of(&key.auth, 16);
         let (Some(p256dh), Some(auth)) = (p256dh, auth) else {
             return Err(
                 "An address carries the device's P-256 key and its 16-byte secret, in hex"
@@ -221,9 +333,11 @@ impl Register {
         };
         Ok(PushAddress {
             device: hex::encode(device),
+            kind,
             token,
-            environment: self.environment,
-            topic: topic.to_owned(),
+            endpoint,
+            environment,
+            topic,
             p256dh,
             auth,
             at_ms: now_ms,
@@ -266,11 +380,12 @@ fn write_kept(root: &Path, kept: &Kept) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Take the address `token` out of what is kept under `root`.
-fn drop_token(root: &Path, token: &str) {
+/// Take the address reached at `reach` out of what is kept under `root`.
+fn drop_reach(root: &Path, reach: &str) {
     let mut kept = read_kept(root);
     let had = kept.addresses.len();
-    kept.addresses.retain(|address| address.token != token);
+    kept.addresses
+        .retain(|address| address.reached_as() != reach);
     if kept.addresses.len() != had
         && let Err(error) = write_kept(root, &kept)
     {
@@ -314,11 +429,11 @@ impl Workspaces {
 
     /// Keep `register` as where `device`, a device of `person`'s, is
     /// reached. It takes the place of what that device handed over before,
-    /// and a token that was another person's is theirs no more. The newest
-    /// [`MAX_ADDRESSES`] of a person are kept.
+    /// and an address that was another person's is theirs no more. The
+    /// newest [`MAX_ADDRESSES`] of a person are kept.
     ///
     /// # Errors
-    /// The token, the app's name or the key is not what one is, or the
+    /// The address, the app's name or the key is not what one is, or the
     /// address could not be kept.
     pub fn register_push_address(
         &self,
@@ -329,34 +444,34 @@ impl Workspaces {
         let mut address = register.checked(device, tilo_clock::unix_now_ms())?;
         let root = self.person_settings_root(person);
         let _writing = self.inner.telling.writing.lock_recover();
-        if let Some(before) = self.claim_token(person, &address.token) {
-            drop_token(&self.person_settings_root(&before), &address.token);
+        let reach = address.reached_as().to_owned();
+        if let Some(before) = self.claim_reach(person, &reach) {
+            drop_reach(&self.person_settings_root(&before), &reach);
         }
         let Kept { addresses } = read_kept(&root);
-        // What the device handed over before, and the token wherever else
+        // What the device handed over before, and the address wherever else
         // it was kept, give way to this.
         let (replaced, mut stay): (Vec<PushAddress>, Vec<PushAddress>) = addresses
             .into_iter()
-            .partition(|known| known.device == address.device || known.token == address.token);
-        // The same device handing over the same token again, as an app
+            .partition(|known| known.device == address.device || known.reached_as() == reach);
+        // The same device handing over the same address again, as an app
         // does whenever it starts, keeps what is remembered of it.
         if let Some(known) = replaced
             .iter()
-            .find(|known| known.device == address.device && known.token == address.token)
+            .find(|known| known.device == address.device && known.reached_as() == reach)
         {
             address.shown.clone_from(&known.shown);
         }
-        let token = address.token.clone();
         stay.insert(0, address);
         let over = stay.split_off(MAX_ADDRESSES.min(stay.len()));
         write_kept(&root, &Kept { addresses: stay })?;
         let gone: Vec<String> = replaced
             .into_iter()
             .chain(over)
-            .map(|known| known.token)
-            .filter(|known| *known != token)
+            .map(|known| known.reached_as().to_owned())
+            .filter(|known| *known != reach)
             .collect();
-        self.unclaim_tokens(person, &gone);
+        self.unclaim_reaches(person, &gone);
         Ok(())
     }
 
@@ -379,6 +494,7 @@ impl Workspaces {
                 .map(|address| Listed {
                     this_device: address.device == asking,
                     device: address.device,
+                    kind: address.kind,
                     environment: address.environment,
                     topic: address.topic,
                     at_ms: address.at_ms,
@@ -402,17 +518,21 @@ impl Workspaces {
             tracing::warn!(%error, "telling: a forgotten address is still kept");
             return 0;
         }
-        let tokens: Vec<String> = forgotten.into_iter().map(|address| address.token).collect();
-        self.unclaim_tokens(person, &tokens);
-        tokens.len()
+        let gone: Vec<String> = forgotten
+            .into_iter()
+            .map(|address| address.reached_as().to_owned())
+            .collect();
+        self.unclaim_reaches(person, &gone);
+        gone.len()
     }
 
-    /// The push service said the address `token` of `person`'s is gone,
-    /// since `gone_at_ms` where it names the moment: it is forgotten,
-    /// unless its device handed it over after that moment.
-    pub fn forget_push_address(&self, person: &[u8; 32], token: &str, gone_at_ms: Option<u64>) {
+    /// The push service said the address `reach` of `person`'s is gone
+    /// (its token, or its endpoint), since `gone_at_ms` where it names the
+    /// moment: it is forgotten, unless its device handed it over after that
+    /// moment.
+    pub fn forget_push_address(&self, person: &[u8; 32], reach: &str, gone_at_ms: Option<u64>) {
         self.forget_addresses(person, |address| {
-            address.token == token && gone_at_ms.is_none_or(|at| address.at_ms <= at)
+            address.reached_as() == reach && gone_at_ms.is_none_or(|at| address.at_ms <= at)
         });
     }
 
@@ -428,9 +548,10 @@ impl Workspaces {
     }
 
     /// A push showed the thing `id` on the devices of `person`'s that are
-    /// reached at `tokens`: remembered, so it can be taken back from them.
-    pub fn push_shown(&self, person: &[u8; 32], tokens: &[String], id: &str) {
-        if tokens.is_empty() {
+    /// reached at `reaches` (their tokens or endpoints): remembered, so it
+    /// can be taken back from them.
+    pub fn push_shown(&self, person: &[u8; 32], reaches: &[String], id: &str) {
+        if reaches.is_empty() {
             return;
         }
         let root = self.person_settings_root(person);
@@ -438,7 +559,7 @@ impl Workspaces {
         let mut kept = read_kept(&root);
         let mut marked = false;
         for address in &mut kept.addresses {
-            if !tokens.contains(&address.token) {
+            if !reaches.iter().any(|reach| reach == address.reached_as()) {
                 continue;
             }
             address.shown.retain(|shown| shown != id);
@@ -452,14 +573,16 @@ impl Workspaces {
         }
     }
 
-    /// The addresses of `person`'s on whose devices a push showed one of
-    /// the things `ids`, each with those of the ids it showed, which are
-    /// remembered no more: what is taken back is taken back once.
+    /// The addresses of `person`'s of the kind `kind` on whose devices a
+    /// push showed one of the things `ids`, each with those of the ids it
+    /// showed, which are remembered no more: what is taken back is taken
+    /// back once, and only by the sender that showed it.
     #[must_use]
     pub fn push_taken_back(
         &self,
         person: &[u8; 32],
         ids: &[String],
+        kind: PushKind,
     ) -> Vec<(PushAddress, Vec<String>)> {
         if ids.is_empty() {
             return Vec::new();
@@ -469,6 +592,9 @@ impl Workspaces {
         let mut kept = read_kept(&root);
         let mut taken = Vec::new();
         for address in &mut kept.addresses {
+            if address.kind != kind {
+                continue;
+            }
             let (gone, stay): (Vec<String>, Vec<String>) = std::mem::take(&mut address.shown)
                 .into_iter()
                 .partition(|shown| ids.contains(shown));
@@ -485,9 +611,9 @@ impl Workspaces {
         taken
     }
 
-    /// Whose each address this server keeps is, by its token, read from
-    /// the stores of its people.
-    fn tokens_kept(&self) -> HashMap<String, [u8; 32]> {
+    /// Whose each address this server keeps is, by what reaches it, read
+    /// from the stores of its people.
+    fn reaches_kept(&self) -> HashMap<String, [u8; 32]> {
         let mut whose = HashMap::new();
         let Ok(people) = std::fs::read_dir(self.inner.dir.join("people")) else {
             return whose;
@@ -501,34 +627,34 @@ impl Workspaces {
                 continue;
             };
             for address in read_kept(&root).addresses {
-                whose.insert(address.token, person);
+                whose.insert(address.reached_as().to_owned(), person);
             }
         }
         whose
     }
 
-    /// Note that the address `token` is `person`'s from now on, and answer
-    /// whose it was when it was somebody else's.
-    fn claim_token(&self, person: &[u8; 32], token: &str) -> Option<[u8; 32]> {
+    /// Note that the address reached at `reach` is `person`'s from now on,
+    /// and answer whose it was when it was somebody else's.
+    fn claim_reach(&self, person: &[u8; 32], reach: &str) -> Option<[u8; 32]> {
         let before = self
             .inner
             .telling
             .reached
             .lock_recover()
-            .get_or_insert_with(|| self.tokens_kept())
-            .insert(token.to_owned(), *person);
+            .get_or_insert_with(|| self.reaches_kept())
+            .insert(reach.to_owned(), *person);
         before.filter(|before| before != person)
     }
 
-    /// Note that the addresses `tokens` are `person`'s no more.
-    fn unclaim_tokens(&self, person: &[u8; 32], tokens: &[String]) {
+    /// Note that the addresses reached at `reaches` are `person`'s no more.
+    fn unclaim_reaches(&self, person: &[u8; 32], reaches: &[String]) {
         self.inner
             .telling
             .reached
             .lock_recover()
             .iter_mut()
             .for_each(|whose| {
-                whose.retain(|token, theirs| theirs != person || !tokens.contains(token));
+                whose.retain(|reach, theirs| theirs != person || !reaches.contains(reach));
             });
     }
 }

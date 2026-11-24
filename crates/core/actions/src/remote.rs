@@ -1275,6 +1275,27 @@ pub fn workspace_provider(workspace: &str) -> String {
 /// catalogue read and an action called by its address.
 pub const ACTIONS_PROVIDER: &str = "tilo.actions";
 
+/// The providers whose actions a workspace's host answers for a person in it: what the host
+/// keeps for them rather than for the workspace ([`person_telling`], the vault, their accounts
+/// and models, the connections made in their name, and the formats they read). A device of
+/// theirs reaches them over the device action service, as the person the transport certified,
+/// and its own dispatch answers nothing of them locally.
+pub const WORKSPACE_KEPT_PROVIDERS: [&str; 6] = [
+    person_accounts::PROVIDER,
+    model_providers::PROVIDER,
+    person_vault::PROVIDER,
+    person_telling::PROVIDER,
+    person_connections::PROVIDER,
+    formats::PROVIDER,
+];
+
+/// Whether `provider` is one a workspace's host answers for the person
+/// ([`WORKSPACE_KEPT_PROVIDERS`]).
+#[must_use]
+pub fn kept_by_workspace_host(provider: &str) -> bool {
+    WORKSPACE_KEPT_PROVIDERS.contains(&provider)
+}
+
 /// The workspace a workspace provider token names, or `None` for an application
 /// provider.
 #[must_use]

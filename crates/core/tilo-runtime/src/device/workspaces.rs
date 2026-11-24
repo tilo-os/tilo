@@ -116,6 +116,9 @@ pub(crate) struct ServiceWorkspaces {
     /// The records the device keeps as its own, once the person's services run: its settings,
     /// read through the one record API in its own space and in the person's workspace.
     records: OnceLock<Arc<super::records::DeviceRecords>>,
+    /// The hosts of the workspaces placed on another device, once the person's services run: one
+    /// connection per host and workspace, kept for every call that goes there.
+    hosts: OnceLock<Arc<super::hosts::Hosts>>,
 }
 
 impl ServiceWorkspaces {
@@ -206,6 +209,7 @@ impl ServiceWorkspaces {
             keepers: Mutex::new(Vec::new()),
             search: OnceLock::new(),
             records: OnceLock::new(),
+            hosts: OnceLock::new(),
         }
     }
 
@@ -213,6 +217,17 @@ impl ServiceWorkspaces {
     /// actions write and what reads in the person's workspace answer.
     pub(crate) fn hold_device_records(&self, records: Arc<super::records::DeviceRecords>) {
         let _ = self.records.set(records);
+    }
+
+    /// Keep the hosts of the workspaces placed on another device, once the person's services
+    /// run: the connections a person's own calls of what a host keeps go on.
+    pub(crate) fn hold_hosts(&self, hosts: Arc<super::hosts::Hosts>) {
+        let _ = self.hosts.set(hosts);
+    }
+
+    /// The hosts of the workspaces placed on another device, once the person's services run.
+    pub(crate) fn hosts(&self) -> Option<Arc<super::hosts::Hosts>> {
+        self.hosts.get().cloned()
     }
 
     /// The records this device keeps as its own, once the person's services kept them.

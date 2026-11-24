@@ -50,6 +50,16 @@ public class TiloActivity extends NativeActivity {
 
     private void installExtensions() {
         TiloTextInput.install(this);
+        // An app whose manifest takes pushes registers with its distributor, and a launch a
+        // notification started leaves the link it opened for Rust to read.
+        TiloPush.install(this, getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        TiloPush.rememberTap(this, intent);
     }
 
     @Override

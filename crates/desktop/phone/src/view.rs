@@ -187,6 +187,10 @@ impl ui::widget::Decorator for PhoneView {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.instance.sync();
         let exchanged = self.exchange();
+        // A tap on one of the phone's notifications opens what the thing it is about is in.
+        if let Some(app) = self.worker.take_open() {
+            *self.to_open.borrow_mut() = Some(app);
+        }
         let opened = self.open_asked();
         let child = self.inner_mut().update(state, path);
         exchanged || opened || child || self.shell.owes()
@@ -248,7 +252,13 @@ pub fn open(
     bundles: &BTreeMap<String, Arc<Bundle>>,
     storage: Option<PathBuf>,
 ) -> Result<tilolang_process::window::hosted::HostedWindow, String> {
-    let bundle = match bundles.get(app) {
+    // A thing told names the app that holds what it is about by its id, which a telling written
+    // elsewhere may spell whole (`so.tilo.notes`) where the phone carries `notes`.
+    let found = bundles.get(app).or_else(|| {
+        let last = app.rsplit('.').next().unwrap_or_default();
+        bundles.get(last)
+    });
+    let bundle = match found {
         Some(bundle) => Arc::clone(bundle),
         None => {
             let payload = tilo_runtime::device::package_runs::verified_payload(app)?;
