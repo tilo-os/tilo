@@ -17,7 +17,6 @@ path = "src/lib.rs"
 # Every app that keeps a model, one guest crate each (`apps/<app>-model-wasm`).
 # tools/ci/app-models.sh fails when an app's guest crate is missing here.
 [dependencies]
-activity-model-wasm = { path = "../../../apps/activity-model-wasm" }
 assistant-model-wasm = { path = "../../../apps/assistant-model-wasm" }
 backups-model-wasm = { path = "../../../apps/backups-model-wasm" }
 camera-model-wasm = { path = "../../../apps/camera-model-wasm" }

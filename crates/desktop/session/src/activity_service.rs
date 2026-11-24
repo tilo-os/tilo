@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::{ActionInvoker, ApiError, ResourceSpec};
-use tilo_desktop_surface::session::ActivityRequests;
 use tilo_service::{Service, Started, offer};
+use tilo_session_core::desktop::session::ActivityRequests;
 
 /// The resource every app reads the activity as, and every action is an action of: the id the
 /// model publishes it under.
@@ -1351,7 +1351,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
-    use tilo_desktop_surface::session::{ActivityAsk, ActivityReads, activity_requests};
+    use tilo_session_core::desktop::session::{ActivityAsk, ActivityReads, activity_requests};
 
     /// The model as a test plays it: one change of one workspace, one of another, and the same
     /// reads each pass.

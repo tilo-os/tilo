@@ -2,10 +2,10 @@
   "app": "activity",
   "said": "Activity",
   "family": "apps",
-  "live": "rust",
-  "rust": {
+  "live": "tl",
+  "tl": {
     "id": "so.tilo.activity",
-    "native": "activity"
+    "package": "activity"
   },
   "steps": [
     {

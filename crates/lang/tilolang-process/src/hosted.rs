@@ -1781,6 +1781,7 @@ impl Hosted {
                 callees: Rc::clone(&self.callees),
                 calls: Rc::clone(&self.waiting_calls),
                 manager: self.connection.shared_manager(),
+                platform: Rc::clone(&self.platform),
             };
             match &self.shell {
                 Some(shell) => host.runtime().set_foreign_invoker(shell.invoker(apis)),
@@ -3855,10 +3856,30 @@ struct Apis {
     calls: Rc<RefCell<BTreeMap<String, Invocation>>>,
     /// The instance's connection, to send the call on.
     manager: Rc<RefCell<collaboration::CollaborationManager>>,
+    /// The platform packages this window reads: their resources are no records here, and what a
+    /// view changes of one runs where the session serves it, before the calling action goes on.
+    platform: Rc<RefCell<Roots>>,
 }
 
 impl Invoker for Apis {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
+        // A platform app's resource is answered by the session's services, and its refusal is
+        // the calling action's result, not a change that lands later as a reading.
+        if let Some((app, resource, action, tilo_actions::remote::InvokeArgument::Json(arguments))) =
+            api_ask(invocation)
+            && self.platform.borrow().reads(&app)
+        {
+            use tilolang_tilo::runtime::Value;
+            use tilolang_tilo::runtime::delegate::Invoked;
+            return match self
+                .platform
+                .borrow()
+                .invoke(&resource, &action, &arguments)
+            {
+                Ok(()) => Invoked::Done(Value::Unit),
+                Err(refusal) => Invoked::Refused(refusal),
+            };
+        }
         let call = match self.callees.call(invocation) {
             Ok(call) => call,
             Err(answer) => return self.callees.answered(invocation, answer),
@@ -3983,6 +4004,69 @@ fn output_of(app: &str, value: &Value) -> tilo_actions::ActionOutput {
             )],
         },
         _ => tilo_actions::ActionOutput::default(),
+    }
+}
+
+/// What a view or an action of this window asks of another app's api: the app, the resource,
+/// the action's name and its arguments as the api takes them. `None` for an invocation that
+/// names no target.
+fn api_ask(
+    invocation: &tilolang_tilo::runtime::delegate::Invocation,
+) -> Option<(String, String, String, tilo_actions::remote::InvokeArgument)> {
+    use tilolang_tilo::runtime::Value;
+    use tilolang_tilo::runtime::delegate::Invocation;
+    match invocation {
+        Invocation::Action {
+            app,
+            name,
+            target: Some(target),
+            from,
+            ..
+        } => {
+            let mut arguments = invocation.api_arguments();
+            if let Some(from) = from {
+                arguments.insert(
+                    tilo_actions::params::FROM_ARGUMENT.to_owned(),
+                    tilo_actions::params::MadeFrom {
+                        resource: from.id_string(),
+                        kind: from.ty.clone(),
+                    }
+                    .to_json(),
+                );
+            }
+            // The app's api takes it by the name it publishes it under.
+            Some((
+                app.to_string(),
+                target.id_string(),
+                name.clone(),
+                tilo_actions::remote::InvokeArgument::Json(arguments),
+            ))
+        }
+        Invocation::Action { .. } => None,
+        Invocation::Edit {
+            app,
+            target,
+            field,
+            value,
+            ..
+        } => {
+            let action = match value {
+                Value::Bool(_) => tilolang_tilo::action::EDIT_FLAG_ACTION,
+                _ => tilolang_tilo::action::EDIT_TEXT_ACTION,
+            };
+            let value = tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default();
+            let arguments = serde_json::Map::from_iter([
+                // The field as its type names it, which the API's edit takes.
+                ("field".to_owned(), field.clone().into()),
+                ("value".to_owned(), value),
+            ]);
+            Some((
+                app.to_string(),
+                target.id_string(),
+                action.to_owned(),
+                tilo_actions::remote::InvokeArgument::Json(arguments),
+            ))
+        }
     }
 }
 

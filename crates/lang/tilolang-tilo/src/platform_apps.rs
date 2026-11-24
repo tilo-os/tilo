@@ -249,7 +249,9 @@ const PUBLISHED: &[Published] = &[
         kinds: &[],
         roots: ACTIVITY_ROOTS,
         // What the workspace's activity reads as, beside the session that serves it.
-        files: &[include_str!("../../../desktop/session/activity-surface.json")],
+        files: &[include_str!(
+            "../../../desktop/session/activity-surface.json"
+        )],
         described: false,
         listed: &[],
     },
@@ -581,7 +583,7 @@ pub trait Reading: Send {
 
 /// Where the platform's published resources are reached: the session's services, which a
 /// process reaches over its connection.
-pub trait Published: Send + Sync {
+pub trait PublishedSource: Send + Sync {
     /// Follow the reading of the published resource `resource`, waking `wake`'s owner at each
     /// new one.
     ///
@@ -592,12 +594,24 @@ pub trait Published: Send + Sync {
         resource: &str,
         wake: tilo_rt::wake::WakeHandle,
     ) -> Result<Box<dyn Reading>, String>;
+
+    /// Ask the published resource `resource` to run `action` with `arguments`, as the session
+    /// serves it, and hand back what it said: a refusal is its words.
+    ///
+    /// # Errors
+    /// No session's services are reached, or the change was refused or cancelled.
+    fn invoke(
+        &self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String>;
 }
 
 /// The session's services: the platform roots read where the session publishes them.
 pub struct Session;
 
-impl Published for Session {
+impl PublishedSource for Session {
     fn follow(
         &self,
         resource: &str,
@@ -606,6 +620,15 @@ impl Published for Session {
         Ok(Box::new(Followed(collaboration::SessionResource::follow(
             resource, wake,
         )?)))
+    }
+
+    fn invoke(
+        &self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        collaboration::SessionResource::invoke_without_watching(resource, action, arguments)
     }
 }
 
@@ -618,15 +641,15 @@ impl Reading for Followed {
     }
 }
 
-static SOURCE: std::sync::OnceLock<Box<dyn Published>> = std::sync::OnceLock::new();
+static SOURCE: std::sync::OnceLock<Box<dyn PublishedSource>> = std::sync::OnceLock::new();
 
 /// Read the platform's published resources through `source` from now on. Called once, by the
 /// process's start; a process with none reads no platform root.
-pub fn install(source: Box<dyn Published>) {
+pub fn install(source: Box<dyn PublishedSource>) {
     let _ = SOURCE.set(source);
 }
 
-fn published() -> Option<&'static dyn Published> {
+fn published() -> Option<&'static dyn PublishedSource> {
     SOURCE.get().map(Box::as_ref)
 }
 
@@ -674,7 +697,12 @@ pub struct Roots {
 impl Roots {
     /// The platform packages `uses` names, loaded into `host`, and each of their roots followed.
     /// What the session does not answer is said once and left reading as it would start.
-    pub fn load(&mut self, host: &crate::host::Host, uses: &[String], wake: tilo_rt::wake::WakeHandle) {
+    pub fn load(
+        &mut self,
+        host: &crate::host::Host,
+        uses: &[String],
+        wake: tilo_rt::wake::WakeHandle,
+    ) {
         if self.loaded {
             return;
         }
@@ -706,9 +734,10 @@ impl Roots {
                 else {
                     continue;
                 };
-                let Some(target) =
-                    crate::runtime::ResourceRef::parse_id(published, format!("{}#{name}", meta.app))
-                else {
+                let Some(target) = crate::runtime::ResourceRef::parse_id(
+                    published,
+                    format!("{}#{name}", meta.app),
+                ) else {
                     continue;
                 };
                 self.declared.insert(target.id_string());
@@ -739,6 +768,29 @@ impl Roots {
     /// reading at all. The session's first reading replaces it.
     fn seed(&self, host: &crate::host::Host, target: &crate::runtime::ResourceRef) {
         let _ = host.runtime().set_reading(target, "{}");
+    }
+
+    /// Whether `app` is a platform app this window reads: what its views change is its
+    /// resources' actions, asked of the session's services.
+    #[must_use]
+    pub fn reads(&self, app: &str) -> bool {
+        self.apps.contains(app)
+    }
+
+    /// Ask the published resource `resource` to run `action` with `arguments`, as the session
+    /// serves it, and hand back what it said.
+    ///
+    /// # Errors
+    /// No session's services are reached, or the change was refused or cancelled.
+    pub fn invoke(
+        &self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        published()
+            .ok_or_else(|| "nothing reads the platform's resources here".to_owned())?
+            .invoke(resource, action, arguments)
     }
 
     /// Hand the runtime every new reading of the roots followed, and follow the ones its views

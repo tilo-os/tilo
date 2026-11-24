@@ -62,8 +62,12 @@ fn app_dirs() -> Vec<PathBuf> {
             continue;
         };
         let package = apps.join("tl").join(name);
-        let source = std::fs::read_to_string(package.join("app.tl"))
-            .unwrap_or_else(|e| panic!("{entry} is shipped but {}: {e}", package.join("app.tl").display()));
+        let source = std::fs::read_to_string(package.join("app.tl")).unwrap_or_else(|e| {
+            panic!(
+                "{entry} is shipped but {}: {e}",
+                package.join("app.tl").display()
+            )
+        });
         assert!(
             source.lines().any(|line| line.starts_with("app so.tilo.")),
             "{entry} names no `so.tilo.` app id"
@@ -211,13 +215,13 @@ tilo_test_env::scenario! {
     // no build knows is refused, never taken for a view. Browser is the one shipped app whose
     // window's page lives in its engine, so its device-bound windows and no other app's.
     {
-        let activity = repo_root().join("apps/activity");
+        let activity = repo_root().join("apps/backups");
         assert!(
             !load(&activity).window_runs_on_its_device(),
-            "an Activity window is a view of a record"
+            "a Backups window is a view of a record"
         );
         let src =
-            std::fs::read_to_string(manifest_path(&activity)).expect("Activity's manifest");
+            std::fs::read_to_string(manifest_path(&activity)).expect("Backups' manifest");
         let said = src.replacen("[entrypoint]", "[entrypoint]\nwindow = \"device\"", 1);
         assert_ne!(said, src, "the manifest has an entrypoint to say it in");
         let manifest = Manifest::from_toml_str(&said).expect("the manifest decodes");

@@ -3,6 +3,8 @@
 
 d-so-tilo-activity = Activity
 
+d-so-tilo-activity-keywords = history, activity, changes, undo, replay, work sessions, who changed, verlauf, änderungen
+
 d-dgzobvxw = Window
     .doc = The workspace's activity as this window shows it.
     .noun = { $count ->
@@ -28,6 +30,8 @@ d-k5cpej2o = Activity
     .w-open-in-history = Open in History
     .w-morning-sources = Morning sources
     .w-choose-a-resource-to-hear-about = Choose a resource to hear about each morning from a change's details.
+    .w-refresh-source = Refresh source
+    .w-remove-morning-source = Remove morning source
 
 d-irbp5hqf = Changes
     .w-this-workspace = This workspace
@@ -38,6 +42,9 @@ d-irbp5hqf = Changes
     .w-this-device-cannot-change-the-history = This device cannot change the history here.
     .w-no-changes-here = No changes here
     .w-no-changes-match-these-filters = No changes match these filters
+    .w-selected = Selected
+    .w-not-on = Not on { $label }: { $reason }
+    .w-select-through-here = Select through here
 
 d-umnlvx2v = Detail card
     .w-details = Details
@@ -52,3 +59,4 @@ d-peafm5lw = Replay
     .w-checkpoint-of = Checkpoint { $value } of { $total }
     .w-back = Back
     .w-forward = Forward
+    .w-present = Present: { $name }

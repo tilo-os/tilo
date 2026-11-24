@@ -97,9 +97,6 @@ members = [
     "crates/ui/ui-core",
 
     # Applications
-    "apps/activity",
-    "apps/activity-model",
-    "apps/activity-model-wasm",
     "apps/console",
     "apps/console-model",
     "apps/console-model-wasm",

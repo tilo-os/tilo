@@ -3202,7 +3202,7 @@ impl Published {
 /// [`Published`] as the source the process reads the platform's roots through.
 struct TestSession(Arc<Published>);
 
-impl tilolang_tilo::platform_apps::Published for TestSession {
+impl tilolang_tilo::platform_apps::PublishedSource for TestSession {
     fn follow(
         &self,
         resource: &str,

@@ -216,7 +216,7 @@ pub(crate) struct Shell {
 /// monitor that went hands its windows to the nearest one left. A mirror is one display, as the
 /// desktop lays them: an output sharing a rectangle shows the same.
 pub(crate) fn reconcile_displays(
-    handle: &tilo_desktop_surface::DesktopHandle,
+    handle: &tilo_session_core::desktop::state::DesktopHandle,
     outputs: &[tilo_compositor::OutputInfo],
     primary: Option<&str>,
 ) {

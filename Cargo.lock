@@ -169,38 +169,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "activity"
-version = "0.1.0"
-dependencies = [
- "activity",
- "activity-model",
- "jiff",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tilo-app",
- "workspace-hack",
-]
-
-[[package]]
-name = "activity-model"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "activity-model-wasm"
-version = "0.1.0"
-dependencies = [
- "activity-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "adblock"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18879,7 +18847,6 @@ dependencies = [
 name = "tilo-models-wasm"
 version = "0.1.0"
 dependencies = [
- "activity-model-wasm",
  "assistant-model-wasm",
  "backups-model-wasm",
  "camera-model-wasm",
@@ -26478,9 +26445,6 @@ dependencies = [
  "accesskit_unix",
  "account-credentials",
  "accounts",
- "activity",
- "activity-model",
- "activity-model-wasm",
  "adblock",
  "addr",
  "addr2line 0.25.1",
@@ -26955,6 +26919,7 @@ dependencies = [
  "heapless",
  "heck",
  "hex",
+ "hex-engine",
  "hex-literal 0.3.4",
  "hex-literal 1.1.0",
  "hexane",
@@ -27573,6 +27538,7 @@ dependencies = [
  "socket-pktinfo",
  "socket2",
  "sorted-index-buffer",
+ "speed-engine",
  "spellbook",
  "spez",
  "spin 0.10.1",
@@ -27659,6 +27625,7 @@ dependencies = [
  "tilo-agent-session",
  "tilo-agent-turn",
  "tilo-api",
+ "tilo-api-client",
  "tilo-app",
  "tilo-app-builder",
  "tilo-app-id",
@@ -27717,6 +27684,7 @@ dependencies = [
  "tilo-crash-reports",
  "tilo-crypto",
  "tilo-dav",
+ "tilo-db",
  "tilo-delivery-protocol",
  "tilo-deployment-status",
  "tilo-desktop-entry",
@@ -27729,6 +27697,7 @@ dependencies = [
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-dictation",
+ "tilo-disk-usage",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-doc-pdf",
@@ -27754,6 +27723,7 @@ dependencies = [
  "tilo-frame-metrics",
  "tilo-fs",
  "tilo-fs-client",
+ "tilo-git",
  "tilo-headless-schema",
  "tilo-highlight",
  "tilo-highlight-grammars",

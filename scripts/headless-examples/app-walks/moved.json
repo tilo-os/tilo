@@ -324,8 +324,8 @@
     "test": "crates/desktop/session/src/window_share/tests.rs:987"
   },
   "so.tilo.tasks tasks.issues#restore": {
-    "to": "so.tilo.activity workspace.activity#restore",
-    "test": "apps/activity/tests/app.rs:59"
+    "to": "so.tilo.history workspace.activity#restore",
+    "test": "crates/desktop/session/src/activity.rs:1876"
   },
   "so.tilo.tasks tasks.issues#restore-reviewed": {
     "to": "so.tilo.activity activity.window#restore-reviewed",
@@ -476,8 +476,8 @@
     "test": "crates/desktop/session/src/window_share/tests.rs:987"
   },
   "so.tilo.tasks tasks.tracker#restore": {
-    "to": "so.tilo.activity workspace.activity#restore",
-    "test": "apps/activity/tests/app.rs:59"
+    "to": "so.tilo.history workspace.activity#restore",
+    "test": "crates/desktop/session/src/activity.rs:1876"
   },
   "so.tilo.tasks tasks.tracker#restore-reviewed": {
     "to": "so.tilo.activity activity.window#restore-reviewed",
