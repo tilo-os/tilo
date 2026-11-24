@@ -37,8 +37,8 @@ no appearance to get wrong.
 
 | Role | Colour | Used for | Never used for |
 |---|---|---|---|
-| On state | green `intent.on_state` (OKLCH 0.62/0.15/150 dark, 0.58/0.15/150 light), white knob or mark | a switch's track, a checked checkbox or radio, an active Quick Settings tile, a "connected" dot | sliders, selection, buttons |
-| Accent | one hue, by default **the person's own colour** (`Emphasis::You`), settable in Appearance (`Emphasis::Tinted`) | a primary button's fill (`intent.accent`, white label), the caret, the text selection, the keyboard focus ring, links (`intent.accent_ink`), the selected row's lift tint, a value's fill (`intent.value_fill`: a slider's filled track, a progress bar, a gauge) | hover, resize grips, window edges, icons at rest, borders |
+| On state | green `intent.on_state` (OKLCH 0.62/0.15/150 dark, 0.58/0.15/150 light), white knob or mark | a switch's track, a checked checkbox, an active Quick Settings tile, a "connected" dot | sliders, selection, a chosen radio, buttons |
+| Accent | one hue, by default **the person's own colour** (`Emphasis::You`), settable in Appearance (`Emphasis::Tinted`) | a primary button's fill (`intent.accent`, white label), the caret, the text selection, the keyboard focus ring, links (`intent.accent_ink`), the selected row's lift tint, a chosen radio's fill, a value's fill (`intent.value_fill`: a slider's filled track, a progress bar, a gauge) | hover, resize grips, window edges, icons at rest, borders |
 | Presence | the twelve presence hues | other people: avatars, cursors, their selection, what they are doing | anything that is not a person |
 | Status | muted danger, warning, success, info (C ≤ 0.13) | status text, badges, a destructive button's label | decoration |
 | Neutral | everything else | surfaces, ink, icons, hairlines | — |
@@ -360,7 +360,8 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `TextLineFace`, `TextBlockFace` | one line of words, or wrapped running text, in a role: the shared way to paint text on a surface a host owns |
 | `paint_control_row` | a Control's fill, edge and focus ring: the list language Quick Settings and the notification centre share |
 | `Chip` | people, tags and filters only |
-| `Toggle`, `Checkbox`, `Checkbox::radio`, `RadioGroup` | the on-state green, keyboard-only focus ring |
+| `Toggle`, `Checkbox` | the on-state green, keyboard-only focus ring |
+| `Checkbox::radio`, `RadioGroup` | the accent for the chosen radio (a selection, not an on state), keyboard-only focus ring |
 | `InState` | a control drawn still in one state of interaction (hovered, pressed, focused) for a style guide or a review; inert, hidden from assistive technology |
 | `ToggleGroup` (segmented) | raised track, item-radius thumb |
 | `Slider` | the value fill on a lifted track |

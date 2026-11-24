@@ -1709,7 +1709,10 @@ segmented control; more than about six choices are a `Dropdown`. The group is
 one stop of the keyboard's order; the arrow keys move the choice along it,
 past a choice that cannot be made, and Space makes the first choice where none
 is made yet. The whole row is the target, the radio stands at the middle of the
-first line of words, and the focus ring is the keyboard's only.
+first line of words, and the focus ring is the keyboard's only. The chosen
+radio fills with `intent.accent`, as a selected row does: choosing one of
+several is a selection, where a checkbox or a switch turned on is the on-state
+green.
 
 How to tell: if choosing replaces the content below with another view of the
 thing, it is tabs. If it sets a property of the thing (and the content stays

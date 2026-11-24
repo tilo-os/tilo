@@ -459,10 +459,20 @@ impl Checkbox {
         // HIG §9.5: unchecked is the raised control surface with an edge
         // derived from it, and hover is that surface's lift; a declared
         // `border_standard` vanished on a raised dark card. Checking fills
-        // it with the on state, as far as the motion has come.
+        // it with the on state, as far as the motion has come. A radio is a
+        // choice made among others rather than something turned on, so it
+        // fills with the accent, as a selected row and a slider's value do.
         let pose = face.drawn();
         let level = pose.level.clamp(0.0, 1.0);
-        let on_box = theme.tokens.colors.on_fill(!face.interact.disabled);
+        let colors = &theme.tokens.colors;
+        let (on_box, on_mark) = if face.radio && !face.interact.disabled {
+            (colors.intent.accent, colors.intent.on_accent)
+        } else {
+            (
+                colors.on_fill(!face.interact.disabled),
+                colors.intent.on_state_mark,
+            )
+        };
         let off_box = if face.interact.hovered {
             theme
                 .tokens
@@ -487,9 +497,9 @@ impl Checkbox {
         // The mark's ink is read against the filled box it rests on, and
         // fades and scales in with the fill (only fades, under reduced
         // motion).
-        let mark = theme.tokens.colors.ink_on_any(
+        let mark = colors.ink_on_any(
             &[on_box],
-            theme.tokens.colors.intent.on_state_mark,
+            on_mark,
             crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
         );
         if level > 0.0 {

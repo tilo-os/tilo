@@ -296,9 +296,10 @@ pub struct Intents {
     pub accent_pressed: Color,
     pub on_accent: Color,
     pub accent_ink: Color,
-    /// Fill of a control that is on: a switch's track, a checked box or radio, an active
-    /// Quick Settings tile, a "connected" dot. Green, the colour people read as "on";
-    /// state, not status, and never the accent.
+    /// Fill of a control that is on: a switch's track, a checked box, an active Quick
+    /// Settings tile, a "connected" dot. Green, the colour people read as "on"; state, not
+    /// status, and never the accent. A chosen radio is a selection among choices and takes
+    /// [`Self::accent`].
     pub on_state: Color,
     pub on_state_mark: Color,
     /// A value that is neither on nor an action: a slider's filled track, a progress bar,
