@@ -45,6 +45,8 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, Stateme
 use crate::workspaces::{Workspaces, person_workspace, servers};
 
 mod manage;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 /// The field of a vault entry that names the plan whose ticket the entry keeps.
 const PLAN_FIELD: &str = "tilo.planned-machine.plan";

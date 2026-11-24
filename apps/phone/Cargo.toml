@@ -63,7 +63,6 @@ tilolang-cli = { path = "../../crates/lang/tilolang-cli" }
 package-store = { package = "tilo-package-store", path = "../../crates/core/package-store", features = ["store"] }
 # A workspace that runs Notes: its package, as the workspace's governance installs it.
 tilo-app-package = { path = "../../crates/core/tilo-app-package" }
-tilo-peer-state = { path = "../../crates/core/tilo-peer-state" }
 hex.workspace = true
 # The server's Automerge workers are this test binary, started again.
 tilo-automerge-isolate.workspace = true
