@@ -1,4 +1,4 @@
-//! What a Bluetooth address is, written as people and BlueZ write one: six hex octets separated by
+//! What a Bluetooth address is, written as people and `BlueZ` write one: six hex octets separated by
 //! colons, `AA:BB:CC:DD:EE:FF`, in either case.
 //!
 //! The record of a person's accessories refuses a move that names anything else, and the radio's
