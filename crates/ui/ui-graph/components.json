@@ -3278,7 +3278,8 @@
       ],
       "semantics": {
         "role": "Group",
-        "label": "name"
+        "label": "name",
+        "not_in_gallery": "presenting it fills the audience's screen with the view it shows, over the window the gallery is read in, so a gallery page cannot show it without taking that window over"
       }
     },
     {
@@ -12089,7 +12090,7 @@
         },
         {
           "name": "keys",
-          "doc": "The keys the item's actions answer to (\"Ctrl+Enter\"): a press of one while the row holds the keyboard reports `shortcut` with it, whether or not the row carries its menu.",
+          "doc": "The keys the item's actions answer to (\"Ctrl+Enter\"): a press of one while the list holds the keyboard on the row reports `shortcut` with it, whether or not the row carries its menu, and whether the row is one list row or a view of any kind.",
           "type": {
             "list": "text"
           }

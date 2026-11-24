@@ -31,6 +31,19 @@ view shell_parts(g: Gallery) {
                 ui.Backdrop(label: "The shell's wallpaper")
             }
         }
+        part(
+            "Control hints",
+            "The shell's hints over everything it shows: one of its controls taught beside where it is done, in the moment it is useful, and gone once the person does it.",
+        ) {
+            layers(aspect: 3.0) {
+                // Search opens from the chord the person's shortcuts start with: Super and
+                // Space until they set their own.
+                ui.ControlHints(shows: true, search_keys: ["Super", "Space"]) {
+                    on learn(hint: Text): note_hint(last, hint)
+                    on show(hint: Text): note_hint(last, hint)
+                }
+            }
+        }
         part("Chrome", "The ground a bar or a dock stands on, in the theme's finish.") {
             ui.Chrome(name: "A bar", shape: .square, edge: .top) {
                 row(gap: .related, align: .center, padding: .related) {
@@ -137,4 +150,9 @@ action mark_moved(last: Text, moved: Pinned, at: Int) {
 /// Note what a drop target took, in the window's last answer.
 action dropped(last: Text, target: host.Resource) {
     last = "Dropped {meta(target).noun}"
+}
+
+/// Note a hint the person learned or was shown, in the window's last answer.
+action note_hint(last: Text, hint: Text) {
+    last = "Hint {hint}"
 }

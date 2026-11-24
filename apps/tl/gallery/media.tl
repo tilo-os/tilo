@@ -100,6 +100,21 @@ view media(g: Gallery) {
             }
         }
         part(
+            "Call tile",
+            "A person in a call, at their camera or the screen they share: the ring says they are talking now, and the mark says their microphone is off.",
+        ) {
+            row(gap: .related, align: .stretch) {
+                // The person reading, talking at their camera, and someone a bridge carries in,
+                // sharing a screen with their microphone off.
+                layers(fill, aspect: 16.0 / 9.0) {
+                    ui.CallTile(who: invoker, source: .camera, speaking: true)
+                }
+                layers(fill, aspect: 16.0 / 9.0) {
+                    ui.CallTile(name: "Sam Okafor", source: .screen, muted: true)
+                }
+            }
+        }
+        part(
             "Media grid",
             "A library in equal columns: covers, albums, places, with a line or two under each.",
         ) {
