@@ -253,7 +253,7 @@ fn held_notice(host: &Host, id: &str) -> Option<Held> {
         Ok(Value::List(items)) => items
             .iter()
             .filter_map(|item| match item {
-                Value::Text(name) => Some(name.to_string()),
+                Value::Text(name) => Some(name.clone()),
                 _ => None,
             })
             .collect(),

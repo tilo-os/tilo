@@ -376,7 +376,7 @@ fn an_agent_mentioned_in_a_conversation_it_is_not_in_reads_nothing_of_it() {
     );
     settle(&ada);
     // The mention starts Helper's turn, which reads the conversation as Helper: nothing of it.
-    let message = listed(&ada, &with_scout, "messages")
+    let message = listed(&ada, &target(&with_scout), "messages")
         .pop()
         .expect("Ada's message");
     let runtime = ada.host.runtime();

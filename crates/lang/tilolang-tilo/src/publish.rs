@@ -515,7 +515,7 @@ fn described(
             label: said_of(
                 words,
                 &action.id,
-                &tilolang::meta::take_key(n + 1),
+                &tilolang::meta::take_key(n.saturating_add(1)),
                 None,
                 &take.label,
             ),

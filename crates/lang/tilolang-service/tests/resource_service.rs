@@ -545,6 +545,7 @@ fn a_read_that_answers_a_list_gives_its_value() {
     };
     let found = output
         .value
+        .clone()
         .unwrap_or_else(|| panic!("the read answers the paragraphs it found: {output:?}"));
     let matches = found
         .as_array()

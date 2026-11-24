@@ -369,6 +369,7 @@ impl Replica {
         let _ = watch.take();
         Self {
             name: name.to_owned(),
+            role: std::cell::Cell::new(None),
             doc,
             host,
             watch,
