@@ -538,6 +538,7 @@ members = [
     "crates/os/pam-tilo",
     "crates/os/power",
     "crates/services/projector",
+    "crates/services/projector-broker",
     "crates/platform/sandbox-core",
     "crates/desktop/secret-service",
     "crates/core/peer-facts",
@@ -850,10 +851,10 @@ ironcalc_base = "0.9.1"
 # The local IANA zone name, which ironcalc_base needs for TODAY() and NOW().
 iana-time-zone = "0.1.65"
 # Sender-side discovery and transports for FCast and Google Cast. Disable the
-# mobile FFI/logging defaults: tilo-projector is a native Rust broker.
+# mobile FFI/logging defaults: tilo-projector-broker is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
 mdns-sd = "=0.20.3"
-# Miracast (Wi-Fi Display) source for tilo-projector: Tilo's own standalone
+# Miracast (Wi-Fi Display) source for tilo-projector-broker: Tilo's own standalone
 # crate, kept in vendor/miracast until it is published (see its PROVENANCE.md).
 miracast = { path = "vendor/miracast", default-features = false }
 # Discord's DAVE end-to-end encryption for the Discord connector's voice:

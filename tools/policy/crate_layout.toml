@@ -182,7 +182,7 @@ services = [
     "tilo-crash-reports -> tilo-service",
     "tilo-crash-reports -> tilo-ui",
     "tilo-media-controls -> tilo-media",
-    "tilo-projector -> tilo-callstream",
+    "tilo-projector-broker -> tilo-callstream",
     "tilo-vision-service -> agent-provider-config",
     "tilo-vision-service -> tilo-image-codec",
     "tilo-vision-service -> tilo-model-client",

@@ -603,7 +603,7 @@ run = "python3 -I tools/ci/suites.py run --jobs 8 --group browser-runtime-web"
 [[check]]
 name = "miracast-capture"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh cargo test --locked -p tilo-projector --bin tilo-projector session::miracast"
+run = "bash tools/test-env.sh cargo test --locked -p tilo-projector-broker --bin tilo-projector session::miracast"
 image = { check = "image-ci-builder-x86_64", path = "/target/publish/ci-builder/x86_64/image.oci.tar" }
 env = { TILO_REQUIRE_SCREEN_CAPTURE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]

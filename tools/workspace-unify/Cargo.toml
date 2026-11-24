@@ -1253,7 +1253,7 @@ doc = false
 "tilo-presentation" = { path = "../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage"] }
 "tilo-process" = { path = "../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-process-services" = { path = "../../crates/sdk/tilo-process-services", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
-"tilo-projector" = { path = "../../crates/services/projector", default-features = false, features = ["default", "miracast"] }
+"tilo-projector" = { path = "../../crates/services/projector", default-features = false, features = [] }
 "tilo-pycompat" = { path = "../../crates/os/tilo-pycompat", default-features = false, features = [] }
 "tilo-recurrence" = { path = "../../crates/engines/tilo-recurrence", default-features = false, features = [] }
 "tilo-reference" = { path = "../../crates/core/reference", default-features = false, features = [] }
@@ -4035,7 +4035,7 @@ doc = false
 "tilo-presentation" = { path = "../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage"] }
 "tilo-process" = { path = "../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-process-services" = { path = "../../crates/sdk/tilo-process-services", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
-"tilo-projector" = { path = "../../crates/services/projector", default-features = false, features = ["default", "miracast"] }
+"tilo-projector" = { path = "../../crates/services/projector", default-features = false, features = [] }
 "tilo-pycompat" = { path = "../../crates/os/tilo-pycompat", default-features = false, features = [] }
 "tilo-recurrence" = { path = "../../crates/engines/tilo-recurrence", default-features = false, features = [] }
 "tilo-reference" = { path = "../../crates/core/reference", default-features = false, features = [] }

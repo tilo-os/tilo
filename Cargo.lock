@@ -17771,6 +17771,7 @@ dependencies = [
  "tilo-files",
  "tilo-test-env",
  "tilolang-tilo",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -19824,6 +19825,20 @@ dependencies = [
 name = "tilo-projector"
 version = "0.1.0"
 dependencies = [
+ "postcard",
+ "serde",
+ "tilo-files",
+ "tilo-paths",
+ "tilo-test-env",
+ "wire-frame",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-projector-broker"
+version = "0.1.0"
+dependencies = [
  "ashpd",
  "bounded-command",
  "fcast-sender-sdk",
@@ -19833,7 +19848,6 @@ dependencies = [
  "hex",
  "mdns-sd",
  "miracast",
- "postcard",
  "prost",
  "rand 0.10.3",
  "rand_core 0.10.0",
@@ -19849,16 +19863,15 @@ dependencies = [
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
+ "tilo-projector",
  "tilo-rt",
  "tilo-test-env",
  "time",
  "tokio",
  "tokio-rustls",
- "wire-frame",
  "workspace-hack",
  "x509-parser 0.18.1",
  "zbus",
- "zeroize",
 ]
 
 [[package]]

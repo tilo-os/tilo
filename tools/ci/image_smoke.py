@@ -286,7 +286,7 @@ def check_units() -> None:
 
 # The elements Tilo's own code builds pipelines from (crates/engines/tilo-media, the music,
 # video and voice paths, recording, screen streaming) and the software path of the miracast
-# crate tilo-projector runs on.
+# crate tilo-projector-broker runs on.
 GST_ELEMENTS = [
     "playbin", "playbin3", "uridecodebin", "decodebin", "appsrc", "appsink", "autoaudiosink",
     "pulsesrc", "pulsesink", "volume", "capsfilter", "audioconvert", "audioresample",

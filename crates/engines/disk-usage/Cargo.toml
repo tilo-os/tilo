@@ -12,6 +12,7 @@ tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 tilo-files = { path = "../../platform/tilo-files" }
 serde.workspace = true
 serde_json.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }
