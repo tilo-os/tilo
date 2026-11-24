@@ -49,6 +49,8 @@ tilo-cli-kit = { path = "../cli" }
 # app enables a UI feature absent here, Cargo builds a second `ui` instance and
 # the app can link successfully but fail at runtime with undefined symbols.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"], default-features = false }
+# The apps the runtime library carries present only what changed, through Tilo's wgpu-hal.
+tilo-presentation = { path = "../../platform/tilo-presentation", features = ["vulkan-damage"] }
 # The web engine client the toolkit's WebView displays: code that talks to a web engine
 # names it through the runtime instead of linking its own copy.
 tilo-webview = { path = "../../engines/tilo-webview" }

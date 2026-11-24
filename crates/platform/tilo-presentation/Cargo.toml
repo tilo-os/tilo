@@ -11,6 +11,10 @@ description = "Native presentation feedback, input provenance and clock observat
 
 [features]
 gpu-damage = ["dep:wgpu"]
+# Tell Vulkan which pixels changed, through Tilo's own wgpu-hal (vendor/wgpu-hal), which Tilo's
+# programs build with. The crates.io wgpu-hal has no present damage, so a build on it leaves
+# this off and presents whole surfaces.
+vulkan-damage = ["gpu-damage"]
 
 [dependencies]
 winit.workspace = true

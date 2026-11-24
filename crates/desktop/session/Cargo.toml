@@ -312,7 +312,8 @@ resvg = { version = "0.47", default-features = false }
 # toolkit's input events.
 vello.workspace = true
 winit.workspace = true
-tilo-presentation = { path = "../../platform/tilo-presentation" }
+# Tilo's programs present only what changed, which needs Tilo's wgpu-hal.
+tilo-presentation = { path = "../../platform/tilo-presentation", features = ["vulkan-damage"] }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
 # action vocabulary.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }

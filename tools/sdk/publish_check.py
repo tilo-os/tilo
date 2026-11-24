@@ -165,8 +165,9 @@ UPSTREAM_SUFFICES = {
     "rustls-native-certs": "Tilo OS's single trust bundle; the original's discovery is right elsewhere",
     "wayland-backend": "a compositor (server) fix; SDK apps are Wayland clients",
     "wgpu-hal": "Metal presentation observer (only the optional `presentation-feedback` "
-    "feature uses it), the Windows DX12 shader cache and a Vulkan device-loss switch only tests "
-    "set; SDK apps use none of them. It also compiles Metal shaders without fast math; on the "
+    "feature uses it), Vulkan present damage (only tilo-presentation's `vulkan-damage`, which "
+    "Tilo's own programs turn on, uses it), the Windows DX12 shader cache and a Vulkan "
+    "device-loss switch only tests set; SDK apps use none of them. It also compiles Metal shaders without fast math; on the "
     "release a partial redraw on macOS can differ from a full one by a channel step at edges",
     "workspace-hack": "hakari's feature union for this workspace; crates.io's "
     "workspace-hack 0.1.0 is its empty placeholder",

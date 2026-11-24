@@ -1229,7 +1229,7 @@ doc = false
 "tilo-polkit-agent" = { path = "../../crates/os/polkit-agent", default-features = false, features = [] }
 "tilo-portal" = { path = "../../crates/desktop/portal", default-features = false, features = ["pipewire"] }
 "tilo-power-mgmt" = { path = "../../crates/os/power", default-features = false, features = ["default", "serde", "service"] }
-"tilo-presentation" = { path = "../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage"] }
+"tilo-presentation" = { path = "../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage", "vulkan-damage"] }
 "tilo-process" = { path = "../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-process-services" = { path = "../../crates/sdk/tilo-process-services", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
 "tilo-projector" = { path = "../../crates/services/projector", default-features = false, features = [] }
@@ -3734,7 +3734,7 @@ doc = false
 "tilo-polkit-agent" = { path = "../../crates/os/polkit-agent", default-features = false, features = [] }
 "tilo-portal" = { path = "../../crates/desktop/portal", default-features = false, features = ["pipewire"] }
 "tilo-power-mgmt" = { path = "../../crates/os/power", default-features = false, features = ["default", "serde", "service"] }
-"tilo-presentation" = { path = "../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage"] }
+"tilo-presentation" = { path = "../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage", "vulkan-damage"] }
 "tilo-process" = { path = "../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-process-services" = { path = "../../crates/sdk/tilo-process-services", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
 "tilo-projector" = { path = "../../crates/services/projector", default-features = false, features = [] }

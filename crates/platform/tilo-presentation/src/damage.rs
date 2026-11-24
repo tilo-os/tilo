@@ -13,7 +13,7 @@ pub struct DamageRect {
 /// preserves whole-surface presentation; it never permits partial buffer copies.
 #[cfg(all(feature = "gpu-damage", not(target_arch = "wasm32")))]
 pub fn set_next_present_damage(surface: &wgpu::Surface<'_>, damage: &[DamageRect]) -> bool {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "vulkan-damage", target_os = "linux"))]
     {
         let regions: Vec<_> = damage
             .iter()

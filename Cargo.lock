@@ -12711,6 +12711,7 @@ dependencies = [
  "tilo-mime",
  "tilo-model-client",
  "tilo-net",
+ "tilo-presentation",
  "tilo-registry-types",
  "tilo-rich-text",
  "tilo-rt",
