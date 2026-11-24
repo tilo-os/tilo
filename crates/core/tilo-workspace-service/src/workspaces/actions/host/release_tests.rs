@@ -1,7 +1,8 @@
 //! A vault item released to an app's held connection ([`crate::workspaces::vault_release`]):
 //! the device holds the bridge's connection and keeps two made-up tokens in the workspace's
 //! vault. The first release asks the person, once; their "Approve and grant" lets the bridge read
-//! that one item, and the next release answers exactly the token. Every other caller is refused saying
+//! that one item, and the next release answers exactly the token until they take that leave
+//! back. Every other caller is refused saying
 //! what is missing, and the token is in no record, no argument, no log line, no use and no file
 //! in the clear.
 
@@ -267,6 +268,70 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
         "the other item waits"
     );
 
+    // Their person reads the bridge's leave beside the item's uses; taking back an agent's
+    // leaves leaves it, taking back the bridge's ends it, and the next release asks again.
+    let mine = (&owner, &caller(&owner));
+    let leaves = |answer: Value| answer["always"].as_array().cloned().unwrap_or_default();
+    let read = ask(
+        &service,
+        workspace_id,
+        mine,
+        person_vault::USES,
+        json!({"item": token.to_string()}),
+    )
+    .await
+    .expect("the person reads who may use the item");
+    let [leave] = &leaves(read)[..] else {
+        panic!("the bridge's leave is listed");
+    };
+    assert_eq!(leave["app"], BRIDGE);
+    assert_eq!(leave["using"], person_vault::RELEASE);
+    assert!(leave.get("agent").is_none(), "{leave}");
+    assert!(leave["since"].as_u64().unwrap() > 0, "{leave}");
+    let others = ask(
+        &service,
+        workspace_id,
+        mine,
+        person_vault::USES,
+        json!({"item": other.to_string()}),
+    )
+    .await
+    .unwrap();
+    assert!(leaves(others).is_empty(), "the leave covers one item");
+    let kept_on = ask(
+        &service,
+        workspace_id,
+        mine,
+        person_vault::TAKE_BACK,
+        json!({"item": token.to_string(), "agent": "scout"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(leaves(kept_on).len(), 1, "an agent's take-back leaves the app's");
+    workspaces
+        .release_to((BRIDGE, &workspace), &connection, &call)
+        .await
+        .expect("still allowed");
+    let taken = ask(
+        &service,
+        workspace_id,
+        mine,
+        person_vault::TAKE_BACK,
+        json!({"item": token.to_string(), "app": BRIDGE}),
+    )
+    .await
+    .expect("the person takes the bridge's leave back");
+    assert!(leaves(taken).is_empty(), "the leave is gone");
+    assert_eq!(
+        refusal(
+            workspaces
+                .release_to((BRIDGE, &workspace), &connection, &call)
+                .await
+        ),
+        release::asked_first(BRIDGE),
+        "once taken back, the bridge is asked for again"
+    );
+
     // The token is in no record, no argument, no use written into the item, no log line and
     // no file in the clear.
     drop(guard);
@@ -292,7 +357,7 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
     let uses = items
         .uses(&vault_items::ItemId::parse(token.id()).unwrap())
         .unwrap();
-    assert_eq!(uses.len(), 1, "one release, one use: {uses:?}");
+    assert_eq!(uses.len(), 2, "two releases, two uses: {uses:?}");
     assert_eq!(uses[0].by, BRIDGE, "the use names the app it went to");
     assert_eq!(uses[0].using, "tilo.vault/release");
     assert_eq!(uses[0].allowed, Some(vault_items::Allowance::Always));

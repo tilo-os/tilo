@@ -391,8 +391,14 @@ pub struct ItemUses {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AlwaysUse {
-    /// The agent, by its id: what [`TakeBack::agent`] names.
+    /// The agent, by its id: what [`TakeBack::agent`] names. Empty for an
+    /// app's leave.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent: String,
+    /// The app, by its id, that may be handed the item itself ([`RELEASE`]):
+    /// what [`TakeBack::app`] names. Empty for an agent's leave.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app: String,
     /// The name its person knew it under when they gave the leave.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub by: String,
@@ -456,10 +462,13 @@ pub struct ForgetEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TakeBack {
     pub item: ItemRef,
-    /// The agent whose leaves to take back ([`AlwaysUse::agent`]); every
-    /// agent's when left out.
+    /// The agent whose leaves to take back ([`AlwaysUse::agent`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// The app whose leave to take back ([`AlwaysUse::app`]); with neither
+    /// this nor `agent`, every leave of the item goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 /// What every use by reference says of the reference it takes.
@@ -1270,6 +1279,7 @@ mod tests {
         );
         let leave = AlwaysUse {
             agent: "scout".into(),
+            app: String::new(),
             by: "Scout".into(),
             using: "tilo.accounts/add-mail-with-item".into(),
             places: vec!["imap://mail.example.test:993".into()],
@@ -1282,6 +1292,7 @@ mod tests {
         let said = serde_json::to_value(&some).unwrap();
         assert_eq!(said["always"][0]["agent"], "scout");
         assert_eq!(said["always"][0]["since"], 7);
+        assert!(said["always"][0].get("app").is_none(), "an agent's leave names no app");
         assert_eq!(serde_json::from_value::<ItemUses>(said).unwrap(), some);
         let back: TakeBack =
             serde_json::from_value(serde_json::json!({"item": format!("vault.item:{ID}")}))

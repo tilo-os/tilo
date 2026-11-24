@@ -326,11 +326,12 @@ impl Workspaces {
         if let Some(taking) = take_back {
             let mut ids = Vec::new();
             kept.retain(|(grant, shown)| {
-                if taking
+                let other_agent = taking
                     .agent
                     .as_ref()
-                    .is_some_and(|agent| *agent != shown.agent)
-                {
+                    .is_some_and(|agent| *agent != shown.agent);
+                let other_app = taking.app.as_ref().is_some_and(|app| *app != shown.app);
+                if other_agent || other_app {
                     return true;
                 }
                 ids.push(grant.id.clone());
@@ -351,10 +352,12 @@ impl Workspaces {
         let mut shown = Vec::with_capacity(kept.len());
         for (grant, mut approval) in kept {
             approval.since = times.get(&grant.id).map_or(0, |at| at / 1_000_000_000);
-            approval.by = self
-                .agent_name(&name, &approval.agent)
-                .await
-                .unwrap_or_default();
+            if !approval.agent.is_empty() {
+                approval.by = self
+                    .agent_name(&name, &approval.agent)
+                    .await
+                    .unwrap_or_default();
+            }
             shown.push(approval);
         }
         shown.sort_by_key(|approval| approval.since);
@@ -609,10 +612,24 @@ fn said<T: serde::Serialize>(outcome: Result<T, String>) -> Result<Value, Action
 }
 
 /// What `grant` lets an agent always use of the workspace's vault item
-/// `item`, if it is such a grant.
+/// `item`, or lets an app read of it, if it is such a grant.
 fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
     if grant.answer != Answer::Allow {
         return None;
+    }
+    if let Some(app) = grant.grantee.app_id() {
+        let reads = grant.node.id_at(Level::App) == Some(person_vault::PROVIDER)
+            && grant.node.id_at(Level::Kind) == Some(person_vault::ITEM_KIND)
+            && grant.node.id_at(Level::Resource) == Some(item.to_string().as_str())
+            && grant.node.id_at(Level::Action) == Some(person_vault::RELEASE);
+        return reads.then(|| AlwaysUse {
+            agent: String::new(),
+            app: app.to_owned(),
+            by: String::new(),
+            using: person_vault::RELEASE.to_owned(),
+            places: Vec::new(),
+            since: 0,
+        });
     }
     let agent = grant.grantee.agent_id()?;
     let (app, action) = (
@@ -637,6 +654,7 @@ fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
     }
     Some(AlwaysUse {
         agent: agent.to_owned(),
+        app: String::new(),
         by: String::new(),
         using: grant.node.id_at(Level::Kind)?.to_owned(),
         places: serde_json::from_str(places).ok()?,

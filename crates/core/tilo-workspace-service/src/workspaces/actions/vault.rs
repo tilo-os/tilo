@@ -126,7 +126,13 @@ fn take_back_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "agent",
             ParamType::Text,
-            "The agent whose leaves to take back; every agent's when left out.",
+            "The agent whose leaves to take back.",
+        ),
+        ActionParam::optional(
+            "app",
+            ParamType::Text,
+            "The app whose leave to read the item to take back. With neither this nor `agent`, \
+             every leave of the item goes.",
         ),
     ]
 }
