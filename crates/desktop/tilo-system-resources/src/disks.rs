@@ -46,6 +46,17 @@ pub struct DiskHealth {
     pub self_test: Option<String>,
 }
 
+/// What a partition's own encryption is, where it is one.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct Encryption {
+    /// How it is encrypted: `LUKS2`, `BitLocker`.
+    pub scheme: String,
+    /// The unlocked mapping's kernel name (`dm-1`), where its filesystem is mounted from; `None`
+    /// while it is locked.
+    #[serde(default)]
+    pub unlocked_as: Option<String>,
+}
+
 /// One partition of a drive.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
@@ -67,6 +78,9 @@ pub struct Partition {
     pub mountpoint: Option<String>,
     #[serde(default)]
     pub uuid: Option<String>,
+    /// How it is encrypted, where it is; its filesystem is inside the mapping then.
+    #[serde(default)]
+    pub encryption: Option<Encryption>,
 }
 
 /// One drive and its partitions.

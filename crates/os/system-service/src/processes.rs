@@ -120,7 +120,13 @@ fn socket() -> Option<std::path::PathBuf> {
 }
 
 fn connect() -> Option<Client> {
-    Client::connect_unconfined(&socket()?, "so.tilo.system-service").ok()
+    Client::connect_unconfined_with(
+        &socket()?,
+        "so.tilo.system-service",
+        tilo_system_stats::protocol::Grants::IMAGE_DEFAULT
+            .with(tilo_system_stats::protocol::Grant::CommandLines),
+    )
+    .ok()
 }
 
 /// Start reading the machine every interval, calling `changed` as each snapshot arrives. The
@@ -236,6 +242,8 @@ fn mapped(snapshot: &Snapshot, interval_ms: u32) -> Processes {
                 ppid: process.ppid,
                 started_at: process.started_at,
                 name: process.name.clone(),
+                cmd: process.command.clone(),
+                open_files: process.open_files,
                 app_id: process.app.clone(),
                 user: process.user.clone(),
                 cpu: f64::from(process.cpu),

@@ -153,6 +153,16 @@ impl Client {
     }
 
     pub fn connect_unconfined(socket: &std::path::Path, app_id: &str) -> std::io::Result<Self> {
+        Self::connect_unconfined_with(socket, app_id, Grants::IMAGE_DEFAULT)
+    }
+
+    /// The same connection, reading what `grants` names: the session's own service publishes one
+    /// reading for the whole device, so it reads the command lines that belong with it.
+    pub fn connect_unconfined_with(
+        socket: &std::path::Path,
+        app_id: &str,
+        grants: Grants,
+    ) -> std::io::Result<Self> {
         let mut stream = tilo_files::native::socket::connect(socket)?;
         write_handoff(
             &mut stream,
@@ -160,7 +170,7 @@ impl Client {
                 protocol: PROTOCOL,
                 app_id: app_id.to_owned(),
                 workspace_id: None,
-                grants: Grants::IMAGE_DEFAULT,
+                grants,
                 ceiling: Grants::ALL,
             },
         )?;

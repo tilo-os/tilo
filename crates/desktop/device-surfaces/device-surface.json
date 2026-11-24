@@ -7237,6 +7237,18 @@
               "type": "text"
             },
             {
+              "name": "cmd",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "open_files",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
               "name": "app_id",
               "type": {
                 "option": "text"
@@ -7667,6 +7679,22 @@
           ]
         },
         {
+          "name": "Encryption",
+          "doc": "What a partition's own encryption is, where it is one.",
+          "fields": [
+            {
+              "name": "scheme",
+              "type": "text"
+            },
+            {
+              "name": "unlocked_as",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
           "name": "Partition",
           "doc": "One partition of a drive.",
           "fields": [
@@ -7712,6 +7740,14 @@
               "name": "uuid",
               "type": {
                 "option": "text"
+              }
+            },
+            {
+              "name": "encryption",
+              "type": {
+                "option": {
+                  "named": "Encryption"
+                }
               }
             }
           ]

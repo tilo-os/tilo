@@ -255,6 +255,7 @@ impl Collector {
                 run_secs,
                 kernel_thread: row.kernel_thread,
                 command: row.command,
+                open_files: row.open_files,
                 endable,
                 name: row.name,
             });

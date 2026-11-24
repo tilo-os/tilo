@@ -3,9 +3,7 @@
 //! actions that read them again and end a process.
 //!
 //! What reads `/proc` is the session's system information service; this resource is the
-//! vocabulary the Monitor window, an agent and a script read it by. Command lines are not part of
-//! the reading: they are granted to one app at a time, and a reading is one value for the whole
-//! session.
+//! vocabulary the Monitor window, an agent and a script read it by.
 
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +35,12 @@ pub struct Process {
     /// Its start time in clock ticks since boot: with the pid, the identity of this lifetime.
     pub started_at: u64,
     pub name: String,
+    /// What it was run as: its command line, or its name where the kernel exposes no arguments.
+    #[serde(default)]
+    pub cmd: Option<String>,
+    /// How many files it holds open, where the kernel lets this device count them.
+    #[serde(default)]
+    pub open_files: Option<u32>,
     /// The app this process belongs to, when it belongs to one.
     pub app_id: Option<String>,
     pub user: String,

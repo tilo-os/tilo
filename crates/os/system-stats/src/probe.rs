@@ -86,6 +86,7 @@ pub struct RawProcess {
     pub kernel_thread: bool,
     pub cgroup: Option<String>,
     pub command: Option<String>,
+    pub open_files: Option<u32>,
 }
 
 pub trait Probe: Send {
@@ -355,6 +356,12 @@ impl KernelProbe {
         process.cgroup = std::fs::read_to_string(dir.join("cgroup"))
             .ok()
             .and_then(|text| crate::apps::unified_path(&text).map(str::to_owned));
+        if !process.kernel_thread {
+            process.open_files = std::fs::read_dir(dir.join("fd"))
+                .ok()
+                .map(|files| files.filter_map(Result::ok).count())
+                .and_then(|count| u32::try_from(count).ok());
+        }
         if command_line {
             process.command = std::fs::read(dir.join("cmdline")).ok().and_then(|bytes| {
                 let joined = bytes

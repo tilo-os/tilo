@@ -8,7 +8,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use tilo_actions::ResourceSpec;
 use tilo_service::{offer, unavailable};
-use tilo_system_resources::disks::{Benchmark, DiskAction, DiskHealth, Disks, Drive, Partition};
+use tilo_system_resources::disks::{
+    Benchmark, DiskAction, DiskHealth, Disks, Drive, Encryption, Partition,
+};
 use tilo_system_stats::client::Client;
 use tilo_system_stats::protocol::{DriveHealth, StorageDevice};
 
@@ -97,16 +99,7 @@ fn drive_of(device: &StorageDevice) -> Drive {
     let partitions = device
         .children
         .iter()
-        .map(|child| Partition {
-            name: child.name.clone(),
-            label: child.label.clone(),
-            fstype: child.fstype.clone(),
-            part_type_name: child.part_type_name.clone(),
-            size_bytes: child.size,
-            used_bytes: child.fs_used,
-            mountpoint: child.mountpoint.clone(),
-            uuid: child.uuid.clone(),
-        })
+        .map(partition_of)
         .collect();
     Drive {
         name: device.name.clone(),
@@ -122,6 +115,60 @@ fn drive_of(device: &StorageDevice) -> Drive {
         mountpoint: device.mountpoint.clone(),
         partitions,
         health: device.health.as_ref().map(health_of),
+    }
+}
+
+fn encryption_of(device: &StorageDevice) -> Option<Encryption> {
+    let scheme = match device.fstype.as_deref()? {
+        "crypto_LUKS" => match device.fs_version.as_deref() {
+            Some(version) if !version.is_empty() => format!("LUKS{version}"),
+            _ => "LUKS".to_owned(),
+        },
+        "BitLocker" => "BitLocker".to_owned(),
+        _ => return None,
+    };
+    Some(Encryption {
+        scheme,
+        unlocked_as: unlocked_mapping(device).map(|mapping| {
+            mapping
+                .kernel_name
+                .clone()
+                .unwrap_or_else(|| mapping.name.clone())
+        }),
+    })
+}
+
+/// The device's unlocked mapping, where it is an encryption that is open.
+fn unlocked_mapping(device: &StorageDevice) -> Option<&StorageDevice> {
+    device.children.iter().find(|child| child.kind == "crypt")
+}
+
+/// One partition. An encrypted one takes its filesystem, label and mount point from the mapping
+/// it is unlocked as, and has none while it is locked.
+fn partition_of(device: &StorageDevice) -> Partition {
+    let encryption = encryption_of(device);
+    let holds = match &encryption {
+        Some(Encryption {
+            unlocked_as: Some(_),
+            ..
+        }) => unlocked_mapping(device),
+        Some(_) => None,
+        None => Some(device),
+    };
+    Partition {
+        name: device.name.clone(),
+        label: holds
+            .and_then(|filesystem| filesystem.label.clone())
+            .or_else(|| device.label.clone()),
+        fstype: holds.and_then(|filesystem| filesystem.fstype.clone()),
+        part_type_name: device.part_type_name.clone(),
+        size_bytes: device.size,
+        used_bytes: holds
+            .and_then(|filesystem| filesystem.fs_used)
+            .filter(|used| device.size > 0 && *used <= device.size),
+        mountpoint: holds.and_then(|filesystem| filesystem.mountpoint.clone()),
+        uuid: device.uuid.clone(),
+        encryption,
     }
 }
 

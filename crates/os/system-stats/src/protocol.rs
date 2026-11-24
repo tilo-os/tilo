@@ -519,6 +519,10 @@ pub struct ProcessStats {
     pub kernel_thread: bool,
     #[serde(default)]
     pub command: Option<String>,
+    /// How many files the process holds open, where the kernel lets it be
+    /// counted; `None` for a kernel thread and where it cannot.
+    #[serde(default)]
+    pub open_files: Option<u32>,
     pub endable: bool,
 }
 
