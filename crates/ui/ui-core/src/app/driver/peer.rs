@@ -658,6 +658,7 @@ impl Driver {
                         request,
                         CollabRequest::RemoteAction {
                             message: RemoteActionMessage::Invoke(_),
+                            ..
                         } | CollabRequest::DecideShownActions { .. }
                     )
                 })
@@ -679,6 +680,7 @@ impl Driver {
         for request in &asked {
             let CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
+                ..
             } = request
             else {
                 continue;
@@ -729,6 +731,7 @@ impl Driver {
             let request = match request {
                 CollabRequest::RemoteAction {
                     message: RemoteActionMessage::Invoke(request),
+                    ..
                 } => request,
                 asked => {
                     if let Some(verdicts) = peer.served_by_caller.asked(&asked) {

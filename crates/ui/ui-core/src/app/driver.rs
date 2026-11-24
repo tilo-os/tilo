@@ -2557,6 +2557,7 @@ impl Driver {
             .find_map(|request| match request {
                 crate::collaboration::CollabRequest::RemoteAction {
                     message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                    ..
                 } if request.target.address.action == address.action => Some(request.invocation),
                 _ => None,
             })

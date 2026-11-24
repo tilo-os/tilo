@@ -43,7 +43,7 @@ fn view(shown: &str, transition: Option<&str>) -> Vec<ToUi> {
 
 struct Shown {
     app: local::End,
-    harness: ui::headless::FrameHarness,
+    harness: ui::headless::Driver,
 }
 
 impl Shown {
@@ -54,7 +54,7 @@ impl Shown {
             .expect("sends");
         let window = Box::new(AppWindow::new(Box::new(end), Vec::new()));
         let harness = clock(now, || {
-            let mut harness = ui::headless::FrameHarness::new(ui::State::new(), window, (600, 800));
+            let mut harness = ui::headless::Driver::new(ui::State::new(), window, (600, 800));
             harness.set_theme(ui::Theme::dark().with_reduce_motion(reduced));
             ui::widget::find_mut::<AppWindow>(harness.root_widget_mut())
                 .expect("the window")
