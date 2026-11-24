@@ -498,4 +498,12 @@ fn a_fresh_computers_identity_is_founded_through_the_system_admission() {
         super::root_record_for_person(person_key).is_ok(),
         "the founded person's root is not found for their signed-in account"
     );
+    // The login asks again only while it holds nothing, but a computer whose person is here
+    // answers the ask all the same: it refuses, and never waits on the part it is starting.
+    let again = do_here(&socket, ADA, "devices#found", json!({}));
+    assert_eq!(
+        again["result"]["isError"],
+        json!(true),
+        "a person's device answered no refusal to a second founding: {again}"
+    );
 }

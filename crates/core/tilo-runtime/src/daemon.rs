@@ -950,18 +950,36 @@ impl Native {
                 std::thread::Builder::new()
                     .name("tilo-native-wait".into())
                     .spawn(move || {
+                        let deadline = Instant::now()
+                            .checked_add(WAITED_WITHIN)
+                            .unwrap_or_else(Instant::now);
                         let mut told = native.started.0.lock_recover();
                         let person = loop {
                             if let Some(person) = native.person() {
-                                break person;
+                                break Some(person);
+                            }
+                            let left = deadline.saturating_duration_since(Instant::now());
+                            if left.is_zero() {
+                                break None;
                             }
                             told = native
                                 .started
                                 .1
-                                .wait(told)
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                .wait_timeout(told, left)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .0;
                         };
                         drop(told);
+                        // A person's part that has not started in time is said, never waited on
+                        // for as long as it is broken: the caller would otherwise wait forever.
+                        let Some(person) = person else {
+                            crate::device::serve::refuse(
+                                &stream,
+                                "this computer's Tilo has not started its person's part yet: run \
+                                 `tilo status` to see how it stands, then try again",
+                            );
+                            return;
+                        };
                         if let Err(error) = person(stream, slot, seated) {
                             tracing::debug!(%error, "a native connection that waited while the person's services started was not served");
                         }
@@ -971,6 +989,10 @@ impl Native {
         }
     }
 }
+
+/// How long a connection waits for the person's part to take it before it is told why it is not
+/// served. The agents' endpoint bounds its own handoff by the same name.
+const WAITED_WITHIN: Duration = Duration::from_secs(120);
 
 /// Hand each connection to `listener` to `take`, at most [`MAX_CONNECTIONS`] at once. One more
 /// is told there is no room and closed ([`refuse_busy`]).

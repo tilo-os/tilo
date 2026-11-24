@@ -135,13 +135,17 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     let name = name.map(str::trim).filter(|name| !name.is_empty());
     if made {
         login::ensure_daemon()?;
-        // The daemon makes this account's person as it starts, and then answers `devices` as
-        // theirs: a person it made is served, whatever the found call says.
-        let found = tilo_api::daemon::this_computer().and_then(|place| place.found(name));
-        if let Err(why) = found
-            && held()?.is_none()
-        {
-            return Err(anyhow::Error::msg(why));
+        // The daemon makes this account's person as it starts, and founds them when its own
+        // answer to this computer's unclaimed device asks it to: a person already kept here is
+        // served, and asking again would wait on the person's part the daemon is starting. One
+        // whose certificate is not written yet has its root certify it as the daemon founds it.
+        if !held().is_ok_and(|person| person.is_some()) {
+            let found = tilo_api::daemon::this_computer().and_then(|place| place.found(name));
+            if let Err(why) = found
+                && held()?.is_none()
+            {
+                return Err(anyhow::Error::msg(why));
+            }
         }
     }
     let mut person =

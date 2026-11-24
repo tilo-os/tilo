@@ -440,6 +440,11 @@ impl DaemonPlace {
         let mut native = tilo_files::native::socket::connect(&self.native()).map_err(|error| {
             DeviceRefusal::said(format!("Tilo isn't answering on this computer: {error}"))
         })?;
+        // A daemon that took this connection but never answers leaves the command hanging for as
+        // long as it is broken: the person is told it did not answer, and where to see why.
+        native
+            .set_read_timeout(Some(ANSWERING_WITHIN))
+            .map_err(|error| DeviceRefusal::said(error.to_string()))?;
         let line = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -451,7 +456,16 @@ impl DaemonPlace {
         let mut answer = String::new();
         std::io::BufReader::new(native)
             .read_line(&mut answer)
-            .map_err(|error| DeviceRefusal::said(error.to_string()))?;
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                    DeviceRefusal::said(format!(
+                        "Tilo's daemon took this request and did not answer it within {} seconds: \
+                         run `tilo status` to see how it stands, then try again",
+                        ANSWERING_WITHIN.as_secs()
+                    ))
+                }
+                _ => DeviceRefusal::said(error.to_string()),
+            })?;
         let answer: serde_json::Value = serde_json::from_str(answer.trim()).map_err(|_| {
             DeviceRefusal::said(format!(
                 "Tilo answered something unreadable: {}",
@@ -509,6 +523,11 @@ impl DaemonPlace {
 
 /// How long one read of a followed call waits for it to move before it is read again.
 const FOLLOW_WAIT_MS: u64 = 60_000;
+
+/// How long a device action's answer is waited for before the command says the daemon took it
+/// and did not answer. A daemon whose person's part is still starting, or whose workspace cannot
+/// be read, answers nothing at all: what a command does meanwhile is say so.
+const ANSWERING_WITHIN: Duration = Duration::from_secs(300);
 
 /// The code of a device action's refusal that named none.
 const REFUSED: &str = "refused";

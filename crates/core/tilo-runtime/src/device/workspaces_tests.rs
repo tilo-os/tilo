@@ -728,6 +728,55 @@ async fn a_persons_workspace_is_founded_when_they_first_need_one() {
     assert_eq!(started_again.get(), Some(founded.as_str()));
 }
 
+/// The standing of the workspace a fresh person's computer founds encodes as the JSON the
+/// daemon publishes to their shell: its people and the devices each holds travel with string
+/// keys, and it reads back as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_founded_workspaces_standing_crosses_as_json() {
+    use tilo_peer_state::workspace_view::WorkspaceReading;
+    use tilo_workspace_service::workspaces::standing;
+
+    let (own, directory, _, cert, _) = ServiceWorkspaces::test_of_person().await;
+    let person = cert.user_public_key;
+    let home = FirstWorkspace::open(Arc::clone(&own), None, directory.path(), &person).unwrap();
+    let founded = home.found().await.unwrap();
+
+    let held = own.held();
+    let (workspace, _, peer) = held
+        .iter()
+        .find(|(workspace, _, _)| workspace.to_string() == founded)
+        .expect("the workspace this computer founded is held");
+    let signer = own.signer();
+    let reader = standing::Reader {
+        person,
+        device: cert.device_public_key,
+        signer: signer.as_ref(),
+    };
+    let reading = standing::reading(*workspace, peer, &reader, None, Vec::new());
+    assert_eq!(reading.id, founded);
+    assert!(
+        reading
+            .members
+            .devices
+            .values()
+            .any(|devices| devices.contains(&cert.device_public_key)),
+        "this device is listed among its person's: {:?}",
+        reading.members.devices
+    );
+
+    let json = serde_json::to_vec(&reading).expect("the standing encodes as JSON");
+    let read: WorkspaceReading = serde_json::from_slice(&json).expect("and reads back");
+    assert_eq!(
+        read.members, reading.members,
+        "its members cross as they are"
+    );
+    assert_eq!(read.people, reading.people, "its people cross as they are");
+    assert_eq!(
+        read.device_labels, reading.device_labels,
+        "its labels cross"
+    );
+}
+
 /// A desktop of the device `cert` certifies, keeping its state under `state`, whose own
 /// workspace service founded its person's workspace, kept nowhere else, and wrote the layout's
 /// front in it before it stopped: the workspace.
