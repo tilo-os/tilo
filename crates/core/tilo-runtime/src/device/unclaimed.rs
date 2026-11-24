@@ -395,6 +395,9 @@ impl DeviceOnly {
         };
         let person = make(seated)?;
         seated.seats.founded_by(seated.seat.clone(), person)?;
+        // A person founded while this daemon serves has their root marked and their asks served
+        // from now on, without the daemon starting again.
+        super::services::person_founded(person);
         Ok(hex::encode(person))
     }
 

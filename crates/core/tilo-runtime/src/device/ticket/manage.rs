@@ -400,6 +400,17 @@ impl Issuer for Fleet {
     }
 
     fn root(&self) -> Result<Option<Root>, String> {
+        // The call runs as the account that made it: their root signs it where this computer
+        // keeps it, and the device's own root answers what the person it serves asks.
+        if let Some(person) = super::super::services::root_caller() {
+            let record =
+                super::super::services::root_record_for_person(person).map_err(|error| {
+                    format!("this computer keeps no root of this person's: {error}")
+                })?;
+            return tilo_identity::store::load_from_path(record)
+                .map(|root| Some(Arc::new(root) as Root))
+                .map_err(|error| error.to_string());
+        }
         (self.root)()
             .map(|root| root.map(|root| Arc::new(root) as Root))
             .map_err(|error| format!("{error:#}"))

@@ -675,10 +675,6 @@ const ROOT_PERSON_SIGNED: [&str; 5] = [
     ANSWER_SIGN_IN,
 ];
 
-/// The device actions only the root of the person this computer was set up from signs: the
-/// tickets it issues, the computers it approves, and the devices it names or revokes.
-const ROOT_DEVICE_SIGNED: [&str; 4] = [ISSUE, APPROVE, RENAME, REVOKE];
-
 /// The person `caller` acts as, when it is a person: their root key.
 fn caller_person(caller: &tilo_actions::remote::Caller) -> Option<[u8; 32]> {
     hex::decode(caller.acting().person_id()?)
@@ -942,18 +938,6 @@ impl Tickets {
         self.0.logged_in.subscribe()
     }
 
-    /// Whether `caller` is the person this computer was set up from: what only their root signs
-    /// is answered for them alone.
-    fn the_device_person(&self, caller: &tilo_actions::remote::Caller) -> bool {
-        if caller.is_system() {
-            return true;
-        }
-        let Some(person) = caller_person(caller) else {
-            return false;
-        };
-        super::services::device_person() == Some(person)
-    }
-
     /// The record of the root the calling account's person keeps here, with the identity it
     /// signs for: root-only calls are signed with it and no other account's.
     fn rooted_for(
@@ -1053,13 +1037,6 @@ impl Tickets {
         };
         let args = Value::Object(argument.clone());
         let action = request.target.address.action.clone();
-        // What only the root of the person this computer was set up from signs is never answered
-        // for another account's call: each account's root stays theirs.
-        if ROOT_DEVICE_SIGNED.contains(&action.as_str()) && !self.the_device_person(caller) {
-            return Pending::ready(Err(refused(
-                "only the person whose root this computer keeps signs this",
-            )));
-        }
         // What the calling account's own root signs is answered with that root, and with no
         // other: an account whose root this computer keeps not signs nothing here.
         let rooted = if ROOT_PERSON_SIGNED.contains(&action.as_str()) {
@@ -1147,42 +1124,51 @@ impl Tickets {
         let receipt = accepted.receipt();
         self.0.calls.lock_recover().insert(invocation, accepted);
         let served = self.clone();
-        self.0.runtime.spawn(async move {
-            let answer = match action.as_str() {
-                LOG_IN => served.log_in(&args).await,
-                PENDING => served.pending(&args).await,
-                APPROVE => served.approve(&args).await,
-                REPORTED => served.report(&args).await,
-                RENAME | REVOKE | UPDATE => served.manage(&action, &args).await,
-                _ if wait => served.waited().await,
-                _ => {
-                    if unreached {
-                        tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
+        let person = caller_person(caller);
+        self.0
+            .runtime
+            .spawn(super::services::with_root_caller(person, async move {
+                let answer = match action.as_str() {
+                    LOG_IN => served.log_in(&args).await,
+                    PENDING => served.pending(&args).await,
+                    APPROVE => served.approve(&args).await,
+                    REPORTED => served.report(&args).await,
+                    RENAME | REVOKE | UPDATE => served.manage(&action, &args).await,
+                    _ if wait => served.waited().await,
+                    _ => {
+                        if unreached {
+                            tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
+                        }
+                        served.issue(&args).await
                     }
-                    served.issue(&args).await
-                }
-            };
-            let update = match answer {
-                Ok(value) => succeeded(invocation, value),
-                Err(error) => failed(invocation, &format!("{error:#}")),
-            };
-            served
-                .0
-                .calls
-                .lock_recover()
-                .insert(invocation, InvocationState::new(invocation, update));
-            served.0.ended.notify_waiters();
-        });
+                };
+                let update = match answer {
+                    Ok(value) => succeeded(invocation, value),
+                    Err(error) => failed(invocation, &format!("{error:#}")),
+                };
+                served
+                    .0
+                    .calls
+                    .lock_recover()
+                    .insert(invocation, InvocationState::new(invocation, update));
+                served.0.ended.notify_waiters();
+            }));
         Pending::ready(Ok(receipt))
     }
 
     /// Take `request` and wait for it to end: how it ended.
-    pub(crate) async fn run_to_end(&self, request: &InvokeRequest) -> InvocationUpdate {
+    pub(crate) async fn run_to_end(
+        &self,
+        request: &InvokeRequest,
+        caller: &tilo_actions::remote::Caller,
+    ) -> InvocationUpdate {
         let invocation = request.invocation;
-        // The call was kept for this device as one that keeps the person's root, and admitted by
-        // the workspace already: it runs here as the device, with the root it keeps.
-        let device = tilo_actions::remote::Caller::local_system();
-        if let Some(Err(error)) = Tickets::invoke(self, request, &device).await {
+        // The call was kept for this device as one that keeps the caller's person's root: it runs
+        // here with that person's root, as their own call.
+        let person = caller_person(caller);
+        if let Some(Err(error)) =
+            super::services::with_root_caller(person, Tickets::invoke(self, request, caller)).await
+        {
             return failed(invocation, &error.to_string());
         }
         loop {

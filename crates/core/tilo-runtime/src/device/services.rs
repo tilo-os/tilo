@@ -230,6 +230,50 @@ pub fn found_a_person(
     found_a_person_in(&tilo_identity::store::identity_dir_from_env()?, keys, name)
 }
 
+tokio::task_local! {
+    /// The person whose root-only call runs on this device, while one does: what it signs is
+    /// signed with that person's root, never the device's own.
+    static ROOT_CALLER: Option<[u8; 32]>;
+}
+
+/// Run `future` as the root-only call of `person`.
+pub(crate) async fn with_root_caller<F: std::future::Future>(
+    person: Option<[u8; 32]>,
+    future: F,
+) -> F::Output {
+    ROOT_CALLER.scope(person, future).await
+}
+
+/// The person whose root-only call runs here, while one does.
+pub(crate) fn root_caller() -> Option<[u8; 32]> {
+    ROOT_CALLER.try_with(|person| *person).ok().flatten()
+}
+
+/// What runs when a person is founded while this daemon serves: their root marked in their
+/// devices record, and their root-only asks served here, without the daemon starting again.
+pub(crate) type PersonFounded = Arc<dyn Fn([u8; 32]) + Send + Sync>;
+
+static PERSON_FOUNDED: std::sync::OnceLock<std::sync::Mutex<Option<PersonFounded>>> =
+    std::sync::OnceLock::new();
+
+/// Have `hook` run when a person is founded while this daemon serves, in place of one an earlier
+/// start of its services left.
+pub(crate) fn when_person_founded(hook: PersonFounded) {
+    *PERSON_FOUNDED
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock_recover() = Some(hook);
+}
+
+/// Run what this daemon does for `person`, founded while it serves.
+pub(crate) fn person_founded(person: [u8; 32]) {
+    let hook = PERSON_FOUNDED
+        .get()
+        .and_then(|held| held.lock_recover().clone());
+    if let Some(hook) = hook {
+        hook(person);
+    }
+}
+
 /// Found the person of the account `uid` on this computer ([`found_a_person`]), whose root is
 /// kept for that account alone: a computer serving several accounts keeps each one's apart.
 ///
@@ -650,6 +694,24 @@ impl Daemon {
     #[must_use]
     pub fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {
         self.workspaces.copies()
+    }
+
+    /// The calls that wait for their person's answer here, each as its asked record.
+    #[must_use]
+    pub(crate) fn asked(&self) -> &Arc<super::asked::DeviceAsked> {
+        &self.asked
+    }
+
+    /// The device actions this daemon answers: a ticket, a login, and what only a root signs.
+    #[must_use]
+    pub(crate) fn tickets(&self) -> &Arc<Tickets> {
+        &self.tickets
+    }
+
+    /// Whether this device runs what waits for a device that keeps a person's root.
+    #[must_use]
+    pub(crate) fn serves_at_root(&self) -> bool {
+        self.asked.serves_at_root()
     }
 
     /// Every counter of the workspace service this device runs: the documents its reads opened,

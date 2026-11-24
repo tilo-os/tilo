@@ -277,6 +277,12 @@ impl DeviceAsked {
         receipt
     }
 
+    /// Whether this device runs what waits for a device that keeps the person's root: it keeps
+    /// one or more of them.
+    pub(crate) fn serves_at_root(&self) -> bool {
+        self.serving_at_root.get().is_some()
+    }
+
     /// Run here what waits for a device that keeps the person's root, with `tickets`: this
     /// device keeps it.
     pub(crate) fn serve_at_root(&self, tickets: super::ticket::Tickets) {
@@ -613,7 +619,7 @@ impl AskedDispatch for AtRoot {
 
     fn readmit(
         &self,
-        _: &Caller,
+        caller: &Caller,
         request: InvokeRequest,
         _: &Value,
     ) -> Result<(), ActionCallError> {
@@ -624,9 +630,13 @@ impl AskedDispatch for AtRoot {
         }
         // Taken before it runs: after a restart this device runs it again, never drops it.
         self.store.take(request.invocation);
-        let (tickets, store) = (self.tickets.clone(), Arc::clone(&self.store));
+        let (tickets, store, caller) = (
+            self.tickets.clone(),
+            Arc::clone(&self.store),
+            caller.clone(),
+        );
         self.runtime.spawn(async move {
-            let outcome = tickets.run_to_end(&request).await;
+            let outcome = tickets.run_to_end(&request, &caller).await;
             store.settle_for(request.invocation, outcome);
         });
         Ok(())

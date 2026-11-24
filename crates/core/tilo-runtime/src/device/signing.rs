@@ -71,7 +71,12 @@ fn person() -> io::Result<Rooted> {
 /// # Errors
 /// This daemon keeps no root, or the tab is not one a certificate is signed for.
 pub(crate) fn sign_tab(tab: &tilo_device_identity::login::Tab) -> io::Result<DeviceCert> {
-    let rooted = person()?;
+    // A browser approved as another account's is signed with that account's own root where this
+    // computer keeps it; the person this device serves signs with the device's.
+    let rooted = match super::services::root_caller() {
+        Some(person) => Rooted::at(&super::services::root_record_for_person(person)?)?,
+        None => person()?,
+    };
     let mut cert = tab
         .certificate(rooted.person, tilo_clock::unix_now_ns())
         .map_err(|error| io::Error::other(format!("the tab's certificate: {error}")))?;

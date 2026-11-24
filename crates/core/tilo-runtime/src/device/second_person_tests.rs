@@ -339,3 +339,65 @@ fn two_accounts_make_their_people_on_one_computer_and_each_certifies_as_itself()
     );
     assert_eq!(refused["result"]["isError"], json!(true), "{refused}");
 }
+
+const ROOTS_SERVED_TEST: &str = "device::services::second_person_tests::people_founded_while_the_daemon_serves_have_their_roots_served_here";
+
+/// People founded while this daemon serves have each one's root kept and served here without
+/// the daemon starting again: an account founded after it started, and the first person a fresh
+/// computer founds through `devices#found` (what `tilo login --new-identity` runs). Each one's
+/// root-only call is then answered here as themselves.
+#[test]
+fn people_founded_while_the_daemon_serves_have_their_roots_served_here() {
+    let Some(root) = isolated_root(ROOTS_SERVED_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let device_keys = tilo_api::calls::device_keys();
+    let device = DeviceOnly::new(
+        tilo_device_identity::persist::load_device_key(&device_keys).unwrap(),
+        tilo_device_identity::login::Place::here(device_keys).unwrap(),
+    );
+    let admission: &'static tilo_api::daemon::admission::Admission = Box::leak(Box::new(
+        tilo_api::daemon::admission::Admission::new(DAEMON, true),
+    ));
+    let socket = root.join("native.sock");
+    crate::daemon::serve_for_test(&daemon, device, test_peer, admission, &socket).unwrap();
+
+    for uid in [ADA, BO] {
+        let said = signed_in(&socket, uid);
+        assert_ne!(said["result"]["isError"], true, "{said}");
+        let made = do_here(&socket, uid, "devices#found", json!({}));
+        assert_ne!(
+            made["result"]["isError"], true,
+            "account {uid} made no person: {made}"
+        );
+        let person = answered_json(&made)["person"]
+            .as_str()
+            .expect("a person is made")
+            .to_owned();
+        let certified = do_here(&socket, uid, "seats#certified", json!({}));
+        assert_ne!(
+            certified["result"]["isError"], true,
+            "account {uid} certified no key with its own root: {certified}"
+        );
+        let who = who_here(&socket, uid);
+        assert_eq!(who["person"], json!(person), "{who}");
+        assert_eq!(
+            who["holds_root"],
+            json!(true),
+            "account {uid}'s root is not kept here: {who}"
+        );
+    }
+    // The daemon serves root-only asks for the people it founded, without starting again.
+    assert!(
+        daemon.serves_at_root(),
+        "no root-only ask is served here after founding"
+    );
+    for uid in [ADA, BO] {
+        let words = do_here(&socket, uid, "devices#recoveryWords", json!({}));
+        assert_ne!(
+            words["result"]["isError"], true,
+            "account {uid}'s root-only call is not answered as itself: {words}"
+        );
+    }
+}
