@@ -812,6 +812,18 @@ def is_compute_package(app_dir: Path) -> bool:
     )
 
 
+def is_host_program(manifest: dict) -> bool:
+    """A program of the computer it runs on, not an app a Tilo device installs.
+
+    Its `Cargo.toml` declares `[package.metadata.tilo] kind = "host-program"`:
+    it runs before any Tilo device or workspace exists (the installer, on
+    Windows, macOS and Linux), so no device hosts it as an app. It still serves
+    its steps through the one actions protocol, which its own tests drive.
+    """
+    tilo = manifest.get("package", {}).get("metadata", {}).get("tilo", {})
+    return isinstance(tilo, dict) and tilo.get("kind") == "host-program"
+
+
 def is_ui_core_dependency(alias: str, specification: object) -> bool:
     if package_name(alias, specification) == "ui":
         return True
@@ -1814,6 +1826,8 @@ def audit(
     for manifest_path in manifests:
         with manifest_path.open("rb") as handle:
             manifest = tomllib.load(handle)
+        if is_host_program(manifest):
+            continue
         dependencies = [
             (alias, specification)
             for table in dependency_tables(manifest)

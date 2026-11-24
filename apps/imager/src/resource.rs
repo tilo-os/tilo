@@ -531,47 +531,6 @@ mod tests {
     }
 
     #[test]
-    fn typing_a_hostname_is_one_undo_step_through_the_panel() {
-        let mut app = customizing();
-        app.invoke(Invoke::edit(&Imager::paths().profile.hostname.replace("")).unwrap())
-            .unwrap();
-        app.harness()
-            .perform_named("imager.profile.hostname", &ui::a11y::Action::Focus)
-            .unwrap();
-        app.harness().type_text("lab01");
-        assert_eq!(app.state().profile.hostname, "lab01");
-        assert!(app.undo());
-        assert_eq!(
-            app.state().profile.hostname,
-            "",
-            "the keystrokes of one field are one step"
-        );
-        assert!(app.redo(), "the grouped field edit can be redone");
-        assert_eq!(app.state().profile.hostname, "lab01");
-
-        let previous_name = app.state().profile.user.full_name;
-        app.invoke(
-            Invoke::edit(
-                &Imager::paths()
-                    .profile
-                    .user
-                    .full_name
-                    .replace("Second field"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(app.state().profile.user.full_name, "Second field");
-        assert!(app.undo(), "a different field is a separate step");
-        assert_eq!(app.state().profile.user.full_name, previous_name);
-        assert_eq!(
-            app.state().profile.hostname,
-            "lab01",
-            "undoing another field keeps the prior typed word"
-        );
-    }
-
-    #[test]
     fn the_keyboard_chooser_commits_through_the_real_event_path() {
         let mut app = customizing();
         app.harness()

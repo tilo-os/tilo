@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use automerge::ChangeHash;
 use tilo_resource::replica::Replica;
 use tilo_resource::resource::Resource;
 use tilo_resource::{Edit, Invoke};
@@ -17,16 +16,6 @@ struct Kept {
     replica: Replica<Imager>,
     file: Option<PathBuf>,
     revision: u64,
-    undo: Vec<Step>,
-    redo: Vec<Step>,
-}
-
-/// One step of the person's undo history: the resource before and after it. The keystrokes
-/// typed into one field are one step.
-struct Step {
-    before: Vec<ChangeHash>,
-    after: Vec<ChangeHash>,
-    field: Option<String>,
 }
 
 /// The one resource every window of a run shows and edits.
@@ -73,8 +62,6 @@ impl Store {
             replica,
             file,
             revision: 0,
-            undo: Vec::new(),
-            redo: Vec::new(),
         })))
     }
 
@@ -113,79 +100,13 @@ impl Store {
     ///
     /// Why the resource refused it.
     pub(crate) fn apply(&self, invoke: impl Into<Invoke<Imager>>) -> Result<(), String> {
-        self.applied(invoke.into(), None)
-    }
-
-    /// Run `invoke` as one step of the person's undo history, or as more of the step before it
-    /// when both are typing into the same `field`.
-    fn applied(&self, invoke: Invoke<Imager>, field: Option<String>) -> Result<(), String> {
-        let mut kept = self.0.borrow_mut();
-        let before = kept.replica.heads();
-        kept.replica
-            .apply(invoke)
+        self.0
+            .borrow_mut()
+            .replica
+            .apply(invoke.into())
             .map_err(|error| error.to_string())?;
-        let after = kept.replica.heads();
-        kept.redo.clear();
-        match kept.undo.last_mut() {
-            Some(last) if field.is_some() && last.field == field && last.after == before => {
-                last.after = after;
-            }
-            _ => kept.undo.push(Step {
-                before,
-                after,
-                field,
-            }),
-        }
-        drop(kept);
         self.changed();
         Ok(())
-    }
-
-    /// Whether there is a step to undo, and one to redo.
-    pub(crate) fn undo_status(&self) -> (bool, bool) {
-        let kept = self.0.borrow();
-        (!kept.undo.is_empty(), !kept.redo.is_empty())
-    }
-
-    /// Undo the person's last step, as Ctrl+Z does: the resource as it was before it, written as
-    /// a change of its own. Whether there was one.
-    pub(crate) fn undo(&self) -> bool {
-        self.step(true)
-    }
-
-    /// Redo the step last undone. Whether there was one.
-    pub(crate) fn redo(&self) -> bool {
-        self.step(false)
-    }
-
-    #[expect(
-        clippy::expect_used,
-        reason = "the replica holds the resource it was made with; one it cannot read is a bug"
-    )]
-    fn step(&self, undo: bool) -> bool {
-        let mut kept = self.0.borrow_mut();
-        let Some(step) = (if undo {
-            kept.undo.pop()
-        } else {
-            kept.redo.pop()
-        }) else {
-            return false;
-        };
-        let heads = if undo { &step.before } else { &step.after };
-        let shown = kept
-            .replica
-            .state_at(heads)
-            .expect("the installer's resource reads at every version it had");
-        tilo_resource::Fields::write_fields(&shown, kept.replica.doc_mut(), &automerge::ROOT)
-            .expect("the installer's resource writes");
-        if undo {
-            kept.redo.push(step);
-        } else {
-            kept.undo.push(step);
-        }
-        drop(kept);
-        self.changed();
-        true
     }
 
     /// Read the stored document itself.
@@ -208,19 +129,14 @@ impl Store {
     }
 
     /// Edit a field of the resource as the person types into its control: the profile's Wi-Fi
-    /// name, the device's label. What they type into one field in a row is one undo step.
+    /// name, the device's label. Going back a page is the form's own state, so an edit keeps no
+    /// history of its own.
     ///
     /// # Errors
     ///
     /// Why the resource refused it.
     pub(crate) fn edit(&self, edit: &Edit<Imager>) -> Result<(), String> {
-        let field = serde_json::to_value(edit)
-            .ok()
-            .and_then(|edit| edit.get("path").map(ToString::to_string));
-        self.applied(
-            Invoke::edit(edit).map_err(|error| error.to_string())?,
-            field,
-        )
+        self.apply(Invoke::edit(edit).map_err(|error| error.to_string())?)
     }
 
     /// The type the resource's own actions travel under.

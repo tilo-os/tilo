@@ -195,16 +195,6 @@ impl TestHost {
         self.address(resource, id, &object(arguments), true)
     }
 
-    /// Undo, as Ctrl+Z does. Whether anything was undone.
-    pub(crate) fn undo(&mut self) -> bool {
-        self.harness.perform_undo()
-    }
-
-    /// Redo, as Ctrl+Shift+Z does.
-    pub(crate) fn redo(&mut self) -> bool {
-        self.harness.perform_redo()
-    }
-
     /// Read the stored document itself.
     pub(crate) fn read_document<T>(&self, read: impl FnOnce(&tilo_resource::Doc) -> T) -> T {
         self.store.read_document(read)

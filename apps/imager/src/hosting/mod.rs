@@ -429,31 +429,6 @@ pub(crate) fn invoke(store: &Store, root: &mut dyn Widget, encoded: &EncodedActi
     }
 }
 
-/// Ctrl+Z and Ctrl+Shift+Z undo and redo the person's steps on the resource.
-impl<W: Window> ui::undo::LocalUndo for Hosted<W> {
-    fn local_undo_status(&self) -> Option<ui::undo::LocalUndoStatus> {
-        let (can_undo, can_redo) = self.0.port().store().undo_status();
-        Some(ui::undo::LocalUndoStatus::Ready(ui::undo::UndoStatus {
-            can_undo,
-            can_redo,
-            undo_summary: None,
-            redo_summary: None,
-        }))
-    }
-
-    fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
-        let store = self.0.port().store().clone();
-        let done = match request {
-            ui::undo::UndoRequest::Undo => store.undo(),
-            ui::undo::UndoRequest::Redo => store.redo(),
-        };
-        if done {
-            serve(&mut self.0);
-        }
-        done
-    }
-}
-
 impl<W: Window> ui::widget::Decorator for Hosted<W> {
     type Inner = W;
 
@@ -465,7 +440,7 @@ impl<W: Window> ui::widget::Decorator for Hosted<W> {
         &mut self.0
     }
 
-    ui::provides!(dyn Served, dyn ui::undo::LocalUndo; decorated);
+    ui::provides!(dyn Served; decorated);
 
     fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         serve(&mut self.0);

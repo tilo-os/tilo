@@ -22,6 +22,12 @@ name = "tilo-installer"
 path = "src/bin/tilo-installer.rs"
 required-features = ["destination"]
 
+# The installer runs on Windows, macOS and Linux before any Tilo device or workspace exists: it
+# is a program of the computer it runs on, not an app a Tilo device installs. It still serves
+# its steps as actions, through the one actions protocol.
+[package.metadata.tilo]
+kind = "host-program"
+
 [features]
 # The guided installation of Tilo from another operating system: the guided
 # setup (`--setup`) that downloads Tilo, stages it next to the running system

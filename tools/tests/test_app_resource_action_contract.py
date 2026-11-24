@@ -873,6 +873,31 @@ class AppResourceActionContractTests(unittest.TestCase):
                 self.assertIn("tilo-app", reasons)
                 self.assertIn("Widget::resources", reasons)
 
+    def test_a_host_program_is_not_audited_as_an_app(self):
+        source = (
+            "pub fn next(commands: Commands) -> Button {\n"
+            "    Button::new(\"next\", \"Next\").on_click(move || commands.push(Next))\n"
+            "}\n"
+        )
+        on_the_toolkit = 'ui={path="../../crates/ui/ui-core"}\n'
+        with self.subTest(phase="a crate on ui-core with closure buttons is refused as an app"):
+            root = self.fixture(source, dependencies=on_the_toolkit)
+            violations, _ = contract.audit(root)
+            reasons = "\n".join(item.reason for item in violations)
+            self.assertIn("direct ui-core dependency", reasons)
+        with self.subTest(phase="the same crate its manifest declares a host program passes"):
+            root = self.fixture(source, dependencies=on_the_toolkit)
+            manifest = root / "apps" / "sample" / "Cargo.toml"
+            manifest.write_text(
+                manifest.read_text(encoding="utf-8").replace(
+                    "[dependencies]",
+                    '[package.metadata.tilo]\nkind="host-program"\n[dependencies]',
+                ),
+                encoding="utf-8",
+            )
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
+
     def test_search_providers_must_be_budgeted_paged_and_catalogue_stable(self):
         with self.subTest(phase='app search provider must override limited and paged queries'):
             root = self.fixture(
