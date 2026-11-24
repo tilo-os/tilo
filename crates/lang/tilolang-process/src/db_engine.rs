@@ -36,6 +36,7 @@ impl tilolang_tilo::engine::Provider for Databases {
 pub fn register() {
     tilolang_tilo::engine::register(
         APP,
-        Arc::new(Databases(tilo_db::Database::new())) as Arc<dyn tilolang_tilo::engine::Provider + Send + Sync>,
+        Arc::new(Databases(tilo_db::Database::new()))
+            as Arc<dyn tilolang_tilo::engine::Provider + Send + Sync>,
     );
 }

@@ -62,6 +62,53 @@ fn call_of(kind: &str, id: u32, facts: &serde_json::Value) -> Option<(&'static s
     })
 }
 
+/// What the page said of itself (a download moving, the pages it can go to), raised as the
+/// app's call of its own action: the kind names the action and the note's other fields are its
+/// arguments. `true` when it said anything this reads.
+fn note(
+    kind: &str,
+    said: &serde_json::Value,
+    (workspace, app, page): (&str, &str, Option<&str>),
+    mut send: impl FnMut(CollabRequest) -> bool,
+) -> bool {
+    let action = match kind {
+        "download" => "update_download",
+        "history" => "remember_history",
+        "open" => "open_from_page",
+        _ => {
+            tracing::warn!(kind, "a note the app has no page action for");
+            return false;
+        }
+    };
+    let (Some(page), serde_json::Value::Object(fields)) = (page, said) else {
+        return false;
+    };
+    let arguments: serde_json::Map<String, serde_json::Value> = fields
+        .iter()
+        .filter(|(name, _)| name.as_str() != "note")
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    let request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: tilo_actions::remote::application_action_target(workspace, app, page, action),
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let message = RemoteActionMessage::Invoke(request);
+    if send(CollabRequest::RemoteAction { message }) {
+        true
+    } else {
+        tracing::warn!(kind, "a note's call did not reach the dispatch");
+        false
+    }
+}
+
 impl PagePrompts {
     /// Take what the window said of a prompt (`prompt`, as the page engine encodes it): one
     /// raised becomes the app's call of its own action on `page` in `workspace`, sent with
@@ -81,6 +128,11 @@ impl PagePrompts {
             .and_then(serde_json::Value::as_u64)
             .and_then(|id| u32::try_from(id).ok())
             .unwrap_or_default();
+        // What the page said of itself is the app's record's: its call runs at once, with no
+        // question, and nothing waits to be withdrawn.
+        if let Some(kind) = said.get("note").and_then(serde_json::Value::as_str) {
+            return note(kind, &said, (workspace, app, page), |request| send(request));
+        }
         if let Some(kind) = said.get("ended").and_then(serde_json::Value::as_str) {
             // The page no longer waits: the person is asked no more.
             if let Some(raised) = self.raised.remove(&(kind.to_owned(), id)) {
@@ -272,6 +324,46 @@ mod tests {
         assert_eq!(no["op"], "answer_permission");
         assert_eq!(no["allow"], false);
         assert_eq!(prompts.answered(&declined), None, "told once");
+    }
+
+    /// What the page says of itself is the app's own action on it, run at once with the note's
+    /// fields as its arguments.
+    #[test]
+    fn a_download_moving_is_the_apps_own_update_on_the_page() {
+        let mut prompts = PagePrompts::default();
+        let note = serde_json::json!({"note": "download", "id": 4, "state": "downloading",
+            "name": "report.pdf", "url": "https://example.org/report.pdf", "path": "",
+            "retryable": false, "received": 2048, "total": 8192, "error": ""});
+        let mut sent = Vec::new();
+        assert!(prompts.take(
+            note.to_string().as_bytes(),
+            ("w1", "so.tilo.browser", Some(PAGE)),
+            |request| {
+                sent.push(request);
+                true
+            },
+        ));
+        let [
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            },
+        ] = sent.as_slice()
+        else {
+            panic!("one call: {sent:?}");
+        };
+        assert_eq!(request.target.address.resource, PAGE);
+        assert_eq!(request.target.address.action, "update_download");
+        assert!(request.confirmation.is_none(), "a note is no question");
+        let InvokeArgument::Json(arguments) = &request.argument else {
+            panic!("arguments as JSON");
+        };
+        assert_eq!(arguments["id"], 4);
+        assert_eq!(arguments["received"], 2048);
+        assert_eq!(arguments["name"], "report.pdf");
+        assert!(
+            arguments.get("note").is_none(),
+            "the kind is the action, not an argument"
+        );
     }
 
     /// A prompt the page stops waiting on, or a page that closes, withdraws its call.

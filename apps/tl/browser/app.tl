@@ -118,6 +118,14 @@ type Page (title: title) {
     /// The files the page downloads, as its window last read them: engine state, never the
     /// page's own record.
     downloads: Collection<Download>
+    /// Whether the page's sound is muted.
+    muted: Bool = false
+    /// The site's connection, permissions and stored data, as its window last read them.
+    site: Option<SiteInfo> = .none
+    /// The pages before this one and the ones after it, as the engine last answered the window's
+    /// request for them.
+    back: Collection<HistoryEntry>
+    forward: Collection<HistoryEntry>
     /// How far the page has loaded, what it is zoomed to, and where the find bar stands.
     loading: Bool = false
     progress: Float = 0.0
@@ -209,6 +217,45 @@ type Download (title: name) {
     }
 }
 
+/// What a site's connection, its permissions and its stored data are, as the page's window last
+/// read them: engine state, refreshed when the window reads the page.
+type SiteInfo (title: origin) {
+    origin: Text
+    /// The document's generation the engine answered for: a site action names it, so a command
+    /// meant for this page never lands on one that came after.
+    generation: Int
+    /// How many requests in this page tracker protection blocked or replaced.
+    blocked: Int
+    /// Whether tracker protection is on for this site.
+    protected: Bool = true
+    /// `secure`, `mixed`, `insecure` or `unverified`.
+    security: Text
+    /// The certificate's own state, as the engine numbers it: 0 when it reported none.
+    certificate: Int = 0
+    issuer: Text
+    subject: Text
+    /// Each thing the site may ask for, as `camera: ask`, `microphone: blocked`.
+    permissions: List<Text>
+    /// Whether the site may ask again for what it was refused.
+    can_reset: Bool = false
+
+    search {
+        hide origin
+    }
+}
+
+/// One page the page's own history holds: where it is, what it was called, and the engine's
+/// number for it, which going back or forward to it names.
+type HistoryEntry (title: title) {
+    entry: Int
+    url: Text
+    title: Text
+
+    search {
+        hide url
+    }
+}
+
 /// What a page is asked, as the window that holds it reads it: one operation and the fields it
 /// takes. A field left at its default is unsent, and the page reads it as absent.
 type Ask {
@@ -236,6 +283,20 @@ type Ask {
     values: Option<List<Text>> = .none
     /// What each question of a form is answered with, by the question's name.
     answers: Option<Map<Text>> = .none
+    /// Whether the page's sound is muted.
+    muted: Bool = false
+    /// Which way the page's own history is read: `back` or `forward`.
+    direction: Option<Text> = .none
+    /// The page's number for one entry of its history, which going there names.
+    entry: Option<Int> = .none
+    /// What a site action does: `clear`, `revoke`, `reset`, `enable`, `disable` or `reload`.
+    doing: Option<Text> = .none
+    /// The sites tracker protection is off for, which the engine keeps beside its own lists.
+    origins: Option<List<Text>> = .none
+    /// The site a site action or a status reading is about.
+    origin: Option<Text> = .none
+    /// The document generation the site was read at, which a site action names.
+    generation: Option<Int> = .none
     paths: Option<List<Text>> = .none
     steps: Option<List<Text>> = .none
     since: Option<Int> = .none
@@ -602,6 +663,79 @@ action submit_page(
     ask_page(p, request)
 }
 
+/// Writes what the page last said of one of its downloads into the page's record, as its window
+/// hands it over while the transfer moves. The window raises it, never a person, agent or script.
+action update_download(
+    p: Page,
+    id: Int,
+    state: Text,
+    name: Text,
+    url: Text,
+    path: Text,
+    retryable: Bool,
+    received: Int,
+    total: Int,
+    error: Text,
+) {
+    if let held = p.downloads.find(d -> d.transfer == id) {
+        held.state = state
+        held.name = name
+        held.url = url
+        held.path = path
+        held.retryable = retryable
+        held.received = received
+        held.total = total
+        held.error = error
+    } else {
+        p.downloads.insert(
+            Download(
+                transfer: id,
+                state: state,
+                name: name,
+                url: url,
+                path: path,
+                retryable: retryable,
+                received: received,
+                total: total,
+                error: error,
+            ),
+        )
+    }
+}
+
+/// Keeps a page the page opened in a window of its own as a page of this browser, as its window
+/// hands it over: a popup a site sized, or a plain new tab.
+action open_from_page(p: Page, url: Text, popup: Bool) {
+    let url = normalized(url)
+    if url != "" {
+        let b = root Browser
+        b.pages.insert(Page(url: url, title: ""))
+    }
+}
+
+/// Writes the pages the page can go to one way into its record, as its window hands them over:
+/// what the menu then offers beside Back and Forward.
+action remember_history(p: Page, direction: Text, entries: Text) {
+    let value = match json.parse(entries) {
+        .ok(value) => value,
+        .err(_) => {
+            return
+        }
+    }
+    let found = history_of(value, direction)
+    if direction == "forward" {
+        p.forward.remove_where(e -> true)
+        for e in found {
+            p.forward.insert(e)
+        }
+    } else {
+        p.back.remove_where(e -> true)
+        for e in found {
+            p.back.insert(e)
+        }
+    }
+}
+
 /// Answers a whole form of the page in one ask: each question's answer by its name, through the
 /// page's own validation, and the form's first button when `submit` is on. A form is named by
 /// the shape `read_page_forms` publishes for it.
@@ -770,6 +904,18 @@ action refresh_page(p: Page) -> Answer uses page (
     for d in held {
         p.downloads.insert(d)
     }
+    p.muted = json_flag(value, "muted")
+    p.site = site_of(value)
+    let before = history_of(value, "back")
+    p.back.remove_where(e -> true)
+    for e in before {
+        p.back.insert(e)
+    }
+    let after = history_of(value, "forward")
+    p.forward.remove_where(e -> true)
+    for e in after {
+        p.forward.insert(e)
+    }
     Answer(ok: true, message: "read")
 }
 
@@ -841,6 +987,128 @@ action cancel_all_downloads(p: Page) -> Answer uses page (
     label: "Cancel every download",
 ) {
     ask_page(p, json.encode(Ask(op: "cancel_all_downloads")))
+}
+
+/// Opens the engine's developer tools for this page: its console, its elements and its network.
+action developer_tools(p: Page) -> Answer uses page (icon: .code, label: "Developer tools") {
+    ask_page(p, json.encode(Ask(op: "developer_tools")))
+}
+
+/// Opens a saved download in the app that opens its kind, through the system's one open.
+action open_download(name: Text, path: Text) uses files (
+    icon: .external_link,
+    label: "Open the download",
+) {
+    require path != "" "Save the download first"
+    match File.open(path) {
+        .ok => Answer(ok: true, message: "Opened {name}"),
+        .err(why) => Answer(message: why),
+    }
+}
+
+/// Silences the page's sound, or lets it play again.
+action mute(p: Page, muted: Bool = not p.muted) -> Answer uses page (
+    icon: .headphone_off,
+    label: "Mute the page",
+) {
+    ask_page(p, json.encode(Ask(op: "mute", muted: muted)))
+}
+
+/// Asks the page where it can go back to. The engine answers with the pages before this one,
+/// which the page's record holds once its window reads them again.
+action read_back_history(p: Page) -> Answer uses page (icon: .arrow_left, label: "Earlier pages") {
+    ask_page(p, json.encode(Ask(op: "history", direction: .some("back"))))
+}
+
+/// Asks the page where it can go forward to, the answer kept like [`read_back_history`]'s.
+action read_forward_history(p: Page) -> Answer uses page (
+    icon: .arrow_right,
+    label: "Later pages",
+) {
+    ask_page(p, json.encode(Ask(op: "history", direction: .some("forward"))))
+}
+
+/// Goes to one page of the page's own history, by the entry its reading named.
+action go_history_entry(p: Page, entry: Int) -> Answer uses page (
+    icon: .arrow_right,
+    label: "Go to a page of its history",
+) {
+    ask_page(p, json.encode(Ask(op: "history_entry", entry: .some(entry))))
+}
+
+/// Reads the site's connection, its certificate, the requests tracker protection blocked and
+/// what the site may ask for, into the page's record.
+action read_site(p: Page) -> Answer uses page (icon: .shield, label: "Site information") {
+    require origin_of(p.url) != "" "This page is not on a site"
+    ask_page(p, json.encode(Ask(op: "site_status", origin: .some(origin_of(p.url)))))
+}
+
+/// Clears this site's storage, cookies and remembered forms, including cookies it shares with
+/// its subdomains, and reloads it.
+destructive action clear_site_data(p: Page) -> Answer uses page (
+    icon: .trash,
+    label: "Clear this site's data",
+) {
+    require p.site != .none "Read the site's information first"
+    if let site = p.site {
+        return ask_page(p, site_action(site, "clear"))
+    }
+    Answer(message: "Read the site's information first")
+}
+
+/// Blocks what the site may ask for (its camera, microphone, location and notifications).
+destructive action block_site_permissions(p: Page) -> Answer uses page (
+    icon: .shield,
+    label: "Block what this site asks for",
+) {
+    require p.site != .none "Read the site's information first"
+    if let site = p.site {
+        return ask_page(p, site_action(site, "revoke"))
+    }
+    Answer(message: "Read the site's information first")
+}
+
+/// Lets the site ask again for what it was refused.
+action ask_site_permissions_again(p: Page) -> Answer uses page (
+    icon: .refresh,
+    label: "Let the site ask again",
+) {
+    require p.site != .none "Read the site's information first"
+    if let site = p.site {
+        return ask_page(p, site_action(site, "reset"))
+    }
+    Answer(message: "Read the site's information first")
+}
+
+/// What a site action asks the engine: the site, the document it was read from, and what to do.
+fn site_action(site: SiteInfo, doing: Text) -> Text {
+    json.encode(
+        Ask(
+            op: "site_action",
+            origin: .some(site.origin),
+            generation: .some(site.generation),
+            doing: .some(doing),
+        ),
+    )
+}
+
+/// Tells the engine which sites tracker protection is off for, as the Browser's own set says:
+/// the engine keeps the same list beside its filters.
+action sync_site_exceptions(p: Page) -> Answer uses page (
+    icon: .shield,
+    label: "Apply the sites tracker protection is off for",
+) {
+    ask_page(
+        p,
+        json.encode(
+            Ask(op: "site_exceptions", origins: .some(protection_exceptions(root Browser))),
+        ),
+    )
+}
+
+/// The sites tracker protection is off for, in the order the Browser holds them.
+fn protection_exceptions(b: Browser) -> List<Text> {
+    b.sites_without_protection.filter(site -> true)
 }
 
 /// Gives an extension the more access it asked for. The window raises it as the Browser's own
@@ -1154,6 +1422,19 @@ action visit(b: Browser, url: Text, title: Text, at: Time) {
     } else {
         b.visits.insert(Visit(url: url, title: if said == "" { url } else { said }, last: at))
     }
+    trim_history(b, 10000)
+}
+
+/// Keeps the person's own visits to their newest `most`, forgetting the oldest: the history stays
+/// within what a person could read, as every other list the system keeps does.
+action trim_history(b: Browser, most: Int) {
+    require most > 0 "A history keeps at least one page"
+    let all = b.visits.filter(v -> true).sort_by(v -> v.last)
+    if all.len() > most {
+        for v in all.take(all.len() - most) {
+            b.visits.remove(v)
+        }
+    }
 }
 
 /// Takes in a page a window arrived at: it joins the person's history.
@@ -1338,7 +1619,9 @@ fn question_of(line: Text) -> Question {
     )
 }
 
-/// The bookmarks a JSON bundle holds.
+/// The bookmarks a JSON bundle holds: a flat list, each with its folder, or another browser's
+/// tree of folders with their children. A nested folder's bookmarks keep their path
+/// (`Work/Reading`).
 fn bookmarks_of_json(text: Text) -> List<Bookmark> {
     let value = match json.parse(text) {
         .ok(value) => value,
@@ -1346,22 +1629,27 @@ fn bookmarks_of_json(text: Text) -> List<Bookmark> {
             return []
         }
     }
+    bookmarks_in(json_field(value, "bookmarks") ?? value, "")
+}
+
+/// The bookmarks `entries` holds, under the folder `under` when they stand in one.
+fn bookmarks_in(entries: json.Value, under: Text) -> List<Bookmark> {
     let found: List<Bookmark> = []
-    for entry in json_arrays(json_field(value, "bookmarks") ?? value) {
+    for entry in json_arrays(entries) {
         let url = normalized(json_text(entry, "url"))
+        let title = json_text(entry, "title")
         if url != "" {
-            let title = json_text(entry, "title")
+            let folder = if under != "" { under } else { json_text(entry, "folder") }
             found = [
                 found,
-                [
-                    Bookmark(
-                        url: url,
-                        title: if title == "" { url } else { title },
-                        folder: json_text(entry, "folder"),
-                    ),
-                ],
+                [Bookmark(url: url, title: if title == "" { url } else { title }, folder: folder)],
             ]
                 .flat_map(x -> x)
+        } else if let children = json_field(entry, "children") {
+            let named = if under == "" {
+                title
+            } else if title == "" { under } else { "{under}/{title}" }
+            found = [found, bookmarks_in(children, named)].flat_map(x -> x)
         }
     }
     found
@@ -1512,6 +1800,69 @@ fn downloads_of(value: json.Value) -> List<Download> {
     found
 }
 
+/// The site the page last reported, when it reported one.
+fn site_of(value: json.Value) -> Option<SiteInfo> {
+    match json_field(value, "site") {
+        .some(held) => {
+            let origin = json_text(held, "origin")
+            if origin == "" {
+                return .none
+            }
+            .some(
+                SiteInfo(
+                    origin: origin,
+                    generation: json_number(held, "generation").to_int(),
+                    blocked: json_number(held, "blocked").to_int(),
+                    protected: json_flag(held, "protected"),
+                    security: json_text(held, "security"),
+                    certificate: json_number(held, "certificate").to_int(),
+                    issuer: json_text(held, "issuer"),
+                    subject: json_text(held, "subject"),
+                    permissions: permissions_of(held),
+                    can_reset: json_flag(held, "can_reset"),
+                ),
+            )
+        }
+        .none => .none,
+    }
+}
+
+/// Each permission the site reported, as what it is for and what it may do.
+fn permissions_of(site: json.Value) -> List<Text> {
+    let found: List<Text> = []
+    for held in json_arrays(json_field(site, "permissions") ?? site) {
+        let kind = json_text(held, "kind")
+        if kind != "" {
+            found = [found, ["{kind}: {json_text(held, "state")}"]].flat_map(x -> x)
+        }
+    }
+    found
+}
+
+/// One direction's pages the page last reported, as its window reads them.
+fn history_of(value: json.Value, direction: Text) -> List<HistoryEntry> {
+    let found: List<HistoryEntry> = []
+    for held in json_arrays(json_field(value, direction) ?? value) {
+        let entry = json_number(held, "id").to_int()
+        if entry != 0 {
+            let url = json_text(held, "url")
+            let title = json_text(held, "title")
+            found = [
+                found,
+                [
+                    HistoryEntry(
+                        entry: entry,
+                        url: url,
+                        title: if title == "" { url } else { title },
+                    ),
+                ],
+            ]
+                .flat_map(x -> x)
+        }
+    }
+    found
+}
+
 /// What the page answered an answer to what it waited on: whether it took it. It changes nothing
 /// of the page's record, so the person's approve of it is the whole of what it does.
 fn page_answered(raw: Text) -> Answer {
@@ -1627,6 +1978,28 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
         ui.MenuItem("Reader view", icon: .book_open) {
             on choose: set(reading, not reading).then(reader(p, not reading))
         }
+        ui.MenuItem(
+            if p.muted { "Unmute the page" } else { "Mute the page" },
+            icon: .headphone_off,
+        ) {
+            on choose: mute(p, not p.muted)
+        }
+        ui.MenuItem("Earlier pages", icon: .arrow_left) {
+            on choose: read_back_history(p)
+        }
+        ui.MenuItem("Later pages", icon: .arrow_right) {
+            on choose: read_forward_history(p)
+        }
+        for e in p.back {
+            ui.MenuItem(e.title, icon: .arrow_left) {
+                on choose: go_history_entry(p, e.entry)
+            }
+        }
+        for e in p.forward {
+            ui.MenuItem(e.title, icon: .arrow_right) {
+                on choose: go_history_entry(p, e.entry)
+            }
+        }
         ui.MenuItem("Zoom in", icon: .plus) {
             on choose: zoom(p, zoomed_in(level)).then(set(level, zoomed_in(level)))
         }
@@ -1640,15 +2013,21 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
         ) {
             on choose: zoom(p, 1.0).then(set(level, 1.0))
         }
+        ui.MenuItem("Site information", icon: .shield) {
+            on choose: read_site(p)
+        }
+        ui.MenuItem("Developer tools", icon: .code) {
+            on choose: developer_tools(p)
+        }
         if origin_of(p.url) != "" {
             let site = origin_of(p.url)
             if b.sites_without_protection.contains(site) {
                 ui.MenuItem("Turn tracker protection on for this site", icon: .shield) {
-                    on choose: set_site_protection(b, site, true)
+                    on choose: set_site_protection(b, site, true).then(sync_site_exceptions(p))
                 }
             } else {
                 ui.MenuItem("Turn tracker protection off for this site", icon: .shield) {
-                    on choose: set_site_protection(b, site, false)
+                    on choose: set_site_protection(b, site, false).then(sync_site_exceptions(p))
                 }
             }
             ui.MenuItem("Forget this site’s forms", icon: .trash) {
@@ -1810,6 +2189,41 @@ view page_view(p: Page) {
                         on dismiss: answer_page_dialog(p, ask.request, false).then(refresh_page(p))
                     }
                 }
+                if let site = p.site {
+                    stack(padding: .related) {
+                        ui.Section("Site information") {
+                            ui.ListRow(title: site.origin, secondary: site.security, mark: .shield)
+                            ui.ListRow(
+                                title: "Requests blocked",
+                                secondary: "{site.blocked}",
+                                mark: .shield,
+                            )
+                            if site.issuer != "" {
+                                ui.ListRow(
+                                    title: "Certificate",
+                                    secondary: site.issuer,
+                                    mark: .lock,
+                                )
+                            }
+                            for permission in site.permissions {
+                                ui.Text(permission)
+                            }
+                            stack(padding: .related) {
+                                ui.Button("Clear this site's data", icon: .trash) {
+                                    on press: clear_site_data(p)
+                                }
+                                ui.Button("Block what this site asks for", icon: .shield) {
+                                    on press: block_site_permissions(p)
+                                }
+                                if site.can_reset {
+                                    ui.Button("Let the site ask again", icon: .refresh) {
+                                        on press: ask_site_permissions_again(p)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if not p.downloads.is_empty() {
                     stack(padding: .group) {
                         ui.Section("Downloads") {
@@ -1967,19 +2381,27 @@ view library(b: Browser) {
     }
 }
 
-/// The pages saved: each a row that opens where it is.
+/// The pages saved, under the folder each stands in: a library path (`Work/Reading`) groups
+/// what the person, or the browser they came from, put there.
 view bookmarks_list(b: Browser, query: Text) {
     let found = b.bookmarks.filter(
         k -> query == ""
             or k.title.lower().contains(query.lower())
             or k.url.contains(query.lower()),
     )
+    let folders = bookmark_folders(found)
     if found.is_empty() {
         ui.EmptyState("No bookmarks yet", icon: .star)
     } else {
-        std.list(found, in_column: true) { (k, at) ->
-            ui.ListItem(item: k, presence: at) {
-                bookmark_row(k)
+        ui.Scroll {
+            stack {
+                for folder in folders {
+                    ui.Section(if folder == "" { "Top of the bookmarks" } else { folder }) {
+                        for k in found.filter(k -> k.folder == folder) {
+                            bookmark_row(k)
+                        }
+                    }
+                }
             }
         }
     }
@@ -1998,6 +2420,18 @@ view imported_row(v: ImportedVisit) {
 /// A bookmark's row in the library: its name over its address.
 view bookmark_row(k: Bookmark) {
     ui.ListRow(title: k.title, secondary: k.url, mark: .star)
+}
+
+/// The folders the bookmarks stand in, each once and in the order they first stand there, the
+/// top of the library first.
+fn bookmark_folders(bookmarks: List<Bookmark>) -> List<Text> {
+    let folders: List<Text> = []
+    for k in bookmarks {
+        if not folders.contains(k.folder) {
+            folders = [folders, [k.folder]].flat_map(x -> x)
+        }
+    }
+    folders
 }
 
 /// An address's row in the settings: what the person calls it over the name it fills. Opening
@@ -2156,6 +2590,11 @@ view download_row(p: Page, d: Download) {
         if d.state == "failed" and d.retryable {
             ui.Button("Retry", icon: .refresh, role: .plain) {
                 on press: retry_download(p, d)
+            }
+        }
+        if d.state == "completed" and d.path != "" {
+            ui.Button("Open", icon: .external_link, role: .plain) {
+                on press: open_download(d.name, d.path)
             }
         }
     }

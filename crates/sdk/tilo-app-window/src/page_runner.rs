@@ -90,11 +90,59 @@ pub fn prompts(page: &Page) -> Vec<String> {
         return Vec::new();
     };
     session.poll();
-    session
-        .prompts()
-        .iter()
-        .map(codec::prompt_json)
-        .collect()
+    session.prompts().iter().map(codec::prompt_json).collect()
+}
+
+/// The page's file choosers a person's click opened since the window last took them, oldest
+/// first: the window asks the host's picker and answers each with [`answer_chooser`].
+#[must_use]
+pub fn choosers(page: &Page) -> Vec<tilo_webview::FileChooser> {
+    let mut held = page.borrow_mut();
+    let Some(session) = held.as_mut() else {
+        return Vec::new();
+    };
+    session.poll();
+    session.choosers()
+}
+
+/// What the page said of itself that the app's record carries (a download moving, the pages it
+/// can go to) since the window last took it, each encoded for the app, oldest first.
+#[must_use]
+pub fn notes(page: &Page) -> Vec<String> {
+    let mut held = page.borrow_mut();
+    let Some(session) = held.as_mut() else {
+        return Vec::new();
+    };
+    session.poll();
+    session.notes()
+}
+
+/// Whether the page said anything of itself since the window last took it.
+#[must_use]
+pub fn notes_waiting(page: &Page) -> bool {
+    page.borrow_mut().as_mut().is_some_and(|session| {
+        session.poll();
+        session.has_notes()
+    })
+}
+
+/// Whether a file chooser started waiting since the window last took them.
+#[must_use]
+pub fn choosers_waiting(page: &Page) -> bool {
+    page.borrow_mut().as_mut().is_some_and(|session| {
+        session.poll();
+        session.has_choosers()
+    })
+}
+
+/// Answer the page's file chooser `id` with exactly the paths the person picked, or with none
+/// to cancel it.
+pub fn answer_chooser(page: &Page, id: u32, paths: Vec<String>) {
+    let mut held = page.borrow_mut();
+    let Some(session) = held.as_mut() else {
+        return;
+    };
+    session.answer_chooser(id, paths);
 }
 
 /// Whether the page started or stopped waiting on the person's yes since the window last took

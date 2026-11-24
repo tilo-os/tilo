@@ -397,6 +397,17 @@ d-vsaswu4a = Seitenansicht
     .w-previous = Zurück
     .w-downloads = Downloads
     .w-cancel-every-download = Alle Downloads abbrechen
+    .w-unmute-the-page = Seite wieder hörbar
+    .w-mute-the-page = Seite stummschalten
+    .w-earlier-pages = Frühere Seiten
+    .w-later-pages = Spätere Seiten
+    .w-site-information = Seiteninformationen
+    .w-requests-blocked = Blockierte Anfragen
+    .w-certificate = Zertifikat
+    .w-clear-this-site-s-data = Daten dieser Website löschen
+    .w-block-what-this-site-asks-for = Blockieren, wonach diese Website fragt
+    .w-let-the-site-ask-again = Website darf erneut fragen
+    .w-developer-tools = Entwicklerwerkzeuge
 
 d-pu2zdrbu = Schrittzeile
 
@@ -420,6 +431,7 @@ d-jlg4rve3 = Bibliothek
 
 d-3dld2nsk = Lesezeichenliste
     .w-no-bookmarks-yet = Noch keine Lesezeichen
+    .w-top-of-the-bookmarks = Oberste Ebene der Lesezeichen
 
 d-2ow3mpb2 = Besuchszeile
 
@@ -1013,34 +1025,43 @@ d-og3g2nds-request = Anfrage
 d-23a4az4u = Vorschlag
 
 d-o2occ235 = Downloads
+    .doc = Die Dateien, die die Seite herunterlädt, wie das Fenster sie zuletzt gelesen hat: Zustand des Motors, nie der eigene Eintrag der Seite.
 
 d-cjw2xcfs = Download
     .noun = { $count ->
+    .doc = Eine Datei, die eine Seite herunterlädt: woher sie kommt, wohin sie ging und wie weit sie ist.
         [one] Download
        *[other] Downloads
     }
 
 d-anfisgsq = Übertragung
+    .doc = Die Nummer des Motors für die Übertragung, die nennt, was die Person mit ihr tut.
 
 d-in525zqp = Zustand
+    .doc = `awaiting`, `downloading`, `completed`, `failed` oder `cancelled`.
 
 d-wz6wi2p3 = Name
 
 d-z4gzfvzw = URL
 
 d-feka5n4y = Pfad
+    .doc = Wohin sie gespeichert wurde, sobald sie vollständig ist.
 
 d-kubpqqew = Wiederholbar
+    .doc = Ob der Motor sie nach einem Fehler erneut starten kann.
 
 d-cokrfftg = Empfangen
+    .doc = Wie viele Bytes angekommen sind, von wie vielen der Motor weiß: keine, wenn er es nicht weiß.
 
 d-pbavpdyk = Gesamt
 
 d-wfaksaa6 = Fehler
 
 d-ntpmcicu = Antworten
+    .doc = Womit jede Frage eines Formulars beantwortet wird, nach dem Namen der Frage.
 
 d-qvvu7twk = Eingetippt
+    .doc = Die Antwort trägt, was die Person beim Beantworten der Frage getippt hat, auf dem Weg zum Fenster aus ihrer Zustimmung eingesetzt: sie ist nie ein Wert des Laufs.
 
 d-e43kzg7c-filter-typed = Eingetippt
 
@@ -1101,10 +1122,12 @@ d-4xa6zyzf-site = Seite
 d-4xa6zyzf-realm = Bereich
 
 d-4i65tg5t = Anmeldung abbrechen
+    .doc = Lehnt die Anmeldung einer Website ab: nichts wird gesendet, und der Server zeigt seine eigene Seite.
 d-4i65tg5t-id = Id
 d-4i65tg5t-asker = Fragender
 
 d-psytxnym = Senden lassen
+    .doc = Lässt hinaus, was die Seite sendet: ein Formular, eine Navigation oder eine Anfrage, die wartet, bis die Person es sagt.
 d-psytxnym-id = Id
 d-psytxnym-origin = Ursprung
 d-psytxnym-method = Methode
@@ -1112,13 +1135,16 @@ d-psytxnym-leaving = Geht hinaus
 
 d-7gjwwcba = Dieses Lesezeichen benennen
     .w-a-bookmark-is-called-by-some = Ein Lesezeichen braucht einen Namen
+    .doc = Benennt eine gespeicherte Seite um, wenn der Person ihr eigener Name dafür besser gefällt als der Titel.
 d-7gjwwcba-title = Titel
 
 d-vyepjajq = Lesezeichen in einen Ordner legen
+    .doc = Legt ein Lesezeichen in einen Ordner der eigenen Bibliothek, etwa `Work/Reading`, oder ganz oben, wenn der Ordner leer ist.
 d-vyepjajq-folder = Ordner
 
 d-eb3wtiud = Formular mit einer Adresse ausfüllen
     .w-this-form-asks-nothing-an-address = Dieses Formular fragt nichts, was eine Adresse beantwortet
+    .doc = Füllt ein Formular der Seite mit einer gespeicherten Adresse, Frage für Frage, ohne es zu senden. Die eigene Prüfung der Seite entscheidet weiterhin, ob es gesendet werden könnte.
 d-eb3wtiud-form = Formular
 d-eb3wtiud-a = A
 
@@ -1142,3 +1168,171 @@ d-6w4zu5de = Downloadzeile
     .w-downloading = Wird heruntergeladen
     .w-cancel = Abbrechen
     .w-retry = Wiederholen
+    .w-open = Öffnen
+
+d-eg4w4fow = Stumm
+    .doc = Ob der Ton der Seite stummgeschaltet ist.
+
+d-ctm6ma5g = Zurück
+    .doc = Die Seiten vor dieser und die danach, wie der Motor sie zuletzt auf eine Anfrage geantwortet hat.
+
+d-znzxwmxa = Vorwärts
+
+d-frfmgq2w = Verlaufseintrag
+    .noun = { $count ->
+    .doc = Eine Seite im eigenen Verlauf der Seite: wo sie ist, wie sie hieß und die Nummer des Motors für sie, die das Zurück- oder Vorwärtsgehen nennt.
+        [one] Verlaufseintrag
+       *[other] Verlaufseinträge
+    }
+
+d-eyk6uw4k = Eintrag
+
+d-2chmpqlt = URL
+
+d-uugq5btr = Titel
+
+d-zoqmh2dz = Stumm
+    .doc = Ob der Ton der Seite stummgeschaltet ist.
+
+d-l3gmhwrx = Richtung
+    .doc = In welche Richtung der eigene Verlauf der Seite gelesen wird: `back` oder `forward`.
+
+d-pucrebly = Eintrag
+    .doc = Die Nummer der Seite für einen Eintrag ihres Verlaufs, die das Gehen dorthin nennt.
+
+d-e43kzg7c-filter-muted = Stumm
+
+d-e43kzg7c-filter-entry = Eintrag
+
+d-hd7ra2gz = Seite stummschalten
+    .doc = Schaltet den Ton der Seite stumm oder lässt ihn wieder spielen.
+d-hd7ra2gz-muted = Stumm
+
+d-ugidwhtg = Frühere Seiten
+    .doc = Fragt die Seite, wohin sie zurückgehen kann. Der Motor antwortet mit den Seiten vor dieser, die der Eintrag der Seite hält, sobald ihr Fenster sie wieder liest.
+
+d-kwhpfr2t = Spätere Seiten
+    .doc = Fragt die Seite, wohin sie vorwärts gehen kann; die Antwort wird wie bei `read_back_history` behalten.
+
+d-unfwzbsr = Zu einer Seite ihres Verlaufs gehen
+    .doc = Geht zu einer Seite im eigenen Verlauf der Seite, nach dem Eintrag, den ihr Lesen genannt hat.
+d-unfwzbsr-entry = Eintrag
+
+
+d-252payib = Seite
+    .doc = Verbindung, Berechtigungen und gespeicherte Daten der Website, wie das Fenster sie zuletzt gelesen hat.
+
+d-qeovjxlz = Seiteninfo
+    .noun = { $count ->
+    .doc = Verbindung, Berechtigungen und gespeicherte Daten einer Website, wie das Fenster der Seite sie zuletzt gelesen hat.
+        [one] Seiteninfo
+       *[other] Seiteninfos
+    }
+
+d-hrkhpkbd = Ursprung
+
+d-scje2sv3 = Generation
+    .doc = Die Generation des Dokuments, für die der Motor geantwortet hat: eine Website-Aktion nennt sie, damit ein Befehl nie auf eine spätere Seite trifft.
+
+d-lyopffwi = Blockiert
+    .doc = Wie viele Anfragen in dieser Seite der Trackingschutz blockiert oder ersetzt hat.
+
+d-az2v2pr3 = Geschützt
+    .doc = Ob der Trackingschutz für diese Website eingeschaltet ist.
+
+d-ageqt2tb = Sicherheit
+    .doc = `secure`, `mixed`, `insecure` oder `unverified`.
+
+d-i3vtfymr = Zertifikat
+    .doc = Der eigene Zustand des Zertifikats, wie der Motor ihn nummeriert: 0, wenn er keinen gemeldet hat.
+
+d-zarq7l6o = Aussteller
+
+d-5nsqo5b5 = Betreff
+
+d-gsqr2kkr = Berechtigungen
+    .doc = Jedes, wonach die Website fragen darf, als `camera: ask`, `microphone: blocked`.
+
+d-eygtkatk = Zurücksetzbar
+    .doc = Ob die Website erneut fragen darf, was ihr verweigert wurde.
+
+d-4vqdzqut = Aktion
+    .doc = Was eine Website-Aktion tut: `clear`, `revoke`, `reset`, `enable`, `disable` oder `reload`.
+
+d-fbtgqfhx = Ursprünge
+    .doc = Die Websites, für die der Trackingschutz aus ist und die der Motor neben seinen eigenen Listen führt.
+
+d-ymm5jh2h = Ursprung
+    .doc = Die Website, um die es bei einer Website-Aktion oder einem Status geht.
+
+d-7gcvts2u = Generation
+    .doc = Die Dokumentgeneration, bei der die Website gelesen wurde, die eine Website-Aktion nennt.
+
+d-e43kzg7c-filter-generation = Generation
+
+d-qdr46mze = Seiteninformationen
+    .w-this-page-is-not-on-a = Diese Seite gehört zu keiner Website
+    .doc = Liest Verbindung, Zertifikat, die vom Trackingschutz blockierten Anfragen und wonach die Website fragen darf in den Eintrag der Seite.
+
+d-xsnvn6le = Daten dieser Website löschen
+    .w-read-the-site-s-information-first = Lies zuerst die Informationen zur Website
+    .doc = Löscht Speicher, Cookies und gemerkte Formulare dieser Website, auch Cookies, die sie mit ihren Subdomains teilt, und lädt sie neu.
+
+d-muzeyo2h = Blockieren, wonach diese Website fragt
+    .w-read-the-site-s-information-first = Lies zuerst die Informationen zur Website
+    .doc = Blockiert, wonach die Website fragen darf (Kamera, Mikrofon, Standort und Mitteilungen).
+
+d-63b5vewx = Website darf erneut fragen
+    .w-read-the-site-s-information-first = Lies zuerst die Informationen zur Website
+    .doc = Lässt die Website erneut fragen, was ihr verweigert wurde.
+
+d-kqjsvdfh = Die Websites anwenden, für die der Trackingschutz aus ist
+    .doc = Sagt dem Motor, für welche Websites der Trackingschutz aus ist, wie die eigene Liste des Browsers sie nennt: der Motor führt dieselbe Liste neben seinen Filtern.
+
+
+d-k3vqdvsp = Download öffnen
+    .w-save-the-download-first = Speichere den Download zuerst
+    .doc = Öffnet einen gespeicherten Download in der App, die seine Art öffnet, über das eine Öffnen des Systems.
+d-k3vqdvsp-name = Name
+d-k3vqdvsp-path = Pfad
+
+d-rllv4b5a = Entwicklerwerkzeuge
+    .doc = Öffnet die Entwicklerwerkzeuge des Motors für diese Seite: ihre Konsole, ihre Elemente und ihr Netzwerk.
+
+d-3xz2iwbw = Download aktualisieren
+    .doc = Schreibt, was die Seite zuletzt über einen ihrer Downloads gesagt hat, in den Eintrag der Seite, wie ihr Fenster es weitergibt, während die Übertragung läuft. Das Fenster ruft sie auf, nie eine Person, ein Agent oder ein Skript.
+d-3xz2iwbw-id = Id
+d-3xz2iwbw-state = Zustand
+d-3xz2iwbw-name = Name
+d-3xz2iwbw-url = URL
+d-3xz2iwbw-path = Pfad
+d-3xz2iwbw-retryable = Wiederholbar
+d-3xz2iwbw-received = Empfangen
+d-3xz2iwbw-total = Gesamt
+d-3xz2iwbw-error = Fehler
+
+d-7roz5txv = Verlauf merken
+    .doc = Schreibt die Seiten, zu denen die Seite in eine Richtung gehen kann, in ihren Eintrag, wie ihr Fenster sie weitergibt: was das Menü dann neben Zurück und Vorwärts anbietet.
+d-7roz5txv-direction = Richtung
+d-7roz5txv-entries = Einträge
+
+d-ptwqhcz2 = Von der Seite geöffnet
+    .doc = Behält eine Seite, die die Seite in einem eigenen Fenster geöffnet hat, als Seite dieses Browsers, wie ihr Fenster sie weitergibt: ein Popup mit eigener Größe oder ein neuer Tab.
+d-ptwqhcz2-url = URL
+d-ptwqhcz2-popup = Popup
+
+d-wrsl2noi = Verlauf kürzen
+    .w-a-history-keeps-at-least-one = Ein Verlauf behält mindestens eine Seite
+    .doc = Behält die eigenen Besuche der Person bis zu den neuesten `most` und vergisst die ältesten: der Verlauf bleibt, was eine Person lesen könnte.
+d-wrsl2noi-most = Höchstzahl
+
+
+d-tqd4wzqk = Download
+d-wutb5pms = Download öffnen
+d-nja545os = Website lesen
+d-3wo5bbtr = Website-Daten löschen
+d-h3g4heky = Website-Berechtigungen blockieren
+d-j4t6lwtn = Website erneut fragen lassen
+d-asdqm6oc = Lesezeichen benennen
+d-xbrdtvx6 = Adresse ausfüllen
+d-sb77wivf = Verlauf kürzen

@@ -278,6 +278,9 @@ pub struct AppWindow {
     page: crate::page_runner::Page,
     /// The app's page request each page action waits for the answer of, by the action.
     page_asks: BTreeMap<u32, u32>,
+    /// The person's picker, which answers a page's file input: the host's chooser is the one
+    /// place a person chooses a file, and a window the host gave none answers no chooser.
+    page_picker: Option<std::sync::Arc<dyn PagePicker>>,
     /// The task runs a change mark asked to show ([`ToUi::ShowRun`]), until the window takes
     /// them ([`Self::take_shown_runs`]).
     shown_runs: Vec<String>,
@@ -433,6 +436,7 @@ impl AppWindow {
             reconciler,
             page,
             page_asks: BTreeMap::new(),
+            page_picker: None,
             events,
             built: None,
             rows,
@@ -499,6 +503,12 @@ impl AppWindow {
     /// window asks for mirrors that app's player.
     pub fn set_app_id(&mut self, app_id: impl Into<String>) {
         self.app_id = app_id.into();
+    }
+
+    /// Give the window the person's picker: a page's file input is answered with the paths they
+    /// choose there, and a window given none answers a chooser with nothing.
+    pub fn set_page_picker(&mut self, picker: std::sync::Arc<dyn PagePicker>) {
+        self.page_picker = Some(picker);
     }
 
     /// The places a playback plays, as the app last sent them ([`ToUi::Outputs`]), until the host
@@ -1553,6 +1563,8 @@ impl AppWindow {
         !self.out.is_empty()
             || !self.page_asks.is_empty()
             || crate::page_runner::prompts_waiting(&self.page)
+            || crate::page_runner::choosers_waiting(&self.page)
+            || crate::page_runner::notes_waiting(&self.page)
             || !self.events.is_empty()
             || self
                 .rows
@@ -1562,6 +1574,11 @@ impl AppWindow {
     }
 
     pub fn flush(&mut self) {
+        // A file input the person clicked in the page waits on their choice: the host's picker
+        // asks, in its own time, and answers the page with what they picked.
+        for chooser in crate::page_runner::choosers(&self.page) {
+            self.ask_page_picker(chooser);
+        }
         // A page the app asked does its work in its own time: what it answered since the last
         // frame goes back to whoever asked.
         for (action, answer) in crate::page_runner::answers(&self.page) {
@@ -1571,6 +1588,14 @@ impl AppWindow {
                     answer: answer.into_bytes(),
                 });
             }
+        }
+        // What the page said of itself that the app's record keeps (a download moving, the pages
+        // it can go to) goes to the app, which writes it into the page's record through its own
+        // action: the record moves while the person looks.
+        for note in crate::page_runner::notes(&self.page) {
+            self.out.push(ToApp::PagePrompt {
+                prompt: note.into_bytes(),
+            });
         }
         // What the page waits on the person's yes for goes to the app, which raises each as its
         // call of its own action, and withdraws it once the page no longer waits.
@@ -1626,6 +1651,45 @@ impl AppWindow {
                 }
             }
             Err(error) => tracing::error!(%error, "a frame's batch did not encode"),
+        }
+    }
+
+    /// Ask the person for the files the page's input takes, in the host's picker, and answer the
+    /// page with what they chose. The picker answers in its own time, so it runs off the frame
+    /// and the answer goes to the engine, which wakes the window when it lands. A window the
+    /// host gave no picker answers the page with nothing, so no page waits on a chooser no one
+    /// can answer.
+    fn ask_page_picker(&self, chooser: tilo_webview::FileChooser) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = chooser;
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(picker) = self.page_picker.clone() else {
+                crate::page_runner::answer_chooser(&self.page, chooser.id, Vec::new());
+                return;
+            };
+            let engine = crate::page_runner::engine_of(&self.page);
+            let asked = std::thread::Builder::new()
+                .name("tilo-page-file-chooser".to_owned())
+                .spawn(move || {
+                    let files = PageFiles {
+                        title: chooser.title.clone(),
+                        several: chooser.mode == tilo_webview::FileChooserMode::Several,
+                        folder: chooser.mode == tilo_webview::FileChooserMode::Folder,
+                        accept: chooser.accept.clone(),
+                    };
+                    let paths = picker.pick(&files);
+                    engine.send(tilo_webview::WebViewCommand::AnswerFileChooser {
+                        id: chooser.id,
+                        paths,
+                    });
+                });
+            if asked.is_err() {
+                crate::page_runner::answer_chooser(&self.page, chooser.id, Vec::new());
+            }
         }
     }
 
@@ -3275,6 +3339,26 @@ impl ui::widget::Decorator for AppWindow {
         let own = ui::widget::StructureChange::of(std::mem::take(&mut self.structure_dirty));
         own.join(self.body.take_structure_change())
     }
+}
+
+/// What a page's file input takes, as the window asks the host's picker for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageFiles {
+    /// The chooser's own title, empty for the picker's.
+    pub title: String,
+    /// One file or more.
+    pub several: bool,
+    /// One folder, with what it holds.
+    pub folder: bool,
+    /// What the input accepts, a hint to the picker and never a rule the page may rely on.
+    pub accept: Vec<String>,
+}
+
+/// The person's own picker, as the window needs it: the files an input takes, answered with
+/// exactly the paths the person chose there, or none when they cancelled. A host implements it
+/// over its chooser; the window never draws a picker of its own.
+pub trait PagePicker: Send + Sync {
+    fn pick(&self, files: &PageFiles) -> Vec<String>;
 }
 
 #[cfg(test)]

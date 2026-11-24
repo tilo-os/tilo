@@ -7,7 +7,8 @@
 //! it, so the answer goes to the question the person saw and no other.
 
 use tilo_webview::{
-    ContextMenuItem, HeldRequest, HttpAuthChallenge, PageDialog, WebViewEvent,
+    ContextMenuItem, HeldRequest, HttpAuthChallenge, NavigationDirection, NavigationEntry,
+    PageDialog, WebViewEvent,
 };
 
 /// One download the page started, as its last update said.
@@ -54,6 +55,14 @@ pub struct Asks {
     pub title: String,
     pub loading: bool,
     pub downloads: Vec<Download>,
+    /// Whether the page's sound is muted.
+    pub muted: bool,
+    /// The pages before this one, and the ones after it, as the engine last answered a request
+    /// for them.
+    pub back: Vec<NavigationEntry>,
+    pub forward: Vec<NavigationEntry>,
+    /// The site the page is of, as the engine last answered a request for its information.
+    pub site: Option<tilo_webview::SiteStatus>,
 }
 
 impl Asks {
@@ -79,7 +88,11 @@ impl Asks {
                 permissions,
             } => self.permission = Some((*id, origin.clone(), permissions.clone())),
             WebViewEvent::PermissionClosed { id } => {
-                if self.permission.as_ref().is_some_and(|(held, ..)| held == id) {
+                if self
+                    .permission
+                    .as_ref()
+                    .is_some_and(|(held, ..)| held == id)
+                {
                     self.permission = None;
                 }
             }
@@ -109,6 +122,14 @@ impl Asks {
             WebViewEvent::ZoomChanged(level) => self.zoom = Some(*level),
             WebViewEvent::FullscreenChanged(on) => self.fullscreen = *on,
             WebViewEvent::LoadProgress(share) => self.progress = *share,
+            WebViewEvent::AudioMutedChanged(muted) => self.muted = *muted,
+            WebViewEvent::SiteStatus(site) => self.site = Some(site.clone()),
+            WebViewEvent::NavigationHistory {
+                direction, entries, ..
+            } => match direction {
+                NavigationDirection::Back => self.back.clone_from(entries),
+                NavigationDirection::Forward => self.forward.clone_from(entries),
+            },
             WebViewEvent::TitleChanged(title) => self.title.clone_from(title),
             WebViewEvent::LoadFinished => self.loading = false,
             WebViewEvent::UriChanged(_) => self.loading = true,

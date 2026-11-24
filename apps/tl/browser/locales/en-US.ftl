@@ -149,6 +149,17 @@ d-tveuvbse = Menu
 d-o2occ235 = Downloads
     .doc = The files the page downloads, as its window last read them: engine state, never the page's own record.
 
+d-eg4w4fow = Muted
+    .doc = Whether the page's sound is muted.
+
+d-252payib = Site
+    .doc = The site's connection, permissions and stored data, as its window last read them.
+
+d-ctm6ma5g = Back
+    .doc = The pages before this one and the ones after it, as the engine last answered the window's request for them.
+
+d-znzxwmxa = Forward
+
 d-eiqyiw53 = Loading
     .doc = How far the page has loaded, what it is zoomed to, and where the find bar stands.
 
@@ -299,6 +310,53 @@ d-pbavpdyk = Total
 
 d-wfaksaa6 = Error
 
+d-qeovjxlz = Site info
+    .doc = What a site's connection, its permissions and its stored data are, as the page's window last read them: engine state, refreshed when the window reads the page.
+    .noun = { $count ->
+        [one] site info
+       *[other] site infos
+    }
+
+d-hrkhpkbd = Origin
+
+d-scje2sv3 = Generation
+    .doc = The document's generation the engine answered for: a site action names it, so a command meant for this page never lands on one that came after.
+
+d-lyopffwi = Blocked
+    .doc = How many requests in this page tracker protection blocked or replaced.
+
+d-az2v2pr3 = Protected
+    .doc = Whether tracker protection is on for this site.
+
+d-ageqt2tb = Security
+    .doc = `secure`, `mixed`, `insecure` or `unverified`.
+
+d-i3vtfymr = Certificate
+    .doc = The certificate's own state, as the engine numbers it: 0 when it reported none.
+
+d-zarq7l6o = Issuer
+
+d-5nsqo5b5 = Subject
+
+d-gsqr2kkr = Permissions
+    .doc = Each thing the site may ask for, as `camera: ask`, `microphone: blocked`.
+
+d-eygtkatk = Can reset
+    .doc = Whether the site may ask again for what it was refused.
+
+d-frfmgq2w = History entry
+    .doc = One page the page's own history holds: where it is, what it was called, and the engine's number for it, which going back or forward to it names.
+    .noun = { $count ->
+        [one] history entry
+       *[other] history entries
+    }
+
+d-eyk6uw4k = Entry
+
+d-2chmpqlt = Url
+
+d-uugq5btr = Title
+
 d-e43kzg7c = Ask
     .doc = What a page is asked, as the window that holds it reads it: one operation and the fields it takes.
     .noun = { $count ->
@@ -352,6 +410,27 @@ d-zroiv7hs = Values
 
 d-ntpmcicu = Answers
     .doc = What each question of a form is answered with, by the question's name.
+
+d-zoqmh2dz = Muted
+    .doc = Whether the page's sound is muted.
+
+d-l3gmhwrx = Direction
+    .doc = Which way the page's own history is read: `back` or `forward`.
+
+d-pucrebly = Entry
+    .doc = The page's number for one entry of its history, which going there names.
+
+d-4vqdzqut = Doing
+    .doc = What a site action does: `clear`, `revoke`, `reset`, `enable`, `disable` or `reload`.
+
+d-fbtgqfhx = Origins
+    .doc = The sites tracker protection is off for, which the engine keeps beside its own lists.
+
+d-ymm5jh2h = Origin
+    .doc = The site a site action or a status reading is about.
+
+d-7gcvts2u = Generation
+    .doc = The document generation the site was read at, which a site action names.
 
 d-ky26jv4a = Paths
 
@@ -429,6 +508,12 @@ d-e43kzg7c-filter-to_y = To y
 d-e43kzg7c-filter-nth = Nth
 
 d-e43kzg7c-filter-level = Level
+
+d-e43kzg7c-filter-muted = Muted
+
+d-e43kzg7c-filter-entry = Entry
+
+d-e43kzg7c-filter-generation = Generation
 
 d-e43kzg7c-filter-since = Since
 
@@ -737,6 +822,41 @@ d-arvpanvu-cross_origin = Cross origin
 
 d-arvpanvu-frame = Frame
 
+d-3xz2iwbw = Update download
+    .doc = Writes what the page last said of one of its downloads into the page's record, as its window hands it over while the transfer moves.
+
+d-3xz2iwbw-id = Id
+
+d-3xz2iwbw-state = State
+
+d-3xz2iwbw-name = Name
+
+d-3xz2iwbw-url = Url
+
+d-3xz2iwbw-path = Path
+
+d-3xz2iwbw-retryable = Retryable
+
+d-3xz2iwbw-received = Received
+
+d-3xz2iwbw-total = Total
+
+d-3xz2iwbw-error = Error
+
+d-ptwqhcz2 = Open from page
+    .doc = Keeps a page the page opened in a window of its own as a page of this browser, as its window hands it over: a popup a site sized, or a plain new tab.
+
+d-ptwqhcz2-url = Url
+
+d-ptwqhcz2-popup = Popup
+
+d-7roz5txv = Remember history
+    .doc = Writes the pages the page can go to one way into its record, as its window hands them over: what the menu then offers beside Back and Forward.
+
+d-7roz5txv-direction = Direction
+
+d-7roz5txv-entries = Entries
+
 d-4unqkzgu = Answer a form
     .doc = Answers a whole form of the page in one ask: each question's answer by its name, through the page's own validation, and the form's first button when `submit` is on.
 
@@ -876,6 +996,52 @@ d-dmiputmu-d = D
 
 d-boev3sbj = Cancel every download
     .doc = Stops every download this page has going.
+
+d-rllv4b5a = Developer tools
+    .doc = Opens the engine's developer tools for this page: its console, its elements and its network.
+
+d-k3vqdvsp = Open the download
+    .doc = Opens a saved download in the app that opens its kind, through the system's one open.
+    .w-save-the-download-first = Save the download first
+
+d-k3vqdvsp-name = Name
+
+d-k3vqdvsp-path = Path
+
+d-hd7ra2gz = Mute the page
+    .doc = Silences the page's sound, or lets it play again.
+
+d-hd7ra2gz-muted = Muted
+
+d-ugidwhtg = Earlier pages
+    .doc = Asks the page where it can go back to.
+
+d-kwhpfr2t = Later pages
+    .doc = Asks the page where it can go forward to, the answer kept like [`read_back_history`]'s.
+
+d-unfwzbsr = Go to a page of its history
+    .doc = Goes to one page of the page's own history, by the entry its reading named.
+
+d-unfwzbsr-entry = Entry
+
+d-qdr46mze = Site information
+    .doc = Reads the site's connection, its certificate, the requests tracker protection blocked and what the site may ask for, into the page's record.
+    .w-this-page-is-not-on-a = This page is not on a site
+
+d-xsnvn6le = Clear this site's data
+    .doc = Clears this site's storage, cookies and remembered forms, including cookies it shares with its subdomains, and reloads it.
+    .w-read-the-site-s-information-first = Read the site's information first
+
+d-muzeyo2h = Block what this site asks for
+    .doc = Blocks what the site may ask for (its camera, microphone, location and notifications).
+    .w-read-the-site-s-information-first = Read the site's information first
+
+d-63b5vewx = Let the site ask again
+    .doc = Lets the site ask again for what it was refused.
+    .w-read-the-site-s-information-first = Read the site's information first
+
+d-kqjsvdfh = Apply the sites tracker protection is off for
+    .doc = Tells the engine which sites tracker protection is off for, as the Browser's own set says: the engine keeps the same list beside its filters.
 
 d-trhtau5i = Allow the extension
     .doc = Gives an extension the more access it asked for.
@@ -1024,6 +1190,12 @@ d-2dmo7lzf-title = Title
 
 d-2dmo7lzf-at = At
 
+d-wrsl2noi = Trim history
+    .doc = Keeps the person's own visits to their newest `most`, forgetting the oldest: the history stays within what a person could read, as every other list the system keeps does.
+    .w-a-history-keeps-at-least-one = A history keeps at least one page
+
+d-wrsl2noi-most = Most
+
 d-q5brlj4t = Arrived at
     .doc = Takes in a page a window arrived at: it joins the person's history.
 
@@ -1063,6 +1235,16 @@ d-t3d7dnlx = Go~present
 
 d-tqd4wzqk = Download~present
 
+d-wutb5pms = Open download~present
+
+d-nja545os = Read site~present
+
+d-3wo5bbtr = Clear site data~present
+
+d-h3g4heky = Block site permissions~present
+
+d-j4t6lwtn = Ask site permissions again~present
+
 d-sayctunu = Bookmark~present
 
 d-asdqm6oc = Name bookmark~present
@@ -1076,6 +1258,8 @@ d-t5atc53e = Remember form~present
 d-xbrdtvx6 = Fill address~present
 
 d-y7tjvycu = Name visit~present
+
+d-sb77wivf = Trim history~present
 
 d-r7exe3by = Page window
     .w-browser = Browser
@@ -1096,10 +1280,16 @@ d-vsaswu4a = Page view
     .w-bookmarks = Bookmarks
     .w-browser-settings = Browser settings
     .w-reader-view = Reader view
+    .w-unmute-the-page = Unmute the page
+    .w-mute-the-page = Mute the page
+    .w-earlier-pages = Earlier pages
+    .w-later-pages = Later pages
     .w-zoom-in = Zoom in
     .w-zoom-out = Zoom out
     .w-actual-size = Actual size
     .w-actual-size-2 = Actual size ({ $percent }%)
+    .w-site-information = Site information
+    .w-developer-tools = Developer tools
     .w-turn-tracker-protection-on-for-this = Turn tracker protection on for this site
     .w-turn-tracker-protection-off-for-this = Turn tracker protection off for this site
     .w-forget-this-site-s-forms = Forget this site’s forms
@@ -1112,6 +1302,11 @@ d-vsaswu4a = Page view
     .w-this-page-asks = This page asks
     .w-ok = OK
     .w-cancel = Cancel
+    .w-requests-blocked = Requests blocked
+    .w-certificate = Certificate
+    .w-clear-this-site-s-data = Clear this site's data
+    .w-block-what-this-site-asks-for = Block what this site asks for
+    .w-let-the-site-ask-again = Let the site ask again
     .w-downloads = Downloads
     .w-cancel-every-download = Cancel every download
     .w-what-was-done = What was done
@@ -1154,6 +1349,7 @@ d-jlg4rve3 = Library
 
 d-3dld2nsk = Bookmarks list
     .w-no-bookmarks-yet = No bookmarks yet
+    .w-top-of-the-bookmarks = Top of the bookmarks
 
 d-2ow3mpb2 = Visit row
 
@@ -1196,3 +1392,4 @@ d-6w4zu5de = Download row
     .w-downloading = Downloading
     .w-cancel = Cancel
     .w-retry = Retry
+    .w-open = Open

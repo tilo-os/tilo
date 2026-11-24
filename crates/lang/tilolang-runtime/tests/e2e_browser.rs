@@ -8,6 +8,7 @@ mod cases {
     use serde_json::{Value as Json, json};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use tilolang_runtime::files::{Entry, FileTarget, FilesHost};
     use tilolang_runtime::page::PageHost;
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
@@ -55,11 +56,43 @@ mod cases {
         }
     }
 
+    /// The device's files, as a download's open asks them: what was opened, in order.
+    #[derive(Clone, Default)]
+    struct Files {
+        opened: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl FilesHost for Files {
+        fn list(&self, _path: &str) -> Result<Vec<Entry>, String> {
+            Ok(Vec::new())
+        }
+
+        fn stat(&self, _path: &str) -> Result<Option<Entry>, String> {
+            Ok(None)
+        }
+
+        fn read(&self, _path: &str) -> Result<Vec<u8>, String> {
+            Err("the test keeps no files".to_owned())
+        }
+
+        fn watch(&self, _path: &str, _run: &str) -> Result<String, String> {
+            Err("the test watches no folder".to_owned())
+        }
+
+        fn open(&self, file: FileTarget<'_>) -> Result<(), String> {
+            if let FileTarget::Path(path) = file {
+                self.opened.borrow_mut().push(path.to_owned());
+            }
+            Ok(())
+        }
+    }
+
     struct Browser {
         rt: Runtime,
         app: App,
         root: ResourceRef,
         page: Page,
+        files: Files,
         opened: ResourceRef,
     }
 
@@ -69,6 +102,8 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let page = Page::default();
             rt.set_page(page.clone());
+            let files = Files::default();
+            rt.set_device_files(files.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
@@ -81,6 +116,7 @@ mod cases {
                 app,
                 root,
                 page,
+                files,
                 opened,
             }
         }
@@ -317,6 +353,195 @@ mod cases {
         );
     }
 
+    /// A file input is answered with the paths a person or an agent chose there, through the
+    /// page's own validation of what it accepts.
+    #[test]
+    fn a_file_input_is_filled_with_the_paths_it_was_given() {
+        let b = Browser::new();
+        b.page(
+            "fill_page_files",
+            &[
+                ("element", Value::text("d1")),
+                (
+                    "paths",
+                    Value::List(vec![
+                        Value::text("/home/ada/picture.png"),
+                        Value::text("/home/ada/second.png"),
+                    ]),
+                ),
+            ],
+        );
+        assert_eq!(b.page.ops(), ["fill_files"]);
+        let ask = b.page.last();
+        assert_eq!(ask["element"].as_str(), Some("d1"));
+        let paths: Vec<&str> = ask["paths"]
+            .as_array()
+            .expect("the paths are an array")
+            .iter()
+            .filter_map(Json::as_str)
+            .collect();
+        assert_eq!(paths, ["/home/ada/picture.png", "/home/ada/second.png"]);
+    }
+
+    /// The page's sound and its own back and forward pages are read into its record, and the
+    /// person's mute and history asks reach the engine.
+    #[test]
+    fn a_pages_sound_and_its_own_history_are_read_and_asked_for() {
+        let b = Browser::new();
+        b.page.answer_asks(json!({
+            "muted": true,
+            "back": [{"id": 2, "url": "https://example.org/earlier", "title": "Earlier"}],
+            "forward": [{"id": 3, "url": "https://example.org/later", "title": ""}],
+        }));
+        b.page("refresh_page", &[]);
+        assert!(
+            matches!(b.read(&b.opened, "muted"), Value::Bool(true)),
+            "the page's sound is muted"
+        );
+        let back = b.rt.project(&b.read(&b.opened, "back"));
+        assert_eq!(
+            back["items"][0]["fields"]["url"].as_str(),
+            Some("https://example.org/earlier")
+        );
+        assert_eq!(
+            back["items"][0]["fields"]["title"].as_str(),
+            Some("Earlier")
+        );
+        let after = b.rt.project(&b.read(&b.opened, "forward"));
+        assert_eq!(
+            after["items"][0]["fields"]["title"].as_str(),
+            Some("https://example.org/later"),
+            "a page the engine has no title for is named by its address"
+        );
+
+        b.page("mute", &[("muted", Value::Bool(false))]);
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("mute"));
+        let ask = b.page.last();
+        assert_eq!(ask["muted"].as_bool(), Some(false), "the mute ask: {ask}");
+
+        b.page("read_back_history", &[]);
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("history"));
+        assert_eq!(b.page.last()["direction"].as_str(), Some("back"));
+
+        b.page("read_forward_history", &[]);
+        assert_eq!(b.page.last()["direction"].as_str(), Some("forward"));
+
+        b.page("go_history_entry", &[("entry", Value::Int(2))]);
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("history_entry")
+        );
+        assert_eq!(b.page.last()["entry"].as_i64(), Some(2));
+    }
+
+    /// What a site's connection and permissions are is read into the page, and the person's
+    /// clearing, blocking and asking again reach the engine for this site and this document.
+    #[test]
+    fn a_site_is_read_and_its_data_and_permissions_are_acted_on() {
+        let b = Browser::new();
+        b.page(
+            "went_to",
+            &[("url", Value::text("https://example.org/private"))],
+        );
+        b.page.answer_asks(json!({
+            "site": {
+                "origin": "https://example.org",
+                "generation": 4,
+                "blocked": 7,
+                "protected": true,
+                "security": "secure",
+                "certificate": 0,
+                "issuer": "Example CA",
+                "subject": "example.org",
+                "permissions": [{"kind": "camera", "state": "ask"}],
+                "can_reset": true,
+            },
+        }));
+        b.page("refresh_page", &[]);
+        let view = b.page_view();
+        assert_eq!(row_secondary(&view, "https://example.org"), "secure");
+        assert_eq!(row_secondary(&view, "Requests blocked"), "7");
+        assert_eq!(row_secondary(&view, "Certificate"), "Example CA");
+
+        b.page("read_site", &[]);
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("site_status"));
+        assert_eq!(
+            b.page.last()["origin"].as_str(),
+            Some("https://example.org")
+        );
+
+        b.page("clear_site_data", &[]);
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("site_action"));
+        assert_eq!(b.page.last()["doing"].as_str(), Some("clear"));
+        assert_eq!(b.page.last()["generation"].as_i64(), Some(4));
+
+        b.page("block_site_permissions", &[]);
+        assert_eq!(b.page.last()["doing"].as_str(), Some("revoke"));
+
+        b.page("ask_site_permissions_again", &[]);
+        assert_eq!(b.page.last()["doing"].as_str(), Some("reset"));
+
+        b.run(
+            "set_site_protection",
+            &[
+                ("b", Value::resource(&b.root)),
+                ("origin", Value::text("https://example.org")),
+                ("enabled", Value::Bool(false)),
+            ],
+        );
+        b.page("sync_site_exceptions", &[]);
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("site_exceptions")
+        );
+        let ask = b.page.last();
+        let origins: Vec<&str> = ask["origins"]
+            .as_array()
+            .expect("the origins are an array")
+            .iter()
+            .filter_map(Json::as_str)
+            .collect();
+        assert_eq!(origins, ["https://example.org"]);
+    }
+
+    /// The person's history stays within its bound: the oldest visits go and the newest stay.
+    #[test]
+    fn the_history_stays_within_its_bound() {
+        let b = Browser::new();
+        for (at, name) in [
+            ("2026-11-24T09:00:00Z", "a"),
+            ("2026-11-24T10:00:00Z", "b"),
+            ("2026-11-24T11:00:00Z", "c"),
+        ] {
+            b.run(
+                "visit",
+                &[
+                    ("b", Value::resource(&b.root)),
+                    ("url", Value::text(format!("https://example.org/{name}"))),
+                    ("title", Value::text(name)),
+                    ("at", Value::text(at)),
+                ],
+            );
+        }
+        b.run(
+            "trim_history",
+            &[("b", Value::resource(&b.root)), ("most", Value::Int(2))],
+        );
+        let visits = b.rt.project(&b.read(&b.root, "visits"));
+        let urls: Vec<&str> = visits["items"]
+            .as_array()
+            .expect("visits are a list")
+            .iter()
+            .filter_map(|visit| visit["fields"]["url"].as_str())
+            .collect();
+        assert_eq!(urls.len(), 2, "two visits stay: {urls:?}");
+        assert!(
+            !urls.contains(&"https://example.org/a"),
+            "the oldest goes: {urls:?}"
+        );
+        assert!(urls.contains(&"https://example.org/c"), "the newest stays");
+    }
+
     #[test]
     fn a_sign_in_turned_down_sends_no_credentials() {
         let b = Browser::new();
@@ -333,6 +558,158 @@ mod cases {
         assert_eq!(ask["asker"].as_str(), Some("proxy.example"));
         assert!(ask["username"].is_null(), "no user name is sent: {ask}");
         assert!(ask["password"].is_null(), "no password is sent: {ask}");
+    }
+
+    /// Another browser's bookmarks come in with their folders: a flat entry's folder and a
+    /// tree's nested folder both reach the library as the path the bookmark stands under.
+    #[test]
+    fn imported_bookmarks_keep_their_folders_and_their_tree() {
+        let b = Browser::new();
+        b.run(
+            "import_bookmarks",
+            &[
+                ("b", Value::resource(&b.root)),
+                (
+                    "bundle",
+                    Value::text(
+                        r#"{"bookmarks":[
+                            {"url":"https://example.org/a","title":"A","folder":"Work"},
+                            {"title":"Reading","children":[
+                                {"url":"https://example.org/b","title":"B"}
+                            ]}
+                        ]}"#,
+                    ),
+                ),
+            ],
+        );
+        let made = b.rt.project(&b.read(&b.root, "bookmarks"));
+        let items = made["items"].as_array().expect("the bookmarks are a list");
+        let folder = |url: &str| {
+            items
+                .iter()
+                .find(|item| item["fields"]["url"].as_str() == Some(url))
+                .unwrap_or_else(|| panic!("no bookmark for {url}: {made}"))["fields"]["folder"]
+                .as_str()
+                .map(str::to_owned)
+        };
+        assert_eq!(folder("https://example.org/a").as_deref(), Some("Work"));
+        assert_eq!(folder("https://example.org/b").as_deref(), Some("Reading"));
+    }
+
+    /// A saved download opens in the app that opens its kind, through the system's one open,
+    /// and one that was never saved is refused before anything is opened.
+    /// The engine's own developer tools are asked for by the page's action.
+    /// A page the page opened in a window of its own becomes a page of the browser.
+    #[test]
+    fn a_popup_a_page_opened_becomes_a_page_of_the_browser() {
+        let b = Browser::new();
+        b.page(
+            "open_from_page",
+            &[
+                ("url", Value::text("https://example.org/sign-in")),
+                ("popup", Value::Bool(true)),
+            ],
+        );
+        let pages = b.rt.project(&b.read(&b.root, "pages"));
+        let urls: Vec<&str> = pages["items"]
+            .as_array()
+            .expect("pages are a list")
+            .iter()
+            .filter_map(|page| page["fields"]["url"].as_str())
+            .collect();
+        assert!(
+            urls.contains(&"https://example.org/sign-in"),
+            "the popup is kept as a page: {urls:?}"
+        );
+    }
+
+    #[test]
+    fn developer_tools_are_asked_for() {
+        let b = Browser::new();
+        b.page("developer_tools", &[]);
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("developer_tools")
+        );
+    }
+
+    /// What the window hands over while a transfer moves and when the page's history is read is
+    /// written into the same page record the window draws, so the view moves while a person looks.
+    #[test]
+    fn a_moving_download_and_the_pages_it_can_go_to_reach_the_record() {
+        let b = Browser::new();
+        let download = |received: i64| {
+            vec![
+                ("id", Value::Int(4)),
+                ("state", Value::text("downloading")),
+                ("name", Value::text("report.pdf")),
+                ("url", Value::text("https://example.org/report.pdf")),
+                ("path", Value::text("")),
+                ("retryable", Value::Bool(false)),
+                ("received", Value::Int(received)),
+                ("total", Value::Int(8192)),
+                ("error", Value::text("")),
+            ]
+        };
+        b.page("update_download", &download(2048));
+        assert_eq!(
+            row_secondary(&b.page_view(), "report.pdf"),
+            "2.0 KB of 8.1 KB",
+            "the record moves with the transfer"
+        );
+        b.page("update_download", &download(4096));
+        assert_eq!(
+            row_secondary(&b.page_view(), "report.pdf"),
+            "4.0 KB of 8.1 KB",
+            "one download, moved"
+        );
+
+        b.page(
+            "remember_history",
+            &[
+                ("direction", Value::text("back")),
+                (
+                    "entries",
+                    Value::text(
+                        r#"[{"id":2,"url":"https://example.org/earlier","title":"Earlier"}]"#,
+                    ),
+                ),
+            ],
+        );
+        let back = b.rt.project(&b.read(&b.opened, "back"));
+        assert_eq!(
+            back["items"][0]["fields"]["title"].as_str(),
+            Some("Earlier")
+        );
+    }
+
+    #[test]
+    fn a_saved_download_opens_through_the_systems_open() {
+        let b = Browser::new();
+        let refused = Browser::call(
+            &b.app,
+            &b.rt,
+            "open_download",
+            &[
+                ("name", Value::text("report.pdf")),
+                ("path", Value::text("")),
+            ],
+        );
+        assert!(refused.is_err(), "a download with no path is refused");
+        assert!(b.files.opened.borrow().is_empty(), "nothing was opened");
+
+        b.run(
+            "open_download",
+            &[
+                ("name", Value::text("report.pdf")),
+                ("path", Value::text("/home/ada/report.pdf")),
+            ],
+        );
+        assert_eq!(
+            b.files.opened.borrow().as_slice(),
+            ["/home/ada/report.pdf"],
+            "the system opened exactly the download's path"
+        );
     }
 
     #[test]

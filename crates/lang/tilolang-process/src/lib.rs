@@ -805,6 +805,18 @@ impl TilolangProcess {
                 wake();
             })
             .map_err(AdmitError::Window)?;
+        let chooser = chooser_of(fds.chooser);
+        // The window that shows this instance answers its page's file inputs with this chooser;
+        // the instance is named before its window connects, so it is kept by that name.
+        #[cfg(feature = "app-launch")]
+        if let Some(picker) = &chooser {
+            crate::window::hosted::keep_page_picker(
+                instance,
+                std::sync::Arc::new(crate::window::hosted::SessionPicker(std::sync::Arc::clone(
+                    picker,
+                ))),
+            );
+        }
         self.opening.push(Opening {
             app,
             instance,
@@ -817,7 +829,7 @@ impl TilolangProcess {
             identity: Some(fds.identity),
             origin: fds.origin,
             content: store_of(fds.content),
-            chooser: chooser_of(fds.chooser),
+            chooser,
             clipboard: clipboard_of(fds.clipboard),
             tools,
             received: std::time::Instant::now(),

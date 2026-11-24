@@ -29,8 +29,9 @@
 
 use base64::Engine as _;
 use tilo_webview::{
-    FrameId, KeyModifiers, PageFailure, PageReply, PageRequest, PageResourceNote, PointerButton,
-    PointerPoint, PointerStep, PointerStepKind, ScrollTarget, WebViewCommand,
+    FrameId, KeyModifiers, NavigationDirection, NavigationEntry, PageFailure, PageReply,
+    PageRequest, PageResourceNote, PointerButton, PointerPoint, PointerStep, PointerStepKind,
+    ScrollTarget, WebViewCommand,
 };
 
 use crate::Asks;
@@ -59,10 +60,13 @@ pub enum Ask {
 ///
 /// # Errors
 /// The text is no JSON object, or it names no operation this vocabulary has.
-#[allow(clippy::too_many_lines, reason = "one arm per operation of one closed vocabulary")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per operation of one closed vocabulary"
+)]
 pub fn decode(request: &str) -> Result<Ask, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(request).map_err(|error| format!("a page request is no object: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(request)
+        .map_err(|error| format!("a page request is no object: {error}"))?;
     let op = value
         .get("op")
         .and_then(serde_json::Value::as_str)
@@ -112,9 +116,11 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             let chord = text(&value, "key").unwrap_or_default();
             Ask::Page(PageRequest::Press {
                 element: element_opt(&value, "element"),
-                key: tilo_webview::PageKey::parse(&chord).unwrap_or_else(|| tilo_webview::PageKey {
-                    key: chord,
-                    modifiers: KeyModifiers::default(),
+                key: tilo_webview::PageKey::parse(&chord).unwrap_or_else(|| {
+                    tilo_webview::PageKey {
+                        key: chord,
+                        modifiers: KeyModifiers::default(),
+                    }
                 }),
                 frame: frame(&value),
             })
@@ -241,9 +247,9 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             id: integer(&value, "id").unwrap_or_default(),
             asker: text(&value, "asker").unwrap_or_default(),
             credentials: match (text(&value, "username"), text(&value, "password")) {
-                (Some(username), Some(password)) => Some(
-                    tilo_webview::HttpAuthCredentials::new(username, password),
-                ),
+                (Some(username), Some(password)) => {
+                    Some(tilo_webview::HttpAuthCredentials::new(username, password))
+                }
                 _ => None,
             },
         }),
@@ -271,6 +277,39 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             command: integer(&value, "command").unwrap_or_default(),
         }),
         "asks" => Ask::Asks,
+        // The engine's own developer tools, opened beside the page.
+        "developer_tools" => Ask::Command(WebViewCommand::ShowDeveloperTools),
+        // The page's sound, and where it can go back or forward to: the engine answers the
+        // history through `asks` once it has read it.
+        "mute" => Ask::Command(WebViewCommand::SetAudioMuted(flag(&value, "muted"))),
+        "history" => Ask::Command(WebViewCommand::RequestNavigationHistory {
+            request_id: 1,
+            direction: if text(&value, "direction").as_deref() == Some("forward") {
+                NavigationDirection::Forward
+            } else {
+                NavigationDirection::Back
+            },
+        }),
+        "history_entry" => Ask::Command(WebViewCommand::NavigateToHistoryEntry {
+            request_id: 1,
+            id: u32::try_from(integer(&value, "entry").unwrap_or_default()).unwrap_or(u32::MAX),
+        }),
+        // What a site's connection, permissions and stored data are, and what the person may do
+        // about them: the engine answers the status through `asks` and the result as an answer.
+        "site_status" => Ask::Command(WebViewCommand::RequestSiteStatus {
+            request_id: 1,
+            origin: text(&value, "origin").unwrap_or_default(),
+        }),
+        "site_action" => Ask::Command(WebViewCommand::SiteAction {
+            request_id: 1,
+            origin: text(&value, "origin").unwrap_or_default(),
+            generation: u64::try_from(integer(&value, "generation").unwrap_or_default())
+                .unwrap_or_default(),
+            action: text(&value, "doing").unwrap_or_default(),
+        }),
+        "site_exceptions" => {
+            Ask::Command(WebViewCommand::SetSiteExceptions(texts(&value, "origins")))
+        }
         // What the page downloads: the engine's own transfers, which the app starts, answers,
         // stops and resumes by the id the engine gave them.
         "start_download" => Ask::Command(WebViewCommand::StartDownload {
@@ -321,7 +360,9 @@ pub fn encode(result: &Result<PageReply, PageFailure>) -> String {
             {
                 fields.insert(
                     "image".to_owned(),
-                    base64::engine::general_purpose::STANDARD.encode(image).into(),
+                    base64::engine::general_purpose::STANDARD
+                        .encode(image)
+                        .into(),
                 );
             }
             answer.to_string()
@@ -422,8 +463,100 @@ pub fn asks_json(asks: &Asks) -> String {
         "title": &asks.title,
         "loading": asks.loading,
         "downloads": downloads,
+        "muted": asks.muted,
+        "back": entries_json(&asks.back),
+        "forward": entries_json(&asks.forward),
+        "site": asks.site.as_ref().map(site_json),
     })
     .to_string()
+}
+
+/// What a page said of one of its downloads as it moves, for the window to hand the app as its
+/// call: the transfer's id, how it stands, what it is called and where it comes from and went,
+/// whether it can be retried, how far it has come, and why it failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadNote<'a> {
+    pub id: u32,
+    pub state: &'a str,
+    pub name: &'a str,
+    pub url: &'a str,
+    pub path: &'a str,
+    pub retryable: bool,
+    pub received: u64,
+    pub total: u64,
+    pub error: &'a str,
+}
+
+/// The note a download's report becomes.
+#[must_use]
+pub fn download_note(note: DownloadNote<'_>) -> String {
+    serde_json::json!({
+        "note": "download",
+        "id": note.id,
+        "state": note.state,
+        "name": note.name,
+        "url": note.url,
+        "path": note.path,
+        "retryable": note.retryable,
+        "received": note.received,
+        "total": note.total,
+        "error": note.error,
+    })
+    .to_string()
+}
+
+/// A page the page opened in a window of its own (`window.open`, a link that names a new tab),
+/// for the window to hand the app as its call.
+#[must_use]
+pub fn open_note(url: &str, popup: bool) -> String {
+    serde_json::json!({"note": "open", "url": url, "popup": popup}).to_string()
+}
+
+/// What the page's own history holds one way, for the window to hand the app as its call: the
+/// direction and the pages, each as its id, address and title.
+#[must_use]
+pub fn history_note(direction: NavigationDirection, entries: &[NavigationEntry]) -> String {
+    serde_json::json!({
+        "note": "history",
+        "direction": direction.as_str(),
+        "entries": serde_json::Value::Array(entries_json(entries)).to_string(),
+    })
+    .to_string()
+}
+
+/// What a site's connection, permissions and stored data are, as the app reads them.
+fn site_json(site: &tilo_webview::SiteStatus) -> serde_json::Value {
+    let permissions: Vec<serde_json::Value> = site
+        .permissions
+        .iter()
+        .map(|(kind, state)| serde_json::json!({"kind": kind, "state": state}))
+        .collect();
+    serde_json::json!({
+        "origin": site.origin,
+        "generation": site.generation,
+        "blocked": site.blocked,
+        "protected": site.effective,
+        "security": site.security,
+        "certificate": site.certificate_status,
+        "issuer": site.issuer,
+        "subject": site.subject,
+        "permissions": permissions,
+        "can_reset": site.can_reset,
+    })
+}
+
+/// One direction's pages, each as its id, address and title.
+fn entries_json(entries: &[tilo_webview::NavigationEntry]) -> Vec<serde_json::Value> {
+    entries
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "id": entry.id,
+                "url": entry.url,
+                "title": entry.title,
+            })
+        })
+        .collect()
 }
 
 /// What the page started or stopped waiting on a person's yes for, as the window tells the app
@@ -502,7 +635,10 @@ fn record(note: &PageResourceNote) -> serde_json::Value {
 }
 
 fn text(value: &serde_json::Value, key: &str) -> Option<String> {
-    value.get(key).and_then(serde_json::Value::as_str).map(str::to_owned)
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 /// Words a wait or a find looks for: a blank is the same as leaving them out.
@@ -536,7 +672,10 @@ fn integer(value: &serde_json::Value, key: &str) -> Option<u32> {
 }
 
 fn flag(value: &serde_json::Value, key: &str) -> bool {
-    value.get(key).and_then(serde_json::Value::as_bool).unwrap_or(false)
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn frame(value: &serde_json::Value) -> Option<FrameId> {

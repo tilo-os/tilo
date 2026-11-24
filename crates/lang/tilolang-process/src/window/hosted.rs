@@ -485,6 +485,84 @@ struct Connected {
     labels: std::collections::BTreeMap<String, String>,
 }
 
+/// The person's picker for each instance this process was admitted for, by its instance: the
+/// window showing that instance answers its page's file inputs with it. The chooser comes from
+/// the session with the instance, so the window cannot open one of its own.
+static PAGE_PICKERS: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<u64, std::sync::Arc<dyn tilo_app_window::window::PagePicker>>,
+    >,
+> = std::sync::OnceLock::new();
+
+/// The session's chooser as a window asks it: the files a page's input takes, answered with the
+/// person's exact paths, or none when they cancelled.
+pub struct SessionPicker(pub std::sync::Arc<dyn tilo_dialogs::FilePicker>);
+
+impl tilo_app_window::window::PagePicker for SessionPicker {
+    fn pick(&self, files: &tilo_app_window::window::PageFiles) -> Vec<String> {
+        use tilo_dialogs::portal::{FileFilter, MultiOutcome, PickRequest, PortalOutcome};
+        /// How long the person may take before the page is told nothing was chosen.
+        const WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+        let mut request = if files.folder {
+            PickRequest::directory(&files.title, "")
+        } else if files.several {
+            PickRequest::open_multiple(&files.title, "")
+        } else {
+            PickRequest::open(&files.title, "")
+        }
+        .thread_name("tilo-page-file-chooser");
+        // The input's accepted types narrow what the picker shows; the page still checks what it
+        // was given.
+        if !files.accept.is_empty() {
+            let mut filter = FileFilter::new("Files");
+            for accepted in &files.accept {
+                filter = filter.mimetype(accepted);
+            }
+            request = request.filter(filter);
+        }
+        let paths = if files.several {
+            match self.0.pick_multiple(request).recv_timeout(WAIT) {
+                Ok(MultiOutcome::Selected(paths)) => paths,
+                _ => return Vec::new(),
+            }
+        } else {
+            match self.0.pick(request).recv_timeout(WAIT) {
+                Ok(PortalOutcome::Opened(path)) => vec![path],
+                _ => return Vec::new(),
+            }
+        };
+        paths
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect()
+    }
+}
+
+/// Keep `picker` as the chooser of the instance `instance`: a page its window shows asks the
+/// person with this picker.
+pub fn keep_page_picker(
+    instance: u64,
+    picker: std::sync::Arc<dyn tilo_app_window::window::PagePicker>,
+) {
+    PAGE_PICKERS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(instance, picker);
+}
+
+/// The chooser the instance `instance` was admitted with, when it had one.
+fn page_picker(
+    instance: Option<u64>,
+) -> Option<std::sync::Arc<dyn tilo_app_window::window::PagePicker>> {
+    PAGE_PICKERS
+        .get()?
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&instance?)
+        .cloned()
+}
+
 /// The window. See the module docs.
 pub struct HostedWindow {
     instance: Option<u64>,
@@ -675,6 +753,11 @@ impl HostedWindow {
                 // A floating surface the view asks for mirrors its app's own player.
                 if let Some(bundle) = crate::window::installed_bundle() {
                     view.set_app_id(bundle.meta.app.as_str());
+                }
+                // The page's file inputs ask the person with the chooser the session opened for
+                // this instance, the one place a file is chosen and granted.
+                if let Some(picker) = page_picker(self.instance) {
+                    view.set_page_picker(picker);
                 }
                 self.connected = Some(Connected {
                     view,
@@ -1053,5 +1136,99 @@ impl ui::widget::Decorator for HostedWindow {
             Some(connected) => Widget::take_structure_change(&mut connected.view),
             None => self.waiting.take_structure_change(),
         }
+    }
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use tilo_dialogs::portal::{
+        LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
+        OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome,
+    };
+
+    use tilo_app_window::window::PagePicker;
+
+    use super::SessionPicker;
+
+    /// A chooser answering what the test says the person chose.
+    struct Picks {
+        one: Option<PathBuf>,
+        many: Vec<PathBuf>,
+    }
+
+    impl tilo_dialogs::FilePicker for Picks {
+        fn pick(&self, _request: PickRequest) -> PortalChannel {
+            let (answers, channel) = std::sync::mpsc::channel();
+            let outcome = match &self.one {
+                Some(path) => PortalOutcome::Opened(path.clone()),
+                None => PortalOutcome::Cancelled,
+            };
+            let _ = answers.send(outcome);
+            channel
+        }
+
+        fn pick_multiple(&self, _request: PickRequest) -> MultiChannel {
+            let (answers, channel) = std::sync::mpsc::channel();
+            let outcome = if self.many.is_empty() {
+                MultiOutcome::Cancelled
+            } else {
+                MultiOutcome::Selected(self.many.clone())
+            };
+            let _ = answers.send(outcome);
+            channel
+        }
+
+        fn open_file(&self, _request: PickRequest) -> OpenFileChannel {
+            let (answers, channel) = std::sync::mpsc::channel();
+            let _ = answers.send(OpenFileOutcome::Cancelled);
+            channel
+        }
+
+        fn launch(&self, _request: LaunchRequest) -> LaunchChannel {
+            let (answers, channel) = std::sync::mpsc::channel();
+            let _ = answers.send(LaunchOutcome::Opened);
+            channel
+        }
+    }
+
+    /// The session's chooser, as a page's input asks it: the person's exact paths, several of
+    /// them for a multiple input, and none when they cancelled.
+    #[test]
+    fn the_sessions_picker_answers_the_pages_files() {
+        let one = PathBuf::from("/home/ada/picture.png");
+        let picker = SessionPicker(Arc::new(Picks {
+            one: Some(one.clone()),
+            many: Vec::new(),
+        }));
+        let files = |several, folder| tilo_app_window::window::PageFiles {
+            title: "Upload".to_owned(),
+            several,
+            folder,
+            accept: vec!["image/png".to_owned()],
+        };
+        assert_eq!(picker.pick(&files(false, false)), ["/home/ada/picture.png"]);
+        assert_eq!(picker.pick(&files(false, true)), ["/home/ada/picture.png"]);
+
+        let two = PathBuf::from("/home/ada/second.png");
+        let picker = SessionPicker(Arc::new(Picks {
+            one: None,
+            many: vec![one, two],
+        }));
+        assert_eq!(
+            picker.pick(&files(true, false)),
+            ["/home/ada/picture.png", "/home/ada/second.png"]
+        );
+
+        let cancelled = SessionPicker(Arc::new(Picks {
+            one: None,
+            many: Vec::new(),
+        }));
+        assert!(
+            cancelled.pick(&files(false, false)).is_empty(),
+            "a cancelled chooser answers no paths"
+        );
     }
 }
