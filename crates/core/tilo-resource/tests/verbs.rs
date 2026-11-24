@@ -846,6 +846,7 @@ pub enum CardEffect {
     Show {
         card: CardKey,
         colour: Option<Colour>,
+        #[param(opaque)]
         opaque: Opaque,
     },
 }

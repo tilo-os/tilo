@@ -142,6 +142,58 @@
 //! strings: a constant table, an array of names). `#[param(label = "key")]`
 //! takes the description from the vocabulary's catalogue instead, read in the
 //! person's language where the action is published.
+//!
+//! A parameter's Rust type describes its JSON form — it derives
+//! [`JsonSchema`](crate::JsonSchema) — because the surface publishes the
+//! parameter's type, its schema and the records and enums it names, which
+//! other languages compile against. A type that describes none is refused
+//! where the effect is declared, naming the parameter and the type:
+//!
+//! ```compile_fail
+//! use serde::{Deserialize, Serialize};
+//! use tilo_resource::Effect;
+//!
+//! /// A value that says nothing about its JSON form.
+//! #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+//! pub struct Opaque;
+//!
+//! #[derive(Clone, Debug, PartialEq, Effect)]
+//! #[effect(operation = "example.backups")]
+//! pub enum Backups {
+//!     /// Restore a snapshot.
+//!     #[effect(kind = "outside")]
+//!     Restore { snapshot: Opaque },
+//! }
+//! # fn main() {}
+//! ```
+//!
+//! A value that really is opaque — a parsed document, an engine's own answer —
+//! says so with `#[param(opaque)]`, and its surface publishes an object with
+//! no schema:
+//!
+//! ```
+//! use serde::{Deserialize, Serialize};
+//! use tilo_resource::Effect;
+//!
+//! /// A document as this app's engine kept it.
+//! #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+//! pub struct Reading;
+//!
+//! #[derive(Clone, Debug, PartialEq, Effect)]
+//! #[effect(operation = "example.backups")]
+//! pub enum Backups {
+//!     /// Restore a snapshot.
+//!     #[effect(kind = "read")]
+//!     Restore {
+//!         #[param(opaque)]
+//!         snapshot: Reading,
+//!     },
+//! }
+//!
+//! let read = &Backups::declarations()[0].params[0];
+//! assert!(read.schema.is_none(), "an opaque value publishes no schema");
+//! # fn main() {}
+//! ```
 
 use std::sync::Arc;
 
