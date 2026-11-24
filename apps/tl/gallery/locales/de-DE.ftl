@@ -277,7 +277,6 @@ d-7chkyi44 = Grundlagen
     .w-a-section-opened-in-a-page = Ein Abschnitt, in einer eigenen Seite geöffnet, eine Ebene tief.
     .w-a-page-one-level-deep-slid = Eine Seite eine Ebene tiefer, über die geschoben, die sie geöffnet hat.
 
-
 d-zttzkxdn = Schrift und Schriftsysteme
     .w-the-type-scale-and-the-scripts = Die Schriftskala und die Schriftsysteme, in denen Text gesetzt wird, jedes in der Schrift, die es braucht.
     .w-type-scale = Schriftskala
@@ -306,6 +305,9 @@ d-vvxmf5ve = Backlogliste
     .w-add-an-item-to-the-backlog = Einen Eintrag zum Backlog hinzufügen
     .w-add = Hinzufügen
     .w-rows-of-a-collection-each-with = Zeilen einer Sammlung: jede mit einem Menü, einem Wischen, einer Werkzeugleiste beim Darüberfahren und ihren Reaktionen.
+    .w-mark-done = Als erledigt markieren
+    .w-delete = Löschen
+    .w-done = Erledigt
 
 d-7ptc3r7a = Eintragszeile
     .w-mark-done = Als erledigt markieren
@@ -314,6 +316,7 @@ d-7ptc3r7a = Eintragszeile
 d-qczmqkvq = Release-Board
     .w-a-board-a-list-per-stage = Ein Board, eine Liste je Phase, mit Karten, die eine App zwischen ihnen zieht.
     .w-release = Release
+    .w-new-item = Neuer Eintrag
 
 d-glo4d4xp = Board-Eintragszeile
 
@@ -388,6 +391,7 @@ d-wxq3apea = Daten
     .w-name = Name
     .w-state = Zustand
     .w-size = Größe
+    .w-b = { $size } B
     .w-tree-view = Baumansicht
     .w-nested-things-as-a-sidebar-holds = Verschachtelte Dinge, wie eine Seitenleiste die Ordner eines Projekts hält; ein Ordner öffnet sich an Ort und Stelle.
     .w-project = Projekt
@@ -397,6 +401,7 @@ d-wxq3apea = Daten
     .w-card-grid = Kartenraster
     .w-collections-as-cards-in-columns-as = Sammlungen als Karten in Spalten, so viele, wie die Breite fasst.
     .w-collections = Sammlungen
+    .w-a-collection-s-cards-as-an = Die Karten einer Sammlung, als eine App für sich.
     .w-activity-timeline = Aktivitätsverlauf
     .w-what-happened-to-a-document-newest = Was mit einem Dokument geschah, das Neueste zuerst, jede Änderung zum Zurücknehmen.
     .w-timeline = Zeitachse
@@ -581,6 +586,7 @@ d-rygoropv = Rahmenteile
     .w-a-dock-s-body-inset-and = Der Körper eines Docks, eingesetzt und gerundet
     .w-tab-strip = Tableiste
     .w-a-frame-s-tabs-the-one = Die Tabs eines Rahmens: der vordere angehoben, wer an jedem ist, und ein geänderter markiert.
+    .w-ada-lovelace = Ada Lovelace
     .w-bar-chip = Leisten-Chip
     .w-what-a-bar-holds-who-is = Was eine Leiste hält: wer hier ist, eine Einladung, ein Zustand, für den sie steht.
     .w-who-is-here = Wer hier ist
