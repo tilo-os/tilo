@@ -3,8 +3,8 @@
 //! The broker admits an own-device invocation for the person at this device
 //! ([`OwnDeviceActions`]); this is where the other device is reached: the request is sent there
 //! as an ordinary invocation over the device action service (`tilo-actions/1`), under the
-//! original invocation's id, and followed until that device answers, so the app observes the
-//! outcome as its own invocation's.
+//! original invocation's id and signed by this device for its person, and followed until that
+//! device answers, so the app observes the outcome as its own invocation's.
 //!
 //! A request from another of the person's devices is them using this computer: it holds suspend
 //! off for a lease after each, so nothing falls asleep mid-task while they are away from it.
@@ -71,7 +71,20 @@ impl OwnDeviceActions for AnotherDevice {
         let addr = Self::addr(checked.device)?;
         let actions = self.workspaces.copies().action_service();
         let device = Arc::new(actions.remote(&self.workspaces.endpoint(), &addr, workspace));
-        let forwarded = checked.forwarded(workspace, request);
+        // The device signs for its person, whose call this is: the other device decides it as
+        // theirs from the signature, and never meets a forward it cannot check.
+        let mut forwarded = checked.forwarded(workspace, request);
+        let signed = tilo_server_protocol::invocation::sign_invocation_now(
+            workspace,
+            &forwarded,
+            self.workspaces.device_cert(),
+            self.workspaces.signer().as_ref(),
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|error| ActionCallError::Unavailable {
+            reason: format!("the call could not be signed for its person: {error}"),
+        })?;
+        forwarded.signed = Some(Box::new(signed));
         let (complete, outcome) = pending();
         device
             .invoke_until_settled(forwarded, FOLLOW_DEADLINE)
