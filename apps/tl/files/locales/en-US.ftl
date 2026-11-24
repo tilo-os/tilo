@@ -230,6 +230,12 @@ d-mrkltxcn = Go
 
 d-mrkltxcn-place = Place
 
+d-t73vg2dk = Show
+    .doc = Shows the place `path` names: the folder itself, or the folder holding the file, with that file marked.
+    .w-a-place-is-named-by-its = A place is named by its path
+
+d-t73vg2dk-path = Path
+
 d-cj9hqb9z = Back
     .doc = Goes back to the place the person came from.
     .w-there-is-nowhere-to-go-back = There is nowhere to go back to
@@ -362,11 +368,6 @@ d-o4nc1mt2 = New file
 
 d-o4nc1mt2-name = Name
 
-d-eaysxl23 = Import dropped
-    .doc = Writes the files a person dropped on the window into the folder shown, each under its own name; a name the folder already holds is kept both, so nothing is replaced.
-
-d-eaysxl23-files = Files
-
 d-6x2g4o5k = Open drive
     .doc = Opens the drive `drive` and goes to where it is open, so a removable disk is a place like any other folder.
 
@@ -475,6 +476,8 @@ d-gcytlgzo = Open app
 d-gcytlgzo-a = A
 
 d-npbyxhoy = Go~present
+
+d-oqb3l2oe = Show~present
 
 d-tnjafyxk = Back~present
 

@@ -60,6 +60,13 @@ wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../pla
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
+sha2.workspace = true
+# A CRX3 extension package is signed by its publisher; its proofs are verified here before
+# anything is unpacked, so an installed extension is the one its identifier names.
+ring = "0.17.14"
+# An extension package is an untrusted archive: it is read within the limits the workspace's
+# reader enforces, and unpacked only after its manifest is read.
+bounded-zip = { package = "tilo-bounded-zip", version = "0.1.0", path = "../bounded-zip" }
 zeroize.workspace = true
 thiserror.workspace = true
 blake3.workspace = true

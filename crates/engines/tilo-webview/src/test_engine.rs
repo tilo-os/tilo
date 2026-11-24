@@ -769,6 +769,26 @@ impl WebViewEngine for TestEngine {
         let mut inner = self.lock_inner();
         inner.commands.push(cmd.clone());
         match cmd {
+            // The test engine keeps no extensions: what is installed is the device's, and a test
+            // that needs an inventory pushes the event its engine would answer with.
+            WebViewCommand::ExtensionList { request_id } => {
+                inner.events.push(WebViewEvent::ExtensionList {
+                    request_id,
+                    installed: Vec::new(),
+                    message: String::new(),
+                });
+            }
+            WebViewCommand::ExtensionInstall { request_id, .. }
+            | WebViewCommand::ExtensionEnable { request_id, .. }
+            | WebViewCommand::ExtensionRemove { request_id, .. } => {
+                inner.events.push(WebViewEvent::ExtensionOutcome {
+                    request_id,
+                    ok: true,
+                    kind: String::new(),
+                    message: String::new(),
+                    id: String::new(),
+                });
+            }
             WebViewCommand::CancelScopedNavigation { request_id } => {
                 inner.events.retain(|event| !matches!(event, WebViewEvent::NavigationOutcome { request_id: id, .. } if *id == request_id));
             }

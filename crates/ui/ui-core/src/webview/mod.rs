@@ -62,14 +62,55 @@ pub fn new_private_page_engine(root: &std::path::Path) -> Result<SharedEngine, S
 }
 
 /// The engine a window shows a page with when it has none yet: this device's Chromium engine,
-/// or one that says why the page cannot be shown.
+/// with the extensions the person turned on, or one that says why the page cannot be shown.
 #[must_use]
 pub fn new_page_engine() -> SharedEngine {
-    match tilo_webview::chromium::ChromiumEngine::new() {
-        Ok(engine) => engine,
+    let extensions = tilo_webview::extensions::extensions_dir()
+        .map(|root| tilo_webview::extensions::approved_paths(&root))
+        .unwrap_or_default();
+    let started = if extensions.is_empty() {
+        tilo_webview::chromium::ChromiumEngine::new()
+    } else {
+        tilo_webview::chromium::ChromiumEngine::new_with_extensions(&extensions)
+    };
+    match started {
+        Ok(engine) => {
+            let engine: SharedEngine = engine;
+            announce_extensions(&engine, &extensions);
+            engine
+        }
         Err(why) => {
             let missing: SharedEngine = tilo_webview::chromium::UnavailableEngine::new(why);
             missing
         }
+    }
+}
+
+/// Tell the engine what each extension it started with may do, from the manifest it installed:
+/// the engine's pages give an extension only what its own file asks for, and nothing an
+/// extension this device did not install claims.
+fn announce_extensions(engine: &SharedEngine, extensions: &[std::path::PathBuf]) {
+    for path in extensions {
+        let Some(id) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        // Chromium names an unsigned extension itself, so its own access belongs to an
+        // identifier no signed package names: only the signed ones are told of here.
+        if !tilo_webview::extensions::crx::is_extension_id(id) {
+            continue;
+        }
+        let Some(access) = tilo_webview::extensions::access_of(path) else {
+            tracing::warn!(path = %path.display(), "an extension's manifest could not be read");
+            continue;
+        };
+        engine.send(tilo_webview::WebViewCommand::ExtensionAccess {
+            id: id.to_owned(),
+            permissions: access.permissions,
+            hosts: access.hosts,
+            scriptable: access.scriptable,
+            framed: access.framed,
+            token: None,
+            commands: access.commands,
+        });
     }
 }

@@ -181,6 +181,25 @@ impl PageSession {
                 } => {
                     self.notes.push(codec::history_note(*direction, entries));
                 }
+                // What is installed and what installing, turning on or removing came to: the
+                // app's record's, never the page's own event.
+                WebViewEvent::ExtensionList {
+                    installed, message, ..
+                } => {
+                    self.notes.push(codec::extensions_note(installed, message));
+                    continue;
+                }
+                WebViewEvent::ExtensionOutcome {
+                    ok,
+                    kind,
+                    message,
+                    id,
+                    ..
+                } => {
+                    self.notes
+                        .push(codec::extension_outcome_note(*ok, kind, message, id));
+                    continue;
+                }
                 // How the engine's credential store answered: the forms and accounts it lists,
                 // the capture it took, and what the action came to. A status the session asked
                 // only to learn the page's document is not the person's to see: their own action

@@ -372,6 +372,29 @@ d-2chmpqlt = Url
 
 d-uugq5btr = Title
 
+d-ryvmj2zx = Extension
+    .doc = One extension installed on this device: what it is, what its manifest asks for, and whether the person turned it on.
+    .noun = { $count ->
+        [one] extension
+       *[other] extensions
+    }
+
+d-iymjskx5 = Key
+    .doc = The engine's identifier for it, which turning it on or removing names.
+
+d-vhst373v = Name
+
+d-7b7zbela = Version
+
+d-v7jkztuy = Manifest version
+
+d-iaycfmmk = Description
+
+d-kkeg7wgf = Permissions
+    .doc = What it asks for, as its own words, one after another.
+
+d-372chbvw = Enabled
+
 d-2hbds7ee = Login form
     .doc = One login form the engine found on the page: its own number for it, the account it offers, and what kind it is (`sign-in` or `create`).
     .noun = { $count ->
@@ -442,6 +465,12 @@ d-dmxbh4fm = Nth
 d-ao4elp2a = Key
 
 d-jmhhkxjz = Url
+
+d-2l2hjzlp = Path
+    .doc = The path of an extension package the person chose to install.
+
+d-5px2ripq = Extension
+    .doc = The identifier of an installed extension, which turning it on or removing names.
 
 d-lqvkggvx = Level
 
@@ -677,6 +706,12 @@ d-zx4a3bhv = Pages
 
 d-z3z5vks2 = Addresses enabled
     .doc = Forms are filled with a saved address while the person has one and leaves this on.
+
+d-nskkfe4o = Extensions
+    .doc = The extensions installed on this device, as a page's window last listed them.
+
+d-uq4ctcke = Extension notice
+    .doc = What installing, turning on or removing an extension came to, in the person's words: empty while there is nothing to say.
 
 d-hh26i3w2-filter-adblock = Adblock
 
@@ -1064,6 +1099,12 @@ d-k3vqdvsp-name = Name
 
 d-k3vqdvsp-path = Path
 
+d-2kfxgvhv = Show the download in Files
+    .doc = Shows where a saved download stands in Files, with the file marked: the system's one place for what a window saved.
+    .w-save-the-download-first = Save the download first
+
+d-2kfxgvhv-path = Path
+
 d-hd7ra2gz = Mute the page
     .doc = Silences the page's sound, or lets it play again.
 
@@ -1143,6 +1184,45 @@ d-y2b7rzoy = Fill with a saved address
 d-y2b7rzoy-f = F
 
 d-y2b7rzoy-a = A
+
+d-fyfcqngs = Read the installed extensions
+    .doc = Reads the extensions installed on this device into the Browser's record.
+
+d-z2yj3nim = Install an extension
+    .doc = Installs the extension package at `path`, a .crx signed by its publisher or a plain .zip: the engine verifies a signed package, unpacks it under its own identifier, and lists it.
+    .w-name-the-extension-package = Name the extension package
+
+d-z2yj3nim-path = Path
+
+d-ljfxfb7w = Turn the extension on or off
+    .doc = Turns an installed extension on, or off: Chromium loads the ones that are on when a page's window starts.
+
+d-ljfxfb7w-e = E
+
+d-ljfxfb7w-on = On
+
+d-u33rt6ml = Remove the extension
+    .doc = Forgets an extension installed on this device: its folder and everything it may do.
+
+d-u33rt6ml-e = E
+
+d-hh7ptqf4 = Remember extensions
+    .doc = Writes the extensions a page's window listed into the Browser's record.
+
+d-hh7ptqf4-installed = Installed
+
+d-hh7ptqf4-message = Message
+
+d-4gc5tpck = Note extension
+    .doc = Writes what installing, turning on or removing an extension came to, in the person's words.
+
+d-4gc5tpck-ok = Ok
+
+d-4gc5tpck-kind = Kind
+
+d-4gc5tpck-message = Message
+
+d-4gc5tpck-id = Id
 
 d-fnrvkh2d = Remember credential
     .doc = Writes what the engine's credential store answered into the page's record: the forms and accounts it listed, the capture it took, and its own words.
@@ -1360,6 +1440,8 @@ d-tqd4wzqk = Download~present
 
 d-wutb5pms = Open download~present
 
+d-arui4kb5 = Reveal download~present
+
 d-nja545os = Read site~present
 
 d-3wo5bbtr = Clear site data~present
@@ -1371,6 +1453,8 @@ d-j4t6lwtn = Ask site permissions again~present
 d-agsgbsb5 = Save login~present
 
 d-5wtzjn5r = Update saved login~present
+
+d-gz3l5gst = Install extension~present
 
 d-sayctunu = Bookmark~present
 
@@ -1443,6 +1527,16 @@ d-vsaswu4a = Page view
     .w-saved-for-this-site = Saved for this site
     .w-fill = Fill
     .w-delete = Delete
+    .w-extensions = Extensions
+    .w-read-the-installed-extensions = Read the installed extensions
+    .w-on = On · { $version }
+    .w-off = Off · { $version }
+    .w-may-use = May use { $permissions }
+    .w-turn-the-extension-off = Turn the extension off
+    .w-turn-the-extension-on = Turn the extension on
+    .w-remove = Remove
+    .w-path-of-an-extension-package-crx = Path of an extension package (.crx or .zip)
+    .w-install = Install
     .w-requests-blocked = Requests blocked
     .w-certificate = Certificate
     .w-clear-this-site-s-data = Clear this site's data
@@ -1534,3 +1628,4 @@ d-6w4zu5de = Download row
     .w-cancel = Cancel
     .w-retry = Retry
     .w-open = Open
+    .w-show-in-files = Show in Files

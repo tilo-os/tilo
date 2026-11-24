@@ -41,6 +41,10 @@ const SETTLE_QUIET_MS: u32 = 500;
 const SETTLE_TIMEOUT_MS: u32 = 10_000;
 /// The steps of a drag, so a gesture is a bounded amount of work whoever asks.
 const DRAG_STEPS: u32 = 8;
+/// The longest path an extension package is named by.
+const MAX_EXTENSION_PATH: usize = 4096;
+/// The longest identifier an extension is named by.
+const MAX_EXTENSION_ID: usize = 128;
 
 /// What an app asked the page to do.
 #[derive(Debug, Clone)]
@@ -315,6 +319,29 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "site_exceptions" => {
             Ask::Command(WebViewCommand::SetSiteExceptions(texts(&value, "origins")))
         }
+        // The extensions this device keeps: what is installed, one installed from the package at
+        // `path` (a CRX3 package or a plain zip), one turned on or off, and one forgotten. The
+        // engine unpacks and launches them; the app never reads a package.
+        "extension_list" => Ask::Command(WebViewCommand::ExtensionList { request_id: 1 }),
+        "extension_install" => {
+            let path = text(&value, "path").unwrap_or_default();
+            if path.is_empty() || path.len() > MAX_EXTENSION_PATH {
+                return Err("an extension package is named by a path".to_owned());
+            }
+            Ask::Command(WebViewCommand::ExtensionInstall {
+                request_id: 1,
+                path,
+            })
+        }
+        "extension_enable" => Ask::Command(WebViewCommand::ExtensionEnable {
+            request_id: 1,
+            id: extension_id(&value)?,
+            enabled: flag(&value, "enabled"),
+        }),
+        "extension_remove" => Ask::Command(WebViewCommand::ExtensionRemove {
+            request_id: 1,
+            id: extension_id(&value)?,
+        }),
         // The engine's own credential store: the logins it keeps for this site, the forms it
         // reads them from, and the capture it takes of one the person typed. The password never
         // crosses this vocabulary.
@@ -476,8 +503,32 @@ pub fn asks_json(asks: &Asks) -> String {
         "back": entries_json(&asks.back),
         "forward": entries_json(&asks.forward),
         "site": asks.site.as_ref().map(site_json),
+        "extensions": asks
+            .extensions
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "id": entry.id,
+                    "name": entry.name,
+                    "version": entry.version,
+                    "manifest_version": entry.manifest_version,
+                    "description": entry.description,
+                    "permissions": entry.permissions,
+                    "enabled": entry.enabled,
+                })
+            })
+            .collect::<Vec<_>>(),
     })
     .to_string()
+}
+
+/// The identifier an extension request names, bounded so no request names a folder of its own.
+fn extension_id(value: &serde_json::Value) -> Result<String, String> {
+    let id = text(value, "id").unwrap_or_default();
+    if id.is_empty() || id.len() > MAX_EXTENSION_ID {
+        return Err("an extension is named by its identifier".to_owned());
+    }
+    Ok(id)
 }
 
 /// The credential action a request names, with the fields it takes. A password is never part of
@@ -588,6 +639,46 @@ pub fn credential_note(
         "capture": capture.unwrap_or_default(),
         "username": username.unwrap_or_default(),
         "late": late,
+    })
+    .to_string()
+}
+
+/// What this device keeps installed, for the window to hand the app as its call: each extension
+/// and whether the person turned it on.
+#[must_use]
+pub fn extensions_note(installed: &[tilo_webview::ExtensionEntry], message: &str) -> String {
+    let entries: Vec<serde_json::Value> = installed
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "id": entry.id,
+                "name": entry.name,
+                "version": entry.version,
+                "manifest_version": entry.manifest_version,
+                "description": entry.description,
+                "permissions": entry.permissions,
+                "enabled": entry.enabled,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "note": "extensions",
+        "installed": serde_json::Value::Array(entries).to_string(),
+        "message": message,
+    })
+    .to_string()
+}
+
+/// How an install, a turning on or off, or a removal came out, for the window to hand the app as
+/// its call: the engine's kind of failure and its own words, and the extension it was about.
+#[must_use]
+pub fn extension_outcome_note(ok: bool, kind: &str, message: &str, id: &str) -> String {
+    serde_json::json!({
+        "note": "extension",
+        "ok": ok,
+        "kind": kind,
+        "message": message,
+        "id": id,
     })
     .to_string()
 }

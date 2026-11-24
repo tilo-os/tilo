@@ -307,11 +307,6 @@ d-o4nc1mt2 = Neue Datei
 
 d-o4nc1mt2-name = Name
 
-d-eaysxl23 = Abgelegte importieren
-    .doc = Schreibt die Dateien, die eine Person auf dem Fenster abgelegt hat, in den gezeigten Ordner, jede unter ihrem eigenen Namen; ein Name, den der Ordner schon enthält, bleibt doppelt, damit nichts ersetzt wird.
-
-d-eaysxl23-files = Dateien
-
 d-6x2g4o5k = Laufwerk öffnen
     .doc = Öffnet das Laufwerk `drive` und geht dorthin, wo es offen ist, damit ein Wechseldatenträger ein Ort wie jeder andere Ordner ist.
 
@@ -584,3 +579,11 @@ d-4dnpiqnl = Apps
     .w-no-apps-yet = Noch keine Apps
     .w-an-app-this-workspace-installs-stands = Eine App, die dieser Arbeitsbereich installiert, steht hier, einen Druck vom Öffnen entfernt.
     .w-applications = Apps
+
+d-t73vg2dk = Anzeigen
+    .doc = Zeigt den Ort, den `path` nennt: den Ordner selbst oder den Ordner, der die Datei hält, mit dieser Datei markiert.
+    .w-a-place-is-named-by-its = Ein Ort wird durch seinen Pfad genannt
+
+d-t73vg2dk-path = Pfad
+
+d-oqb3l2oe = Anzeigen~present

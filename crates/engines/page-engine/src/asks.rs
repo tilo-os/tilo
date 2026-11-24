@@ -63,6 +63,8 @@ pub struct Asks {
     pub forward: Vec<NavigationEntry>,
     /// The site the page is of, as the engine last answered a request for its information.
     pub site: Option<tilo_webview::SiteStatus>,
+    /// What this device keeps installed, as the engine last listed it, and whether each is on.
+    pub extensions: Vec<tilo_webview::ExtensionEntry>,
 }
 
 impl Asks {
@@ -124,6 +126,9 @@ impl Asks {
             WebViewEvent::LoadProgress(share) => self.progress = *share,
             WebViewEvent::AudioMutedChanged(muted) => self.muted = *muted,
             WebViewEvent::SiteStatus(site) => self.site = Some(site.clone()),
+            WebViewEvent::ExtensionList { installed, .. } => {
+                self.extensions.clone_from(installed);
+            }
             WebViewEvent::NavigationHistory {
                 direction, entries, ..
             } => match direction {

@@ -426,6 +426,16 @@ d-vsaswu4a = Seitenansicht
     .w-delete = Löschen
     .w-new-page = Neue Seite
     .w-new-private-window = Neues privates Fenster
+    .w-extensions = Erweiterungen
+    .w-read-the-installed-extensions = Installierte Erweiterungen lesen
+    .w-on = An · { $version }
+    .w-off = Aus · { $version }
+    .w-may-use = Darf { $permissions } nutzen
+    .w-turn-the-extension-off = Erweiterung ausschalten
+    .w-turn-the-extension-on = Erweiterung einschalten
+    .w-remove = Entfernen
+    .w-path-of-an-extension-package-crx = Pfad eines Erweiterungspakets (.crx oder .zip)
+    .w-install = Installieren
     .w-private-window = Privates Fenster
     .w-this-window-keeps-nothing-when-it = Dieses Fenster behält nichts, wenn es schließt: kein Verlauf, keine Anmeldungen und keine Cookies außer denen der Seite.
 
@@ -1187,6 +1197,7 @@ d-6w4zu5de = Downloadzeile
     .w-cancel = Abbrechen
     .w-retry = Wiederholen
     .w-open = Öffnen
+    .w-show-in-files = In Dateien anzeigen
 
 d-eg4w4fow = Stumm
     .doc = Ob der Ton der Seite stummgeschaltet ist.
@@ -1475,3 +1486,87 @@ d-fnrvkh2d-late = Verspätet
 d-agsgbsb5 = Anmeldung speichern~present
 
 d-5wtzjn5r = Gespeicherte Anmeldung aktualisieren~present
+
+d-ryvmj2zx = Erweiterung
+    .doc = Eine auf diesem Gerät installierte Erweiterung: was sie ist, was ihr Manifest verlangt und ob die Person sie eingeschaltet hat.
+    .noun = { $count ->
+        [one] Erweiterung
+       *[other] Erweiterungen
+    }
+
+d-vhst373v = Name
+
+d-7b7zbela = Version
+
+d-v7jkztuy = Manifestversion
+
+d-iaycfmmk = Beschreibung
+
+d-kkeg7wgf = Berechtigungen
+    .doc = Was die Erweiterung in ihrem Manifest verlangt, in ihren eigenen Worten, eines nach dem anderen.
+
+d-372chbvw = Eingeschaltet
+
+d-2l2hjzlp = Pfad
+    .doc = Der Pfad eines Erweiterungspakets, das die Person installieren möchte.
+
+d-5px2ripq = Erweiterung
+    .doc = Die Kennung einer installierten Erweiterung, die Einschalten oder Entfernen nennt.
+
+d-nskkfe4o = Erweiterungen
+    .doc = Die auf diesem Gerät installierten Erweiterungen, wie das Fenster einer Seite sie zuletzt aufgelistet hat.
+
+d-uq4ctcke = Hinweis zur Erweiterung
+    .doc = Was Installieren, Ein- oder Ausschalten einer Erweiterung ergeben hat, in den Worten der Person.
+
+d-fyfcqngs = Installierte Erweiterungen lesen
+    .doc = Liest die auf diesem Gerät installierten Erweiterungen in den Eintrag des Browsers.
+
+d-z2yj3nim = Eine Erweiterung installieren
+    .doc = Installiert das Erweiterungspaket am Pfad `path`, eine vom Herausgeber signierte .crx-Datei oder ein einfaches .zip: der Motor prüft ein signiertes Paket, entpackt es unter seiner eigenen Kennung und listet es auf.
+    .w-name-the-extension-package = Nenne das Erweiterungspaket
+
+d-z2yj3nim-path = Pfad
+
+d-ljfxfb7w = Erweiterung ein- oder ausschalten
+    .doc = Schaltet eine installierte Erweiterung ein oder aus: Chromium lädt die eingeschalteten, wenn das Fenster einer Seite startet.
+
+d-ljfxfb7w-e = E
+
+d-ljfxfb7w-on = An
+
+d-u33rt6ml = Erweiterung entfernen
+    .doc = Vergisst eine auf diesem Gerät installierte Erweiterung: ihren Ordner und alles, was sie darf.
+
+d-u33rt6ml-e = E
+
+d-hh7ptqf4 = Erweiterungen merken
+    .doc = Schreibt die Erweiterungen, die das Fenster einer Seite aufgelistet hat, in den Eintrag des Browsers.
+
+d-hh7ptqf4-installed = Installiert
+
+d-hh7ptqf4-message = Meldung
+
+d-4gc5tpck = Erweiterung vermerken
+    .doc = Schreibt, was Installieren, Ein- oder Ausschalten einer Erweiterung ergeben hat, in den Eintrag des Browsers.
+
+d-4gc5tpck-ok = Erfolg
+
+d-4gc5tpck-kind = Art
+
+d-4gc5tpck-message = Meldung
+
+d-4gc5tpck-id = Kennung
+
+d-gz3l5gst = Erweiterung installieren~present
+
+d-iymjskx5 = Schlüssel
+    .doc = Die Kennung des Motors für die Erweiterung, die Einschalten oder Entfernen nennt.
+
+d-2kfxgvhv = Download in Dateien anzeigen
+    .doc = Zeigt, wo ein gespeicherter Download in Dateien steht, mit der Datei markiert: der eine Ort des Systems für das, was ein Fenster gespeichert hat.
+    .w-save-the-download-first = Speichere den Download zuerst
+
+d-2kfxgvhv-path = Pfad
+
+d-arui4kb5 = Download anzeigen~present

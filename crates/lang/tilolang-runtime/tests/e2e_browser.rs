@@ -15,6 +15,9 @@ mod cases {
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/browser/app.tl");
+    /// Files' published place to show: its own action, which the Browser calls rather than
+    /// reaching the device's files itself.
+    const FILES_SOURCE: &str = include_str!("../../tilolang/tests/fixtures/file_explorer.tl");
 
     /// The page a window holds, as the test plays it: every ask it was given, and what it last
     /// reported of itself.
@@ -107,7 +110,11 @@ mod cases {
             let files = Files::default();
             rt.set_device_files(files.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
-            let app = App::compile(SOURCE, &[]);
+            // The Browser shows where a download stands by asking Files, whose own action knows
+            // the device's files.
+            let files_app = App::compile(FILES_SOURCE, &[]);
+            files_app.load(&rt);
+            let app = App::compile(SOURCE, &[files_app.meta().clone()]);
             authority.trust(&app.load(&rt));
             let root = rt.create_root("Browser").unwrap();
             let made = Browser::call(&app, &rt, "new_page", &[("b", Value::resource(&root))])
@@ -605,6 +612,148 @@ mod cases {
             of_kind(view.tree(), "ui.Banner").is_empty(),
             "an ordinary page shows no private notice"
         );
+    }
+
+    /// A saved download is shown in Files by calling Files' own action: the Browser names the
+    /// place and Files, the app that knows the device's files, shows it. The Browser never reads
+    /// a folder itself.
+    #[test]
+    fn a_saved_download_is_shown_in_files_through_its_own_action() {
+        let authority = TestAuthority::new();
+        let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
+        rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
+        let files = App::compile(FILES_SOURCE, &[]);
+        files.load(&rt);
+        // The Browser is not trusted with another app's actions, so its call to Files asks.
+        let app = App::compile(SOURCE, &[files.meta().clone()]);
+        app.load(&rt);
+        let files_root = rt.create_root("Files").expect("the Files root");
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
+
+        let out = Browser::call(
+            &app,
+            &rt,
+            "reveal_download",
+            &[("path", Value::text("/home/ada/Downloads/report.pdf"))],
+        )
+        .unwrap_or_else(|error| panic!("the download is shown: {error:?}"));
+        let InvokeOutcome::Waits { run, .. } = out else {
+            panic!("the call to Files asks first: {out:?}");
+        };
+        let (action, args) = dispatch.asked();
+        assert_eq!(
+            action,
+            files.action("show"),
+            "Files' own action, by name, not a second path of its own"
+        );
+        assert!(
+            args.contains(&Value::text("/home/ada/Downloads/report.pdf")),
+            "the call names the download: {args:?}"
+        );
+
+        let RunOutcome::Done(_) = dispatch.allow(&rt, &run) else {
+            panic!("Files shows the place");
+        };
+        assert_eq!(
+            rt.read(&files_root, "place").unwrap().as_text(),
+            Some("/home/ada/Downloads/report.pdf"),
+            "Files shows the download's place"
+        );
+
+        // Nothing to show for a download that was never saved.
+        let refused = Browser::call(&app, &rt, "reveal_download", &[("path", Value::text(""))]);
+        assert!(refused.is_err(), "a download with no path shows nothing");
+    }
+
+    /// The extensions this device keeps are read into the Browser's record, installed from the
+    /// package the person names, turned on and off and removed through their rows, and the
+    /// engine's own answer is shown in the person's words.
+    #[test]
+    fn extensions_are_read_installed_turned_on_and_removed_through_the_page() {
+        let b = Browser::new();
+        b.page("list_extensions", &[]);
+        assert_eq!(b.page.ops(), ["extension_list"]);
+
+        b.page(
+            "remember_extensions",
+            &[
+                (
+                    "installed",
+                    Value::text(
+                        r#"[{"id":"abcdefghijklmnopabcdefghijklmnop","name":"Reader","version":"1.2.3","manifest_version":3,"description":"Reads pages","permissions":["storage","tabs"],"enabled":true}]"#,
+                    ),
+                ),
+                ("message", Value::text("")),
+            ],
+        );
+        let view = b.page_view();
+        assert_eq!(row_secondary(&view, "Reader"), "On · 1.2.3");
+
+        b.page(
+            "install_extension",
+            &[("path", Value::text("/home/ada/Downloads/reader.crx"))],
+        );
+        assert_eq!(
+            b.page.last()["op"].as_str(),
+            Some("extension_install"),
+            "the engine is asked to install the package the person named"
+        );
+        assert_eq!(
+            b.page.last()["path"].as_str(),
+            Some("/home/ada/Downloads/reader.crx")
+        );
+        let refused = Browser::call(
+            &b.app,
+            &b.rt,
+            "install_extension",
+            &[("p", Value::resource(&b.opened)), ("path", Value::text(""))],
+        );
+        assert!(refused.is_err(), "no package named, nothing installed");
+
+        // Turning it off names the extension and says which way.
+        let view = b.page_view();
+        view.fire(&button_key(&view, "Turn the extension off"), "press")
+            .unwrap();
+        assert_eq!(b.page.last()["op"].as_str(), Some("extension_enable"));
+        assert_eq!(
+            b.page.last()["extension"].as_str(),
+            Some("abcdefghijklmnopabcdefghijklmnop")
+        );
+        assert_eq!(b.page.last()["enabled"].as_bool(), Some(false));
+
+        let view = b.page_view();
+        view.fire(&button_key(&view, "Remove"), "press").unwrap();
+        assert_eq!(b.page.last()["op"].as_str(), Some("extension_remove"));
+        assert_eq!(
+            b.page.last()["extension"].as_str(),
+            Some("abcdefghijklmnopabcdefghijklmnop")
+        );
+
+        // What the engine read of a package it could not install is shown as the person's words.
+        b.page(
+            "note_extension",
+            &[
+                ("ok", Value::Bool(false)),
+                ("kind", Value::text("damaged")),
+                ("message", Value::text("the package is damaged: signature")),
+                ("id", Value::text("")),
+            ],
+        );
+        assert_eq!(
+            b.text(&b.root, "extension_notice"),
+            "The package is damaged, or signed for another extension"
+        );
+        b.page(
+            "note_extension",
+            &[
+                ("ok", Value::Bool(true)),
+                ("kind", Value::text("")),
+                ("message", Value::text("")),
+                ("id", Value::text("abcdefghijklmnopabcdefghijklmnop")),
+            ],
+        );
+        assert_eq!(b.text(&b.root, "extension_notice"), "");
     }
 
     /// The logins the engine keeps for a site are found, captured, saved, filled and forgotten

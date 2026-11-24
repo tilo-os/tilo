@@ -77,6 +77,7 @@
 
 pub mod chromium;
 mod credentials;
+pub mod extensions;
 pub mod key_code;
 mod service_sessions;
 pub use credentials::{
@@ -802,7 +803,10 @@ pub enum WebViewCommand {
     },
     /// Answer the request `id` an agent's window kept from leaving
     /// ([`WebViewEvent::HeldRequest`]): let it leave exactly once, or keep the page as it is.
-    AnswerDeparture { id: u32, leaving: Leaving },
+    AnswerDeparture {
+        id: u32,
+        leaving: Leaving,
+    },
     SetZoomLevel(f64),
     /// Report the document's size and scroll as [`WebViewEvent::DocumentSize`] whenever
     /// they change, or stop. An engine that cannot measure never reports.
@@ -978,8 +982,32 @@ pub enum WebViewCommand {
         key: KeyInput,
         modifiers: KeyModifiers,
     },
+    /// What is installed on this device and which of it the person turned on.
+    ExtensionList {
+        request_id: u32,
+    },
+    /// Install the extension package at `path`, as the person chose it: a CRX3 package or a
+    /// plain zip.
+    ExtensionInstall {
+        request_id: u32,
+        path: String,
+    },
+    /// Turn the installed extension `id` on or off; Chromium loads it at its next start.
+    ExtensionEnable {
+        request_id: u32,
+        id: String,
+        enabled: bool,
+    },
+    /// Forget the installed extension `id`.
+    ExtensionRemove {
+        request_id: u32,
+        id: String,
+    },
     /// Save the download `id` the page offered, or discard it.
-    AnswerDownload { id: u32, leaving: Leaving },
+    AnswerDownload {
+        id: u32,
+        leaving: Leaving,
+    },
     CancelNativeDownload {
         id: u32,
     },
@@ -1069,6 +1097,22 @@ pub enum WebViewEvent {
     ExtensionSidePanel {
         id: String,
         change: ExtensionSidePanelChange,
+    },
+    /// What is installed, as [`WebViewCommand::ExtensionList`] answered, and what the engine
+    /// failed to read in its own words.
+    ExtensionList {
+        request_id: u32,
+        installed: Vec<ExtensionEntry>,
+        message: String,
+    },
+    /// An install, a turning on or off, or a removal came to this: what the engine read, in its
+    /// own words and as the kind of failure it is.
+    ExtensionOutcome {
+        request_id: u32,
+        ok: bool,
+        kind: String,
+        message: String,
+        id: String,
     },
     SiteStatus(SiteStatus),
     SiteResult {
@@ -1291,6 +1335,37 @@ pub enum WebViewEvent {
         error: String,
         cancelled: bool,
     },
+}
+
+/// One installed extension, as the engine's inventory answers it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionEntry {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub manifest_version: u64,
+    pub description: String,
+    /// What it asks for in its manifest, as its own words.
+    pub permissions: Vec<String>,
+    /// Whether the person turned it on, which is whether Chromium loads it at its next start.
+    pub enabled: bool,
+}
+
+impl ExtensionEntry {
+    /// The entry as the inventory holds it, for a caller that reads it: its fields, in the order
+    /// the type declares them.
+    #[must_use]
+    pub fn of(extension: extensions::Extension, enabled: bool) -> Self {
+        Self {
+            id: extension.id,
+            name: extension.name,
+            version: extension.version,
+            manifest_version: extension.manifest_version,
+            description: extension.description,
+            permissions: extension.permissions,
+            enabled,
+        }
+    }
 }
 
 /// A visible media element expressed relative to the web viewport.

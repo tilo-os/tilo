@@ -68,6 +68,121 @@ struct DocumentSizeReports {
     told: AtomicU8,
 }
 
+/// How an install, a turning on or off, or a removal came out: the extension it was about, and
+/// what the engine read, in its own words and as the kind of failure.
+struct ExtensionOutcome {
+    extension: Option<super::extensions::Extension>,
+    ok: bool,
+    kind: &'static str,
+    message: String,
+}
+
+impl ExtensionOutcome {
+    fn failed(kind: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            extension: None,
+            ok: false,
+            kind,
+            message: message.into(),
+        }
+    }
+
+    fn of(extension: super::extensions::Extension) -> Self {
+        Self {
+            extension: Some(extension),
+            ok: true,
+            kind: "",
+            message: String::new(),
+        }
+    }
+
+    fn of_error(error: super::extensions::ExtensionError) -> Self {
+        let kind = error.kind();
+        Self::failed(kind, error.to_string())
+    }
+
+    fn into_event(self, request_id: u32) -> WebViewEvent {
+        WebViewEvent::ExtensionOutcome {
+            request_id,
+            ok: self.ok,
+            kind: self.kind.to_owned(),
+            message: self.message,
+            id: self
+                .extension
+                .map(|extension| extension.id)
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// The folder the extensions stand in, or why there is none.
+fn extension_root() -> Result<PathBuf, String> {
+    super::extensions::extensions_dir().ok_or_else(|| "this device keeps no extensions".to_owned())
+}
+
+/// Install the package at `path`: read it within the package limit, and unpack it under its own
+/// identifier. A plain zip is accepted unsigned, as a CRX3 package is after its proofs verify.
+fn install_extension(path: &Path) -> ExtensionOutcome {
+    const MAX_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
+    let root = match extension_root() {
+        Ok(root) => root,
+        Err(why) => return ExtensionOutcome::failed("no-place", why),
+    };
+    let bytes = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() > MAX_PACKAGE_BYTES => {
+            return ExtensionOutcome::failed("too-large", "the package is over the size limit");
+        }
+        Ok(_) => match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return ExtensionOutcome::failed("not-saved", error.to_string());
+            }
+        },
+        Err(error) => return ExtensionOutcome::failed("not-saved", error.to_string()),
+    };
+    match super::extensions::install(&bytes, &root, None) {
+        Ok(extension) => ExtensionOutcome::of(extension),
+        Err(error) => ExtensionOutcome::of_error(error),
+    }
+}
+
+/// Turn the installed extension `id` on or off.
+fn enable_extension(id: &str, enabled: bool) -> ExtensionOutcome {
+    let root = match extension_root() {
+        Ok(root) => root,
+        Err(why) => return ExtensionOutcome::failed("no-place", why),
+    };
+    let Some((extension, _)) = super::extensions::installed(&root)
+        .into_iter()
+        .find(|(extension, _)| extension.id == id)
+    else {
+        return ExtensionOutcome::failed("unknown", format!("no extension {id} is installed"));
+    };
+    match super::extensions::set_approved(&extension, enabled) {
+        Ok(()) => ExtensionOutcome::of(extension),
+        Err(error) => ExtensionOutcome::of_error(error),
+    }
+}
+
+/// Forget the installed extension `id`.
+fn remove_extension(id: &str) -> ExtensionOutcome {
+    let root = match extension_root() {
+        Ok(root) => root,
+        Err(why) => return ExtensionOutcome::failed("no-place", why),
+    };
+    let forgotten = super::extensions::installed(&root)
+        .into_iter()
+        .find(|(extension, _)| extension.id == id)
+        .map(|(extension, _)| extension);
+    match super::extensions::remove(&root, id) {
+        Ok(()) => match forgotten {
+            Some(extension) => ExtensionOutcome::of(extension),
+            None => ExtensionOutcome::failed("unknown", format!("no extension {id} is installed")),
+        },
+        Err(error) => ExtensionOutcome::of_error(error),
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     audio: audio::PageAudio,
@@ -1660,7 +1775,48 @@ impl WebViewEngine for ChromiumEngine {
     }
 
     fn send(&self, command: WebViewCommand) {
+        // The extensions this device keeps are the engine's own files, not the host's: they are
+        // read, unpacked and turned on here, and Chromium loads what is on at its next start.
         match command {
+            WebViewCommand::ExtensionList { request_id } => {
+                let (installed, message) = match super::extensions::extensions_dir() {
+                    Some(root) => (
+                        super::extensions::installed(&root)
+                            .into_iter()
+                            .map(|(extension, enabled)| {
+                                super::ExtensionEntry::of(extension, enabled)
+                            })
+                            .collect(),
+                        String::new(),
+                    ),
+                    None => (Vec::new(), "this device keeps no extensions".to_owned()),
+                };
+                self.shared.event(WebViewEvent::ExtensionList {
+                    request_id,
+                    installed,
+                    message,
+                });
+                return;
+            }
+            WebViewCommand::ExtensionInstall { request_id, path } => {
+                let outcome = install_extension(Path::new(&path));
+                self.shared.event(outcome.into_event(request_id));
+                return;
+            }
+            WebViewCommand::ExtensionEnable {
+                request_id,
+                id,
+                enabled,
+            } => {
+                let outcome = enable_extension(&id, enabled);
+                self.shared.event(outcome.into_event(request_id));
+                return;
+            }
+            WebViewCommand::ExtensionRemove { request_id, id } => {
+                let outcome = remove_extension(&id);
+                self.shared.event(outcome.into_event(request_id));
+                return;
+            }
             WebViewCommand::ImportServiceSession(request) => {
                 let reply = super::ServiceSessionReply {
                     request_id: request.request_id,
@@ -2686,6 +2842,12 @@ fn decode_base64_bounded(input: &str, limit: usize) -> Option<Vec<u8>> {
 
 fn encode_command(command: WebViewCommand) -> Option<Value> {
     Some(match command {
+        // What this device keeps installed is the engine's own files: the inventory never
+        // reaches the host.
+        WebViewCommand::ExtensionList { .. }
+        | WebViewCommand::ExtensionInstall { .. }
+        | WebViewCommand::ExtensionEnable { .. }
+        | WebViewCommand::ExtensionRemove { .. } => return None,
         WebViewCommand::Credentials(request) => request.encode()?,
         WebViewCommand::ImportServiceSession(request) => request.encode()?,
         WebViewCommand::Navigate(url) => json!({"op":"navigate","url":url}),

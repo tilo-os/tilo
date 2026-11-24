@@ -6,6 +6,8 @@ app so.tilo.browser "Browser" (
     keywords: ["web", "internet", "surf", "website", "url", "www", "web browser", "chrome", "safari", "edge", "firefox", "browser", "browsen", "webseite", "internetseite"],
 )
 
+use so.tilo.file-explorer as files
+
 /// A site someone saved: where it is and what it is called.
 type Bookmark (title: title) {
     url: Text
@@ -268,6 +270,24 @@ type HistoryEntry (title: title) {
     }
 }
 
+/// One extension installed on this device: what it is, what its manifest asks for, and whether
+/// the person turned it on. Chromium loads the ones that are on when a page's window starts.
+type Extension (title: name) {
+    /// The engine's identifier for it, which turning it on or removing names.
+    key: Text
+    name: Text
+    version: Text
+    manifest_version: Int
+    description: Text
+    /// What it asks for, as its own words, one after another.
+    permissions: Text
+    enabled: Bool = false
+
+    search {
+        hide key
+    }
+}
+
 /// One login form the engine found on the page: its own number for it, the account it offers,
 /// and what kind it is (`sign-in` or `create`).
 type LoginForm (title: form) {
@@ -314,6 +334,10 @@ type Ask {
     nth: Option<Int> = .none
     key: Option<Text> = .none
     url: Option<Text> = .none
+    /// The path of an extension package the person chose to install.
+    path: Option<Text> = .none
+    /// The identifier of an installed extension, which turning it on or removing names.
+    extension: Option<Text> = .none
     level: Option<Float> = .none
     values: Option<List<Text>> = .none
     /// What each question of a form is answered with, by the question's name.
@@ -426,6 +450,11 @@ type Browser {
     pages: Collection<Page>
     /// Forms are filled with a saved address while the person has one and leaves this on.
     addresses_enabled: Bool = false
+    /// The extensions installed on this device, as a page's window last listed them.
+    extensions: Collection<Extension>
+    /// What installing, turning on or removing an extension came to, in the person's words:
+    /// empty while there is nothing to say.
+    extension_notice: Text = ""
 }
 
 root Browser
@@ -1064,6 +1093,13 @@ action open_download(name: Text, path: Text) uses files (
     }
 }
 
+/// Shows where a saved download stands in Files, with the file marked: the system's one place for
+/// what a window saved.
+action reveal_download(path: Text) (icon: .folder, label: "Show the download in Files") {
+    require path != "" "Save the download first"
+    files.show(files.files, path)
+}
+
 /// Silences the page's sound, or lets it play again.
 action mute(p: Page, muted: Bool = not p.muted) -> Answer uses page (
     icon: .headphone_off,
@@ -1233,6 +1269,65 @@ action fill_saved_address(p: Page, f: LoginForm, a: Address) -> Answer uses page
             Ask(credential: .some("fill_address"), form: .some(f.form), address: .some(a)),
         ),
     )
+}
+
+/// Reads the extensions installed on this device into the Browser's record.
+action list_extensions(p: Page) -> Answer uses page (
+    icon: .puzzle,
+    label: "Read the installed extensions",
+) {
+    ask_page(p, json.encode(Ask(op: "extension_list")))
+}
+
+/// Installs the extension package at `path`, a .crx signed by its publisher or a plain .zip: the
+/// engine verifies a signed package, unpacks it under its own identifier, and lists it.
+action install_extension(p: Page, path: Text) -> Answer uses page (
+    icon: .file_plus,
+    label: "Install an extension",
+    shows: [path],
+) {
+    require path.trim() != "" "Name the extension package"
+    ask_page(p, json.encode(Ask(op: "extension_install", path: .some(path.trim()))))
+}
+
+/// Turns an installed extension on, or off: Chromium loads the ones that are on when a page's
+/// window starts.
+action enable_extension(p: Page, e: Extension, on: Bool = not e.enabled) -> Answer uses page (
+    icon: .check,
+    label: "Turn the extension on or off",
+    shows: [e.name],
+) {
+    ask_page(p, json.encode(Ask(op: "extension_enable", extension: .some(e.key), enabled: on)))
+}
+
+/// Forgets an extension installed on this device: its folder and everything it may do.
+destructive action remove_extension(p: Page, e: Extension) -> Answer uses page (
+    icon: .trash,
+    label: "Remove the extension",
+    shows: [e.name],
+) {
+    ask_page(p, json.encode(Ask(op: "extension_remove", extension: .some(e.key))))
+}
+
+/// Writes the extensions a page's window listed into the Browser's record. The window raises it;
+/// a person, agent or script never does.
+action remember_extensions(p: Page, installed: Text, message: Text) {
+    let b = root Browser
+    let found = extensions_of(installed)
+    b.extensions.remove_where(e -> true)
+    for e in found {
+        b.extensions.insert(e)
+    }
+    if message != "" {
+        b.extension_notice = message
+    }
+}
+
+/// Writes what installing, turning on or removing an extension came to, in the person's words.
+/// The window raises it; a person, agent or script never does.
+action note_extension(p: Page, ok: Bool, kind: Text, message: Text, id: Text) {
+    let b = root Browser
+    b.extension_notice = if ok { "" } else { extension_trouble(kind, message) }
 }
 
 /// Writes what the engine's credential store answered into the page's record: the forms and
@@ -2031,6 +2126,77 @@ fn json_flag(value: json.Value, key: Text) -> Bool {
     }
 }
 
+/// The words a JSON field holds as a list, joined by `between`: empty for one that is no list.
+fn json_words(value: json.Value, key: Text, between: Text) -> Text {
+    if let held = json_field(value, key) {
+        json_arrays(held)
+            .map(
+                v -> match v {
+                    .string(text) => text,
+                    .object(_) => "",
+                    .array(_) => "",
+                    .number(_) => "",
+                    .bool(_) => "",
+                    .null => "",
+                },
+            )
+            .filter(word -> word != "")
+            .join(between)
+    } else { "" }
+}
+
+/// What an install, a turning on or off, or a removal came to, in the person's words: the
+/// engine's kind of failure names what happened, and its own detail is for whoever asks.
+fn extension_trouble(kind: Text, said: Text) -> Text {
+    if kind == "no-place" {
+        "This device keeps no extensions"
+    } else if kind == "too-large" {
+        "The package is over the size limit"
+    } else if kind == "damaged" {
+        "The package is damaged, or signed for another extension"
+    } else if kind == "broken" {
+        "The package holds no manifest an extension can use"
+    } else if kind == "not-saved" {
+        "The package could not be read or saved"
+    } else if kind == "package" {
+        "That file is no extension package"
+    } else if kind == "unknown" {
+        "No such extension is installed"
+    } else if said != "" { said } else { "The extension could not be changed" }
+}
+
+/// The extensions an engine's inventory listed.
+fn extensions_of(installed: Text) -> List<Extension> {
+    let value = match json.parse(installed) {
+        .ok(value) => value,
+        .err(_) => {
+            return []
+        }
+    }
+    let found: List<Extension> = []
+    for held in json_arrays(value) {
+        let key = json_text(held, "id")
+        if key != "" {
+            found = [
+                found,
+                [
+                    Extension(
+                        key: key,
+                        name: json_text(held, "name"),
+                        version: json_text(held, "version"),
+                        manifest_version: json_number(held, "manifest_version").to_int(),
+                        description: json_text(held, "description"),
+                        permissions: json_words(held, "permissions", ", "),
+                        enabled: json_flag(held, "enabled"),
+                    ),
+                ],
+            ]
+                .flat_map(x -> x)
+        }
+    }
+    found
+}
+
 /// The downloads the page last reported, as its window reads them.
 fn downloads_of(value: json.Value) -> List<Download> {
     let found: List<Download> = []
@@ -2312,6 +2478,7 @@ view page_view(p: Page) {
     state zoom: Float = p.zoom_level
     state reading: Bool = false
     state answer_text: Text = ""
+    state install_path: Text = ""
     let b = root Browser
     ui.NavShell(content_kind: .document, title: if p.title == "" { p.url } else { p.title }) {
         actions: {
@@ -2525,6 +2692,55 @@ view page_view(p: Page) {
                                         on press: delete_saved_login(p, a)
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+                stack(padding: .related) {
+                    ui.Section("Extensions") {
+                        if b.extension_notice != "" {
+                            ui.Banner("Extensions", message: b.extension_notice, kind: .info)
+                        }
+                        ui.Button("Read the installed extensions", icon: .puzzle, role: .plain) {
+                            on press: list_extensions(p)
+                        }
+                        for e in b.extensions {
+                            stack(padding: .related) {
+                                ui.ListRow(
+                                    title: e.name,
+                                    secondary: if e.enabled {
+                                        "On · {e.version}"
+                                    } else { "Off · {e.version}" },
+                                    mark: .puzzle,
+                                )
+                                if e.description != "" {
+                                    ui.Text(e.description)
+                                }
+                                if e.permissions != "" {
+                                    ui.Text("May use {e.permissions}")
+                                }
+                                ui.Button(
+                                    if e.enabled {
+                                        "Turn the extension off"
+                                    } else { "Turn the extension on" },
+                                    icon: .check,
+                                    role: .plain,
+                                ) {
+                                    on press: enable_extension(p, e)
+                                }
+                                ui.Button("Remove", icon: .trash, role: .plain) {
+                                    on press: remove_extension(p, e)
+                                }
+                            }
+                        }
+                        stack(padding: .related) {
+                            ui.TextInput(
+                                bind: install_path,
+                                placeholder: "Path of an extension package (.crx or .zip)",
+                                key: "e",
+                            )
+                            ui.Button("Install", icon: .file_plus, role: .plain) {
+                                on press: install_extension(p, install_path)
                             }
                         }
                     }
@@ -2935,6 +3151,9 @@ view download_row(p: Page, d: Download) {
         if d.state == "completed" and d.path != "" {
             ui.Button("Open", icon: .external_link, role: .plain) {
                 on press: open_download(d.name, d.path)
+            }
+            ui.Button("Show in Files", icon: .folder, role: .plain) {
+                on press: reveal_download(d.path)
             }
         }
     }
